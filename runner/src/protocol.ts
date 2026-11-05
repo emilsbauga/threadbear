@@ -5,6 +5,22 @@
 export const PROTOCOL_VERSION = 1;
 
 export type Provider = 'claude' | 'codex';
+// Configured engines can precede executable adapters. Provider continues to
+// name runnable accounts so Pi metadata cannot enter CLI-only code paths.
+export type AgentEngine = Provider | 'pi';
+export function isAgentEngine(v: unknown): v is AgentEngine {
+  return v === 'pi' || isProvider(v);
+}
+
+export type PiProfile = {
+  id: string;
+  engine: 'pi';
+  title: string;
+  executable: string;
+  configDir: string;
+  connection: { provider: string; model: string };
+  capabilities: { threads: boolean };
+};
 export const PROVIDERS: readonly Provider[] = ['claude', 'codex'];
 
 export function isProvider(v: unknown): v is Provider {

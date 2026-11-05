@@ -7,6 +7,8 @@ import { RELEASE } from './release.ts';
 import { findGateway, gatewayBase } from './connectors.ts';
 import { findGatewayClient } from './notion-tasks.ts';
 import { CLI_POLICIES, isEffortLevel, isProvider, type CliPolicy, type EffortLevel, type Provider } from './protocol.ts';
+import type { PiProfile } from './protocol.ts';
+import { parsePiProfiles } from './pi-profiles.ts';
 
 // <package version>+<release id>, or +source when run from a checkout.
 export const RUNNER_VERSION = RELEASE.version;
@@ -41,6 +43,7 @@ export const DEFAULT_CLI_UPDATES: CliUpdatesConfig = { claude: 'auto', codex: 'a
 // tests can point THREADBEAR_HOME and THREADBEAR_PORT somewhere harmless and
 // never touch ~/Library/Application Support/Threadbear.
 export type Config = {
+  piProfiles?: PiProfile[];
   home: string; // data dir
   port: number;
   host: string;
@@ -140,6 +143,7 @@ export type RunnerJson = {
   maxLiveCLIs?: number;
   codexPath?: string;
   codexArgs?: string[];
+  pi?: { enabled?: boolean; path?: string; profiles?: unknown[] };
   cliUpdates?: Partial<CliUpdatesConfig>;
   accountNotes?: Record<string, string>;
   poolFolders?: Record<string, string[]>;
@@ -218,8 +222,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const codexPath = nonEmpty(env.THREADBEAR_CODEX_PATH) ?? nonEmpty(json.codexPath);
   const models = providerMap(json.defaults?.models, nonEmpty);
   const efforts = providerMap(json.defaults?.efforts, (v) => (isEffortLevel(v) ? v : undefined));
+  const piProfiles = parsePiProfiles(json.pi, home);
   return {
     home,
+    ...(piProfiles.length ? { piProfiles } : {}),
     port,
     host: '127.0.0.1',
     maxLive: Number.isFinite(maxLive) && maxLive >= 1 ? Math.floor(maxLive) : DEFAULT_MAX_LIVE,

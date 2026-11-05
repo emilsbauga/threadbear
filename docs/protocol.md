@@ -820,6 +820,62 @@ thread's messages keep only the last `assistant.text` of an `itemId`.
 The Convex mirror keys messages by seq, so the phone and website show
 the summary and then the reply.
 
+## Configured Pi profiles
+
+`hello` may include `piProfiles: PiProfile[]`. These are opt-in configuration
+metadata, separate from runnable `accounts`. They do not change defaults,
+pools, CLI updates or the existing `Provider = "claude" | "codex"` contract.
+`AgentEngine = Provider | "pi"` also names configured engines. Pi execution
+will be enabled by a later adapter; current profiles advertise
+`capabilities.threads: false`. Clients must not offer them as runnable accounts.
+Older runners omit the field; clients treat it as an empty list. Older clients
+ignore it. Unknown profile fields are ignored, and clients skip malformed rows.
+
+```ts
+type PiProfile = {
+  id: string
+  engine: "pi"
+  title: string
+  executable: string
+  configDir: string
+  connection: { provider: string, model: string }
+  capabilities: { threads: boolean }
+}
+```
+
+Configure them in `runner.json`:
+
+```json
+{
+  "pi": {
+    "path": "pi",
+    "profiles": [
+      {
+        "id": "pi-local",
+        "title": "Local Pi",
+        "connection": { "provider": "ollama", "model": "my-local-model" }
+      }
+    ]
+  }
+}
+```
+
+The executable defaults to `pi` (a PATH command); absolute and `~/` executable
+paths are accepted. Profile IDs are unique, 1–64 letters/digits/underscores/
+hyphens and start with a letter or digit. Titles default to the ID. `configDir`
+defaults to `<runner home>/pi/profiles/<id>`; explicit paths must be absolute
+or start with `~/`. Provider and model must be nonempty strings. The provider
+is Pi's inference-provider ID, such as `openrouter` or `ollama`, not the agent
+engine. Endpoint details and credentials belong in that Pi profile's own
+configuration; do not put secrets in this public metadata.
+
+Missing/null `pi`, `pi.enabled: false` or no profiles leaves behavior unchanged.
+A profile with `enabled: false` is omitted. Invalid active configuration is
+rejected with its field location, without echoing its contents. Unknown fields
+are discarded. Parsing does not create directories, read Pi credentials,
+discover models, start a process or make a network request. Changes take effect
+after a normal runner restart; profiles are local metadata, not Convex accounts.
+
 ## Composer skills
 
 `skills.list { accountId: string, cwd: string }` returns
@@ -842,7 +898,7 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{ client: string, version: string, build?: { commit, short, tree } }` (`build`: the Mac app's own build, see App restarts) | `{ runnerVersion, protocol: 1, accounts: Account[], pools?: Pool[], defaults: { cwd, accountId, poolId?, model?, models?: { claude?, codex? }, efforts?: { claude?: EffortLevel, codex?: EffortLevel } }, clis?: CliStatus[], updates?: RunnerUpdates }`. `updates` is under Runner updates; `pools` and `defaults.poolId` under Pools. `defaults.accountId` is the account a `threads.create` with no `accountId` uses: the one with the most room among the last-used account's provider (skipping blocked ones, ones under 10% and ones with a note), worked out again as usage changes; a client keeps its own copy of the rule rather than asking again. `defaults.models[provider]` is the model a new thread on that provider gets when it names none (`runner.json`'s `defaults.models`; a dev runner sets the cheapest); `defaults.model` is the same for Claude, kept for older apps. Absent means the account's own default (`accounts[].defaultModel` names it, when known). `defaults.efforts[provider]` likewise for effort; absent means the model's own level. `runnerVersion` is `<package version>+<release id>` when the runner runs from a release, else `<package version>+source` |
+| `hello` | `{ client: string, version: string, build?: { commit, short, tree } }` (`build`: the Mac app's own build, see App restarts) | `{ runnerVersion, protocol: 1, accounts: Account[], pools?: Pool[], piProfiles?: PiProfile[], defaults: { cwd, accountId, poolId?, model?, models?: { claude?, codex? }, efforts?: { claude?: EffortLevel, codex?: EffortLevel } }, clis?: CliStatus[], updates?: RunnerUpdates }`. `updates` is under Runner updates; `pools` and `defaults.poolId` under Pools. `defaults.accountId` is the account a `threads.create` with no `accountId` uses: the one with the most room among the last-used account's provider (skipping blocked ones, ones under 10% and ones with a note), worked out again as usage changes; a client keeps its own copy of the rule rather than asking again. `defaults.models[provider]` is the model a new thread on that provider gets when it names none (`runner.json`'s `defaults.models`; a dev runner sets the cheapest); `defaults.model` is the same for Claude, kept for older apps. Absent means the account's own default (`accounts[].defaultModel` names it, when known). `defaults.efforts[provider]` likewise for effort; absent means the model's own level. `runnerVersion` is `<package version>+<release id>` when the runner runs from a release, else `<package version>+source` |
 | `threads.list` | `{ include?: ("inbox" \| "snoozed" \| "archived")[] }` (default `["inbox"]`) | `{ threads: ThreadSummary[] }` newest activity first |
 | `threads.search` | `{ query: string, limit?: number }` | `{ threads: ThreadSummary[] }` matches title and preview across all threads, archived included |
 | `threads.create` | `{ text: string, images?: ImageRef[], cwd?: string, accountId?: string, poolId?: string, model?: string, effort?: EffortLevel, permissionMode?: "full" \| "ask", title?: string, worktree?: boolean, startedBy?: { kind, label, icon?, threadId?, why? } }` | `{ thread: ThreadSummary }` (the first turn starts straight away). In a repo that asks for worktrees (see Worktrees) the thread gets one of its own before its first turn; `worktree: false` starts it in the folder as it is. The thread's `provider` is its account's. With no `model`, the thread gets `defaults.models[provider]` from `hello`, or `defaults.model` for Claude, or else the account's own default. With no `effort`, `defaults.efforts[provider]`, or else the model's own level. See "Models and effort across providers" |

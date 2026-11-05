@@ -1496,6 +1496,8 @@ public struct RunnerDefaults: Sendable, Hashable, Codable {
 }
 
 public struct HelloResult: Sendable, Hashable, Decodable {
+    /// Configured Pi profiles, separate from runnable accounts. Older runners omit these.
+    public var piProfiles: [PiProfile]
     public var runnerVersion: String
     public var `protocol`: Int
     public var accounts: [Account]
@@ -1514,6 +1516,7 @@ public struct HelloResult: Sendable, Hashable, Decodable {
         runnerVersion = try c.decodeIfPresent(String.self, forKey: .runnerVersion) ?? "?"
         `protocol` = try c.decodeIfPresent(Int.self, forKey: .protocol) ?? 1
         accounts = try c.decodeIfPresent([Account].self, forKey: .accounts) ?? []
+        piProfiles = c.lossyArray(PiProfile.self, forKey: .piProfiles)
         defaults = (try? c.decodeIfPresent(RunnerDefaults.self, forKey: .defaults))
             ?? RunnerDefaults(cwd: "", accountId: accounts.first?.id ?? "claude-main")
         if defaults.accountId.isEmpty { defaults.accountId = accounts.first?.id ?? "claude-main" }
@@ -1523,7 +1526,7 @@ public struct HelloResult: Sendable, Hashable, Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case runnerVersion, `protocol`, accounts, defaults, clis, updates, pools
+        case runnerVersion, `protocol`, accounts, defaults, clis, updates, pools, piProfiles
     }
 }
 

@@ -699,6 +699,15 @@ long before the reset; in green, how much of the week will go unused, so
 it's worth leaning on that login; otherwise that it's on track, or when it
 resets. Hover a window for its rate.
 
+### Pi profile configuration
+
+Pi profile metadata can be registered in `runner.json` under `pi.profiles`.
+The configuration shape is in [Configured Pi profiles](protocol.md#configured-pi-profiles).
+This prepares a profile without starting Pi or offering it in the account
+picker. Running Pi threads is not supported yet. Registering a profile does
+not inspect your Pi login, create its settings folder or change your existing
+Claude/Codex accounts. Omit `pi` to keep the current setup.
+
 ## Connectors
 <!-- slug: connectors -->
 

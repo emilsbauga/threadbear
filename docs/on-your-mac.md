@@ -8,6 +8,12 @@ File references are where to look.
 
 ## What setup and install add
 
+Optional `runner.json` Pi profiles are configuration metadata only
+(`runner/src/pi-profiles.ts`). Their paths are advertised in local `hello`
+responses; parsing creates no folders and reads no Pi settings or credentials.
+It starts no Pi process and makes no Pi network requests. Pi profiles are not
+synced as accounts or offered as runnable threads yet.
+
 - **Git remotes** (`scripts/setup.mjs`, "Your copy"): Mike's repo becomes
   `upstream`. If `gh` is logged in and you cloned rather than forked, setup
   forks the repo to your GitHub account (`gh repo fork --remote`).

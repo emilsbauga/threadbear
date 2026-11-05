@@ -38,6 +38,7 @@ import type {
   PersistedEvent,
   Pool,
   Provider,
+  PiProfile,
   Question,
   RewoundFiles,
   RunnerDefaults,
@@ -1098,7 +1099,7 @@ export class Runner {
 
   // --------------------------------------------------------------- queries
 
-  hello(): { runnerVersion: string; protocol: number; accounts: Account[]; pools: Pool[]; defaults: RunnerDefaults; clis?: CliStatus[] } {
+  hello(): { runnerVersion: string; protocol: number; accounts: Account[]; pools: Pool[]; defaults: RunnerDefaults; clis?: CliStatus[]; piProfiles?: PiProfile[] } {
     const accounts = this.accounts.list();
     const pools = this.pools(accounts);
     const defaults: RunnerDefaults = { cwd: this.cfg.defaults.cwd, accountId: this.defaultAccountId(accounts) };
@@ -1112,6 +1113,7 @@ export class Runner {
     const out: ReturnType<Runner['hello']> = { runnerVersion: RUNNER_VERSION, protocol: PROTOCOL_VERSION, accounts, pools, defaults };
     const clis = this.cliList();
     if (clis) out.clis = clis;
+    if (this.cfg.piProfiles?.length) out.piProfiles = this.cfg.piProfiles;
     return out;
   }
 
