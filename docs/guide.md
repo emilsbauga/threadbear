@@ -286,8 +286,11 @@ to make something, try "Make a file called hello.txt that says hi" and watch
 it appear in `~/ThreadbearThreads`.
 
 In a thread on this Mac, type `/` or `$` at the start of a word to list
-skills for the selected Codex login and folder. Keep typing to search
-names and descriptions. Use ↑ and ↓ to choose, then Return or Tab to
+skills for the selected Codex login and folder. The list floats above the
+whole composer, including its decision card, without moving anything. It
+leaves a small gap and scrolls its results to fit the space above. Keep typing
+to search names and descriptions; spaces and hyphens both work, for example
+`/usage budget` or `/github-create`. Use ↑ and ↓ to choose, then Return or Tab to
 insert it, or click a skill. Escape closes the list. Choosing inserts
 `$skill-name ` so you can add your request before sending. The picker
 shows enabled skills from Codex, including personal and project skills;

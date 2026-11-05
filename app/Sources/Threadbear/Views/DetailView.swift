@@ -97,6 +97,7 @@ struct DetailView: View {
                     ComposerView(thread: thread, session: session, controller: app.transcript)
                         .tourTarget(.composer)
                         .layoutValue(key: PaneRole.self, value: .composer)
+                        .zIndex(2)
                 }
                 if isNew {
                     NewThreadHeading()

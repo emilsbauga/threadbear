@@ -830,7 +830,11 @@ model turn. Only enabled skills are returned; unknown scopes are allowed.
 A provider without discovery returns no skills and an explanatory error.
 Unknown accounts are `-32010`; paths must be absolute existing folders.
 The Mac composer offers these skills when a word starts with `/` or `$`.
-Choosing one replaces that word with `$name `, leaving the rest of the
+Slash searches accept spaces and treat hyphens as word separators. The list
+floats above the entire composer (including its attached card) with an
+eight-point gap, over other UI without reserving layout space. Its result
+list scrolls within the available height above the composer.
+Choosing one replaces the search query with `$name `, leaving the rest of the
 message and its pictures intact; sending uses the existing text protocol.
 An old runner's `-32601` is shown in the picker, never as a broken composer.
 

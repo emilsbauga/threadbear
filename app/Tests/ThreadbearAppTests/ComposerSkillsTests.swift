@@ -78,4 +78,45 @@ final class ComposerSkillsTests: XCTestCase {
         XCTAssertTrue(picker.key(key(125), in: view))
         XCTAssertEqual(picker.selected, 0)
     }
+    func testMultiwordSearchReplacesTheEntireQuery() {
+        let (view, picker) = field("Please /github create")
+        picker.skills = [ComposerSkill(name: "github-create", description: "Create repository", path: "/github", scope: "user")]
+        XCTAssertEqual(picker.matches.map(\.name), ["github-create"])
+        view.keyDown(with: key(36))
+        XCTAssertEqual(view.string, "Please $github-create ")
+        picker.changed(view)
+        XCTAssertNil(picker.token, "a selected dollar mention ends at its inserted space")
+    }
+
+    func testHeadroomUsesWindowCoordinatesAndTheProbeNeverTakesClicks() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 400))
+        window.contentView = content
+        let probe = ComposerSkillsSpaceProbe.Probe(frame: NSRect(x: 20, y: 30, width: 460, height: 120))
+        var space: CGFloat?
+        probe.changed = { space = $0 }
+        content.addSubview(probe)
+        probe.report()
+        for _ in 0..<100 where space == nil { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(try XCTUnwrap(space), max(zoomed(80), 250 - zoomed(48)), accuracy: 0.5)
+        XCTAssertNil(probe.hitTest(NSPoint(x: 40, y: 40)))
+        space = nil
+        window.setContentSize(NSSize(width: 500, height: 260))
+        probe.report()
+        for _ in 0..<100 where space == nil { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(try XCTUnwrap(space), zoomed(80), accuracy: 0.5)
+    }
+
+    func testAnOldRowCannotBeChosenAfterTheSearchChanges() {
+        let (view, picker) = field("/")
+        view.replaceText("/github create")
+        view.setSelectedRange(NSRange(location: 14, length: 0))
+        picker.changed(view)
+        picker.choose(skill, in: view)
+        XCTAssertEqual(view.string, "/github create", "a stale deploy row must not replace the new search")
+    }
+
 }

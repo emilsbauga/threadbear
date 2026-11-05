@@ -490,6 +490,8 @@ async function dispatch(client, method, p) {
     case 'skills.list':
       if (oldRunner) throw rpcError(-32601, 'Method not found');
       return { skills: [
+        { name: 'usage-budget', title: 'Usage budget', description: 'Conserve a stated allowance', path: '/mock/skills/usage-budget/SKILL.md', scope: 'user' },
+        { name: 'github-create', description: 'Create a new repository', path: '/mock/skills/github-create/SKILL.md', scope: 'user' },
         { name: 'mock-review', title: 'Review changes', description: 'Check local changes before shipping', path: '/mock/skills/review/SKILL.md', scope: 'user' },
         { name: 'mock-release', title: 'Prepare release', description: 'Build and verify this project', path: '/mock/skills/release/SKILL.md', scope: 'repo' },
       ], errors: [] };

@@ -28,6 +28,8 @@ final class ComposerSkillPicker {
     func choose(_ skill: ComposerSkill, in view: ComposerTextView?) {
         guard let view, let token,
               SkillCompletion.token(in: view.string, selection: view.selectedRange()) == token else { dismiss(); return }
+        // A click can arrive before SwiftUI has repainted a newly typed query.
+        guard !loading, matches.contains(where: { $0.id == skill.id }) else { return }
         // Through NSTextView: one undo step, preserving pictures and text.
         dismiss()
         view.insertText("$\(skill.name) ", replacementRange: token.range)
@@ -53,16 +55,18 @@ final class ComposerSkillPicker {
 
 struct ComposerSkillsMenu: View {
     let picker: ComposerSkillPicker
+    var maxHeight: CGFloat = 280
     let choose: (ComposerSkill) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: zoomed(6)) {
             HStack {
-                Text("Skills").font(.system(size: TypeScale.chip, weight: .medium))
+                Text("Skills").font(.system(size: TypeScale.chip, weight: .medium)).fixedSize()
                 Spacer()
                 Text("↑↓ choose · Return insert · Esc close")
                     .font(.system(size: TypeScale.chip - 1))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             .padding(.horizontal, zoomed(10))
             if picker.loading {
@@ -96,7 +100,7 @@ struct ComposerSkillsMenu: View {
                             }
                         }
                     }
-                    .frame(height: min(CGFloat(picker.matches.count) * zoomed(34), zoomed(238)))
+                    .frame(height: min(CGFloat(picker.matches.count) * zoomed(34), zoomed(238), max(zoomed(34), maxHeight - zoomed(picker.errors.isEmpty ? 44 : 68))))
                     .onChange(of: picker.selected) { _, index in proxy.scrollTo(index) }
                     .onChange(of: picker.token?.query) { _, _ in proxy.scrollTo(0) }
                 }
@@ -107,8 +111,38 @@ struct ComposerSkillsMenu: View {
             }
         }
         .padding(zoomed(8))
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: zoomed(14)))
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: zoomed(14)))
         .overlay(RoundedRectangle(cornerRadius: zoomed(14)).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
-        .padding(.bottom, zoomed(8))
+        .shadow(color: .black.opacity(0.2), radius: zoomed(12), y: zoomed(3))
+    }
+}
+
+/// Measure in the owning window: SwiftUI's global space can include a
+/// dock panel's offset, which overstates room above a short composer.
+struct ComposerSkillsSpaceProbe: NSViewRepresentable {
+    var changed: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) {
+        view.changed = changed
+        DispatchQueue.main.async { [weak view] in view?.report() }
+    }
+
+    final class Probe: NSView {
+        var changed: ((CGFloat) -> Void)?
+        private var lastSpace: CGFloat = -1
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func layout() { super.layout(); report() }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report() }
+        func report() {
+            guard let content = window?.contentView else { return }
+            let rect = convert(bounds, to: content)
+            let above = content.isFlipped ? rect.minY - content.bounds.minY : content.bounds.maxY - rect.maxY
+            // Keep the pane's header visible, with the same 8-point gap.
+            let space = max(zoomed(80), above - zoomed(48))
+            guard abs(space - lastSpace) > 0.5 else { return }
+            lastSpace = space
+            DispatchQueue.main.async { [weak self] in self?.changed?(space) }
+        }
     }
 }

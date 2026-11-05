@@ -21,6 +21,8 @@ struct ComposerView: View {
     @State private var importing = 0
     @State private var handle = ComposerHandle()
     @State private var skillPicker = ComposerSkillPicker()
+    @State private var skillMenuHeight: CGFloat = 0
+    @State private var skillMenuSpace: CGFloat = 280
 
     static var cornerRadius: CGFloat { zoomed(20) }
     static var padding: CGFloat { zoomed(14) }
@@ -48,9 +50,6 @@ struct ComposerView: View {
         let needsYou = cardRow.map { row in if case .asks(let card) = row.content { !card.isDone } else { false } } ?? false
         let cardCollapsed = needsYou && thread.map { app.collapsedCards[$0.id] == cardRow?.seq } == true
         VStack(alignment: .leading, spacing: 0) {
-        if skillPicker.token != nil, !creating, ThreadSettings(app: app, thread: thread).provider == "codex" {
-            ComposerSkillsMenu(picker: skillPicker) { skillPicker.choose($0, in: handle.textView) }
-        }
         // The folder's actions (patches), on shelves sitting on the box's
         // top edge, in from its rounded corner (ActionChips).
         if let thread, !thread.actions.isEmpty || thread.patches.contains(where: { $0.untrusted != nil }) {
@@ -113,6 +112,19 @@ struct ComposerView: View {
         .padding(Self.padding)
         }
         .background { card(attention: needsYou) }
+        .background { ComposerSkillsSpaceProbe { skillMenuSpace = $0 } }
+        .overlay(alignment: .top) {
+            if skillPicker.token != nil, !creating, ThreadSettings(app: app, thread: thread).provider == "codex" {
+                ComposerSkillsMenu(picker: skillPicker, maxHeight: skillMenuSpace) { skillPicker.choose($0, in: handle.textView) }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { skillMenuHeight = $0 }
+                    // Anchor above the whole card, including asks, attachments
+                    // and editing controls, without changing its layout size.
+                    .offset(y: -skillMenuHeight - zoomed(8))
+                    .opacity(skillMenuHeight > 0 ? 1 : 0)
+            }
+        }
+        .zIndex(skillPicker.token != nil ? 2 : 0)
         }
         // The transcript's reading column: 780 wide at most at 100%,
         // centred, with the same side insets once the window is narrower.
@@ -122,6 +134,7 @@ struct ComposerView: View {
         // corners; Codex and T3 leave about 24.
         .padding(.bottom, zoomed(20))
         .padding(.top, zoomed(4))
+        .zIndex(2)
         .task(id: skillsRequestKey) { await loadSkills() }
         .onChange(of: draftKey) { _, _ in skillPicker.dismiss() }
     }
