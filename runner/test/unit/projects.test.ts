@@ -56,7 +56,7 @@ function setup(opts: { pocket?: () => LibrarianPocket | undefined; models?: (p: 
     s.result('completed');
     await tick();
   };
-  return { h, root, misc, repo, projects, librarian, asked, create, finish };
+  return { h, home, root, misc, repo, projects, librarian, asked, create, finish };
 }
 
 test("the librarian keeps why a thread is in each project, and takes it out of a wrong guess only when it says so", async () => {
@@ -696,7 +696,7 @@ test('the day counts tokens and what pool looks would have cost', async () => {
   assert.equal(st.spentTodayUsd, 0);
 });
 
-test('the librarian renames a thread that has moved on, never one Mike or an agent named', async () => {
+test('the librarian evolves agent titles but preserves user and legacy fixed titles', async () => {
   let answer: unknown = {};
   const s = setup({ models: (p) => reply(typeof answer === 'function' ? (answer as (p: GenerateParams) => unknown)(p) : answer) });
   const { h, create, finish, librarian } = s;
@@ -724,15 +724,81 @@ test('the librarian renames a thread that has moved on, never one Mike or an age
     await tick(8);
     assert.equal(h.runner.get(thread.id).title, 'Librarian renames drifting threads');
   }
-  // Named by an agent: the look is told so, and a title it sends anyway is ignored.
+  // A new agent-chosen title remains eligible for later librarian reviews.
   h.runner.update({ threadId: thread.id, title: 'Picked by the agent', titleBy: 'agent' });
   answer = (q: GenerateParams) => {
-    assert.match(q.prompt, /Its title was set by the user or an agent/);
+    assert.doesNotMatch(q.prompt, /Its title was set by the user/);
     return { projects: [], title: 'Something else' };
   };
   librarian.run(thread.id);
   await tick(8);
-  assert.equal(h.runner.get(thread.id).title, 'Picked by the agent');
+  assert.equal(h.runner.get(thread.id).title, 'Something else');
+  for (const legacy of [false, true]) {
+    h.runner.update({ threadId: thread.id, title: 'Keep my name' });
+    if (legacy) delete rec(h, thread.id).titleByMike;
+    answer = (q: GenerateParams) => {
+      assert.match(q.prompt, /Its title was set by the user/);
+      return { title: 'Must be ignored' };
+    };
+    librarian.run(thread.id);
+    await tick(8);
+    assert.equal(h.runner.get(thread.id).title, 'Keep my name');
+  }
+});
+
+test('evolving titles persist, validate input and leave other librarian work running', async () => {
+  const { h, home, projects, librarian, create, finish } = setup({ models: (q) => {
+    assert.match(q.prompt, /Evolving titles is off/);
+    return reply({ title: 'Ignore this title', thread: 'Milestone completed' });
+  } });
+  const methods = librarianMethods(librarian);
+  assert.equal(librarian.status().evolvingTitles, true);
+  assert.throws(() => methods['librarian.update']({ evolvingTitles: 'false' }), /evolvingTitles must be a boolean/);
+  methods['librarian.update']({ evolvingTitles: false });
+  assert.equal(librarian.status().paused, false);
+  const saved = JSON.parse(fs.readFileSync(path.join(home, 'librarian.json'), 'utf8'));
+  assert.equal(saved.evolvingTitles, false);
+  const { thread } = create('Original title');
+  await finish(thread.id);
+  h.clock.advance(SETTLE_MS);
+  await tick(8);
+  assert.equal(h.runner.get(thread.id).title, 'Original title');
+  assert.equal(rec(h, thread.id).brief?.text, 'Milestone completed');
+  librarian.stop();
+  const restored = new Librarian({ host: h.runner, projects, clock: h.clock, log: nullLogger, home });
+  restored.start();
+  assert.equal(restored.status().evolvingTitles, false);
+  restored.update({ evolvingTitles: true });
+  assert.equal(restored.status().evolvingTitles, true);
+  restored.stop();
+});
+
+test('a manual rename wins over an evolving title already in flight', async () => {
+  let complete!: (v: ModelResult<string>) => void;
+  const { h, create, finish } = setup({ models: () => new Promise((resolve) => { complete = resolve; }) });
+  const { thread } = create('Original title');
+  await finish(thread.id);
+  h.clock.advance(SETTLE_MS);
+  await tick(8);
+  h.runner.update({ threadId: thread.id, title: 'My chosen name' });
+  complete(reply({ title: 'Outdated suggestion' }));
+  await tick(8);
+  assert.equal(h.runner.get(thread.id).title, 'My chosen name');
+});
+
+test('turning evolving titles off rejects a rename already in flight', async () => {
+  let complete!: (v: ModelResult<string>) => void;
+  const { h, librarian, create, finish } = setup({ models: () => new Promise((resolve) => { complete = resolve; }) });
+  const { thread } = create('Original title');
+  await finish(thread.id);
+  h.clock.advance(SETTLE_MS);
+  await tick(8);
+  assert.equal(librarian.status().state, 'working');
+  librarian.update({ evolvingTitles: false });
+  complete(reply({ title: 'Too late', thread: 'Useful progress' }));
+  await tick(8);
+  assert.equal(h.runner.get(thread.id).title, 'Original title');
+  assert.equal(rec(h, thread.id).brief?.text, 'Useful progress');
 });
 
 // "Chrome browser control" kept its name after the tool it's about was

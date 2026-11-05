@@ -2367,6 +2367,7 @@ export class Runner {
       rec.title = params.title.trim().slice(0, 200) || rec.title;
       rec.titleSet = true;
       if (params.titleBy !== 'agent') rec.titleByMike = true;
+      else if (!rec.titleByMike) rec.titleByMike = false;
     }
     if (params.cwd !== undefined && !params.cwd.trim()) throw new RpcError(ErrorCode.badParams, 'cwd must not be blank');
     const newCwd = params.cwd !== undefined ? path.resolve(expandHome(params.cwd.trim())) : undefined;

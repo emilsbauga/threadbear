@@ -467,6 +467,8 @@ type LibrarianStatus = {
                         // on", "Every login in Claude is out of room",
                         // "Model calls are off")
   paused: boolean       // Mike paused it; looks wait in the queue
+  evolvingTitles?: boolean // automatic later renames; default true. Absent
+                        // on older runners, which cannot change this setting
   current?: LibrarianJob & { startedAt: string } // the look under way
   queue: LibrarianJob[] // what it will look at next, soonest first
   recent: LibrarianEntry[] // what it did, newest first, the last 50
@@ -994,7 +996,7 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `librarian.status` | `{}` | `{ librarian: LibrarianStatus }` |
 | `connectors.status` | `{ refresh?: boolean }` | `{ connectors: ConnectorsStatus }` (see Connectors). `refresh` asks the gateway's `/health` first, unless it did in the last 10 seconds; the app passes it when the Connectors panel opens. A runner from before Connectors answers `-32601` and the app leaves the panel out |
 | `librarian.run` | `{ threadId?: string }` | `{ librarian: LibrarianStatus }`. Queues a look at the thread now (reason `asked`), or with no `threadId`, at every thread it has never looked at (a backfill, newest first) |
-| `librarian.update` | `{ paused?: boolean }` | `{ librarian: LibrarianStatus }` |
+| `librarian.update` | `{ paused?: boolean, evolvingTitles?: boolean }` | `{ librarian: LibrarianStatus }`. Both settings persist in librarian.json. Evolving titles defaults on; off prevents later librarian renames, including an answer already in flight, without pausing other librarian work or initial naming |
 | `pools.list` | `{}` | `{ pools: Pool[] }` (see Pools) |
 | `pools.save` | `{ pools: Pool[] }` | `{ pools: Pool[] }`. Replaces the whole list in `runner.json` (`builtIn` is dropped; an empty list goes back to the built-in ones). `-32602` for a duplicate id, a blank id or title, an empty `accountIds`, or an account id the runner doesn't know. A blank or non-string `icon` is dropped. Every client gets `pools.updated` |
 | `settings.get` | `{}` | `{ settings: Settings }` |
@@ -3305,10 +3307,15 @@ gives a new one when the work has moved on or the title is only its first
 message's opening words. It takes effect straight away, tidied like any
 model title, and the look's entry says so ("Renamed it ..."). Never on a
 `first-message` look (the title model has only just named it), never over
-a title Mike or an agent set (`titleSet`), and not if the title changed
-while the model was answering. A librarian title doesn't set `titleSet`,
-so a later look can rename it again. No extra model call: it's the same
-look.
+a title Mike chose (`titleByMike`), or an older fixed title whose ownership
+is unknown (`titleSet` without `titleByMike: false`), and not if the title
+changed while the model was answering. New agent-chosen titles explicitly
+record `titleByMike: false`, so they remain eligible. A librarian title
+doesn't set `titleSet`, so a later look can rename it again. Settings >
+General > Evolving titles switches these later renames on or off (default
+on). The same look considers milestones and changes of objective or phase;
+completion alone and cosmetic rewrites do not warrant a new title. No extra
+model call: it uses the existing look and catch-up timing.
 
 The same look renames a project the thread is in whose name has gone out
 of date: the thing it's about was renamed ("Chrome browser control" after

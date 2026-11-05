@@ -485,6 +485,8 @@ public struct LibrarianStatus: Sendable, Hashable, Decodable {
     public var state: State
     /// State `off`: why.
     public var reason: String?
+    /// Nil on a runner predating the evolving titles setting.
+    public var evolvingTitles: Bool?
     public var paused: Bool
     public var current: LibrarianJob?
     public var queue: [LibrarianJob]
@@ -500,9 +502,10 @@ public struct LibrarianStatus: Sendable, Hashable, Decodable {
 
     public init(state: State = .idle, reason: String? = nil, paused: Bool = false, current: LibrarianJob? = nil,
                 queue: [LibrarianJob] = [], recent: [LibrarianEntry] = [], looksToday: Int = 0, spentTodayUsd: Double = 0,
-                skippedToday: Int = 0, tokensToday: Int = 0, notionalTodayUsd: Double = 0) {
+                skippedToday: Int = 0, tokensToday: Int = 0, notionalTodayUsd: Double = 0, evolvingTitles: Bool? = nil) {
         self.state = state
         self.reason = reason
+        self.evolvingTitles = evolvingTitles
         self.paused = paused
         self.current = current
         self.queue = queue
@@ -516,6 +519,7 @@ public struct LibrarianStatus: Sendable, Hashable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        evolvingTitles = try? c.decodeIfPresent(Bool.self, forKey: .evolvingTitles)
         paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)).flatMap { $0 } ?? false
         state = (try? c.decodeIfPresent(State.self, forKey: .state)).flatMap { $0 } ?? (paused ? .paused : .idle)
         reason = (try? c.decodeIfPresent(String.self, forKey: .reason)).flatMap { $0 }
@@ -530,7 +534,7 @@ public struct LibrarianStatus: Sendable, Hashable, Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case state, reason, paused, current, queue, recent, looksToday, spentTodayUsd, skippedToday, tokensToday, notionalTodayUsd
+        case state, reason, paused, evolvingTitles, current, queue, recent, looksToday, spentTodayUsd, skippedToday, tokensToday, notionalTodayUsd
     }
 
     /// What the activity bar's badge counts: the look under way and the

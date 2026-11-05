@@ -101,7 +101,7 @@ runner, app and phone; it's usually better to hide its entry point.
 
 | Feature | Lives in |
 |---|---|
-| The librarian (titles, filing threads into projects, waking hibernating threads by topic) | `runner/src/librarian.ts`, app `Views/LibrarianHome.swift`, `LibrarianView.swift`. Pause it on its page, or set no `models.pool`. |
+| The librarian (titles, filing threads into projects, waking hibernating threads by topic) | `runner/src/librarian.ts`, app `Views/LibrarianHome.swift`, `LibrarianView.swift`. Pause it on its page, or set no `models.pool`. Settings > General > Evolving titles disables just later thread renaming (`librarian.update`, stored in librarian.json). |
 | Projects | `runner/src/projects.ts`, `project-icons.ts`; app `Projects.swift`, `Views/Projects*.swift`, `ProjectPage.swift`; the project tools in `threadbear-mcp.ts` |
 | Schedules | `runner/src/schedules.ts`, `cron.ts`; app `Schedules.swift`, `Views/Schedule*.swift`, `ScheduledHome.swift`, `ScheduledList.swift` |
 | Pools and Usage | `runner/src/pools.ts`, `usage*.ts`, `token-tally.ts`, `accounts.ts`; app `PoolsModel.swift`, `Usage.swift`, `Views/UsagePanel.swift` |

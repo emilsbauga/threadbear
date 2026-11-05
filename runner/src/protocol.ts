@@ -399,6 +399,7 @@ export type LibrarianStatus = {
   state: 'idle' | 'working' | 'paused' | 'off';
   reason?: string;
   paused: boolean;
+  evolvingTitles?: boolean;
   current?: LibrarianJob & { startedAt: string };
   queue: LibrarianJob[];
   recent: LibrarianEntry[];

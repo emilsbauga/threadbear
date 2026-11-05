@@ -96,6 +96,19 @@ private struct GeneralSettings: View {
                     }
                 }
 
+                if let evolvingTitles = app.librarian?.evolvingTitles {
+                    SettingsSection("Thread titles",
+                                    about: "The librarian updates titles as the work moves on, reviewing milestones and changes of direction. Names you choose stay fixed. Turning this off keeps existing titles; new threads still get an initial name.",
+                                    ask: "check why a thread's title has not changed.") {
+                        Toggle("Evolving titles", isOn: Binding(
+                            get: { evolvingTitles },
+                            set: { app.setEvolvingTitles($0) }
+                        ))
+                        .disabled(app.connection != .connected)
+                        .tip("Let the librarian update thread titles as the work moves on")
+                    }
+                }
+
                 // One reply, Bullet replies, the two live-CLI steppers and
                 // Follow main left here on 2 Nov: Mike wants as few settings
                 // as possible, the defaults suit nearly everyone, and anyone

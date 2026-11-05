@@ -759,8 +759,11 @@ public extension RPCClient {
         return try await call("librarian.run", .object(params), as: LibrarianResult.self).librarian
     }
 
-    func updateLibrarian(paused: Bool) async throws -> LibrarianStatus {
-        try await call("librarian.update", .object(["paused": .bool(paused)]), as: LibrarianResult.self).librarian
+    func updateLibrarian(paused: Bool? = nil, evolvingTitles: Bool? = nil) async throws -> LibrarianStatus {
+        var params: [String: JSONValue] = [:]
+        if let paused { params["paused"] = .bool(paused) }
+        if let evolvingTitles { params["evolvingTitles"] = .bool(evolvingTitles) }
+        return try await call("librarian.update", .object(params), as: LibrarianResult.self).librarian
     }
 }
 

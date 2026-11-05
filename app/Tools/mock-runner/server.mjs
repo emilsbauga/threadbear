@@ -2299,6 +2299,7 @@ function projectRequest(method, p) {
       return { librarian };
     }
     case 'librarian.update':
+      if (p.evolvingTitles !== undefined) librarian.evolvingTitles = Boolean(p.evolvingTitles);
       if (p.paused !== undefined) {
         librarian.paused = Boolean(p.paused);
         // A paused librarian finishes nothing new: what was under way goes
@@ -2467,7 +2468,7 @@ function addDemoProjects() {
 
   const title = (id) => threads.get(id)?.summary.title ?? id;
   librarian = {
-    state: 'working', paused: false,
+    state: 'working', paused: false, evolvingTitles: true,
     current: { threadId: 'demo_landing_pages', threadTitle: title('demo_landing_pages'), reason: 'first-turn', why: 'Its first turn ended', dueAt: ago(0.2), startedAt: ago(0.1) },
     queue: [
       { threadId: 'demo_codex_poster', threadTitle: title('demo_codex_poster'), reason: 'new-folder', why: 'Edited files in ~/dev/meetup-site', dueAt: soon(40) },

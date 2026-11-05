@@ -282,6 +282,13 @@ final class ProjectTests: XCTestCase {
         XCTAssertEqual(status.spentTodayUsd, 0.031, accuracy: 0.0001)
     }
 
+    func testEvolvingTitlesDecodesWithOlderRunnerCompatibility() throws {
+        XCTAssertNil(try decode(LibrarianStatus.self, #"{}"#).evolvingTitles)
+        XCTAssertNil(try decode(LibrarianStatus.self, #"{"evolvingTitles":"false"}"#).evolvingTitles)
+        XCTAssertEqual(try decode(LibrarianStatus.self, #"{"evolvingTitles":false}"#).evolvingTitles, false)
+        XCTAssertEqual(try decode(LibrarianStatus.self, #"{"evolvingTitles":true}"#).evolvingTitles, true)
+    }
+
     func testLibrarianStatusWithAlmostNothing() throws {
         let paused = try decode(LibrarianStatus.self, #"{"paused":true}"#)
         XCTAssertEqual(paused.state, .paused)

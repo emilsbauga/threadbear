@@ -543,7 +543,12 @@ The librarian reads your threads as they go and keeps your projects tidy.
 It files each thread in a project, making one when none fits, keeps each
 project's state up to date, adds a repo to a project's folders once its
 threads work there, and renames threads that have wandered off from their
-title (never one you named). It also looks after the Pocket cards threads
+title (never one you named). Settings › General › Evolving titles turns
+these later renames on or off. It starts on. Turning it off keeps existing
+names while new threads still get an initial title. Titles chosen by an
+agent can evolve; older fixed titles with unknown ownership stay as they
+are. Milestones and changes of phase are reasons to review a title, but
+small steps and completion alone do not cause a rename. It also looks after the Pocket cards threads
 filed.
 
 It looks after a thread's first message and when a turn ends, then catches

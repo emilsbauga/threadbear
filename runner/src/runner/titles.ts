@@ -98,12 +98,12 @@ export const titlesPart = {
   },
 
   // The librarian's title for a thread that has moved on from its old one.
-  // Never over one Mike or an agent set, and only while the title is still
+  // Never over a user-chosen or legacy fixed title, and only while it is still
   // `from`, the one the look was given, so a rename meanwhile wins. Like a
   // model title it doesn't set titleSet, so a later look can rename again.
   retitleFromLibrarian(this: Runner, threadId: string, title: string, from: string): string | undefined {
     const st = this.threads.get(threadId);
-    if (!st || st.rt.deleted || st.rec.titleSet || st.rec.title !== from) return undefined;
+    if (!st || st.rt.deleted || st.rec.titleByMike || (st.rec.titleSet && st.rec.titleByMike !== false) || st.rec.title !== from) return undefined;
     const clean = cleanTitle(title);
     if (!clean || clean === st.rec.title) return undefined;
     st.rec.title = clean;

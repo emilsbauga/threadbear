@@ -115,7 +115,7 @@ export type ThreadRecord = {
   pendingApprovals: string[];
   turnId?: string; // turn in progress when the record was saved
   titleSet?: boolean;
-  titleByMike?: boolean; // named by Mike, so agents leave it alone (Runner.update)
+  titleByMike?: boolean; // true: user-fixed; false: agent-chosen and may evolve; absent with titleSet: legacy fixed
   subagents?: SubagentRecord[]; // newest last, at most SUBAGENTS_KEPT
   // The projects the thread is in (projects.ts), oldest first; titles come
   // from the project list when the summary is made.

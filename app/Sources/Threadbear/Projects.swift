@@ -279,6 +279,18 @@ extension AppModel {
 
     // MARK: The librarian
 
+    func setEvolvingTitles(_ enabled: Bool) {
+        guard let client else { return }
+        settingsError = nil
+        Task {
+            do {
+                librarian = try await client.updateLibrarian(evolvingTitles: enabled)
+            } catch {
+                settingsError = error.localizedDescription
+            }
+        }
+    }
+
     func setLibrarianPaused(_ paused: Bool) {
         guard let client else { return }
         Task {

@@ -124,6 +124,7 @@ type PocketAdded = { at: string; threadId: string };
 type Saved = {
   pocketAdded?: PocketAdded[];
   paused?: boolean;
+  evolvingTitles?: boolean;
   queue?: LibrarianJob[];
   recent?: LibrarianEntry[];
   looks?: Record<string, Look>;
@@ -167,6 +168,7 @@ export class Librarian {
   private file: string;
   private home: string;
   private paused = false;
+  private evolvingTitles = true;
   private queue = new Map<string, LibrarianJob>();
   private recent: LibrarianEntry[] = [];
   private looks: Record<string, Look> = {};
@@ -217,6 +219,7 @@ export class Librarian {
     const saved = readJsonSync<Saved>(this.file);
     if (!saved && fs.existsSync(this.file)) this.log.error('librarian.json could not be read; starting afresh', { file: this.file });
     this.paused = Boolean(saved?.paused);
+    this.evolvingTitles = saved?.evolvingTitles !== false;
     for (const j of saved?.queue ?? []) if (j && typeof j.threadId === 'string') this.queue.set(j.threadId, j);
     this.recent = (saved?.recent ?? []).slice(0, RECENT_KEPT);
     this.looks = saved?.looks ?? {};
@@ -270,6 +273,7 @@ export class Librarian {
     const s: LibrarianStatus = {
       state: this.current ? 'working' : this.paused ? 'paused' : this.off ? 'off' : 'idle',
       paused: this.paused,
+      evolvingTitles: this.evolvingTitles,
       queue: this.sortedQueue(),
       recent: this.recent,
       looksToday: this.day.looks,
@@ -310,7 +314,7 @@ export class Librarian {
     return this.status();
   }
 
-  update(params: { paused?: boolean }): LibrarianStatus {
+  update(params: { paused?: boolean; evolvingTitles?: boolean }): LibrarianStatus {
     if (params.paused !== undefined && params.paused !== this.paused) {
       this.paused = params.paused;
       this.log.info(this.paused ? 'librarian paused' : 'librarian resumed');
@@ -319,6 +323,10 @@ export class Librarian {
         this.iconFullDue = 0;
         this.iconsSoon();
       }
+      this.changed();
+    }
+    if (params.evolvingTitles !== undefined && params.evolvingTitles !== this.evolvingTitles) {
+      this.evolvingTitles = params.evolvingTitles;
       this.changed();
     }
     return this.status();
@@ -597,7 +605,8 @@ export class Librarian {
     lines.push(`Currently in: ${inNow.join(', ') || 'none'}`);
     if (rec.projectsLeft?.length) lines.push(`Never put it in: ${rec.projectsLeft.join(', ')}`);
     if (selfFiled(rec)) lines.push('Filed by its own agent or the user: leave its projects as they are (projects [], new null).');
-    if (rec.titleSet) lines.push('Its title was set by the user or an agent: keep it (title null).');
+    if (!this.evolvingTitles) lines.push('Evolving titles is off: keep the thread title (title null).');
+    if (rec.titleByMike || (rec.titleSet && rec.titleByMike !== false)) lines.push('Its title was set by the user or has unknown ownership: keep it (title null).');
     const repos = [...(this.edited.get(rec.id) ?? [])].map((r) => this.tilde(r));
     if (repos.length) lines.push(`Edited files in: ${repos.join(', ')}`);
     const worked = [...(this.workedIn.get(rec.id) ?? [])].filter((r) => !this.edited.get(rec.id)?.has(r)).map((r) => this.tilde(r));
@@ -793,7 +802,7 @@ export class Librarian {
     if (typeof a.thread === 'string' && a.thread.trim()) this.host.setBrief?.(rec.id, a.thread);
     // A thread that has moved on from its title gets a new one. Not from
     // the first message alone: the title model has only just named it.
-    if (typeof a.title === 'string' && a.title.trim() && job.reason !== 'first-message') {
+    if (this.evolvingTitles && typeof a.title === 'string' && a.title.trim() && job.reason !== 'first-message') {
       const renamed = this.host.retitleFromLibrarian?.(rec.id, a.title, title);
       if (renamed) {
         said.push(`Renamed it ${renamed}`);
@@ -1096,7 +1105,7 @@ export class Librarian {
       }
       atomicWriteFileSync(
         this.file,
-        JSON.stringify({ paused: this.paused, queue, recent: this.recent, looks: this.looks, day: this.day, pocketAdded: this.pocketAdded } satisfies Saved),
+        JSON.stringify({ paused: this.paused, evolvingTitles: this.evolvingTitles, queue, recent: this.recent, looks: this.looks, day: this.day, pocketAdded: this.pocketAdded } satisfies Saved),
       );
     } catch (e) {
       this.log.warn('could not save librarian.json', { error: String(e) });
@@ -1307,7 +1316,7 @@ Folders are repos the work lives in (the thread's folder when it's a repo, the r
 
 Links are the few places the user keeps going back to for a project: its live site, admin page, dashboard, store listing. Copy the url exactly from the messages and give it a short title ("Live site", "Admin", "App Store"). Never a pull request, commit, issue, docs page, localhost, file or one-off page.
 
-Keep the thread's title (title null) unless it no longer says what the thread is about: the work moved on to something else, or the title is only the first words of the first message ("Hey, does the library, sorry, the librarian, does it update"). A better wording of the same subject is no reason. A new title is 2 to 6 words about the whole thread as it is now, in sentence case (a capital for the first word and for names only), with no quotes, full stop, dash or emoji: "Fix the flaky upload test on CI", "Librarian renames threads that move on".
+Keep the thread's title (title null) unless it no longer says what the thread is about: the current objective or phase changed, or the title is only the first words of the first message ("Hey, does the library, sorry, the librarian, does it update"). Review the title when a milestone is completed or a new phase starts. Rename only if the current title would mislead someone scanning the inbox; completion alone, a routine step or a better wording of the same subject is no reason. Keep enough of the subject to recognise the thread; name its current objective, not a temporary tool step, and avoid status words like Done or Running. A new title is 2 to 6 words about the whole thread as it is now, in sentence case (a capital for the first word and for names only), with no quotes, full stop, dash or emoji: "Fix the flaky upload test on CI", "Librarian renames threads that move on".
 
 Keep projects' names too, unless one the thread is in has gone out of date: the thing it's about was renamed (a tool renamed from Paws to BrowserBear leaves "Paws" or a vaguer "Chrome browser control" behind), or a project named for what it does now has a name of its own. Give the new name the user would say, keeping the old words in brackets when they still help: "BrowserBear (Chrome browser control)". A better wording of the same name is no reason, and never rename one marked as named by the user. Most looks rename none.
 
@@ -1414,7 +1423,8 @@ export function librarianMethods(l: Librarian): Record<string, (p: Record<string
     },
     'librarian.update': (p) => {
       if (p.paused !== undefined && typeof p.paused !== 'boolean') throw new RpcError(ErrorCode.badParams, 'paused must be a boolean');
-      return { librarian: l.update({ paused: p.paused as boolean | undefined }) };
+      if (p.evolvingTitles !== undefined && typeof p.evolvingTitles !== 'boolean') throw new RpcError(ErrorCode.badParams, 'evolvingTitles must be a boolean');
+      return { librarian: l.update({ paused: p.paused as boolean | undefined, evolvingTitles: p.evolvingTitles as boolean | undefined }) };
     },
   };
 }
