@@ -44,6 +44,15 @@ test('invalid active profiles fail with a location, disabled profiles are ignore
   assert.deepEqual(parsePiProfiles({ profiles: [{ enabled: false }] }, home), []);
 });
 
+test('Pi tool context overrides are optional, allowlisted and validated', () => {
+  for (const toolContext of ['auto', 'compact', 'full']) {
+    assert.equal(parsePiProfiles({ profiles: [{ ...profile(), toolContext }] }, tmpDir())[0].toolContext, toolContext);
+  }
+  for (const toolContext of ['invalid', 1, ['auto'], null]) {
+    assert.throws(() => parsePiProfiles({ profiles: [{ ...profile(), toolContext }] }, tmpDir()), /toolContext/);
+  }
+});
+
 test('runner config advertises Pi profiles in hello without modifying Claude/Codex accounts or defaults', async () => {
   const home = tmpDir();
   writeRunnerJson(home, { pi: { profiles: [profile()] } });

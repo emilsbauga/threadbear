@@ -16,12 +16,15 @@ import path from 'node:path';
 import { buildThreadbearTools, guidePath, serverInstructions, type ThreadControl } from '../../src/threadbear-mcp.ts';
 import { z } from 'zod';
 import { NAMESPACE_DESCRIPTION, toolGuidance, type ToolDefinition } from '../../src/adapters/codex/tools.ts';
+import { jsonSchema } from '../../src/agent-tools.ts';
 import { worktreeInstructions } from '../../src/worktrees.ts';
 import { USER_NAME } from '../../src/user-name.ts';
 
 const BUDGET_FILE = path.resolve(import.meta.dirname, '..', '..', 'context-budget.json');
 const REPO = path.resolve(import.meta.dirname, '..', '..', '..');
 const SELF = '00000000-0000-4000-8000-000000000000';
+const piExtensionUrl = new URL('../../src/adapters/pi/extension.mjs', import.meta.url).href;
+const { withoutDescriptions, COMPACT_END_DESCRIPTION, COMPACT_GUIDANCE } = await import(piExtensionUrl);
 
 // The same on every Mac and in every worktree: the repo's path and the
 // user's name are in the instructions, so they're swapped for fixed words.
@@ -40,7 +43,7 @@ const bytes = (s: string) => Buffer.byteLength(norm(s), 'utf8');
 function stub<T extends object>(): T {
   return new Proxy({}, { get: () => () => undefined }) as T;
 }
-function tools(provider: 'claude' | 'codex', oneReply: boolean): ToolDefinition[] {
+function tools(provider: 'claude' | 'codex' | 'pi', oneReply: boolean): ToolDefinition[] {
   return buildThreadbearTools(stub<ThreadControl>(), SELF, () => 0, stub(), stub(), stub(), {
     provider,
     oneReply: () => oneReply,
@@ -74,9 +77,16 @@ export function measure() {
   // The namespace's own description goes with the tools (dynamicToolSpecs).
   const codexInstructions = bytes(toolGuidance(codexDefs)) + bytes(NAMESPACE_DESCRIPTION);
   const worktree = bytes(worktreeInstructions({ repo: 'repo', path: '/repo-threads/slot-1', branch: 'thread/00000000', mainCheckout: '/repo', base: '0000000' }));
+  // Only our standing context; Pi's built-in file tools and tool_search
+  // are upstream's, like the native CLI tools excluded above.
+  const piDefs = tools('pi', true);
+  const piTools = (compact: boolean) => piDefs.filter(t => !compact || t.name === 'end_turn').reduce((sum, t) => sum + bytes(JSON.stringify({ name: `mcp__threadbear__${t.name}`, description: compact ? COMPACT_END_DESCRIPTION : t.description, parameters: compact ? withoutDescriptions(jsonSchema(t)) : jsonSchema(t) })), 0);
+  const piInstructions = bytes(serverInstructions(SELF, { one: true, bulletReplies: true, pocket: true, projects: true }));
+  const piFull = piTools(false), piCompact = piTools(true), piCompactInstructions = piInstructions + bytes(COMPACT_GUIDANCE);
   return {
     claude: { instructions: claudeInstructions, tools: claudeTools.total, total: claudeInstructions + claudeTools.total },
     codex: { instructions: codexInstructions, tools: codexTools.total, total: codexInstructions + codexTools.total },
+    pi: { full: { instructions: piInstructions, tools: piFull, total: piInstructions + piFull }, compact: { instructions: piCompactInstructions, tools: piCompact, total: piCompactInstructions + piCompact } },
     worktreeInstructions: worktree,
     perTool: claudeTools.perTool,
   };

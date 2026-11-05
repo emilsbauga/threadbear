@@ -113,14 +113,14 @@ class PiSession implements AgentSession {
     if (this.ending || this.ended) return;
     const bridgeEnv: Record<string, string> = {};
     if (deps.toolsFor) {
-      this.bridge = new PiBridge({ tools: deps.toolsFor(opts.threadId), sink: this.sink, cwd: () => opts.cwd, mode: () => this.mode, rules: () => this.rules, addRules: rules => { for (const rule of rules) this.rules.add(rule); this.sink.output({ kind: 'allowRules', rules }); } });
+      this.bridge = new PiBridge({ toolContext: this.profile.toolContext, tools: deps.toolsFor(opts.threadId), sink: this.sink, cwd: () => opts.cwd, mode: () => this.mode, rules: () => this.rules, addRules: rules => { for (const rule of rules) this.rules.add(rule); this.sink.output({ kind: 'allowRules', rules }); } });
       const address = await this.bridge.start();
       bridgeEnv.THREADBEAR_PI_BRIDGE_URL = address.url; bridgeEnv.THREADBEAR_PI_BRIDGE_TOKEN = address.token;
       if (this.ending || this.ended) { await this.bridge.close(); return; }
     }
     const args = [...(deps.args ?? []), '--mode', 'rpc', '--provider', this.profile.connection.provider, '--model', this.model,
       '--session-dir', sessionDir, opts.resume ? '--session' : '--session-id', opts.sessionId,
-      ...(deps.toolsFor ? ['-e', fileURLToPath(new URL('./extension.mjs', import.meta.url))] : ['--no-tools']), ...ISOLATION_ARGS];
+      ...(deps.toolsFor ? ['-e', 'builtin:tool-search', '-e', fileURLToPath(new URL('./extension.mjs', import.meta.url))] : ['--no-tools']), ...ISOLATION_ARGS];
     const instructions = [opts.instructions, deps.instructionsFor?.(opts.threadId)].filter(Boolean).join('\n\n');
     if (instructions) args.push('--append-system-prompt', instructions);
     this.rpc = new PiRpc({ command: this.profile.executable, args, cwd: opts.cwd,

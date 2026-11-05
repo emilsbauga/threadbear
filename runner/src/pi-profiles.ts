@@ -37,12 +37,14 @@ export function parsePiProfiles(raw: unknown, home: string): PiProfile[] {
     const configDir = row.configDir === undefined ? path.join(home, 'pi', 'profiles', id) : expand(text(row.configDir, `${field}.configDir`));
     if (!path.isAbsolute(configDir)) throw new Error(`${field}.configDir: expected an absolute or ~/ path`);
     const connection = object(row.connection, `${field}.connection`);
+    if (row.toolContext !== undefined && !['auto', 'compact', 'full'].includes(row.toolContext as string)) throw new Error(`${field}.toolContext: expected auto, compact or full`);
     // Construct a fresh allowlisted DTO. Never forward raw settings/secrets.
     return [{
       id, engine: 'pi', title: row.title === undefined ? id : text(row.title, `${field}.title`),
       executable, configDir: path.normalize(configDir),
       connection: { provider: text(connection.provider, `${field}.connection.provider`), model: text(connection.model, `${field}.connection.model`) },
       capabilities: { threads: true },
+      ...(row.toolContext !== undefined ? { toolContext: row.toolContext as PiProfile['toolContext'] } : {}),
     } satisfies PiProfile];
   });
 }

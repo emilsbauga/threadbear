@@ -838,6 +838,19 @@ publishes safe model IDs/titles through the existing account model list.
 This uses Pi's cached catalog, starts no model turn and never loads tools or
 project extensions. Failure leaves the configured default available. The same
 profile and credentials serve any of its advertised models.
+Pi profiles may set `toolContext: "auto" | "compact" | "full"` (default
+`auto`). On Pi runtimes with deferred tool search, auto selects compact
+exposure for loopback endpoints or models with a known context window below
+70,000 tokens. Other models retain full exposure; this policy does not change
+Claude/Codex tools. The selection is reevaluated before each prompt, including
+after model switches and resume. Unknown remote context sizes use full mode.
+Compact exposure keeps native tools and `end_turn` active, with a shorter
+completion description/schema documentation. Other Threadbear tools keep
+their full definitions but are deferred behind Pi's `tool_search`; discovery
+loads them for use in the current turn. The next prompt resets compact
+exposure, avoiding accumulated tool schemas. Full argument validation,
+legacy forms and approval policy stay in the host for every discovered call.
+`tool_search` only discovers tools and requires no action approval.
 With Pi configured, an official CLI without any registered accounts is not
 automatically probed, checked or installed.
 Older runners omit the field; clients treat it as an empty list. Older clients
@@ -852,6 +865,7 @@ type PiProfile = {
   configDir: string
   connection: { provider: string, model: string }
   capabilities: { threads: boolean }
+  toolContext?: "auto" | "compact" | "full"
 }
 ```
 

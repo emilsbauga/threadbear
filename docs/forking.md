@@ -40,6 +40,10 @@ The shared files most features hook into:
   Pi uses its own executable and profiles, outside Claude/Codex CLI updates.
   Its adapter's `models()` reads the provider's cached model catalog through
   a short-lived RPC process; account model updates feed the existing picker.
+  The bridge extension chooses compact tool context for localhost endpoints or
+  known contexts below 70,000 tokens, overridable by profile `toolContext`.
+  It loads optional app tools through Pi's explicitly enabled built-in tool
+  search; shared execution and approval handlers stay unchanged.
 
 - `runner/src/main.ts`: builds every service, holds the RPC method table
   (`const methods = {...}`), and stops each service in `stop()` and

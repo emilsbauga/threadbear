@@ -737,6 +737,12 @@ before edits requests approval for shell commands and writes; read-only tools
 run directly. Always allow for a native Pi action covers that exact input in
 that folder. Pi extension questions appear as Threadbear question cards.
 Pi usage charts, skills and conversation rewind are not available yet.
+Local Pi models served on localhost, and any Pi model with a known context
+below 70,000 tokens, start with fewer tool definitions. File and shell tools
+remain ready; Pi searches for other Threadbear tools when it needs them.
+Approvals work the same. Each profile can set `toolContext` to `"compact"`
+or `"full"` to override this automatic choice; `"auto"` is the default.
+Larger remote models keep the full tool set. Claude and Codex are unchanged.
 Separate profiles are useful for different providers, credentials or endpoints.
 The model list uses Pi's cached catalog. To refresh it, use that profile in Pi
 and run `pi update --models`, then let the runner read its model list again

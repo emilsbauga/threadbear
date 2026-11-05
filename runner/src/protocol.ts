@@ -21,6 +21,7 @@ export type PiProfile = {
   configDir: string;
   connection: { provider: string; model: string };
   capabilities: { threads: boolean };
+  toolContext?: 'auto' | 'compact' | 'full';
 };
 export const CLI_PROVIDERS: readonly CliProvider[] = ['claude', 'codex'];
 export const PROVIDERS: readonly Provider[] = [...CLI_PROVIDERS, 'pi'];

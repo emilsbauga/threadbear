@@ -18,13 +18,18 @@ checks and installs for those unused CLIs are skipped.
 Starting a Pi thread (`runner/src/adapters/pi/`) runs the profile's executable
 in RPC mode, reads that profile's settings through Pi, and saves native sessions
 under `<configDir>/sessions/threadbear/<threadId>`. It passes image attachments,
-project instructions and Threadbear tool guidance to Pi. Built-in tools and one
-explicit Threadbear extension are enabled; MCP, extension/skill discovery and
+project instructions and Threadbear tool guidance to Pi. Built-in tools, Pi's
+explicit `builtin:tool-search` extension and the Threadbear extension are enabled;
+MCP, extension/skill discovery and
 Pi's project context-file discovery remain disabled. The runner opens a
 session-scoped HTTP server on a random loopback port, protected by a random
 bearer token, for tool definitions, execution and approvals. It closes with the
 session. Ask/auto modes gate writable tools and shell commands through
 Threadbear's approval cards; full mode still asks for always-ask tools.
+For localhost endpoints or known contexts below 70,000 tokens, the Threadbear
+extension keeps optional app tool definitions deferred until Pi searches for
+them. This changes the prompt size, not tool access or approval policy. Profiles
+can override it with `toolContext`; larger remote models default to full tools.
 At runner startup, model discovery starts a short-lived Pi RPC process with
 no session, tools or resource discovery, in a temporary folder that is removed
 afterward. It reads Pi's cached available chat models for the profile's provider;

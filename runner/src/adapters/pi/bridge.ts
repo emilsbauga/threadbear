@@ -2,11 +2,12 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { AgentTools, jsonSchema, type ToolDefinition } from '../../agent-tools.ts';
 import { toolTitle, truncateInput } from '../../tools.ts';
-import type { PermissionMode } from '../../protocol.ts';
+import type { PermissionMode, PiProfile } from '../../protocol.ts';
 import type { SessionSink } from '../types.ts';
 import { displayToolName } from './tools.ts';
 
 export type PiBridgeOptions = {
+  toolContext?: PiProfile['toolContext'];
   tools: ToolDefinition[];
   sink: SessionSink;
   cwd(): string;
@@ -40,7 +41,7 @@ export class PiBridge {
     const reply = (data: unknown, status = 200) => { if (!res.destroyed) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)); } };
     if (req.headers.authorization !== `Bearer ${this.token}`) { reply({ error: 'Unauthorized' }, 403); return; }
     if (req.method === 'GET' && req.url === '/tools') {
-      reply({ tools: this.options.tools.map(tool => ({ name: `mcp__threadbear__${tool.name}`, label: tool.name, description: tool.description, parameters: jsonSchema(tool) })) }); return;
+      reply({ toolContext: this.options.toolContext ?? 'auto', tools: this.options.tools.map(tool => ({ name: `mcp__threadbear__${tool.name}`, label: tool.name, description: tool.description, parameters: jsonSchema(tool) })) }); return;
     }
     if (req.method !== 'POST' || !['/tool', '/approve'].includes(req.url ?? '')) { reply({ error: 'Not found' }, 404); return; }
     const controller = new AbortController(); this.pending.add(controller);
@@ -63,7 +64,7 @@ export class PiBridge {
     finally { this.pending.delete(controller); }
   }
   private async approve(name: string, input: Record<string, unknown>, id: string, signal: AbortSignal): Promise<{ allow: boolean; reason?: string }> {
-    if (this.options.mode() === 'full' || ['read', 'ls', 'find', 'grep'].includes(name)) return { allow: true };
+    if (this.options.mode() === 'full' || ['read', 'ls', 'find', 'grep', 'tool_search'].includes(name)) return { allow: true };
     const rule = `pi-native:${name}:${crypto.createHash('sha256').update(JSON.stringify([this.options.cwd(), input])).digest('hex')}`;
     if ([...this.options.rules()].includes(rule)) return { allow: true };
     const answer = await this.options.sink.requestApproval({ toolUseId: id, name: `pi__${name}`, title: toolTitle(displayToolName(name), input, this.options.cwd()), input: truncateInput(input), canAlwaysAllow: true, signal });

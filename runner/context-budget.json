@@ -9,6 +9,18 @@
     "tools": 33984,
     "total": 36142
   },
+  "pi": {
+    "full": {
+      "instructions": 2718,
+      "tools": 34416,
+      "total": 37134
+    },
+    "compact": {
+      "instructions": 2915,
+      "tools": 1529,
+      "total": 4444
+    }
+  },
   "worktreeInstructions": 498,
   "perTool": {
     "ask_secret": 1241,
