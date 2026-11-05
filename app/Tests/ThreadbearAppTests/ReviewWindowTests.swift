@@ -422,7 +422,7 @@ final class ReviewWindowTests: XCTestCase {
             reviewWindow.reviewSession = session
             window = reviewWindow
         } else {
-            window = NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window = ReviewTestWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
         }
         window.isReleasedWhenClosed = false
         window.contentView = host
@@ -465,4 +465,10 @@ final class ReviewWindowTests: XCTestCase {
         }
         pump()
     }
+}
+
+/// These image fixtures and their pixel-to-point assertions use a 2× display.
+/// An off-screen window can report 1× when the Mac is locked or headless.
+private final class ReviewTestWindow: NSWindow {
+    override var backingScaleFactor: CGFloat { 2 }
 }
