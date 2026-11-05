@@ -6,7 +6,9 @@ final class SignInTests: XCTestCase {
     func testPiUsesOnlyItsOwnExecutableProfileAndProvider() {
         let account = Account(id: "pi:local", provider: "pi", title: "Local", configDir: "/profiles/pi", executable: "/bin/pi", connection: PiModelConnection(provider: "openrouter", model: "model"))
         let script = SignIn.script(account, cliPath: "/bin/codex")
-        XCTAssertTrue(script.contains("PI_CODING_AGENT_DIR='/profiles/pi' '/bin/pi' auth login 'openrouter'"), script)
+        XCTAssertTrue(script.contains("In Pi, run /login openrouter to sign in."), script)
+        XCTAssertTrue(script.contains("PI_CODING_AGENT_DIR='/profiles/pi' '/bin/pi' --no-tools --no-extensions --no-mcp --no-skills --no-context-files"), script)
+        XCTAssertFalse(script.contains("auth login"))
         XCTAssertFalse(script.contains("codex"))
         XCTAssertFalse(script.contains("CLAUDE_CONFIG_DIR"))
     }

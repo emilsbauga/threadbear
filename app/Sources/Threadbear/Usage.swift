@@ -209,8 +209,8 @@ enum SignIn {
     static func script(_ account: Account, cliPath: String) -> String {
         if account.provider == "pi" {
             let binary = quoted(account.executable ?? "pi")
-            let provider = quoted(account.connection?.provider ?? "openrouter")
-            return "#!/bin/zsh -l\nPI_CODING_AGENT_DIR=\(quoted(account.configDir)) \(binary) auth login \(provider)\n"
+            let guidance = quoted("In Pi, run /login \(account.connection?.provider ?? "openrouter") to sign in.")
+            return "#!/bin/zsh -l\necho \(guidance)\nPI_CODING_AGENT_DIR=\(quoted(account.configDir)) \(binary) --no-tools --no-extensions --no-mcp --no-skills --no-context-files\n"
         }
         let codex = account.provider == "codex"
         var env = ""
