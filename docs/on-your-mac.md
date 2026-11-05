@@ -14,6 +14,19 @@ responses; parsing creates no folders and reads no Pi settings or credentials.
 It starts no Pi process and makes no Pi network requests. Pi profiles are not
 synced as accounts or offered as runnable threads yet.
 
+The staged Pi adapter (`runner/src/adapters/pi/`) is not registered in the live
+runner yet. When invoked by a test or future integration, it starts the
+profile's explicit executable in RPC mode, reads that profile's settings through
+Pi, and saves native sessions under `<configDir>/sessions/threadbear/<threadId>`.
+It passes image attachments and explicit caller instructions to Pi. Tools,
+MCP, extensions and discovered project instructions are disabled in this stage.
+Automatic catalog requests and telemetry are disabled, but prompts can make
+model requests to the profile's configured endpoint. The adapter keeps a bounded
+private `pi-stderr.log` under its supplied temporary directory, registers its
+process group, and closes or kills only that owned group on stop/exit. Unit
+tests use a fake process; integration smoke checks can use a temporary Pi
+profile with a loopback model stub and no real API credentials.
+
 - **Git remotes** (`scripts/setup.mjs`, "Your copy"): Mike's repo becomes
   `upstream`. If `gh` is logged in and you cloned rather than forked, setup
   forks the repo to your GitHub account (`gh repo fork --remote`).

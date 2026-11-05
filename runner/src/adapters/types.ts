@@ -1,7 +1,8 @@
 // The seam between the runner and a provider CLI. The runner owns threads,
 // turns, persistence and the protocol; an adapter only drives one CLI
 // process per live thread and reports normalised output. Claude and Codex
-// are the two implementations of AgentAdapter.
+// are the runnable implementations; Pi's profile-backed adapter is staged
+// until its tools and approvals are connected.
 import type {
   Account,
   BackgroundKind,
@@ -11,7 +12,7 @@ import type {
   ImageRef,
   ModelChoice,
   PermissionMode,
-  Provider,
+  AgentEngine,
   Question,
   SubagentStatus,
   TurnErrorKind,
@@ -19,10 +20,10 @@ import type {
   UsageWindow,
 } from '../protocol.ts';
 
-export type StartSessionOptions = {
+export type StartSessionOptions<Identity = Account> = {
   threadId: string;
   cwd: string;
-  account: Account;
+  account: Identity;
   model?: string;
   effort?: EffortLevel; // undefined: the model's own level
   permissionMode: PermissionMode;
@@ -181,8 +182,9 @@ export class SessionNotFoundError extends Error {
 }
 
 export interface AgentSession {
-  // Starts a turn, or, sent while one runs, goes into it (steering): the
-  // CLI then lists it in TurnResult.answered or counts it in queuedTurns.
+  // Starts or queues a turn. Adapters that support steering may fold it
+  // into the active turn instead. Report answered IDs and queuedTurns so
+  // the runner keeps working until every submitted message is accounted for.
   send(input: UserInput): void;
   interrupt(): Promise<void>;
   setModel(model: string | undefined): Promise<void>;
@@ -202,9 +204,9 @@ export interface AgentSession {
 // Cutting a native session back to just before one of the runner's
 // messages (docs/protocol.md, "Editing a message"). The thread's CLI is
 // never live while this runs.
-export type RewindRequest = {
+export type RewindRequest<Identity = Account> = {
   threadId: string;
-  account: Account;
+  account: Identity;
   cwd: string;
   sessionId: string;
   messageId: string; // the id the message was sent under (its turnId)
@@ -233,28 +235,28 @@ export class RewindRefusedError extends Error {
 export type SkillChoice = { name: string; title?: string; description: string; path: string; scope: string };
 export type SkillList = { skills: SkillChoice[]; errors: string[] };
 
-export interface AgentAdapter {
-  readonly provider: Provider;
-  start(opts: StartSessionOptions, sink: SessionSink): AgentSession;
+export interface AgentAdapter<Identity = Account> {
+  readonly provider: AgentEngine;
+  start(opts: StartSessionOptions<Identity>, sink: SessionSink): AgentSession;
   // What the account's CLI offers as models, without starting a turn.
   // Optional: a provider without a picker leaves it out.
-  models?(account: Account): Promise<ModelChoice[]>;
-  skills?(account: Account, cwd: string): Promise<SkillList>;
+  models?(account: Identity): Promise<ModelChoice[]>;
+  skills?(account: Identity, cwd: string): Promise<SkillList>;
   // A same-account folder change calls setCwd on a live session, or passes
   // the folder to the next start or resume, instead of copying the
   // transcript and adding a handoff (Codex).
   readonly movesFolders?: boolean;
   // Model, effort and permission changes take effect from the next turn
-  // only, so the runner says so when one arrives mid-turn (Codex).
+  // only, so the runner says so when one arrives mid-turn (Codex and Pi).
   readonly settingsApplyNextTurn?: boolean;
   // Whether the CLI starts a turn of its own when background work ends
   // (default true). Codex doesn't, so the runner skips its wake grace.
   readonly wakesAfterTasks?: boolean;
   // Archives the native session in the CLI's own app when the thread is
   // archived or deleted here. Best effort.
-  archive?(account: Account, nativeSessionId: string): Promise<void>;
+  archive?(account: Identity, nativeSessionId: string): Promise<void>;
   // Cuts the native session back to just before a message, and puts back
   // the files the CLI checkpointed since, where it can. Throws
   // RewindRefusedError when the session doesn't have the message.
-  rewind?(req: RewindRequest): Promise<RewindResult>;
+  rewind?(req: RewindRequest<Identity>): Promise<RewindResult>;
 }

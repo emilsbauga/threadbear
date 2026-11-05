@@ -876,6 +876,42 @@ are discarded. Parsing does not create directories, read Pi credentials,
 discover models, start a process or make a network request. Changes take effect
 after a normal runner restart; profiles are local metadata, not Convex accounts.
 
+### Pi RPC adapter lifecycle
+
+The staged Pi adapter implements the internal session contract using Pi 1.5's
+LF-delimited RPC protocol. It is not registered as a runnable account yet;
+`piProfiles[].capabilities.threads` remains false until the tools and approval
+bridge is connected. Existing provider selection and CLI updates are unchanged.
+
+Each session owns one process and uses its configured Pi directory through
+`PI_CODING_AGENT_DIR`. Session files live under that directory's
+`sessions/threadbear/<threadId>`. New sessions use a preassigned session ID;
+resume uses that same ID and directory, with no replay of old transcript events.
+The adapter refuses a missing resume rather than silently starting a new one.
+
+Sending before startup or during a response queues messages in order. Each
+prompt is acknowledged separately; `agent_settled`, not `agent_end`, completes
+it. The adapter reports the runner message ID and remaining queue count.
+This slice queues whole prompts rather than steering an active response.
+Final assistant messages replace streamed text/reasoning blocks using stable
+item IDs. Unknown events are ignored; malformed or oversized RPC frames,
+request timeouts and unexpected process exits terminate the session.
+
+Stop clears queued prompts before aborting, including messages waiting for
+startup. If abort does not complete within its deadline, the owned process
+group is killed. End closes stdin with bounded termination fallback. Pending
+RPC requests always resolve or reject, and exit is reported once. Settings
+changes apply between prompts. Image inputs are passed as native Pi images;
+this slice does not implement image-bearing tool output or usage statistics.
+
+Until the approval bridge exists, this adapter starts Pi with all tools, MCP,
+extensions, skills, prompt templates and discovered context files disabled.
+Only the caller's explicit instructions are appended. Permission mode cannot
+enable tool execution in this staged adapter. Startup catalog/telemetry calls
+are disabled; model requests still use the selected configured endpoint.
+Stderr is kept separately in a bounded private file under the supplied temporary
+directory, never parsed as RPC or copied into protocol errors.
+
 ## Composer skills
 
 `skills.list { accountId: string, cwd: string }` returns

@@ -33,8 +33,10 @@ The shared files most features hook into:
 
 - Pi profile metadata: `runner/src/pi-profiles.ts`, `config.ts`, the optional
   `hello.piProfiles` field and `ThreadbearCore/Protocol/PiProfile.swift`.
-  Omit `pi` in runner.json to leave it unused. No Pi adapter or process is
-  enabled by this configuration foundation.
+  Omit `pi` in runner.json to leave it unused. The staged RPC implementation
+  lives in `runner/src/adapters/pi/`; it is not registered in `main.ts` yet,
+  and configuration alone does not enable it. Remove that directory and its
+  tests to remove the staged transport without changing existing providers.
 
 - `runner/src/main.ts`: builds every service, holds the RPC method table
   (`const methods = {...}`), and stops each service in `stop()` and
