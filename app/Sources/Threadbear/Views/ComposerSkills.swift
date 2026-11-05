@@ -59,6 +59,9 @@ struct ComposerSkillsMenu: View {
     let choose: (ComposerSkill) -> Void
 
     var body: some View {
+        // Capture the current result value before entering lazy/escaping view
+        // builders; otherwise they can keep rows from the previous query.
+        let rows = picker.matches
         VStack(alignment: .leading, spacing: zoomed(6)) {
             HStack {
                 Text("Skills").font(.system(size: TypeScale.chip, weight: .medium)).fixedSize()
@@ -71,14 +74,14 @@ struct ComposerSkillsMenu: View {
             .padding(.horizontal, zoomed(10))
             if picker.loading {
                 Text("Loading skills…").foregroundStyle(.secondary).padding(zoomed(10))
-            } else if picker.matches.isEmpty {
+            } else if rows.isEmpty {
                 Text(picker.errors.first ?? (picker.skills.isEmpty ? "No skills available for this login and folder." : "No matching skills."))
                     .foregroundStyle(.secondary).padding(zoomed(10))
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: zoomed(2)) {
-                            ForEach(Array(picker.matches.enumerated()), id: \.element.id) { index, skill in
+                            ForEach(Array(rows.enumerated()), id: \.element.id) { index, skill in
                                 Button { choose(skill) } label: {
                                     HStack(spacing: zoomed(9)) {
                                         Image(systemName: "shippingbox").foregroundStyle(.secondary)
@@ -96,13 +99,17 @@ struct ComposerSkillsMenu: View {
                                 .buttonStyle(.plain)
                                 .tip("$\(skill.name): \(skill.description)\n\(skill.path)")
                                 .accessibilityLabel("\(skill.displayName), \(skill.scopeLabel). \(skill.description)")
-                                .id(index)
+                                .id(skill.id)
                             }
                         }
                     }
-                    .frame(height: min(CGFloat(picker.matches.count) * zoomed(34), zoomed(238), max(zoomed(34), maxHeight - zoomed(picker.errors.isEmpty ? 44 : 68))))
-                    .onChange(of: picker.selected) { _, index in proxy.scrollTo(index) }
-                    .onChange(of: picker.token?.query) { _, _ in proxy.scrollTo(0) }
+                    .frame(height: min(CGFloat(rows.count) * zoomed(34), zoomed(238), max(zoomed(34), maxHeight - zoomed(picker.errors.isEmpty ? 44 : 68))))
+                    .onChange(of: picker.selected) { _, index in
+                        if rows.indices.contains(index) { proxy.scrollTo(rows[index].id) }
+                    }
+                    .onChange(of: picker.token?.query) { _, _ in
+                        if let first = rows.first { proxy.scrollTo(first.id, anchor: .top) }
+                    }
                 }
                 if !picker.errors.isEmpty {
                     Text("Some skills could not be read.").font(.system(size: TypeScale.chip)).foregroundStyle(.secondary)

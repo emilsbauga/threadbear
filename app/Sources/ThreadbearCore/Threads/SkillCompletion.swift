@@ -57,12 +57,33 @@ public enum SkillCompletion {
 
     public static func matches(_ skills: [ComposerSkill], query: String) -> [ComposerSkill] {
         func normalized(_ text: String) -> String {
-            text.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
+            text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
         }
-        let words = normalized(query).split(separator: " ").map(String.init)
-        return skills.filter { skill in
-            let haystack = normalized("\(skill.name) \(skill.displayName) \(skill.description)")
-            return words.allSatisfy { haystack.localizedStandardContains($0) }
-        }.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        let query = normalized(query)
+        let words = query.split(separator: " ").map(String.init)
+        func titleRank(_ text: String) -> Int? {
+            if text == query { return 0 }
+            if text.hasPrefix(query) { return 10 }
+            let titleWords = text.split(separator: " ")
+            if words.allSatisfy({ word in titleWords.contains { $0.hasPrefix(word) } }) { return 20 }
+            if text.contains(query) { return 30 }
+            if words.allSatisfy({ text.contains($0) }) { return 40 }
+            return nil
+        }
+        let ranked = skills.compactMap { skill -> (skill: ComposerSkill, rank: Int)? in
+            if query.isEmpty { return (skill, 0) }
+            // The displayed title comes first. Internal names remain searchable
+            // aliases; descriptions only fill in results with no title match.
+            if let rank = titleRank(normalized(skill.displayName)) { return (skill, rank) }
+            if let rank = titleRank(normalized(skill.name)) { return (skill, 50 + rank) }
+            let all = normalized("\(skill.displayName) \(skill.name) \(skill.description)")
+            return words.allSatisfy { all.contains($0) } ? (skill, 100) : nil
+        }
+        return ranked.sorted {
+            if $0.rank != $1.rank { return $0.rank < $1.rank }
+            let order = $0.skill.displayName.localizedStandardCompare($1.skill.displayName)
+            return order == .orderedSame ? $0.skill.path < $1.skill.path : order == .orderedAscending
+        }.map(\.skill)
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import Threadbear
 import ThreadbearCore
@@ -117,6 +118,35 @@ final class ComposerSkillsTests: XCTestCase {
         picker.changed(view)
         picker.choose(skill, in: view)
         XCTAssertEqual(view.string, "/github create", "a stale deploy row must not replace the new search")
+    }
+
+    func testVisibleRowsFollowEveryCharacterWhileMenuStaysOpen() async throws {
+        let (field, picker) = field("/")
+        picker.skills = [
+            ComposerSkill(name: "agents-sdk", description: "Build agents", path: "/a", scope: "user"),
+            ComposerSkill(name: "github-create", description: "Create repository", path: "/g", scope: "user"),
+            ComposerSkill(name: "usage-budget", title: "Usage budget", description: "Conserve allowance", path: "/u", scope: "user"),
+        ]
+        let host = NSHostingView(rootView: ComposerSkillsMenu(picker: picker, choose: { _ in }))
+        let window = try XCTUnwrap(windows.last)
+        window.setContentSize(NSSize(width: 700, height: 300))
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        window.orderFrontRegardless()
+        func tips(_ view: NSView) -> [String] {
+            view.subviews.flatMap { ($0 as? TipAnchorView).map { $0.visibleRect.isEmpty ? [] : [$0.text] } ?? tips($0) }
+        }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        for character in "usage" {
+            field.insertText(String(character), replacementRange: field.selectedRange())
+            picker.changed(field)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            let shown = tips(host).filter { $0.hasPrefix("$") }
+            let expected = picker.matches.map { "$\($0.name): \($0.description)\n\($0.path)" }
+            XCTAssertEqual(Set(shown), Set(expected), "visible rows must follow query \(picker.token?.query ?? "")")
+        }
     }
 
 }

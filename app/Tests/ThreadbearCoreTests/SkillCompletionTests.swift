@@ -38,4 +38,30 @@ final class SkillCompletionTests: XCTestCase {
         XCTAssertNil(SkillCompletion.token(in: "/tmp/my file", selection: NSRange(location: 12, length: 0)))
     }
 
+    func testShortNamePrefixesRankAheadOfDescriptionMatches() {
+        let skills = [
+            ComposerSkill(name: "agents-sdk", description: "Use usage budgets and GitHub tools", path: "/a", scope: "user"),
+            ComposerSkill(name: "unslop", description: "Edit prose", path: "/b", scope: "user"),
+            ComposerSkill(name: "usage-budget", title: "Usage budget", description: "Conserve allowance", path: "/u", scope: "user"),
+            ComposerSkill(name: "github-create", description: "Create repository", path: "/g", scope: "user"),
+        ]
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "us").first?.name, "usage-budget")
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "git").first?.name, "github-create")
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "usage").first?.name, "usage-budget")
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "github cr").first?.name, "github-create")
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "budget").first?.name, "usage-budget")
+    }
+
+    func testRankingAppliesToAnyTitleAndKeepsAliasesAndDescriptionsSecondary() {
+        let skills = [
+            ComposerSkill(name: "alpha-code", title: "Winter preparation", description: "Summit planning", path: "/a", scope: "user"),
+            ComposerSkill(name: "zeta-code", title: "Summit planning", description: "", path: "/z", scope: "user"),
+            ComposerSkill(name: "beta-code", title: "Summit planner", description: "", path: "/b", scope: "user"),
+            ComposerSkill(name: "summit-alias", title: "Unrelated label", description: "", path: "/u", scope: "user"),
+        ]
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "SUM").map(\.name), ["beta-code", "zeta-code", "summit-alias", "alpha-code"])
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "summit planning").first?.name, "zeta-code")
+        XCTAssertEqual(SkillCompletion.matches(skills, query: "prep").first?.name, "alpha-code")
+    }
+
 }
