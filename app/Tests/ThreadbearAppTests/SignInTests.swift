@@ -3,6 +3,13 @@ import ThreadbearCore
 @testable import Threadbear
 
 final class SignInTests: XCTestCase {
+    func testPiUsesOnlyItsOwnExecutableProfileAndProvider() {
+        let account = Account(id: "pi:local", provider: "pi", title: "Local", configDir: "/profiles/pi", executable: "/bin/pi", connection: PiModelConnection(provider: "openrouter", model: "model"))
+        let script = SignIn.script(account, cliPath: "/bin/codex")
+        XCTAssertTrue(script.contains("PI_CODING_AGENT_DIR='/profiles/pi' '/bin/pi' auth login 'openrouter'"), script)
+        XCTAssertFalse(script.contains("codex"))
+        XCTAssertFalse(script.contains("CLAUDE_CONFIG_DIR"))
+    }
     // claude-main is the Keychain login the runner starts with no
     // CLAUDE_CONFIG_DIR, so its sign-in mustn't set one either.
     func testMainClaudeLoginSetsNoConfigDir() {

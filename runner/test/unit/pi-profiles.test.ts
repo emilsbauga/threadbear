@@ -14,8 +14,8 @@ test('Pi is a configured engine without changing runnable providers', () => {
   assert.equal(isAgentEngine('pi'), true);
   assert.equal(isAgentEngine('codex'), true);
   assert.equal(isAgentEngine('other'), false);
-  assert.equal(isProvider('pi'), false);
-  assert.deepEqual(PROVIDERS, ['claude', 'codex']);
+  assert.equal(isProvider('pi'), true);
+  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi']);
 });
 
 test('Pi configuration is opt-in and does not create or read profile files', () => {
@@ -23,7 +23,7 @@ test('Pi configuration is opt-in and does not create or read profile files', () 
   assert.deepEqual(parsePiProfiles(undefined, home), []);
   assert.deepEqual(parsePiProfiles({ enabled: false, profiles: 'invalid' }, home), []);
   const profiles = parsePiProfiles({ profiles: [profile()] }, home);
-  assert.deepEqual(profiles, [{ ...profile(), engine: 'pi', title: 'pi-local', executable: 'pi', configDir: path.join(home, 'pi/profiles/pi-local'), capabilities: { threads: false } }]);
+  assert.deepEqual(profiles, [{ ...profile(), engine: 'pi', title: 'pi-local', executable: 'pi', configDir: path.join(home, 'pi/profiles/pi-local'), capabilities: { threads: true } }]);
   assert.equal(fs.existsSync(path.join(home, 'pi')), false);
 });
 

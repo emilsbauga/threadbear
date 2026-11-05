@@ -9,11 +9,11 @@
 // (HTTPS_PROXY, which the CLIs use as well) the proxy is asked for a
 // tunnel to the host, as the CLI's request would.
 import net from 'node:net';
-import type { Provider } from './protocol.ts';
+import { isCliProvider, type CliProvider, type Provider } from './protocol.ts';
 
 export type Reachable = (provider: Provider) => Promise<boolean>;
 
-const HOSTS: Record<Provider, string> = {
+const HOSTS: Record<CliProvider, string> = {
   claude: 'api.anthropic.com',
   // Codex logins are ChatGPT ones; its requests go to chatgpt.com.
   codex: 'chatgpt.com',
@@ -21,7 +21,7 @@ const HOSTS: Record<Provider, string> = {
 
 const PROBE_TIMEOUT_MS = 5_000;
 
-export function probeTarget(provider: Provider, env: NodeJS.ProcessEnv = process.env): { host: string; port: number; proxy?: { host: string; port: number } } {
+export function probeTarget(provider: CliProvider, env: NodeJS.ProcessEnv = process.env): { host: string; port: number; proxy?: { host: string; port: number } } {
   const host = HOSTS[provider] ?? HOSTS.claude;
   const proxy = env.HTTPS_PROXY || env.https_proxy;
   if (proxy) {
@@ -36,6 +36,7 @@ export function probeTarget(provider: Provider, env: NodeJS.ProcessEnv = process
 }
 
 export const reachable: Reachable = (provider) => {
+  if (!isCliProvider(provider)) return Promise.resolve(false);
   const { host, port, proxy } = probeTarget(provider);
   return new Promise((resolve) => {
     const socket = net.connect(proxy ?? { host, port });

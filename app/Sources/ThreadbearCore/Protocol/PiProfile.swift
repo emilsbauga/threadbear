@@ -12,9 +12,13 @@ public struct PiProfile: Sendable, Hashable, Decodable, Identifiable {
     public var capabilities: PiProfileCapabilities
 }
 
-public struct PiModelConnection: Sendable, Hashable, Decodable {
+public struct PiModelConnection: Sendable, Hashable, Codable {
     public var provider: String
     public var model: String
+    public init(provider: String, model: String) {
+        self.provider = provider
+        self.model = model
+    }
 }
 
 public struct PiProfileCapabilities: Sendable, Hashable, Decodable {

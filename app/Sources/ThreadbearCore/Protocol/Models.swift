@@ -5,6 +5,9 @@ import Foundation
 // the app keeps working when the runner is upgraded first.
 
 public struct Account: Sendable, Hashable, Codable, Identifiable {
+    public var piProfileId: String?
+    public var executable: String?
+    public var connection: PiModelConnection?
     public var id: String
     /// "claude" or "codex"; kept as a string so a provider this app doesn't
     /// know yet still shows.
@@ -31,7 +34,7 @@ public struct Account: Sendable, Hashable, Codable, Identifiable {
 
     public init(
         id: String, provider: String = "claude", title: String, configDir: String = "", defaultModel: String? = nil, models: [ModelChoice] = [],
-        defaultEffort: String? = nil, email: String? = nil, plan: String? = nil, note: String? = nil, usage: AccountUsage? = nil
+        defaultEffort: String? = nil, email: String? = nil, plan: String? = nil, note: String? = nil, usage: AccountUsage? = nil, piProfileId: String? = nil, executable: String? = nil, connection: PiModelConnection? = nil
     ) {
         self.id = id
         self.provider = provider
@@ -44,11 +47,17 @@ public struct Account: Sendable, Hashable, Codable, Identifiable {
         self.plan = plan
         self.note = note
         self.usage = usage
+        self.piProfileId = piProfileId
+        self.executable = executable
+        self.connection = connection
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        piProfileId = try? c.decodeIfPresent(String.self, forKey: .piProfileId)
+        executable = try? c.decodeIfPresent(String.self, forKey: .executable)
+        connection = try? c.decodeIfPresent(PiModelConnection.self, forKey: .connection)
         provider = (try? c.decodeIfPresent(String.self, forKey: .provider)) ?? "claude"
         title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? id
         configDir = (try? c.decodeIfPresent(String.self, forKey: .configDir)) ?? ""

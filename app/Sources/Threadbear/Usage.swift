@@ -207,6 +207,11 @@ enum SignIn {
     /// `cliPath` is the binary the runner starts for new sessions (Codex is
     /// often Threadbear's own copy, not on the PATH); empty uses the PATH's.
     static func script(_ account: Account, cliPath: String) -> String {
+        if account.provider == "pi" {
+            let binary = quoted(account.executable ?? "pi")
+            let provider = quoted(account.connection?.provider ?? "openrouter")
+            return "#!/bin/zsh -l\nPI_CODING_AGENT_DIR=\(quoted(account.configDir)) \(binary) auth login \(provider)\n"
+        }
         let codex = account.provider == "codex"
         var env = ""
         if codex, !account.configDir.isEmpty { env = "CODEX_HOME=\(quoted(account.configDir)) " }

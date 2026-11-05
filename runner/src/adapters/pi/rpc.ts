@@ -98,6 +98,15 @@ export class PiRpc {
     });
   }
 
+  respondUI(id: string, answer: RecordValue): Promise<void> {
+    const payload = JSON.stringify({ ...answer, type: 'extension_ui_response', id }) + '\n';
+    this.writes = this.writes.then(() => new Promise<void>((resolve, reject) => {
+      if (!this.alive) return reject(new Error('Pi session is closed.'));
+      this.child.stdin.write(payload, error => error ? reject(error) : resolve());
+    }));
+    return this.writes;
+  }
+
   private read(chunk: string): void {
     if (this.done || this.failure) return;
     this.buffer += chunk;

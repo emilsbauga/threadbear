@@ -42,7 +42,9 @@ export function parsePiProfiles(raw: unknown, home: string): PiProfile[] {
       id, engine: 'pi', title: row.title === undefined ? id : text(row.title, `${field}.title`),
       executable, configDir: path.normalize(configDir),
       connection: { provider: text(connection.provider, `${field}.connection.provider`), model: text(connection.model, `${field}.connection.model`) },
-      capabilities: { threads: false },
+      capabilities: { threads: true },
     } satisfies PiProfile];
   });
 }
+
+export function piAccountId(profileId: string): string { return `pi:${profileId}`; }

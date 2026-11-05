@@ -4,10 +4,11 @@
 
 export const PROTOCOL_VERSION = 1;
 
-export type Provider = 'claude' | 'codex';
+export type CliProvider = 'claude' | 'codex';
+export type Provider = CliProvider | 'pi';
 // Configured engines can precede executable adapters. Provider continues to
 // name runnable accounts so Pi metadata cannot enter CLI-only code paths.
-export type AgentEngine = Provider | 'pi';
+export type AgentEngine = Provider;
 export function isAgentEngine(v: unknown): v is AgentEngine {
   return v === 'pi' || isProvider(v);
 }
@@ -21,7 +22,11 @@ export type PiProfile = {
   connection: { provider: string; model: string };
   capabilities: { threads: boolean };
 };
-export const PROVIDERS: readonly Provider[] = ['claude', 'codex'];
+export const CLI_PROVIDERS: readonly CliProvider[] = ['claude', 'codex'];
+export const PROVIDERS: readonly Provider[] = [...CLI_PROVIDERS, 'pi'];
+export function isCliProvider(v: unknown): v is CliProvider {
+  return typeof v === 'string' && (CLI_PROVIDERS as readonly string[]).includes(v);
+}
 
 export function isProvider(v: unknown): v is Provider {
   return typeof v === 'string' && (PROVIDERS as readonly string[]).includes(v);
@@ -72,6 +77,9 @@ export type AccountUsage = {
 };
 
 export type Account = {
+  piProfileId?: string;
+  connection?: { provider: string; model: string };
+  executable?: string;
   id: string;
   provider: Provider;
   // Codex titles start "Codex · " so an app that only shows title can tell
@@ -95,7 +103,7 @@ export const CLI_POLICIES: readonly CliPolicy[] = ['auto', 'notify', 'off'];
 export type CliUpdateState = 'waiting' | 'running' | 'succeeded' | 'unchanged' | 'failed';
 
 export type CliStatus = {
-  provider: Provider;
+  provider: CliProvider;
   path: string; // the binary new sessions start
   // Codex: Threadbear's own copies; Claude: its own installer; 'none' when
   // codexPath is set by hand and never updated.

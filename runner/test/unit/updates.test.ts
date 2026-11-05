@@ -99,7 +99,7 @@ const checkSurface = (dir: string) => {
 
 type Hooks = CliUpdatesHooks & { released: [Provider, string][]; pending: boolean; binaries: string[] };
 
-function setup(o: { latest?: Partial<Record<Provider, string>>; env?: NodeJS.ProcessEnv; exec?: Exec; cfg?: Partial<ReturnType<typeof testConfig>> } = {}) {
+function setup(o: { enabled?: () => boolean; latest?: Partial<Record<Provider, string>>; env?: NodeJS.ProcessEnv; exec?: Exec; cfg?: Partial<ReturnType<typeof testConfig>> } = {}) {
   const root = tmpDir('tb-updates-');
   const home = path.join(root, 'home');
   fs.mkdirSync(path.join(home, 'run'), { recursive: true });
@@ -131,7 +131,7 @@ function setup(o: { latest?: Partial<Record<Provider, string>>; env?: NodeJS.Pro
   // cleanupCodex's 10 s limit, which skips the cleanup a test then checks (2 Nov).
   const exec: Exec = o.exec ?? ((cmd, args, opts) => (cmd === '/bin/ps' ? Promise.resolve({ code: 0, stdout: '', stderr: '' }) : defaultExec(cmd, args, opts)));
   const make = () =>
-    new CliUpdates({ cfg, log: nullLogger, clock, hooks, env, execPath: npm.execPath, fetchText, exec, random: () => 0, notice: (_l, m) => void notices.push(m), codex: { resolve, checkSurface, testedVersion: '0.164.0' } });
+    new CliUpdates({ cfg, enabled: o.enabled, log: nullLogger, clock, hooks, env, execPath: npm.execPath, fetchText, exec, random: () => 0, notice: (_l, m) => void notices.push(m), codex: { resolve, checkSurface, testedVersion: '0.164.0' } });
   const u = make();
   const changes: CliStatus[][] = [];
   u.onChange((c) => changes.push(c));
@@ -140,6 +140,18 @@ function setup(o: { latest?: Partial<Record<Provider, string>>; env?: NodeJS.Pro
 }
 
 const of = (clis: CliStatus[], p: Provider) => clis.find((c) => c.provider === p)!;
+
+test('a Pi-only runner never probes, checks or installs unused official CLIs automatically', async () => {
+  let executions = 0;
+  const t = setup({ enabled: () => false, exec: async () => { executions++; throw new Error('An unused CLI was started'); } });
+  t.u.start();
+  t.clock.advance(60_000);
+  await t.u.settled();
+  t.u.stop();
+  assert.equal(executions, 0);
+  assert.deepEqual(t.fetched, []);
+  assert.deepEqual(t.npm.installs(), []);
+});
 
 test('claude: a check finds it behind; update() returns at once, then succeeds and releases idle sessions', async () => {
   const t = setup();

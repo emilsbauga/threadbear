@@ -267,6 +267,7 @@ export const newThreadsPart = {
   // Claude: anything but a Codex id, unless the account itself lists it.
   modelFits(this: Runner, account: Account, model: string): boolean {
     if (modelRow(account, model)) return true;
+    if (account.provider === 'pi') return model === account.connection?.model;
     if (account.provider === 'codex') return !account.models?.length && model.startsWith('gpt-');
     if (isClaudeModel(model)) return true;
     const codexIds = this.safeAccounts().filter((a) => a.provider === 'codex').some((a) => modelRow(a, model));

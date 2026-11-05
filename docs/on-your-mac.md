@@ -8,18 +8,23 @@ File references are where to look.
 
 ## What setup and install add
 
-Optional `runner.json` Pi profiles are configuration metadata only
-(`runner/src/pi-profiles.ts`). Their paths are advertised in local `hello`
-responses; parsing creates no folders and reads no Pi settings or credentials.
-It starts no Pi process and makes no Pi network requests. Pi profiles are not
-synced as accounts or offered as runnable threads yet.
+Optional `runner.json` Pi profiles (`runner/src/pi-profiles.ts`) register runnable
+accounts. Parsing creates no folders and reads no Pi settings or credentials.
+Safe account metadata can sync to your own deployment; profile configuration
+and credentials stay local. Threadbear does not install or update Pi.
+When Pi is configured and no Claude/Codex accounts are registered, automatic
+checks and installs for those unused CLIs are skipped.
 
-The staged Pi adapter (`runner/src/adapters/pi/`) is not registered in the live
-runner yet. When invoked by a test or future integration, it starts the
-profile's explicit executable in RPC mode, reads that profile's settings through
-Pi, and saves native sessions under `<configDir>/sessions/threadbear/<threadId>`.
-It passes image attachments and explicit caller instructions to Pi. Tools,
-MCP, extensions and discovered project instructions are disabled in this stage.
+Starting a Pi thread (`runner/src/adapters/pi/`) runs the profile's executable
+in RPC mode, reads that profile's settings through Pi, and saves native sessions
+under `<configDir>/sessions/threadbear/<threadId>`. It passes image attachments,
+project instructions and Threadbear tool guidance to Pi. Built-in tools and one
+explicit Threadbear extension are enabled; MCP, extension/skill discovery and
+Pi's project context-file discovery remain disabled. The runner opens a
+session-scoped HTTP server on a random loopback port, protected by a random
+bearer token, for tool definitions, execution and approvals. It closes with the
+session. Ask/auto modes gate writable tools and shell commands through
+Threadbear's approval cards; full mode still asks for always-ask tools.
 Automatic catalog requests and telemetry are disabled, but prompts can make
 model requests to the profile's configured endpoint. The adapter keeps a bounded
 private `pi-stderr.log` under its supplied temporary directory, registers its
@@ -185,6 +190,7 @@ profile with a loopback model stub and no real API credentials.
 | GitHub | Mike's repo | Release tags fetched every 6 hours; the fork at setup |
 | downloads.claude.ai, registry.npmjs.org | Anthropic, npm | CLI version checks and installs; `npm ci` |
 | Anthropic, OpenAI | yours | Your threads, through the official CLIs on your own logins. After a turn fails because the API couldn't be reached, the runner itself opens (and straight away closes) a connection to api.anthropic.com or chatgpt.com on port 443, at most once a minute, until one opens and the thread carries on. Nothing is sent over it (`runner/src/net-probe.ts`). |
+| Pi profile's model endpoint | yours | Prompts, tool output and images through Pi, using that profile's provider settings and credentials. This can be a local server or a remote service such as OpenRouter. Threadbear does not read or copy Pi credentials. |
 | Mike's push relay | Mike's | Only when a paired iPhone gets a notification. It's sent from your Convex deployment, not the Mac. The text is encrypted for the phone; the relay sees the device token and thread id (`convex/push.ts`, `docs/push-relay.md`). The first time, your deployment registers with it, giving its own address; the relay keeps that address and checks it by posting a one-time code back to your deployment's `/relay/verify` (`convex/http.ts`). |
 | A Connectors gateway | whoever runs it | Only if one is set in `runner.json` or `~/.claude.json`. Its `/health` every few minutes (and once more at the end of a turn where a call to one of its services failed, to see if it needs signing in), and for a project with a Notion page, a Notion read or two every 5 minutes for its task board (`runner/src/notion-tasks.ts`), signed with the header the `headersHelper` command in that `connectors` entry prints, which it runs for each read |
 | Sentry | Mike's | Nothing from your copy. Only a copy whose `origin` is Mike's own repo reports errors or uploads the app's debug symbols (`runner/src/sentry.ts`, `app/Sources/Threadbear/CrashReporting.swift`, `app/build-app.sh`). The App Store iPhone app sends anonymous crash reports. |

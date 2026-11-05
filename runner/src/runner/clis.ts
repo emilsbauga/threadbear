@@ -4,7 +4,7 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import type { CliStatus, Provider } from '../protocol.ts';
+import { isCliProvider, type CliStatus, type Provider } from '../protocol.ts';
 import type { AgentAdapter } from '../adapters/types.ts';
 import type { BinaryReporter, CliControl, CliHooks, ThreadState } from '../runner.ts';
 
@@ -157,6 +157,7 @@ export const clisPart = {
   },
 
   tellStarted(this: Runner, p: Provider, version: string | undefined, ok: boolean): void {
+    if (!isCliProvider(p)) return;
     try {
       this.clis?.sessionStarted?.(p, version, ok);
     } catch (e) {

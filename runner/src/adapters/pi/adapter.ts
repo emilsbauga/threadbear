@@ -1,6 +1,10 @@
+import { fileURLToPath } from 'node:url';
+import { PiBridge } from './bridge.ts';
+import { fileContext } from '../context.ts';
+import type { ToolDefinition } from '../../agent-tools.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { EffortLevel, PermissionMode, PiProfile } from '../../protocol.ts';
+import type { Account, EffortLevel, PermissionMode, PiProfile } from '../../protocol.ts';
 import type { Logger } from '../../log.ts';
 import type { ProcessRegistry } from '../../proc.ts';
 import { SessionNotFoundError, type AgentAdapter, type AgentSession, type SessionSink, type StartSessionOptions, type UserInput } from '../types.ts';
@@ -15,13 +19,15 @@ export type PiAdapterDeps = {
   requestTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   maxLineBytes?: number;
+  profileFor?(accountId: string): PiProfile | undefined;
+  toolsFor?(threadId: string): ToolDefinition[];
+  instructionsFor?(threadId: string): string;
 };
-type PiStartOptions = StartSessionOptions<PiProfile>;
+type PiStartOptions = StartSessionOptions<Account | PiProfile>;
 type Turn = { input: UserInput; started: number; normalizer: PiNormalizer; acknowledged: boolean; settled: boolean; interrupted: boolean; cancelled: string[] };
 
-// Staged, profile-backed adapter. Register runnable Pi accounts only after
-// the tool/approval bridge is supplied; all executable tools are disabled.
-export class PiAdapter implements AgentAdapter<PiProfile> {
+// Profile-backed RPC sessions. Without a bridge, executable tools stay disabled.
+export class PiAdapter implements AgentAdapter {
   readonly provider = 'pi';
   readonly settingsApplyNextTurn = true;
   readonly wakesAfterTasks = false;
@@ -32,6 +38,13 @@ export class PiAdapter implements AgentAdapter<PiProfile> {
 
 class PiSession implements AgentSession {
   private rpc?: PiRpc;
+  private profile: PiProfile;
+  private bridge?: PiBridge;
+  private cleanup: Promise<void> = Promise.resolve();
+  private dialogs = new Set<AbortController>();
+  private mode: PermissionMode;
+  private nextMode: PermissionMode;
+  private rules: Set<string>;
   private ready: Promise<void>;
   private initialized = false;
   private ending = false;
@@ -50,7 +63,12 @@ class PiSession implements AgentSession {
   private deps: PiAdapterDeps;
   constructor(opts: PiStartOptions, sink: SessionSink, deps: PiAdapterDeps) {
     this.opts = opts; this.sink = sink; this.deps = deps;
-    this.model = this.appliedModel = opts.model ?? opts.account.connection.model;
+    const profile = 'engine' in opts.account ? opts.account : deps.profileFor?.(opts.account.id);
+    if (!profile) throw new Error('The Pi profile for this account is unavailable.');
+    this.profile = profile;
+    this.mode = this.nextMode = opts.permissionMode;
+    this.rules = new Set(opts.allowRules ?? []);
+    this.model = this.appliedModel = opts.model ?? profile.connection.model;
     this.effort = opts.effort;
     this.ready = this.initialize();
     void this.ready.then(() => this.pump()).catch(error => this.fail(error));
@@ -61,15 +79,23 @@ class PiSession implements AgentSession {
     if (opts.resumeAt) throw new Error('Pi conversation rewind is not implemented yet.');
     for (const id of [opts.threadId, opts.sessionId]) if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9_-]{0,126}[a-zA-Z0-9])?$/.test(id)) throw new Error('Pi requires a safe thread and session ID.');
     if (opts.effort === 'ultra') throw new Error('Pi does not support ultra effort.');
-    const sessionDir = path.join(opts.account.configDir, 'sessions', 'threadbear', opts.threadId);
+    const sessionDir = path.join(this.profile.configDir, 'sessions', 'threadbear', opts.threadId);
     await fs.mkdir(sessionDir, { recursive: true, mode: 0o700 });
     if (this.ending || this.ended) return;
-    const args = [...(deps.args ?? []), '--mode', 'rpc', '--provider', opts.account.connection.provider, '--model', this.model,
+    const bridgeEnv: Record<string, string> = {};
+    if (deps.toolsFor) {
+      this.bridge = new PiBridge({ tools: deps.toolsFor(opts.threadId), sink: this.sink, cwd: () => opts.cwd, mode: () => this.mode, rules: () => this.rules, addRules: rules => { for (const rule of rules) this.rules.add(rule); this.sink.output({ kind: 'allowRules', rules }); } });
+      const address = await this.bridge.start();
+      bridgeEnv.THREADBEAR_PI_BRIDGE_URL = address.url; bridgeEnv.THREADBEAR_PI_BRIDGE_TOKEN = address.token;
+      if (this.ending || this.ended) { await this.bridge.close(); return; }
+    }
+    const args = [...(deps.args ?? []), '--mode', 'rpc', '--provider', this.profile.connection.provider, '--model', this.model,
       '--session-dir', sessionDir, opts.resume ? '--session' : '--session-id', opts.sessionId,
-      '--no-tools', '--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--no-approve', '--offline'];
-    if (opts.instructions) args.push('--append-system-prompt', opts.instructions);
-    this.rpc = new PiRpc({ command: opts.account.executable, args, cwd: opts.cwd,
-      env: { ...process.env, ...opts.env, PI_CODING_AGENT_DIR: opts.account.configDir, PI_OFFLINE: '1', PI_TELEMETRY: '0' },
+      ...(deps.toolsFor ? ['-e', fileURLToPath(new URL('./extension.mjs', import.meta.url))] : ['--no-tools']), '--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--no-approve', '--offline'];
+    const instructions = [opts.instructions, deps.instructionsFor?.(opts.threadId)].filter(Boolean).join('\n\n');
+    if (instructions) args.push('--append-system-prompt', instructions);
+    this.rpc = new PiRpc({ command: this.profile.executable, args, cwd: opts.cwd,
+      env: { ...process.env, ...opts.env, PI_CODING_AGENT_DIR: this.profile.configDir, PI_OFFLINE: '1', PI_TELEMETRY: '0', ...bridgeEnv },
       diagnosticsDir: opts.tmpDir, registry: deps.registry, log: deps.log,
       requestTimeoutMs: deps.requestTimeoutMs ?? 15_000, shutdownTimeoutMs: deps.shutdownTimeoutMs ?? 3000, maxLineBytes: deps.maxLineBytes,
       event: record => this.event(record), exited: error => this.onExit(error) });
@@ -94,12 +120,13 @@ class PiSession implements AgentSession {
   private async pump(): Promise<void> {
     if (!this.initialized || this.turn || this.stopping || this.ending || this.ended || !this.queue.length) return;
     const input = this.queue.shift()!;
-    const turn: Turn = { input, started: Date.now(), normalizer: new PiNormalizer(this.sink), acknowledged: false, settled: false, interrupted: false, cancelled: [] };
+    const turn: Turn = { input, started: Date.now(), normalizer: new PiNormalizer(this.sink, fileContext(this.opts.cwd, this.opts.mediaDir, this.opts.blobsDir)), acknowledged: false, settled: false, interrupted: false, cancelled: [] };
     this.turn = turn;
+    this.mode = this.nextMode;
     try {
       if (this.model !== this.appliedModel) {
         const model = this.model;
-        await this.rpc!.request('set_model', { provider: this.opts.account.connection.provider, modelId: model });
+        await this.rpc!.request('set_model', { provider: this.profile.connection.provider, modelId: model });
         this.appliedModel = model;
         this.sink.output({ kind: 'session', nativeSessionId: this.opts.sessionId, model });
       }
@@ -125,7 +152,7 @@ class PiSession implements AgentSession {
   }
 
   private event(record: RecordValue): void {
-    if (record.type === 'extension_ui_request') return this.fail(new Error('Pi requested interactive UI before the approval bridge is available.'));
+    if (record.type === 'extension_ui_request') { void this.dialog(record).catch(error => this.fail(error)); return; }
     const turn = this.turn;
     if (!turn || this.ended) return;
     turn.normalizer.handle(record);
@@ -141,6 +168,7 @@ class PiSession implements AgentSession {
     if (!turn?.acknowledged || !turn.settled) return;
     this.turn = undefined;
     const interrupted = turn.interrupted || turn.normalizer.aborted;
+    turn.normalizer.closeOpen();
     this.sink.output({ kind: 'result', result: {
       outcome: interrupted ? 'interrupted' : turn.normalizer.error ? 'failed' : 'completed',
       durationMs: Date.now() - turn.started,
@@ -153,6 +181,7 @@ class PiSession implements AgentSession {
   async interrupt(): Promise<void> {
     if (this.ended) return;
     this.stopping = true;
+    for (const dialog of this.dialogs) dialog.abort();
     const cancelled = this.queue.splice(0).flatMap(input => input.id ? [input.id] : []);
     if (this.turn) { this.turn.interrupted = true; this.turn.cancelled.push(...cancelled); }
     else if (cancelled.length) this.sink.output({ kind: 'result', result: { outcome: 'interrupted', durationMs: 0, answered: cancelled, queuedTurns: 0 } });
@@ -179,13 +208,13 @@ class PiSession implements AgentSession {
 
   async setModel(model: string | undefined): Promise<void> {
     if (model !== undefined && !model.trim()) throw new Error('Pi model must not be empty.');
-    this.model = model ?? this.opts.account.connection.model;
+    this.model = model ?? this.profile.connection.model;
   }
   async setEffort(effort: EffortLevel | undefined): Promise<void> {
     if (effort === 'ultra') throw new Error('Pi does not support ultra effort.');
     this.effort = effort;
   }
-  async setPermissionMode(_mode: PermissionMode): Promise<void> { /* All tools stay disabled in this staged adapter. */ }
+  async setPermissionMode(mode: PermissionMode): Promise<void> { this.nextMode = mode; }
 
   async end(options: { hard?: boolean } = {}): Promise<void> {
     this.ending = true;
@@ -195,11 +224,25 @@ class PiSession implements AgentSession {
     await this.ready.catch(() => {});
     if (this.rpc) await this.rpc.end(options.hard);
     else this.onExit();
+    await this.cleanup;
   }
   kill(): void {
     this.ending = true; this.queue = [];
     if (this.turn) this.turn.interrupted = true;
     if (this.rpc) this.rpc.kill(); else this.onExit();
+  }
+
+  private async dialog(record: RecordValue): Promise<void> {
+    if (!['select', 'confirm', 'input', 'editor'].includes(record.method) || typeof record.id !== 'string') return;
+    const controller = new AbortController(); this.dialogs.add(controller);
+    const question = [record.title, record.message].filter((s: unknown) => typeof s === 'string' && s).join('\n\n') || 'Pi has a question';
+    const labels: string[] = record.method === 'confirm' ? ['Yes', 'No'] : Array.isArray(record.options) ? record.options.filter((s: unknown) => typeof s === 'string') : [];
+    const timer = typeof record.timeout === 'number' ? setTimeout(() => controller.abort(), record.timeout) : undefined;
+    try {
+      const result = await this.sink.requestQuestion({ signal: controller.signal, questions: [{ question, multiSelect: false, options: labels.map(label => ({ label })) }] });
+      const value = result.answers?.[question] ?? result.message;
+      if (this.rpc?.alive) await this.rpc.respondUI(record.id, controller.signal.aborted || value === undefined ? { cancelled: true } : record.method === 'confirm' ? { confirmed: value === 'Yes' } : { value });
+    } finally { if (timer) clearTimeout(timer); this.dialogs.delete(controller); }
   }
 
   private fail(error: Error): void {
@@ -210,6 +253,7 @@ class PiSession implements AgentSession {
   private onExit(error?: Error): void {
     if (this.ended) return;
     this.ended = true;
+    for (const dialog of this.dialogs) dialog.abort();
     this.queue = [];
     if (this.turn) {
       this.turn.normalizer.error ??= error?.message ?? 'Pi closed before the response settled.';
@@ -217,6 +261,7 @@ class PiSession implements AgentSession {
       this.finish();
     }
     const missing = this.opts.resume && error instanceof PiMissingSessionError;
-    this.sink.exited(missing ? new SessionNotFoundError(error.message) : error);
+    this.cleanup = this.bridge?.close() ?? Promise.resolve();
+    void this.cleanup.then(() => this.sink.exited(missing ? new SessionNotFoundError(error.message) : error));
   }
 }

@@ -39,6 +39,7 @@ import type {
   Pool,
   Provider,
   PiProfile,
+  CliProvider,
   Question,
   RewoundFiles,
   RunnerDefaults,
@@ -198,13 +199,13 @@ export type UsageSink = {
 // E's CliUpdates, as the runner and rpc.ts use it.
 export type CliControl = {
   list(): CliStatus[];
-  check(p?: Provider): CliStatus[];
-  update(p: Provider, o?: { version?: string; force?: boolean }): CliStatus[];
-  setPolicy(p: Provider, policy: CliPolicy): CliStatus[];
+  check(p?: CliProvider): CliStatus[];
+  update(p: CliProvider, o?: { version?: string; force?: boolean }): CliStatus[];
+  setPolicy(p: CliProvider, policy: CliPolicy): CliStatus[];
   onChange(fn: (clis: CliStatus[]) => void): () => void;
   // Whether a session on `version` got going (its CLI reported a version)
   // or died before it did, for the "failed to start twice" warning.
-  sessionStarted?(p: Provider, version: string | undefined, ok: boolean): void;
+  sessionStarted?(p: CliProvider, version: string | undefined, ok: boolean): void;
 };
 
 // What E's CliUpdates calls back into (its constructor's `hooks`).
@@ -1091,8 +1092,8 @@ export class Runner {
   // Sent to each client after its hello.
   noticesForNewClient(): { level: 'info' | 'warning' | 'error'; message: string }[] {
     const out = this.clock.now() - this.startedAt < STARTUP_NOTICE_MS ? [...this.startupNotices] : [];
-    if (!fs.existsSync(this.cfg.claudePath)) {
-      out.push({ level: 'error', message: `The claude CLI isn't at ${this.cfg.claudePath}, so no turn can start. Install Claude Code, or set claudePath in runner.json.` });
+    if ((!this.cfg.piProfiles?.length || this.accounts.list().some(a => a.provider === 'claude')) && !fs.existsSync(this.cfg.claudePath)) {
+      out.push({ level: 'error', message: `The claude CLI isn't at ${this.cfg.claudePath}, so Claude threads can't start. Install Claude Code, or set claudePath in runner.json.` });
     }
     return out;
   }
@@ -3228,11 +3229,11 @@ export function oneLine(text: string, max: number): string {
 
 // A provider's name in notes.
 export function providerName(p: Provider): string {
-  return p === 'codex' ? 'Codex' : 'Claude';
+  return p === 'codex' ? 'Codex' : p === 'pi' ? 'Pi' : 'Claude';
 }
 
 function cliName(p: Provider): string {
-  return p === 'codex' ? 'Codex' : 'Claude Code';
+  return p === 'codex' ? 'Codex' : p === 'pi' ? 'Pi' : 'Claude Code';
 }
 
 // Claude's own ids: its aliases, and anything starting claude- (with or

@@ -171,6 +171,7 @@ export class TokenTally {
     const seenRoots = new Set<string>();
     const seenFiles = new Set<string>();
     for (const account of this.accounts()) {
+      if (account.provider === 'pi') continue; // Detailed Pi usage is deferred.
       const roots =
         account.provider === 'codex'
           ? [path.join(account.configDir, 'sessions'), path.join(account.configDir, 'archived_sessions')]

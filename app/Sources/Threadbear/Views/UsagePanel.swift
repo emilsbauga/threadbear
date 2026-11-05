@@ -24,11 +24,11 @@ struct UsagePanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: zoomed(14)) {
                 if !app.accounts.contains(where: { $0.usage != nil }) {
-                    Text("The usage numbers need a newer runner.")
+                    Text(app.accounts.allSatisfy { $0.provider == "pi" } ? "Pi usage statistics are not available yet." : "The usage numbers need a newer runner.")
                         .font(.system(size: zoomed(12)))
                         .foregroundStyle(.secondary)
                 }
-                if let stats = app.usageStats {
+                if let stats = app.usageStats, app.accounts.contains(where: { $0.provider != "pi" }) {
                     SpendSection(stats: stats, accounts: app.accounts, colours: colours, now: app.now)
                 }
                 ForEach(groups) { group in

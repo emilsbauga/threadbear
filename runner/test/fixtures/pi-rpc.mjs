@@ -18,6 +18,7 @@ const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 const response = (c, data = {}) => out({ type: 'response', id: c.id, command: c.type, success: true, data });
 const mode = process.env.PI_RPC_TEST_MODE;
 let active = false;
+let dialogMessage;
 function finish(message) {
   out({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'thinking', thinking: 'final thought' }, { type: 'text', text: 'final:' + message }] } });
   out({ type: 'agent_end', willRetry: false });
@@ -56,6 +57,11 @@ async function command(c) {
       return response(c, { disposition: 'started' });
     }
     response(c, { disposition: 'started' });
+    if (c.message === 'question' || c.message === 'question-hang') {
+      dialogMessage = c.message;
+      out({ type: 'extension_ui_request', id: 'dialog', method: 'confirm', title: 'Continue?', message: 'This is a Pi question.' });
+      return;
+    }
     if (c.message === 'hang') return;
     if (c.message === 'retry') {
       out({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'temporary failure' } });
@@ -72,6 +78,10 @@ async function command(c) {
       active = false;
       out({ type: 'agent_settled', aborted: true });
     }
+  }
+  if (c.type === 'extension_ui_response') {
+    if (active) finish(`${dialogMessage}:${c.confirmed ? 'yes' : 'no'}`);
+    return;
   }
   response(c);
 }

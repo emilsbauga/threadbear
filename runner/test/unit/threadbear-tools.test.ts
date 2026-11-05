@@ -1,10 +1,11 @@
+import { threadbearMcpServer } from '../../src/adapters/claude/threadbear.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
 import { copySessionTranscript, projectDirName } from '../../src/transcripts.ts';
-import { buildThreadbearTools, parseWhen, threadbearMcpServer } from '../../src/threadbear-mcp.ts';
+import { buildThreadbearTools, parseWhen } from '../../src/threadbear-mcp.ts';
 import { needsFromTool } from '../../src/needs.ts';
 import { CodexTools, type ToolDefinition } from '../../src/adapters/codex/tools.ts';
 import { toolTitle } from '../../src/tools.ts';
@@ -1150,7 +1151,7 @@ test("end_turn waits for its own call to land, and takes a call that never lands
 // show_options and pin. Without them an agent pinned three mockups and asked
 // Mike to choose in chat.
 test('both instruction texts say when to use show_options and pin', async () => {
-  const { threadbearMcpServer } = await import('../../src/threadbear-mcp.ts');
+  const { threadbearMcpServer } = await import('../../src/adapters/claude/threadbear.ts');
   const { TOOL_GUIDANCE } = await import('../../src/adapters/codex/tools.ts');
   const claude = threadbearMcpServer({} as never, 'self');
   const instructions = (claude.instance as unknown as { server: { _instructions?: string } }).server._instructions ?? '';
@@ -1165,7 +1166,7 @@ test('both instruction texts say when to use show_options and pin', async () => 
 // every such copy (a fork with no Convex yet, say) to use a tool they didn't
 // have (4 Nov 2026).
 test('only a thread that has the pocket tool is told to use it, Claude or Codex', async () => {
-  const { threadbearMcpServer } = await import('../../src/threadbear-mcp.ts');
+  const { threadbearMcpServer } = await import('../../src/adapters/claude/threadbear.ts');
   const { toolGuidance } = await import('../../src/adapters/codex/tools.ts');
   const instructionsOf = (pocket?: () => never) => {
     const server = threadbearMcpServer({} as never, 'self', undefined, undefined, undefined, () => true, pocket);
@@ -1212,7 +1213,7 @@ test('the patches line sends button and panel asks to a patch file, by the proto
 });
 
 test("a Claude or Codex thread's instructions point at the guide", async () => {
-  const { guidePath, threadbearMcpServer } = await import('../../src/threadbear-mcp.ts');
+  const { guidePath } = await import('../../src/threadbear-mcp.ts');
   const { TOOL_GUIDANCE } = await import('../../src/adapters/codex/tools.ts');
   const server = threadbearMcpServer({} as never, 'self');
   const instructions = (server.instance as unknown as { server: { _instructions?: string } }).server._instructions ?? '';

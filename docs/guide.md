@@ -701,14 +701,24 @@ long before the reset; in green, how much of the week will go unused, so
 it's worth leaning on that login; otherwise that it's on track, or when it
 resets. Hover a window for its rate.
 
-### Pi profile configuration
+### Pi accounts
 
-Pi profile metadata can be registered in `runner.json` under `pi.profiles`.
+Pi profiles can be registered in `runner.json` under `pi.profiles`.
 The configuration shape is in [Configured Pi profiles](protocol.md#configured-pi-profiles).
-This prepares a profile without starting Pi or offering it in the account
-picker. Running Pi threads is not supported yet. Registering a profile does
-not inspect your Pi login, create its settings folder or change your existing
+After the runner's next normal restart, choose the profile under Pi in the
+account picker. It uses the configured model. Threadbear does not install Pi
+or configure its model endpoint: prepare that profile in Pi first, using
+`PI_CODING_AGENT_DIR=<configDir> pi`. Its settings and credentials are separate
+from Claude and Codex. Registering a profile does not inspect your Pi login,
+create its settings folder or change your existing
 Claude/Codex accounts. Omit `pi` to keep the current setup.
+
+Pi supports sending, streamed replies, Stop, resume and Threadbear tools. Ask
+before edits requests approval for shell commands and writes; read-only tools
+run directly. Always allow for a native Pi action covers that exact input in
+that folder. Pi extension questions appear as Threadbear question cards.
+Pi usage charts, model discovery, skills and conversation rewind are not
+available yet. Configure a separate profile for each provider/model you need.
 
 ## Connectors
 <!-- slug: connectors -->

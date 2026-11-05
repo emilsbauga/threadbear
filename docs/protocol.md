@@ -88,7 +88,8 @@ upgrade with an `Authorization` header that's wrong is turned away with HTTP
 ## Types
 
 ```ts
-type Provider = "claude" | "codex"
+type CliProvider = "claude" | "codex"
+type Provider = CliProvider | "pi"
 
 type Account = {
   id: string            // "claude-main", "claude-1", "codex-main", "codex-1", ...
@@ -823,11 +824,13 @@ the summary and then the reply.
 ## Configured Pi profiles
 
 `hello` may include `piProfiles: PiProfile[]`. These are opt-in configuration
-metadata, separate from runnable `accounts`. They do not change defaults,
-pools, CLI updates or the existing `Provider = "claude" | "codex"` contract.
-`AgentEngine = Provider | "pi"` also names configured engines. Pi execution
-will be enabled by a later adapter; current profiles advertise
-`capabilities.threads: false`. Clients must not offer them as runnable accounts.
+metadata. Enabled profiles advertise `capabilities.threads: true` and register
+runnable accounts as `pi:<profile ID>`, with `piProfileId`, `executable` and
+`connection` metadata. Existing IDs/defaults stay unchanged when no Pi profile
+is configured. `CliProvider` and `clis.*` remain Claude/Codex-only; Pi is a
+runnable `Provider` but is never sent through their installers or update paths.
+With Pi configured, an official CLI without any registered accounts is not
+automatically probed, checked or installed.
 Older runners omit the field; clients treat it as an empty list. Older clients
 ignore it. Unknown profile fields are ignored, and clients skip malformed rows.
 
@@ -874,14 +877,16 @@ A profile with `enabled: false` is omitted. Invalid active configuration is
 rejected with its field location, without echoing its contents. Unknown fields
 are discarded. Parsing does not create directories, read Pi credentials,
 discover models, start a process or make a network request. Changes take effect
-after a normal runner restart; profiles are local metadata, not Convex accounts.
+after a normal runner restart; profile definitions remain local; safe runnable account metadata may sync.
 
 ### Pi RPC adapter lifecycle
 
-The staged Pi adapter implements the internal session contract using Pi 1.5's
-LF-delimited RPC protocol. It is not registered as a runnable account yet;
-`piProfiles[].capabilities.threads` remains false until the tools and approval
-bridge is connected. Existing provider selection and CLI updates are unchanged.
+The Pi adapter implements the internal session contract using Pi 1.5's
+LF-delimited RPC protocol. It is registered for opt-in Pi profile accounts. Shared tool handlers use an
+authenticated, session-scoped loopback bridge. Native tool calls and writable
+Threadbear tools request approval in ask/auto mode; full mode bypasses normal
+requests but always-ask tools still ask. Read-only tools remain available.
+Always allow rules are persisted; native rules cover the exact input and cwd.
 
 Each session owns one process and uses its configured Pi directory through
 `PI_CODING_AGENT_DIR`. Session files live under that directory's
@@ -902,12 +907,12 @@ startup. If abort does not complete within its deadline, the owned process
 group is killed. End closes stdin with bounded termination fallback. Pending
 RPC requests always resolve or reject, and exit is reported once. Settings
 changes apply between prompts. Image inputs are passed as native Pi images;
-this slice does not implement image-bearing tool output or usage statistics.
+tool images are saved to the thread's media directory. Usage charts are deferred.
 
-Until the approval bridge exists, this adapter starts Pi with all tools, MCP,
-extensions, skills, prompt templates and discovered context files disabled.
-Only the caller's explicit instructions are appended. Permission mode cannot
-enable tool execution in this staged adapter. Startup catalog/telemetry calls
+The adapter enables built-in Pi tools and one explicit Threadbear bridge
+extension. MCP and extension discovery remain disabled; profiles cannot load
+arbitrary project extensions at startup. The caller's project instructions and
+Threadbear tool guidance are appended. Permission changes apply between prompts. Startup catalog/telemetry calls
 are disabled; model requests still use the selected configured endpoint.
 Stderr is kept separately in a bounded private file under the supplied temporary
 directory, never parsed as RPC or copied into protocol errors.

@@ -1,3 +1,6 @@
+import { PiAdapter } from './adapters/pi/adapter.ts';
+import { piAccountId } from './pi-profiles.ts';
+import { threadbearMcpServer } from './adapters/claude/threadbear.ts';
 // Runner entry point: `node src/main.ts`. launchd runs this (see
 // scripts/install-runner.sh); tests run it with THREADBEAR_HOME and
 // THREADBEAR_PORT pointing at temp places.
@@ -51,7 +54,7 @@ import { detectMachineIcon } from './machine.ts';
 import { filesMethods } from './files.ts';
 import { devicesMethods } from './devices.ts';
 import { flushSentry, reportException, reportLoggedError, reportLoggedWarning, startSentry } from './sentry.ts';
-import { ALWAYS_ASK_TOOLS, SERVER_NAME, buildThreadbearTools, threadbearMcpServer } from './threadbear-mcp.ts';
+import { ALWAYS_ASK_TOOLS, SERVER_NAME, buildThreadbearTools, serverInstructions } from './threadbear-mcp.ts';
 
 // Tells launch.mjs this runner calls its listening() hook (release.ts), so
 // it may stop one that hasn't started listening in time.
@@ -101,6 +104,9 @@ async function main(): Promise<void> {
   const usage = new UsageStore({ limitsFile: cfg.tokenStatsLimitsFile, dataDir: cfg.home, clock: realClock, log, history: usageHistory });
   usage.start();
   const accounts = new AccountRegistry(cfg, usage);
+  // Opt-in Pi-only installations need neither official CLI. Preserve the
+  // existing bootstrap behavior when Pi has not been configured.
+  const usesCli = (provider: 'claude' | 'codex') => !cfg.piProfiles?.length || accounts.list().some(a => a.provider === provider);
   const tally = new TokenTally({ dataDir: cfg.home, clock: realClock, log, accounts: () => accounts.list() });
   if (cfg.tokenTally !== false) tally.start();
   // Every session gets tools for driving Threadbear itself, bound to its
@@ -132,6 +138,7 @@ async function main(): Promise<void> {
   // the Restarter, made below; nothing calls them before start().
   const updates = new CliUpdates({
     cfg,
+    enabled: usesCli,
     log,
     clock: realClock,
     hooks: {
@@ -169,6 +176,11 @@ async function main(): Promise<void> {
     toolsFor: (threadId) => buildThreadbearTools(router(), threadId, Date.now, scheduleControl(), projectControl(), appRestarts, { provider: 'codex', bulletReplies: () => cfg.bulletReplies, oneReply: () => cfg.oneReply, pocket: pocketControl, gateway: () => cfg.connectorsUrl, gatewayHealth }),
     onNotice: (text) => runner.notice('warning', text),
   });
+  const pi = new PiAdapter({ registry, log,
+    profileFor: id => cfg.piProfiles?.find(profile => piAccountId(profile.id) === id),
+    toolsFor: threadId => buildThreadbearTools(router(), threadId, Date.now, scheduleControl(), projectControl(), appRestarts, { provider: 'pi', bulletReplies: () => cfg.bulletReplies, oneReply: () => cfg.oneReply, pocket: pocketControl, gateway: () => cfg.connectorsUrl, gatewayHealth }),
+    instructionsFor: threadId => serverInstructions(threadId, { one: cfg.oneReply, bulletReplies: cfg.bulletReplies, pocket: Boolean(pocketControl()), projects: true }),
+  });
   // The runner's own small-model calls, on the settings' Claude pool.
   const models = new Models({
     home: cfg.home,
@@ -189,7 +201,7 @@ async function main(): Promise<void> {
     atMac: () => atMac,
     config: cfg,
     store,
-    adapters: { claude, codex },
+    adapters: { claude, codex, pi },
     accounts,
     // A draining runner's readings go to the primary, which owns
     // usage.json (docs/protocol.md, "Handovers").
@@ -472,7 +484,7 @@ async function main(): Promise<void> {
   // another Mac (files.ts).
   Object.assign(methods, filesMethods());
   methods['upstream.check'] = async () => ({ upstream: await upstream.check() });
-  const codexWarning = missingCodex(updates.codexBinary(), cfg);
+  const codexWarning = usesCli('codex') ? missingCodex(updates.codexBinary(), cfg) : undefined;
   if (codexWarning) log.warn('codex CLI not found', { path: updates.codexBinary() });
   // Other runners' threads through the backend, for the Mac app (relay.ts).
   const relay = new Relay({
@@ -497,7 +509,7 @@ async function main(): Promise<void> {
     appHello: (build) => appRestarts.appHello(build),
     helloNotices: () => {
       // Like a missing claude: said to every client, until it's there.
-      const noCodex = missingCodex(updates.codexBinary(), cfg);
+      const noCodex = usesCli('codex') ? missingCodex(updates.codexBinary(), cfg) : undefined;
       return [
         ...(rolledBack ? [{ level: 'warning' as const, message: rolledBack }] : []),
         ...(noCodex ? [{ level: 'warning' as const, message: noCodex }] : []),

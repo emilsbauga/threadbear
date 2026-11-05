@@ -14,8 +14,8 @@ import type { Clock, TimerHandle } from '../clock.ts';
 import type { Config } from '../config.ts';
 import type { Logger } from '../log.ts';
 import { paths } from '../config.ts';
-import type { CliPolicy, CliStatus, Provider } from '../protocol.ts';
-import { PROVIDERS } from '../protocol.ts';
+import type { CliPolicy, CliStatus, CliProvider } from '../protocol.ts';
+import { CLI_PROVIDERS } from '../protocol.ts';
 import { claudeChannel, claudeInstalledVersion, claudeLatestVersion, runClaudeUpdate } from './claude.ts';
 import { CodexCopies, NPM_LATEST, codexPackageVersion, type CodexResolver, type SurfaceCheck } from './codex.ts';
 import { VERSION_RE, compareVersions, defaultExec, defaultFetchText, type Exec, type FetchText } from './exec.ts';
@@ -33,14 +33,15 @@ export type CliUpdatesHooks = {
   restartPending(): boolean;
   // Release sessions of that provider that are idle (no turn, approvals,
   // queued messages or background work) and not on keepVersion.
-  releaseIdle(p: Provider, keepVersion: string): void;
-  versionsInUse(p: Provider): { version: string; threadIds: string[] }[];
+  releaseIdle(p: CliProvider, keepVersion: string): void;
+  versionsInUse(p: CliProvider): { version: string; threadIds: string[] }[];
   // The real binary paths the runner's live Codex processes started.
   codexBinariesInUse(): string[];
 };
 
 export type CliUpdatesDeps = {
   cfg: Config;
+  enabled?(provider: CliProvider): boolean;
   log: Logger;
   clock: Clock;
   hooks: CliUpdatesHooks;
@@ -70,12 +71,12 @@ export class CliUpdates {
   private history: UpdateHistory;
   private copies: CodexCopies;
   private st: UpdatesFile;
-  private installed: Partial<Record<Provider, string>> = {};
-  private running: Partial<Record<Provider, Promise<void>>> = {};
+  private installed: Partial<Record<CliProvider, string>> = {};
+  private running: Partial<Record<CliProvider, Promise<void>>> = {};
   private work = new Set<Promise<void>>();
   private timers = new Map<string, TimerHandle>();
   private listeners = new Set<(clis: CliStatus[]) => void>();
-  private retryOptions: Partial<Record<Provider, UpdateOptions>> = {};
+  private retryOptions: Partial<Record<CliProvider, UpdateOptions>> = {};
   private stopped = false;
   // The Claude version before the newest update, for the "go back" hint.
   private lastClaude?: string;
@@ -101,7 +102,7 @@ export class CliUpdates {
     });
     // A previous update that was running when the runner stopped didn't
     // finish; say so rather than show it running forever.
-    for (const p of PROVIDERS) {
+    for (const p of CLI_PROVIDERS) {
       const u = this.st[p]?.update;
       if (u && (u.state === 'running' || u.state === 'waiting')) this.st[p]!.update = { ...u, state: 'failed', message: 'The runner stopped before this finished.' };
     }
@@ -109,7 +110,7 @@ export class CliUpdates {
 
   start(): void {
     this.stopped = false;
-    if (this.managedCodex() && this.copies.cleanPartials().length) this.d.log.info('cli updates: removed an unfinished Codex install');
+    if (this.d.enabled?.('codex') !== false && this.managedCodex() && this.copies.cleanPartials().length) this.d.log.info('cli updates: removed an unfinished Codex install');
     this.track('claude', this.refreshInstalled());
     this.schedule('check', FIRST_CHECK_MS);
   }
@@ -137,20 +138,20 @@ export class CliUpdates {
   }
 
   list(): CliStatus[] {
-    return PROVIDERS.map((p) => this.status(p));
+    return CLI_PROVIDERS.map((p) => this.status(p));
   }
 
-  check(p?: Provider): CliStatus[] {
-    for (const prov of p ? [p] : PROVIDERS) this.track(prov, this.runCheck(prov, true));
+  check(p?: CliProvider): CliStatus[] {
+    for (const prov of p ? [p] : CLI_PROVIDERS) this.track(prov, this.runCheck(prov, true));
     return this.list();
   }
 
-  update(p: Provider, o: { version?: string; force?: boolean } = {}): CliStatus[] {
+  update(p: CliProvider, o: { version?: string; force?: boolean } = {}): CliStatus[] {
     this.startUpdate(p, o);
     return this.list();
   }
 
-  setPolicy(p: Provider, policy: CliPolicy): CliStatus[] {
+  setPolicy(p: CliProvider, policy: CliPolicy): CliStatus[] {
     this.ps(p).policy = policy;
     this.save();
     this.changed();
@@ -166,7 +167,7 @@ export class CliUpdates {
   // The runner tells this whether a session on `version` got as far as the
   // CLI's init (Claude) or initialize (Codex). Two failures in a row on a
   // version it just moved to send a warning, once.
-  sessionStarted(p: Provider, version: string | undefined, ok: boolean): void {
+  sessionStarted(p: CliProvider, version: string | undefined, ok: boolean): void {
     if (!version) return;
     const s = this.ps(p);
     if (ok) {
@@ -194,7 +195,7 @@ export class CliUpdates {
 
   // ---- status
 
-  private status(p: Provider): CliStatus {
+  private status(p: CliProvider): CliStatus {
     const s = this.st[p] ?? {};
     const installedVersion = this.installed[p];
     const latestVersion = s.latestVersion;
@@ -226,13 +227,13 @@ export class CliUpdates {
   // THREADBEAR_CLI_UPDATES=off (tests, dev runners) and runner.json's own
   // "off" can't be turned on from the app; a Codex binary set by hand is
   // never updated.
-  private policy(p: Provider): CliPolicy {
+  private policy(p: CliProvider): CliPolicy {
     if (this.configOff(p)) return 'off';
     if (p === 'codex' && this.cfg.codexPath) return 'off';
     return this.st[p]?.policy ?? this.cfg.cliUpdates[p];
   }
 
-  private configOff(p: Provider): boolean {
+  private configOff(p: CliProvider): boolean {
     return this.env.THREADBEAR_CLI_UPDATES === 'off' || this.cfg.cliUpdates[p] === 'off';
   }
 
@@ -245,7 +246,7 @@ export class CliUpdates {
   }
 
   private async refreshInstalled(): Promise<void> {
-    const claude = await claudeInstalledVersion(this.cfg.claudePath, this.exec);
+    const claude = this.d.enabled?.('claude') === false ? undefined : await claudeInstalledVersion(this.cfg.claudePath, this.exec);
     const bin = this.codexBinary();
     const codex = bin === this.copies.currentLink ? this.copies.currentVersion() : codexPackageVersion(bin);
     const changed = claude !== this.installed.claude || codex !== this.installed.codex;
@@ -264,11 +265,11 @@ export class CliUpdates {
       this.d.clock.setTimeout(() => {
         this.timers.delete(name);
         if (name === 'check') {
-          for (const p of PROVIDERS) this.track(p, this.runCheck(p, false));
+          for (const p of CLI_PROVIDERS) if (this.d.enabled?.(p) !== false) this.track(p, this.runCheck(p, false));
           const jitter = Math.floor((this.d.random ?? Math.random)() * CHECK_JITTER_MS);
           this.schedule('check', this.cfg.cliUpdates.checkMinutes * 60_000 + jitter);
         } else if (name.startsWith('retry:')) {
-          const [, p, attempt] = name.split(':') as [string, Provider, string];
+          const [, p, attempt] = name.split(':') as [string, CliProvider, string];
           const o = this.retryOptions[p] ?? {};
           delete this.retryOptions[p];
           this.startUpdate(p, o, Number(attempt));
@@ -277,7 +278,7 @@ export class CliUpdates {
     );
   }
 
-  private async runCheck(p: Provider, asked: boolean): Promise<void> {
+  private async runCheck(p: CliProvider, asked: boolean): Promise<void> {
     await this.refreshInstalled();
     const policy = this.policy(p);
     if (policy === 'off' && !asked) return;
@@ -314,7 +315,7 @@ export class CliUpdates {
 
   // ---- updating
 
-  private startUpdate(p: Provider, o: UpdateOptions, attempt = 1): void {
+  private startUpdate(p: CliProvider, o: UpdateOptions, attempt = 1): void {
     if (this.running[p] || this.stopped) return;
     const target = o.version ?? this.st[p]?.latestVersion;
     if (this.d.hooks.restartPending()) {
@@ -457,17 +458,17 @@ export class CliUpdates {
 
   // ---- state
 
-  private ps(p: Provider): ProviderState {
+  private ps(p: CliProvider): ProviderState {
     return (this.st[p] ??= {});
   }
 
-  private setUpdate(p: Provider, u: NonNullable<CliStatus['update']>): void {
+  private setUpdate(p: CliProvider, u: NonNullable<CliStatus['update']>): void {
     this.ps(p).update = stripUndefined(u);
     this.save();
     this.changed();
   }
 
-  private finish(p: Provider, u: NonNullable<CliStatus['update']>): void {
+  private finish(p: CliProvider, u: NonNullable<CliStatus['update']>): void {
     this.setUpdate(p, { ...u, finishedAt: this.iso() });
   }
 
@@ -490,7 +491,7 @@ export class CliUpdates {
     }
   }
 
-  private track(_p: Provider, promise: Promise<void>): void {
+  private track(_p: CliProvider, promise: Promise<void>): void {
     const tracked = promise.catch((e: Error) => this.d.log.error('cli updates: failed', { error: e.message }));
     this.work.add(tracked);
     void tracked.finally(() => this.work.delete(tracked));

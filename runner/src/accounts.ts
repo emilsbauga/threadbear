@@ -1,3 +1,4 @@
+import { piAccountId } from './pi-profiles.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isEffortLevel, type Account, type EffortLevel, type ModelChoice } from './protocol.ts';
@@ -84,7 +85,7 @@ export function isCodexLogin(dir: string): boolean {
 }
 
 export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 'tokenStatsAccountsDir'> &
-  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'accountsDir'>>;
+  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'accountsDir' | 'piProfiles'>>;
 
 // claude-main is ~/.claude (its .claude.json sits at ~/.claude.json);
 // codex-main is ~/.codex. Token Stats' Accounts folder holds claude-N and
@@ -121,6 +122,7 @@ export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
   for (const { id, dir } of [...codex, ...numbered('codex')]) {
     if (isCodexLogin(dir)) out.push(codexAccount(id, dir));
   }
+  for (const profile of cfg.piProfiles ?? []) out.push({ id: piAccountId(profile.id), provider: 'pi', title: `Pi · ${profile.title}`, configDir: profile.configDir, executable: profile.executable, piProfileId: profile.id, connection: profile.connection, defaultModel: profile.connection.model, models: [{ id: profile.connection.model, model: profile.connection.model, title: profile.connection.model, effortLevels: [] }] });
   for (const a of out) {
     const note = cfg.accountNotes?.[a.id];
     if (note) a.note = note;
@@ -153,6 +155,7 @@ function codexTitle(email: string | undefined, id: string): string {
 // The model an account names for sessions that name none: Claude's
 // settings.json, Codex's config.toml.
 function settingsModel(account: Account): string | undefined {
+  if (account.provider === 'pi') return account.connection?.model ?? account.defaultModel;
   if (account.provider === 'codex') return readCodexConfig(path.join(account.configDir, 'config.toml')).model;
   return readSettingsModel(path.join(account.configDir, 'settings.json'));
 }
@@ -227,7 +230,7 @@ export class AccountRegistry {
   // Email, plan and title from Token Stats or the account's last reading
   // (they beat .claude.json, which once held a stale address), and usage.
   private withUsage(account: Account): Account {
-    if (!this.usage) return account;
+    if (!this.usage || account.provider === 'pi') return account;
     const out: Account = { ...account };
     const id = this.usage.identityFor(account);
     if (id.email) out.email = id.email;
