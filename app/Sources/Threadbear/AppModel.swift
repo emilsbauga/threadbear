@@ -352,6 +352,7 @@ final class AppModel {
     var projects: [Project] = [] {
         didSet { projectsVersion &+= 1 }
     }
+    @ObservationIgnored let projectFilePicker = ProjectFilePicker()
     /// The runner knows about projects: an older one answers
     /// `projects.list` with -32601, and then the activity bar has no
     /// Projects or Librarian button and threads show no project chips.
