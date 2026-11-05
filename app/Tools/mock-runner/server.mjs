@@ -1069,6 +1069,18 @@ async function dispatch(client, method, p) {
             : { version: '0.1.0+20261104T221010Z-51ae514', release: '20261104T221010Z-51ae514', startedAt: iso(-26 * 3_600_000) }),
         })),
       };
+    case 'runners.stats': {
+      // Each runner's machine figures, a little different each ask.
+      if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
+      const GB = 1024 ** 3;
+      const wobble = () => Math.round(Math.random() * 8);
+      return {
+        stats: [
+          { runnerId: SELF_RUNNER.id, at: iso(), cpuPercent: 31 + wobble(), cores: 10, memUsed: 17.4 * GB, memTotal: 24 * GB, diskFree: 212 * GB, diskTotal: 994 * GB, load1: 3.42, uptimeSec: 4 * 86400 + 3600, machine: 'Apple M5', os: 'macOS 27.2' },
+          { runnerId: 'runner_bruce', at: iso(), cpuPercent: 8 + wobble(), cores: 8, memUsed: 7.4 * GB, memTotal: 8 * GB, diskFree: 41 * GB, diskTotal: 228 * GB, load1: 1.1, uptimeSec: 19 * 86400, machine: 'Apple M1', os: 'macOS 27.1' },
+        ],
+      };
+    }
     case 'schedules.create': {
       if (!p.text) throw rpcError(-32602, 'text is required');
       if (Boolean(p.at) === Boolean(p.cron)) throw rpcError(-32602, 'Give exactly one of at and cron');

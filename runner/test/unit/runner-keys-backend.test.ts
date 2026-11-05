@@ -325,8 +325,13 @@ test("refusals don't say whose a thread, command or card is", async () => {
   await s.owner.upsert(thread('M5T', M5));
   const cmd = await s.ctx.db.insert('commands', { runnerId: M5, kind: 'send', args: {}, state: 'pending', createdAt: 1 });
   await call(s.ctx, sync.savePocketCard, { key: OWNER, card: { title: 'Hotel Booking', text: 'x' } });
-  for (const p of [s.bruce.append('M5T', 'x'), call(s.ctx, sync.takeCommand, { key: BRUCE_KEY, commandId: cmd }), call(s.ctx, sync.removeThreads, { key: BRUCE_KEY, threadIds: ['M5T'] }), call(s.ctx, sync.replyImages, { key: BRUCE_KEY, threadId: 'M5T' })]) {
-    assert.doesNotMatch(await errorText(p), new RegExp(M5));
+  // Thunks, started one at a time: built as promises up front, a later one
+  // could reject while an earlier one was still awaiting crypto.subtle, with
+  // no handler on it yet, and node:test failed the run on that unhandled
+  // rejection now and then.
+  const refusals = [() => s.bruce.append('M5T', 'x'), () => call(s.ctx, sync.takeCommand, { key: BRUCE_KEY, commandId: cmd }), () => call(s.ctx, sync.removeThreads, { key: BRUCE_KEY, threadIds: ['M5T'] }), () => call(s.ctx, sync.replyImages, { key: BRUCE_KEY, threadId: 'M5T' })];
+  for (const refuse of refusals) {
+    assert.doesNotMatch(await errorText(refuse()), new RegExp(M5));
   }
   assert.doesNotMatch(await errorText(call(s.ctx, sync.savePocketCard, { key: BRUCE_KEY, card: { title: 'hotel booking', text: 'x' } })), /Hotel Booking/);
 });

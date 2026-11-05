@@ -661,3 +661,23 @@ test('a project moving only by last activity goes at most every ten minutes, and
   assert.equal((sent[0]!.args.projects as { lastActivityAt: string }[])[0]!.lastActivityAt, 't3');
   await sync.stop();
 });
+
+test('a row with a secret in it is not written again by a restart', async () => {
+  const s = setup();
+  const secret = `sk-${'a1b2'.repeat(12)}`;
+  const t = s.h.runner.create({ text: `use ${secret}`, cwd: s.h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  s.h.runner.update({ threadId: t.id, title: `about ${secret}` });
+  await firstStart(s);
+  assert.ok(s.docs().some((d) => d.threadId === t.id && d.title === 'about [REDACTED]'));
+  assert.ok(!JSON.stringify(s.docs()).includes(secret));
+  s.calls.length = 0;
+  const again = s.make();
+  again.start();
+  await settle();
+  s.h.clock.advance(2000);
+  await settle();
+  await again.flushNow();
+  assert.deepEqual(s.named('sync:upsertThreads'), []);
+  assert.deepEqual(s.named('sync:appendMessages'), []);
+  await again.stop();
+});

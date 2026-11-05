@@ -8,10 +8,39 @@ import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
 import { threadFields, views } from './schema';
 import { API_VERSION } from './version';
-import { actAs, checkRunnerId, forbidden, hasLiveKey, runnerAuth, sha256 } from './lib';
+import { actAs, checkRunnerId, forbidden, hasLiveKey, runnerAuth, runnerStatsRows, sha256, watchRunnersFor } from './lib';
+import { scrubDoc, scrubEveryString, SCRUB_RULES_VERSION, HELD_BACK } from './redaction';
+import { dropHead, seedHeads, syncHead, syncHeads } from './projectHeads';
 import { cutBytes, docBytes, mayClaim, NAME_CHARS, mayFinish, mayTake, mayTouch, mayUseStorage, mayWrite, nameSkeleton, normalName, ownsCard, SCHEDULE_ID, utf8Bytes, type Caller } from './runnerAccess';
 import { dropWake, seedWakes, syncWake } from './wakes';
 import { issueToken as makeToken, listTokens as allTokens, revokeToken as revokeOne, tokenInfo, tokenKind, MAX_DAYS } from './tokens';
+
+// The second pass on anything a runner sends (docs/convex-backend.md, "Secret
+// scrubbing"): a runner scrubs first, but one on an older release doesn't, and
+// nothing that comes through here should depend on that. A string whose check
+// fails is stored as HELD_BACK rather than as it came, and the log says so.
+function clean<T>(value: T): T {
+  return scrubDoc(value, undefined, (e) => console.error(`secret check failed, stored "${HELD_BACK}" instead:`, (e as Error)?.name));
+}
+
+// A call's answer is JSON text. Scrubbing the text whole can leave it unparseable
+// (a rule's match crossing an escaped quote), so scrub what it says and write it
+// again. Text that doesn't parse isn't kept: nothing could read it anyway.
+function cleanResult(result: string): string | undefined {
+  try {
+    return JSON.stringify(scrubEveryString(JSON.parse(result), clean));
+  } catch {
+    return undefined;
+  }
+}
+
+// What a command keeps once it's over, however it ended. Its words were stored as
+// typed only so the runner could get them exactly, and nothing reads them after
+// that. Dropped rather than scrubbed, as a value only the sender knew would get
+// through any scrubbing here. Its photos stay named, for deleteIfUnused to count.
+function finishedArgs(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  return Array.isArray(args?.images) ? { images: args.images } : {};
+}
 
 // Finished commands and paged messages older than this are pruned.
 const KEEP_FINISHED_MS = 24 * 60 * 60_000;
@@ -438,6 +467,7 @@ export const upsertThreads = mutation({
   returns: v.object({ skipped: v.array(v.string()) }),
   handler: async (ctx, { key, threads }) => {
     const caller = await runnerAuth(ctx, key, 'upsertThreads');
+    threads = clean(threads);
     const now = Date.now();
     const skipped: string[] = [];
     for (const given of threads) {
@@ -612,8 +642,9 @@ export const addReplyImage = mutation({
     height: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { key, ...img }) => {
+  handler: async (ctx, { key, ...sent }) => {
     const caller = await runnerAuth(ctx, key, 'addReplyImage');
+    const img = clean(sent);
     const mine = await ownThread(ctx, caller, img.threadId);
     await mustMayUseStorage(ctx, caller, img.storageId);
     // No row to put it on: the upload goes, unless something else has it.
@@ -672,8 +703,9 @@ export const addShareImage = mutation({
     height: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { key, ...img }) => {
+  handler: async (ctx, { key, ...sent }) => {
     const caller = await runnerAuth(ctx, key, 'addShareImage');
+    const img = clean(sent);
     const mine = await ownThread(ctx, caller, img.threadId);
     await mustMayUseStorage(ctx, caller, img.storageId);
     // No row to put it on: the upload goes, unless something else has it.
@@ -749,6 +781,7 @@ export const heartbeat = mutation({
   returns: v.object({ apiVersion: v.number(), firstSeen: v.optional(v.boolean()), ownerKeyRotating: v.optional(v.boolean()) }),
   handler: async (ctx, { key, runner }) => {
     const caller = await runnerAuth(ctx, key, 'heartbeat');
+    runner = clean(runner);
     // A runner key heartbeats as its own runner only: the row has the
     // rpcUrl other Macs' apps dial.
     await actAs(ctx, caller, runner.runnerId);
@@ -776,6 +809,8 @@ export const heartbeat = mutation({
       await ctx.db.patch(counted._id, { projectsLinked: true });
       await ctx.scheduler.runAfter(0, internal.sync.linkProjects, { runnerId: runner.runnerId, cursor: null });
     }
+    // API 48: every project from before projectHeads, once.
+    await seedHeads(ctx);
     return { apiVersion: API_VERSION, ...(existing ? {} : { firstSeen: true }), ...(caller.owner && process.env.RUNNER_KEY_NEXT ? { ownerKeyRotating: true } : {}) };
   },
 });
@@ -814,6 +849,31 @@ export const runnerWatch = query({
   },
 });
 
+// The Mac app's runner details are open (API 46): the same watch as the
+// website's (phone:watchRunners), through the main Mac's runner. Owner only,
+// as it wakes every runner.
+export const watchRunnersFromMac = mutation({
+  args: { key: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { key }) => {
+    await runnerAuth(ctx, key, 'watchRunnersFromMac');
+    await watchRunnersFor(ctx);
+    return null;
+  },
+});
+
+// Every runner's latest figures for the Mac app's Runners panel (API 46), as
+// phone:runnerStats gives them to the website. Owner only: they're every
+// runner's.
+export const runnerStatsList = query({
+  args: { key: v.string() },
+  returns: v.array(v.object({ runnerId: v.string(), at: v.string(), cpuPercent: v.number(), cores: v.number(), memUsed: v.number(), memTotal: v.number(), diskFree: v.number(), diskTotal: v.number(), load1: v.optional(v.number()), uptimeSec: v.number(), machine: v.optional(v.string()), os: v.optional(v.string()) })),
+  handler: async (ctx, { key }) => {
+    await runnerAuth(ctx, key, 'runnerStatsList');
+    return runnerStatsRows(ctx);
+  },
+});
+
 export const setRunnerStats = mutation({
   args: {
     key: v.string(),
@@ -837,8 +897,9 @@ export const setRunnerStats = mutation({
     // fit, as its heartbeat's are.
     const caller = await runnerAuth(ctx, key, 'setRunnerStats');
     await actAs(ctx, caller, runnerId);
-    const labels = caller.owner ? {} : { ...(stats.machine !== undefined ? { machine: cutBytes(stats.machine, 128) } : {}), ...(stats.os !== undefined ? { os: cutBytes(stats.os, 128) } : {}) };
-    const row = { runnerId, at: Date.now(), ...stats, ...labels };
+    const cleaned = clean(stats);
+    const labels = caller.owner ? {} : { ...(cleaned.machine !== undefined ? { machine: cutBytes(cleaned.machine, 128) } : {}), ...(cleaned.os !== undefined ? { os: cutBytes(cleaned.os, 128) } : {}) };
+    const row = { runnerId, at: Date.now(), ...cleaned, ...labels };
     const existing = await ctx.db.query('runnerStats').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).unique();
     if (existing) await ctx.db.replace(existing._id, row);
     else await ctx.db.insert('runnerStats', row);
@@ -927,7 +988,7 @@ export const issueToken = mutation({
   returns: v.object({ id: v.string(), token: v.string(), expiresAt: v.string() }),
   handler: async (ctx, { key, kind, name, days }) => {
     await runnerAuth(ctx, key, 'issueToken');
-    const trimmed = name.trim().slice(0, 80);
+    const trimmed = clean(name.trim().slice(0, 80));
     if (!trimmed) throw new ConvexError({ kind: 'badArgs', message: 'name must not be blank' });
     if (days !== undefined && (!Number.isFinite(days) || days < 1 || days > MAX_DAYS)) throw new ConvexError({ kind: 'badArgs', message: `days must be 1 to ${MAX_DAYS}` });
     // Which main key made it, so an audit after a rotation can tell (tb runner audit).
@@ -980,6 +1041,7 @@ export const appendMessages = mutation({
   returns: v.object({ skipped: v.array(v.string()) }),
   handler: async (ctx, { key, messages }) => {
     const caller = await runnerAuth(ctx, key, 'appendMessages');
+    messages = clean(messages);
     const checked = new Map<string, 'yes' | 'none'>();
     const skipped: string[] = [];
     const insertedNow = new Set<string>();
@@ -1129,9 +1191,11 @@ export const setProjects = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, projects: given }) => {
     const caller = await runnerAuth(ctx, key, 'setProjects');
+    given = clean(given);
     await actAs(ctx, caller, runnerId);
     const projects = fitProjects(caller, given);
     await replaceRows(ctx, 'projects', runnerId, projects);
+    await syncHeads(ctx, runnerId, projects.map((p) => ({ ...p, runnerId })));
     // A picture for a project that's gone, or that has no picture any more,
     // goes with it. One the runner hasn't replaced yet stays, so the phone
     // keeps showing the old picture rather than a letter meanwhile.
@@ -1155,6 +1219,7 @@ export const upsertProjects = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, projects: given, removed }) => {
     const caller = await runnerAuth(ctx, key, 'upsertProjects');
+    given = clean(given);
     await actAs(ctx, caller, runnerId);
     const one = (id: string) => ctx.db.query('projects').withIndex('by_runner_id', (q) => q.eq('runnerId', runnerId).eq('id', id)).unique();
     // As setProjects: a picture goes when its project does, or has none now.
@@ -1180,11 +1245,13 @@ export const upsertProjects = mutation({
       const existing = await one(p.id);
       if (existing) await ctx.db.replace(existing._id, { ...p, runnerId });
       else await ctx.db.insert('projects', { ...p, runnerId });
+      await syncHead(ctx, { ...p, runnerId });
       if (!p.icon?.picture) await dropIcon(p.id);
     }
     for (const id of removed) {
       const existing = await one(id);
       if (existing) await ctx.db.delete(existing._id);
+      await dropHead(ctx, runnerId, id);
       await dropIcon(id);
     }
     return null;
@@ -1305,6 +1372,7 @@ export const setProjectIcon = mutation({
       picture = cutBytes(picture, 200);
       mediaType = cutBytes(mediaType, 100);
     }
+    mediaType = clean(mediaType);
     const now = Date.now();
     const existing = await ctx.db
       .query('projectIcons')
@@ -1329,6 +1397,7 @@ export const setSchedules = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, schedules }) => {
     const caller = await runnerAuth(ctx, key, 'setSchedules');
+    schedules = clean(schedules);
     await actAs(ctx, caller, runnerId);
     const owned = new Set<string>();
     for await (const row of ctx.db.query('schedules')) {
@@ -1404,15 +1473,67 @@ export const schedules = query({
   handler: async (ctx, { key }) => {
     const caller = await runnerAuth(ctx, key, 'schedules');
     const out = [];
-    for await (const row of ctx.db.query('schedules')) {
+    // A runner key's runner lists only its own: another's schedule is its
+    // text, folder and permissions, which aren't this runner's to see. By
+    // index, so it's all it reads too: reading the whole table cost about 170
+    // KB a run and re-ran it for every other runner's claim (API 45).
+    const rows = caller.owner ? ctx.db.query('schedules') : ctx.db.query('schedules').withIndex('by_runnerId', (q) => q.eq('runnerId', caller.runnerId));
+    for await (const row of rows) {
       if (!row.owned) continue;
-      // A runner key's runner lists only its own: another's schedule is
-      // its text, folder and permissions, which aren't this runner's to see.
-      if (!caller.owner && row.runnerId !== caller.runnerId) continue;
-      const { _id, _creationTime, owned, claim, ...rest } = row;
+      const { _id, _creationTime, owned, claim, updatedMs: _u, ...rest } = row;
       out.push(rest);
     }
     return out;
+  },
+});
+
+const SCHEDULES_SINCE_CAP = 200;
+// scheduleGone rows last a day (pruneOld, every 6 hours), so asking from further
+// back than this could miss one: read the whole table instead.
+const SCHEDULES_SINCE_OLDEST_MS = 12 * 60 * 60_000;
+
+// With no `since`, the whole table and the time to follow it from; with one,
+// the rows written at or after it and the ids gone since (API 48). A runner
+// asks again from a little before the newest it heard, so each run reads only
+// what changed (runner/src/schedule-follow.ts). `more`: read it whole again.
+// A runner key's runner reads and hears of only its own, by index.
+export const schedulesSince = query({
+  // `fresh`: anything different each time, so a whole read isn't served from
+  // Convex's cache with the `at` of when it was first made.
+  args: { key: v.string(), since: v.optional(v.number()), fresh: v.optional(v.number()) },
+  returns: v.object({
+    rows: v.array(v.object({ ...ownedScheduleDoc.fields, updatedMs: v.optional(v.number()) })),
+    gone: v.array(v.string()),
+    at: v.number(),
+    more: v.optional(v.boolean()),
+  }),
+  handler: async (ctx, { key, since }) => {
+    const caller = await runnerAuth(ctx, key, 'schedulesSince');
+    const own = caller.owner ? undefined : caller.runnerId;
+    const at = Date.now();
+    const shown = (row: Doc<'schedules'>) => {
+      const { _id, _creationTime, owned: _o, claim: _c, ...rest } = row;
+      return rest;
+    };
+    if (since === undefined) {
+      const all = own ? ctx.db.query('schedules').withIndex('by_runnerId', (q) => q.eq('runnerId', own)) : ctx.db.query('schedules');
+      const rows = [];
+      for await (const row of all) if (row.owned) rows.push(shown(row));
+      return { rows, gone: [], at };
+    }
+    if (since < at - SCHEDULES_SINCE_OLDEST_MS) return { rows: [], gone: [], at, more: true };
+    const docs = await (own
+      ? ctx.db.query('schedules').withIndex('by_runner_updated', (q) => q.eq('runnerId', own).gte('updatedMs', since))
+      : ctx.db.query('schedules').withIndex('by_updated', (q) => q.gte('updatedMs', since))
+    ).take(SCHEDULES_SINCE_CAP + 1);
+    const went = await (own
+      ? ctx.db.query('scheduleGone').withIndex('by_runner_at', (q) => q.eq('runnerId', own).gte('at', since))
+      : ctx.db.query('scheduleGone').withIndex('by_at', (q) => q.gte('at', since))
+    ).take(SCHEDULES_SINCE_CAP + 1);
+    if (docs.length > SCHEDULES_SINCE_CAP || went.length > SCHEDULES_SINCE_CAP) return { rows: [], gone: [], at, more: true };
+    // An id that's back since it went has a row, which is what's true now.
+    const here = new Set(docs.map((d) => d.id));
+    return { rows: docs.filter((d) => d.owned).map(shown), gone: went.filter((g) => !here.has(g.id)).map((g) => g.id), at };
   },
 });
 
@@ -1424,6 +1545,7 @@ export const saveSchedule = mutation({
   returns: v.null(),
   handler: async (ctx, { key, schedule }) => {
     const caller = await runnerAuth(ctx, key, 'saveSchedule');
+    schedule = clean(schedule);
     const row = await scheduleRow(ctx, schedule.id);
     // A schedule is its runner sending that text with those permissions,
     // so a runner key puts one only on its own runner (schedules.create
@@ -1436,11 +1558,13 @@ export const saveSchedule = mutation({
     if (!row && !caller.owner && (await ownedCount(ctx, schedule.runnerId)) >= CAP.schedules) throw tooMany('schedules', CAP.schedules);
     await syncWake(ctx, schedule);
     if (!row) {
-      await ctx.db.insert('schedules', { ...schedule, owned: true });
+      await ctx.db.insert('schedules', { ...schedule, owned: true, updatedMs: Date.now() });
       return null;
     }
     const claim = row.claim && row.nextRunAt === schedule.nextRunAt ? { claim: row.claim } : {};
-    await ctx.db.replace(row._id, { ...schedule, owned: true, ...claim });
+    // Moved to another runner: the one it was on follows only its own rows.
+    if (row.runnerId !== schedule.runnerId) await ctx.db.insert('scheduleGone', { id: row.id, runnerId: row.runnerId, at: Date.now() });
+    await ctx.db.replace(row._id, { ...schedule, owned: true, ...claim, updatedMs: Date.now() });
     return null;
   },
 });
@@ -1456,6 +1580,7 @@ export const deleteSchedule = mutation({
     if (!row) return false;
     await ctx.db.delete(row._id);
     await dropWake(ctx, scheduleId);
+    await ctx.db.insert('scheduleGone', { id: row.id, runnerId: row.runnerId, at: Date.now() });
     return true;
   },
 });
@@ -1472,6 +1597,7 @@ export const adoptSchedules = mutation({
   returns: v.object({ held: v.array(v.object({ id: v.string(), why: v.string() })) }),
   handler: async (ctx, { key, runnerId, schedules }) => {
     const caller = await runnerAuth(ctx, key, 'adoptSchedules');
+    schedules = clean(schedules);
     await actAs(ctx, caller, runnerId);
     const fresh: typeof schedules = [];
     const held: { id: string; why: string }[] = [];
@@ -1498,7 +1624,7 @@ export const adoptSchedules = mutation({
       }
     }
     for (const s of fresh) {
-      await ctx.db.insert('schedules', { ...s, runnerId, owned: true });
+      await ctx.db.insert('schedules', { ...s, runnerId, owned: true, updatedMs: Date.now() });
       await syncWake(ctx, { ...s, runnerId });
     }
     return { held: [] };
@@ -1566,6 +1692,7 @@ export const scheduleRan = mutation({
   returns: v.null(),
   handler: async (ctx, { key, scheduleId, holder, lastRun, sent, expectUpdatedAt, nextRunAt, finishedAt, request }) => {
     const caller = await runnerAuth(ctx, key, 'scheduleRan');
+    lastRun = clean(lastRun);
     // Another runner's schedule is as good as missing to a runner key: no
     // refusal to say it's there or whose it is.
     const row = visibleTo(caller, await scheduleRow(ctx, scheduleId));
@@ -1573,7 +1700,7 @@ export const scheduleRan = mutation({
     // A runner key's run record is cut to fit: the row it's recorded on is
     // read whole with every other schedule (CAP).
     const run = caller.owner ? lastRun : { ...lastRun, at: cutBytes(lastRun.at, 64), outcome: cutBytes(lastRun.outcome, 64), ...(lastRun.threadId !== undefined ? { threadId: cutBytes(lastRun.threadId, 100) } : {}), ...(lastRun.note !== undefined ? { note: cutBytes(lastRun.note, CAP.note) } : {}) };
-    const patch: Record<string, unknown> = { lastRun: run, runs: row.runs + (sent ? 1 : 0) };
+    const patch: Record<string, unknown> = { lastRun: run, runs: row.runs + (sent ? 1 : 0), updatedMs: Date.now() };
     if (row.claim?.holder === holder) patch.claim = undefined;
     if (request !== undefined && row.runRequestedAt === request) patch.runRequestedAt = undefined;
     if (row.updatedAt === expectUpdatedAt) {
@@ -1599,7 +1726,7 @@ export const requestScheduleRun = mutation({
     // refusal to say it's there or whose it is.
     const row = visibleTo(caller, await scheduleRow(ctx, scheduleId));
     if (!row) return false;
-    await ctx.db.patch(row._id, { runRequestedAt: caller.owner ? at : cutBytes(at, 64) });
+    await ctx.db.patch(row._id, { runRequestedAt: caller.owner ? at : cutBytes(at, 64), updatedMs: Date.now() });
     return true;
   },
 });
@@ -1629,6 +1756,7 @@ export const savePools = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, pools }) => {
     await runnerAuth(ctx, key, 'savePools');
+    pools = clean(pools);
     await writePools(ctx, runnerId, pools);
     return null;
   },
@@ -1642,6 +1770,7 @@ export const adoptPools = mutation({
   returns: v.boolean(),
   handler: async (ctx, { key, runnerId, pools }) => {
     await runnerAuth(ctx, key, 'adoptPools');
+    pools = clean(pools);
     if (pools.length === 0 || (await ctx.db.query('pools').first())) return false;
     await writePools(ctx, runnerId, pools);
     return true;
@@ -1673,9 +1802,9 @@ async function writePools(ctx: { db: MutationCtx['db'] }, runnerId: string, pool
 // (API 39): the same subscription signed in on several machines is one
 // limit, so each runner takes the newest reading from any of them.
 export const sharedUsage = query({
-  args: { key: v.string() },
+  args: { key: v.string(), runnerId: v.optional(v.string()) },
   returns: v.array(v.object({ runnerId: v.string(), provider: v.string(), email: v.string(), usage: v.any() })),
-  handler: async (ctx, { key }) => {
+  handler: async (ctx, { key, runnerId }) => {
     const caller = await runnerAuth(ctx, key, 'sharedUsage');
     // A runner key gets readings only for logins its own runner has (by
     // email and provider): that's all it needs to show the newest reading
@@ -1686,8 +1815,20 @@ export const sharedUsage = query({
       mine = new Set();
       for (const a of await ctx.db.query('accounts').withIndex('by_runnerId', (q) => q.eq('runnerId', caller.runnerId)).take(CAP.accounts + 1)) if (a.email) mine.add(`${a.provider}:${a.email.toLowerCase()}`);
     }
+    // Only other runners' rows (API 45): a runner has no use for its own, and
+    // reading them re-ran this for each of its own writes. Two ranges of the
+    // index, so a write to the caller's rows isn't in what this read. A runner
+    // key's own logins, just above, still are. A runner sending no runnerId
+    // (from before 45) is told about everyone's, and leaves out its own.
+    const me = caller.owner ? runnerId : caller.runnerId;
+    const rows = me
+      ? [
+          ...(await ctx.db.query('accounts').withIndex('by_runnerId', (q) => q.lt('runnerId', me)).collect()),
+          ...(await ctx.db.query('accounts').withIndex('by_runnerId', (q) => q.gt('runnerId', me)).collect()),
+        ]
+      : await ctx.db.query('accounts').collect();
     const out = [];
-    for (const row of await ctx.db.query('accounts').collect()) {
+    for (const row of rows) {
       if (!row.email || !row.usage) continue;
       if (mine && !mine.has(`${row.provider}:${row.email.toLowerCase()}`)) continue;
       out.push({ runnerId: row.runnerId, provider: row.provider, email: row.email, usage: row.usage });
@@ -1701,6 +1842,7 @@ export const setAccounts = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, accounts }) => {
     const caller = await runnerAuth(ctx, key, 'setAccounts');
+    accounts = clean(accounts);
     await actAs(ctx, caller, runnerId);
     // A runner key's: ones too big left out, and at most CAP.accounts.
     const fitting = caller.owner ? accounts : accounts.filter((a) => docBytes(a) <= CAP.accountDoc).slice(0, CAP.accounts);
@@ -1718,6 +1860,7 @@ export const upsertAccounts = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, accounts, removed }) => {
     const caller = await runnerAuth(ctx, key, 'upsertAccounts');
+    accounts = clean(accounts);
     await actAs(ctx, caller, runnerId);
     const one = (id: string) => ctx.db.query('accounts').withIndex('by_runner_id', (q) => q.eq('runnerId', runnerId).eq('id', id)).unique();
     // A runner key's, as setAccounts: ones too big left out, at most CAP.accounts.
@@ -1764,6 +1907,7 @@ export const savePocketCard = mutation({
   returns: v.union(v.literal('added'), v.literal('replaced')),
   handler: async (ctx, { key, card }) => {
     const caller = await runnerAuth(ctx, key, 'savePocketCard');
+    card = clean(card);
     capText(caller, "A card's title", card.title, CAP.cardTitle);
     capText(caller, "A card's text", card.text, CAP.cardText);
     capText(caller, "A card's place", card.place, CAP.cardPlace);
@@ -1806,6 +1950,7 @@ export const removePocketCard = mutation({
   returns: v.boolean(),
   handler: async (ctx, { key, title }) => {
     const caller = await runnerAuth(ctx, key, 'removePocketCard');
+    title = clean(title);
     const had = await ctx.db.query('pocketCards').withIndex('by_key', (q) => q.eq('key', cardKey(caller, title))).first();
     if (had && !ownsCard(caller, had)) throw forbidden('remove that Pocket card');
     if (had) await ctx.db.delete(had._id);
@@ -1870,7 +2015,7 @@ export const takeCommand = mutation({
     if (c.threadId !== undefined && c.runnerId !== 'any') {
       const t = await ctx.db.query('threads').withIndex('by_threadId', (q) => q.eq('threadId', c.threadId!)).unique();
       if (!t || t.runnerId !== c.runnerId) {
-        await ctx.db.patch(commandId, { state: 'failed', doneAt: Date.now(), note: t ? 'That thread is on another runner now.' : 'That thread has gone.' });
+        await ctx.db.patch(commandId, { state: 'failed', doneAt: Date.now(), args: finishedArgs(c.args), note: t ? 'That thread is on another runner now.' : 'That thread has gone.' });
         return false;
       }
     }
@@ -1892,7 +2037,7 @@ export const finishCommand = mutation({
     const c = await ctx.db.get(commandId);
     if (!c) return null;
     if (!mayFinish(caller, c)) throw forbidden("finish that command: it isn't for its runner");
-    const keep = ok && c.kind === 'call' && result !== undefined && utf8Bytes(result) <= RESULT_MAX_BYTES;
+    const kept = ok && c.kind === 'call' && result !== undefined && utf8Bytes(result) <= RESULT_MAX_BYTES ? cleanResult(result) : undefined;
     // The thread a create made is the command's runner's (it writes the row
     // before finishing): never another runner's id, which the main Mac would
     // then open as this runner's new thread.
@@ -1901,13 +2046,10 @@ export const finishCommand = mutation({
       const t = await ctx.db.query('threads').withIndex('by_threadId', (q) => q.eq('threadId', resultThreadId)).unique();
       if (t && (c.runnerId === 'any' ? caller.owner || t.runnerId === (caller as { runnerId?: string }).runnerId : t.runnerId === c.runnerId)) made = resultThreadId;
     }
-    await ctx.db.patch(commandId, { state: ok ? 'done' : 'failed', doneAt: Date.now(), ...(note ? { note } : {}), ...(made ? { resultThreadId: made } : {}), ...(keep ? { result } : {}) });
-    // A secret's sealed answer (docs/protocol.md, "Secrets") has done its
-    // job: only the runner could open it, but it needn't sit here a day.
-    if (c.args?.sealed) {
-      const { sealed: _sealed, ...rest } = c.args;
-      await ctx.db.patch(commandId, { args: rest });
-    }
+    await ctx.db.patch(commandId, { state: ok ? 'done' : 'failed', doneAt: Date.now(), ...(note ? { note: clean(note) } : {}), ...(made ? { resultThreadId: made } : {}), ...(kept !== undefined ? { result: kept } : {}) });
+    // Its words, and a secret's sealed answer (docs/protocol.md, "Secrets"), have
+    // done their job: see finishedArgs.
+    await ctx.db.patch(commandId, { args: finishedArgs(c.args) });
     // The runner has its copy of the phone's photos by now, and images are
     // meant to live on the Mac. A failed send keeps its photos on the phone,
     // which uploads them again.
@@ -1943,6 +2085,11 @@ export const pruneOld = internalMutation({
     for (const m of await ctx.db.query('messages').withIndex('by_pagedAt', (q) => q.gt('pagedAt', 0).lt('pagedAt', cutoff)).take(Math.max(0, Math.min(left, PRUNE_MESSAGES)))) {
       await ctx.db.patch(m._id, { pagedAt: undefined });
       left -= Math.ceil(PRUNE_BATCH / PRUNE_MESSAGES);
+    }
+    // What sync:schedulesSince told runners went, likewise.
+    for (const t of await ctx.db.query('scheduleGone').withIndex('by_at', (q) => q.lt('at', cutoff)).take(Math.max(0, left))) {
+      await ctx.db.delete(t._id);
+      left--;
     }
     // What phone:threadsSince told clients went, once they've had a day to hear.
     for (const t of await ctx.db.query('threadGone').withIndex('by_at', (q) => q.lt('at', cutoff)).take(Math.max(0, left))) {
@@ -2010,6 +2157,7 @@ export const setThreadIndex = mutation({
   returns: v.null(),
   handler: async (ctx, { key, runnerId, rows, removed, keep }) => {
     const caller = await runnerAuth(ctx, key, 'setThreadIndex');
+    rows = clean(rows);
     await actAs(ctx, caller, runnerId);
     // One runner's writes come one at a time, so its rows' updatedMs only
     // go up, which is what threadIndexSince relies on.
@@ -2204,7 +2352,9 @@ export const addRunnerKey = mutation({
   returns: v.object({ runnerId: v.string(), key: v.string() }),
   handler: async (ctx, { key, runnerId, name, ownerRunnerId, replace }) => {
     await runnerAuth(ctx, key, 'addRunnerKey');
-    return makeRunnerKey(ctx, runnerId, name, ownerRunnerId, Boolean(replace));
+    // runner-keys.ts posts straight to the backend, not through ConvexSync's
+    // scrubbing wrapper, so this pass is the only one its name gets.
+    return makeRunnerKey(ctx, runnerId, clean(name), ownerRunnerId, Boolean(replace));
   },
 });
 
@@ -2358,6 +2508,10 @@ export const auditRemove = mutation({
         } else {
           await ctx.db.delete(row._id);
           if (r.kind === 'picture') await deleteIfUnused(ctx, row.storageId);
+          if (r.kind === 'schedule') {
+            await ctx.db.insert('scheduleGone', { id: row.id, runnerId: row.runnerId, at: Date.now() });
+            if (!(await scheduleRow(ctx, row.id))) await dropWake(ctx, row.id);
+          }
           n++;
         }
       }
@@ -2405,10 +2559,17 @@ export const purgeRunner = mutation({
       await dropThread(ctx, t.threadId, t);
       return { done: false };
     }
-    for (const table of ['threadIndex', 'pocketCards', 'schedules', 'projects', 'accounts'] as const) {
+    for (const table of ['threadIndex', 'pocketCards', 'schedules', 'projects', 'projectHeads', 'accounts'] as const) {
       if (left <= 0) break;
       for (const r of await ctx.db.query(table).withIndex('by_runnerId', (q: any) => q.eq('runnerId', runnerId)).take(left)) {
         await ctx.db.delete(r._id);
+        // The owner's runner holds a copy of every schedule, this one's too.
+        if (table === 'schedules') {
+          await ctx.db.insert('scheduleGone', { id: (r as Doc<'schedules'>).id, runnerId, at: Date.now() });
+          // An old mirror row can share its id with another runner's live schedule,
+          // whose wake this is then, so it stays.
+          if (!(await scheduleRow(ctx, (r as Doc<'schedules'>).id))) await dropWake(ctx, (r as Doc<'schedules'>).id);
+        }
         left--;
       }
     }
@@ -2427,5 +2588,48 @@ export const purgeRunner = mutation({
       return { done: true };
     }
     return { done: false };
+  },
+});
+
+// ------------------------------------------------------------ rewriting what's stored
+// Today's rules over rows stored before them: `appendMessages` never rewrites a
+// row, and a runner doesn't send one again, so a new rule doesn't reach old
+// rows by itself. runner/scripts/scrub-stored.mjs calls this a page at a time,
+// by hand, dry run unless told otherwise. It says which rows and how many,
+// never what was in them. Nothing changes for a runner: what it remembers
+// sending is unaffected, so it re-sends nothing. The owner key's only.
+const SCRUB_TABLES = ['messages', 'threads', 'threadIndex', 'projects', 'schedules', 'pocketCards', 'accounts', 'commands', 'replyImages', 'shareImages', 'pools', 'runners', 'tokens', 'runnerKeys', 'runnerStats', 'projectIcons', 'projectHeads'] as const;
+
+export const scrubStoredBatch = mutation({
+  args: {
+    key: v.string(),
+    table: v.union(...SCRUB_TABLES.map((t) => v.literal(t))),
+    cursor: v.union(v.string(), v.null()),
+    apply: v.boolean(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ scanned: v.number(), changed: v.array(v.string()), cursor: v.string(), done: v.boolean(), rulesVersion: v.number() }),
+  handler: async (ctx, { key, table, cursor, apply, limit }) => {
+    await runnerAuth(ctx, key, 'scrubStoredBatch');
+    const page = await (ctx.db.query(table) as any).paginate({ numItems: Math.min(Math.max(limit ?? 200, 1), 500), cursor });
+    const changed: string[] = [];
+    for (const row of page.page as Record<string, any>[]) {
+      // A command still on its way has to reach the runner as it was typed.
+      if (table === 'commands' && (row.state === 'pending' || row.state === 'taken')) continue;
+      const { _id, _creationTime, ...doc } = row;
+      const scrubbed: Record<string, any> = clean(doc);
+      if (scrubbed === doc) continue;
+      changed.push(String(_id));
+      if (!apply) continue;
+      const next = { ...scrubbed };
+      // A card's lookup key follows its title, for its runner if it has one.
+      if (table === 'pocketCards') next.key = cardKey(row.runnerId ? ({ owner: false, runnerId: row.runnerId } as Caller) : ({ owner: true } as Caller), next.title);
+      // So a Mac watching only what changed (threadIndexSince) hears of it.
+      if (table === 'threadIndex' || table === 'schedules') next.updatedMs = Date.now();
+      await ctx.db.replace(_id as any, next as any);
+      // The list's copy of a title, or it keeps showing the old one.
+      if (table === 'projects') await syncHead(ctx, next as any);
+    }
+    return { scanned: page.page.length, changed, cursor: page.continueCursor, done: page.isDone, rulesVersion: SCRUB_RULES_VERSION };
   },
 });

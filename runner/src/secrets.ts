@@ -30,6 +30,9 @@ export class SecretStore {
 
   private readonly secretsDir: string;
   private readonly now: () => number;
+  // Told each answer as it's written, in memory only: the runner masks it from
+  // what goes to Convex from this moment (src/secret-values.ts).
+  onWritten?: (value: string) => void;
 
   constructor(secretsDir: string, now: () => number = Date.now) {
     this.secretsDir = secretsDir;
@@ -48,6 +51,7 @@ export class SecretStore {
     const name = crypto.randomBytes(16).toString('hex');
     const file = path.join(this.dir, name);
     const askpass = `${file}.askpass`;
+    this.onWritten?.(value);
     fs.writeFileSync(file, value, { flag: 'wx', mode: 0o600 });
     try {
       // sudo -A, ssh and git run the helper and read the password from

@@ -31,11 +31,15 @@ import { agentsStillWorking, ARCHIVE_VERDICTS, ErrorCode, isEffortLevel } from '
 import type { Account, ArchiveVerdict, ApprovalDecision, ApprovalOption, AskAnswer, EffortLevel, ImageRef, OpenAsk, PersistedEvent, Project, Question, Schedule, ThreadSummary } from './protocol.ts';
 import type { Notification } from './runner.ts';
 import type { ScheduleBackend, StoredSchedule } from './schedules.ts';
+import { followSchedules } from './schedule-follow.ts';
 import { ThreadIndex, type RemoteThreads } from './thread-index.ts';
 import { digest, dropSyncCache, loadSyncCache, saveSyncCache, SYNC_CACHE_MAX_AGE_MS } from './sync-cache.ts';
 import { paths, readRunnerJson, writeRunnerJson } from './config.ts';
 import { unplacedPictures } from './pictures.ts';
 import { listFolderFor } from './files.ts';
+import { Scrubber, type ScrubStatus } from './scrub.ts';
+import { scrubEveryString } from './redaction.ts';
+import { withholdReason } from './withhold.ts';
 // A `call` for files.list answers with at most this many entries (the backend keeps it a day).
 const CALL_ENTRIES = 500;
 
@@ -102,12 +106,16 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 45;
+export const BACKEND_API_VERSION = 48;
 // From this one the main Mac reads and steers other runners' threads through
 // the backend (convex/relay.ts): commands can be `interrupt` or `call`, and a
 // pending approval carries its event's seq (docs/protocol.md, "Other
 // runners' threads through the backend").
 export const RELAY_API_VERSION = 44;
+// From this one the Mac app's Runners panel can ask for every runner's machine
+// figures (runners.stats): sync:watchRunnersFromMac and sync:runnerStatsList,
+// on top of the website's runnerStats rows (API 45).
+export const MAC_RUNNER_STATS_API_VERSION = 46;
 // From this one an owned schedule can carry `poolId`, the pool that picks
 // its threads' login. An older backend's validator would turn it down.
 export const SCHEDULE_POOLS_API_VERSION = 36;
@@ -115,6 +123,19 @@ export const SCHEDULE_POOLS_API_VERSION = 36;
 export const SHARED_POOLS_API_VERSION = 38;
 // Other runners' usage readings of the same logins (sync:sharedUsage).
 export const SHARED_USAGE_API_VERSION = 39;
+// From this one the backend scrubs secrets again before storing what a runner
+// sends (convex/redaction.ts). A runner scrubs first either way.
+export const SCRUB_API_VERSION = 47;
+// From this one sync:sharedUsage takes this runner's id and doesn't read its
+// rows, so it doesn't re-run for this runner's own writes.
+export const SHARED_USAGE_OTHERS_API_VERSION = 48;
+// From this one the scheduler follows only the schedules written since it last
+// heard (sync:schedulesSince), rather than the whole table on every change.
+export const SCHEDULES_FOLLOW_API_VERSION = 48;
+export function sharedUsageArgs<K>(key: K, runnerId: string | undefined, backend: number): { key: K; runnerId?: string } {
+  // An older backend's validator would turn the extra argument down.
+  return runnerId && backend >= SHARED_USAGE_OTHERS_API_VERSION ? { key, runnerId } : { key };
+}
 // From this one a thread's row carries its open card of asks and a finished
 // turn's next steps, and a message row can be `summary` (end_turn's
 // bullets), so the phone shows end-of-turn cards. An older backend's
@@ -244,6 +265,9 @@ export type SyncStatus = {
   // key rotated out from under it, or a runner key revoked. lastError says
   // what to do.
   keyRejected?: boolean;
+  // What this runner does about secrets (src/scrub.ts), and whether its
+  // backend checks again.
+  scrub?: ScrubStatus & { backendChecks?: boolean };
 };
 
 // The approval or question a thread is waiting on, as the phone sees it.
@@ -329,6 +353,23 @@ export class WokeRows {
 }
 
 // One call to the deployment's HTTP API; tests pass a fake.
+// One runner's figures, as sync:runnerStatsList gives them (runner-stats.ts).
+export type RunnerStatsRow = {
+  runnerId: string;
+  at: string;
+  cpuPercent: number;
+  cores: number;
+  memUsed: number;
+  memTotal: number;
+  diskFree: number;
+  diskTotal: number;
+  load1?: number;
+  uptimeSec: number;
+  machine?: string;
+  os?: string;
+};
+const STATS_WATCH_EVERY_MS = 20_000;
+
 export type Post = (kind: 'mutation' | 'query', fn: string, args: Record<string, unknown>) => Promise<unknown>;
 
 // A live query on the deployment (the commands the phone has queued):
@@ -437,6 +478,9 @@ export type SyncDeps = {
   notice?: (level: 'warning' | 'error', message: string) => void;
   readKey?: () => string | undefined;
   restart?: (reason: string) => void;
+  // What takes secrets out of everything sent (src/scrub.ts). Left out, the
+  // shape rules alone: there's always a scrubber on the way up.
+  scrubber?: Scrubber;
 };
 
 // What tb status and the app say while the backend turns this runner's
@@ -721,13 +765,16 @@ export function forBackend(d: ThreadDoc, v: number, now: number): ThreadDoc {
 
 // A persisted user.message or assistant.text as a message row; anything
 // else is undefined.
-export function toMessageDoc(threadId: string, e: PersistedEvent): MessageDoc | undefined {
+// Scrubbed before it's cut, the one place a value could be split in two and
+// each half missed; everything is scrubbed again on the way up (this.post).
+export function toMessageDoc(threadId: string, e: PersistedEvent, scrub: (text: string) => string = (t) => t): MessageDoc | undefined {
   // The start of the id tells a thread's turns apart, in a row sent for every
   // message.
   const turn = e.turnId ? { turn: e.turnId.slice(0, 8) } : {};
-  if (e.type === 'tool.call') return { threadId, seq: e.seq, role: 'tool', text: toolLine(e), toolKind: e.kind, ...turn, at: e.ts };
+  if (e.type === 'tool.call') return { threadId, seq: e.seq, role: 'tool', text: toolLine(e, scrub), toolKind: e.kind, ...turn, at: e.ts };
   if (e.type !== 'user.message' && e.type !== 'assistant.text') return undefined;
-  const cut = e.text.length > MESSAGE_CHARS ? e.text.slice(0, MESSAGE_CHARS) + '\n\n[cut: the rest is on the Mac]' : e.text;
+  const clean = scrub(e.text);
+  const cut = clean.length > MESSAGE_CHARS ? clean.slice(0, MESSAGE_CHARS) + '\n\n[cut: the rest is on the Mac]' : clean;
   // Mike's own pictures stay on the Mac, so the phone and website get a line saying
   // there were some; a photo sent with no words would be an empty bubble.
   // One a [Picture N] marker places shows as a chip there instead, so the
@@ -745,7 +792,8 @@ export function toMessageDoc(threadId: string, e: PersistedEvent): MessageDoc | 
 // on the Mac): the agent's own description of a command when it gave one
 // ("Run the full check suite"), what was read, edited or searched, else the
 // call's title. Never the whole input.
-export function toolLine(e: { name: string; kind: string; title: string; input: Record<string, unknown> }): string {
+export function toolLine(e: { name: string; kind: string; title: string; input: Record<string, unknown> }, scrub: (text: string) => string = (t) => t): string {
+  const oneLine = (text: string) => shortLine(scrub(text));
   const str = (k: string) => (typeof e.input[k] === 'string' && (e.input[k] as string).trim() ? oneLine(e.input[k] as string) : undefined);
   const file = str('file_path') ?? str('path') ?? str('notebook_path');
   const short = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
@@ -771,16 +819,16 @@ export function toolLine(e: { name: string; kind: string; title: string; input: 
 
 // One line of a tool's input for the approval card: the command, the
 // path, or the first short string in it. Never the whole input.
-export function inputSummary(input: Record<string, unknown>): string | undefined {
+export function inputSummary(input: Record<string, unknown>, scrub: (text: string) => string = (t) => t): string | undefined {
   for (const k of ['command', 'file_path', 'path', 'url', 'pattern', 'query']) {
     const v = input[k];
-    if (typeof v === 'string' && v.trim()) return oneLine(v);
+    if (typeof v === 'string' && v.trim()) return shortLine(scrub(v));
   }
-  for (const v of Object.values(input)) if (typeof v === 'string' && v.trim()) return oneLine(v);
+  for (const v of Object.values(input)) if (typeof v === 'string' && v.trim()) return shortLine(scrub(v));
   return undefined;
 }
 
-function oneLine(s: string): string {
+function shortLine(s: string): string {
   const line = s.trim().split('\n')[0]!.trim();
   return line.length > 200 ? line.slice(0, 199) + '…' : line;
 }
@@ -992,6 +1040,9 @@ export class ConvexSync {
   private picturesPausedUntil?: number;
   private ownerKeyRotating = false;
   private schedulesRefused = false;
+  private scrubber: Scrubber;
+  // Tool calls on a file of secrets that haven't finished.
+  private secretCalls = new Map<string, string>();
 
   constructor(deps: SyncDeps) {
     this.deps = deps;
@@ -1001,7 +1052,36 @@ export class ConvexSync {
     if (!enabled) this.off = 'sync.enabled is false';
     else if (!url) this.off = 'no sync.url in runner.json';
     else if (!deps.key) this.off = 'no secrets/convex-key';
-    this.post = deps.post ?? (url ? convexPoster(url) : async () => undefined);
+    this.scrubber = deps.scrubber ?? new Scrubber({ env: {}, folders: false });
+    // The one way up: every mutation, the sidebar table's and the scheduler's
+    // included, goes through here, so no field can be forgotten. Digests of what
+    // was sent are of the row before this, so a rule or a value changing never
+    // makes a row look new, and a start doesn't write everything again.
+    const send = deps.post ?? (url ? convexPoster(url) : async () => undefined);
+    this.post = async (kind, fn, args) => {
+      if (kind !== 'mutation') return send(kind, fn, args);
+      // A command for another runner, like one from the phone: that runner has
+      // to get the words as typed, or an agent is handed "[REDACTED]" where the
+      // user gave it a password. finishCommand scrubs the stored copy when it's done.
+      if (fn === 'relay:queueCommand') return send(kind, fn, args);
+      // Still reading .env files after this long: text waits and the flush tries
+      // again, rather than go up missing values that would have been masked.
+      // A heartbeat has no thread's words in it, and says the runner's alive.
+      if (fn !== 'sync:heartbeat' && !(await this.scrubber.known.settled())) throw new Error('still reading what to take out of text before sending it');
+      // A call's answer is JSON text: scrub what it says, not the text, which a
+      // match could leave unparseable. The backend does the same.
+      if (fn === 'sync:finishCommand' && typeof args.result === 'string') {
+        const { result, ...rest } = args;
+        let safe: string | undefined;
+        try {
+          safe = JSON.stringify(scrubEveryString(JSON.parse(result as string), this.scrubber.safeText));
+        } catch {
+          safe = undefined;
+        }
+        return send(kind, fn, { ...this.scrubber.doc(rest), ...(safe !== undefined ? { result: safe } : {}) });
+      }
+      return send(kind, fn, this.scrubber.doc(args));
+    };
     this.upload = deps.upload ?? convexUploader();
     if (!this.off) this.subscriber = deps.subscriber ?? (url ? convexSubscriber(url) : undefined);
     if (!this.off && deps.home) {
@@ -1150,6 +1230,7 @@ export class ConvexSync {
     }
     const held = this.deps.schedules?.heldLocal?.().length ?? 0;
     if (held) s.schedulesHeld = held;
+    s.scrub = { ...this.scrubber.status(), ...(this.backendApiVersion !== undefined ? { backendChecks: this.backendApiVersion >= SCRUB_API_VERSION } : {}) };
     return s;
   }
 
@@ -1405,14 +1486,30 @@ export class ConvexSync {
       }
     }
     this.woke.see(e);
-    const m = toMessageDoc(threadId, e);
+    // A thread that's just touched a file of secrets may quote what's in it.
+    // Looked at once it's done: a write hasn't happened yet when it's asked for.
+    // Any reason, as `printenv > .env` is an environment command first.
+    if (e.type === 'tool.call' && withholdReason(e)) {
+      const file = typeof e.input.file_path === 'string' ? e.input.file_path : undefined;
+      const dir = file && path.isAbsolute(file) ? path.dirname(file) : this.cwdOf(threadId);
+      this.scrubber.known.lookSoon(dir);
+      if (dir) this.secretCalls.set(`${threadId} ${e.itemId}`, dir);
+    } else if (e.type === 'tool.result' && this.secretCalls.size) {
+      const key = `${threadId} ${e.itemId}`;
+      const dir = this.secretCalls.get(key);
+      if (dir) {
+        this.secretCalls.delete(key);
+        this.scrubber.known.lookSoon(dir);
+      }
+    }
+    const m = toMessageDoc(threadId, e, this.scrubber.safeText);
     if (m) {
       this.messages.push(this.woke.take(m, e));
       this.scheduleFlush();
       return;
     }
     if (e.type === 'approval.requested') {
-      this.pending.set(threadId, { approvalId: e.approvalId, kind: 'approval', seq: e.seq, name: e.name, title: e.title, options: e.options, ...(inputSummary(e.input) ? { inputSummary: inputSummary(e.input) } : {}) });
+      this.pending.set(threadId, { approvalId: e.approvalId, kind: 'approval', seq: e.seq, name: e.name, title: e.title, options: e.options, ...(inputSummary(e.input, this.scrubber.safeText) ? { inputSummary: inputSummary(e.input, this.scrubber.safeText) } : {}) });
     } else if (e.type === 'question.requested') {
       this.pending.set(threadId, { approvalId: e.approvalId, kind: 'question', seq: e.seq, questions: e.questions });
     } else if (e.type === 'secret.requested') {
@@ -1448,6 +1545,8 @@ export class ConvexSync {
     // row has to go up before it needs Mike, or no push ever fires for it (a
     // push is needsYou going from false to true on a row that's there).
     if (this.settling && !now_ && this.sent.has(t.id)) return;
+    // Its folder's .env files are what a thread's words are likely to quote.
+    if (!t.archivedAt) this.scrubber.known.noteFolder(t.cwd);
     // A thread that isn't waiting any more lost its approval some other
     // way (the turn ended, the runner restarted); the row mustn't keep it.
     if (t.status === 'idle' || t.status === 'error' || t.status === 'stopped') this.pending.delete(t.id);
@@ -1463,6 +1562,9 @@ export class ConvexSync {
       this.held.delete(t.id);
       return;
     }
+    // An archived thread isn't saying anything new, but a row about to go up
+    // for the first time can still quote what its folder holds.
+    if (t.archivedAt) this.scrubber.known.noteFolder(t.cwd, true);
     const last = this.lastWrite.get(t.id);
     if (!this.dirty.has(t.id) && last && now - last.at < PREVIEW_HOLD_MS && last.steady === steadyDigest(row)) {
       this.held.set(t.id, { doc, due: last.at + PREVIEW_HOLD_MS });
@@ -2015,7 +2117,7 @@ export class ConvexSync {
       const img = this.pendingImages[0]!;
       const up = this.imagesUp.get(img.threadId) ?? new Set<string>();
       this.imagesUp.set(img.threadId, up);
-      const id = `${img.seq} ${img.path}`;
+      const id = `${img.seq} ${this.scrubber.safeText(img.path)}`;
       if (!up.has(id) && this.sharedNow.get(img.threadId)) {
         // Only real pictures from the thread's own places, typed by their
         // bytes: the page is public, and a path is only what the agent wrote.
@@ -2093,7 +2195,7 @@ export class ConvexSync {
         up = new Set((rows ?? []).map((r) => `${r.seq} ${r.path}`));
         this.replyUp.set(threadId, up);
       }
-      const id = `${seq} ${file}`;
+      const id = `${seq} ${this.scrubber.safeText(file)}`;
       if (!up.has(id)) {
         const read = readReplyImage(file);
         if ('skip' in read) {
@@ -2229,6 +2331,8 @@ export class ConvexSync {
   private messagesAfter(t: ThreadSummary, after: number, strict: true): MessageDoc[] | undefined;
   private messagesAfter(t: ThreadSummary, after: number): MessageDoc[];
   private messagesAfter(t: ThreadSummary, after: number, strict = false): MessageDoc[] | undefined {
+    // An archived thread's folder isn't watched, but its history still goes up.
+    if (t.lastSeq > after) this.scrubber.known.noteFolder(t.cwd, true);
     const out: MessageDoc[] = [];
     const woke = new WokeRows();
     while (t.lastSeq > after) {
@@ -2246,7 +2350,7 @@ export class ConvexSync {
       for (const e of events) {
         if (e.seq <= after || cuts.some((c) => e.seq >= c.from && e.seq <= c.to)) continue;
         woke.see(e);
-        const m = toMessageDoc(t.id, e);
+        const m = toMessageDoc(t.id, e, this.scrubber.safeText);
         if (m) out.push(woke.take(m, e));
       }
       after = next;
@@ -2320,6 +2424,7 @@ export class ConvexSync {
 
   private heartbeat(): void {
     if (!this.running) return;
+    this.scrubber.known.refreshIfDue();
     const runner = {
       runnerId: this.runnerId,
       name: this.name,
@@ -2431,6 +2536,44 @@ export class ConvexSync {
     this.stats.start();
   }
 
+  // ------------------------------------------------------------ runner figures
+
+  private statsWatchSentAt = 0;
+  private statsForbidden = false;
+
+  /**
+   * runners.stats: each runner's latest CPU, memory and disk, for the Mac
+   * app's Runners panel while a runner's details are open. Asking marks the
+   * figures wanted, as the website's Runners view does (runner-stats.ts), so
+   * every runner reports every few seconds until nobody asks for a while.
+   * Empty with sync off, on an older backend, or on a runner key, which
+   * can't see other runners.
+   */
+  async runnerStats(): Promise<RunnerStatsRow[]> {
+    if (!this.running || this.statsForbidden || (this.backendApiVersion ?? 0) < MAC_RUNNER_STATS_API_VERSION) return [];
+    const key = this.deps.key;
+    const now = this.deps.clock.now();
+    // The watch lasts 45 s in the backend; once every 20 s keeps it going
+    // through a slow answer without a write on every ask.
+    if (now - this.statsWatchSentAt >= STATS_WATCH_EVERY_MS) {
+      this.statsWatchSentAt = now;
+      void this.post('mutation', 'sync:watchRunnersFromMac', { key }).catch((e) => {
+        this.statsWatchSentAt = 0;
+        this.deps.log.debug('runner watch failed', { error: String(e) });
+      });
+    }
+    try {
+      const rows = await this.post('query', 'sync:runnerStatsList', { key });
+      return Array.isArray(rows) ? (rows as RunnerStatsRow[]) : [];
+    } catch (e) {
+      if (forbiddenText(e)) {
+        this.statsForbidden = true;
+        return [];
+      }
+      throw e;
+    }
+  }
+
   /** remoteThreads.list: other runners' threads, empty with sync off. */
   remoteThreads(): RemoteThreads {
     return this.index?.list() ?? { runners: [], threads: [] };
@@ -2455,7 +2598,11 @@ export class ConvexSync {
           onError(new Error('sync is off'));
           return () => {};
         }
-        return this.subscriber.subscribe('sync:schedules', { key }, (v) => onRows(Array.isArray(v) ? (v as StoredSchedule[]) : []), onError);
+        const subscriber = this.subscriber;
+        if ((this.backendApiVersion ?? 0) >= SCHEDULES_FOLLOW_API_VERSION) {
+          return followSchedules<StoredSchedule>((fn, args, onUpdate, fail) => subscriber.subscribe(fn, args, onUpdate, fail), key, onRows, onError);
+        }
+        return subscriber.subscribe('sync:schedules', { key }, (v) => onRows(Array.isArray(v) ? (v as StoredSchedule[]) : []), onError);
       },
       save: async (sc) => {
         await call('mutation', 'sync:saveSchedule', { schedule: toOwnedScheduleDoc(sc, this.backendApiVersion ?? 0) });
@@ -2494,16 +2641,24 @@ export class ConvexSync {
   // ------------------------------------------------------------ shared usage
 
   private unsubSharedUsage?: () => void;
+  private sharedUsageAsked?: string;
 
   // Once: every runner's readings, less this runner's own, to the usage
   // store. Each reading's readAt keeps a copy of a copy from winning over
   // the reading it came from.
   private followSharedUsage(): void {
-    if (this.unsubSharedUsage || !this.subscriber || !this.deps.sharedUsage) return;
+    if (!this.subscriber || !this.deps.sharedUsage) return;
+    // A heartbeat calls this each time: once, unless the backend has come to
+    // take the runner's id since.
+    const args = sharedUsageArgs(this.deps.key, this.runnerId, this.backendApiVersion ?? 0);
+    const asked = JSON.stringify(args);
+    if (this.unsubSharedUsage && this.sharedUsageAsked === asked) return;
+    this.unsubSharedUsage?.();
+    this.sharedUsageAsked = asked;
     const mine = this.runnerId;
     this.unsubSharedUsage = this.subscriber.subscribe(
       'sync:sharedUsage',
-      { key: this.deps.key },
+      args,
       (v) => this.deps.sharedUsage?.setShared((Array.isArray(v) ? (v as SharedReading[]) : []).filter((r) => r.runnerId !== mine)),
       (e) => {
         this.deps.log.debug('shared usage subscription failed', { error: String(e) });
@@ -2636,6 +2791,31 @@ export class ConvexSync {
     }
   }
 
+  // The phone saw a question as it was scrubbed, so its answer may name the
+  // question, or pick an option, in scrubbed words. The CLI wants the real ones.
+  private realAnswers(threadId: string, answers: Record<string, string>): Record<string, string> {
+    const pending = this.pending.get(threadId);
+    if (pending?.kind !== 'question') return answers;
+    const out = { ...answers };
+    for (const q of pending.questions) {
+      const seen = this.scrubber.safeText(q.question);
+      if (seen !== q.question && out[seen] !== undefined && out[q.question] === undefined) {
+        out[q.question] = out[seen]!;
+        delete out[seen];
+      }
+      // Several picks arrive joined with ", ", and a label can hold a comma.
+      const picked = out[q.question];
+      if (picked === undefined) continue;
+      let answer = picked;
+      for (const o of q.options ?? []) {
+        const seenLabel = this.scrubber.safeText(o.label);
+        if (seenLabel !== o.label) answer = answer.split(seenLabel).join(o.label);
+      }
+      out[q.question] = answer;
+    }
+    return out;
+  }
+
   // Applies one command through the runner; returns the new thread's id
   // for a create or a quickAsk. Throws with a readable message for the phone.
   private async apply(c: Command): Promise<{ threadId?: string; result?: unknown } | undefined> {
@@ -2676,7 +2856,7 @@ export class ConvexSync {
           approvalId: String(a.approvalId),
           decision,
           ...(typeof a.message === 'string' ? { message: a.message } : {}),
-          ...(a.answers && typeof a.answers === 'object' ? { answers: a.answers as Record<string, string> } : {}),
+          ...(a.answers && typeof a.answers === 'object' ? { answers: this.realAnswers(needThread(), a.answers as Record<string, string>) } : {}),
         });
         return undefined;
       }
@@ -2762,7 +2942,7 @@ export class ConvexSync {
         const cuts = this.deps.runner.cuts?.(id) ?? [];
         const page = events
           .filter((e) => !cuts.some((c) => e.seq >= c.from && e.seq <= c.to))
-          .map((e) => toMessageDoc(id, e))
+          .map((e) => toMessageDoc(id, e, this.scrubber.safeText))
           .filter((m): m is MessageDoc => Boolean(m) && m!.role !== 'tool')
           .slice(-PAGE_SIZE)
           .map((m) => ({ ...m, pagedAt: now }));

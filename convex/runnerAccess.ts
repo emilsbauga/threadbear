@@ -164,6 +164,7 @@ export const ACCESS: Record<string, Access> = {
   // no runner on a runner key needs it, and it can shadow other ids.
   setSchedules: 'owner',
   schedules: 'own',
+  schedulesSince: 'own',
   saveSchedule: 'own',
   deleteSchedule: 'own',
   adoptSchedules: 'own',
@@ -175,6 +176,9 @@ export const ACCESS: Record<string, Access> = {
   // runner; the figures are only ever its own (API 45).
   runnerWatch: 'shared',
   setRunnerStats: 'own',
+  // Every runner's figures, and waking them all to report: the main Mac's.
+  watchRunnersFromMac: 'owner',
+  runnerStatsList: 'owner',
   setAccounts: 'own',
   upsertAccounts: 'own',
   // Usage readings of logins its own runner has, from any Mac.
@@ -199,6 +203,7 @@ export const ACCESS: Record<string, Access> = {
   listRunnerKeys: 'owner',
   revokeRunnerKey: 'owner',
   audit: 'owner',
+  scrubStoredBatch: 'owner',
   auditRemove: 'owner',
   purgeRunner: 'owner',
   // relay.ts (API 44): other runners' threads read and steered from the main

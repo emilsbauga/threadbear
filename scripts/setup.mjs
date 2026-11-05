@@ -451,6 +451,8 @@ function finish(url) {
   // The terminal scripts still work, for a Mac with no app window to hand.
   const at = url ?? '<your deployment URL>';
   note(`From a terminal instead: swift ios/scripts/pair-qr.swift --prod --url ${at}  and  npm run web:sign-in`);
+  // docs/on-your-mac.md, "Who it talks to", has the longer version.
+  note('Your threads\' text goes to your own Convex deployment with known secret shapes and values taken out first. That catches what it knows, not everything, and it can\'t read pictures. If a key does leak into a thread, rotate it. `tb status` says what this runner does.');
 }
 
 try {

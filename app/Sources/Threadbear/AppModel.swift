@@ -330,6 +330,11 @@ final class AppModel {
     /// reach them. Their threads are in `threads`, marked with `runnerId`
     /// (RemoteRunners.swift).
     var remoteRunners: [RemoteRunner] = []
+    /// Each runner's machine figures by runner id (`runners.stats`), asked
+    /// every 10 s while a runner's details are open in the Runners panel.
+    var runnerStats: [String: RunnerMachineStats] = [:]
+    /// The runner has answered `runners.stats` at least once since then.
+    var runnerStatsAsked = false
     /// The last `remoteThreads` list, kept to put the sidebar table's rows
     /// back once a runner's own connection closes.
     @ObservationIgnored var remoteIndex = RemoteThreads()

@@ -269,6 +269,14 @@ not the same as hiding it from the agent. A command that prints the file
 would put it in the transcript, so only give a secret to a thread you'd
 trust with it.
 
+If a key does end up in a thread's words, Threadbear takes out what it can
+recognise before the text reaches your phone or the website, which show
+`[REDACTED]` there; the Mac keeps every word. It goes by the shapes keys
+usually have and the values in your `.env` files, so it won't catch
+everything, and it can't read pictures. Treat a key that showed up in a
+thread as leaked and replace it, since the AI provider has seen it too.
+`tb status` says what this runner does.
+
 ## Your first thread
 <!-- slug: first-thread -->
 
@@ -632,7 +640,11 @@ With more than one runner, Runners (the rack icon near the bottom of the
 left-hand rail) opens a panel with each one: whether it's online and for
 how long, or when it was last heard from, the commit it runs, and the
 threads running there, which open with a click. A grey dot on the icon
-means one is offline or updating.
+means one is offline or updating. Click a runner's name to see its CPU,
+memory and disk, what machine it is and how long that machine has been
+up. A bar turns orange when memory is 90% used or disk is under 10 GB free.
+The figures come every 10 seconds while the details are open and the
+window can be seen; a runner too old to send them says so.
 
 ## Accounts, pools and Usage
 <!-- slug: accounts -->

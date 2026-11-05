@@ -10,6 +10,8 @@ import {
   isCliFor,
   parseLsof,
   parsePs,
+  waitsOnUserMs,
+  WAIT_GRACE_MS,
   type BackgroundShell,
   type Probe,
   type TaskFile,
@@ -157,9 +159,9 @@ test('ps, lsof and CLI matching', () => {
   assert.equal(cpuTime('12:03.50'), 723.5);
   assert.equal(cpuTime('1:02:03.00'), 3723);
   assert.equal(cpuTime('2-01:00:00.00'), 2 * 86_400 + 3600);
-  assert.deepEqual(parsePs('  9896 39636   0:00.52 /bin/zsh -c source x\n39636 30110 1:02.00 /Users/m/.local/bin/claude --resume=abc\n'), [
-    { pid: 9896, ppid: 39636, cpuSeconds: 0.52, command: '/bin/zsh -c source x' },
-    { pid: 39636, ppid: 30110, cpuSeconds: 62, command: '/Users/m/.local/bin/claude --resume=abc' },
+  assert.deepEqual(parsePs('  9896 39636   0:00.52    01:05 /bin/zsh -c source x\n39636 30110 1:02.00 1-02:00:00 /Users/m/.local/bin/claude --resume=abc\n'), [
+    { pid: 9896, ppid: 39636, cpuSeconds: 0.52, ageSeconds: 65, command: '/bin/zsh -c source x' },
+    { pid: 39636, ppid: 30110, cpuSeconds: 62, ageSeconds: 86_400 + 7200, command: '/Users/m/.local/bin/claude --resume=abc' },
   ]);
   assert.deepEqual([...parseLsof('p9896\nf1\nn/private/tmp/claude-501/p/s/tasks/bwjre5i4r.output\np12\nf1\nn/dev/null\n')], [
     [9896, '/private/tmp/claude-501/p/s/tasks/bwjre5i4r.output'],
@@ -170,4 +172,113 @@ test('ps, lsof and CLI matching', () => {
   assert.ok(isCliFor(`claude --session-id ${id}`, id));
   // A background shell reading another task's output names the session too.
   assert.ok(!isCliFor(`/bin/zsh -c source /Users/m/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'cat /tmp/claude-501/p/${id}/tasks/b.output'`, id));
+});
+
+test('a browserbear handoff --wait is left alone until its own timeout, then counts', async () => {
+  const { h, probe, jobs, thread, s } = setUp();
+  const handoff = { id: 'b2', type: 'local_bash', kind: 'shell' as const, description: 'Wait for Mike to sign in' };
+  s.out({ kind: 'tasks', tasks: [handoff] });
+  s.result('completed');
+  const started = h.clock.now();
+  probe.files.set('b2', { startedAt: started, lastOutputAt: started });
+  // The script sleeps ten minutes before the handoff starts.
+  const handoffStarted = started + 10 * MIN;
+  const shell = (cpuSeconds: number): BackgroundShell => ({
+    taskId: 'b2',
+    cpuSeconds,
+    commands: ['zsh', 'node'],
+    processes: [
+      { command: "/bin/zsh -c source /x/shell-snapshots/snapshot-zsh.sh && eval 'sleep 600; browserbear handoff 12 --wait --timeout 3600'", startedAt: started },
+      { command: 'node /Users/m/.local/bin/browserbear handoff 12 --wait --timeout 3600', startedAt: handoffStarted },
+    ],
+  });
+  probe.shellsBySession.set(session(h), [shell(0.1)]);
+
+  // Quiet and idle for 70 minutes, well past 30, but the handoff said it'd
+  // wait an hour from when it started.
+  for (let i = 0; i < 14; i++) {
+    h.clock.advance(5 * MIN);
+    await jobs.sweep();
+  }
+  assert.deepEqual(nudges(h, thread.id), []);
+
+  // Past its timeout and the grace: it should have exited, so it's stuck.
+  h.clock.advance(handoffStarted + 60 * MIN + WAIT_GRACE_MS - h.clock.now());
+  await jobs.sweep();
+  probe.shellsBySession.set(session(h), [shell(0.2)]);
+  h.clock.advance(5 * MIN);
+  await jobs.sweep();
+  assert.equal(nudges(h, thread.id).length, 1);
+});
+
+test('a stuck loop whose shell text only mentions a handoff still counts', async () => {
+  const { h, probe, jobs, thread, s } = setUp();
+  s.out({ kind: 'tasks', tasks: [waiter] });
+  s.result('completed');
+  const started = h.clock.now();
+  probe.files.set('b1', { startedAt: started, lastOutputAt: started });
+  const line = "/bin/zsh -c source /x/shell-snapshots/snapshot-zsh.sh && eval 'false && browserbear handoff 12 --wait --timeout 86400; while true; do sleep 3; done'";
+  const shell = (cpuSeconds: number): BackgroundShell => ({
+    taskId: 'b1',
+    cpuSeconds,
+    commands: ['zsh', 'sleep'],
+    processes: [{ command: line, startedAt: started }, { command: 'sleep 3', startedAt: h.clock.now() }],
+  });
+  probe.shellsBySession.set(session(h), [shell(0.1)]);
+  h.clock.advance(35 * MIN);
+  await jobs.sweep();
+  probe.shellsBySession.set(session(h), [shell(0.3)]);
+  h.clock.advance(5 * MIN);
+  await jobs.sweep();
+  assert.equal(nudges(h, thread.id).length, 1);
+});
+
+test('which command lines wait on the user, and for how long', () => {
+  assert.equal(waitsOnUserMs('node /Users/m/.local/bin/browserbear handoff 12 --wait --timeout 3600'), 3600_000);
+  assert.equal(waitsOnUserMs('node /x/browserbear/cli.mjs handoff https://a.b --until-url *done*'), 20 * MIN);
+  assert.equal(waitsOnUserMs('/opt/homebrew/bin/node /x/browserbear handoff 3 --wait --timeout nope'), 20 * MIN);
+  // Read as browserbear reads its flags: anywhere, the last one winning.
+  assert.equal(waitsOnUserMs('node /x/browserbear --timeout 7200 handoff 12 --wait'), 7200_000);
+  assert.equal(waitsOnUserMs('node /x/browserbear handoff 12 --wait --timeout 1800 --timeout 7200'), 7200_000);
+  assert.equal(waitsOnUserMs('node /x/browserbear --until-text Payment complete handoff 12 --timeout 7200'), 7200_000);
+  assert.equal(waitsOnUserMs('node --no-warnings /x/browserbear handoff 12 --wait'), 20 * MIN);
+  // Inline node code that only mentions it.
+  assert.equal(waitsOnUserMs("node -e /* /x/browserbear handoff 12 --wait --timeout 86400 */ setInterval(()=>{},1000)"), undefined);
+  assert.equal(waitsOnUserMs('node -e x /x/browserbear handoff 12 --wait'), undefined);
+  // Not waiting, not browserbear, or only a shell's text naming it: judged as usual.
+  assert.equal(waitsOnUserMs('node /x/browserbear handoff 12'), undefined);
+  assert.equal(waitsOnUserMs('node /x/browserbear snapshot 12 --wait'), undefined);
+  assert.equal(waitsOnUserMs('sleep 3600'), undefined);
+  assert.equal(waitsOnUserMs("/bin/zsh -c eval 'browserbear handoff 12 --wait --timeout 86400'"), undefined);
+  assert.equal(waitsOnUserMs('until ! pgrep -f snip2.py; do sleep 3; done'), undefined);
+});
+
+test('a loop that keeps starting handoffs is judged once the first one would have timed out', async () => {
+  const { h, probe, jobs, thread, s } = setUp();
+  s.out({ kind: 'tasks', tasks: [waiter] });
+  s.result('completed');
+  const started = h.clock.now();
+  probe.files.set('b1', { startedAt: started, lastOutputAt: started });
+  let cpu = 0;
+  // Each look sees a freshly started handoff under the loop.
+  const look = async () => {
+    cpu += 0.1;
+    probe.shellsBySession.set(session(h), [
+      { taskId: 'b1', cpuSeconds: cpu, commands: ['zsh', 'node'], processes: [{ command: 'node /x/browserbear handoff 12 --wait --timeout 3600', startedAt: h.clock.now() - MIN }] },
+    ]);
+    await jobs.sweep();
+  };
+  // The deadline is set at the first look that finds it quiet (30 min),
+  // from the handoff seen then: 29 + 60 + 5 = 94 min. Without it, every
+  // new handoff would put it off again, for good.
+  for (let i = 0; i < 18; i++) {
+    h.clock.advance(5 * MIN);
+    await look();
+  }
+  assert.deepEqual(nudges(h, thread.id), []);
+  for (let i = 0; i < 2; i++) {
+    h.clock.advance(5 * MIN);
+    await look();
+  }
+  assert.equal(nudges(h, thread.id).length, 1);
 });

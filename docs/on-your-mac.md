@@ -92,7 +92,7 @@ profile with a loopback model stub and no real API credentials.
   nothing else ever reads these); and `~/ThreadbearThreads`, the default
   folder for new threads. A folder you open from a link in the side pane
   is listed, and watched for changes only while it's showing, and macOS may
-  ask for permission the first time that's somewhere like Documents. The runner also runs `vm_stat` and `sw_vers` on a Mac, or reads `/proc/meminfo` and `/etc/os-release` on Linux, for the memory and system figures in the website's Runners view (`runner/src/runner-stats.ts`), every 5 minutes and while that view is open. It also runs `ps`, and `sample` (in a
+  ask for permission the first time that's somewhere like Documents. The runner also runs `vm_stat` and `sw_vers` on a Mac, or reads `/proc/meminfo` and `/etc/os-release` on Linux, for the memory and system figures in the website's Runners view and the Mac app's runner details (`runner/src/runner-stats.ts`), every 5 minutes and while either is open. It also runs `ps`, and `sample` (in a
   sandbox, through `sandbox-exec`) on a thread's own CLI, when a turn has been quiet for a minute,
   to tell a CLI frozen on a macOS prompt from a long job. The sample is a
   temp file, deleted straight after. Taking over from a draining runner
@@ -184,12 +184,20 @@ profile with a loopback model stub and no real API credentials.
   again. It never reads it. Without the access macOS refuses, with no prompt.
 - Whether `Threadbear.app` is in `/Applications` or `~/Applications`, as a Mac
   without it is probably one nobody sits at.
+- The `.env*` files in the folders your threads work in (the folder, the
+  folders directly inside it, and up to its repo's root; not `.env.example`
+  and the like, your home folder or external drives), and everything in its
+  own `secrets/` folder, to know what to take out of text before it goes to
+  your Convex deployment (`runner/src/secret-values.ts`). Looked at when a
+  folder first turns up, when a thread has just touched a file of secrets
+  (including a `.env` in a folder of its choosing), and otherwise at most
+  every 5 minutes. Kept in memory, never logged, written down or sent anywhere.
 
 ## Who it talks to
 
 | Service | Whose | What goes there |
 |---|---|---|
-| Your Convex deployment | yours | Thread titles and status, all message text (each message cut at 8,000 characters), one line per tool call, projects, schedules, your logins' emails and usage, whether you're at the Mac, whether this machine is low on memory or disk, and the pictures you paste into a message, up to 10 MB each, so your own website can show them. Those go up as they are, in your deployment's file storage: unlike text, nothing can scrub a secret out of a picture, so a screenshot of something sensitive goes too. `"sync": { "pastedPictures": false }` in `runner.json` keeps them on this Mac. While someone has the website's Runners view open, this machine's CPU, memory and disk use, its processor model, operating system and time since it started, every 10 seconds; with nobody looking, none of that is sent. Photos you send from the phone, deleted once the Mac has fetched them. Pictures and videos agents put in their replies or pin, at most 10 MB each, for the phone to show. Other images only for threads you share by link. Other tool output and files stay on the Mac. |
+| Your Convex deployment | yours | Thread titles and status, all message text (each message cut at 8,000 characters), one line per tool call, projects, schedules, your logins' emails and usage, whether you're at the Mac, whether this machine is low on memory or disk, and the pictures you paste into a message, up to 10 MB each, so your own website can show them. Those go up as they are, in your deployment's file storage: unlike text, nothing can scrub a secret out of a picture, so a screenshot of something sensitive goes too. `"sync": { "pastedPictures": false }` in `runner.json` keeps them on this Mac. While someone has the website's Runners view open, this machine's CPU, memory and disk use, its processor model, operating system and time since it started, every 10 seconds; with nobody looking, none of that is sent. Photos you send from the phone, deleted once the Mac has fetched them. Pictures and videos agents put in their replies or pin, at most 10 MB each, for the phone to show. Other images only for threads you share by link. Other tool output and files stay on the Mac. Text has known secrets taken out first: see below. |
 | Convex (the Convex panel) | yours | Only for a thread in a Convex project, when its Convex panel opens: the runner's Convex CLI asks api.convex.dev for the project's deployments and a deploy key, the runner asks the deployment whether a kept key still works (`/api/check_admin_key`), and the panel loads Convex's embedded dashboard (dashboard-embedded.convex.dev) with that key. Sign in to Convex goes to auth.convex.dev. (`runner/src/convex-keys.ts`) |
 | Your other Macs, over ssh | yours | Only when you run `tb runner add <name> --ssh <host>` or `tb runner check --ssh <host>` on your first Mac: it reads that Mac's Threadbear `runner.json`, writes its id and the deployment's address there if it hasn't them, writes its new key into that Mac's `secrets/convex-key`, and looks whether that Mac has a deploy key, Convex panel keys or a Convex login (names only, never a key), through your own ssh setup with agent and port forwarding off (`runner/src/runner-keys.ts`). `tb runner audit` asks this Mac's runner for its threads' last seqs and your deployment for what the main key made. `tb runner rotate-owner` sets env vars on your deployment with your deploy key, and, if you give it a Convex team access token for that run (`CONVEX_TEAM_TOKEN`, never kept), asks api.convex.dev for the deployment's deploy keys (their names and dates) before it rotates. |
 | GitHub | Mike's repo | Release tags fetched every 6 hours; the fork at setup |
@@ -238,3 +246,31 @@ folder; any program on this Mac could reach that port, so it holds only what you
 sign it in to (`app/Sources/Threadbear/Views/AgentBrowserPanel.swift`).
 
 Nothing else: no analytics, no ads, no tracking.
+
+## Secrets and your Convex deployment
+
+Before any text goes to your deployment, the runner takes out what it can
+recognise (`runner/src/scrub.ts`): shapes of keys and tokens
+(`runner/src/redaction.ts`) and the actual values in `.env` files and its own
+`secrets/` folder. Your deployment does the shape check again before storing it
+(`convex/redaction.ts`), so an older runner can't put a known shape there. Your
+own copy on the runner keeps every word. If the check itself fails, that text
+isn't sent, and `tb status` says so.
+
+**It isn't a guarantee.** It catches shapes and values it knows, so a secret in
+an unfamiliar format can get through, and it can't read pictures at all: any
+picture that goes up (ones agents post or pin, and anything in a thread you
+share) goes as it is. Scrubbing also can't undo a leak. A key that shows up in
+a thread has already been to the AI provider, so rotate it.
+
+`runner/scripts/scrub-stored.mjs` runs today's rules over what's already stored,
+and only when you run it. Convex backups and snapshot exports keep their copies.
+
+There's also a silent on-device check, off unless `runner.json` has
+`secretCheck: { enabled: true }`, on a Mac with Apple Intelligence
+(`runner/src/secret-check.ts`). It's an experiment: it builds a small helper the
+first time (`<data>/tools/secret-check/`), and on mains power, at background
+priority, it passes a sample of tool output and pictures to Apple's on-device
+model, and Apple's on-device text recognition for a picture. Nothing leaves the
+Mac and it changes nothing that uploads. It keeps counts, and the thread and
+sequence number of what it flagged, in `<data>/secret-check.json`. Never the text.

@@ -47,6 +47,8 @@ import { removeTempFiles } from './fsutil.ts';
 import { Models } from './models/index.ts';
 import { SettingsService, modelMethods, settingsMethods } from './settings.ts';
 import { ConvexSync, defaultRunnerName, ensureRunnerId, readSyncKey } from './sync.ts';
+import { Scrubber } from './scrub.ts';
+import { SecretCheck } from './secret-check.ts';
 import { SharedPools } from './shared-pools.ts';
 import { readPools } from './pools.ts';
 import { machineSampler } from './runner-stats.ts';
@@ -343,6 +345,8 @@ async function main(): Promise<void> {
     sharedPools.loadCache();
     runner.sharedPools = sharedPools;
   }
+  const scrubber = new Scrubber({ secretsDir: paths.secrets(cfg.home), log });
+  runner.secrets.onWritten = (value) => scrubber.known.add(value);
   const sync = new ConvexSync({
     config: { ...cfg.sync, runnerId: syncRunnerId, icon: runnerIcon },
     key: syncKey,
@@ -379,6 +383,7 @@ async function main(): Promise<void> {
     notice: (level, message) => runner.notice(level, message),
     readKey: () => readSyncKey(cfg.home),
     restart: (reason) => void restarter.request({ when: 'idle', reason }),
+    scrubber,
     version: RUNNER_VERSION,
     release: RELEASE.release,
     startedAt,
@@ -386,6 +391,14 @@ async function main(): Promise<void> {
     log,
   });
   sync.start();
+  // Counts only, and off unless runner.json asks (src/secret-check.ts).
+  const secretCheck = new SecretCheck({ home: cfg.home, enabled: cfg.secretCheck === true, log });
+  if (secretCheck.on) {
+    secretCheck.start();
+    runner.onNotification((n) => {
+      if (n.method === 'thread.event') secretCheck.see(n.params.threadId, n.params.event as Parameters<SecretCheck['see']>[1]);
+    });
+  }
   if (swept) runner.startupNotice('info', `Stopped ${swept === 1 ? 'a process group' : `${swept} process groups`} left running by the previous runner.`);
 
   // launch.mjs went back to this release because a newer one kept crashing
@@ -474,12 +487,14 @@ async function main(): Promise<void> {
   const restartStatus = methods['runner.status'];
   methods['runner.status'] = (p) => {
     const draining = peers.status();
-    return { ...(restartStatus(p) as Record<string, unknown>), clis: updates.list(), sync: sync.status(), relay: relay.status(), upstream: upstream.status(), ...(draining.length ? { draining } : {}), ...(macScreen ? { macScreen: macScreen.status() } : {}) };
+    return { ...(restartStatus(p) as Record<string, unknown>), clis: updates.list(), sync: sync.status(), secretCheck: secretCheck.status(), relay: relay.status(), upstream: upstream.status(), ...(draining.length ? { draining } : {}), ...(macScreen ? { macScreen: macScreen.status() } : {}) };
   };
   // tb updates (docs/protocol.md, "Mike's releases").
   methods['upstream.status'] = () => ({ upstream: upstream.status() });
   // Other runners' threads, for the Mac app's sidebar (step 6 part 2).
   methods['remoteThreads.list'] = () => sync.remoteThreads();
+  // Every runner's machine figures, for the Mac app's Runners panel.
+  methods['runners.stats'] = async () => ({ stats: await sync.runnerStats() });
   // A file here, for a Mac app showing one of this runner's threads from
   // another Mac (files.ts).
   Object.assign(methods, filesMethods());
@@ -589,6 +604,7 @@ async function main(): Promise<void> {
     updates.stop();
     // A restart's new release writes everything again under the same
     // runnerId; only a stop for good tells the phone this runner is gone.
+    secretCheck.stop();
     await sync.stop({ bye: signal !== 'restart' && !draining });
     try {
       await runner.shutdown();
@@ -634,6 +650,7 @@ async function main(): Promise<void> {
       usage.stopWriting();
       tally.stopWriting();
       // The new release mirrors from here on.
+      secretCheck.stop();
       void sync.stop();
       // The older runners it was connected to are the new primary's now:
       // it connects to every one of them, and each thread they hand over

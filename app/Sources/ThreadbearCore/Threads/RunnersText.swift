@@ -71,6 +71,70 @@ public enum RunnersText {
         running.filter { r.isSelf ? $0.runnerId == nil || $0.runnerId == r.id : $0.runnerId == r.id }
     }
 
+    // MARK: A runner's figures (runners.stats)
+
+    /// One bar in a runner's details: how full, its words, and whether it's
+    /// worth noticing (the runner's own pressure rules, runner-stats.ts).
+    public struct Gauge: Equatable, Sendable {
+        public var title: String
+        public var fraction: Double
+        public var text: String
+        public var high: Bool
+    }
+
+    public static func gauges(_ s: RunnerMachineStats) -> [Gauge] {
+        var out = [Gauge(title: "CPU", fraction: min(1, max(0, s.cpuPercent / 100)), text: "\(Int(s.cpuPercent.rounded()))%", high: s.cpuPercent >= 90)]
+        if s.memTotal > 0 {
+            let used = s.memUsed / s.memTotal
+            out.append(Gauge(title: "Memory", fraction: min(1, used), text: "\(number(s.memUsed)) of \(gb(s.memTotal))", high: used >= 0.9))
+        }
+        if s.diskTotal > 0 {
+            out.append(Gauge(title: "Disk", fraction: min(1, max(0, 1 - s.diskFree / s.diskTotal)), text: "\(gb(s.diskFree)) free", high: s.diskFree < 10 * pow(1024, 3)))
+        }
+        return out
+    }
+
+    /// The lines under the bars: what it is, and how busy and long up.
+    /// "Apple M5, macOS 27.2" and "Machine up 4d, load 2.1 on 10 cores" (the
+    /// machine, as the state line above says how long the runner has been up).
+    public static func machineLines(_ s: RunnerMachineStats) -> [String] {
+        var lines: [String] = []
+        let what = [s.machine, s.os].compactMap { $0 }
+        if !what.isEmpty { lines.append(what.joined(separator: ", ")) }
+        var up = "Machine up \(span(seconds: s.uptimeSec))"
+        if let load = s.load1 { up += ", load \(String(format: "%.1f", load))" + (s.cores > 0 ? " on \(s.cores) cores" : "") }
+        lines.append(up)
+        return lines
+    }
+
+    /// Said when the last report is old enough to doubt: it's sent every
+    /// 10 s while anyone's looking.
+    public static func staleLine(_ s: RunnerMachineStats, now: Date) -> String? {
+        let age = now.timeIntervalSince(s.at)
+        return age > 60 ? "From \(span(from: s.at, to: now)) ago" : nil
+    }
+
+    /// "9.1 GB", "24 GB", "512 GB", "1.8 TB", in the binary units Activity
+    /// Monitor uses.
+    public static func gb(_ bytes: Double) -> String {
+        let g = bytes / pow(1024, 3)
+        if g >= 1000 { return number(bytes / 1024) + " TB" }
+        return number(bytes) + " GB"
+    }
+
+    /// The same without the unit, for "7.4 of 8 GB": a tenth under 100, and
+    /// no ".0".
+    public static func number(_ bytes: Double) -> String {
+        let g = bytes / pow(1024, 3)
+        if g >= 100 { return "\(Int(g.rounded()))" }
+        let tenth = (g * 10).rounded() / 10
+        return tenth == tenth.rounded() ? "\(Int(tenth))" : String(format: "%.1f", tenth)
+    }
+
+    public static func span(seconds: Double) -> String {
+        span(from: Date(timeIntervalSince1970: 0), to: Date(timeIntervalSince1970: seconds))
+    }
+
     /// "12s", "4m", "3h", "2d", as the website says them.
     public static func span(from start: Date, to now: Date) -> String {
         let s = max(0, Int(now.timeIntervalSince(start).rounded()))

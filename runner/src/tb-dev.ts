@@ -446,6 +446,7 @@ export function formatStatus(s: RunnerStatus, threads: ThreadSummary[], now: num
   if (u) lines.push(formatUpdate(u, now));
   if (s.upstream && (s.upstream.state !== 'off' || s.upstream.published)) lines.push(formatUpstream(s.upstream, now).split('\n')[0]);
   if (s.sync) lines.push(formatSync(s.sync, now));
+  if (s.sync?.scrub) lines.push(...formatSecrets(s.sync.scrub, s.secretCheck, now));
   // Releases never touch the LaunchAgent (launch.mjs, the plist, Threadbear
   // Runner.app); only Mike's install-runner.sh does.
   if (u?.launcherChanged) lines.push(`${u.launcherReason ?? 'launch.mjs on main differs from the installed one.'} The user runs ${u.checkout ? `${u.checkout}/runner/` : 'runner/'}scripts/install-runner.sh once nothing is busy.`);
@@ -465,6 +466,25 @@ function formatSync(y: NonNullable<RunnerStatus['sync']>, now: number): string {
   const held = y.schedulesHeld ? `; ${y.schedulesHeld} schedule${y.schedulesHeld === 1 ? '' : 's'} too big (or taken) for this runner's key, so its schedules stay in schedules.json on this Mac (tb logs says which)` : '';
   const rotating = y.ownerKeyRotating ? '; RUNNER_KEY_NEXT is still set, so two main keys work: finish with tb runner rotate-owner --finish' : '';
   return `Convex mirror: on${where} as ${y.name ?? y.runnerId ?? 'this runner'}${last}${pending}${behind}${held}${rotating}`;
+}
+
+// What stands between this runner's threads and the Convex deployment
+// (src/scrub.ts), said plainly: docs/on-your-mac.md has the longer version.
+export function formatSecrets(y: NonNullable<NonNullable<RunnerStatus['sync']>['scrub']>, c: RunnerStatus['secretCheck'], now: number): string[] {
+  const backend = y.backendChecks === false ? "; its backend is too old to check again" : y.backendChecks ? '; the backend checks again' : '';
+  const lines = [`Secrets: rules v${y.rulesVersion} and ${plural(y.knownValues, 'known value', 'known values')} on everything sent to Convex${backend}. Tool output stays here, with a withhold list ready for when it doesn't. Not a guarantee: rotate any key that leaks.`];
+  if (y.foldersUnread) lines.push(`Secrets: ${plural(y.foldersUnread, 'thread folder', 'thread folders')} didn't answer, so values in their .env files aren't known; only the rules cover those.`);
+  if (y.failed) lines.push(`Secrets: the check failed on ${plural(y.failed, 'string', 'strings')}, held back rather than sent${y.lastFailure ? ` (${y.lastFailure})` : ''}.`);
+  if (!c || c.state === 'off' || c.state === 'unsupported') {
+    lines.push(`On-device secret check: ${c?.state === 'unsupported' ? 'none on this machine' : 'off'}, so this runner relies on the rules and the withhold list.`);
+  } else if (c.state === 'unavailable') {
+    lines.push(`On-device secret check: unavailable${c.reason ? ` (${c.reason})` : ''}, so this runner relies on the rules and the withhold list.`);
+  } else {
+    const last = c.lastRunAt ? `, last ran ${duration(now - Date.parse(c.lastRunAt))} ago` : ', not run yet';
+    const battery = c.skippedOnBattery ? `, ${plural(c.skippedOnBattery, 'run', 'runs')} skipped on battery` : '';
+    lines.push(`On-device secret check: on, silently (it changes nothing that uploads): ${c.flaggedText} of ${c.checkedText} tool outputs and ${c.flaggedImages} of ${c.checkedImages} pictures flagged, ${plural(c.errors, 'error', 'errors')}${last}${battery}.${c.file ? ` Flagged items by thread and seq: ${c.file}` : ''}`);
+  }
+  return lines;
 }
 
 // The runner following main by itself (src/update.ts), one line.

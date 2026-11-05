@@ -5,12 +5,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
-import { ConvexSync, forBackend, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, BACKEND_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
+import { ConvexSync, forBackend, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
 import type { Project } from '../../src/protocol.ts';
 import type { ScheduleBackend } from '../../src/schedules.ts';
 import { nullLogger, type Logger } from '../../src/log.ts';
 import { AT_MAC_IDLE_MS, isAtMac } from '../../src/presence.ts';
 import { paths, readRunnerJson } from '../../src/config.ts';
+import { scrubText } from '../../src/redaction.ts';
+import { Scrubber } from '../../src/scrub.ts';
+import { SCRUB_API_VERSION } from '../../src/sync.ts';
 
 type Call = { kind: string; fn: string; args: Record<string, unknown> };
 
@@ -1952,6 +1955,240 @@ test('a project picture held back by the upload allowance goes by itself once th
   h.clock.advance(SYNC_COALESCE_MS * 2);
   await tick(20);
   assert.equal(setIcons().length, 1);
+});
+
+// ---- Secret scrubbing (src/scrub.ts): what's sent, not what's kept.
+
+const FAKE_KEY = `sk-${'a1b2'.repeat(12)}`;
+const planted = (fn: string, calls: Call[]) => calls.filter((c) => c.fn === fn && JSON.stringify({ ...c.args, key: undefined }).includes(FAKE_KEY));
+
+test('no text the mirror sends carries a secret, in any field', async () => {
+  const { h, sync, calls } = setup({ answer: (fn) => (fn === 'sync:heartbeat' ? { apiVersion: BACKEND_API_VERSION } : null) });
+  sync.start();
+  await sync.flushNow();
+  const t = h.runner.create({ text: `please use ${FAKE_KEY}`, cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  await tick();
+  // Every free-text field a row can carry, as a thread might have it.
+  const full = {
+    ...h.runner.get(t.id),
+    title: `title ${FAKE_KEY}`,
+    preview: `preview ${FAKE_KEY}`,
+    asked: `asked ${FAKE_KEY}`,
+    background: [{ id: 'b', kind: 'shell', description: `working ${FAKE_KEY}`, startedAt: '2026-11-05T00:00:00.000Z' }],
+    startedBy: { kind: 'thread', label: `by ${FAKE_KEY}`, why: `why ${FAKE_KEY}` },
+    asks: [{ action: `ask ${FAKE_KEY}`, why: `because ${FAKE_KEY}`, options: [`option ${FAKE_KEY}`], reply: `reply ${FAKE_KEY}`, links: [{ title: `link ${FAKE_KEY}`, url: `https://x.dev/?k=${FAKE_KEY}` }] }],
+    asksSeq: 1,
+    projects: [{ id: 'p', title: `project ${FAKE_KEY}` }],
+  };
+  h.runner.publish({ method: 'thread.updated', params: { thread: full } } as never);
+  h.runner.publish({ method: 'thread.event', params: { threadId: t.id, event: { seq: 900, ts: '2026-11-05T00:00:00.000Z', threadId: t.id, type: 'assistant.text', itemId: 'i', text: `reply with ${FAKE_KEY}` } } } as never);
+  h.runner.publish({ method: 'thread.event', params: { threadId: t.id, event: { seq: 901, ts: '2026-11-05T00:00:00.000Z', threadId: t.id, type: 'tool.call', itemId: 'j', name: 'Bash', kind: 'command', title: `curl -H "x: ${FAKE_KEY}"`, input: { command: `curl -H "x: ${FAKE_KEY}"` } } } } as never);
+  h.runner.publish({ method: 'thread.event', params: { threadId: t.id, event: { seq: 902, ts: '2026-11-05T00:00:00.000Z', threadId: t.id, type: 'approval.requested', approvalId: 'a', name: 'Bash', title: `Run ${FAKE_KEY}`, options: ['allow'], input: { command: `export TOKEN=${FAKE_KEY}` } } } } as never);
+  h.runner.publish({ method: 'projects.updated', params: { projects: [{ id: 'p', title: `t ${FAKE_KEY}`, folders: [], goals: `g ${FAKE_KEY}`, state: `s ${FAKE_KEY}`, notes: `n ${FAKE_KEY}`, createdBy: 'user', createdAt: 'x', updatedAt: 'x', threadCount: 0 }] } } as never);
+  h.runner.publish({ method: 'schedules.updated', params: { schedules: [{ id: 's', title: `t ${FAKE_KEY}`, text: `x ${FAKE_KEY}`, whenText: 'daily', paused: false, createdAt: 'x', updatedAt: 'x', runs: 0, lastRun: { at: 'x', outcome: 'failed', note: `note ${FAKE_KEY}` } }] } } as never);
+  await tick();
+  await sync.flushNow();
+  await sync.savePocketCard({ title: `card ${FAKE_KEY}`, text: `text ${FAKE_KEY}`, place: `place ${FAKE_KEY}` });
+  assert.ok(calls.some((c) => c.fn === 'sync:upsertThreads' && JSON.stringify(c.args).includes('[REDACTED]')), 'the row went up, scrubbed');
+  assert.ok(calls.some((c) => c.fn === 'sync:appendMessages' && JSON.stringify(c.args).includes('reply with [REDACTED]')));
+  for (const c of calls.filter((x) => x.kind === 'mutation')) {
+    const { key: _key, ...rest } = c.args;
+    assert.ok(!JSON.stringify(rest).includes(FAKE_KEY), `${c.fn} carried the key`);
+  }
+  assert.ok(calls[0]!.args.key === 'k', 'the runner key itself still goes');
+  assert.ok(planted('sync:upsertThreads', calls).length === 0);
+  assert.ok(sync.status().scrub!.changed > 0);
+  await sync.stop();
+});
+
+test('the runner keeps its own words: scrubbing is only on the way up', async () => {
+  const { h, sync } = setup();
+  sync.start();
+  const t = h.runner.create({ text: `keep ${FAKE_KEY}`, cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  await tick();
+  await sync.flushNow();
+  const { events } = h.runner.events(t.id, { afterSeq: 0, limit: 50 });
+  assert.ok(events.some((e) => e.type === 'user.message' && e.text.includes(FAKE_KEY)));
+  await sync.stop();
+});
+
+test('a long message is scrubbed before it is cut, so a value at the cut is not missed', () => {
+  const longKey = `sk-${'c3d4'.repeat(30)}`;
+  const text = 'x '.repeat(3990) + longKey;
+  const doc = toMessageDoc('t', { type: 'assistant.text', seq: 1, ts: 'x', threadId: 't', itemId: 'i', text } as never, scrubText)!;
+  assert.ok(!doc.text.includes('c3d4'));
+  const bare = toMessageDoc('t', { type: 'assistant.text', seq: 1, ts: 'x', threadId: 't', itemId: 'i', text } as never)!;
+  assert.ok(bare.text.includes('c3d4'), 'the cut really did fall inside the value');
+});
+
+test('a tool line and an approval line are scrubbed before they are cut to one line', () => {
+  const pem = `-----BEGIN PRIVATE KEY-----\n${'a1B2'.repeat(16)}\n-----END PRIVATE KEY-----`;
+  assert.ok(!toolLine({ name: 'Bash', kind: 'command', title: '', input: { command: `TOKEN=${FAKE_KEY} npm test` } }, scrubText).includes(FAKE_KEY));
+  assert.ok(!inputSummary({ command: `TOKEN=${FAKE_KEY} npm test` }, scrubText)!.includes(FAKE_KEY));
+  assert.ok(!inputSummary({ command: pem }, scrubText)!.includes('a1B2'));
+});
+
+test('status says whether the backend checks too', async () => {
+  const older = setup({ answer: (fn) => (fn === 'sync:heartbeat' ? { apiVersion: SCRUB_API_VERSION - 1 } : null) });
+  older.sync.start();
+  await older.sync.flushNow();
+  await tick();
+  assert.equal(older.sync.status().scrub!.backendChecks, false);
+  await older.sync.stop();
+  const newer = setup({ answer: (fn) => (fn === 'sync:heartbeat' ? { apiVersion: SCRUB_API_VERSION } : null) });
+  newer.sync.start();
+  await newer.sync.flushNow();
+  await tick();
+  assert.equal(newer.sync.status().scrub!.backendChecks, true);
+  await newer.sync.stop();
+});
+
+test('a phone answer in scrubbed words reaches the CLI in the real ones', async () => {
+  const { sync } = setup();
+  const internals = sync as unknown as { pending: Map<string, unknown>; realAnswers(id: string, a: Record<string, string>): Record<string, string> };
+  const q = `Use ${FAKE_KEY} here?`;
+  const label = `The key ${FAKE_KEY}`;
+  internals.pending.set('t', { approvalId: 'a', kind: 'question', questions: [{ question: q, multiSelect: false, options: [{ label }, { label: 'No' }] }, { question: 'Plain?', multiSelect: false, options: [{ label: 'Yes' }] }] });
+  const real = internals.realAnswers('t', { 'Use [REDACTED] here?': 'The key [REDACTED]', 'Plain?': 'Yes' });
+  assert.deepEqual(real, { [q]: label, 'Plain?': 'Yes' });
+  assert.deepEqual(internals.realAnswers('t', { 'Use [REDACTED] here?': 'The key [REDACTED], No' }), { [q]: `${label}, No` });
+  assert.deepEqual(internals.realAnswers('other', { x: 'y' }), { x: 'y' });
+  const comma = `Key ${FAKE_KEY}, prod`;
+  internals.pending.set('c', { approvalId: 'b', kind: 'question', questions: [{ question: 'Which?', multiSelect: true, options: [{ label: comma }, { label: 'No' }] }] });
+  assert.deepEqual(internals.realAnswers('c', { 'Which?': 'Key [REDACTED], prod, No' }), { 'Which?': `${comma}, No` });
+});
+
+test("an archived thread's folder is looked at for its history", async () => {
+  const dir = tmpDir();
+  const value = `opaque9${'Zq7x'.repeat(6)}`;
+  const { h } = setup();
+  const folder = path.join(dir, 'old-project');
+  fs.mkdirSync(path.join(folder, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(folder, '.env'), `WEBHOOK_SECRET=${value}\n`);
+  const t = h.runner.create({ text: `quoting ${value}`, cwd: folder, accountId: 'claude-3' }).thread;
+  await tick();
+  await h.runner.update({ threadId: t.id, archived: true, title: `about ${value}` });
+  const calls: Call[] = [];
+  const sync = new ConvexSync({
+    config: { enabled: true, url: 'https://x.convex.cloud', name: 'TestMac', runnerId: 'r1' },
+    key: 'k',
+    runner: h.runner,
+    version: '0.1.0+test',
+    startedAt: '2026-10-27T00:00:00.000Z',
+    clock: h.clock,
+    log: nullLogger,
+    scrubber: new Scrubber({ env: {}, home: dir }),
+    post: async (kind, fn, args) => {
+      calls.push({ kind, fn, args });
+      return fn === 'sync:heartbeat' ? { apiVersion: BACKEND_API_VERSION } : null;
+    },
+  });
+  sync.start();
+  await sync.flushNow();
+  const sent = calls.filter((c) => c.fn === 'sync:appendMessages' || c.fn === 'sync:upsertThreads' || c.fn === 'sync:setThreadIndex');
+  assert.ok(sent.length > 0);
+  assert.ok(!JSON.stringify(sent).includes(value), 'neither its history nor its row');
+  await sync.stop();
+});
+
+test('text waits rather than go up while .env files are still being read', async () => {
+  const { h } = setup();
+  const calls: Call[] = [];
+  const scrubber = new Scrubber({ env: {}, folders: false });
+  let ready = false;
+  scrubber.known.settled = async () => ready;
+  const sync = new ConvexSync({
+    config: { enabled: true, url: 'https://x.convex.cloud', name: 'TestMac', runnerId: 'r1' },
+    key: 'k',
+    runner: h.runner,
+    version: '0.1.0+test',
+    startedAt: '2026-10-27T00:00:00.000Z',
+    clock: h.clock,
+    log: nullLogger,
+    scrubber,
+    post: async (kind, fn, args) => {
+      calls.push({ kind, fn, args });
+      return fn === 'sync:heartbeat' ? { apiVersion: BACKEND_API_VERSION } : null;
+    },
+  });
+  h.runner.create({ text: 'waits', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' });
+  sync.start();
+  await sync.flushNow();
+  assert.ok(calls.some((c) => c.fn === 'sync:heartbeat'), 'a heartbeat still goes');
+  assert.equal(calls.filter((c) => c.fn === 'sync:upsertThreads').length, 0);
+  assert.match(sync.status().lastError ?? '', /still reading/);
+  ready = true;
+  await sync.flushNow();
+  assert.ok(calls.some((c) => c.fn === 'sync:upsertThreads'));
+  await sync.stop();
+});
+
+test("a command for another runner keeps the user's words, and everything else the Mac's relay sends is scrubbed", async () => {
+  const { h } = setup();
+  const calls: Call[] = [];
+  const sync = new ConvexSync({
+    config: { enabled: true, url: 'https://x.convex.cloud', name: 'TestMac', runnerId: 'r1' },
+    key: 'k',
+    runner: h.runner,
+    version: '0.1.0+test',
+    startedAt: '2026-10-27T00:00:00.000Z',
+    clock: h.clock,
+    log: nullLogger,
+    scrubber: new Scrubber({ env: {}, folders: false }),
+    post: async (kind, fn, args) => {
+      calls.push({ kind, fn, args });
+      return fn === 'sync:heartbeat' ? { apiVersion: BACKEND_API_VERSION } : null;
+    },
+  });
+  sync.start();
+  await sync.flushNow();
+  const src = sync.relaySource();
+  assert.ok(src, 'the backend is new enough for the relay');
+  // Made up here, so no key-shaped text sits in the repo.
+  const typed = `use this: sk-${'a1B2'.repeat(10)}`;
+  await src.post('mutation', 'relay:queueCommand', { key: 'k', runnerId: 'r2', kind: 'send', args: { text: typed } });
+  await src.post('mutation', 'sync:somethingElse', { key: 'k', text: typed });
+  const queued = calls.find((c) => c.fn === 'relay:queueCommand')!;
+  assert.equal((queued.args.args as { text: string }).text, typed, 'that runner gets the words as typed');
+  const other = calls.find((c) => c.fn === 'sync:somethingElse')!;
+  assert.ok(!String(other.args.text).includes('a1B2a1B2'), 'any other mutation is scrubbed');
+  await sync.stop();
+});
+
+test("a call's answer is still JSON after scrubbing, whatever a file is called", async () => {
+  const { h } = setup();
+  const calls: Call[] = [];
+  const sync = new ConvexSync({
+    config: { enabled: true, url: 'https://x.convex.cloud', name: 'TestMac', runnerId: 'r1' },
+    key: 'k',
+    runner: h.runner,
+    version: '0.1.0+test',
+    startedAt: '2026-10-27T00:00:00.000Z',
+    clock: h.clock,
+    log: nullLogger,
+    scrubber: new Scrubber({ env: {}, folders: false }),
+    post: async (kind, fn, args) => {
+      calls.push({ kind, fn, args });
+      return fn === 'sync:heartbeat' ? { apiVersion: BACKEND_API_VERSION } : null;
+    },
+  });
+  sync.start();
+  await sync.flushNow();
+  const src = sync.relaySource()!;
+  // This name's rule matches across the escaped quotes in the JSON text, which
+  // is what used to leave the answer unparseable.
+  const name = 'security unlock-keychain -p "madeUpPassword123"';
+  await src.post('mutation', 'sync:finishCommand', { key: 'k', commandId: 'c1', ok: true, result: JSON.stringify({ entries: [{ name }, { name: 'plain.txt' }] }) });
+  const sent = calls.find((c) => c.fn === 'sync:finishCommand')!;
+  const parsed = JSON.parse(sent.args.result as string) as { entries: { name: string }[] };
+  assert.ok(!parsed.entries[0]!.name.includes('madeUpPassword123'), 'scrubbed');
+  assert.equal(parsed.entries[1]!.name, 'plain.txt');
+  // A field scrubbing skips in a row means nothing in an answer.
+  const hidden = `tbr_${'ab'.repeat(32)}`;
+  await src.post('mutation', 'sync:finishCommand', { key: 'k', commandId: 'c0', ok: true, result: JSON.stringify({ entries: [{ name: 'a.txt', key: hidden, cwd: hidden, seenAt: hidden }] }) });
+  assert.ok(!String(calls.filter((c) => c.fn === 'sync:finishCommand')[1]!.args.result).includes(hidden));
+  await src.post('mutation', 'sync:finishCommand', { key: 'k', commandId: 'c2', ok: true, result: 'not json' });
+  assert.equal(calls.filter((c) => c.fn === 'sync:finishCommand')[2]!.args.result, undefined, "text that doesn't parse isn't sent");
   await sync.stop();
 });
 
@@ -2020,4 +2257,41 @@ test('a forbidden heartbeat with a new key on disk restarts onto it too', async 
   await tick();
   assert.equal(restarts.length, 1);
   await sync.stop();
+});
+
+test('runners.stats marks the figures wanted at most every 20 s, and is empty where it can\'t be had', async () => {
+  const row = { runnerId: 'r2', at: '2026-11-05T08:00:00.000Z', cpuPercent: 12, cores: 8, memUsed: 4, memTotal: 8, diskFree: 50, diskTotal: 100, uptimeSec: 60 };
+  let forbid = false;
+  const answer = (fn: string) => {
+    if (fn === 'sync:heartbeat') return { apiVersion: MAC_RUNNER_STATS_API_VERSION };
+    if (fn === 'sync:runnerStatsList') {
+      if (forbid) throw Object.assign(new Error('forbidden'), { data: { kind: 'forbidden', message: "This runner's key can't list runners." } });
+      return [row];
+    }
+    return null;
+  };
+  const { h, sync, calls } = setup({ answer });
+  assert.deepEqual(await sync.runnerStats(), [], 'not before it has started');
+  sync.start();
+  await tick();
+  assert.deepEqual(await sync.runnerStats(), [row]);
+  assert.deepEqual(await sync.runnerStats(), [row]);
+  const watches = () => calls.filter((c) => c.fn === 'sync:watchRunnersFromMac').length;
+  assert.equal(watches(), 1, 'one watch for two asks close together');
+  h.clock.advance(21_000);
+  await sync.runnerStats();
+  assert.equal(watches(), 2);
+  forbid = true;
+  assert.deepEqual(await sync.runnerStats(), [], "a runner key can't see the others");
+  const asked = calls.filter((c) => c.fn === 'sync:runnerStatsList').length;
+  await sync.runnerStats();
+  assert.equal(calls.filter((c) => c.fn === 'sync:runnerStatsList').length, asked, 'and stops asking');
+  await sync.stop();
+
+  const old = setup({ answer: (fn) => (fn === 'sync:heartbeat' ? { apiVersion: MAC_RUNNER_STATS_API_VERSION - 1 } : null) });
+  old.sync.start();
+  await tick();
+  assert.deepEqual(await old.sync.runnerStats(), [], 'an older backend has none');
+  assert.equal(old.calls.filter((c) => c.fn === 'sync:runnerStatsList').length, 0);
+  await old.sync.stop();
 });

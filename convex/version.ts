@@ -202,4 +202,18 @@
 //    heartbeat; phone:schedule and a `schedule` command, for Pause and Run now.
 //    A runner sends these only to a backend of 45 or later, and a runner from
 //    before fails a schedule command with "unknown command".
-export const API_VERSION = 45;
+// 46: sync:watchRunnersFromMac and sync:runnerStatsList, the Mac app's Runners
+//    panel's figures through the main Mac's runner (runners.stats). Owner key
+//    only.
+// 47: the backend scrubs secrets from what a runner sends before storing it
+//    (convex/redaction.ts), and sync:scrubStoredBatch rewrites stored rows
+//    with today's rules. Nothing a client sends or reads changes shape; the
+//    runner's `tb status` says the backend checks too from this version.
+// 48: phone:projects reads projectHeads, a small row per project, and returns
+//    goals, state, notes and folders empty; phone:project has one whole. No
+//    iPhone app has ever read those four. sync:sharedUsage takes the caller's
+//    runnerId and leaves its rows out of what it reads; an older runner sends
+//    none and is told about everyone's, as before. sync:schedules reads only a
+//    runner key's own rows. sync:schedulesSince is the table once and then only
+//    the rows written since; an older runner goes on using sync:schedules.
+export const API_VERSION = 48;

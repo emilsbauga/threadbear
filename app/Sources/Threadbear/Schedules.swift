@@ -78,6 +78,21 @@ extension AppModel {
         }
     }
 
+    /// Every runner's latest figures, for the Runners panel's details.
+    func loadRunnerStats() {
+        guard let client else { return }
+        Task {
+            do {
+                let list = try await client.runnerStats()
+                let byId = Dictionary(list.map { ($0.runnerId, $0) }, uniquingKeysWith: { a, b in a.at > b.at ? a : b })
+                if byId != runnerStats { runnerStats = byId }
+                runnerStatsAsked = true
+            } catch {
+                AppLog.write("rpc", "runners.stats failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// The runner this app talks to, as the backend knows it.
     var selfRunnerId: String? { runners.first(where: \.isSelf)?.id }
 

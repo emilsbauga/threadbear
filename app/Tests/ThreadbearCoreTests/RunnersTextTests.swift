@@ -55,4 +55,29 @@ import Testing
         let old = try JSONDecoder().decode(RunnerInfo.self, from: Data(#"{"id":"b","name":"bruce","online":true}"#.utf8))
         #expect(old.version == nil && old.startedAt == nil && !old.draining)
     }
+
+    @Test func figures() throws {
+        let gib: Double = 1024 * 1024 * 1024
+        let json = #"{"runnerId":"b","at":"2026-11-05T08:00:00.000Z","cpuPercent":23.4,"cores":8,"memUsed":7730941132.8,"memTotal":8589934592,"diskFree":5368709120,"diskTotal":245107195904,"load1":2.13,"uptimeSec":360000,"machine":"Apple M2","os":"macOS 27.2","later":1}"#
+        let s = try JSONDecoder().decode(RunnerMachineStats.self, from: Data(json.utf8))
+        let g = RunnersText.gauges(s)
+        #expect(g.map(\.title) == ["CPU", "Memory", "Disk"])
+        #expect(g[0].text == "23%")
+        #expect(!g[0].high)
+        #expect(g[1].text == "7.2 of 8 GB")
+        #expect(g[1].high, "90% of memory used")
+        #expect(g[2].text == "5 GB free")
+        #expect(g[2].high, "under 10 GB free")
+        #expect(abs(g[2].fraction - (1 - 5 * gib / 245107195904)) < 0.0001)
+        #expect(RunnersText.machineLines(s) == ["Apple M2, macOS 27.2", "Machine up 4d, load 2.1 on 8 cores"])
+        #expect(RunnersText.staleLine(s, now: s.at.addingTimeInterval(30)) == nil)
+        #expect(RunnersText.staleLine(s, now: s.at.addingTimeInterval(300)) == "From 5m ago")
+        #expect(RunnersText.gb(2 * 1024 * gib) == "2 TB")
+        #expect(RunnersText.gb(212.4 * gib) == "212 GB")
+        #expect(RunnersText.gb(9.06 * gib) == "9.1 GB")
+        // A Linux box with no load figure or model.
+        let bare = RunnerMachineStats(runnerId: "c", cpuPercent: 5, cores: 2, uptimeSec: 90)
+        #expect(RunnersText.gauges(bare).map(\.title) == ["CPU"])
+        #expect(RunnersText.machineLines(bare) == ["Machine up 1m"])
+    }
 }

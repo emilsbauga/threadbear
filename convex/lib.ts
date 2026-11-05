@@ -76,3 +76,26 @@ export async function sha256(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+// Someone has a Runners view open: the website's (phone:watchRunners) or the
+// Mac app's runner details (sync:watchRunnersFromMac). Runners report their
+// figures until this lapses (API 45, 46). Each viewer renews it every 30 s
+// at most, so a closed view stops them within RUNNER_WATCH_MS.
+export const RUNNER_WATCH_MS = 45_000;
+export async function watchRunnersFor(ctx: MutationCtx): Promise<void> {
+  const until = Date.now() + RUNNER_WATCH_MS;
+  const row = await ctx.db.query('runnerWatch').first();
+  if (row) await ctx.db.patch(row._id, { until });
+  else await ctx.db.insert('runnerWatch', { until });
+}
+
+// Every runner's latest figures (runnerStats), `at` as an ISO string, for
+// phone:runnerStats and sync:runnerStatsList alike.
+export async function runnerStatsRows(ctx: QueryCtx) {
+  const out = [];
+  for await (const s of ctx.db.query('runnerStats')) {
+    const { _id, _creationTime, at, ...rest } = s;
+    out.push({ ...rest, at: new Date(at).toISOString() });
+  }
+  return out;
+}

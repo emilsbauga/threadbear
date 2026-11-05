@@ -17,6 +17,11 @@ import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 // used next to no CPU since the last look. The agent checks on it and
 // stops it or carries on; it asks Mike if it can't tell. Once per job.
 //
+// A job that waits on Mike by design is left alone until its own timeout:
+// `browserbear handoff <tab> --wait` sits silent with no CPU until he
+// presses Done (5 Nov: two nudges in a row for one). The shell's command
+// lines show it, so it's told apart from a loop that can never end.
+//
 // Claude only: its jobs write to output files under /tmp/claude-<uid>
 // (a sub-agent's is a link to its transcript), which give the start and
 // last-output times. Codex's background terminals leave nothing to read.
@@ -34,7 +39,67 @@ export type TaskFile = { startedAt: number; lastOutputAt: number };
 // A background shell under a thread's CLI: the job it writes for (from the
 // output file on its stdout), the CPU it and everything under it have used,
 // and what's running there ("zsh", "sleep").
-export type BackgroundShell = { taskId?: string; cpuSeconds: number; commands: string[] };
+// `processes` are everything under it, with full command lines and when
+// each started, for telling a wait on Mike apart.
+export type BackgroundShell = { taskId?: string; cpuSeconds: number; commands: string[]; processes?: ShellProcess[] };
+export type ShellProcess = { command: string; startedAt: number };
+
+// How long past a waiting command's own timeout before it counts as stuck
+// after all: it should have exited by itself by then.
+export const WAIT_GRACE_MS = 5 * 60_000;
+// browserbear's own default for handoff --wait (cli.mjs DEFAULT_WAIT_S).
+const HANDOFF_DEFAULT_WAIT_S = 20 * 60;
+// browserbear's flags that take a value (cli.mjs parse()).
+const BROWSERBEAR_VALUE_FLAGS = new Set(['profile', 'group', 'until-url', 'until-text', 'timeout']);
+
+// How long a process says it will wait on the user, in ms, or undefined
+// when it isn't such a process. Only `browserbear handoff` with --wait,
+// --until-url or --until-text for now. Only a real browserbear process
+// counts (`node …/browserbear …`, as its shebang runs it), never a shell
+// whose -c text merely mentions it: `false && browserbear handoff …; while
+// true; do sleep 3; done` must still be judged. The flags are read the way
+// browserbear's own parse() reads them: anywhere, the last one winning.
+export function waitsOnUserMs(commandLine: string): number | undefined {
+  const words = commandLine.trim().split(/\s+/);
+  const isScript = (w: string) => /(^|\/)browserbear(\/cli\.mjs)?$/.test(w);
+  let at = isScript(words[0] ?? '') ? 0 : -1;
+  if (at < 0 && /(^|\/)node$/.test(words[0] ?? '')) {
+    // Node's script is its first argument that isn't an option; inline
+    // code (-e, -p) that only mentions browserbear doesn't count.
+    const i = words.findIndex((w, i) => i > 0 && !w.startsWith('-'));
+    if (i > 0 && isScript(words[i]) && !words.slice(1, i).some((w) => /^(-e|-p|--eval|--print)(=|$)/.test(w))) at = i;
+  }
+  if (at < 0) return undefined;
+  const flags = new Map<string, string | true>();
+  const pos: string[] = [];
+  const argv = words.slice(at + 1);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--') && BROWSERBEAR_VALUE_FLAGS.has(key)) flags.set(key, argv[++i]);
+      else flags.set(key, true);
+    } else pos.push(a);
+  }
+  // ps joins the arguments with spaces, so a flag's value with spaces in it
+  // (--until-text "Payment complete") spills into the positionals: look for
+  // the command among them rather than only first.
+  if (!pos.includes('handoff') || !(flags.get('wait') || flags.get('until-url') || flags.get('until-text'))) return undefined;
+  const t = flags.get('timeout');
+  const secs = t === undefined ? HANDOFF_DEFAULT_WAIT_S : Number(t);
+  return (Number.isFinite(secs) && secs > 0 ? secs : HANDOFF_DEFAULT_WAIT_S) * 1000;
+}
+
+// The latest a shell's waiting processes said they'd wait until, plus the grace.
+function waitDeadline(processes: ShellProcess[]): number | undefined {
+  let out: number | undefined;
+  for (const p of processes) {
+    const wait = waitsOnUserMs(p.command);
+    if (wait !== undefined) out = Math.max(out ?? 0, p.startedAt + wait + WAIT_GRACE_MS);
+  }
+  return out;
+}
 
 export interface Probe {
   taskFile(sessionId: string, taskId: string): Promise<TaskFile | undefined>;
@@ -67,6 +132,8 @@ export class StuckJobs {
   private sweeping = false;
   // CPU seconds each shell had used at the last look, by thread/task.
   private cpu = new Map<string, number>();
+  // When a job waiting on Mike (waitsOnUserMs) stops being left alone, by thread/task.
+  private waitDeadline = new Map<string, number>();
 
   constructor(deps: Deps) {
     this.deps = deps;
@@ -107,6 +174,7 @@ export class StuckJobs {
     const saved = this.read();
     const live = new Set(threads.flatMap((t) => t.tasks.map((task) => key(t.threadId, task.id))));
     for (const k of this.cpu.keys()) if (!live.has(k)) this.cpu.delete(k);
+    for (const k of this.waitDeadline.keys()) if (!live.has(k)) this.waitDeadline.delete(k);
     const nudged: Record<string, string> = {};
     for (const [k, at] of Object.entries(saved.nudged)) if (now - Date.parse(at) < NUDGE_MEMORY_MS) nudged[k] = at;
 
@@ -138,6 +206,15 @@ export class StuckJobs {
           // exited and the CLI will say so, or it isn't ours to judge.
           const shell = shells.get(sessionId)?.find((s) => s.taskId === task.id);
           if (!shell) continue;
+          // Waiting on Mike, and still within the time it said it would,
+          // counted from when that process started (a script may sleep
+          // first). The first wait seen sets the job's deadline, so a loop
+          // that keeps starting new handoffs can't put it off for good.
+          const deadline = this.waitDeadline.get(k) ?? waitDeadline(shell.processes ?? []);
+          if (deadline !== undefined) {
+            this.waitDeadline.set(k, deadline);
+            if (now < deadline) continue;
+          }
           const before = this.cpu.get(k);
           this.cpu.set(k, shell.cpuSeconds);
           // Two looks are needed to see how much CPU it's using.
@@ -236,7 +313,8 @@ export function realProbe(root = path.join('/tmp', `claude-${process.getuid?.() 
     },
     async shells(sessionIds) {
       const out = new Map<string, BackgroundShell[]>();
-      const procs = parsePs(await run('ps', ['-axo', 'pid=,ppid=,time=,command=']));
+      const procs = parsePs(await run('ps', ['-axo', 'pid=,ppid=,time=,etime=,command=']));
+      const lookedAt = Date.now();
       const kids = new Map<number, Proc[]>();
       for (const p of procs) kids.set(p.ppid, [...(kids.get(p.ppid) ?? []), p]);
       const roots = new Map<string, Proc[]>();
@@ -259,6 +337,7 @@ export function realProbe(root = path.join('/tmp', `claude-${process.getuid?.() 
               taskId: name?.endsWith('.output') ? path.basename(name, '.output') : undefined,
               cpuSeconds: tree.reduce((sum, p) => sum + p.cpuSeconds, 0),
               commands: tree.map((p) => commandName(p.command)),
+              processes: tree.map((p) => ({ command: p.command, startedAt: lookedAt - p.ageSeconds * 1000 })),
             };
           }),
         );
@@ -268,18 +347,19 @@ export function realProbe(root = path.join('/tmp', `claude-${process.getuid?.() 
   };
 }
 
-type Proc = { pid: number; ppid: number; cpuSeconds: number; command: string };
+// ageSeconds: how long ago it started (ps's etime).
+type Proc = { pid: number; ppid: number; cpuSeconds: number; ageSeconds: number; command: string };
 
 export function parsePs(text: string): Proc[] {
   const out: Proc[] = [];
   for (const line of text.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), cpuSeconds: cpuTime(m[3]), command: m[4] });
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), cpuSeconds: cpuTime(m[3]), ageSeconds: cpuTime(m[4]), command: m[5] });
   }
   return out;
 }
 
-// ps's TIME: [[dd-]hh:]mm:ss.ss
+// ps's TIME and ETIME: [[dd-]hh:]mm:ss[.ss]
 export function cpuTime(s: string): number {
   const [days, rest] = s.includes('-') ? s.split('-') : ['0', s];
   const parts = rest.split(':').map(Number);

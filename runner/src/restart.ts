@@ -6,6 +6,7 @@
 // starts the runner again. The next start reads the file, notes the restart
 // in the threads that asked to carry on, and sends each of them its resume
 // text as a turn of the runner's own.
+import type { SecretCheckStatus } from './secret-check.ts';
 import type { MacScreenStatus } from './mac-screen.ts';
 import type { UpstreamStatus } from './upstream.ts';
 import fs from 'node:fs';
@@ -92,6 +93,7 @@ export type RunnerStatus = {
   upstream?: UpstreamStatus;
   // The Convex mirror (src/sync.ts; main.ts adds it).
   sync?: SyncStatus;
+  secretCheck?: SecretCheckStatus;
   // Dialogs on this Mac's screen and Full Disk Access (mac-screen.ts; main.ts adds it).
   macScreen?: MacScreenStatus;
 };

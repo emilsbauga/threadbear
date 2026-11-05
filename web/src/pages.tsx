@@ -340,9 +340,18 @@ const iconOf = (p: object) => (p as { icon?: { url?: string } }).icon?.url;
 export function ProjectsList({ token, selected }: { token: string; selected?: string }) {
   const rows = useLiveQuery(api.phone.projects, { token });
   const [query, setQuery] = useState('');
-  if (!rows) return <div className="lists muted pad">Loading…</div>;
   const q = query.trim().toLowerCase();
-  const shown = rows.filter((p) => !q || [p.title, p.goals, p.state].some((x) => x.toLowerCase().includes(q)));
+  // Goals and state aren't in the list (phone:projects), so those are asked about
+  // only once typing has paused, as it reads every project's whole row.
+  const [asked, setAsked] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setAsked(q), 400);
+    return () => clearTimeout(t);
+  }, [q]);
+  const deep = useLiveQuery(api.phone.projectSearch, asked ? { token, text: asked } : 'skip');
+  if (!rows) return <div className="lists muted pad">Loading…</div>;
+  const inDepth = new Set((deep ?? []).map((m) => `${m.runnerId}/${m.id}`));
+  const shown = rows.filter((p) => !q || p.title.toLowerCase().includes(q) || inDepth.has(`${p.runnerId}/${p.id}`));
   return (
     <div className="lists-wrap">
       <div className="search-row">
@@ -387,6 +396,10 @@ const PROJECT_THREADS_MORE = 100;
 
 export function ProjectPage({ token, id }: { token: string; id: string }) {
   const rows = useLiveQuery(api.phone.projects, { token });
+  // The list says which runner has it; its goals, state and notes are read for
+  // this project alone.
+  const head = rows?.find((x) => x.id === id);
+  const p = useLiveQuery(api.phone.project, head ? { token, runnerId: head.runnerId, id } : 'skip');
   const [limit, setLimit] = useState(PROJECT_THREADS_FIRST);
   // Archived threads too, so the list matches the "22 threads" in the
   // sidebar rather than only the ones still in the inbox.
@@ -394,8 +407,8 @@ export function ProjectPage({ token, id }: { token: string; id: string }) {
   // A new project starts from the first page again.
   useEffect(() => setLimit(PROJECT_THREADS_FIRST), [id]);
   if (!rows) return <div className="pad muted">Loading…</div>;
-  const p = rows.find((x) => x.id === id);
-  if (!p) return <PageGone view="projects" what="That project has gone." />;
+  if (!head || p === null) return <PageGone view="projects" what="That project has gone." />;
+  if (!p) return <div className="pad muted">Loading…</div>;
   const live = (threads ?? []).filter((t) => t.view !== 'den');
   const archived = (threads ?? []).filter((t) => t.view === 'den');
   const more = (threads?.length ?? 0) >= limit;

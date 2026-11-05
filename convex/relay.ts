@@ -147,7 +147,9 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
       break;
     case 'call':
       if (!CALLS.has(String(a.method))) throw bad(`only ${[...CALLS].join(', ')} can be asked of another runner`);
-      out = { method: a.method, params: a.params && typeof a.params === 'object' ? a.params : {} };
+      // Only what the one allowed call reads: anything else in here would sit in
+      // the row, under field names scrubbing skips.
+      out = { method: a.method, params: typeof (a.params as { path?: unknown } | undefined)?.path === 'string' ? { path: (a.params as { path: string }).path } : {} };
       break;
     case 'share':
       if (a.access !== 'off' && a.access !== 'link') throw bad('access is "off" or "link"');

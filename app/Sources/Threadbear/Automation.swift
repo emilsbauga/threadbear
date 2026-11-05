@@ -1278,8 +1278,25 @@ enum Automation {
             return "ok " + json([reason ?? "(no reason)", who] + (HighlightProjects.canKeep(m) ? ["Keep"] : []) + ["Take out", "Open project"])
         case "runners":
             // The Runners panel: {"show": true} opens it ({"show": false}
-            // closes it). With neither, the icon's tooltip and each
-            // runner's line.
+            // closes it), {"open": "<runner id or name>"} opens or closes
+            // that runner's details. With neither, the icon's tooltip and
+            // each runner's line.
+            // {"stats": true} asks for the figures now, as the panel does
+            // every 10 s while it can be seen (a scripted window can't).
+            if c["stats"] as? Bool == true {
+                app.loadRunnerStats()
+                try? await Task.sleep(for: .milliseconds(500))
+                return "ok " + json(app.runnerStats.values.sorted { $0.runnerId < $1.runnerId }.map { s in
+                    "\(s.runnerId): " + RunnersText.gauges(s).map { "\($0.title) \($0.text)" }.joined(separator: ", ")
+                })
+            }
+            if let which = c["open"] as? String {
+                guard let r = app.runners.first(where: { $0.id == which || $0.name == which }) else { return "error no runner \(which)" }
+                var ids = Set((UserDefaults.standard.string(forKey: "runnersPanelOpen") ?? "").split(separator: ",").map(String.init))
+                if ids.contains(r.id) { ids.remove(r.id) } else { ids.insert(r.id) }
+                UserDefaults.standard.set(ids.sorted().joined(separator: ","), forKey: "runnersPanelOpen")
+                return "ok " + (ids.contains(r.id) ? "open" : "closed")
+            }
             if let show = c["show"] as? Bool {
                 app.runnersShown = show
                 guard show else { return "ok closed" }

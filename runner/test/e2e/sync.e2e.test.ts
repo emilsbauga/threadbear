@@ -345,6 +345,43 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     await api('mutation', 'sync:bye', { key, runnerId });
   });
 
+  test('API 48: the project list is small rows, one project is whole, and search reaches goals and state', async () => {
+    const runnerId = 'e2e-heads-' + crypto.randomBytes(4).toString('hex');
+    const pid = 'e2e-head-' + crypto.randomBytes(4).toString('hex');
+    const word = 'zq' + crypto.randomBytes(5).toString('hex');
+    const secret = `sk-${'e2e3'.repeat(12)}`;
+    await api('mutation', 'sync:heartbeat', { key, runner: { runnerId, name: runnerId, version: 'x', startedAt: 'x', draining: false, threadCount: 0 } });
+    const { token } = (await api('mutation', 'sync:issueToken', { key, kind: 'browser', name: 'e2e-48' })) as { token: string };
+    const doc = { id: pid, title: `Title ${secret}`, folders: ['/x'], goals: `the ${word} goal`, state: 'going', notes: 'long notes', createdBy: 'user', archived: false, createdAt: 'x', updatedAt: 'x', threadCount: 0 };
+    await api('mutation', 'sync:setProjects', { key, runnerId, projects: [doc] });
+    type Row = { runnerId: string; id: string; title: string; goals: string; notes: string };
+    const listed = ((await api('query', 'phone:projects', { token })) as Row[]).find((p) => p.id === pid)!;
+    assert.equal(listed.title, 'Title [REDACTED]', 'the small row has the scrubbed title');
+    assert.equal(listed.goals, '');
+    assert.equal(listed.notes, '');
+    const whole = (await api('query', 'phone:project', { token, runnerId, id: pid })) as Row;
+    assert.equal(whole.goals, `the ${word} goal`);
+    assert.equal(whole.notes, 'long notes');
+    assert.deepEqual(await api('query', 'phone:projectSearch', { token, text: word.toUpperCase() }), [{ runnerId, id: pid }]);
+    assert.deepEqual(await api('query', 'phone:projectSearch', { token, text: 'no-project-says-this' }), []);
+    // A row from before the rules: rewriting it takes the list's copy of the title too.
+    const old = path.join(home, 'old-project.jsonl');
+    const oldId = pid + '-old';
+    fs.writeFileSync(old, JSON.stringify({ ...doc, id: oldId, runnerId }) + '\n');
+    await run('npx', ['convex', 'import', ...ENV_ARGS, '--append', '--yes', '--table', 'projects', old], { cwd: REPO });
+    fs.writeFileSync(old, JSON.stringify({ runnerId, id: oldId, title: doc.title, createdBy: 'user', archived: false, createdAt: 'x', updatedAt: 'x', threadCount: 0 }) + '\n');
+    await run('npx', ['convex', 'import', ...ENV_ARGS, '--append', '--yes', '--table', 'projectHeads', old], { cwd: REPO });
+    const oldTitle = async () => ((await api('query', 'phone:projects', { token })) as Row[]).find((p) => p.id === oldId)!.title;
+    assert.ok((await oldTitle()).includes(secret));
+    const script: string = '../../scripts/scrub-stored.mjs';
+    const { scrubStored } = await import(script);
+    await scrubStored({ post: (fn: string, args: Record<string, unknown>) => api('mutation', fn, args), key, tables: ['projects'], apply: true, batch: 50 });
+    assert.equal(await oldTitle(), 'Title [REDACTED]', 'the head follows when only `projects` is rewritten');
+    await api('mutation', 'sync:setProjects', { key, runnerId, projects: [] });
+    assert.ok(!((await api('query', 'phone:projects', { token })) as Row[]).some((p) => p.id === pid), 'its small row goes with it');
+    await api('mutation', 'sync:bye', { key, runnerId });
+  });
+
   test('API 40: a project lists its threads newest first, archived ones too, and follows moves and deletes', async () => {
     const runnerId = 'e2e-links-' + crypto.randomBytes(4).toString('hex');
     const pid = 'e2e-proj-' + crypto.randomBytes(4).toString('hex');
@@ -407,6 +444,101 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
       const r = (await api('query', 'sync:otherRunnersThreads', { key, runnerId: 'someone-else' })) as any;
       return r.threads.some((t: any) => t.threadId === thread.id) ? undefined : true;
     });
+  });
+
+  // docs/convex-backend.md, "Secret scrubbing": what an older runner would send
+  // is scrubbed on the way in, and a row from before the rules can be rewritten.
+  test('scrubbing: the backend checks what an old runner sends, and scrub-stored rewrites old rows', async () => {
+    const secret = `sk-${'e2e1'.repeat(12)}`;
+    const threadId = `scrub-${crypto.randomBytes(4).toString('hex')}`;
+    const { token } = (await api('mutation', 'sync:issueToken', { key, kind: 'phone', name: 'scrub-e2e' })) as { token: string };
+    const runnerId = readRunnerJson(home).sync?.runnerId;
+    const at = new Date().toISOString();
+    await api('mutation', 'sync:upsertThreads', {
+      key,
+      threads: [{ threadId, runnerId, title: `title ${secret}`, cwd: '/tmp/x', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: `preview ${secret}`, createdAt: at, lastActivityAt: at, lastActivityMs: Date.now(), view: 'inbox' }],
+    });
+    await api('mutation', 'sync:appendMessages', { key, messages: [{ threadId, seq: 1, role: 'user', text: `here it is ${secret}`, at }] });
+    const read = () => api('query', 'phone:messages', { token, threadId, limit: 50 }) as Promise<{ messages: { seq: number; text: string }[] }>;
+    let page = await read();
+    assert.equal(page.messages[0]!.text, 'here it is [REDACTED]');
+    const rows = (await api('query', 'phone:threads', { token, view: 'inbox' })) as { threadId: string; title: string; preview: string }[];
+    const row = rows.find((r) => r.threadId === threadId)!;
+    assert.equal(row.title, 'title [REDACTED]');
+    assert.equal(row.preview, 'preview [REDACTED]');
+    assert.equal(await api('mutation', 'sync:savePocketCard', { key, card: { title: `card ${secret}`, text: `text ${secret}` } }), 'added');
+    const cards = (await api('query', 'sync:pocketCards', { key })) as { title: string; text: string }[];
+    assert.ok(!JSON.stringify(cards).includes(secret));
+    assert.equal(await api('mutation', 'sync:removePocketCard', { key, title: `card ${secret}` }), true);
+
+    // A row stored before the rules: straight in, past the mutations.
+    const old = path.join(home, 'old-rows.jsonl');
+    fs.writeFileSync(old, JSON.stringify({ threadId, seq: 2, role: 'assistant', text: `old row ${secret}`, at }) + '\n');
+    await run('npx', ['convex', 'import', ...ENV_ARGS, '--append', '--yes', '--table', 'messages', old], { cwd: REPO });
+    page = await read();
+    assert.ok(page.messages.some((m) => m.seq === 2 && m.text.includes(secret)));
+
+    const script: string = '../../scripts/scrub-stored.mjs';
+    const { scrubStored } = await import(script);
+    const post = (fn: string, args: Record<string, unknown>) => api('mutation', fn, args);
+    const dry = await scrubStored({ post, key, tables: ['messages'], batch: 50 });
+    assert.equal(dry.messages.changed, 1, 'just the old row');
+    assert.ok((await read()).messages.some((m) => m.seq === 2 && m.text.includes(secret)), 'a dry run changes nothing');
+    assert.ok(!JSON.stringify(dry).includes(secret), 'ids and counts, never the text');
+    const applied = await scrubStored({ post, key, tables: ['messages'], apply: true, batch: 50 });
+    assert.equal(applied.messages.changed, 1);
+    assert.equal((await read()).messages.find((m) => m.seq === 2)!.text, 'old row [REDACTED]');
+    const again = await scrubStored({ post, key, tables: ['messages'], batch: 50 });
+    assert.equal(again.messages.changed, 0);
+    await api('mutation', 'sync:removeThreads', { key, threadIds: [threadId] });
+  });
+
+  // Words stored as typed are only for the runner to get exactly: once a command
+  // is over, however it ended, they're gone from the row.
+  test('scrubbing: a finished command keeps none of its words, and a call only its path', async () => {
+    const secret = `sk-${'e2e2'.repeat(12)}`;
+    const runnerId = `e2e-away-${crypto.randomBytes(3).toString('hex')}`;
+    await api('mutation', 'sync:heartbeat', { key, runner: { runnerId, name: runnerId, version: 'x', startedAt: 'x', draining: false, threadCount: 0 } });
+    const at = new Date().toISOString();
+    const thread = async () => {
+      const threadId = `cmd-${crypto.randomBytes(4).toString('hex')}`;
+      await api('mutation', 'sync:upsertThreads', { key, threads: [{ threadId, runnerId, title: 't', cwd: '/tmp/x', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: 'p', createdAt: at, lastActivityAt: at, lastActivityMs: Date.now(), view: 'inbox' }] });
+      return threadId;
+    };
+    const send = (threadId: string) => api('mutation', 'relay:queueCommand', { key, runnerId, threadId, kind: 'send', args: { text: `use ${secret}` } }) as Promise<string>;
+    const rows = async () => {
+      const { stdout } = await run('npx', ['convex', 'data', ...ENV_ARGS, 'commands', '--limit', '200', '--format', 'jsonl'], { cwd: REPO });
+      return stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l) as { _id: string; args?: unknown; result?: string });
+    };
+    const pending = () => api('query', 'sync:pendingCommands', { key, runnerId }) as Promise<{ commandId: string; args: Record<string, unknown> }[]>;
+
+    // Done: the runner got the words as typed, and the row then lets them go.
+    const done = await send(await thread());
+    assert.equal((await pending()).find((c) => c.commandId === done)!.args.text, `use ${secret}`);
+    assert.equal(await api('mutation', 'sync:takeCommand', { key, commandId: done }), true);
+    await api('mutation', 'sync:finishCommand', { key, commandId: done, ok: true });
+
+    // Failed by the backend, with no finishCommand: the thread went first.
+    const goneThread = await thread();
+    const gone = await send(goneThread);
+    await api('mutation', 'sync:removeThreads', { key, threadIds: [goneThread] });
+    assert.equal(await api('mutation', 'sync:takeCommand', { key, commandId: gone }), false);
+
+    // A call: nothing but the path stays, and its answer is still JSON.
+    const call = (await api('mutation', 'relay:queueCommand', { key, runnerId, kind: 'call', args: { method: 'files.list', params: { path: '/tmp', commentAt: secret } } })) as string;
+    assert.deepEqual((await pending()).find((c) => c.commandId === call)!.args.params, { path: '/tmp' });
+    await api('mutation', 'sync:takeCommand', { key, commandId: call });
+    const name = 'security unlock-keychain -p "madeUpPassword123"';
+    await api('mutation', 'sync:finishCommand', { key, commandId: call, ok: true, result: JSON.stringify({ entries: [{ name, key: secret, cwd: secret }] }) });
+    const state = (await api('query', 'relay:commandState', { key, commandId: call })) as { state: string; result?: { entries: { name: string }[] } };
+    assert.equal(state.state, 'done');
+    assert.ok(state.result?.entries[0] && !state.result.entries[0].name.includes('madeUpPassword123'));
+    assert.ok(!JSON.stringify(state.result).includes(secret), 'not under a name scrubbing skips in a row, either');
+
+    const all = await rows();
+    for (const id of [done, gone]) assert.deepEqual(all.find((r) => r._id === id)!.args, {}, 'nothing left of the words');
+    assert.ok(!JSON.stringify(all).includes(secret));
+    await api('mutation', 'sync:bye', { key, runnerId });
   });
 
   test('a thread is mirrored, updated, and removed; the runner is listed and signs off', async () => {
