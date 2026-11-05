@@ -6,7 +6,7 @@ const args = process.argv.slice(2);
 const option = name => args[args.indexOf(name) + 1];
 const config = process.env.PI_CODING_AGENT_DIR;
 fs.mkdirSync(config, { recursive: true });
-fs.writeFileSync(path.join(config, 'launch.json'), JSON.stringify({ args, telemetry: process.env.PI_TELEMETRY, offline: process.env.PI_OFFLINE }));
+fs.writeFileSync(path.join(config, 'launch.json'), JSON.stringify({ args, cwd: process.cwd(), telemetry: process.env.PI_TELEMETRY, offline: process.env.PI_OFFLINE }));
 const id = option(args.includes('--session') ? '--session' : '--session-id');
 const file = path.join(option('--session-dir'), id + '.jsonl');
 if (args.includes('--session') && !fs.existsSync(file)) {
@@ -16,7 +16,7 @@ if (args.includes('--session') && !fs.existsSync(file)) {
 const history = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 const response = (c, data = {}) => out({ type: 'response', id: c.id, command: c.type, success: true, data });
-const mode = process.env.PI_RPC_TEST_MODE;
+const mode = process.env.PI_RPC_TEST_MODE || (args.includes('--fixture-mode') ? option('--fixture-mode') : '');
 let active = false;
 let dialogMessage;
 function finish(message) {
@@ -27,6 +27,17 @@ function finish(message) {
 }
 async function command(c) {
   fs.appendFileSync(path.join(config, 'commands.jsonl'), JSON.stringify(c) + '\n');
+  if (c.type === 'get_available_models') {
+    if (mode === 'models-hang') return;
+    if (mode === 'models-malformed') return response(c, { models: 'invalid' });
+    return response(c, { models: [
+      { provider: 'openrouter', id: 'vendor/one', name: 'Model One', headers: { authorization: 'private fixture' } },
+      { provider: 'openrouter', id: 'vendor/two', name: 'Model Two' },
+      { provider: 'other', id: 'not-this-profile', name: 'Other' },
+      { provider: 'openrouter', id: 'vendor/one', name: 'Duplicate' },
+      { provider: 'openrouter', id: '' }, null,
+    ] });
+  }
   if (c.type === 'get_state') {
     if (mode === 'startup-hang') return;
     if (mode === 'malformed') return process.stdout.write('not json\n');

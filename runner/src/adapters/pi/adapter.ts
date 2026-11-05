@@ -4,7 +4,8 @@ import { fileContext } from '../context.ts';
 import type { ToolDefinition } from '../../agent-tools.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Account, EffortLevel, PermissionMode, PiProfile } from '../../protocol.ts';
+import os from 'node:os';
+import type { Account, EffortLevel, ModelChoice, PermissionMode, PiProfile } from '../../protocol.ts';
 import type { Logger } from '../../log.ts';
 import type { ProcessRegistry } from '../../proc.ts';
 import { SessionNotFoundError, type AgentAdapter, type AgentSession, type SessionSink, type StartSessionOptions, type UserInput } from '../types.ts';
@@ -25,6 +26,7 @@ export type PiAdapterDeps = {
 };
 type PiStartOptions = StartSessionOptions<Account | PiProfile>;
 type Turn = { input: UserInput; started: number; normalizer: PiNormalizer; acknowledged: boolean; settled: boolean; interrupted: boolean; cancelled: string[] };
+const ISOLATION_ARGS = ['--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--no-approve', '--offline'];
 
 // Profile-backed RPC sessions. Without a bridge, executable tools stay disabled.
 export class PiAdapter implements AgentAdapter {
@@ -34,6 +36,33 @@ export class PiAdapter implements AgentAdapter {
   private deps: PiAdapterDeps;
   constructor(deps: PiAdapterDeps) { this.deps = deps; }
   start(options: PiStartOptions, sink: SessionSink): AgentSession { return new PiSession(options, sink, this.deps); }
+
+  async models(account: Account): Promise<ModelChoice[]> {
+    const profile = this.deps.profileFor?.(account.id);
+    if (!profile) throw new Error('The Pi profile for this account is unavailable.');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'threadbear-pi-models-'));
+    let rpc: PiRpc | undefined;
+    try {
+      rpc = new PiRpc({ command: profile.executable,
+        args: [...(this.deps.args ?? []), '--mode', 'rpc', '--no-session', '--session-dir', path.join(root, 'sessions'), '--no-tools', ...ISOLATION_ARGS],
+        cwd: root, env: { ...process.env, PI_CODING_AGENT_DIR: profile.configDir, PI_OFFLINE: '1', PI_TELEMETRY: '0' },
+        diagnosticsDir: root, registry: this.deps.registry, log: this.deps.log,
+        requestTimeoutMs: this.deps.requestTimeoutMs ?? 15_000, shutdownTimeoutMs: this.deps.shutdownTimeoutMs ?? 3000,
+        maxLineBytes: this.deps.maxLineBytes, event() {}, exited() {},
+      });
+      const result = await rpc.request('get_available_models');
+      if (!Array.isArray(result.models)) throw new Error('Pi returned no model list.');
+      const models = new Map<string, ModelChoice>();
+      for (const model of result.models) {
+        if (model?.provider !== profile.connection.provider || typeof model.id !== 'string' || !model.id.trim()) continue;
+        if (!models.has(model.id)) models.set(model.id, { id: model.id, model: model.id, title: typeof model.name === 'string' && model.name.trim() ? model.name : model.id, effortLevels: [] });
+      }
+      return [...models.values()];
+    } finally {
+      await rpc?.end();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
 }
 
 class PiSession implements AgentSession {
@@ -91,7 +120,7 @@ class PiSession implements AgentSession {
     }
     const args = [...(deps.args ?? []), '--mode', 'rpc', '--provider', this.profile.connection.provider, '--model', this.model,
       '--session-dir', sessionDir, opts.resume ? '--session' : '--session-id', opts.sessionId,
-      ...(deps.toolsFor ? ['-e', fileURLToPath(new URL('./extension.mjs', import.meta.url))] : ['--no-tools']), '--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--no-approve', '--offline'];
+      ...(deps.toolsFor ? ['-e', fileURLToPath(new URL('./extension.mjs', import.meta.url))] : ['--no-tools']), ...ISOLATION_ARGS];
     const instructions = [opts.instructions, deps.instructionsFor?.(opts.threadId)].filter(Boolean).join('\n\n');
     if (instructions) args.push('--append-system-prompt', instructions);
     this.rpc = new PiRpc({ command: this.profile.executable, args, cwd: opts.cwd,

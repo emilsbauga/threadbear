@@ -831,6 +831,13 @@ runnable accounts as `pi:<profile ID>`, with `piProfileId`, `executable` and
 `connection` metadata. Existing IDs/defaults stay unchanged when no Pi profile
 is configured. `CliProvider` and `clis.*` remain Claude/Codex-only; Pi is a
 runnable `Provider` but is never sent through their installers or update paths.
+The profile connection's model is its default, not its only allowed model.
+At startup, the runner asks an isolated, short-lived Pi RPC process for
+`get_available_models`, filters it to the profile's inference provider and
+publishes safe model IDs/titles through the existing account model list.
+This uses Pi's cached catalog, starts no model turn and never loads tools or
+project extensions. Failure leaves the configured default available. The same
+profile and credentials serve any of its advertised models.
 With Pi configured, an official CLI without any registered accounts is not
 automatically probed, checked or installed.
 Older runners omit the field; clients treat it as an empty list. Older clients

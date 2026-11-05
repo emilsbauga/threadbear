@@ -38,6 +38,8 @@ The shared files most features hook into:
   `runner/src/adapters/pi/`, registered in `main.ts`. Shared tool policy lives in
   `agent-tools.ts`; Claude's SDK wrapper is in `adapters/claude/threadbear.ts`.
   Pi uses its own executable and profiles, outside Claude/Codex CLI updates.
+  Its adapter's `models()` reads the provider's cached model catalog through
+  a short-lived RPC process; account model updates feed the existing picker.
 
 - `runner/src/main.ts`: builds every service, holds the RPC method table
   (`const methods = {...}`), and stops each service in `stop()` and

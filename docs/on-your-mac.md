@@ -25,6 +25,11 @@ session-scoped HTTP server on a random loopback port, protected by a random
 bearer token, for tool definitions, execution and approvals. It closes with the
 session. Ask/auto modes gate writable tools and shell commands through
 Threadbear's approval cards; full mode still asks for always-ask tools.
+At runner startup, model discovery starts a short-lived Pi RPC process with
+no session, tools or resource discovery, in a temporary folder that is removed
+afterward. It reads Pi's cached available chat models for the profile's provider;
+it sends no prompt and makes no model request. Models are advertised by safe
+ID/title only. Catalog refresh remains Pi's own action (`pi update --models`).
 Automatic catalog requests and telemetry are disabled, but prompts can make
 model requests to the profile's configured endpoint. The adapter keeps a bounded
 private `pi-stderr.log` under its supplied temporary directory, registers its
