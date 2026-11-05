@@ -48,7 +48,7 @@ struct ComposerView: View {
         let needsYou = cardRow.map { row in if case .asks(let card) = row.content { !card.isDone } else { false } } ?? false
         let cardCollapsed = needsYou && thread.map { app.collapsedCards[$0.id] == cardRow?.seq } == true
         VStack(alignment: .leading, spacing: 0) {
-        if skillPicker.token != nil, !creating {
+        if skillPicker.token != nil, !creating, ThreadSettings(app: app, thread: thread).provider == "codex" {
             ComposerSkillsMenu(picker: skillPicker) { skillPicker.choose($0, in: handle.textView) }
         }
         // The folder's actions (patches), on shelves sitting on the box's
@@ -96,7 +96,7 @@ struct ComposerView: View {
                 handle: handle,
                 onEscape: { cancelEdit() },
                 editable: !creating,
-                skillPicker: skillPicker
+                skillPicker: ThreadSettings(app: app, thread: thread).provider == "codex" ? skillPicker : nil
             )
             .frame(height: height)
             .opacity(creating ? 0.5 : 1)
@@ -138,6 +138,7 @@ struct ComposerView: View {
         skillPicker.loading = true
         defer { if !Task.isCancelled { skillPicker.loading = false } }
         let settings = ThreadSettings(app: app, thread: thread)
+        guard settings.provider == "codex" else { skillPicker.dismiss(); return }
         // Never display this Mac's paths for a thread on another machine.
         guard !settings.isAway else {
             skillPicker.errors = ["The skills picker is available for threads on this Mac."]
