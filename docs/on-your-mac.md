@@ -133,6 +133,12 @@ File references are where to look.
 
 ## What it reads
 
+- Installed skill names, descriptions, scopes and paths, through the selected
+  Codex login's `skills/list`, when you open the Mac composer's skill picker.
+  This starts a short-lived official Codex process, not a model turn. Selecting
+  a skill inserts its `$name` in the draft; Codex reads its instructions when
+  the message is sent.
+
 - From your Claude and Codex logins: which account each is (the email in
   `~/.claude.json`), a few settings, and the token counts in your session
   transcripts, so it can show how much room each login has

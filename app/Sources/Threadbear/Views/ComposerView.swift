@@ -20,6 +20,7 @@ struct ComposerView: View {
     @State private var height: CGFloat = ComposerTextField.minHeight
     @State private var importing = 0
     @State private var handle = ComposerHandle()
+    @State private var skillPicker = ComposerSkillPicker()
 
     static var cornerRadius: CGFloat { zoomed(20) }
     static var padding: CGFloat { zoomed(14) }
@@ -47,6 +48,9 @@ struct ComposerView: View {
         let needsYou = cardRow.map { row in if case .asks(let card) = row.content { !card.isDone } else { false } } ?? false
         let cardCollapsed = needsYou && thread.map { app.collapsedCards[$0.id] == cardRow?.seq } == true
         VStack(alignment: .leading, spacing: 0) {
+        if skillPicker.token != nil, !creating {
+            ComposerSkillsMenu(picker: skillPicker) { skillPicker.choose($0, in: handle.textView) }
+        }
         // The folder's actions (patches), on shelves sitting on the box's
         // top edge, in from its rounded corner (ActionChips).
         if let thread, !thread.actions.isEmpty || thread.patches.contains(where: { $0.untrusted != nil }) {
@@ -91,7 +95,8 @@ struct ComposerView: View {
                 pictures: ComposerTextView.Pictures(allowed: { picturesAllowed() }, importOne: { await importPicture($0) }),
                 handle: handle,
                 onEscape: { cancelEdit() },
-                editable: !creating
+                editable: !creating,
+                skillPicker: skillPicker
             )
             .frame(height: height)
             .opacity(creating ? 0.5 : 1)
@@ -117,6 +122,40 @@ struct ComposerView: View {
         // corners; Codex and T3 leave about 24.
         .padding(.bottom, zoomed(20))
         .padding(.top, zoomed(4))
+        .task(id: skillsRequestKey) { await loadSkills() }
+        .onChange(of: draftKey) { _, _ in skillPicker.dismiss() }
+    }
+
+    private var skillsRequestKey: String {
+        let settings = ThreadSettings(app: app, thread: thread)
+        return "\(draftKey)|\(settings.account)|\(settings.cwd)|\(settings.draftRunnerId ?? thread?.runnerId ?? "local")|\(skillPicker.token != nil)"
+    }
+
+    private func loadSkills() async {
+        guard skillPicker.token != nil else { return }
+        skillPicker.skills = []
+        skillPicker.errors = []
+        skillPicker.loading = true
+        defer { if !Task.isCancelled { skillPicker.loading = false } }
+        let settings = ThreadSettings(app: app, thread: thread)
+        // Never display this Mac's paths for a thread on another machine.
+        guard !settings.isAway else {
+            skillPicker.errors = ["The skills picker is available for threads on this Mac."]
+            return
+        }
+        guard let client = app.client(for: thread?.id) else {
+            skillPicker.errors = ["Connect to the runner to list skills."]
+            return
+        }
+        do {
+            let result: ComposerSkills = try await client.call("skills.list", .object(["accountId": .string(settings.account), "cwd": .string(settings.cwd)]))
+            guard !Task.isCancelled else { return }
+            skillPicker.skills = result.skills
+            skillPicker.errors = result.errors
+        } catch {
+            guard !Task.isCancelled else { return }
+            skillPicker.errors = [error.localizedDescription]
+        }
     }
 
     /// A lighter fill on dark; on light, white lifted off the page by a
@@ -381,6 +420,7 @@ struct ComposerTextField: NSViewRepresentable {
     var onEscape: () -> Bool = { false }
     /// False while what's in it is being sent (a new thread being made).
     var editable = true
+    var skillPicker: ComposerSkillPicker?
 
     // Computed, so they follow the zoom (`applyTypeScale` re-applies
     // them to a text view that's already up).
@@ -450,6 +490,7 @@ struct ComposerTextField: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? ComposerTextView else { return }
+        textView.skillPicker = skillPicker
         textView.onSend = onSend
         textView.onReturnWhenEmpty = onReturnWhenEmpty
         textView.pictures = pictures
@@ -505,8 +546,17 @@ struct ComposerTextField: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView else { return }
+            parent.skillPicker?.changed(textView)
             parent.draft = textView.draftNow
             updateHeight()
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            if let textView { parent.skillPicker?.changed(textView) }
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.skillPicker?.dismiss()
         }
 
         func updateHeight() {
@@ -526,6 +576,7 @@ final class ComposerTextView: NSTextView {
     /// One of a card's Something else boxes (AskAnswerBox), not the
     /// composer: lookups for the composer skip it.
     var inAnswerBox = false
+    var skillPicker: ComposerSkillPicker?
     var onSend: (() -> Void)?
     var onReturnWhenEmpty: (() -> Bool)?
     var onEscape: (() -> Bool)?
@@ -689,6 +740,7 @@ final class ComposerTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         hoverChip(nil)
+        if skillPicker?.key(event, in: self) == true { return }
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         if isReturn, !hasMarkedText() {
             if event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option) {

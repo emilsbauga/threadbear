@@ -670,6 +670,8 @@ export class RpcServer {
           ...(decline ? { decline: true } : { secret: p.secret as string }),
         });
       }
+      case 'skills.list':
+        return r.listSkills(reqString(p, 'accountId'), reqString(p, 'cwd'));
       case 'pools.list':
         return r.listPools();
       case 'pools.save':

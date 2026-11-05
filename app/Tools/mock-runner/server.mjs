@@ -487,6 +487,12 @@ async function dispatch(client, method, p) {
         runnerVersion, protocol: 1, accounts: publicAccounts(),
         defaults: oldRunner ? { ...defaults, poolId: undefined } : defaults, ...(oldRunner ? {} : { clis, updates, pools }),
       };
+    case 'skills.list':
+      if (oldRunner) throw rpcError(-32601, 'Method not found');
+      return { skills: [
+        { name: 'mock-review', title: 'Review changes', description: 'Check local changes before shipping', path: '/mock/skills/review/SKILL.md', scope: 'user' },
+        { name: 'mock-release', title: 'Prepare release', description: 'Build and verify this project', path: '/mock/skills/release/SKILL.md', scope: 'repo' },
+      ], errors: [] };
     case 'files.read':
       // Slow enough on bruce that the app's loading state shows.
       if (client.as) await sleep(400);

@@ -696,3 +696,21 @@ test('requests about a draining runner\'s thread go to it; a moved answer is han
     await server.close();
   }
 });
+
+
+test('skills.list validates the selected account and folder and reports unsupported providers', async () => {
+  const { h, server, url } = await serve();
+  const c = await RunnerClient.connect(url, TOKEN);
+  try {
+    await assert.rejects(c.call('skills.list', { accountId: 'missing', cwd: h.home }), (e: { code: number }) => e.code === -32010);
+    await assert.rejects(c.call('skills.list', { accountId: 'claude-main', cwd: 'relative' }), (e: { code: number }) => e.code === -32602);
+    await assert.rejects(c.call('skills.list', { cwd: h.home }), (e: { code: number }) => e.code === -32602);
+    const unsupported = await c.call('skills.list', { accountId: 'claude-main', cwd: h.home });
+    assert.deepEqual(unsupported.skills, []);
+    assert.ok(unsupported.errors[0].includes('Codex'));
+    let queried = '';
+    h.runner.adapters.claude.skills = async (_a, cwd) => { queried = cwd; return { skills: [], errors: ['unreadable skill'] }; };
+    assert.deepEqual(await c.call('skills.list', { accountId: 'claude-main', cwd: h.home }), { skills: [], errors: ['unreadable skill'] });
+    assert.equal(queried, h.home);
+  } finally { c.close(); await server.close(); }
+});

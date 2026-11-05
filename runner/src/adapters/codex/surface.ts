@@ -83,6 +83,7 @@ export const CLIENT_REQUESTS = [
   'turn/steer',
   'turn/interrupt',
   'model/list',
+  'skills/list',
   'account/read',
   'account/rateLimits/read',
 ];

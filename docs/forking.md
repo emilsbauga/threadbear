@@ -182,3 +182,12 @@ What a first list of the cuts missed and the trial found: the `-ThreadbearPocket
 launch argument, the positional parameter shifting the tools test, and the
 App Store review notes. Expect a few like that in any feature: after the
 listed cuts, `git grep -i <feature>` across the repo finds the rest.
+
+## Composer skills picker
+
+`app/Sources/Threadbear/Views/ComposerSkills.swift` draws the searchable
+list and handles selection; `ComposerView.swift` connects it to the editor.
+`ThreadbearCore/Threads/SkillCompletion.swift` handles word ranges and search.
+The `skills.list` RPC in `runner/src/rpc.ts` calls `Runner.listSkills`, which
+uses the Codex adapter's short-lived `skills/list` query. Removing the picker
+and these hooks leaves typed `$skill-name` messages working as before.

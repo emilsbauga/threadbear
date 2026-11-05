@@ -285,6 +285,14 @@ folder?" or "Explain what you can do for me here." When you're ready for it
 to make something, try "Make a file called hello.txt that says hi" and watch
 it appear in `~/ThreadbearThreads`.
 
+In a thread on this Mac, type `/` or `$` at the start of a word to list
+skills for the selected Codex login and folder. Keep typing to search
+names and descriptions. Use ↑ and ↓ to choose, then Return or Tab to
+insert it, or click a skill. Escape closes the list. Choosing inserts
+`$skill-name ` so you can add your request before sending. The picker
+shows enabled skills from Codex, including personal and project skills;
+it is not available for Claude logins or threads on another Mac yet.
+
 Return sends and Shift-Return adds a new line. In a list, Shift-Return
 starts the next item ("2. " after "1. milk", "- " after "- milk"), and
 Shift-Return on an empty item ends the list. You can paste or drop images

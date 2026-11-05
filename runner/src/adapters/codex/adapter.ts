@@ -166,6 +166,20 @@ export class CodexAdapter implements AgentAdapter {
     );
   }
 
+  async skills(account: Account, cwd: string): Promise<import('../types.ts').SkillList> {
+    return withShortLivedProcess(
+      { ...this.shortLived(account, `skills:${account.id}`), cwd },
+      async (p) => {
+        const r = await p.request<{ data?: { skills?: { name: string; description: string; path: string; scope: string; enabled: boolean; interface?: { displayName?: string } }[]; errors?: { message: string }[] }[] }>('skills/list', { cwds: [cwd], forceReload: true });
+        return {
+          skills: (r.data ?? []).flatMap(d => (d.skills ?? []).filter(s => s.enabled && s.name && s.path).map(s => ({ name: s.name, ...(s.interface?.displayName ? { title: s.interface.displayName } : {}), description: s.description, path: s.path, scope: s.scope }))),
+          errors: (r.data ?? []).flatMap(d => (d.errors ?? []).map(e => e.message)),
+        };
+      },
+      (p, live) => this.track(p, live),
+    );
+  }
+
   // Archives the thread in Codex (it shows in Codex Desktop's list until
   // then), and any subagent threads this runner saw it start. Resume
   // unarchives. Best effort: the runner logs a failure.

@@ -230,12 +230,16 @@ export class RewindRefusedError extends Error {
   }
 }
 
+export type SkillChoice = { name: string; title?: string; description: string; path: string; scope: string };
+export type SkillList = { skills: SkillChoice[]; errors: string[] };
+
 export interface AgentAdapter {
   readonly provider: Provider;
   start(opts: StartSessionOptions, sink: SessionSink): AgentSession;
   // What the account's CLI offers as models, without starting a turn.
   // Optional: a provider without a picker leaves it out.
   models?(account: Account): Promise<ModelChoice[]>;
+  skills?(account: Account, cwd: string): Promise<SkillList>;
   // A same-account folder change calls setCwd on a live session, or passes
   // the folder to the next start or resume, instead of copying the
   // transcript and adding a handoff (Codex).

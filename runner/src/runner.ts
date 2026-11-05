@@ -726,6 +726,17 @@ export class Runner {
     }
   }
 
+  async listSkills(accountId: string, cwd: string): Promise<import('./adapters/types.ts').SkillList> {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new RpcError(ErrorCode.accountNotFound, 'Account not found');
+    if (!path.isAbsolute(cwd) || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new RpcError(ErrorCode.badParams, 'Choose an existing absolute folder for skills');
+    }
+    const adapter = this.adapters[account.provider];
+    if (!adapter?.skills) return { skills: [], errors: ['The skills picker is available for Codex logins.'] };
+    return adapter.skills(account, cwd);
+  }
+
   learnAccount(accountId: string, info: LearnedAccountInfo): void {
     if (!this.accounts.learn(accountId, info)) return;
     this.accountsChanged();

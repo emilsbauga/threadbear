@@ -820,6 +820,20 @@ thread's messages keep only the last `assistant.text` of an `itemId`.
 The Convex mirror keys messages by seq, so the phone and website show
 the summary and then the reply.
 
+## Composer skills
+
+`skills.list { accountId: string, cwd: string }` returns
+`{ skills: { name, title?, description, path, scope }[], errors: string[] }`.
+The runner asks the selected login's Codex app-server for `skills/list`
+with `cwds: [cwd]` and `forceReload: true`, without starting a thread or
+model turn. Only enabled skills are returned; unknown scopes are allowed.
+A provider without discovery returns no skills and an explanatory error.
+Unknown accounts are `-32010`; paths must be absolute existing folders.
+The Mac composer offers these skills when a word starts with `/` or `$`.
+Choosing one replaces that word with `$name `, leaving the rest of the
+message and its pictures intact; sending uses the existing text protocol.
+An old runner's `-32601` is shown in the picker, never as a broken composer.
+
 ## Requests (app to runner)
 
 | method | params | result |

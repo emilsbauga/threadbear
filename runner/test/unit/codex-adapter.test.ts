@@ -1041,3 +1041,22 @@ test('auto on Codex is as careful as ask, as Codex has no classifier', async () 
   assert.equal(req.params.sandbox, 'read-only');
   h.conn.respond(req.id, threadResult('th-1'));
 });
+
+
+test('skills() reads enabled skills in the selected folder without starting a turn', async () => {
+  const f = await fake();
+  const adapter = new CodexAdapter({ codexBinary: () => f.bin, registry: new ProcessRegistry(tmp(), nullLogger), log: nullLogger });
+  const pending = adapter.skills(account, os.tmpdir());
+  const conn = await f.next();
+  await conn.init();
+  const req = await conn.request('skills/list');
+  assert.deepEqual(req.params, { cwds: [os.tmpdir()], forceReload: true });
+  conn.respond(req.id as number, { data: [{ cwd: os.tmpdir(), skills: [
+    { name: 'deploy', description: 'Ship it', path: '/skills/deploy/SKILL.md', scope: 'user', enabled: true, interface: { displayName: 'Deploy' } },
+    { name: 'off', description: 'Disabled', path: '/skills/off/SKILL.md', scope: 'repo', enabled: false },
+  ], errors: [] }] });
+  assert.deepEqual(await pending, { skills: [{ name: 'deploy', title: 'Deploy', description: 'Ship it', path: '/skills/deploy/SKILL.md', scope: 'user' }], errors: [] });
+  await conn.closed;
+  assert.equal(conn.received.some(m => m.method === 'thread/start' || m.method === 'turn/start'), false);
+  assert.deepEqual(adapter.binariesInUse(), []);
+});
