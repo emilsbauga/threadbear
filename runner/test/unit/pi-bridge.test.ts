@@ -37,13 +37,15 @@ test('Pi native rules cover exact cwd/input, while full mode still asks for alwa
   mode = 'full'; await call('/tool', { name: 'delete_thread', input: {}, id: 'delete' }); assert.equal(approvals, 3);
 });
 
-test('closing the Pi bridge cancels a pending approval', async () => {
+test('closing the Pi bridge cancels a pending approval', { timeout: 15_000 }, async t => {
   let aborted = false;
-  const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: req => new Promise(resolve => { req.signal.addEventListener('abort', () => { aborted = true; resolve({ decision: 'expired' }); }); }) };
+  const started = Promise.withResolvers<void>();
+  const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: req => new Promise(resolve => { req.signal.addEventListener('abort', () => { aborted = true; resolve({ decision: 'expired' }); }); started.resolve(); }) };
   const bridge = new PiBridge({ tools: [], sink, cwd: () => '/work', mode: () => 'ask', rules: () => [], addRules() {} });
   const { url, token } = await bridge.start();
+  t.after(() => bridge.close());
   const pending = fetch(url + '/approve', { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ name: 'write', input: {}, id: 'pending' }) }).catch(() => null);
-  await new Promise(r => setTimeout(r, 30)); await bridge.close(); await pending;
+  await started.promise; await bridge.close(); await pending;
   assert.equal(aborted, true);
 });
 
