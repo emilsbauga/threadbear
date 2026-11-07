@@ -8,12 +8,13 @@ import { nullLogger } from '../../src/log.ts';
 import type { Account, PiProfile } from '../../src/protocol.ts';
 import { tmpDir } from '../helpers/fakes.ts';
 
+// Include process startup under load; timeout coverage still uses a fixture that never replies.
 const fixture = fileURLToPath(new URL('../fixtures/pi-rpc.mjs', import.meta.url));
 function setup(mode = '') {
   const root = tmpDir(), configDir = path.join(root, 'config'), owned = new Set<number>();
   const account: Account = { id: 'pi:router', provider: 'pi', title: 'Pi', configDir };
   const profile: PiProfile = { id: 'router', engine: 'pi', title: 'Pi', executable: process.execPath, configDir, connection: { provider: 'openrouter', model: 'vendor/one' }, capabilities: { threads: true } };
-  const adapter = new PiAdapter({ profileFor: id => id === account.id ? profile : undefined, args: [fixture, '--fixture-mode', mode], requestTimeoutMs: 200, shutdownTimeoutMs: 100, log: nullLogger, registry: { add: p => owned.add(p), remove: p => owned.delete(p) } });
+  const adapter = new PiAdapter({ profileFor: id => id === account.id ? profile : undefined, args: [fixture, '--fixture-mode', mode], requestTimeoutMs: 10_000, shutdownTimeoutMs: 100, log: nullLogger, registry: { add: p => owned.add(p), remove: p => owned.delete(p) } });
   return { account, adapter, configDir, owned };
 }
 

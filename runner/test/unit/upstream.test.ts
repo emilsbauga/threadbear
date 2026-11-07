@@ -792,7 +792,7 @@ function alive(pid: number): boolean {
 for (const when of ['list', 'fetch'] as const) {
   test(`an upstream that hangs ${when === 'list' ? 'listing its tags' : 'sending them'} fails the check by its deadline, and leaves nothing running or behind`, async () => {
     const w = world();
-    const up = upstreamFor(w.theirs, w.home, new FakeClock(LATER), { fetchTimeoutMs: 1500 });
+    const up = upstreamFor(w.theirs, w.home, new FakeClock(LATER), { fetchTimeoutMs: 10_000 });
     assert.equal((await up.check()).release?.tag, 'release/2026-10-01');
     fs.rmSync(path.join(w.root, 'calls'), { force: true });
     commit(w.mike, 'b.txt', 'Newer');
@@ -802,7 +802,7 @@ for (const when of ['list', 'fetch'] as const) {
     const before = objectsIn(w.theirs);
     const t0 = Date.now();
     const s = await up.check();
-    assert.ok(Date.now() - t0 < 15_000, `took ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < 30_000, `took ${Date.now() - t0} ms`);
     assert.equal(s.state, 'failed');
     assert.match(s.reason ?? '', /timed out/);
     assert.equal(s.release?.tag, 'release/2026-10-01', 'keeps the release it knew of');

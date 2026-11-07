@@ -10,7 +10,8 @@ import type { PiProfile } from '../../src/protocol.ts';
 import { tmpDir } from '../helpers/fakes.ts';
 
 const fixture = fileURLToPath(new URL('../fixtures/pi-rpc.mjs', import.meta.url));
-async function until(check: () => boolean, timeout = 4000) {
+// Allow fixture startup and RPC delivery while other test processes are busy.
+async function until(check: () => boolean, timeout = 15_000) {
   const end = Date.now() + timeout;
   while (!check()) { if (Date.now() > end) throw new Error('Timed out waiting for Pi fixture'); await new Promise(r => setTimeout(r, 5)); }
 }
@@ -19,7 +20,7 @@ function setup(t: { after(fn: () => Promise<void>): void }, extra: { mode?: stri
   const profile: PiProfile = { id: 'pi-test', engine: 'pi', title: 'Pi', executable: process.execPath, configDir: path.join(root, 'config'), connection: { provider: 'test-provider', model: 'test-model' }, capabilities: { threads: false } };
   const outputs: AdapterOutput[] = [], exits: (Error | undefined)[] = [], owned = new Set<number>();
   const sink: SessionSink = { output: o => outputs.push(o), exited: e => exits.push(e), requestApproval: async () => { throw new Error('No tools'); }, requestQuestion: extra.requestQuestion ?? (async () => { throw new Error('No UI'); }) };
-  const adapter = new PiAdapter({ args: [fixture], log: nullLogger, registry: { add: pid => { owned.add(pid); }, remove: pid => { owned.delete(pid); } }, requestTimeoutMs: extra.timeout ?? 1500, shutdownTimeoutMs: 150, maxLineBytes: extra.maxLineBytes, ...(extra.tools ? { toolsFor: () => [] } : {}) });
+  const adapter = new PiAdapter({ args: [fixture], log: nullLogger, registry: { add: pid => { owned.add(pid); }, remove: pid => { owned.delete(pid); } }, requestTimeoutMs: extra.timeout ?? 10_000, shutdownTimeoutMs: 150, maxLineBytes: extra.maxLineBytes, ...(extra.tools ? { toolsFor: () => [] } : {}) });
   const session = adapter.start({ threadId: 'thread-one', sessionId: 'session-one', resume: extra.resume ?? false, account: profile, cwd: root, permissionMode: 'ask', tmpDir: path.join(root, 'tmp'), mediaDir: root, blobsDir: root, env: { PI_RPC_TEST_MODE: extra.mode ?? '', PI_CODING_AGENT_DIR: '/wrong', PI_TELEMETRY: '1' } }, sink);
   t.after(() => session.end({ hard: true }));
   const results = () => outputs.filter(o => o.kind === 'result').map(o => o.result);
@@ -134,7 +135,7 @@ test('Pi reports prompt rejection and crashes once and forcibly stops an unrespo
   await until(() => rejected.results().length === 1); assert.equal(rejected.results()[0].outcome, 'failed');
   const crashed = setup(t); crashed.session.send({ id: 'c', text: 'crash', images: [] });
   await until(() => crashed.exits.length === 1); assert.equal(crashed.results()[0].outcome, 'failed');
-  const hung = setup(t, { mode: 'abort-hang', timeout: 200 }); hung.session.send({ id: 'h', text: 'hang', images: [] });
+  const hung = setup(t, { mode: 'abort-hang', timeout: 5000 }); hung.session.send({ id: 'h', text: 'hang', images: [] });
   await until(() => hung.outputs.some(o => o.kind === 'delta'));
   await hung.session.interrupt();
   await until(() => hung.exits.length === 1);

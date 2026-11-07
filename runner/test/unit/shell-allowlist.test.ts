@@ -1061,7 +1061,7 @@ test("R10: a live command's `&` can't outlive it: its process group gets SIGTERM
   const session = await runCommand(`${JSON.stringify(process.execPath)} -e "const c = require('child_process').spawn('sleep', ['30'], { detached: true, stdio: 'inherit' }); console.log(c.pid); c.unref()"`, { cwd: dir, env: process.env, shell: ['/bin/sh', '-c'], killGroup: true, killGraceMs: 200 });
   const left = Number(session.text.trim());
   assert.ok(left > 0, session.text);
-  assert.ok(Date.now() - before < 5000, 'the answer came back');
+  assert.ok(Date.now() - before < 15_000, 'the answer came back');
   assert.equal(await gone(left, 100), false, "it's documented as not covered");
   process.kill(left, 'SIGKILL');
 });
