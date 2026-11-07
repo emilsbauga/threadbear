@@ -55,3 +55,26 @@ test('invalid draft creation does not leave an idle thread behind', () => {
   assert.throws(() => h.runner.createDraft({ text: 'bad', images: [{path: h.home, mediaType: 'image/png'}] }));
   assert.equal(h.runner.list().length, before);
 });
+
+for (const archived of [false, true]) {
+  test(`deleting ${archived ? 'archived' : 'Backlog'} draft removes its prompt and owned media from active storage`, async () => {
+    const h = makeHarness();
+    const image = path.join(h.home, 'delete-test.png');
+    fs.writeFileSync(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5X8AAAAASUVORK5CYII=', 'base64'));
+    const { thread } = h.runner.createDraft({ text: 'Disposable draft', images: [{ path: image, mediaType: 'image/png' }] });
+    if (archived) h.runner.update({ threadId: thread.id, archived: true });
+    h.runner.flush();
+    h.runner.delete(thread.id);
+    h.runner.flush();
+    assert.throws(() => h.runner.get(thread.id), /not found/i);
+    assert.equal(fs.existsSync(h.store.threadDir(thread.id)), false);
+    assert.equal(fs.existsSync(thread.backlog!.images[0].path), false);
+    const trashed = fs.readdirSync(path.join(h.home, 'trash')).find(name => name.startsWith(thread.id));
+    assert.ok(trashed);
+    assert.ok(fs.existsSync(path.join(h.home, 'trash', trashed, 'media', path.basename(thread.backlog!.images[0].path))));
+    const next = h.restart();
+    await tick();
+    assert.equal(next.runner.list(['inbox', 'archived']).some(t => t.id === thread.id), false);
+    assert.equal(next.adapter.sessions.length, 0);
+  });
+}

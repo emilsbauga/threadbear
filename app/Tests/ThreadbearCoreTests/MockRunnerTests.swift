@@ -79,6 +79,16 @@ final class MockRunnerTests: XCTestCase {
         return client
     }
 
+    func testDeleteSavedDraft() async throws {
+        let client = try await connect()
+        defer { client.close() }
+        let draft = try await client.createThread(NewThreadRequest(text: "Disposable saved prompt"), backlog: true)
+        XCTAssertNotNil(draft.backlog)
+        try await client.deleteThread(draft.id)
+        let remaining = try await client.listThreads(include: [.inbox, .archived])
+        XCTAssertFalse(remaining.contains { $0.id == draft.id })
+    }
+
     func testHelloListSearchAndEvents() async throws {
         let client = try await connect()
         defer { client.close() }

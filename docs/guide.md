@@ -44,6 +44,11 @@ the usual Inbox and Archived flow. Archiving an unsent item keeps its draft;
 bringing it back returns it to Backlog. Like the other headings, Backlog can
 be folded away and its items appear in search.
 
+Hover a Backlog or Archived chat and click the trash icon, or right-click
+and choose **Delete…**.
+Confirm **Delete**, or choose **Cancel** to keep it. Deleting removes its
+saved prompt and pictures too; there is no Undo in the app.
+
 Inbox holds the threads for you, with
 the ones that need you at the top. The number on the Threads icon in the
 left-hand rail is how many are in it. The arrows at the end of its heading

@@ -299,6 +299,7 @@ extension AppModel {
     func forget(_ threadId: String) {
         let panel = WindowDock.threadPanel(threadId)
         if dock.layout.contains(panel) { dock.close(panel) }
+        backlogSaves[threadId]?.cancel()
         threads[threadId] = nil
         drafts[threadId] = nil
         if let session = sessions.removeValue(forKey: threadId) { session.unsubscribe() }

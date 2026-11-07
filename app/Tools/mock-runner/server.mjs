@@ -709,6 +709,13 @@ async function dispatch(client, method, p) {
       setTimeout(() => fakeTurn(t.summary.id, p.text ?? '', p.images ?? [], turnId, undefined, { editOf: p.seq }), 10);
       return { turnId, rewound: { seq: rewound.seq, fromSeq: rewound.fromSeq, toSeq: rewound.toSeq, files } };
     }
+    case 'threads.delete': {
+      const t = need(p.threadId);
+      if (t.interrupt) t.interrupt();
+      threads.delete(t.summary.id);
+      broadcast('thread.deleted', { threadId: t.summary.id });
+      return {};
+    }
     case 'threads.interrupt': {
       const t = need(p.threadId);
       if (t.interrupt) t.interrupt();

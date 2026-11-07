@@ -19,6 +19,10 @@ public extension RPCClient {
         return try await call("threads.list", params, as: ThreadsResult.self).threads
     }
 
+    func deleteThread(_ threadId: String) async throws {
+        _ = try await call("threads.delete", .object(["threadId": .string(threadId)]), as: EmptyResult.self)
+    }
+
     func searchThreads(_ query: String, limit: Int? = nil) async throws -> [ThreadSummary] {
         var params: [String: JSONValue] = ["query": .string(query)]
         if let limit { params["limit"] = .number(Double(limit)) }

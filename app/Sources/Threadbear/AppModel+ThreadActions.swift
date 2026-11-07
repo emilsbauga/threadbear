@@ -624,6 +624,26 @@ extension AppModel {
         update(threadId, ThreadUpdate(starred: starred))
     }
 
+    /// Sidebar deletion is limited to saved tasks and archived chats.
+    func deleteThread(_ threadId: String) {
+        guard let thread = threads[threadId], thread.isArchived || thread.backlog != nil,
+              let client = client(for: threadId) else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete \u{201C}\(thread.title)\u{201D}?"
+        alert.informativeText = "This removes the chat, its saved prompt and attachments. It can't be undone in the app."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let current = threads[threadId], current.isArchived || current.backlog != nil else { return }
+        Task {
+            do {
+                try await client.deleteThread(threadId)
+                forget(threadId)
+            } catch { show(error) }
+        }
+    }
+
     /// Archive (Mike calls it settling): leaves the inbox, stops its CLI.
     /// Its row slides off first, as a swiped one does;
     /// `slid` is a swipe that's already done that.

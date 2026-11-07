@@ -3,6 +3,22 @@ import ThreadbearCore
 @testable import Threadbear
 
 final class BacklogComposerTests: XCTestCase {
+    @MainActor func testDeleteActionsStayOutOfActiveRowsAndForgetClearsDraft() {
+        let app = AppModel()
+        var thread = ThreadSummary(id: "delete-draft", title: "Disposable")
+        thread.backlog = BacklogDraft(text: "Saved", images: [])
+        app.threads[thread.id] = thread
+        app.restoreBacklog(thread.id)
+        XCTAssertTrue(RowMode(.backlog, thread: thread, now: Date()).rowActions.contains(.delete))
+        XCTAssertTrue(RowMode.archive.rowActions.contains(.delete))
+        XCTAssertFalse(RowMode.inbox.rowActions.contains(.delete))
+        XCTAssertFalse(RowMode.hibernating.rowActions.contains(.delete))
+        XCTAssertFalse(RowMode.projects.rowActions.contains(.delete))
+        app.forget(thread.id)
+        XCTAssertNil(app.threads[thread.id])
+        XCTAssertNil(app.drafts[thread.id])
+    }
+
     @MainActor func testSavedDraftRestoresPicturesAndDoesNotHoldUpAppUpdates() {
         let app = AppModel()
         var thread = ThreadSummary(id: "backlog-test", title: "A saved prompt")

@@ -1087,6 +1087,8 @@ just as sent images are.
 Backlog is included in the existing `threads.list` inbox scope, but clients
 place it in its own collapsible section, before Inbox and after Starred.
 Backlog takes precedence over a star; archiving takes precedence over both.
+The Mac sidebar offers Delete on Backlog and Archived rows, with confirmation,
+using `threads.delete`; saved prompts and owned media move to runner trash together.
 The composer restores the draft when opening it and saves edits to the
 runner. Creation is offered as Save to Backlog in the new composer's + menu
 and send button menu. It uses the selected folder, login/pool and model.

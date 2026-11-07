@@ -570,7 +570,7 @@ private struct SelectionKey: Equatable {
 
 /// What kind of list a row is in: how it reads and its hover buttons.
 enum RowMode: Equatable {
-    case inbox, hibernating, archive, projects
+    case inbox, backlog, hibernating, archive, projects
 
     /// A starred thread reads as what it is: one that's hibernating says
     /// when it wakes, and wakes rather than hibernates. So does one under
@@ -580,7 +580,8 @@ enum RowMode: Equatable {
         switch section {
         case .starred, .hibernating: self = thread.isSnoozed(at: now) ? .hibernating : .inbox
         case .archived: self = .archive
-        case .backlog, .inbox, .running: self = .inbox
+        case .backlog: self = .backlog
+        case .inbox, .running: self = .inbox
         }
     }
 
@@ -588,13 +589,14 @@ enum RowMode: Equatable {
         switch self {
         case .inbox, .projects: return [.star, .snooze, .archive]
         case .hibernating: return [.star, .unsnooze, .archive]
-        case .archive: return [.unarchive]
+        case .backlog: return [.star, .snooze, .archive, .delete]
+        case .archive: return [.unarchive, .delete]
         }
     }
 }
 
 enum RowAction {
-    case star, snooze, archive, unsnooze, unarchive
+    case star, snooze, archive, unsnooze, unarchive, delete
 }
 
 struct ThreadRowView: View {
@@ -652,7 +654,7 @@ struct ThreadRowView: View {
     var body: some View {
         // The Projects view's rows say what they're doing too: it has no
         // Needs you or Running headings to say it for them.
-        let look = mode == .inbox || mode == .projects ? ThreadRowLook(thread, section: section) : ThreadRowLook(status: .time, unread: false, emphasised: false)
+        let look = mode == .inbox || mode == .backlog || mode == .projects ? ThreadRowLook(thread, section: section) : ThreadRowLook(status: .time, unread: false, emphasised: false)
         // A tile for the thread's project, two lines tall, then the title
         // across the whole width and under it where the thread belongs and
         // what it's doing. The preview and the account name went once
@@ -1047,6 +1049,10 @@ private struct RowActions: View {
                     Button { app.unsnooze(thread.id) } label: { Image(systemName: "arrow.uturn.backward") }
                         .buttonStyle(RowIconButtonStyle())
                         .tip("Wake")
+                case .delete:
+                    Button { app.deleteThread(thread.id) } label: { Image(systemName: "trash") }
+                        .buttonStyle(RowIconButtonStyle())
+                        .tip("Delete chat…")
                 case .unarchive:
                     Button { app.unarchive(thread.id) } label: { Image(systemName: "arrow.uturn.backward") }
                         .buttonStyle(RowIconButtonStyle())
@@ -1182,6 +1188,9 @@ struct ThreadMenu: View {
             Button("Unarchive", systemImage: "tray.and.arrow.up") { app.unarchive(thread.id) }
         } else {
             Button("Archive", systemImage: "archivebox") { app.archive(thread.id) }
+        }
+        if thread.isArchived || thread.backlog != nil {
+            Button("Delete…", systemImage: "trash", role: .destructive) { app.deleteThread(thread.id) }
         }
         // Projects are this Mac's runner's; another runner's threads
         // aren't in them.
