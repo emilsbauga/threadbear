@@ -453,12 +453,13 @@ extension Automation {
             }
             return "ok " + json(AccountMenu.lines(settings.pinSections, footer: settings.pinnedLine))
         case "permission": menu = settings.permissionMenu()
+        case "plus": menu = settings.plusMenu(attach: {})
         case "folder": menu = settings.folderMenu()
         case "runner":
             // Runs on, on the new-thread composer only.
             guard app.selectedThread == nil else { return "error runner is for a new thread" }
             menu = settings.runnerMenu()
-        default: return "error menu is model, account, pin, permission, folder or runner"
+        default: return "error menu is model, account, pin, permission, plus, folder or runner"
         }
         if let title = c["click"] as? String {
             guard let item = allItems(menu).first(where: { $0.title == title }), let action = item.action else { return "error no item \(title)" }

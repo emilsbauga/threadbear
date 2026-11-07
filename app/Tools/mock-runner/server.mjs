@@ -613,6 +613,15 @@ async function dispatch(client, method, p) {
       }
       return { threads: made.reverse() };
     }
+    case 'threads.saveDraft': {
+      const t = need(p.threadId);
+      if (!t.summary.backlog || t.summary.backlog.revision !== p.revision) throw rpcError(-32602, 'Backlog draft changed');
+      t.summary.backlog = { text: p.text ?? '', images: p.images ?? [], revision: p.revision + 1 };
+      t.summary.preview = p.text ?? '';
+      broadcastSummary(t.summary.id);
+      return { thread: t.summary };
+    }
+    case 'threads.createDraft':
     case 'threads.create': {
       if (!p.text) throw rpcError(-32602, 'text is required');
       const threadId = 'th_' + crypto.randomBytes(6).toString('hex');
@@ -634,12 +643,19 @@ async function dispatch(client, method, p) {
       // Made over /bruce/rpc, it's bruce's: only bruce's clients hear of
       // it, and this runner's through remoteThreads.updated.
       threads.set(threadId, { summary, events: [], inProgress: new Map(), timers: [], ...(client.as ? { runnerId: client.as } : {}) });
+      if (method === 'threads.createDraft') {
+        summary.backlog = { text: p.text, images: p.images ?? [], revision: 1 };
+        summary.status = 'idle'; summary.live = false; summary.preview = p.text;
+        broadcastSummary(threadId);
+        return { thread: summary };
+      }
       broadcastSummary(threadId);
       setTimeout(() => fakeTurn(threadId, p.text, p.images ?? []), 10);
       return { thread: summary };
     }
     case 'threads.send': {
       const t = need(p.threadId);
+      delete t.summary.backlog;
       // A message declines any secret card still open, first (docs/
       // protocol.md, "Secrets"), as the real runner does.
       const resolved = new Set(t.events.filter((e) => e.type === 'approval.resolved').map((e) => e.approvalId));

@@ -106,7 +106,8 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 48;
+export const BACKEND_API_VERSION = 49;
+export const BACKLOG_API_VERSION = 49;
 // From this one the main Mac reads and steers other runners' threads through
 // the backend (convex/relay.ts): commands can be `interrupt` or `call`, and a
 // pending approval carries its event's seq (docs/protocol.md, "Other
@@ -302,6 +303,7 @@ export type ThreadDoc = {
   asked?: string;
   archivedAt?: string;
   starredAt?: string;
+  backlog?: { text: string; revision: number; imageCount: number };
   costUsd?: number;
   projects?: { id: string; title: string }[];
   working?: string;
@@ -662,6 +664,7 @@ export function toThreadDoc(t: ThreadSummary, runnerId: string, now: number, pen
   if (t.asked) doc.asked = t.asked;
   if (t.archivedAt) doc.archivedAt = t.archivedAt;
   if (t.starredAt) doc.starredAt = t.starredAt;
+  if (t.backlog) doc.backlog = { text: t.backlog.text, revision: t.backlog.revision, imageCount: t.backlog.images.length };
   // To the cent: a running thread's cost moves every turn and the phone
   // doesn't need a write for the fourth decimal.
   if (t.costUsd !== undefined) doc.costUsd = Math.round(t.costUsd * 100) / 100;
@@ -732,8 +735,9 @@ function phoneAnswers(raw: unknown): AskAnswer[] | undefined {
 export function forBackend(d: ThreadDoc, v: number, now: number): ThreadDoc {
   const asks = d.asks !== undefined || d.asksSeq !== undefined || d.next !== undefined;
   const sections = d.needs !== undefined || d.pendingReviews !== undefined || d.waitingForRoom !== undefined;
-  if ((v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined)) return d;
+  if ((v >= BACKLOG_API_VERSION || !d.backlog) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined)) return d;
   const out = { ...d };
+  if (v < BACKLOG_API_VERSION) delete out.backlog;
   if (v < SECTIONS_API_VERSION) {
     delete out.needs;
     delete out.pendingReviews;
@@ -1099,6 +1103,7 @@ export class ConvexSync {
         takesStartedBy: () => (this.backendApiVersion ?? 0) >= INDEX_STARTED_BY_API_VERSION,
         takesStars: () => (this.backendApiVersion ?? 0) >= STARS_API_VERSION,
         takesAsked: () => (this.backendApiVersion ?? 0) >= INDEX_ASKED_API_VERSION,
+        takesBacklog: () => (this.backendApiVersion ?? 0) >= BACKLOG_API_VERSION,
         takesSince: () => (this.backendApiVersion ?? 0) >= INDEX_SINCE_API_VERSION,
         seed: () => {
           const file = deps.cachePath;

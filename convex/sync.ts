@@ -2146,6 +2146,7 @@ const indexDoc = v.object({
   snoozedUntil: v.optional(v.string()),
   archivedAt: v.optional(v.string()),
   starredAt: v.optional(v.string()),
+  backlog: v.optional(v.boolean()),
   startedBy: v.optional(v.object({ kind: v.string(), label: v.string(), icon: v.optional(v.string()), threadTitle: v.optional(v.string()), why: v.optional(v.string()) })),
   asked: v.optional(v.string()), // since API 32
 });

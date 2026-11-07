@@ -148,6 +148,10 @@ test('view follows hibernate and den; cost is to the cent; working comes from ba
   assert.equal(toThreadDoc({ ...base, archivedAt: '2026-10-27T09:40:00.000Z' }, 'r', now).view, 'den');
   // A star keeps a hibernating thread in the list the phone always loads, but
   // not an archived one. A backend without stars gets it as an ordinary thread.
+  const draft = toThreadDoc({ ...base, backlog: { text: 'Unsent prompt', images: [], revision: 1 } }, 'r', now);
+  assert.deepEqual(draft.backlog, { text: 'Unsent prompt', imageCount: 0, revision: 1 });
+  assert.equal(forBackend(draft, 48, now).backlog, undefined);
+  assert.deepEqual(forBackend(draft, 49, now).backlog, draft.backlog);
   const starredAt = '2026-10-27T09:20:00.000Z';
   const asleep = toThreadDoc({ ...base, starredAt, snoozedUntil: '2026-10-27T18:00:00.000Z' }, 'r', now);
   assert.equal(asleep.view, 'inbox');

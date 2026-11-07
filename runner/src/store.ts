@@ -11,6 +11,7 @@ export type QueuedSend = { turnId: string; text: string; images: ImageRef[]; ori
 
 // What thread.json holds: the public summary fields plus a few internal ones.
 export type ThreadRecord = {
+  backlog?: import('./protocol.ts').BacklogDraft;
   id: string;
   title: string;
   cwd: string;

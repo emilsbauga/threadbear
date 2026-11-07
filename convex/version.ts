@@ -216,4 +216,5 @@
 //    none and is told about everyone's, as before. sync:schedules reads only a
 //    runner key's own rows. sync:schedulesSince is the table once and then only
 //    the rows written since; an older runner goes on using sync:schedules.
-export const API_VERSION = 48;
+// 49: unsent Backlog first prompts on thread rows; no turn or CLI until send.
+export const API_VERSION = 49;

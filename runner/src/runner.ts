@@ -1286,6 +1286,9 @@ export class Runner {
     if (!text && images.length === 0) throw new RpcError(ErrorCode.badParams, 'text or images required');
     // Its turn was made up; a real agent picking it up would only be lost.
     if (st.rec.sample) throw new RpcError(ErrorCode.badParams, "This is one of the tour's sample threads, so nothing can be sent to it. Start a new thread to try it for real.");
+    // Phone clients have storage IDs for new pictures, not paths to the
+    // draft's existing media. Keep those when starting its first prompt.
+    if (st.rec.backlog && opts.origin === 'phone') images = [...st.rec.backlog.images, ...images];
     checkImages(images);
     return { turnId: this.sendTo(st, text, images, opts) };
   }
@@ -1308,6 +1311,10 @@ export class Runner {
         throw new RpcError(ErrorCode.badParams, (e as Error).message);
       }
     });
+    // Only a validated send promotes a saved first prompt into an active thread.
+    const wasBacklog = Boolean(rec.backlog);
+    delete rec.backlog;
+    if (wasBacklog && !rec.titleSet && text.trim()) void this.titleFromModel(st, text);
     // New work: its last finish no longer says it's done, for threads
     // waiting on it (runner/hibernation.ts).
     delete rec.finished;
@@ -2862,6 +2869,7 @@ export class Runner {
       lastSeq: rec.lastSeq,
       lastSeenSeq: rec.lastSeenSeq,
     };
+    if (rec.backlog) s.backlog = structuredClone(rec.backlog);
     if (rec.poolId) s.poolId = rec.poolId;
     if (rec.waitingForRoom) s.waitingForRoom = { ...rec.waitingForRoom };
     if (rec.waitingForNetwork) s.waitingForNetwork = { since: rec.waitingForNetwork.since };

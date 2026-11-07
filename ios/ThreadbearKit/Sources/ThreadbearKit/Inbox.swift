@@ -5,11 +5,12 @@ import Foundation
 /// until Mike merged it into Hibernating (3 Nov): either way they're asleep
 /// until a time.
 public enum PhoneSection: String, Sendable, CaseIterable {
-    case starred, inbox, running, hibernating, archived
+    case starred, backlog, inbox, running, hibernating, archived
 
     public var title: String {
         switch self {
         case .starred: "Starred"
+        case .backlog: "Backlog"
         case .inbox: "Inbox"
         case .running: "Running"
         case .hibernating: "Hibernating"
@@ -20,6 +21,7 @@ public enum PhoneSection: String, Sendable, CaseIterable {
     public var icon: String {
         switch self {
         case .starred: "star"
+        case .backlog: "tray.full"
         case .inbox: "tray"
         case .running: "bolt"
         case .hibernating: "moon.zzz"
@@ -91,6 +93,7 @@ public struct InboxSections: Sendable, Equatable {
     /// Oldest star first, so they stay put. Hibernating ones too: the runner
     /// keeps them in the inbox list for this (backend API 27).
     public var starred: [PhoneThread] = []
+    public var backlog: [PhoneThread] = []
     public var inbox: [PhoneThread] = []
     public var running: [PhoneThread] = []
     /// Soonest to wake first.
@@ -114,6 +117,10 @@ public struct InboxSections: Sendable, Equatable {
     public static func build(_ threads: some Sequence<PhoneThread>, now: Date, wakes: [String: PhoneSchedule] = [:]) -> InboxSections {
         var sections = InboxSections()
         for thread in threads where thread.archivedAt == nil {
+            if thread.backlog != nil {
+                sections.backlog.append(thread)
+                continue
+            }
             if thread.starredAt != nil {
                 sections.starred.append(thread)
                 continue
@@ -141,6 +148,7 @@ public struct InboxSections: Sendable, Equatable {
             let (a, b) = (urgency($0), urgency($1))
             return a != b ? a < b : newestFirst($0, $1)
         }
+        sections.backlog.sort(by: newestFirst)
         sections.running.sort(by: newestFirst)
         sections.scheduled.sort {
             let (a, b) = (wakes[$0.threadId]?.nextRunAt ?? .distantFuture, wakes[$1.threadId]?.nextRunAt ?? .distantFuture)
@@ -206,7 +214,7 @@ public struct InboxSections: Sendable, Equatable {
         return (awake + inbox).filter { Self.urgency($0) <= 2 }.count
     }
 
-    public var isEmpty: Bool { starred.isEmpty && inbox.isEmpty && running.isEmpty && scheduled.isEmpty }
+    public var isEmpty: Bool { starred.isEmpty && backlog.isEmpty && inbox.isEmpty && running.isEmpty && scheduled.isEmpty }
 }
 
 /// The search at the top of the inbox, as the Mac sidebar's
@@ -214,6 +222,7 @@ public struct InboxSections: Sendable, Equatable {
 /// section cut down to the matches in its usual order.
 public struct ThreadSearch: Sendable, Equatable {
     public var starred: [PhoneThread] = []
+    public var backlog: [PhoneThread] = []
     public var inbox: [PhoneThread] = []
     public var running: [PhoneThread] = []
     /// The scheduled threads and the snoozed ones, as the Hibernating heading
@@ -233,6 +242,7 @@ public struct ThreadSearch: Sendable, Equatable {
         let keep: ([PhoneThread]) -> [PhoneThread] = { threads in
             threads.filter { Self.matches($0, query) && seen.insert($0.threadId).inserted }
         }
+        backlog = keep(sections.backlog)
         starred = keep(sections.starred)
         inbox = keep(sections.inbox)
         running = keep(sections.running)
@@ -248,7 +258,7 @@ public struct ThreadSearch: Sendable, Equatable {
         return [thread.title, thread.preview, thread.placeText].contains { $0.range(of: query, options: options) != nil }
     }
 
-    public var isEmpty: Bool { starred.isEmpty && inbox.isEmpty && running.isEmpty && hibernating.isEmpty && archived.isEmpty }
+    public var isEmpty: Bool { starred.isEmpty && backlog.isEmpty && inbox.isEmpty && running.isEmpty && hibernating.isEmpty && archived.isEmpty }
 }
 
 /// What a row says at its right: the status while it means something, else

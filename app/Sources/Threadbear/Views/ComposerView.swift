@@ -43,7 +43,7 @@ struct ComposerView: View {
         let canSend = !picks.isEmpty || !followUps.isEmpty || ComposerChips.canSend(text: draft.wrappedValue.text, imageCount: draft.wrappedValue.images.count)
         // A new thread on its way: what was sent stays, greyed and locked,
         // until the runner has made the thread.
-        let creating = thread == nil && app.creatingThread
+        let creating = thread == nil ? app.creatingThread : app.startingBacklog.contains(thread!.id)
         // The open card sits at the top of the box (ComposerCard), not
         // while a message is being edited: the edit is a reply of its own.
         let cardRow = thread.flatMap { thread in app.editing[thread.id] == nil ? session?.openCard : nil }

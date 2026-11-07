@@ -714,3 +714,20 @@ test('skills.list validates the selected account and folder and reports unsuppor
     assert.equal(queried, h.home);
   } finally { c.close(); await server.close(); }
 });
+
+
+test('Backlog RPCs save without sending, reject stale edits, and promote on first send', async () => {
+  const { h, server, url } = await serve();
+  const c = await RunnerClient.connect(url, TOKEN);
+  try {
+    const { thread } = await c.call('threads.createDraft', { text: 'First draft' });
+    assert.equal(thread.backlog.text, 'First draft');
+    assert.equal(h.adapter.sessions.length, 0);
+    const saved = await c.call('threads.saveDraft', { threadId: thread.id, text: 'Revised draft', revision: 1 });
+    assert.equal(saved.thread.backlog.revision, 2);
+    await assert.rejects(c.call('threads.saveDraft', { threadId: thread.id, text: 'stale', revision: 1 }), /changed/);
+    await c.call('threads.send', { threadId: thread.id, text: 'Revised draft' });
+    assert.equal(h.runner.get(thread.id).backlog, undefined);
+    assert.equal(h.adapter.last.sent[0].text, 'Revised draft');
+  } finally { c.close(); await server.close(); }
+});

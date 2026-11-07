@@ -242,7 +242,10 @@ extension AppModel {
 
     private func apply(_ thread: ThreadSummary) {
         let previous = threads[thread.id]
+        let oldDraft = previous?.backlog.map(Self.composerDraft)
+        let cleanDraft = drafts[thread.id] == nil || drafts[thread.id]?.normalized == oldDraft
         threads[thread.id] = thread
+        if thread.backlog != nil && cleanDraft && !startingBacklog.contains(thread.id) { restoreBacklog(thread.id, replacing: true) }
         // The open transcript's "3 sub-agents working in the background"
         // line follows the summary, not the events.
         if previous?.background != thread.background { sessions[thread.id]?.setBackground(thread.background) }

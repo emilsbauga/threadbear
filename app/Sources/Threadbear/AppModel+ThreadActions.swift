@@ -204,6 +204,11 @@ extension AppModel {
     /// thread exists. While disconnected nothing is touched at all.
     func send(threadId: String?) {
         let key = threadId ?? "new"
+        if let threadId, startingBacklog.contains(threadId) { return }
+        if let threadId, threads[threadId]?.backlog != nil {
+            startBacklog(threadId)
+            return
+        }
         if let threadId, let edit = editing[threadId] {
             sendEdit(threadId: threadId, edit: edit)
             return

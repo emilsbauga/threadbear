@@ -195,3 +195,13 @@ test('the sidebar stays between its limits and leaves the thread room', () => {
   assert.equal(readWidth('banana'), SIDEBAR_DEFAULT);
   assert.equal(readWidth('410'), 410);
 });
+
+test('an unsent draft stays in Backlog even if starred, and first send leaves it', () => {
+  const draft = row({ backlog: {text: 'Saved prompt', revision: 1, imageCount: 1}, starredAt: '2026-11-01T00:00:00Z' });
+  const s = build([draft], NOW, none, 'needsYou');
+  assert.deepEqual(ids(s.backlog), [draft.threadId]);
+  assert.deepEqual(s.starred, []);
+  assert.deepEqual(s.inbox, []);
+  const {backlog: _saved, starredAt: _star, ...started} = draft;
+  assert.deepEqual(ids(build([{...started, status: 'running'}], NOW, none, 'needsYou').running), [draft.threadId]);
+});

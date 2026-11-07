@@ -185,7 +185,7 @@ private struct ThreadSection: View {
 
     var body: some View {
         let count = total ?? threads.count
-        if count > 0 || (section == .inbox && !searching) {
+        if count > 0 || ((section == .inbox || section == .backlog) && !searching) {
             let collapsed = !searching && app.collapsedSections.contains(section)
             SectionHeading(title: section.title, icon: section.icon, fold: searching ? nil : .init(collapsed: collapsed, count: count) {
                 withAnimation(.snappy(duration: 0.2)) {
@@ -202,7 +202,7 @@ private struct ThreadSection: View {
                         .tourTarget(.sampleRow(row.thread.title), when: row.thread.sample)
                         .transition(Juice.row)
                     // Put-away threads have nothing running to list.
-                    if !section.isPutAway {
+                    if !section.isPutAway && section != .backlog {
                         SubagentList(thread: row.thread, section: section.title, finishedShown: section != .inbox && section != .starred)
                     }
                 }
@@ -445,6 +445,7 @@ extension InboxSection {
     var icon: String {
         switch self {
         case .starred: return "star"
+        case .backlog: return "tray.full"
         case .inbox: return "tray"
         case .running: return "bolt"
         case .hibernating: return "moon.zzz"
@@ -548,7 +549,7 @@ enum RowMode: Equatable {
         switch section {
         case .starred, .hibernating: self = thread.isSnoozed(at: now) ? .hibernating : .inbox
         case .archived: self = .archive
-        case .inbox, .running: self = .inbox
+        case .backlog, .inbox, .running: self = .inbox
         }
     }
 

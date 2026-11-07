@@ -11,6 +11,7 @@ struct ThreadView: View {
     @State private var detail: ThreadDetail?
     @State private var loaded = false
     @State private var draft = ""
+    @State private var backlogLoaded = false
     /// The last command sent from here, until the runner has taken it.
     @State private var sent: (id: String, status: CommandStatus?)?
     @State private var hibernateTarget: PhoneThread?
@@ -191,8 +192,18 @@ struct ThreadView: View {
                 if quick.voiceThreadId == threadId, !typing {
                     VoiceBar(threadId: threadId, afterSeq: messages.last?.seq ?? 0, working: thread.isBusy) { typing = true }
                 } else {
-                    Composer(text: $draft, placeholder: thread.isBusy ? "Steer the agent" : "Reply", links: thread.links ?? []) { text, photos in
+                    Composer(text: $draft, placeholder: thread.backlog != nil ? "First prompt" : thread.isBusy ? "Steer the agent" : "Reply", links: thread.links ?? []) { text, photos in
                         await send(text, photos: photos, to: thread)
+                    }
+                    .onChange(of: thread.backlog, initial: true) {
+                        if let saved = thread.backlog, !backlogLoaded {
+                            draft = saved.text
+                            backlogLoaded = true
+                        }
+                    }
+                    if let saved = thread.backlog, saved.imageCount > 0 {
+                        Text("\(saved.imageCount) saved image(s) will be included")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

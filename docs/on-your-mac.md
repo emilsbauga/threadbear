@@ -279,3 +279,11 @@ priority, it passes a sample of tool output and pictures to Apple's on-device
 model, and Apple's on-device text recognition for a picture. Nothing leaves the
 Mac and it changes nothing that uploads. It keeps counts, and the thread and
 sequence number of what it flagged, in `<data>/secret-check.json`. Never the text.
+
+### Saved Backlog prompts
+
+An unsent first prompt is stored in its thread's existing `thread.json`,
+with pictures copied to that thread's existing `media/` directory. Saving or
+opening one starts no CLI or model job. The Mac saves composer changes to
+the runner. With sync enabled, draft text and image count are mirrored to
+your own backend (API 49); picture paths stay on the runner.

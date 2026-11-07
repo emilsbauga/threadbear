@@ -203,7 +203,7 @@ struct InboxView: View {
         let threads = model.threads(section)
         // A folded put-away section with no count (an older backend) still
         // shows its heading, so there's a way to open it.
-        if section != .inbox, count != 0 || (count == nil && section.view != nil) {
+        if section != .inbox, section == .backlog || count != 0 || (count == nil && section.view != nil) {
             Section {
                 if !folded {
                     if section == .hibernating {
@@ -241,6 +241,9 @@ struct InboxView: View {
             ContentUnavailableView.search(text: query.trimmingCharacters(in: .whitespaces))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
+        }
+        if !search.backlog.isEmpty {
+            Section { rows(search.backlog) } header: { SectionHeading(title: "Backlog", icon: "tray.full") }
         }
         if !search.starred.isEmpty {
             Section { rows(search.starred, starred: true) } header: { SectionHeading(title: "Starred", icon: "star") }

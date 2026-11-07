@@ -14,11 +14,12 @@ import Foundation
 /// Starred is above them all: threads Mike wants in reach whatever they're
 /// doing (1 Nov).
 public enum InboxSection: String, Sendable, CaseIterable {
-    case starred, inbox, running, hibernating, archived
+    case starred, backlog, inbox, running, hibernating, archived
 
     public var title: String {
         switch self {
         case .starred: return "Starred"
+        case .backlog: return "Backlog"
         case .inbox: return "Inbox"
         case .running: return "Running"
         case .hibernating: return "Hibernating"
@@ -58,6 +59,7 @@ public enum InboxOrder: String, Sendable, CaseIterable {
 public struct ThreadSections: Sendable, Equatable {
     /// Oldest star first, so they stay put while Mike goes back and forth.
     public var starred: [ThreadSummary] = []
+    public var backlog: [ThreadSummary] = []
     public var inbox: [ThreadSummary] = []
     public var running: [ThreadSummary] = []
     /// Hibernated threads and ones waiting on a schedule, soonest to wake
@@ -66,8 +68,9 @@ public struct ThreadSections: Sendable, Equatable {
     /// Most recently archived first.
     public var archived: [ThreadSummary] = []
 
-    public init(starred: [ThreadSummary] = [], inbox: [ThreadSummary] = [], running: [ThreadSummary] = [],
+    public init(starred: [ThreadSummary] = [], backlog: [ThreadSummary] = [], inbox: [ThreadSummary] = [], running: [ThreadSummary] = [],
                 hibernating: [ThreadSummary] = [], archived: [ThreadSummary] = []) {
+        self.backlog = backlog
         self.starred = starred
         self.inbox = inbox
         self.running = running
@@ -95,6 +98,8 @@ public struct ThreadSections: Sendable, Equatable {
         for thread in threads {
             if thread.isArchived {
                 sections.archived.append(thread)
+            } else if thread.backlog != nil {
+                sections.backlog.append(thread)
             } else if thread.isStarred {
                 sections.starred.append(thread)
             } else if thread.isSnoozed(at: now) {
@@ -127,6 +132,7 @@ public struct ThreadSections: Sendable, Equatable {
         case .oldest:
             sections.inbox.sort { newestFirst($1, $0) }
         }
+        sections.backlog.sort(by: newestFirst)
         sections.running.sort(by: newestFirst)
         // A snooze's time, or for one waiting on a schedule its next run.
         // Back on restart has no time, so it goes last with the topics.
@@ -176,6 +182,7 @@ public struct ThreadSections: Sendable, Equatable {
     public subscript(section: InboxSection) -> [ThreadSummary] {
         switch section {
         case .starred: return starred
+        case .backlog: return backlog
         case .inbox: return inbox
         case .running: return running
         case .hibernating: return hibernating
@@ -197,7 +204,7 @@ public struct ThreadSections: Sendable, Equatable {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return self }
         let keep: ([ThreadSummary]) -> [ThreadSummary] = { $0.filter { Self.matches($0, trimmed) } }
-        return ThreadSections(starred: keep(starred), inbox: keep(inbox), running: keep(running),
+        return ThreadSections(starred: keep(starred), backlog: keep(backlog), inbox: keep(inbox), running: keep(running),
                               hibernating: keep(hibernating), archived: keep(archived))
     }
 

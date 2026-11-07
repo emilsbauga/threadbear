@@ -52,6 +52,7 @@ const THREAD_METHODS = new Set([
   'reviews.save',
   'reviews.respond',
   'reviews.cancel',
+  'threads.saveDraft',
   'threads.send',
   'threads.edit',
   'threads.interrupt',
@@ -502,7 +503,11 @@ export class RpcServer {
         if (!remote) return { threads: local };
         return remote.search(query, limit ?? 50).then((more) => ({ threads: mergeSummaries(local, more).slice(0, limit ?? 50) }));
       }
+      case 'threads.saveDraft':
+        return r.saveDraft(reqString(p, 'threadId'), optString(p, 'text') ?? '', optImages(p) ?? [], Number(p.revision));
+      case 'threads.createDraft':
       case 'threads.create': {
+        if (method === 'threads.createDraft' && typeof p.runnerId === 'string') throw bad('Create Backlog drafts on their owning runner.');
         // On another runner (docs/protocol.md, "Other runners' threads through the backend").
         if (typeof p.runnerId === 'string' && this.opts.relay) {
           return this.opts.relay.create(p.runnerId, p).then((res) => {
@@ -513,7 +518,7 @@ export class RpcServer {
           });
         }
         if (p.worktree !== undefined && typeof p.worktree !== 'boolean') throw bad('worktree must be a boolean');
-        const res = r.create({
+        const res = (method === 'threads.createDraft' ? r.createDraft.bind(r) : r.create.bind(r))({
           text: optString(p, 'text') ?? '',
           images: optImages(p),
           cwd: optString(p, 'cwd'),
@@ -526,7 +531,7 @@ export class RpcServer {
           ...(p.worktree === false ? { worktree: false } : {}),
           ...optStartedBy(p),
         });
-        return { thread: res.thread, turnId: res.turnId };
+        return { thread: res.thread, ...('turnId' in res ? { turnId: res.turnId } : {}) };
       }
       case 'threads.samples':
         return r.samples({ cwd: reqString(p, 'cwd'), remove: p.remove === true });

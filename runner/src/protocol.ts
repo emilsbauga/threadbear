@@ -163,7 +163,10 @@ export type ArchivedBy = 'mike' | 'agent' | 'threadbear';
 export type ArchiveVerdict = 'worked' | 'didntWork' | 'notNeeded';
 export const ARCHIVE_VERDICTS: readonly ArchiveVerdict[] = ['worked', 'didntWork', 'notNeeded'];
 
+export type BacklogDraft = { text: string; images: ImageRef[]; revision: number };
+
 export type ThreadSummary = {
+  backlog?: BacklogDraft;
   id: string;
   title: string;
   cwd: string;

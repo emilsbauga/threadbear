@@ -409,7 +409,7 @@ final class ThreadSectionsTests: XCTestCase {
         XCTAssertEqual(sections.hibernating.map(\.id), ["said-done-unread", "snoozed", "read"])
         XCTAssertEqual(Set(sections.inbox.map(\.id)), ["asked-read", "unread", "question", "failed", "no-wake", "woken"])
         XCTAssertEqual(sections.running.map(\.id), ["running"])
-        XCTAssertEqual(InboxSection.allCases.map(\.title), ["Starred", "Inbox", "Running", "Hibernating", "Archived"])
+        XCTAssertEqual(InboxSection.allCases.map(\.title), ["Starred", "Backlog", "Inbox", "Running", "Hibernating", "Archived"])
     }
 
     func testPreviewTextDropsMarkdown() {

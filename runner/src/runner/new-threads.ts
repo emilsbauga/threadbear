@@ -3,6 +3,7 @@
 // fork's change to one area doesn't clash with another's. Each method's `this`
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
+import { copyImageInto, imageRefFor } from '../media.ts';
 import type { RunnerPart } from './part.ts';
 import { SAMPLE_THREADS, WELCOME_PATCH } from '../samples.ts';
 import type { Account, EffortLevel, ImageRef, MessageOrigin, PermissionMode, ThreadStartedBy, ThreadSummary } from '../protocol.ts';
@@ -19,6 +20,45 @@ import type { ThreadState } from '../runner.ts';
 import { checkImages, effortTitle, isClaudeModel, modelRow, modelTitle, newRuntime, oneLine, providerName, titleFrom, userMessage } from '../runner.ts';
 
 export const newThreadsPart = {
+  createDraft(this: Runner, params: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; poolId?: string; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; title?: string; worktree?: boolean; startedBy?: ThreadStartedBy }): { thread: ThreadSummary } {
+    checkImages(params.images ?? []);
+    if (!params.text.trim() && !params.images?.length) throw new RpcError(ErrorCode.badParams, 'text or images required');
+    // Validate sources before allocating a thread; saveDraft takes ownership of the files.
+    for (const img of params.images ?? []) if (!fs.existsSync(img.path)) throw new RpcError(ErrorCode.badParams, `Image not found: ${img.path}`);
+    const { st } = this.makeThread(params);
+    st.rec.backlog = { text: '', images: [], revision: 0 };
+    try {
+      return this.saveDraft(st.rec.id, params.text, params.images ?? [], 0);
+    } catch (error) {
+      // A bad attachment must not leave an ordinary idle thread behind.
+      this.threads.delete(st.rec.id);
+      this.store.trash(st.rec.id, this.clock.now());
+      throw error;
+    }
+  },
+
+  saveDraft(this: Runner, threadId: string, text: string, images: ImageRef[], revision: number): { thread: ThreadSummary } {
+    this.checkAccepting();
+    const st = this.mustGet(threadId);
+    const draft = st.rec.backlog;
+    if (!draft) throw new RpcError(ErrorCode.badParams, 'This thread is no longer in Backlog.');
+    if (revision !== draft.revision) throw new RpcError(ErrorCode.badParams, 'This Backlog draft changed. Reopen it before saving again.');
+    checkImages(images);
+    const media = this.store.mediaDir(threadId);
+    const refs = images.map(img => {
+      if (!fs.existsSync(img.path)) throw new RpcError(ErrorCode.badParams, `Image not found: ${img.path}`);
+      return path.dirname(img.path) === media ? imageRefFor(img.path, img.mediaType) : copyImageInto(media, img.path);
+    });
+    st.rec.backlog = { text, images: refs, revision: revision + 1 };
+    st.rec.preview = oneLine(text, LIMITS.previewChars);
+    st.rec.lastActivityAt = this.isoNow();
+    if (!st.rec.titleSet) st.rec.title = titleFrom(text);
+    this.markDirty(st);
+    // A successful save means the draft is durable, even if the app quits immediately.
+    this.store.save(st.rec);
+    return { thread: this.summary(st) };
+  },
+
   create(this: Runner, params: {
     text: string;
     images?: ImageRef[];

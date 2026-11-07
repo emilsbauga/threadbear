@@ -3,8 +3,8 @@
 // inbox. Change them together. No React here, so the tests can run it bare.
 import { folderName } from './format.ts';
 
-export type SectionKey = 'starred' | 'inbox' | 'running' | 'hibernating' | 'archived';
-export const SECTIONS: SectionKey[] = ['starred', 'inbox', 'running', 'hibernating', 'archived'];
+export type SectionKey = 'starred' | 'backlog' | 'inbox' | 'running' | 'hibernating' | 'archived';
+export const SECTIONS: SectionKey[] = ['starred', 'backlog', 'inbox', 'running', 'hibernating', 'archived'];
 
 export type InboxOrder = 'needsYou' | 'newest' | 'oldest';
 
@@ -19,6 +19,7 @@ export type ThreadRow = {
   unread: boolean;
   lastActivityMs: number;
   starredAt?: string;
+  backlog?: { text: string; revision: number; imageCount: number };
   archivedAt?: string;
   snoozedUntil?: string;
   snoozedUntilRestart?: boolean;
@@ -81,12 +82,14 @@ export function wakesOf(schedules: ScheduleRow[]): Map<string, number> {
 // A starred thread is in the inbox list even while hibernating (API 27).
 export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<string, number>, order: InboxOrder) {
   const starred: T[] = [];
+  const backlog: T[] = [];
   const inbox: T[] = [];
   const running: T[] = [];
   const scheduled: T[] = [];
   for (const r of rows) {
     if (r.archivedAt) continue;
-    if (r.starredAt) starred.push(r);
+    if (r.backlog) backlog.push(r);
+    else if (r.starredAt) starred.push(r);
     else if (isSnoozed(r, now)) continue;
     // A question or approval goes in the inbox even while background work
     // runs: the thread is stuck until he answers.
@@ -101,7 +104,7 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
   else if (order === 'newest') inbox.sort(newestFirst);
   else inbox.sort((a, b) => newestFirst(b, a));
   running.sort(newestFirst);
-  return { starred, inbox, running, scheduled };
+  return { starred, backlog: backlog.sort(newestFirst), inbox, running, scheduled };
 }
 
 // The Hibernating heading's rows: soonest to wake first, each once (a thread

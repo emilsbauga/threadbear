@@ -206,3 +206,13 @@ list and handles selection; `ComposerView.swift` connects it to the editor.
 The `skills.list` RPC in `runner/src/rpc.ts` calls `Runner.listSkills`, which
 uses the Codex adapter's short-lived `skills/list` query. Removing the picker
 and these hooks leaves typed `$skill-name` messages working as before.
+
+## Backlog draft threads
+
+Backlog uses an optional `backlog` first-prompt field on thread records and
+summaries (`runner/src/runner/new-threads.ts`, `store.ts`, `protocol.ts`).
+`threads.createDraft` and `threads.saveDraft` persist it without a session or
+turn; the first validated send removes it. The Mac composer integration is
+`AppModel+Backlog.swift`, with grouping in `ThreadSections.swift`. Phone/web
+rows carry draft text and image count from backend API 49, and remote sidebar
+index rows carry only a Backlog marker. Nanobot is not a dependency.

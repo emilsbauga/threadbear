@@ -27,7 +27,18 @@ back to it days later and carry on.
 
 ### The list
 
-The threads view has four sections. Inbox holds the threads for you, with
+The threads view includes Backlog, Inbox, Running, Hibernating and Archived.
+Backlog holds saved first prompts that have not been sent. Write a new
+prompt, add any pictures, choose its folder and model, then choose **Save to
+Backlog** from the composer's **+** menu or the send button's right-click
+menu. Saving starts no agent or model job. Open the item to find its prompt
+in the normal composer; edits save automatically on the Mac, including its
+pictures. Send when ready: the same thread moves into Running and follows
+the usual Inbox and Archived flow. Archiving an unsent item keeps its draft;
+bringing it back returns it to Backlog. Like the other headings, Backlog can
+be folded away and its items appear in search.
+
+Inbox holds the threads for you, with
 the ones that need you at the top. The number on the Threads icon in the
 left-hand rail is how many are in it. The arrows at the end of its heading
 sort it newest first or oldest first instead, which is handy for working

@@ -164,6 +164,10 @@ struct ComposerControls: View {
                 // Right-click send for later, as Mail and Slack do. Not on
                 // another Mac's thread: its schedules are made from there.
                 .iconContextMenu {
+                    if thread == nil, !draftAway {
+                        Button("Save to Backlog", systemImage: "tray.full") { app.saveToBacklog() }
+                            .disabled(!canSend || sending)
+                    }
                     if app.schedulesSupported, remote == nil, !draftAway { Button("Schedule…", systemImage: "clock", action: onSchedule) }
                 }
         }
@@ -289,6 +293,12 @@ struct ThreadSettings {
         let folder = NSMenuItem(title: "Folder", symbol: "folder", action: nil)
         folder.submenu = folderMenu()
         menu.addItem(folder)
+        if thread == nil {
+            let later = ActionMenuItem("Save to Backlog", symbol: "tray.full") { app.saveToBacklog() }
+            let draft = app.drafts["new"] ?? Draft()
+            later.isEnabled = !app.creatingThread && app.newThreadRunnerId == nil && (!draft.words().isEmpty || !draft.images.isEmpty)
+            menu.addItem(later)
+        }
         if let schedule {
             menu.addItem(.separator())
             let later = ActionMenuItem("Schedule…", symbol: "clock", handler: schedule)

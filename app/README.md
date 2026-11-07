@@ -429,6 +429,11 @@ permission. Without it, or with the screen locked, each shot is AppKit's own
 drawing of the window ("drawn in-process"): the sidebar's glass is a flat
 fill and the traffic lights are approximate, and the rest matches.
 
+Backlog: write a new prompt and choose Save to Backlog from + or the send
+button's context menu. Open its row to edit the saved, unsent first prompt;
+send to start the same thread. `composer-menu` also accepts `plus` for this
+menu during scripted checks.
+
 ## Seeing and driving it from a script
 
 Debug builds launched with `--automation <log file>` take commands as

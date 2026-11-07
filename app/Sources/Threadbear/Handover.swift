@@ -282,7 +282,10 @@ final class Handover {
         info["mode"] = state.mode
         info["selection"] = state.selection
         // Words only: a picture's chip would be a mark with no picture behind it.
-        let drafts = app.drafts.compactMapValues { draft in
+        let drafts = app.drafts.filter { id, draft in
+            guard let saved = app.threads[id]?.backlog else { return true }
+            return draft.normalized != AppModel.composerDraft(saved)
+        }.compactMapValues { draft in
             let words = InlinePictures.words(draft.text)
             return words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : words
         }

@@ -22,6 +22,7 @@ extension AppModel {
         showsScheduledHome = false
         stopShowingSubagent()
         guard let threadId else { return }
+        restoreBacklog(threadId)
         let session = session(for: threadId)
         if session.state == .idle || session.state.isFailed {
             session.open(width: transcript.width > 0 ? transcript.width : transcript.currentTableWidth)
@@ -45,6 +46,7 @@ extension AppModel {
             showHibernating()
         } else {
             sidebarMode = .inbox
+            if thread.backlog != nil { collapsedSections.remove(.backlog) }
         }
         select(threadId)
     }

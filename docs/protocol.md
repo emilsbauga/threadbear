@@ -940,6 +940,36 @@ are disabled; model requests still use the selected configured endpoint.
 Stderr is kept separately in a bounded private file under the supplied temporary
 directory, never parsed as RPC or copied into protocol errors.
 
+## Backlog
+
+Backlog is a collapsible section in the existing thread list. Its items are
+threads with a saved, unsent first prompt, not turns or a separate task store.
+`ThreadSummary.backlog?: { text: string, images: ImageRef[], revision: number }`
+is present only until the first send. The status is `idle`, `live` and
+`needsYou` are false, and no model, native session, title job or worktree is
+started by saving or opening it. Draft images are copied into the thread's
+media directory before saving, just as sent images are.
+
+- `threads.createDraft`: the same settings as `threads.create`, with `text`
+  and optional `images`; returns `{ thread }` without starting a turn.
+- `threads.saveDraft`: `{ threadId, text, images?, revision }` replaces that
+  Backlog prompt and returns `{ thread }`. Empty edits are allowed. A stale
+  revision or a thread that has already started gives `-32602`, without
+  changing anything. Each successful save increases the revision.
+- `threads.send` sends the composer's current prompt and removes `backlog`
+  only after image validation succeeds. That first turn then follows the
+  normal Running, Inbox and Archived lifecycle. Failed validation retains
+  the saved draft. Archiving an unsent item retains its draft; restoring it
+  returns it to Backlog.
+
+Backlog is included in the existing `threads.list` inbox scope, but clients
+place it in its own collapsible section, before Inbox and after Starred.
+Backlog takes precedence over a star; archiving takes precedence over both.
+The composer restores the draft when opening it and saves edits to the
+runner. Creation is offered as Save to Backlog in the new composer's + menu
+and send button menu. It uses the selected folder, login/pool and model.
+Nanobot and other capture integrations are independent future producers.
+
 ## Composer skills
 
 `skills.list { accountId: string, cwd: string }` returns

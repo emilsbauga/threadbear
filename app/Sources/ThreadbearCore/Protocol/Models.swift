@@ -999,6 +999,15 @@ public struct ThreadShare: Sendable, Hashable, Codable {
     public var isOn: Bool { access == .link }
 }
 
+public struct BacklogDraft: Sendable, Hashable, Codable {
+    public var text: String
+    public var images: [ImageRef]
+    public var revision: Int
+    public init(text: String, images: [ImageRef] = [], revision: Int = 1) {
+        self.text = text; self.images = images; self.revision = revision
+    }
+}
+
 public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     public var id: String
     public var title: String
@@ -1017,6 +1026,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     public var needsYou: Bool
     /// Image reviews still waiting for a response, independent of whether
     /// the last turn has been read. Absent on older runners.
+    public var backlog: BacklogDraft? = nil
     public var pendingReviews: Int?
     public var createdAt: Date
     public var updatedAt: Date
@@ -1181,6 +1191,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        backlog = try c.decodeIfPresent(BacklogDraft.self, forKey: .backlog)
         func date(_ key: CodingKeys) throws -> Date? {
             guard let text = try c.decodeIfPresent(String.self, forKey: key) else { return nil }
             return ISO8601.parse(text)
@@ -1246,6 +1257,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(backlog, forKey: .backlog)
         try c.encode(id, forKey: .id)
         try c.encode(title, forKey: .title)
         try c.encode(cwd, forKey: .cwd)
@@ -1305,7 +1317,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, cwd, accountId, provider, model, effort, modelInUse, effortInUse, permissionMode, status, live, needsYou, pendingReviews
+        case backlog, id, title, cwd, accountId, provider, model, effort, modelInUse, effortInUse, permissionMode, status, live, needsYou, pendingReviews
         case createdAt, updatedAt, lastActivityAt, snoozedUntil, snoozedUntilRestart, wakeWhen, waitingOn, woke, archivedAt, starredAt, onOldRunner, preview
         case lastSeq, lastSeenSeq, nativeSessionId, contextTokens, contextWindow, costUsd, panels, actions, hooks, patches, background, subagents
         case projects, worktree, needs, asks, asksSeq, highlightsAt, schedule, startedBy, asked, poolId, waitingForRoom, waitingForNetwork, panelRequest, share, sample

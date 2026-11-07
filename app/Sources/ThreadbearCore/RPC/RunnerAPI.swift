@@ -25,7 +25,7 @@ public extension RPCClient {
         return try await call("threads.search", .object(params), as: ThreadsResult.self).threads
     }
 
-    func createThread(_ request: NewThreadRequest) async throws -> ThreadSummary {
+    func createThread(_ request: NewThreadRequest, backlog: Bool = false) async throws -> ThreadSummary {
         var params: [String: JSONValue] = ["text": .string(request.text)]
         if !request.images.isEmpty { params["images"] = .array(request.images.map(\.jsonValue)) }
         if let cwd = request.cwd { params["cwd"] = .string(cwd) }
@@ -36,7 +36,14 @@ public extension RPCClient {
         if let mode = request.permissionMode { params["permissionMode"] = .string(mode.rawValue) }
         if let title = request.title { params["title"] = .string(title) }
         if let runnerId = request.runnerId { params["runnerId"] = .string(runnerId) }
-        return try await call("threads.create", .object(params), as: ThreadResult.self, timeout: RPCClient.sendTimeout).thread
+        return try await call(backlog ? "threads.createDraft" : "threads.create", .object(params), as: ThreadResult.self, timeout: RPCClient.sendTimeout).thread
+    }
+
+    func saveDraft(threadId: String, text: String, images: [ImageRef], revision: Int) async throws -> ThreadSummary {
+        try await call("threads.saveDraft", .object([
+            "threadId": .string(threadId), "text": .string(text),
+            "images": .array(images.map(\.jsonValue)), "revision": .number(Double(revision))
+        ]), as: ThreadResult.self).thread
     }
 
     /// The tour's sample threads (protocol `threads.samples`), made in

@@ -277,7 +277,7 @@ final class AppUpdater {
         // An open schedule editor, or words or pictures in a card's
         // Something else box, count as something typed: a restart would
         // throw away what's in them.
-        let hasDrafts = app.drafts.values.contains { !$0.text.isEmpty || !$0.images.isEmpty } || app.scheduleEditor != nil
+        let hasDrafts = app.hasUnsavedComposerDrafts || app.scheduleEditor != nil
             || app.askPicks.values.contains { $0.notes.values.contains { !$0.isEmpty } }
         let loaded = app.threadsLoaded && app.connection == .connected
         let active = NSApp.isActive

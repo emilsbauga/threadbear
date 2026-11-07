@@ -329,7 +329,7 @@ const verdicts: { verdict: Verdict | undefined; label: string; icon: ReactNode }
 
 function Dock({ token, thread: t, lastSeq, onSent, onArchive }: { token: string; thread: Row; lastSeq?: number; onSent: (id: Id<'commands'>) => void; onArchive: (verdict: Verdict | undefined) => void }) {
   const send = useMutation(api.phone.send);
-  const [text, setText] = useState('');
+  const [text, setText] = useState(t.backlog?.text ?? '');
   // Picks on the card of asks: ask index to choice index, for one card.
   const [picks, setPicks] = useState<{ card?: number; by: Record<number, number> }>({ by: {} });
   const [ticked, setTicked] = useState<{ seq?: number; set: Set<number> }>({ set: new Set() });

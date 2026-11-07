@@ -13,7 +13,7 @@ struct DetailView: View {
         // A sub-agent's transcript, read-only, in place of its thread's.
         let subagentRef = app.subagentSelection
         let session = subagentRef.map { app.subagentSession(for: $0) } ?? app.selection.map { app.session(for: $0) }
-        let isNew = app.selection == nil
+        let isNew = app.selection == nil || thread?.backlog != nil
         // A project's page takes the place of the thread until a thread is
         // picked again.
         let project = app.openProject

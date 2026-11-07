@@ -225,6 +225,12 @@ public struct Woke: Codable, Sendable, Hashable {
     }
 }
 
+public struct BacklogPrompt: Codable, Sendable, Hashable {
+    public var text: String
+    public var revision: Int
+    public var imageCount: Int
+}
+
 public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
     public var id: String { threadId }
     public var threadId: String
@@ -238,6 +244,7 @@ public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
     public var needsYou: Bool
     public var unread: Bool
     public var preview: String
+    public var backlog: BacklogPrompt? = nil
     @FlexibleDate public var lastActivityAt: Date
     @OptionalFlexibleDate public var snoozedUntil: Date?
     public var snoozedUntilRestart: Bool?
