@@ -49,3 +49,19 @@ test('a Pi-only runner creates a runnable Pi thread with the configured model an
   assert.ok(h.events(thread.id).some(e => e.type === 'assistant.text' && e.text === 'final:hello'));
   await h.runner.shutdown(); await live?.end({ hard: true }); assert.equal(owned.size, 0);
 });
+
+// Switching providers must not carry an unsupported mode into Pi or partly
+// apply the rest of a rejected update. No model process starts for drafts.
+test('moving a planned draft to Pi refuses before changing its title or login', async t => {
+  const home = tmpDir();
+  const account: Account = { id: 'pi:test', provider: 'pi', title: 'Local', configDir: home };
+  const accounts = new FakeAccounts([...new FakeAccounts().list(), account]);
+  const h = makeHarness(home, {}, { accounts });
+  h.runner.adapters.pi = h.adapter as unknown as PiAdapter;
+  t.after(() => h.runner.shutdown());
+  const { thread } = h.runner.createDraft({ text: 'Plan only', accountId: 'claude-3', permissionMode: 'plan', title: 'Original' });
+  assert.throws(() => h.runner.update({ threadId: thread.id, accountId: account.id, title: 'Changed' }), /Plan first is not available for Pi/);
+  assert.equal(h.runner.get(thread.id).title, 'Original');
+  assert.equal(h.runner.get(thread.id).accountId, 'claude-3');
+  assert.equal(h.runner.update({ threadId: thread.id, accountId: account.id, permissionMode: 'ask' }).thread.provider, 'pi');
+});

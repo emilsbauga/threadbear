@@ -2656,6 +2656,8 @@ export class Runner {
       }
       toAccountId = id ?? poolAccounts(pool, accounts)[0]?.id;
     }
+    const targetProvider = (toAccountId === undefined ? undefined : this.accounts.get(toAccountId))?.provider ?? rec.provider;
+    if (targetProvider === 'pi' && (params.permissionMode ?? rec.permissionMode) === 'plan') throw new RpcError(ErrorCode.badParams, 'Plan first is not available for Pi threads. Leave Plan first before switching to Pi.');
     if (params.title !== undefined) {
       rec.title = cutSafely(params.title.trim(), 200) || rec.title;
       rec.titleSet = true;
@@ -2775,7 +2777,6 @@ export class Runner {
         if (sayNextTurn()) nextTurn.push(effort ? `${effortTitle(effort)} effort` : "The model's own effort level");
       }
     }
-    if (rec.provider === 'pi' && params.permissionMode === 'plan') throw new RpcError(ErrorCode.badParams, 'Plan first is not available for Pi threads.');
     if (params.permissionMode !== undefined && params.permissionMode !== rec.permissionMode) {
       // What approving a plan goes back to.
       if (params.permissionMode === 'plan') rec.modeBeforePlan = rec.permissionMode;

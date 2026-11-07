@@ -626,17 +626,17 @@ extension AppModel {
 
     /// Sidebar deletion is limited to saved tasks and archived chats.
     func deleteThread(_ threadId: String) {
-        guard let thread = threads[threadId], thread.isArchived || thread.backlog != nil,
+        guard !isBusy(BusyKey.deleteThread(threadId)), let thread = threads[threadId], thread.isArchived || thread.backlog != nil,
               let client = client(for: threadId) else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete \u{201C}\(thread.title)\u{201D}?"
-        alert.informativeText = "This removes the chat, its saved prompt and attachments. It can't be undone in the app."
+        alert.informativeText = "This removes the chat from Threadbear and moves its saved prompt and attachments to the runner’s trash. It can't be undone in the app."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,
               let current = threads[threadId], current.isArchived || current.backlog != nil else { return }
-        Task {
+        whileBusy(BusyKey.deleteThread(threadId), note: "Deleting chat…") { [self] in
             do {
                 try await client.deleteThread(threadId)
                 forget(threadId)

@@ -146,7 +146,7 @@ struct ComposerView: View {
             )
             .frame(height: 1)
         }
-        .task(id: thread.flatMap { paletteQuery(draft.wrappedValue.text) != nil ? $0.id : nil }) {
+        .task(id: "\(thread?.id ?? "")|\(thread?.accountId ?? "")|\(thread?.cwd ?? "")|\(paletteQuery(draft.wrappedValue.text) != nil)") {
             if let thread, paletteQuery(draft.wrappedValue.text) != nil { app.loadSlashCommands(thread.id) }
         }
         // Esc closed the palette at that text only: any change reopens it,
@@ -258,7 +258,7 @@ struct ComposerView: View {
         let skills = skillPicker.skills.map { SlashCommand(name: $0.name, title: $0.title, description: $0.description, source: "skill", scope: $0.scope, path: $0.path) }
         var result = listed.filter { !$0.isSkill } + skills
         // Before the refreshed skills arrive, keep the runner's known list.
-        if skillPicker.loading || skillPicker.skills.isEmpty { result += listed.filter { $0.isSkill } }
+        if skillPicker.loading { result += listed.filter { $0.isSkill } }
         if let token = skillPicker.token, token.range.location != 0 || !(handle.textView?.string.hasPrefix("/") ?? false) {
             result = result.filter(\.isSkill)
         }

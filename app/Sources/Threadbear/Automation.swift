@@ -1287,6 +1287,10 @@ enum Automation {
             guard let path = c["path"] as? String, path.hasPrefix("/") else { return "error path must be absolute" }
             if let refused = refusesToWrite(path) { return refused }
             guard var window else { return "error no window" }
+            if c["palette"] as? Bool == true {
+                guard let panel = NSApp.windows.first(where: { $0 is SlashPalettePanel && $0.isVisible }) else { return "error the palette is not open" }
+                window = panel
+            }
             // {"den": true}: About Threadbear (open it with `den`).
             if c["den"] as? Bool == true, let den = DenWindow.current { window = den }
             // {"review": id}: its own window.

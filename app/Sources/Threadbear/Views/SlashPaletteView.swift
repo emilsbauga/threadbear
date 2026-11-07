@@ -194,6 +194,9 @@ struct SlashPaletteView: View {
                     .padding(.horizontal, zoomed(10))
                     .padding(.vertical, zoomed(8))
                     .background(RoundedRectangle(cornerRadius: zoomed(7)).fill(Color.primary.opacity(0.06)))
+                Text(command.isSkill ? "Return inserts without sending" : "Return runs this command")
+                    .font(.system(size: TypeScale.chip))
+                    .foregroundStyle(.secondary)
                 if let now = current[command.name] {
                     Text("Now: \(now)")
                         .font(.system(size: TypeScale.label + 1))

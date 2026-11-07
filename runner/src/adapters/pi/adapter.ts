@@ -245,7 +245,10 @@ class PiSession implements AgentSession {
     if (effort === 'ultra') throw new Error('Pi does not support ultra effort.');
     this.effort = effort;
   }
-  async setPermissionMode(mode: PermissionMode): Promise<void> { this.nextMode = mode; }
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (mode === 'plan') throw new Error('Plan first is not available for Pi threads.');
+    this.nextMode = mode;
+  }
 
   async end(options: { hard?: boolean } = {}): Promise<void> {
     this.ending = true;
