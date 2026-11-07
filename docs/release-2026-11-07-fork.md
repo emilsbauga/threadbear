@@ -55,3 +55,28 @@ Backlog and Archived rows gain a trash icon and a right-click Delete action.
 Both require confirmation and use existing runner deletion semantics: remove
 the thread from the app and move its stored folder to the runner trash.
 There is no in-app Undo. This is not a secure erase of files on disk.
+
+## Validation
+
+- Full `./check.sh --all` passed: runner typecheck and unit suite, deployment
+  tests, Mac build and tests, web and Convex typechecks, web tests, BearDock
+  tests and iPhone shared-code tests. A complete Node/npm toolchain was used.
+- After the final Pi mode-transition guard, runner typecheck and 20 focused
+  Pi account/adapter/approval tests passed. They use fixtures, no paid model.
+- The real dev-runner first-run tour passed; all 16 screenshots were reviewed.
+- Debug-app visual checks confirmed the combined panel, multiword title
+  search, inline dollar-skill insertion, and visible Return behaviour.
+- Debug Backlog and Archived rows both show trash icons and right-click
+  Delete entries. Only synthetic drafts were created; no real chat deleted.
+- Shared standing instructions reach Pi session startup in regression tests.
+- The signed release and latest local Backlog librarian commit are both
+  ancestors of the prepared branch. Main and live settings are unchanged.
+
+The original local skills popup is superseded by the combined panel; its
+search and insertion behaviour stays. Pi shared-tool handling receives
+upstream cancellation/read-only fixes. The guarded asynchronous project
+picker stays, with the new busy feedback. No local feature was discarded.
+
+Review this branch before landing. Do not deploy or apply the settings above
+until landing is approved. App Store iPhone installation is outside this
+preparation; the shared-code tests are not a signed phone build.
