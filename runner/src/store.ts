@@ -12,6 +12,7 @@ export type QueuedSend = { turnId: string; text: string; images: ImageRef[]; ori
 // What thread.json holds: the public summary fields plus a few internal ones.
 export type ThreadRecord = {
   backlog?: import('./protocol.ts').BacklogDraft;
+  backlogContext?: string; // advisory context carried into the first execution session
   id: string;
   title: string;
   cwd: string;

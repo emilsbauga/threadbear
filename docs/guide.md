@@ -31,7 +31,13 @@ The threads view includes Backlog, Inbox, Running, Hibernating and Archived.
 Backlog holds saved first prompts that have not been sent. Write a new
 prompt, add any pictures, choose its folder and model, then choose **Save to
 Backlog** from the composer's **+** menu or the send button's right-click
-menu. Saving starts no agent or model job. Open the item to find its prompt
+menu. Saving starts no task agent. The librarian reviews saved prompts in
+the background, files them into projects and adds useful context from
+related project notes and threads when available. Find **Context for this
+task** at the top of Highlights; it stays separate from your prompt. Editing
+the prompt clears the old note and schedules a fresh review. When you send
+the reviewed prompt, its context is also given to the executing agent as
+advisory background. Open the item to find its prompt
 in the normal composer; edits save automatically on the Mac, including its
 pictures. Send when ready: the same thread moves into Running and follows
 the usual Inbox and Archived flow. Archiving an unsent item keeps its draft;
@@ -572,7 +578,10 @@ filed.
 
 It looks after a thread's first message and when a turn ends, then catches
 up at most every 20 minutes while the thread keeps going. A catch-up after
-only a quick reply is skipped without asking anything.
+only a quick reply is skipped without asking anything. Saved Backlog prompts
+get a separate look after edits settle: filing into existing projects and
+preparing context for Highlights and the eventual task agent. The task
+itself stays unsent.
 
 Each look is one short call to Haiku, Claude's small, cheap model, rather
 than the model your threads run on. It runs on one of your own Claude

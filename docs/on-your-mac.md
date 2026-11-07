@@ -284,6 +284,11 @@ sequence number of what it flagged, in `<data>/secret-check.json`. Never the tex
 
 An unsent first prompt is stored in its thread's existing `thread.json`,
 with pictures copied to that thread's existing `media/` directory. Saving or
-opening one starts no CLI or model job. The Mac saves composer changes to
+opening one starts no task CLI. The librarian may make a small-model call
+after a saved prompt settles, using relevant project notes and bounded
+excerpts from related non-private threads to file it and add a short context
+note. Its pause, private-folder and model-pool settings still apply. The
+note is stored with the draft and passed as advisory background on first
+send; edits discard the old note. The Mac saves composer changes to
 the runner. With sync enabled, draft text and image count are mirrored to
 your own backend (API 49); picture paths stay on the runner.

@@ -16,6 +16,9 @@ final class BacklogTests: XCTestCase {
         XCTAssertEqual(sections.matching("homepage").backlog.map(\.id), ["draft"])
         let restored = try JSONDecoder().decode(ThreadSummary.self, from: JSONEncoder().encode(draft))
         XCTAssertEqual(restored.backlog, draft.backlog)
+        draft.backlog?.context = "Keep existing design tokens"
+        let annotated = try JSONDecoder().decode(ThreadSummary.self, from: JSONEncoder().encode(draft))
+        XCTAssertEqual(annotated.backlog?.context, "Keep existing design tokens")
         draft.backlog = nil
         draft.status = .running
         draft.starredAt = nil

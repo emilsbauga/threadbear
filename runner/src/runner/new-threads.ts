@@ -49,6 +49,10 @@ export const newThreadsPart = {
       if (!fs.existsSync(img.path)) throw new RpcError(ErrorCode.badParams, `Image not found: ${img.path}`);
       return path.dirname(img.path) === media ? imageRefFor(img.path, img.mediaType) : copyImageInto(media, img.path);
     });
+    if (draft.context && st.rec.brief?.text === draft.context) {
+      delete st.rec.brief;
+      this.highlightsChanged(st);
+    }
     st.rec.backlog = { text, images: refs, revision: revision + 1 };
     st.rec.preview = oneLine(text, LIMITS.previewChars);
     st.rec.lastActivityAt = this.isoNow();

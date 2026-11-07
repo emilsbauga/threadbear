@@ -944,11 +944,12 @@ directory, never parsed as RPC or copied into protocol errors.
 
 Backlog is a collapsible section in the existing thread list. Its items are
 threads with a saved, unsent first prompt, not turns or a separate task store.
-`ThreadSummary.backlog?: { text: string, images: ImageRef[], revision: number }`
+`ThreadSummary.backlog?: { text: string, images: ImageRef[], revision: number, context?: string }`
 is present only until the first send. The status is `idle`, `live` and
-`needsYou` are false, and no model, native session, title job or worktree is
-started by saving or opening it. Draft images are copied into the thread's
-media directory before saving, just as sent images are.
+`needsYou` are false. Saving or opening starts no execution session, title
+job or worktree. The librarian may separately review the saved prompt.
+Draft images are copied into the thread's media directory before saving,
+just as sent images are.
 
 - `threads.createDraft`: the same settings as `threads.create`, with `text`
   and optional `images`; returns `{ thread }` without starting a turn.
@@ -969,6 +970,21 @@ The composer restores the draft when opening it and saves edits to the
 runner. Creation is offered as Save to Backlog in the new composer's + menu
 and send button menu. It uses the selected folder, login/pool and model.
 Nanobot and other capture integrations are independent future producers.
+
+The librarian reviews new/edited Backlog prompts after its normal settling
+period, including saved prompts found on startup. It files them into
+existing projects using existing pin/removal rules and may add a short `context`
+note. The note is separate from the user's prompt and visible at the top
+of Highlights as Context for this task. It can use relevant existing
+project goals/state/notes and bounded excerpts from related threads, with
+source references when available; no task execution or browsing is run.
+Backlog reviews cannot update existing project state, wake other threads,
+or change Pocket cards. Private-folder and pause/model-pool rules still
+apply. One review per saved prompt revision; edits invalidate the old
+context. A result for a changed, started, archived or deleted item is dropped.
+A first send that matches the annotated prompt and pictures preserves the
+note as advisory context in the execution agent's startup instructions;
+otherwise it is discarded. The first prompt itself is never rewritten.
 
 ## Composer skills
 
@@ -3300,6 +3316,9 @@ whole brief that way. An agent that joined a project itself isn't told.
 up to date, on the small model (`models.*`, feature `projects`, inside the
 daily budget, never for private folders). It looks at a thread when:
 
+- a Backlog prompt is saved or edited (`backlog`), 10 seconds after the
+  latest save; this files the dormant task and prepares context only
+  (see Backlog above);
 - its first message comes in (`first-message`), 5 seconds later, so a
   thread is filed while a long first turn is still going; that look
   never changes a project's state;
@@ -3327,7 +3346,8 @@ Those come from the runner's events, and a turn that ends in an older
 runner draining after a handover is only heard there. So on start and
 every 5 minutes the librarian also queues any thread active in the last
 two days with a finished turn it hasn't looked at since (`first-turn` or
-`catch-up`).
+`catch-up`). Unreviewed Backlog revisions are also found on startup and
+each sweep, regardless of their age.
 
 A thread its own agent or Mike has put in a project (`by` other than
 `"librarian"`) is theirs to file: its looks still keep its line and the

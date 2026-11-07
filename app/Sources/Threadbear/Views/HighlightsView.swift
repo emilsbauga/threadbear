@@ -61,6 +61,9 @@ struct HighlightsView: View {
         if let brief = sections.brief {
             let points = HighlightSections.points(brief)
             VStack(alignment: .leading, spacing: zoomed(4)) {
+                if thread.backlog?.context != nil {
+                    Text("Context for this task").fontWeight(.medium)
+                }
                 ForEach(Array(points.enumerated()), id: \.offset) { _, point in
                     HStack(alignment: .firstTextBaseline, spacing: zoomed(6)) {
                         // An old paragraph brief is one point: no bullet.

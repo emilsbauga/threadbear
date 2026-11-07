@@ -365,6 +365,7 @@ public struct ProjectIcon: Sendable, Hashable, Decodable {
 /// Why the librarian looks at a thread. An unknown one from a newer runner
 /// reads as `.asked`, which says least.
 public enum LibrarianReason: String, Sendable, Hashable, Decodable {
+    case backlog
     case firstMessage = "first-message"
     case firstTurn = "first-turn"
     case newFolder = "new-folder"

@@ -163,7 +163,7 @@ export type ArchivedBy = 'mike' | 'agent' | 'threadbear';
 export type ArchiveVerdict = 'worked' | 'didntWork' | 'notNeeded';
 export const ARCHIVE_VERDICTS: readonly ArchiveVerdict[] = ['worked', 'didntWork', 'notNeeded'];
 
-export type BacklogDraft = { text: string; images: ImageRef[]; revision: number };
+export type BacklogDraft = { text: string; images: ImageRef[]; revision: number; context?: string };
 
 export type ThreadSummary = {
   backlog?: BacklogDraft;
@@ -375,7 +375,7 @@ export type ProjectIcon = {
 
 // 'notes': a project's notes got long and were tidied; the entry is the
 // project's, with an empty threadId.
-export type LibrarianReason = 'first-message' | 'first-turn' | 'new-folder' | 'moved' | 'catch-up' | 'asked' | 'notes' | 'waited-on';
+export type LibrarianReason = 'backlog' | 'first-message' | 'first-turn' | 'new-folder' | 'moved' | 'catch-up' | 'asked' | 'notes' | 'waited-on';
 
 export type LibrarianJob = {
   threadId: string;

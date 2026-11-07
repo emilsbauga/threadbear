@@ -13,6 +13,13 @@ final class BacklogComposerTests: XCTestCase {
         XCTAssertEqual(app.drafts[thread.id]?.images, [image])
         XCTAssertEqual(app.drafts[thread.id]?.words(), "Check [Picture 1]")
         XCTAssertFalse(app.hasUnsavedComposerDrafts)
+        // An annotation is separate from the editable prompt. Receiving one
+        // must not dirty the composer or hold up the idle app updater.
+        thread.backlog?.context = "Use the existing typography tokens"
+        app.threads[thread.id] = thread
+        app.restoreBacklog(thread.id)
+        XCTAssertEqual(app.drafts[thread.id]?.words(), "Check [Picture 1]")
+        XCTAssertFalse(app.hasUnsavedComposerDrafts)
         app.drafts["new"] = Draft(text: "Not saved")
         XCTAssertTrue(app.hasUnsavedComposerDrafts)
         app.drafts["new"] = nil

@@ -1332,3 +1332,131 @@ test('a look from the first message alone leaves the Pocket to its agent, and a 
   assert.match(s.asked.at(-1)!.prompt, /The Pocket is not available/);
   assert.equal(fake.saved.length, 0);
 });
+
+test('the librarian files a Backlog prompt and adds grounded context without running its task', async () => {
+  let projectId = '';
+  const s = setup({ models: () => reply({ projects: [projectId], reasons: { [projectId]: 'Plans the homepage update' }, context: '- Existing design uses the shared typography tokens', state: { [projectId]: 'Homepage shipped' }, thread: 'Pretend work finished', wake: ['anything'] }) });
+  const p = s.projects.create({title: 'Website', goals: 'Maintain the website', notes: 'Use shared typography tokens', by: 'mike'});
+  projectId = p.id;
+  const {thread} = s.h.runner.createDraft({text: 'Update the Website homepage', cwd: s.misc});
+  assert.equal(s.librarian.status().queue[0]?.reason, 'backlog');
+  s.h.clock.advance(SETTLE_MS);
+  await tick(8);
+  const saved = s.h.runner.get(thread.id);
+  assert.equal(saved.backlog?.text, 'Update the Website homepage');
+  assert.equal(saved.backlog?.revision, 1);
+  assert.match(saved.backlog?.context ?? '', /typography/);
+  assert.equal(saved.projects?.[0].id, p.id);
+  assert.equal(s.projects.record(p.id)?.state, '');
+  assert.equal(s.h.adapter.sessions.length, 0);
+  assert.match(s.asked.find(p => p.prompt.includes('Unsent Backlog prompt'))!.prompt, /Use shared typography tokens/);
+  assert.match(s.h.runner.highlights(thread.id).brief?.text ?? '', /typography/);
+  s.h.clock.advance(SWEEP_MS);
+  await tick(6);
+  assert.equal(s.asked.filter(p => p.prompt.includes('Unsent Backlog prompt')).length, 1, 'the same saved revision is not reviewed repeatedly');
+  s.h.runner.send(thread.id, saved.backlog!.text, saved.backlog!.images);
+  assert.match(s.h.adapter.last.opts.instructions ?? '', /Context prepared by the librarian/);
+  assert.match(s.h.adapter.last.opts.instructions ?? '', /typography/);
+});
+
+test('editing a Backlog prompt invalidates context and drops an in-flight old review', async () => {
+  const held = heldModel(() => ({context: 'Context for the old prompt'}));
+  const s = setup({models: () => held.models()});
+  const {thread} = s.h.runner.createDraft({text: 'Old Website request', cwd: s.misc});
+  s.h.clock.advance(SETTLE_MS);
+  await tick(5);
+  assert.ok(held.asked());
+  s.h.runner.saveDraft(thread.id, 'New request', [], 1);
+  held.answer();
+  await tick(8);
+  assert.equal(s.h.runner.get(thread.id).backlog?.context, undefined);
+  assert.equal(s.h.runner.highlights(thread.id).brief, undefined);
+  assert.equal(s.librarian.status().queue[0]?.threadId, thread.id);
+  assert.equal(s.h.adapter.sessions.length, 0);
+});
+
+test('starting a Backlog prompt while its review is in flight discards the late result', async () => {
+  const held = heldModel(() => ({context: 'Late context'}));
+  const s = setup({models: () => held.models()});
+  const {thread} = s.h.runner.createDraft({text: 'Start now', cwd: s.misc});
+  s.h.clock.advance(SETTLE_MS);
+  await tick(5);
+  s.h.runner.send(thread.id, 'Start now');
+  held.answer();
+  await tick(8);
+  assert.equal(s.h.runner.get(thread.id).backlog, undefined);
+  assert.equal(s.h.runner.highlights(thread.id).brief, undefined);
+  assert.doesNotMatch(s.h.adapter.last.opts.instructions ?? '', /Late context/);
+});
+
+test('Backlog edits clear prepared context and sending unsaved changes does not carry it forward', async () => {
+  const s = setup({models: () => reply({context: 'Keep the existing design tokens'})});
+  const {thread} = s.h.runner.createDraft({text: 'Update the homepage', cwd: s.misc});
+  s.h.clock.advance(SETTLE_MS);
+  await tick(8);
+  const annotated = s.h.runner.get(thread.id).backlog!;
+  assert.ok(annotated.context);
+  s.h.runner.saveDraft(thread.id, 'Update the checkout', [], annotated.revision);
+  assert.equal(s.h.runner.get(thread.id).backlog?.context, undefined);
+  assert.equal(s.h.runner.highlights(thread.id).brief, undefined);
+  s.h.clock.advance(SETTLE_MS);
+  await tick(8);
+  assert.ok(s.h.runner.get(thread.id).backlog?.context);
+  s.h.runner.send(thread.id, 'A different unsaved request');
+  assert.equal(s.h.runner.highlights(thread.id).brief, undefined);
+  assert.doesNotMatch(s.h.adapter.last.opts.instructions ?? '', /existing design tokens/);
+});
+
+test('Backlog reviews include related context but exclude private and unrelated sources', async () => {
+  const s = setup({models: () => reply({context: null}), privateFolder: cwd => cwd.endsWith('/secret')});
+  const publicRepo = s.repo('website');
+  const secretRepo = s.repo('secret');
+  const p = s.projects.create({title: 'Website', folders: [publicRepo], notes: 'Public typography decision', by: 'mike'});
+  s.projects.create({title: 'Secrets', folders: [secretRepo], notes: 'Private project notes', by: 'mike'});
+  const related = s.create('Website layout decision', publicRepo).thread;
+  s.projects.changeMembership(related.id, {add: [p.id], by: 'mike'});
+  s.h.runner.setBrief(related.id, 'Reuse the existing layout');
+  const privateThread = s.create('Private credentials', secretRepo).thread;
+  s.projects.changeMembership(privateThread.id, {add: [p.id], by: 'mike'});
+  s.h.runner.setBrief(privateThread.id, 'Secret thread details');
+  const unrelated = s.create('Unrelated chore', s.misc).thread;
+  s.h.runner.setBrief(unrelated.id, 'Unrelated personal details');
+  s.h.runner.createDraft({text: 'Update Website homepage', cwd: s.misc});
+  s.h.clock.advance(SETTLE_MS);
+  await tick(12);
+  const prompt = s.asked.find(p => p.prompt.includes('Unsent Backlog prompt'))!.prompt;
+  assert.match(prompt, /Public typography decision/);
+  assert.match(prompt, /Reuse the existing layout/);
+  assert.ok(prompt.includes(`thread:${related.id}`));
+  assert.doesNotMatch(prompt, /Private project notes|Secret thread details|Unrelated personal details/);
+});
+
+test('the librarian finds old saved Backlog items on startup without a completed turn', async () => {
+  const s = setup({models: () => reply({context: 'Prepared after restart'})});
+  s.librarian.stop();
+  const {thread} = s.h.runner.createDraft({text: 'An older saved task', cwd: s.misc});
+  s.h.clock.advance(40 * 24 * 60 * 60_000);
+  const again = new Librarian({host: s.h.runner, projects: s.projects, clock: s.h.clock, log: nullLogger, home: s.home, models: {generate: async () => reply({context: 'Prepared after restart'})}});
+  again.start();
+  assert.equal(again.status().queue[0]?.threadId, thread.id);
+  s.h.clock.advance(SETTLE_MS);
+  await tick(8);
+  assert.equal(s.h.runner.get(thread.id).backlog?.context, 'Prepared after restart');
+  assert.equal(s.h.adapter.sessions.length, 0);
+  again.stop();
+});
+
+test('archiving a Backlog item drops an in-flight review until it is restored', async () => {
+  const held = heldModel(() => ({context: 'Context while archived'}));
+  const s = setup({models: () => held.models()});
+  const {thread} = s.h.runner.createDraft({text: 'Save for another day', cwd: s.misc});
+  s.h.clock.advance(SETTLE_MS);
+  await tick(5);
+  s.h.runner.update({threadId: thread.id, archived: true});
+  held.answer();
+  await tick(8);
+  assert.equal(s.h.runner.get(thread.id).backlog?.context, undefined);
+  assert.equal(s.librarian.status().queue.length, 0);
+  s.h.runner.update({threadId: thread.id, archived: false});
+  assert.equal(s.librarian.status().queue[0]?.threadId, thread.id);
+});

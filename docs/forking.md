@@ -215,4 +215,9 @@ summaries (`runner/src/runner/new-threads.ts`, `store.ts`, `protocol.ts`).
 turn; the first validated send removes it. The Mac composer integration is
 `AppModel+Backlog.swift`, with grouping in `ThreadSections.swift`. Phone/web
 rows carry draft text and image count from backend API 49, and remote sidebar
-index rows carry only a Backlog marker. Nanobot is not a dependency.
+index rows carry only a Backlog marker. The librarian reviews each saved
+prompt revision, files it into existing projects and stores an optional
+`backlog.context`, also shown through Highlights. `setBacklogContext` in
+`runner/titles.ts` guards the revision; `briefFor` carries matching context
+into the first execution session. Edits invalidate it. Nanobot is not a
+dependency.

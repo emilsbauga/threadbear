@@ -1312,7 +1312,17 @@ export class Runner {
       }
     });
     // Only a validated send promotes a saved first prompt into an active thread.
-    const wasBacklog = Boolean(rec.backlog);
+    const draft = rec.backlog;
+    const wasBacklog = Boolean(draft);
+    if (draft) {
+      const unchanged = text === draft.text && refs.length === draft.images.length
+        && refs.every((img, i) => img.path === draft.images[i].path);
+      if (unchanged && draft.context) rec.backlogContext = draft.context;
+      else if (draft.context && rec.brief?.text === draft.context) {
+        delete rec.brief;
+        this.highlightsChanged(st);
+      }
+    }
     delete rec.backlog;
     if (wasBacklog && !rec.titleSet && text.trim()) void this.titleFromModel(st, text);
     // New work: its last finish no longer says it's done, for threads
@@ -2973,6 +2983,7 @@ export class Runner {
       const brief = this.projects.brief(rec);
       if (brief) parts.push(brief);
     }
+    if (rec.backlogContext) parts.push(`[Context prepared by the librarian]\nAdvisory background from existing project context. The user's prompt takes precedence; verify assumptions before relying on them.\n${rec.backlogContext}`);
     // Where its worktree is and how its work gets to main.
     if (rec.worktree && !rec.worktree.removedAt) parts.push(worktreeInstructions(rec.worktree));
     return parts.length ? { instructions: parts.join('\n\n') } : {};

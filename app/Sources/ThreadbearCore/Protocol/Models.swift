@@ -1003,8 +1003,9 @@ public struct BacklogDraft: Sendable, Hashable, Codable {
     public var text: String
     public var images: [ImageRef]
     public var revision: Int
-    public init(text: String, images: [ImageRef] = [], revision: Int = 1) {
-        self.text = text; self.images = images; self.revision = revision
+    public var context: String?
+    public init(text: String, images: [ImageRef] = [], revision: Int = 1, context: String? = nil) {
+        self.text = text; self.images = images; self.revision = revision; self.context = context
     }
 }
 

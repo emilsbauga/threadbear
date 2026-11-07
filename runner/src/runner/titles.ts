@@ -97,6 +97,16 @@ export const titlesPart = {
     this.highlightsChanged(st);
   },
 
+  setBacklogContext(this: Runner, threadId: string, revision: number, text: string): void {
+    const st = this.threads.get(threadId);
+    if (!st || st.rt.deleted || st.rec.archivedAt || st.rec.backlog?.revision !== revision) return;
+    const clean = text.trim().slice(0, 600);
+    if (!clean) return;
+    st.rec.backlog.context = clean;
+    st.rec.brief = { text: clean, at: this.isoNow() };
+    this.highlightsChanged(st);
+  },
+
   // The librarian's title for a thread that has moved on from its old one.
   // Never over a user-chosen or legacy fixed title, and only while it is still
   // `from`, the one the look was given, so a rename meanwhile wins. Like a
