@@ -91,6 +91,8 @@ class PiSession implements AgentSession {
   private sink: SessionSink;
   private deps: PiAdapterDeps;
   constructor(opts: PiStartOptions, sink: SessionSink, deps: PiAdapterDeps) {
+    if (opts.confined) throw new Error('Sandboxed threads are not available for Pi.');
+    if (opts.permissionMode === 'plan') throw new Error('Plan first is not available for Pi threads.');
     this.opts = opts; this.sink = sink; this.deps = deps;
     const profile = 'engine' in opts.account ? opts.account : deps.profileFor?.(opts.account.id);
     if (!profile) throw new Error('The Pi profile for this account is unavailable.');
@@ -113,7 +115,7 @@ class PiSession implements AgentSession {
     if (this.ending || this.ended) return;
     const bridgeEnv: Record<string, string> = {};
     if (deps.toolsFor) {
-      this.bridge = new PiBridge({ toolContext: this.profile.toolContext, tools: deps.toolsFor(opts.threadId), sink: this.sink, cwd: () => opts.cwd, mode: () => this.mode, rules: () => this.rules, addRules: rules => { for (const rule of rules) this.rules.add(rule); this.sink.output({ kind: 'allowRules', rules }); } });
+      this.bridge = new PiBridge({ toolContext: this.profile.toolContext, tools: deps.toolsFor(opts.threadId), sink: this.sink, runsAsCode: opts.runsAsCode, cwd: () => opts.cwd, mode: () => this.mode, rules: () => this.rules, addRules: rules => { for (const rule of rules) this.rules.add(rule); this.sink.output({ kind: 'allowRules', rules }); } });
       const address = await this.bridge.start();
       bridgeEnv.THREADBEAR_PI_BRIDGE_URL = address.url; bridgeEnv.THREADBEAR_PI_BRIDGE_TOKEN = address.token;
       if (this.ending || this.ended) { await this.bridge.close(); return; }

@@ -32,6 +32,15 @@ final class ComposerSkillsTests: XCTestCase {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
     }
 
+    func testCombinedPaletteReturnInsertsSkillsButRunsCommands() {
+        var state = PaletteState()
+        let skill = SlashCommand(name: "deploy", source: "skill")
+        let command = SlashCommand(name: "compact", source: "cli")
+        XCTAssertEqual(SlashPaletteView.handle(.enter, matches: [skill], state: &state, text: "/deploy")?.run, false)
+        XCTAssertEqual(SlashPaletteView.handle(.tab, matches: [skill], state: &state, text: "/deploy")?.run, false)
+        XCTAssertEqual(SlashPaletteView.handle(.enter, matches: [command], state: &state, text: "/compact")?.run, true)
+    }
+
     func testReturnInsertsRatherThanSendingAndUndoRestoresTheCommand() {
         let (view, picker) = field("Please /dep")
         var sent = false

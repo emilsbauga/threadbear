@@ -1,4 +1,6 @@
 import http from 'node:http';
+import path from 'node:path';
+import { runsAsCodeByName, codeWriteNote, type CodeWrite } from '../../code-writes.ts';
 import crypto from 'node:crypto';
 import { AgentTools, jsonSchema, type ToolDefinition } from '../../agent-tools.ts';
 import { toolTitle, truncateInput } from '../../tools.ts';
@@ -12,6 +14,7 @@ export type PiBridgeOptions = {
   sink: SessionSink;
   cwd(): string;
   mode(): PermissionMode;
+  runsAsCode?(file: string): CodeWrite;
   rules(): Iterable<string>;
   addRules(rules: string[]): void;
 };
@@ -66,10 +69,12 @@ export class PiBridge {
   private async approve(name: string, input: Record<string, unknown>, id: string, signal: AbortSignal): Promise<{ allow: boolean; reason?: string }> {
     if (this.options.mode() === 'full' || ['read', 'ls', 'find', 'grep', 'tool_search'].includes(name)) return { allow: true };
     const rule = `pi-native:${name}:${crypto.createHash('sha256').update(JSON.stringify([this.options.cwd(), input])).digest('hex')}`;
-    if ([...this.options.rules()].includes(rule)) return { allow: true };
-    const answer = await this.options.sink.requestApproval({ toolUseId: id, name: `pi__${name}`, title: toolTitle(displayToolName(name), input, this.options.cwd()), input: truncateInput(input), canAlwaysAllow: true, signal });
+    const file = typeof input.path === 'string' ? path.resolve(this.options.cwd(), input.path) : undefined;
+    const codeWrite = file && ['edit', 'write'].includes(name) ? runsAsCodeByName(file) || (this.options.runsAsCode?.(file) ?? false) : false;
+    if (!codeWrite && [...this.options.rules()].includes(rule)) return { allow: true };
+    const answer = await this.options.sink.requestApproval({ toolUseId: id, name: `pi__${name}`, title: toolTitle(displayToolName(name), input, this.options.cwd()) + (codeWrite ? ` · ${codeWriteNote(codeWrite)}` : ''), input: truncateInput(input), canAlwaysAllow: !codeWrite, signal });
     const allow = !signal.aborted && (answer.decision === 'allow' || answer.decision === 'allowAlways');
-    if (allow && answer.decision === 'allowAlways') this.options.addRules([rule]);
+    if (allow && !codeWrite && answer.decision === 'allowAlways') this.options.addRules([rule]);
     return { allow, ...(allow ? {} : { reason: answer.message ?? 'The user did not approve this action.' }) };
   }
   close(): Promise<void> {

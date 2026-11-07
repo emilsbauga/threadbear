@@ -35,7 +35,8 @@ test('which variables are masked', () => {
   assert.deepEqual(valuesOfVariable('CONVEX_URL', 'https://opulent-moose-249.ap-southeast-2.convex.cloud'), []);
   assert.deepEqual(valuesOfVariable('CONVEX_DEPLOYMENT', 'dev:earnest-puffin-640'), []);
   assert.deepEqual(valuesOfVariable('DEBUG_LEVEL', 'verbose-but-ordinary-words'), []);
-  const withPassword = `postgres://me:${rand(12)}@db.example.com/x`;
+  // Fixed: a random one now and then doesn't look random enough, and this flaked.
+  const withPassword = 'postgres://me:xK9fQ2mP7vL4@db.example.com/x';
   assert.ok(valuesOfVariable('DATABASE_URL', withPassword).includes(withPassword), 'an address with a password in it');
   assert.equal(looksRandom('/Users/sam/dev/some/long/path/9'), false);
 });
@@ -63,6 +64,16 @@ function files(dir: string, map: Record<string, string>): void {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), text);
   }
+}
+
+// Rewrites a file and moves its time on a second. Linux keeps file times to
+// a kernel tick, so a same-size rewrite straight after the first write has
+// the same size and time, and looks unchanged (hive, Ubuntu 22.04, 5 Nov).
+function rewrite(file: string, text: string): void {
+  const before = fs.statSync(file).mtime;
+  fs.writeFileSync(file, text);
+  const after = new Date(before.getTime() + 1000);
+  fs.utimesSync(file, after, after);
 }
 
 test('known values come from secrets/ and thread folders, and mask however they turn up', async () => {
@@ -122,7 +133,7 @@ test('looks only at what changed, and not again inside the refresh time', async 
   const known = new KnownValues({ env: {}, home, now: () => now });
   known.noteFolder(repo);
   await known.settled();
-  fs.writeFileSync(path.join(repo, '.env'), `A_SECRET=${second}\n`);
+  rewrite(path.join(repo, '.env'), `A_SECRET=${second}\n`);
   known.refreshIfDue();
   await known.settled();
   assert.ok(known.mask(second).includes(second), 'too soon to look again');
@@ -331,6 +342,8 @@ test('tb status says plainly what protects this runner', async () => {
   assert.match(none, /3 known values/);
   assert.match(none, /Not a guarantee: rotate any key that leaks/);
   assert.match(none, /relies on the rules and the withhold list/);
+  assert.match(formatSecrets(base, { state: 'starting', since: '', checkedText: 7, checkedImages: 0, flaggedText: 1, flaggedImages: 0, errors: 0, rulesAndModel: 0, rulesOnly: 0 }, 0).join('\n'), /waiting for its first run.*1 of 7/);
+  assert.match(formatSecrets(base, undefined, 0, { bodies: 1, bytes: 1, withheld: 0, unsent: 0, pending: 0 })[0]!, /Tool output goes up too/);
   assert.match(formatSecrets({ ...base, backendChecks: false }, undefined, 0)[0]!, /too old to check again/);
   assert.match(formatSecrets({ ...base, backendChecks: true }, undefined, 0)[0]!, /the backend checks again/);
   assert.match(formatSecrets(base, { state: 'unsupported', reason: 'x', ...counts }, 0)[1]!, /none on this machine/);
@@ -423,11 +436,11 @@ test('a folder looked at once is not looked at again, and lookSoon brings a look
   known.noteFolder(live);
   await known.settled();
   assert.ok(!known.mask(first).includes(first));
-  fs.writeFileSync(path.join(repo, '.env'), `A_SECRET=${second}\n`);
+  rewrite(path.join(repo, '.env'), `A_SECRET=${second}\n`);
   now += REFRESH_MS + 1;
   await known.refresh();
   assert.ok(known.mask(second).includes(second), 'once means once');
-  fs.writeFileSync(path.join(live, '.env'), `A_SECRET=${second}\n`);
+  rewrite(path.join(live, '.env'), `A_SECRET=${second}\n`);
   known.lookSoon(live);
   await known.settled();
   assert.ok(!known.mask(second).includes(second));

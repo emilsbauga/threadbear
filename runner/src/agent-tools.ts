@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import type { ToolApprovalAnswer, ToolApprovalRequest } from './adapters/types.ts';
 import type { PermissionMode } from './protocol.ts';
-import { ALWAYS_ASK_TOOLS, FILING_PROJECTS, guideLine, POCKET_LINE, SERVER_NAME, SHOWING_THE_USER } from './threadbear-mcp.ts';
+import { ALWAYS_ASK_TOOLS, NEVER_ASK_TOOLS, FILING_PROJECTS, guideLine, POCKET_LINE, SERVER_NAME, SHOWING_THE_USER } from './threadbear-mcp.ts';
 import { userLine } from './user-name.ts';
 import { CODEX_ONE_REPLY_DESCRIPTION, END_TURN_TOOL } from './needs.ts';
 import { toolTitle, truncateInput } from './tools.ts';
@@ -145,7 +145,7 @@ export class AgentTools {
     const args = parsed.data as Record<string, unknown>;
     const fullName = `mcp__${NAMESPACE}__${name}`;
     const alwaysAsk = ALWAYS_ASK_TOOLS.has(fullName);
-    const readOnly = READ_ONLY_TOOLS.has(name) || tool.annotations?.readOnlyHint === true;
+    const readOnly = NEVER_ASK_TOOLS.has(fullName) || tool.annotations?.readOnlyHint === true;
     const allowed = !alwaysAsk && [...this.deps.rules()].includes(fullName);
     if (alwaysAsk || (this.deps.mode() !== 'full' && !readOnly && !allowed)) {
       const ans = await this.deps.requestApproval({
@@ -163,7 +163,7 @@ export class AgentTools {
     }
     try {
       if (o.signal.aborted) return text('The tool call was cancelled.', false);
-      const result = await tool.handler(args, {});
+      const result = await tool.handler(args, { signal: o.signal });
       const out = (result.content ?? [])
         .map((c) => (c && typeof c === 'object' && (c as { type?: string }).type === 'text' ? String((c as { text?: unknown }).text ?? '') : ''))
         .filter(Boolean)

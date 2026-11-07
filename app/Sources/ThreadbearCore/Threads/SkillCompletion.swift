@@ -55,7 +55,7 @@ public enum SkillCompletion {
         return Token(range: NSRange(location: start, length: selection.location - start), query: query)
     }
 
-    public static func matches(_ skills: [ComposerSkill], query: String) -> [ComposerSkill] {
+    public static func rank(_ skill: ComposerSkill, query: String) -> Int? {
         func normalized(_ text: String) -> String {
             text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
                 .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
@@ -71,15 +71,15 @@ public enum SkillCompletion {
             if words.allSatisfy({ text.contains($0) }) { return 40 }
             return nil
         }
-        let ranked = skills.compactMap { skill -> (skill: ComposerSkill, rank: Int)? in
-            if query.isEmpty { return (skill, 0) }
-            // The displayed title comes first. Internal names remain searchable
-            // aliases; descriptions only fill in results with no title match.
-            if let rank = titleRank(normalized(skill.displayName)) { return (skill, rank) }
-            if let rank = titleRank(normalized(skill.name)) { return (skill, 50 + rank) }
-            let all = normalized("\(skill.displayName) \(skill.name) \(skill.description)")
-            return words.allSatisfy { all.contains($0) } ? (skill, 100) : nil
-        }
+        if query.isEmpty { return 0 }
+        if let rank = titleRank(normalized(skill.displayName)) { return rank }
+        if let rank = titleRank(normalized(skill.name)) { return 50 + rank }
+        let all = normalized("\(skill.displayName) \(skill.name) \(skill.description)")
+        return words.allSatisfy { all.contains($0) } ? 100 : nil
+    }
+
+    public static func matches(_ skills: [ComposerSkill], query: String) -> [ComposerSkill] {
+        let ranked = skills.compactMap { skill in rank(skill, query: query).map { (skill: skill, rank: $0) } }
         return ranked.sorted {
             if $0.rank != $1.rank { return $0.rank < $1.rank }
             let order = $0.skill.displayName.localizedStandardCompare($1.skill.displayName)

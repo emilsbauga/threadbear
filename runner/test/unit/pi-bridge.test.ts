@@ -46,3 +46,21 @@ test('closing the Pi bridge cancels a pending approval', async () => {
   await new Promise(r => setTimeout(r, 30)); await bridge.close(); await pending;
   assert.equal(aborted, true);
 });
+
+test('Pi edits to code Threadbear runs always ask and never save an allow rule', async t => {
+  const requests: { canAlwaysAllow: boolean; title: string }[] = [];
+  const rules = new Set<string>();
+  const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: async req => { requests.push(req); return { decision: 'allowAlways' }; } };
+  const bridge = new PiBridge({ tools: [], sink, cwd: () => '/work', mode: () => 'ask', runsAsCode: file => file === '/work/setup.ts', rules: () => rules, addRules: added => added.forEach(r => rules.add(r)) });
+  t.after(() => bridge.close());
+  const { url, token } = await bridge.start();
+  for (const file of ['.threadbear/patches/actions.ts', 'setup.ts']) {
+    for (let i = 0; i < 2; i++) {
+      const response = await fetch(url + '/approve', { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ name: 'write', input: { path: file, content: 'changed' } }) });
+      assert.equal((await response.json() as { allow: boolean }).allow, true);
+    }
+  }
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(req => !req.canAlwaysAllow && req.title.includes('runs this file as code')));
+  assert.equal(rules.size, 0);
+});
