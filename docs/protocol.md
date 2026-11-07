@@ -1061,6 +1061,36 @@ are disabled; model requests still use the selected configured endpoint.
 Stderr is kept separately in a bounded private file under the supplied temporary
 directory, never parsed as RPC or copied into protocol errors.
 
+## External message intake
+
+Opt-in, text-only intake lives in Convex, independently of runner commands.
+It does not create a thread or start a task yet. HTTP actions use the deployment's
+`.convex.site` URL (including its region when present), not `.convex.cloud`.
+
+- `POST /intake/v1/messages`, with `Authorization: Bearer tbi_<64 hex>`
+  and `Content-Type: application/json`. Body: `{ messageId, source, sourceMessageId,
+  text, sentAt, sender? }`. `source` is `email` or `telegram`; `sentAt` is an ISO
+  timestamp with timezone. Original text and source values are preserved.
+- `GET /intake/v1/receipt?messageId=...`, with the same header, reads only that
+  client's receipt. Missing receipts give 404.
+- Receipt: `{ receiptId, messageId, state: "received", receivedAt }`, with
+  `receivedAt` as epoch milliseconds. POST returns 201 on first acceptance and
+  200 for an identical retry. This confirms durable backend storage only.
+- `(clientId, messageId)` is unique transactionally. Reusing an ID with different
+  content gives 409. A rotated key keeps the same clientId and receipts; intake
+  records are not pruned with commands. Neither endpoint updates or deletes one.
+- Bad/revoked/missing keys give 401; malformed input 400; non-JSON POST 415;
+  requests over 64 KiB or text over 48 KiB 413. New entries are limited to
+  120 per client per fixed UTC hour (429); identical retries do not use allowance.
+  Message IDs are 1–256 printable ASCII characters without spaces; source IDs
+  and optional sender are 1–512 characters. Unknown body fields are ignored.
+- Admin-only internal `intake:provision` accepts `{ clientId, keyHash }` (SHA-256
+  hex of the complete bearer key), creating or rotating a dedicated client key.
+  `intake:revoke` disables that client. Plain keys are generated and stored only
+  by the operator; they never go in Convex arguments or tables. Intake keys
+  cannot call runner or phone APIs, provision keys, enumerate intake, or change
+  receipt states. No clients are provisioned by default.
+
 ## Backlog
 
 Backlog is a collapsible section in the existing thread list. Its items are

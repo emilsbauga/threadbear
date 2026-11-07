@@ -190,11 +190,33 @@ export default defineSchema({
     byOwner: v.optional(v.boolean()),
   }).index('by_runnerId', ['runnerId']),
 
-  // Runner keys (docs/protocol.md, "Runner keys"): each authenticates as its
-  // runnerId alone, where the owner key (RUNNER_KEY) can do everything. Only
-  // the SHA-256 of a key is kept; the plain key goes back once, to the owner
-  // that made it (sync:addRunnerKey). Making another for the same runner
-  // revokes the one before.
+  // External intake is opt-in and cannot start work. Client identity survives
+  // key rotation; receipts are durable and are never pruned with commands.
+  intakeClients: defineTable({
+    clientId: v.string(),
+    keyHash: v.string(),
+    createdAt: v.number(),
+    revokedAt: v.optional(v.number()),
+    hourStart: v.optional(v.number()),
+    hourCount: v.optional(v.number()),
+  }).index('by_client', ['clientId']).index('by_hash', ['keyHash']),
+  intakeMessages: defineTable({
+    clientId: v.string(),
+    messageId: v.string(),
+    message: v.object({
+      messageId: v.string(),
+      source: v.union(v.literal('email'), v.literal('telegram')),
+      sourceMessageId: v.string(),
+      text: v.string(),
+      sentAt: v.string(),
+      sender: v.optional(v.string()),
+    }),
+    state: v.literal('received'),
+    receivedAt: v.number(),
+  }).index('by_client_message', ['clientId', 'messageId']),
+
+  // Runner keys: own runner only, where RUNNER_KEY can do everything. Only
+  // the hash is kept; sync:addRunnerKey returns the plain key once.
   runnerKeys: defineTable({
     runnerId: v.string(),
     keyHash: v.string(),

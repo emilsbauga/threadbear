@@ -35,7 +35,7 @@ let indexes: Record<string, Record<string, string[]>> = {};
 const fakes: Record<string, Record<string, unknown>> = {
   'convex/values': { v, ConvexError },
   'convex/server': { defineSchema: (t: Record<string, Def>) => t, defineTable },
-  './_generated/server': { mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x },
+  './_generated/server': { mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
   './_generated/api': { internal: fnRef(['internal']), api: fnRef(['api']) },
 };
 

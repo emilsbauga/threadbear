@@ -1,5 +1,13 @@
 # What Threadbear does on your Mac
 
+Optional external intake (`convex/intake.ts`) lets explicitly provisioned capture
+clients send email/Telegram text, source identifiers, sender and timestamp to
+your Convex backend over HTTPS. It stores the original content and receipts
+indefinitely, without runner secret scrubbing. Only credential hashes are stored
+on the backend. This step adds no Mac timer, remote-device process or runner
+consumer. An operator may keep a private intake credential file for transfer to
+their capture device; see `docs/intake.md`.
+
 Everything Threadbear installs, runs in the background, reads, and talks to
 over the network. It's here so you, or the agent installing it for you, can
 check the code against it before running anything. If the code does

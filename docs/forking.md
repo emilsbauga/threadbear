@@ -227,6 +227,14 @@ and these hooks leaves typed `$skill-name` messages working as before.
 
 ## Backlog draft threads
 
+External intake is independent: `convex/intake.ts`, the two `/intake/v1/` routes
+in `convex/http.ts`, and `intakeClients`/`intakeMessages` in `convex/schema.ts`.
+It is off until an administrator provisions a client; it starts no runner work.
+Revoke clients to disable it. To remove it, remove the routes and module, then
+empty the two tables before dropping their schema definitions; regenerate API
+bindings. No deployment names, credentials or nanobot addresses are in code.
+See `docs/intake.md` for the operator contract.
+
 Backlog uses an optional `backlog` first-prompt field on thread records and
 summaries (`runner/src/runner/new-threads.ts`, `store.ts`, `protocol.ts`).
 `threads.createDraft` and `threads.saveDraft` persist it without a session or

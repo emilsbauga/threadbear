@@ -1,5 +1,9 @@
 # Using Threadbear
 
+External email/Telegram intake is an operator-configured backend API, described
+in [External message intake](intake.md). This first step stores text and delivery
+receipts only; it does not yet add items to Backlog or connect to nanobot.
+
 <!-- Each `## ` section is also a page on the website, at
      threadbear.mikecann.app/docs/<slug>, named by the slug comment on the
      line under its heading (site/scripts/docs.mjs builds them). The Mac

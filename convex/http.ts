@@ -12,8 +12,12 @@ import { httpAction } from './_generated/server';
 import type { Id } from './_generated/dataModel';
 import { MAX_RUNNER_UPLOAD_BYTES } from './sync';
 import { PHONE_UPLOADS } from './phone';
+import { postMessage, getReceipt } from './intake';
 
 const http = httpRouter();
+
+http.route({ path: '/intake/v1/messages', method: 'POST', handler: postMessage });
+http.route({ path: '/intake/v1/receipt', method: 'GET', handler: getReceipt });
 
 http.route({
   pathPrefix: '/s/',
