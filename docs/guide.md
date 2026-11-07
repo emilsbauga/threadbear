@@ -743,7 +743,9 @@ up at most every 20 minutes while the thread keeps going. A catch-up after
 only a quick reply is skipped without asking anything. Saved Backlog prompts
 get a separate look after edits settle: filing into existing projects and
 preparing context for Highlights and the eventual task agent. The task
-itself stays unsent.
+itself stays unsent. It can also improve a Backlog title using that context,
+without editing your saved message. Your own titles stay protected, and
+Evolving titles controls these renames too.
 
 Each look is one short call to Haiku, Claude's small, cheap model, rather
 than the model your threads run on. It runs on one of your own Claude

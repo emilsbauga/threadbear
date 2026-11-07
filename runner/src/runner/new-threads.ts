@@ -57,7 +57,8 @@ export const newThreadsPart = {
     st.rec.backlog = { text, images: refs, revision: revision + 1 };
     st.rec.preview = oneLine(text, LIMITS.previewChars);
     st.rec.lastActivityAt = this.isoNow();
-    if (!st.rec.titleSet) st.rec.title = titleFrom(text);
+    // Keep an inferred title; only the provisional first-line title follows edits.
+    if (!st.rec.titleSet && st.rec.title === titleFrom(draft.text)) st.rec.title = titleFrom(text);
     this.markDirty(st);
     // A successful save means the draft is durable, even if the app quits immediately.
     this.store.save(st.rec);

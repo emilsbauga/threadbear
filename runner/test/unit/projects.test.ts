@@ -1467,3 +1467,45 @@ test('archiving a Backlog item drops an in-flight review until it is restored', 
   s.h.runner.update({threadId: thread.id, archived: false});
   assert.equal(s.librarian.status().queue[0]?.threadId, thread.id);
 });
+
+test('Backlog titles use available context without modifying the draft and survive autosaves', async () => {
+  const text = 'Can you sort this out for the homepage?';
+  const s = setup({ models: () => reply({ title: 'Update Website homepage layout' }) });
+  const { thread } = s.h.runner.createDraft({ text, cwd: s.misc });
+  const before = structuredClone(s.h.runner.get(thread.id).backlog);
+  s.h.clock.advance(SETTLE_MS);
+  await tick(8);
+  assert.equal(s.h.runner.get(thread.id).title, 'Update Website homepage layout');
+  assert.deepEqual(s.h.runner.get(thread.id).backlog, before);
+  s.h.runner.saveDraft(thread.id, text, [], 1);
+  assert.equal(s.h.runner.get(thread.id).title, 'Update Website homepage layout');
+  s.h.runner.saveDraft(thread.id, `${text} Keep the existing content.`, [], 2);
+  assert.equal(s.h.runner.get(thread.id).title, 'Update Website homepage layout');
+  assert.equal(s.h.runner.get(thread.id).backlog?.text, `${text} Keep the existing content.`);
+});
+
+test('first send preserves a librarian Backlog title without starting another naming job', async () => {
+  const s = setup({ models: () => reply({ title: 'Update Website homepage layout' }) });
+  const { thread } = s.h.runner.createDraft({ text: 'Can you sort this out?', cwd: s.misc });
+  s.h.clock.advance(SETTLE_MS);
+  await tick(8);
+  let titleJobs = 0;
+  s.h.runner.titleFromModel = async () => { titleJobs++; return { reason: 'Fake naming job' }; };
+  s.h.runner.send(thread.id, 'Can you sort this out?');
+  assert.equal(titleJobs, 0);
+  assert.equal(s.h.runner.get(thread.id).title, 'Update Website homepage layout');
+});
+
+test('Backlog naming respects user titles and the Evolving titles setting', async () => {
+  for (const protect of ['user', 'off']) {
+    const s = setup({ models: () => reply({ title: 'Must not replace this' }) });
+    const { thread } = s.h.runner.createDraft({ text: 'Keep the saved message intact', cwd: s.misc });
+    if (protect === 'user') s.h.runner.update({ threadId: thread.id, title: 'My chosen name' });
+    else s.librarian.update({ evolvingTitles: false });
+    const before = s.h.runner.get(thread.id);
+    s.h.clock.advance(SETTLE_MS);
+    await tick(8);
+    assert.equal(s.h.runner.get(thread.id).title, before.title);
+    assert.deepEqual(s.h.runner.get(thread.id).backlog, before.backlog);
+  }
+});

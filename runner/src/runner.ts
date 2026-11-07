@@ -1408,7 +1408,7 @@ export class Runner {
     });
     // Only a validated send promotes a saved first prompt into an active thread.
     const draft = rec.backlog;
-    const wasBacklog = Boolean(draft);
+    const needsBacklogTitle = draft && !rec.titleSet && rec.title === titleFrom(draft.text);
     if (draft) {
       const unchanged = text === draft.text && refs.length === draft.images.length
         && refs.every((img, i) => img.path === draft.images[i].path);
@@ -1419,7 +1419,7 @@ export class Runner {
       }
     }
     delete rec.backlog;
-    if (wasBacklog && !rec.titleSet && text.trim()) void this.titleFromModel(st, text);
+    if (needsBacklogTitle && text.trim()) void this.titleFromModel(st, text);
     // New work: its last finish no longer says it's done, for threads
     // waiting on it (runner/hibernation.ts).
     delete rec.finished;

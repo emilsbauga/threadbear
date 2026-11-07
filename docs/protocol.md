@@ -1107,7 +1107,11 @@ apply. One review per saved prompt revision; edits invalidate the old
 context. A result for a changed, started, archived or deleted item is dropped.
 A first send that matches the annotated prompt and pictures preserves the
 note as advisory context in the execution agent's startup instructions;
-otherwise it is discarded. The first prompt itself is never rewritten.
+otherwise it is discarded. The librarian may also improve a Backlog title
+from the saved prompt and supplied context, under the normal Evolving
+titles and user-chosen-title rules. A librarian title survives draft
+autosaves and first send; a later review may evolve it again. The first
+prompt itself is never rewritten.
 
 ## Composer skills
 
