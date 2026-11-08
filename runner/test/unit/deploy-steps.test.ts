@@ -88,13 +88,11 @@ test('unitTests: a test that fails twice stops the build', () => {
   assert.throws(() => steps.unitTests(c, {}, io), /Rerunning test\/unit\/broken\.test\.ts failed \(node exited with 1\)/);
 });
 
-// 90 s was too short with the Mac at a load of 94 on 18 cores (6 Nov): the
-// release was fine and started in 7 s once it eased. The wait goes on while
-// the Mac is that busy, up to a cap, and gives up at 90 s otherwise.
-test('the smoke test waits longer for a release to listen while the Mac is overloaded', () => {
+// CPU load alone does not describe memory or I/O stalls during startup.
+test('the smoke test gives startup a bounded budget even with low CPU load', () => {
   assert.equal(steps.smokeTimedOut(89_000, 0.5), false);
-  assert.equal(steps.smokeTimedOut(91_000, 0.5), true);
-  assert.equal(steps.smokeTimedOut(91_000, 1.0), true);
+  assert.equal(steps.smokeTimedOut(91_000, 0.5), false);
+  assert.equal(steps.smokeTimedOut(91_000, 1.0), false);
   assert.equal(steps.smokeTimedOut(91_000, 5.2), false);
   assert.equal(steps.smokeTimedOut(9 * 60_000, 5.2), false);
   assert.equal(steps.smokeTimedOut(10 * 60_000 + 1, 5.2), true);
@@ -114,20 +112,20 @@ test('smoke hello tolerates slow answers within the shared startup budget', asyn
 
 test('smoke hello stops on exit or a bounded timeout', async () => {
   const io = {
-    probe: async () => ({ state: 'unknown' }), waited: () => 91_000,
+    probe: async () => ({ state: 'unknown' }), waited: () => 601_000,
     load: () => 0.5, exited: () => null, sleep: async () => {},
   };
-  await assert.rejects(steps.smokeHello(io), /hello got no answer after 91 s/);
+  await assert.rejects(steps.smokeHello(io), /hello got no answer after 601 s/);
   await assert.rejects(steps.smokeHello({ ...io, exited: () => ({ code: 1 }) }), /it exited \(1\)/);
   await assert.rejects(steps.smokeHello({ ...io, waited: () => 600_001, load: () => 5 }), /hello got no answer/);
 });
 
 
-test('smoke hello keeps waiting past 90 seconds only under load', async () => {
+test('smoke hello keeps waiting when CPU load misses startup pressure', async () => {
   let attempts = 0;
   const result = await steps.smokeHello({
     probe: async () => (++attempts === 1 ? { state: 'unknown' } : { state: 'up' }),
-    waited: () => 120_000, load: () => 5, exited: () => null, sleep: async () => {},
+    waited: () => 120_000, load: () => 0.5, exited: () => null, sleep: async () => {},
   });
   assert.equal(result.state, 'up');
   assert.equal(attempts, 2);
