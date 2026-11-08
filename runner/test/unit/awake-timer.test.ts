@@ -9,8 +9,7 @@ import { makeHarness } from '../helpers/fakes.ts';
 
 // Blocks the event loop the way a starved process stalls.
 function stall(ms: number) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {}
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 test('fires after the time, and clear() stops it', async () => {
@@ -40,8 +39,12 @@ test('the handshake survives the process stalling past both auth timeouts mid-wa
   // machine so loaded that node isn't scheduled for longer than either
   // side's auth timeout (restart.test.ts failed this way under a load of
   // 60+, 6 Nov). The replies are in the sockets when it wakes.
+  // Real socket delivery needs the runner's normal three-second budget,
+  // not 200 ms on a loaded check host. The stall still exceeds the budget.
+  const authMs = 3000;
+  const stallMs = authMs * 2;
   const { runner } = makeHarness();
-  const server = new RpcServer({ host: '127.0.0.1', port: 0, token: 'tok', runner, log: nullLogger, methods: { ping: () => 'pong' }, authTimeoutMs: 200 });
+  const server = new RpcServer({ host: '127.0.0.1', port: 0, token: 'tok', runner, log: nullLogger, methods: { ping: () => 'pong' }, authTimeoutMs: authMs });
   const { port } = await server.listen();
   try {
     // Stall at each point of the handshake: as the challenge arrives (both
@@ -49,14 +52,14 @@ test('the handshake survives the process stalling past both auth timeouts mid-wa
     // queued in the server's socket, and the server's in the client's
     // once the server answers on waking).
     for (const at of ['challenge', 'proof'] as const) {
-      const c = new RunnerClient(`ws://127.0.0.1:${port}/rpc`, 'tok', { authTimeoutMs: 200 });
+      const c = new RunnerClient(`ws://127.0.0.1:${port}/rpc`, 'tok', { authTimeoutMs: authMs });
       const ws = (c as any).ws;
-      if (at === 'challenge') ws.prependOnceListener('message', () => stall(400));
+      if (at === 'challenge') ws.prependOnceListener('message', () => stall(stallMs));
       else {
         const send = ws.send.bind(ws);
         ws.send = (data: string, ...rest: unknown[]) => {
           send(data, ...rest);
-          if (data.includes('auth.prove')) stall(400);
+          if (data.includes('auth.prove')) stall(stallMs);
         };
       }
       const t0 = performance.now(); await c.opened.catch((e) => { throw new Error(at + ' after ' + Math.round(performance.now() - t0) + ': ' + e.message); });
