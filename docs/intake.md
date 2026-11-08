@@ -4,14 +4,14 @@ Text intake accepts email and Telegram content and returns durable receipts.
 The optional Backlog consumer below saves received messages as dormant drafts.
 `received` still means stored in Convex, not confirmation of a draft or execution.
 Capture/forwarding is implemented on the separate device. V1 remains text-only;
-API 63 adds the V2 temporary file transfer described below. No task agent is started automatically.
+API 66 adds the V2 temporary file transfer described below. No task agent is started automatically.
 
 No client is enabled by default. A deployment administrator provisions a
 dedicated client; never give a capture device a deploy, runner or phone key.
 
 ## Consuming into Backlog
 
-Backend API 62 adds a runner-bound consumer behind the `externalIntake`
+Backend API 65 adds a runner-bound consumer behind the `externalIntake`
 experiment (off by default). An administrator binds a client once with internal
 `intakeConsumer:bindConsumer`, passing `{ clientId, runnerId }`. Binding cannot
 be silently changed to another runner. Revoke a client to stop intake/delivery;
@@ -111,11 +111,11 @@ secret scrubbing; choose what to submit accordingly. There is no public list,
 edit, delete or task-start endpoint. Future consumers must treat source content
 as external data and retain intake identity through Backlog creation.
 
-## Attachments (API 63)
+## Attachments (API 66)
 
 Use the same restricted credential with `/intake/v2/prepare`, `/upload`,
 `/finalize`, `/status` and `/cancel`. The complete wire contract is in
-[File intake](protocol.md#file-intake-backend-api-63); device implementation
+[File intake](protocol.md#file-intake-backend-api-66); device implementation
 instructions are in [Nanobot attachment handoff](nanobot-attachments-handoff.md).
 No additional credential is needed and capture devices never receive a runner,
 owner, deploy or storage administrator key.

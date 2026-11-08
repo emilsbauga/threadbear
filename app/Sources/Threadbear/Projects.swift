@@ -139,7 +139,7 @@ extension AppModel {
             if let first = project.folders.first { panel.directoryURL = URL(fileURLWithPath: first) }
         }) { [weak self] url in
             guard let self, let url, self.project(id) != nil else { return }
-            self.whileBusy(BusyKey.projectIcon(id)) {
+            self.whileBusy(BusyKey.projectIcon(id)) { [self] in
                 do {
                     self.replace(try await client.setProjectIcon(id, path: url.standardizedFileURL.path))
                 } catch {

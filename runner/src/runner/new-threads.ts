@@ -75,15 +75,22 @@ export const newThreadsPart = {
       throw error;
     }
   },
-  createDraft(this: Runner, params: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; poolId?: string; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; title?: string; worktree?: boolean; startedBy?: ThreadStartedBy }): { thread: ThreadSummary } {
+  createDraft(this: Runner, params: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; poolId?: string; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; title?: string; worktree?: boolean; startedBy?: ThreadStartedBy; projectIds?: string[] }): { thread: ThreadSummary } {
     checkImages(params.images ?? []);
     if (!params.text.trim() && !params.images?.length) throw new RpcError(ErrorCode.badParams, 'text or images required');
     // Validate sources before allocating a thread; saveDraft takes ownership of the files.
     for (const img of params.images ?? []) if (!fs.existsSync(img.path)) throw new RpcError(ErrorCode.badParams, `Image not found: ${img.path}`);
+    const projectIds = params.projectIds ?? [];
+    if (projectIds.length) {
+      if (!this.projects) throw new RpcError(ErrorCode.badParams, 'projects are not available on this runner');
+      for (const id of projectIds) this.projects.get(id);
+    }
     const { st } = this.makeThread(params);
     st.rec.backlog = { text: '', images: [], revision: 0 };
     try {
-      return this.saveDraft(st.rec.id, params.text, params.images ?? [], 0);
+      this.saveDraft(st.rec.id, params.text, params.images ?? [], 0);
+      if (projectIds.length) this.projects!.changeMembership(st.rec.id, { add: projectIds, by: 'mike' });
+      return { thread: this.summary(st) };
     } catch (error) {
       // A bad attachment must not leave an ordinary idle thread behind.
       this.threads.delete(st.rec.id);
@@ -139,10 +146,21 @@ export const newThreadsPart = {
     // Started by a sandboxed thread's agent in a sandbox folder: shut in
     // one too (ThreadRecord.confined).
     confined?: boolean;
+    // Projects it starts in (New Thread on a project's page), joined
+    // before its first turn, so that turn already has the project's brief.
+    projectIds?: string[];
   }): { thread: ThreadSummary; turnId: string } {
     if (!params.text && !params.images?.length) throw new RpcError(ErrorCode.badParams, 'text or images required');
     checkImages(params.images ?? []);
+    const projectIds = params.projectIds ?? [];
+    if (projectIds.length) {
+      const projects = this.projects;
+      if (!projects) throw new RpcError(ErrorCode.badParams, 'projects are not available on this runner');
+      // Every one checked before the thread exists: a bad id makes nothing.
+      for (const p of projectIds) projects.get(p);
+    }
     const { st, notes } = this.makeThread(params);
+    if (projectIds.length) this.projects!.changeMembership(st.rec.id, { add: projectIds, by: 'mike' });
     const turnId = this.sendTo(st, params.text ?? '', params.images ?? [], { origin: params.origin, scheduleId: params.scheduleId });
     // Under the first turn, so they read as part of starting it.
     for (const text of notes) this.emit(st, { type: 'system.note', text }, st.rt.turn?.turnId ?? turnId);

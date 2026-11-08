@@ -14,7 +14,7 @@ bound intake clients as unsent Backlog drafts. Their original text stays in the
 composer; Message source in Highlights holds provenance. No task session, turn
 or worktree starts until you send the draft. Existing Backlog librarian review
 may add context. Retries, restarts and deletion do not create the same task again.
-With backend API 63, attachments are transferred in private blocks, verified and
+With backend API 66, attachments are transferred in private blocks, verified and
 saved locally with the complete draft. Cloud bytes are removed only after durable
 local confirmation. Pending data has no age expiry. See docs/intake.md for
 checksum holds and storage lifecycle.

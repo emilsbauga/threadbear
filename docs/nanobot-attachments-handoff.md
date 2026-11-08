@@ -1,6 +1,6 @@
 # Nanobot attachment implementation handoff
 
-This is the device-side work after Threadbear's API 63 and attachment-aware
+This is the device-side work after Threadbear's API 66 and attachment-aware
 runner are live. Read `docs/intake.md` and the File intake section of
 `docs/protocol.md` before implementation. This document contains no secrets.
 Do not change capture rules or enable/restart the gateway merely to test files.
@@ -152,7 +152,7 @@ upgraded to attachments; report that case rather than inventing another task.
    timeout-after-acceptance, duplicate/out-of-order blocks, changed manifest,
    revoked key, full disk, corrupt original, interrupted source download,
    multi-file/empty-file/attachment-only messages and files above 25 MB.
-6. Ask Emīls to confirm the Threadbear API63/runner rollout is complete. Run a
+6. Ask Emīls to confirm the Threadbear API66/runner rollout is complete. Run a
    standalone synthetic V2 smoke without enabling real-source capture: small
    image + document + file above 25 MB, no real private source content. Expect
    one dormant draft with locally verified originals; confirm `localSaved`,

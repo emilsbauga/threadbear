@@ -1052,6 +1052,7 @@ private struct RowActions: View {
                 case .delete:
                     Button { app.deleteThread(thread.id) } label: { Image(systemName: "trash") }
                         .buttonStyle(RowIconButtonStyle())
+                        .busy(app.isBusy(BusyKey.deleteThread(thread.id)))
                         .tip("Delete chat…")
                 case .unarchive:
                     Button { app.unarchive(thread.id) } label: { Image(systemName: "arrow.uturn.backward") }

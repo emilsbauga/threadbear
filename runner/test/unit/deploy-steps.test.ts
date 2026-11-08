@@ -88,6 +88,17 @@ test('unitTests: a test that fails twice stops the build', () => {
   assert.throws(() => steps.unitTests(c, {}, io), /Rerunning test\/unit\/broken\.test\.ts failed \(node exited with 1\)/);
 });
 
+test('unitTests: a rerun of many failed files still gets a log file it can open', () => {
+  // 7 Nov: twelve files made the log's name too long, and the rerun never ran.
+  const files = Array.from({ length: 12 }, (_, i) => `test/unit/a-fairly-long-test-file-name-${i}.test.ts`);
+  const output = files.map((f) => `test at ${f}:1:1\n`).join('');
+  const { io, said, calls } = fakeIo([{ status: 1, output }, { status: 0 }]);
+  steps.unitTests(c, {}, io);
+  assert.equal(calls.length, 2);
+  assert.ok(files.every((f) => calls[1].args.includes(f)));
+  assert.ok(said.some((s) => /^Flaky: /.test(s)), said.join('\n'));
+});
+
 // CPU load alone does not describe memory or I/O stalls during startup.
 test('the smoke test gives startup a bounded budget even with low CPU load', () => {
   assert.equal(steps.smokeTimedOut(89_000, 0.5), false);

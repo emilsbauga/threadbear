@@ -272,8 +272,25 @@
 //    runner key can't save a schedule under an id gone from another runner
 //    within the day (scheduleGone). An older runner never asks, and does
 //    as before.
-// 61: this fork adds unsent Backlog drafts to thread rows. The former fork-only
-//    API 49 overlapped upstream wakeNote; only 61 unambiguously supports both.
-// 62: runner-bound external intake delivery to dormant Backlog drafts.
-// 63: chunked external intake attachments, temporary storage and local delivery.
-export const API_VERSION = 63;
+// 61: an open card's asks can carry `optionNotes`, what each answer does,
+//    so a Mac reading another runner's thread through the relay draws the
+//    card as its own runner's (rows with a line under each answer), not
+//    plain buttons (Mike, 8 Nov, on a Hetzner thread). An older runner sends
+//    none, and an older backend gets the asks without them.
+// 62: phone:slashCommands, which asks a thread's runner for the slash
+//    commands it can run (a `slashCommands` command, answered with its
+//    threads.commands list), and phone:command returns that list as
+//    `result`. An older runner fails it as unknown, and the phone shows no
+//    palette; an older phone never asks.
+// 63: relay:queueCommand takes `images` (storage ids the main Mac's runner
+//    uploaded through relay:pictureUploadUrl and /relay/upload, recorded in
+//    relayUploads) on a send or a create, and gives the command a URL for
+//    each, as a phone's photos have; relay:discardPictures deletes ones that
+//    weren't queued, and sync:pruneFiles any left after a day. A runner
+//    sends pictures to another runner only from 63: an older backend would
+//    drop them and send the words alone.
+// 64: combines upstream APIs 61–63 with this fork's Backlog (formerly 61).
+// 65: includes this fork's external intake consumer (formerly 62).
+// 66: includes temporary intake attachment transfer (formerly fork API 63).
+// Older fork 61–63 and upstream 61–63 described different capabilities.
+export const API_VERSION = 66;
