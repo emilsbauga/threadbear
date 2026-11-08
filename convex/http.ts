@@ -13,8 +13,13 @@ import type { Id } from './_generated/dataModel';
 import { MAX_RUNNER_UPLOAD_BYTES } from './sync';
 import { PHONE_UPLOADS } from './phone';
 import { postMessage, getReceipt } from './intake';
+import { jsonRequest, upload, download } from './intakeFiles';
 
 const http = httpRouter();
+for (const op of ['prepare', 'finalize', 'cancel']) http.route({ path: `/intake/v2/${op}`, method: 'POST', handler: jsonRequest });
+http.route({ path: '/intake/v2/status', method: 'GET', handler: jsonRequest });
+http.route({ path: '/intake/v2/upload', method: 'POST', handler: upload });
+http.route({ path: '/intake/v2/download', method: 'GET', handler: download });
 
 http.route({ path: '/intake/v1/messages', method: 'POST', handler: postMessage });
 http.route({ path: '/intake/v1/receipt', method: 'GET', handler: getReceipt });

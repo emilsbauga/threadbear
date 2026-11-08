@@ -238,7 +238,12 @@ local `intake-imports/` markers if delivery might resume after task deletion.
 Revoke clients to disable it. To remove intake entirely, remove routes/modules, then
 empty the two tables before dropping their schema definitions; regenerate API
 bindings. No deployment names, credentials or nanobot addresses are in code.
-See `docs/intake.md` for the operator contract.
+File transfer adds `convex/intakeFiles.ts`, `intakeTransfers`/`intakeChunks`,
+V2 HTTP routes and cleanup crons, plus `runner/src/intake-files.ts`. Mac file
+chips live in ComposerView, with AttachmentRef in the shared models/protocol.
+Remove their access entry, API gating and routes together; never drop pending
+bytes or completion records during removal. See `docs/intake.md` for the
+operator contract.
 
 Backlog uses an optional `backlog` first-prompt field on thread records and
 summaries (`runner/src/runner/new-threads.ts`, `store.ts`, `protocol.ts`).

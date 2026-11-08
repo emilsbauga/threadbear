@@ -46,7 +46,11 @@ the prompt clears the old note and schedules a fresh review. When you send
 the reviewed prompt, its context is also given to the executing agent as
 advisory background. Open the item to find its prompt
 in the normal composer; edits save automatically on the Mac, including its
-pictures. Send when ready: the same thread moves into Running and follows
+pictures. Imported email/Telegram files also appear above the prompt, with
+image thumbnails or their filename and size. Click to preview, or remove a file
+from the draft before sending. Originals remain in the thread’s local folder
+and Highlights after delivery; Convex removes its temporary copies only after
+this computer saves the complete draft. Send when ready: the same thread moves into Running and follows
 the usual Inbox and Archived flow. Archiving an unsent item keeps its draft;
 bringing it back returns it to Backlog. Like the other headings, Backlog can
 be folded away and its items appear in search.

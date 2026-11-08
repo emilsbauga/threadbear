@@ -7,7 +7,7 @@ import { sha256 } from './lib';
 import type { QueryCtx, MutationCtx } from './_generated/server';
 import type { Doc } from './_generated/dataModel';
 
-const messageFields = {
+export const messageFields = {
   messageId: v.string(), source: v.union(v.literal('email'), v.literal('telegram')),
   sourceMessageId: v.string(), text: v.string(), sentAt: v.string(), sender: v.optional(v.string()),
 };
@@ -20,11 +20,11 @@ const bytes = (s: string) => new TextEncoder().encode(s).byteLength;
 const receiptOf = (row: Doc<'intakeMessages'>): Receipt => ({ receiptId: row._id, messageId: row.messageId, state: row.state, receivedAt: row.receivedAt });
 const failure = (status: number, error: string): Result => ({ status, error });
 
-function validate(value: unknown): Message | Result {
+export function validate(value: unknown, allowEmpty = false): Message | Result {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return failure(400, 'Expected a message object');
   const m = value as Record<string, unknown>;
   if (!messageIdOk(m.messageId) || !short(m.sourceMessageId)
-    || (m.source !== 'email' && m.source !== 'telegram') || typeof m.text !== 'string' || !m.text.trim()
+    || (m.source !== 'email' && m.source !== 'telegram') || typeof m.text !== 'string' || (!allowEmpty && !m.text.trim())
     || typeof m.sentAt !== 'string' || m.sentAt.length > 64
     || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(m.sentAt)
     || !Number.isFinite(Date.parse(m.sentAt)) || (m.sender !== undefined && !short(m.sender))) return failure(400, 'Invalid message fields');
@@ -81,6 +81,8 @@ export const accept = internalMutation({
       if (old.source !== m.source || old.sourceMessageId !== m.sourceMessageId || old.text !== m.text || old.sentAt !== m.sentAt || old.sender !== m.sender) return failure(409, 'Message ID already has different content');
       return { status: 200, receipt: receiptOf(existing) };
     }
+    const staged = await ctx.db.query('intakeTransfers').withIndex('by_client_message', q => q.eq('clientId', c.clientId).eq('messageId', m.messageId)).first();
+    if (staged) return failure(409, 'This ID belongs to a file transfer; use v2 finalize');
     const now = Date.now();
     const hourStart = Math.floor(now / 3_600_000) * 3_600_000;
     const count = c.hourStart === hourStart ? c.hourCount ?? 0 : 0;

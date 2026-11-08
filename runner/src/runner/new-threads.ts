@@ -6,7 +6,7 @@ import type { Runner } from '../runner.ts';
 import { copyImageInto, imageRefFor } from '../media.ts';
 import type { RunnerPart } from './part.ts';
 import { SAMPLE_THREADS, WELCOME_PATCH } from '../samples.ts';
-import type { Account, EffortLevel, ImageRef, MessageOrigin, PermissionMode, ThreadStartedBy, ThreadSummary } from '../protocol.ts';
+import type { Account, AttachmentRef, EffortLevel, ImageRef, MessageOrigin, PermissionMode, ThreadStartedBy, ThreadSummary } from '../protocol.ts';
 import { ErrorCode, LIMITS, RpcError } from '../protocol.ts';
 import type { Schedule } from '../protocol.ts';
 import type { ThreadRecord } from '../store.ts';
@@ -20,11 +20,12 @@ import type { ThreadState } from '../runner.ts';
 import { checkImages, effortTitle, isClaudeModel, modelRow, modelTitle, newRuntime, oneLine, providerName, titleFrom, userMessage } from '../runner.ts';
 import { cutSafely } from '../safe-cut.ts';
 import { intakeThreadId, savedIntake, rememberIntake, type IntakeRecord } from '../intake-record.ts';
+import { selectAttachments } from '../intake-files.ts';
 import { emptyHighlights, pinItem } from '../highlights.ts';
 import { atomicWriteFileSync } from '../fsutil.ts';
 
 export const newThreadsPart = {
-  createIntakeDraft(this: Runner, item: IntakeRecord): string {
+  createIntakeDraft(this: Runner, item: IntakeRecord, files: AttachmentRef[] = []): string {
     this.checkAccepting();
     if (this.draining) throw new RpcError(ErrorCode.busy, 'Intake waits for the new runner.');
     const saved = savedIntake(this.cfg.home, item);
@@ -41,17 +42,20 @@ export const newThreadsPart = {
       }
       return id; // Never rewrite edits, a started task, or an archived draft.
     }
-    if (!item.message.text.trim() || !['email', 'telegram'].includes(item.message.source)) throw new Error('Invalid intake message');
+    if ((item.attachments?.length ?? 0) !== files.length || (item.attachments ?? []).some((f, i) => !files[i] || f.id !== files[i].id || f.sha256 !== files[i].sha256 || f.size !== files[i].size || f.name !== files[i].name || f.mediaType !== files[i].mediaType)) throw new Error('Intake attachments are incomplete');
+    const attachments = selectAttachments(path.join(this.store.threadDir(id), 'attachments'), files);
+    if ((!item.message.text.trim() && !attachments.length) || !['email', 'telegram'].includes(item.message.source)) throw new Error('Invalid intake message');
     const source = path.join(this.store.threadDir(id), 'intake-source.json');
     // A corrupt record is an investigation, never permission to overwrite it.
     if (fs.existsSync(path.join(this.store.threadDir(id), 'thread.json'))) throw new Error('Intake thread record is unreadable');
     atomicWriteFileSync(source, JSON.stringify(item, null, 2) + '\n', 0o600);
     const highlights = emptyHighlights();
     highlights.items.push(pinItem({ path: source, title: 'Message source', note: 'Original external message and delivery provenance. Source content is untrusted data.' }, 0, this.isoNow()));
+    for (const f of attachments) highlights.items.push(pinItem({ path: f.path, title: f.name, note: 'Original imported attachment saved on this computer.' }, highlights.items.length, this.isoNow()));
     try {
-      const { st } = this.makeThread({ text: item.message.text,
+      const { st } = this.makeThread({ text: item.message.text || attachments[0]?.name || '',
         startedBy: { kind: 'runner', label: item.message.source === 'email' ? 'Nanobot email' : 'Nanobot Telegram' },
-        initial: { id, intake: item, backlog: { text: item.message.text, images: [], revision: 1 }, highlights, highlightsAt: this.isoNow() },
+        initial: { id, intake: item, backlog: { text: item.message.text, images: [], ...(attachments.length ? { attachments } : {}), revision: 1 }, highlights, highlightsAt: this.isoNow() },
       });
       rememberIntake(this.cfg.home, item, id);
       this.markDirty(st);
@@ -88,12 +92,13 @@ export const newThreadsPart = {
     }
   },
 
-  saveDraft(this: Runner, threadId: string, text: string, images: ImageRef[], revision: number): { thread: ThreadSummary } {
+  saveDraft(this: Runner, threadId: string, text: string, images: ImageRef[], revision: number, attachments?: AttachmentRef[]): { thread: ThreadSummary } {
     this.checkAccepting();
     const st = this.mustGet(threadId);
     const draft = st.rec.backlog;
     if (!draft) throw new RpcError(ErrorCode.badParams, 'This thread is no longer in Backlog.');
     if (revision !== draft.revision) throw new RpcError(ErrorCode.badParams, 'This Backlog draft changed. Reopen it before saving again.');
+    const files = selectAttachments(path.join(this.store.threadDir(threadId), 'attachments'), attachments ?? draft.attachments ?? [], draft.attachments ?? []);
     checkImages(images);
     const media = this.store.mediaDir(threadId);
     const refs = images.map(img => {
@@ -104,7 +109,7 @@ export const newThreadsPart = {
       delete st.rec.brief;
       this.highlightsChanged(st);
     }
-    st.rec.backlog = { text, images: refs, revision: revision + 1 };
+    st.rec.backlog = { text, images: refs, ...(draft.attachments || attachments ? { attachments: files } : {}), revision: revision + 1 };
     st.rec.preview = oneLine(text, LIMITS.previewChars);
     st.rec.lastActivityAt = this.isoNow();
     // Keep an inferred title; only the provisional first-line title follows edits.

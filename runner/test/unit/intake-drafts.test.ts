@@ -72,3 +72,50 @@ test('atomic initial record creation never replaces an existing thread record', 
   assert.throws(() => h.store.create({ ...rec, title: 'Wrong replacement' }), /EEXIST/);
   assert.notEqual(h.store.load(id)?.title, 'Wrong replacement');
 });
+
+test('attachment-only intake owns files, keeps them through old-client autosave and supplies local paths only on send', async () => {
+  const h = makeHarness();
+  const incoming = { ...item, message: { ...item.message, text: '' }, attachments: [{ id: 'a', name: 'report.txt', mediaType: 'text/plain', size: 3, sha256: 'a'.repeat(64) }] };
+  assert.throws(() => h.runner.createIntakeDraft(incoming), /attachment/i);
+  const id = intakeThreadId(incoming.clientId, incoming.receiptId);
+  const dir = path.join(h.home, 'threads', id, 'attachments'); fs.mkdirSync(dir, { recursive: true });
+  const file = { ...incoming.attachments[0], path: path.join(dir, 'local.txt') }; fs.writeFileSync(file.path, 'abc');
+  h.runner.createIntakeDraft(incoming, [file]);
+  assert.deepEqual(h.runner.get(id).backlog?.attachments, [file]);
+  assert.equal(h.adapter.sessions.length, 0);
+  h.runner.saveDraft(id, '', [], 1);
+  assert.deepEqual(h.runner.get(id).backlog?.attachments, [file]);
+  h.runner.send(id, '', []);
+  await Promise.resolve();
+  assert.equal(h.runner.get(id).backlog, undefined);
+  const events = h.events(id);
+  const user = events.find(e => e.type === 'user.message');
+  assert.equal(user?.text, '');
+  assert.deepEqual(user?.attachments, [file]);
+  assert.ok(h.runner.forAgent({ text: '', attachments: [file] }).includes(file.path));
+});
+
+test('explicit empty attachments removes them and missing files never promote a draft', () => {
+  const h = makeHarness();
+  const id = h.runner.createIntakeDraft(item);
+  const file = { id: 'a', path: '/missing', name: 'missing.txt', mediaType: 'text/plain', size: 1, sha256: 'a'.repeat(64) };
+  const rec = h.store.load(id)!; rec.backlog!.attachments = [file]; h.store.save(rec);
+  const next = h.restart();
+  assert.throws(() => next.runner.send(id, 'Start', []), /attachment|file/i);
+  assert.ok(next.runner.get(id).backlog);
+  next.runner.saveDraft(id, 'Start', [], 1, []);
+  assert.deepEqual(next.runner.get(id).backlog?.attachments, []);
+});
+
+test('a supported image attachment reaches native provider image input only after Send', async () => {
+  const h = makeHarness();
+  const incoming = { ...item, attachments: [{ id: 'picture', name: 'picture.png', mediaType: 'image/png', size: 68, sha256: 'a'.repeat(64) }] };
+  const id = intakeThreadId(item.clientId, item.receiptId);
+  const dir = path.join(h.home, 'threads', id, 'attachments'); fs.mkdirSync(dir, { recursive: true });
+  const file = { ...incoming.attachments[0], path: path.join(dir, 'picture.png') };
+  fs.writeFileSync(file.path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+  h.runner.createIntakeDraft(incoming, [file]); assert.equal(h.adapter.sessions.length, 0);
+  h.runner.send(id, item.message.text); await Promise.resolve();
+  assert.equal(h.adapter.sessions[0].sent[0].images[0].path, file.path);
+  assert.ok(h.adapter.sessions[0].sent[0].text.includes(file.path));
+});

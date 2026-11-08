@@ -195,7 +195,7 @@ export type ArchivedBy = 'mike' | 'agent' | 'threadbear';
 export type ArchiveVerdict = 'worked' | 'didntWork' | 'notNeeded';
 export const ARCHIVE_VERDICTS: readonly ArchiveVerdict[] = ['worked', 'didntWork', 'notNeeded'];
 
-export type BacklogDraft = { text: string; images: ImageRef[]; revision: number; context?: string };
+export type BacklogDraft = { text: string; images: ImageRef[]; attachments?: AttachmentRef[]; revision: number; context?: string };
 
 export type ThreadSummary = {
   backlog?: BacklogDraft;
@@ -613,6 +613,8 @@ export function backgroundFlag(tasks: BackgroundTask[] | undefined): string {
 }
 
 
+export type AttachmentRef = { id: string; path: string; name: string; mediaType: string; size: number; sha256: string };
+
 export type ImageRef = {
   path: string;
   mediaType: string;
@@ -722,7 +724,7 @@ export type EventBody =
   | { type: 'button.updated'; button: ReplyButton }
   // origin is set only on messages the runner sent by itself (the resume
   // after a restart).
-  | { type: 'user.message'; text: string; images: ImageRef[]; origin?: MessageOrigin; scheduleId?: string; reviewId?: string; reviewResponse?: ReviewDraft; answers?: AskAnswer[]; editOf?: number }
+  | { type: 'user.message'; text: string; images: ImageRef[]; attachments?: AttachmentRef[]; origin?: MessageOrigin; scheduleId?: string; reviewId?: string; reviewResponse?: ReviewDraft; answers?: AskAnswer[]; editOf?: number }
   // summary: the turn's summary, written by the runner from end_turn
   // givesWay: the turn's summary, with bullet replies off: any message of
   // the turn is the reply over it, however short

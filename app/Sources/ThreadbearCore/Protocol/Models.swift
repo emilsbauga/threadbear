@@ -349,6 +349,18 @@ public enum PermissionMode: String, Sendable, Hashable, Codable {
     }
 }
 
+public struct AttachmentRef: Sendable, Hashable, Codable, Identifiable {
+    public var id: String
+    public var path: String
+    public var name: String
+    public var mediaType: String
+    public var size: Int64
+    public var sha256: String
+    public init(id: String, path: String, name: String, mediaType: String, size: Int64, sha256: String) {
+        self.id = id; self.path = path; self.name = name; self.mediaType = mediaType; self.size = size; self.sha256 = sha256
+    }
+}
+
 public struct ImageRef: Sendable, Hashable, Codable {
     public var path: String
     public var mediaType: String
@@ -1070,12 +1082,13 @@ public struct ThreadShare: Sendable, Hashable, Codable {
 }
 
 public struct BacklogDraft: Sendable, Hashable, Codable {
+    public var attachments: [AttachmentRef]?
     public var text: String
     public var images: [ImageRef]
     public var revision: Int
     public var context: String?
-    public init(text: String, images: [ImageRef] = [], revision: Int = 1, context: String? = nil) {
-        self.text = text; self.images = images; self.revision = revision; self.context = context
+    public init(text: String, images: [ImageRef] = [], revision: Int = 1, context: String? = nil, attachments: [AttachmentRef]? = nil) {
+        self.text = text; self.images = images; self.revision = revision; self.context = context; self.attachments = attachments
     }
 }
 

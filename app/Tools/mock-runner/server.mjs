@@ -632,7 +632,7 @@ async function dispatch(client, method, p) {
     case 'threads.saveDraft': {
       const t = need(p.threadId);
       if (!t.summary.backlog || t.summary.backlog.revision !== p.revision) throw rpcError(-32602, 'Backlog draft changed');
-      t.summary.backlog = { text: p.text ?? '', images: p.images ?? [], revision: p.revision + 1 };
+      t.summary.backlog = { text: p.text ?? '', images: p.images ?? [], attachments: p.attachments ?? t.summary.backlog.attachments, revision: p.revision + 1 };
       t.summary.preview = p.text ?? '';
       broadcastSummary(t.summary.id);
       return { thread: t.summary };

@@ -12,6 +12,15 @@ original submitted text without secret scrubbing. It starts no task session,
 turn or worktree; the existing Backlog librarian may review the draft. No process
 is installed on the capture device. An operator may keep a private intake
 credential file for transfer to their device; see `docs/intake.md`.
+API 63 file intake (`convex/intakeFiles.ts`, `/intake/v2/`) temporarily stores
+private 8 MiB blocks in Convex. The runner downloads them over authenticated
+HTTPS, verifies size/SHA-256 and saves originals in each thread's `attachments/`.
+Partial verified blocks and checksum holds live in its `.transfer/` subfolder.
+No pending-file age limit applies. After durable local publication, backend
+cleanup deletes cloud bytes and keeps receipt/manifest metadata. A separate
+six-hour sweep removes unregistered orphan blocks older than a day, never
+registered pending data. Files move to runner trash with deleted threads.
+No capture-device process or credentials are changed by this feature.
 
 Everything Threadbear installs, runs in the background, reads, and talks to
 over the network. It's here so you, or the agent installing it for you, can

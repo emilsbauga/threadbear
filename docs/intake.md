@@ -3,8 +3,8 @@
 Text intake accepts email and Telegram content and returns durable receipts.
 The optional Backlog consumer below saves received messages as dormant drafts.
 `received` still means stored in Convex, not confirmation of a draft or execution.
-Capture/forwarding is implemented on the separate device; attachments are not
-supported by this API. No task agent is started automatically.
+Capture/forwarding is implemented on the separate device. V1 remains text-only;
+API 63 adds the V2 temporary file transfer described below. No task agent is started automatically.
 
 No client is enabled by default. A deployment administrator provisions a
 dedicated client; never give a capture device a deploy, runner or phone key.
@@ -110,3 +110,52 @@ from the command queue. Original text is stored as submitted, without runner
 secret scrubbing; choose what to submit accordingly. There is no public list,
 edit, delete or task-start endpoint. Future consumers must treat source content
 as external data and retain intake identity through Backlog creation.
+
+## Attachments (API 63)
+
+Use the same restricted credential with `/intake/v2/prepare`, `/upload`,
+`/finalize`, `/status` and `/cancel`. The complete wire contract is in
+[File intake](protocol.md#file-intake-backend-api-63); device implementation
+instructions are in [Nanobot attachment handoff](nanobot-attachments-handoff.md).
+No additional credential is needed and capture devices never receive a runner,
+owner, deploy or storage administrator key.
+
+Freeze the ordered file manifest and original bytes before prepare. Upload exact
+8 MiB blocks (the last may be smaller), then finalize. Zero-byte files use no
+blocks and still require the SHA-256 of empty bytes. There is no 25 MB file cap.
+Names are metadata; storage IDs and local paths are chosen by Threadbear.
+Attachment-only messages may have empty text. The 64 KiB JSON envelope and
+48 KiB text limits still apply, including the manifest in the envelope budget.
+
+Only finalized messages are consumed. The runner resumes verified blocks in
+`threads/<id>/attachments/.transfer/`, assembles and hashes originals, then
+publishes a complete dormant draft with local `AttachmentRef` values. The Mac
+composer shows thumbnails and filename/size chips. Preview opens in the app;
+Remove changes the draft selection and does not erase original bytes. Files also
+appear in Highlights. On Send, supported images use provider image input and all
+files are described to the agent by local path. No file is executed or archive
+extracted during intake. Mobile/web attachment display is not implemented;
+older clients preserve stored files when omitting the attachments argument.
+
+`received` remains only a Convex receipt. V2 status separately reports
+`localSaved` after durable local publication and `cloudDeleted` after retryable
+cleanup. A sender must retain its local original spool until `localSaved`, even
+if finalize succeeded. Cloud byte deletion retains receipt/manifest metadata,
+so duplicate submissions never recreate a task or request a new upload. Local
+files follow the thread into trash when it is deleted; normal backups are the
+operator's responsibility after one-time cloud delivery.
+
+Pending registered bytes have no age expiry, including while the Mac is asleep
+or offline. This deliberately retains storage cost until delivery or explicit
+cancellation. Cancel only applies before finalize. An unregistered blob left by
+an interrupted HTTP action is swept after a day; it has no accepted message or
+registered block. Cleanup of delivered/cancelled chunks is retried every 15
+minutes. Do not enable any generic storage TTL that removes pending chunks.
+
+A checksum mismatch is held locally with `<hash>.held.json` in `.transfer/`,
+preventing repeated billable downloads. Investigate source bytes and the frozen
+manifest first. A changed source needs a new explicit source/version identity;
+never mutate an existing message ID. For a verified transient block problem,
+remove that held marker to permit retry. Network and lease interruptions retry
+automatically; credentials, cancellation and manifest conflicts require operator
+attention. Never delete cloud bytes manually to fix a consumer error.

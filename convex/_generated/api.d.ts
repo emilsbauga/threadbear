@@ -13,6 +13,7 @@ import type * as devices from "../devices.js";
 import type * as http from "../http.js";
 import type * as intake from "../intake.js";
 import type * as intakeConsumer from "../intakeConsumer.js";
+import type * as intakeFiles from "../intakeFiles.js";
 import type * as lib from "../lib.js";
 import type * as phone from "../phone.js";
 import type * as projectHeads from "../projectHeads.js";
@@ -42,6 +43,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   intake: typeof intake;
   intakeConsumer: typeof intakeConsumer;
+  intakeFiles: typeof intakeFiles;
   lib: typeof lib;
   phone: typeof phone;
   projectHeads: typeof projectHeads;

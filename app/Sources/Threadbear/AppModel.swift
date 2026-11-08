@@ -25,12 +25,13 @@ enum ConnectionState: Equatable {
 struct Draft: Equatable {
     var text = ""
     var images: [ImageRef] = []
+    var attachments: [AttachmentRef] = []
 
     /// One mark per picture: a picture added from outside the composer
     /// gets a chip at the end, and marks whose pictures didn't come along
     /// go.
     var normalized: Draft {
-        Draft(text: InlinePictures.normalized(text, imageCount: images.count), images: images)
+        Draft(text: InlinePictures.normalized(text, imageCount: images.count), images: images, attachments: attachments)
     }
 
     /// The words to send, the chips as [Picture N] markers numbered from
@@ -55,7 +56,7 @@ struct Draft: Equatable {
         guard whole.images.indices.contains(index) else { return whole }
         var images = whole.images
         images.remove(at: index)
-        return Draft(text: InlinePictures.removingMark(index, from: whole.text), images: images)
+        return Draft(text: InlinePictures.removingMark(index, from: whole.text), images: images, attachments: whole.attachments)
     }
 }
 

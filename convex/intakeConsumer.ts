@@ -1,5 +1,6 @@
 // Runner-only delivery of external intake to dormant drafts. Sender receipts
 // remain immutable. Admin binding is explicit; clients cannot choose a runner.
+import { internal } from './_generated/api';
 import { v } from 'convex/values';
 import { query, mutation, internalMutation } from './_generated/server';
 import { runnerAuth, actAs, checkRunnerId, sha256 } from './lib';
@@ -25,6 +26,10 @@ export const ignoreMessage = internalMutation({
     if (!row) throw new Error('Intake message not found');
     if (row.deliveryState === 'saved' || (row.leaseUntil ?? 0) > Date.now()) throw new Error('Message is already saved or has a live lease');
     await ctx.db.patch(row._id, { deliveryState: 'ignored' });
+    if (row.transferId) {
+      await ctx.db.patch(row.transferId, { state: 'cancelled', cleanupPending: true });
+      await ctx.scheduler.runAfter(0, internal.intakeFiles.cleanDelivered, { transferId: row.transferId });
+    }
     return null;
   },
 });
@@ -35,18 +40,20 @@ async function owned(ctx: MutationCtx | QueryCtx, receiptId: Id<'intakeMessages'
   const client = await ctx.db.query('intakeClients').withIndex('by_client', q => q.eq('clientId', row.clientId)).unique();
   return client && client.revokedAt === undefined && client.consumerRunnerId === runnerId ? row : null;
 }
-const itemOf = (row: Doc<'intakeMessages'>) => ({ receiptId: row._id, clientId: row.clientId, receivedAt: row.receivedAt, message: row.message });
+const itemOf = (row: Doc<'intakeMessages'>) => ({ receiptId: row._id, clientId: row.clientId, receivedAt: row.receivedAt, message: row.message, ...(row.attachments ? { attachments: row.attachments } : {}) });
 
 export const pendingIntake = query({
-  args: { key: v.string(), runnerId: v.string() },
-  handler: async (ctx, { key, runnerId }) => {
+  args: { key: v.string(), runnerId: v.string(), includeAttachments: v.optional(v.boolean()) },
+  handler: async (ctx, { key, runnerId, includeAttachments }) => {
     const caller = await runnerAuth(ctx, key, 'pendingIntake');
     await actAs(ctx, caller, runnerId);
     const out: ReturnType<typeof itemOf>[] = [];
     for (const c of await ctx.db.query('intakeClients').withIndex('by_consumer', q => q.eq('consumerRunnerId', runnerId)).take(32)) {
       if (c.revokedAt !== undefined) continue;
-      const rows = await ctx.db.query('intakeMessages').withIndex('by_client_delivery', q => q.eq('clientId', c.clientId).eq('deliveryState', undefined)).take(8 - out.length);
-      out.push(...rows.map(itemOf));
+      const rows = includeAttachments
+        ? await ctx.db.query('intakeMessages').withIndex('by_client_delivery', q => q.eq('clientId', c.clientId).eq('deliveryState', undefined)).take(8 - out.length)
+        : await ctx.db.query('intakeMessages').withIndex('by_client_delivery_kind', q => q.eq('clientId', c.clientId).eq('deliveryState', undefined).eq('hasAttachments', undefined)).take(8 - out.length);
+      out.push(...rows.filter(row => includeAttachments || !row.attachments?.length).map(itemOf));
       if (out.length >= 8) break;
     }
     return out;
@@ -81,6 +88,10 @@ export const finishIntake = mutation({
     if (row.deliveryState === 'saved') return row.leaseToken === leaseToken;
     if (row.leaseToken !== leaseToken || (row.leaseUntil ?? 0) <= Date.now()) return false;
     await ctx.db.patch(receiptId, { deliveryState: 'saved', deliveredAt: Date.now(), deliveredRunnerId: runnerId, leaseUntil: undefined });
+    if (row.transferId) {
+      await ctx.db.patch(row.transferId, { localSaved: true, cleanupPending: true });
+      await ctx.scheduler.runAfter(0, internal.intakeFiles.cleanDelivered, { transferId: row.transferId });
+    }
     return true;
   },
 });

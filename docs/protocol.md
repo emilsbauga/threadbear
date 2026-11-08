@@ -1091,6 +1091,56 @@ HTTP intake does not start a task. HTTP actions use the deployment's
   cannot call runner or phone APIs, provision keys, enumerate intake, or change
   receipt states. No clients are provisioned by default.
 
+### File intake (backend API 63)
+
+V1 stays text-only and its four-field receipts remain unchanged. V2 uses the
+same restricted bearer credential and JSON envelopes up to 64 KiB:
+
+- `POST /intake/v2/prepare`: `{ message, attachments }`. `message` has the V1
+  fields; its text may be blank if there are files. Each attachment is
+  `{ id, name, mediaType, size, sha256 }`: stable printable ASCII ID, original
+  display name, MIME type, safe integer byte size and lowercase SHA-256 hex.
+  The ordered manifest is immutable. Returns upload block size and status.
+- `POST /intake/v2/upload?messageId=...&attachmentId=...&index=N`: authenticated
+  binary upload, at most 8 MiB. Index is zero-based; the last block has its exact
+  remaining length. Duplicate blocks must have identical bytes/hash. This is a
+  transport block limit, not a file-size cap. Blob IDs are never accepted from
+  capture clients, preventing attachment of someone else's storage objects.
+- `POST /intake/v2/finalize`: `{ messageId }`; only succeeds when all declared
+  blocks exist. Returns the same immutable receipt shape as V1. Until then no
+  intake row is available to the runner. Retries return the same result.
+- `GET /intake/v2/status?messageId=...`: own transfer's state, attachment block
+  counts, receipt when finalized, and `localSaved`/`cloudDeleted`. This is separate
+  from the receipt's original meaning. A sender may clear local staging only
+  after `localSaved` is true. Source emails/Telegram messages are untouched.
+- `POST /intake/v2/cancel`: `{ messageId }` cancels an unfinalized upload and
+  schedules safe cleanup. Finalized/pending messages never expire while the Mac
+  is offline. Re-preparing a cancelled ID with the same manifest restarts it.
+
+Runner-authenticated block downloads use `GET /intake/v2/download`, with
+`runnerId`, `receiptId`, `attachmentId` and `index` query fields;
+the lease token is in `X-Intake-Lease` and the runner credential is in
+Authorization, never the URL. Each request checks
+client binding and the current lease. No public download URL is exposed. The
+consumer renews its lease while downloading, resumes verified blocks, streams
+assembly into a local temporary file, verifies full size/hash and only then
+publishes one complete draft. After durable completion it confirms delivery;
+retryable internal cleanup deletes cloud bytes but retains manifests/receipts.
+
+`AttachmentRef = { id, path, name, mediaType, size, sha256 }` references a local
+regular file owned by the thread. `BacklogDraft.attachments?` and optional
+`attachments` on save/send let clients remove/reorder attachments explicitly.
+Omitting that argument preserves a saved draft's files for older clients;
+`[]` removes them. Files survive draft autosave, restart and send. Images get
+thumbnails; other files get filename/size chips. Sending supplies supported
+images to the provider and other files as local file references, without
+rewriting the saved draft text or starting work before explicit Send.
+
+A checksum mismatch creates a local `.held.json` marker and requires investigation
+before another download. Unregistered upload blobs left by an action crash are
+removed after a day; registered pending uploads and finalized transfers do not expire.
+Older runners omit `includeAttachments` on `pendingIntake` and see text-only items.
+
 ### Intake to Backlog (backend API 62)
 
 The `externalIntake` experiment enables a runner's 15-second consumer. Clients
@@ -5737,6 +5787,7 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `pendingCommands` | its own | `runnerId` only: `"any"` commands wait for the owner key |
 | `pendingIntake` | its own | intake clients bound to this runner only |
 | `claimIntake` | its own | fenced claim of a receipt for its bound runner |
+| `intakeChunkAccess` | its own | read a bound intake block under a current lease |
 | `finishIntake` | its own | confirm the saved draft under a current lease |
 | `takeCommand` | its own | a command for its runner |
 | `finishCommand` | its own | a command for its runner |

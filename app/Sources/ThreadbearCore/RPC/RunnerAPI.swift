@@ -43,11 +43,13 @@ public extension RPCClient {
         return try await call(backlog ? "threads.createDraft" : "threads.create", .object(params), as: ThreadResult.self, timeout: RPCClient.sendTimeout).thread
     }
 
-    func saveDraft(threadId: String, text: String, images: [ImageRef], revision: Int) async throws -> ThreadSummary {
-        try await call("threads.saveDraft", .object([
+    func saveDraft(threadId: String, text: String, images: [ImageRef], revision: Int, attachments: [AttachmentRef]? = nil) async throws -> ThreadSummary {
+        var params: [String: JSONValue] = [
             "threadId": .string(threadId), "text": .string(text),
             "images": .array(images.map(\.jsonValue)), "revision": .number(Double(revision))
-        ]), as: ThreadResult.self).thread
+        ]
+        if let attachments { params["attachments"] = .array(attachments.map(\.jsonValue)) }
+        return try await call("threads.saveDraft", .object(params), as: ThreadResult.self).thread
     }
 
     /// The tour's sample threads (protocol `threads.samples`), made in
@@ -60,9 +62,10 @@ public extension RPCClient {
     }
 
     @discardableResult
-    func send(threadId: String, text: String, images: [ImageRef] = [], answers: [AskAnswer] = []) async throws -> String? {
+    func send(threadId: String, text: String, images: [ImageRef] = [], answers: [AskAnswer] = [], attachments: [AttachmentRef]? = nil) async throws -> String? {
         var params: [String: JSONValue] = ["threadId": .string(threadId), "text": .string(text)]
         if !images.isEmpty { params["images"] = .array(images.map(\.jsonValue)) }
+        if let attachments { params["attachments"] = .array(attachments.map(\.jsonValue)) }
         // The card's answers it carries, for the bubble (docs/protocol.md, "Needs you").
         if !answers.isEmpty {
             params["answers"] = .array(answers.map { .object(["action": .string($0.action), "answer": .string($0.answer)]) })
@@ -1017,5 +1020,11 @@ public enum SecretAnswer: Sendable, CustomStringConvertible, CustomDebugStringCo
     /// whitespace-only secret (-32602).
     public static func canSave(_ typed: String) -> Bool {
         !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+extension AttachmentRef {
+    public var jsonValue: JSONValue {
+        .object(["id": .string(id), "path": .string(path), "name": .string(name), "mediaType": .string(mediaType), "size": .number(Double(size)), "sha256": .string(sha256)])
     }
 }

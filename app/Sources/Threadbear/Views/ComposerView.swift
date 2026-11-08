@@ -95,6 +95,13 @@ struct ComposerView: View {
                     .disabled(creating)
                     .opacity(creating ? 0.5 : 1)
             }
+            if !draft.wrappedValue.attachments.isEmpty, let thread {
+                IntakeFileStrip(files: draft.wrappedValue.attachments, onPreview: { app.preview(path: $0.path, title: $0.name, in: thread) }, onRemove: { id in
+                    draft.wrappedValue.attachments.removeAll { $0.id == id }
+                })
+                .disabled(creating)
+                .opacity(creating ? 0.5 : 1)
+            }
             ComposerTextField(
                 draft: draft,
                 height: $height,
@@ -360,7 +367,7 @@ struct ComposerView: View {
     }
 
     private static func canSend(_ draft: Draft, picks: [Int: Int], followUps: FollowUpPicks) -> Bool {
-        !picks.isEmpty || !followUps.isEmpty || ComposerChips.canSend(text: draft.text, imageCount: draft.images.count)
+        !picks.isEmpty || !followUps.isEmpty || !draft.attachments.isEmpty || ComposerChips.canSend(text: draft.text, imageCount: draft.images.count)
     }
 
     /// Return with nothing typed sends picked answers on their own (once
@@ -379,6 +386,7 @@ struct ComposerView: View {
             send()
             return true
         }
+        if !draft.attachments.isEmpty { send(); return true }
         return draft.images.isEmpty && allowSoleApproval()
     }
 
@@ -1615,5 +1623,49 @@ extension ComposerTextView {
         didChangeText()
         setSelectedRange(NSRange(location: replace.location + piece.length, length: 0))
         return true
+    }
+}
+
+private struct IntakeFileStrip: View {
+    let files: [AttachmentRef]
+    let onPreview: (AttachmentRef) -> Void
+    let onRemove: (String) -> Void
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: zoomed(8)) {
+                ForEach(files) { file in
+                    HStack(spacing: zoomed(8)) {
+                        Button { onPreview(file) } label: {
+                            HStack(spacing: zoomed(8)) {
+                                if file.mediaType.hasPrefix("image/") {
+                                    AsyncThumbnail(path: file.path)
+                                        .frame(width: zoomed(40), height: zoomed(40))
+                                        .clipShape(RoundedRectangle(cornerRadius: zoomed(6)))
+                                } else {
+                                    Image(systemName: "doc").font(.system(size: zoomed(22)))
+                                }
+                                VStack(alignment: .leading, spacing: zoomed(3)) {
+                                    Text(file.name).lineLimit(1).truncationMode(.middle)
+                                    Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
+                                        .foregroundStyle(.secondary).font(.system(size: zoomed(11)))
+                                }
+                            }
+                            .frame(maxWidth: zoomed(230), alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .tip("Preview " + file.name)
+                        Button { onRemove(file.id) } label: {
+                            Image(systemName: "xmark").font(.system(size: zoomed(10), weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .tip("Remove " + file.name + " from this draft")
+                    }
+                    .padding(zoomed(8))
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: zoomed(8)))
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
     }
 }

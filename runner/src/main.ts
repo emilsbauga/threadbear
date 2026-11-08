@@ -439,7 +439,7 @@ async function main(): Promise<void> {
       // A schedule's own runner gets its command, so the scheduler here is its.
       schedule: ({ scheduleId, action }) => (action === 'run' ? scheduler.runNow(scheduleId) : scheduler.update({ scheduleId, paused: action === 'pause' })),
     },
-    intake: (item) => runner.createIntakeDraft(item),
+    intake: (item, files) => runner.createIntakeDraft(item, files),
     sample: machineSampler(cfg.home),
     secretBox: runner.secrets,
     schedules: scheduler,

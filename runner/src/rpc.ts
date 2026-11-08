@@ -1,3 +1,4 @@
+import type { AttachmentRef } from './protocol.ts';
 // WebSocket JSON-RPC 2.0 server at ws://127.0.0.1:<port>/rpc.
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -525,7 +526,7 @@ export class RpcServer {
         return remote.search(query, limit ?? 50).then((more) => ({ threads: mergeSummaries(local, more).slice(0, limit ?? 50) }));
       }
       case 'threads.saveDraft':
-        return r.saveDraft(reqString(p, 'threadId'), optString(p, 'text') ?? '', optImages(p) ?? [], Number(p.revision));
+        return r.saveDraft(reqString(p, 'threadId'), optString(p, 'text') ?? '', optImages(p) ?? [], Number(p.revision), optAttachments(p));
       case 'threads.createDraft':
       case 'threads.create': {
         if (method === 'threads.createDraft' && typeof p.runnerId === 'string') throw bad('Create Backlog drafts on their owning runner.');
@@ -576,7 +577,7 @@ export class RpcServer {
       case 'buttons.press':
         return r.pressButton(reqString(p, 'threadId'), reqString(p, 'buttonId'));
       case 'threads.send':
-        return r.send(reqString(p, 'threadId'), optString(p, 'text') ?? '', optImages(p) ?? [], { ...optAnswers(p), ...optPhoneOrigin(p) });
+        return r.send(reqString(p, 'threadId'), optString(p, 'text') ?? '', optImages(p) ?? [], { ...optAnswers(p), ...optPhoneOrigin(p), attachments: optAttachments(p) });
       case 'threads.edit':
         return r.editMessage(reqString(p, 'threadId'), reqNumber(p, 'seq'), optString(p, 'text') ?? '', optImages(p) ?? [], { stopBackground: p.stopBackground === true });
       case 'threads.interrupt':
@@ -900,4 +901,10 @@ function optImages(p: Record<string, unknown>): ImageRef[] | undefined {
     if (!x || typeof x !== 'object' || typeof (x as ImageRef).path !== 'string') throw bad('each image needs a path');
     return x as ImageRef;
   });
+}
+
+function optAttachments(p: Record<string, unknown>): AttachmentRef[] | undefined {
+  if (p.attachments === undefined) return undefined;
+  if (!Array.isArray(p.attachments)) throw bad('attachments must be an array');
+  return p.attachments as AttachmentRef[];
 }

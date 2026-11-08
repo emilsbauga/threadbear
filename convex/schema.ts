@@ -201,6 +201,17 @@ export default defineSchema({
     hourCount: v.optional(v.number()),
     consumerRunnerId: v.optional(v.string()),
   }).index('by_client', ['clientId']).index('by_hash', ['keyHash']).index('by_consumer', ['consumerRunnerId']),
+  intakeTransfers: defineTable({
+    clientId: v.string(), messageId: v.string(), message: v.object({ messageId: v.string(), source: v.union(v.literal('email'), v.literal('telegram')), sourceMessageId: v.string(), text: v.string(), sentAt: v.string(), sender: v.optional(v.string()) }),
+    attachments: v.array(v.object({ id: v.string(), name: v.string(), mediaType: v.string(), size: v.number(), sha256: v.string() })), uploaded: v.array(v.number()),
+    state: v.union(v.literal('preparing'), v.literal('finalized'), v.literal('cancelled')),
+    updatedAt: v.number(), receiptId: v.optional(v.id('intakeMessages')),
+    localSaved: v.optional(v.boolean()), cloudDeleted: v.optional(v.boolean()), cleanupPending: v.optional(v.boolean()),
+  }).index('by_client_message', ['clientId', 'messageId']).index('by_cleanup', ['cleanupPending']),
+  intakeChunks: defineTable({
+    transferId: v.id('intakeTransfers'), attachmentId: v.string(), index: v.number(),
+    storageId: v.id('_storage'), bytes: v.number(), sha256: v.string(),
+  }).index('by_block', ['transferId', 'attachmentId', 'index']).index('by_storageId', ['storageId']),
   intakeMessages: defineTable({
     clientId: v.string(),
     messageId: v.string(),
@@ -212,6 +223,9 @@ export default defineSchema({
       sentAt: v.string(),
       sender: v.optional(v.string()),
     }),
+    attachments: v.optional(v.array(v.object({ id: v.string(), name: v.string(), mediaType: v.string(), size: v.number(), sha256: v.string() }))),
+    transferId: v.optional(v.id('intakeTransfers')),
+    hasAttachments: v.optional(v.boolean()),
     state: v.literal('received'),
     receivedAt: v.number(),
     deliveryState: v.optional(v.union(v.literal('saved'), v.literal('ignored'))),
@@ -220,7 +234,7 @@ export default defineSchema({
     deliveredAt: v.optional(v.number()),
     leaseToken: v.optional(v.string()),
     leaseUntil: v.optional(v.number()),
-  }).index('by_client_message', ['clientId', 'messageId']).index('by_client_delivery', ['clientId', 'deliveryState']),
+  }).index('by_client_message', ['clientId', 'messageId']).index('by_client_delivery', ['clientId', 'deliveryState']).index('by_client_delivery_kind', ['clientId', 'deliveryState', 'hasAttachments']),
 
   // Runner keys: own runner only, where RUNNER_KEY can do everything. Only
   // the hash is kept; sync:addRunnerKey returns the plain key once.

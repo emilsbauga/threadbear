@@ -9,4 +9,6 @@ crons.interval('prune old rows', { hours: 6 }, internal.sync.pruneOld, {});
 crons.interval('prune old files', { hours: 6 }, internal.sync.pruneFiles, {});
 // Tool output past its 30 days, a batch at a time (each row is read to be deleted).
 crons.interval('prune old tool output', { minutes: 15 }, internal.sync.pruneBodies, {});
+crons.interval('finish intake file cleanup', { minutes: 15 }, internal.intakeFiles.sweepCleanup, {});
+crons.interval('remove abandoned intake blobs', { hours: 6 }, internal.intakeFiles.sweepOrphans, {});
 export default crons;

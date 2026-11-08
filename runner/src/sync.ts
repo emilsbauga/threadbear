@@ -12,6 +12,7 @@
 // THREADBEAR_SYNC=off turns it off whatever runner.json says, which
 // check.sh sets so no test runner ever writes to the real project.
 import { START_CARD } from './cross-runner.ts';
+import { downloadIntakeFiles } from './intake-files.ts';
 import { IntakeConsumer } from './intake-consumer.ts';
 import type { IntakeRecord } from './intake-record.ts';
 import { experimentOn } from './experiments.ts';
@@ -128,7 +129,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 62;
+export const BACKEND_API_VERSION = 63;
 export const INTAKE_API_VERSION = 62;
 // From this one sync:sharedThreads lists a runner's rows shared by link, which
 // it checks against its own threads on every start and every
@@ -558,7 +559,7 @@ export type SyncDeps = {
   cachePath?: string;
   runner: Host;
   commands?: CommandHost;
-  intake?: (item: IntakeRecord) => string;
+  intake?: (item: IntakeRecord, files?: import('./protocol.ts').AttachmentRef[]) => string;
   // The runner's key pair for secrets the phone answers (secrets.ts).
   // Absent in small tests: then a secret card isn't mirrored.
   secretBox?: { publicKey(): string; open(sealed: Sealed, approvalId: string): string };
@@ -1352,9 +1353,12 @@ export class ConvexSync {
         enabled: () => this.running && !this.keyRejected && (this.backendApiVersion ?? 0) >= INTAKE_API_VERSION && experimentOn(this.deps.home!, 'externalIntake'),
         post: (kind, fn, args) => this.backend(kind, fn, { key: this.deps.key, ...args }),
         importDraft: this.deps.intake,
-        failed: () => {
-          this.deps.log.warn('external intake delivery failed; will retry');
-          this.deps.notice?.('warning', 'A received external message could not be saved to Backlog. Threadbear will retry; check the runner log if this continues.');
+        supportsFiles: () => (this.backendApiVersion ?? 0) >= 63,
+        prepareFiles: (item, leaseToken, signal) => downloadIntakeFiles({ home: this.deps.home!, item,
+          origin: this.deps.config.url!.replace(/\.convex\.cloud$/, '.convex.site'), key: this.deps.key!, runnerId: this.runnerId, leaseToken, signal }),
+        failed: (receiptId) => {
+          this.deps.log.warn('external intake delivery failed; retained for retry or investigation', receiptId ? { receiptId } : undefined);
+          this.deps.notice?.('warning', 'A received external message could not be saved to Backlog. Files remain retained. Check the runner log and intake transfer staging if this continues.');
         },
       });
       this.intakeConsumer.start();

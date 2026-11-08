@@ -54,3 +54,21 @@ test('a disabled consumer cannot import after an in-flight backend request retur
   await consumer.poll();
   assert.equal(imported, false);
 });
+
+test('file transfers renew their lease and stop without acknowledgement after a lost lease', async () => {
+  const clock = new FakeClock(); let claims = 0, acks = 0, imported = 0, preparing = false;
+  const fileItem = { ...item, attachments: [{ id: 'a', name: 'x', mediaType: 'text/plain', size: 1, sha256: 'a'.repeat(64) }] };
+  const consumer = new IntakeConsumer({ clock, enabled: () => true, supportsFiles: () => true, runnerId: 'mac',
+    post: async (_kind, fn, args) => {
+      if (fn.endsWith('pendingIntake')) { assert.equal(args.includeAttachments, true); return [fileItem]; }
+      if (fn.endsWith('claimIntake')) { claims++; return { state: claims > 1 ? 'busy' : 'claimed', threadId: intakeThreadId(item.clientId, item.receiptId) }; }
+      acks++; return true;
+    },
+    prepareFiles: (_item, _token, signal) => new Promise((_, reject) => { preparing = true; signal.addEventListener('abort', () => reject(new Error('Lease lost'))); }),
+    importDraft: () => { imported++; return ''; }, failed: () => {},
+  });
+  const poll = consumer.poll();
+  for (let n = 0; n < 8 && !preparing; n++) await Promise.resolve();
+  assert.equal(preparing, true); clock.advance(20000); await poll;
+  assert.equal(claims, 2); assert.equal(acks, 0); assert.equal(imported, 0);
+});

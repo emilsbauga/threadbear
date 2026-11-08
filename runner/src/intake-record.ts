@@ -5,6 +5,7 @@ import { atomicWriteFileSync } from './fsutil.ts';
 
 export type IntakeRecord = {
   clientId: string; receiptId: string; receivedAt: number;
+  attachments?: { id: string; name: string; mediaType: string; size: number; sha256: string }[];
   message: { messageId: string; source: 'email' | 'telegram'; sourceMessageId: string; text: string; sentAt: string; sender?: string };
 };
 export function intakeThreadId(clientId: string, receiptId: string): string {
@@ -21,5 +22,13 @@ export function savedIntake(home: string, item: IntakeRecord): string | undefine
 }
 export function rememberIntake(home: string, item: IntakeRecord, threadId: string): void {
   if (threadId !== intakeThreadId(item.clientId, item.receiptId)) throw new Error('Intake thread identity mismatch');
+  // Publish completion only after the thread directory entry is durable.
+  for (const dir of [path.join(home, 'threads', threadId), path.join(home, 'threads')]) {
+    if (!fs.existsSync(dir)) continue;
+    const fd = fs.openSync(dir, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
   atomicWriteFileSync(marker(home, item), JSON.stringify({ clientId: item.clientId, receiptId: item.receiptId, threadId }), 0o600);
+  for (const dir of [path.join(home, 'intake-imports'), home]) {
+    const fd = fs.openSync(dir, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
 }

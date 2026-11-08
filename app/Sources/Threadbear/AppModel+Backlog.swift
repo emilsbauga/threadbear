@@ -5,13 +5,13 @@ extension AppModel {
     var hasUnsavedComposerDrafts: Bool {
         drafts.contains { id, draft in
             if let saved = threads[id]?.backlog { return draft.normalized != Self.composerDraft(saved) }
-            return !draft.text.isEmpty || !draft.images.isEmpty
+            return !draft.text.isEmpty || !draft.images.isEmpty || !draft.attachments.isEmpty
         }
     }
 
     static func composerDraft(_ saved: BacklogDraft) -> Draft {
         let value = InlinePictures.draft(text: saved.text, images: saved.images)
-        return Draft(text: value.text, images: value.images).normalized
+        return Draft(text: value.text, images: value.images, attachments: saved.attachments ?? []).normalized
     }
 
     func restoreBacklog(_ id: String, replacing: Bool = false) {
@@ -26,7 +26,7 @@ extension AppModel {
             return
         }
         let draft = (drafts["new"] ?? Draft()).normalized
-        guard !draft.words().isEmpty || !draft.images.isEmpty else { return }
+        guard !draft.words().isEmpty || !draft.images.isEmpty || !draft.attachments.isEmpty else { return }
         let request = newThreadRequest(text: draft.words(), images: draft.images)
         creatingThread = true
         Task {
@@ -60,7 +60,7 @@ extension AppModel {
                       let draft = drafts[id]?.normalized, draft != Self.composerDraft(saved),
                       let client = client(for: id) else { return }
                 do {
-                    let thread = try await client.saveDraft(threadId: id, text: draft.words(), images: draft.images, revision: saved.revision)
+                    let thread = try await client.saveDraft(threadId: id, text: draft.words(), images: draft.images, revision: saved.revision, attachments: draft.attachments)
                     guard !startingBacklog.contains(id), threads[id]?.backlog != nil else { return }
                     threads[id] = thread
                     // Replace transient inbox paths only if the user has
@@ -78,12 +78,12 @@ extension AppModel {
     func startBacklog(_ id: String) {
         guard !startingBacklog.contains(id), let client = client(for: id) else { return }
         let draft = (drafts[id] ?? threads[id]?.backlog.map(Self.composerDraft) ?? Draft()).normalized
-        guard !draft.words().isEmpty || !draft.images.isEmpty else { return }
+        guard !draft.words().isEmpty || !draft.images.isEmpty || !draft.attachments.isEmpty else { return }
         startingBacklog.insert(id)
         Task {
             defer { startingBacklog.remove(id) }
             do {
-                try await client.send(threadId: id, text: draft.words(), images: draft.images)
+                try await client.send(threadId: id, text: draft.words(), images: draft.images, attachments: draft.attachments)
                 // The runner's thread.updated normally arrives first. Clear
                 // the marker here too so a delayed notification cannot let
                 // a second Return send the first prompt a second time.

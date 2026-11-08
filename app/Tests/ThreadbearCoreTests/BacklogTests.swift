@@ -2,6 +2,16 @@ import XCTest
 @testable import ThreadbearCore
 
 final class BacklogTests: XCTestCase {
+    func testOldDraftsAndAttachmentOnlyDraftsRoundTrip() throws {
+        let old = try JSONDecoder().decode(BacklogDraft.self, from: Data(#"{"text":"old","images":[],"revision":1}"#.utf8))
+        XCTAssertNil(old.attachments)
+        let file = AttachmentRef(id: "one", path: "/local/one.pdf", name: "Original.pdf", mediaType: "application/pdf", size: 35_000_000, sha256: String(repeating: "a", count: 64))
+        let draft = BacklogDraft(text: "", attachments: [file])
+        let restored = try JSONDecoder().decode(BacklogDraft.self, from: JSONEncoder().encode(draft))
+        XCTAssertEqual(restored, draft)
+        XCTAssertEqual(restored.attachments?.first?.name, "Original.pdf")
+    }
+
     func testBacklogIsItsOwnSectionAndDoesNotCountAsInboxWork() throws {
         var draft = ThreadSummary(id: "draft", title: "Plan the homepage")
         draft.backlog = BacklogDraft(text: "Use the second design")
