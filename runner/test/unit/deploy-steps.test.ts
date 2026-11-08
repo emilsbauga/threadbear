@@ -99,3 +99,36 @@ test('the smoke test waits longer for a release to listen while the Mac is overl
   assert.equal(steps.smokeTimedOut(9 * 60_000, 5.2), false);
   assert.equal(steps.smokeTimedOut(10 * 60_000 + 1, 5.2), true);
 });
+
+test('smoke hello tolerates slow answers within the shared startup budget', async () => {
+  let now = 0;
+  let attempts = 0;
+  const result = await steps.smokeHello({
+    probe: async () => { now += 7_000; return ++attempts < 3 ? { state: attempts === 1 ? 'unknown' : 'down' } : { state: 'up', version: 'release' }; },
+    waited: () => now, load: () => 0.5, exited: () => null,
+    sleep: async () => { now += 100; },
+  });
+  assert.equal(result.version, 'release');
+  assert.equal(attempts, 3);
+});
+
+test('smoke hello stops on exit or a bounded timeout', async () => {
+  const io = {
+    probe: async () => ({ state: 'unknown' }), waited: () => 91_000,
+    load: () => 0.5, exited: () => null, sleep: async () => {},
+  };
+  await assert.rejects(steps.smokeHello(io), /hello got no answer after 91 s/);
+  await assert.rejects(steps.smokeHello({ ...io, exited: () => ({ code: 1 }) }), /it exited \(1\)/);
+  await assert.rejects(steps.smokeHello({ ...io, waited: () => 600_001, load: () => 5 }), /hello got no answer/);
+});
+
+
+test('smoke hello keeps waiting past 90 seconds only under load', async () => {
+  let attempts = 0;
+  const result = await steps.smokeHello({
+    probe: async () => (++attempts === 1 ? { state: 'unknown' } : { state: 'up' }),
+    waited: () => 120_000, load: () => 5, exited: () => null, sleep: async () => {},
+  });
+  assert.equal(result.state, 'up');
+  assert.equal(attempts, 2);
+});

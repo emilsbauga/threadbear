@@ -118,3 +118,17 @@ export function smokeTimedOut(waited, loadPerCore) {
   if (waited <= 90_000) return false;
   return loadPerCore <= 2 || waited > 10 * 60_000;
 }
+
+// Listening is only the first readiness signal. Auth/hello can still time out
+// under load; keep trying within the same budget as startup, not a fresh one.
+export async function smokeHello(io) {
+  for (;;) {
+    const exited = io.exited();
+    if (exited) throw new Error(`it exited (${exited.code ?? exited.signal}) before hello`);
+    const waited = io.waited();
+    if (smokeTimedOut(waited, io.load())) throw new Error(`hello got no answer after ${Math.round(waited / 1000)} s`);
+    const result = await io.probe();
+    if (result.state === 'up') return result;
+    await io.sleep(100);
+  }
+}

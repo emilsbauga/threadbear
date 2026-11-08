@@ -10,7 +10,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pointCurrent, readCurrentLink, readState, releaseExists, writeState } from '../launch.mjs';
 import { connectRpc } from './rpc-client.mjs';
-import { Fail, smokeTimedOut, step, unitTests } from './deploy-steps.mjs';
+import { Fail, smokeHello, smokeTimedOut, step, unitTests } from './deploy-steps.mjs';
 // THREADBARE_* was the old name for these variables (config.ts, adoptOldNames).
 for (const [k, v] of Object.entries(process.env)) {
   const name = k.startsWith('THREADBARE_') ? 'THREADBEAR_' + k.slice(11) : undefined;
@@ -817,8 +817,13 @@ async function smoke(c, id) {
       port = /listening on (\d+)/.exec(fs.readFileSync(out, 'utf8'))?.[1];
       if (!port) await sleep(100);
     }
-    const p = await probe(home);
-    if (p.state !== 'up') throw new Error(`hello on port ${port} got no answer`);
+    const p = await smokeHello({
+      probe: () => probe(home),
+      waited: () => Date.now() - started,
+      load: () => os.loadavg()[0] / os.cpus().length,
+      exited: () => exited,
+      sleep,
+    });
     if (releaseOf(p.version) !== id) throw new Error(`it says it is ${p.version || 'no version'}, not ${id}`);
   } catch (e) {
     problem = e.message;
