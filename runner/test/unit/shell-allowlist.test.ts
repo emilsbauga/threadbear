@@ -825,7 +825,12 @@ test("R5: a repo's filter drivers don't run: its own are refused, and your own d
   git(repo, 'add', 'a.txt', '.gitattributes');
   git(repo, 'commit', '-qm', 'two');
   fs.rmSync(marker, { force: true });
-  fs.appendFileSync(path.join(repo, 'a.txt'), 'two\n');
+  // A size change lets git status report modified without running clean.
+  // Keep the size and force a stat change so it must compare the content,
+  // regardless of whether the index is still racy under a loaded test run.
+  const file = path.join(repo, 'a.txt');
+  fs.writeFileSync(file, 'two\n');
+  fs.utimesSync(file, 1, 1);
   const env: Record<string, string | undefined> = { ...process.env, GIT_CONFIG_GLOBAL: global };
   const e = { ...env, ...liveCommandEnv(env) } as NodeJS.ProcessEnv;
   for (const cmd of ['git merge-base --is-ancestor HEAD HEAD', 'git rev-list --count HEAD', "git branch -a --no-merged HEAD --format='%(refname:short)'"]) {
