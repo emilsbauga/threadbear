@@ -274,4 +274,5 @@
 //    as before.
 // 61: this fork adds unsent Backlog drafts to thread rows. The former fork-only
 //    API 49 overlapped upstream wakeNote; only 61 unambiguously supports both.
-export const API_VERSION = 61;
+// 62: runner-bound external intake delivery to dormant Backlog drafts.
+export const API_VERSION = 62;

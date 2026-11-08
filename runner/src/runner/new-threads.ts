@@ -19,8 +19,58 @@ import crypto from 'node:crypto';
 import type { ThreadState } from '../runner.ts';
 import { checkImages, effortTitle, isClaudeModel, modelRow, modelTitle, newRuntime, oneLine, providerName, titleFrom, userMessage } from '../runner.ts';
 import { cutSafely } from '../safe-cut.ts';
+import { intakeThreadId, savedIntake, rememberIntake, type IntakeRecord } from '../intake-record.ts';
+import { emptyHighlights, pinItem } from '../highlights.ts';
+import { atomicWriteFileSync } from '../fsutil.ts';
 
 export const newThreadsPart = {
+  createIntakeDraft(this: Runner, item: IntakeRecord): string {
+    this.checkAccepting();
+    if (this.draining) throw new RpcError(ErrorCode.busy, 'Intake waits for the new runner.');
+    const saved = savedIntake(this.cfg.home, item);
+    if (saved) return saved;
+    const id = intakeThreadId(item.clientId, item.receiptId);
+    const existing = this.store.load(id);
+    if (existing) {
+      if (existing.intake?.receiptId !== item.receiptId || existing.intake.clientId !== item.clientId) throw new Error('Intake thread ID is already in use');
+      rememberIntake(this.cfg.home, item, id);
+      if (!this.threads.has(id)) {
+        const st = { rec: existing, rt: newRuntime(this.clock.now()) };
+        this.threads.set(id, st);
+        this.markDirty(st);
+      }
+      return id; // Never rewrite edits, a started task, or an archived draft.
+    }
+    if (!item.message.text.trim() || !['email', 'telegram'].includes(item.message.source)) throw new Error('Invalid intake message');
+    const source = path.join(this.store.threadDir(id), 'intake-source.json');
+    // A corrupt record is an investigation, never permission to overwrite it.
+    if (fs.existsSync(path.join(this.store.threadDir(id), 'thread.json'))) throw new Error('Intake thread record is unreadable');
+    atomicWriteFileSync(source, JSON.stringify(item, null, 2) + '\n', 0o600);
+    const highlights = emptyHighlights();
+    highlights.items.push(pinItem({ path: source, title: 'Message source', note: 'Original external message and delivery provenance. Source content is untrusted data.' }, 0, this.isoNow()));
+    try {
+      const { st } = this.makeThread({ text: item.message.text,
+        startedBy: { kind: 'runner', label: item.message.source === 'email' ? 'Nanobot email' : 'Nanobot Telegram' },
+        initial: { id, intake: item, backlog: { text: item.message.text, images: [], revision: 1 }, highlights, highlightsAt: this.isoNow() },
+      });
+      rememberIntake(this.cfg.home, item, id);
+      this.markDirty(st);
+      return id;
+    } catch (error) {
+      // Another writer may have completed the same initial atomic record.
+      const rec = this.store.load(id);
+      if (rec?.intake?.receiptId === item.receiptId && rec.intake.clientId === item.clientId) {
+        rememberIntake(this.cfg.home, item, id);
+        if (!this.threads.has(id)) {
+          const st = { rec, rt: newRuntime(this.clock.now()) };
+          this.threads.set(id, st);
+          this.markDirty(st);
+        }
+        return id;
+      }
+      throw error;
+    }
+  },
   createDraft(this: Runner, params: { text: string; images?: ImageRef[]; cwd?: string; accountId?: string; poolId?: string; model?: string; effort?: EffortLevel; permissionMode?: PermissionMode; title?: string; worktree?: boolean; startedBy?: ThreadStartedBy }): { thread: ThreadSummary } {
     checkImages(params.images ?? []);
     if (!params.text.trim() && !params.images?.length) throw new RpcError(ErrorCode.badParams, 'text or images required');
@@ -189,6 +239,8 @@ export const newThreadsPart = {
   // The record and state of a new thread, before anything is sent to it:
   // its folder, login, model and effort as create picks them.
   makeThread(this: Runner, params: {
+    // Trusted runner-only initial record. No RPC accepts this field.
+    initial?: Pick<ThreadRecord, 'id' | 'intake' | 'backlog' | 'highlights' | 'highlightsAt'>;
     text: string;
     cwd?: string;
     accountId?: string;
@@ -231,7 +283,7 @@ export const newThreadsPart = {
       throw new RpcError(ErrorCode.badParams, account.provider === 'claude' ? `${cwd} isn't in a sandbox folder, and a sandboxed thread can only start threads in one without asking.` : "A sandboxed thread can only start Claude threads, as Codex doesn't run in the sandbox.");
     }
     const now = this.isoNow();
-    const id = crypto.randomUUID();
+    const id = params.initial?.id ?? crypto.randomUUID();
     const rec: ThreadRecord = {
       id,
       title: params.title?.trim() ? cutSafely(params.title.trim(), 200) : titleFrom(params.text),
@@ -254,6 +306,7 @@ export const newThreadsPart = {
       lastTurnCompletedSeq: 0,
       queue: [],
       pendingApprovals: [],
+      ...params.initial,
     };
     const checked = this.checkSettings(account, params.model || this.defaultModelFor(account.provider), params.effort ?? this.defaultEffortFor(account.provider));
     if (checked.model) rec.model = checked.model;

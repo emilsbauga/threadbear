@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { WaitingForRoom, Ask, AskAnswer, NeedsWho, DesignReview, ReplyButton, ReviewDraft, EffortLevel, MessageOrigin, PanelRequest, PermissionMode, ThreadShare, PersistedEvent, Provider, ArchivedBy, ArchiveVerdict, Subagent, ThreadProject, ThreadSchedule, ThreadStartedBy, ThreadStatus, ImageRef, LooseEnd } from './protocol.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import { paths } from './config.ts';
+import { rememberIntake, type IntakeRecord } from './intake-record.ts';
 import type { WorktreeRecord } from './worktrees.ts';
 import type { WakeWhen } from './wake-when.ts';
 
@@ -11,6 +12,7 @@ export type QueuedSend = { turnId: string; text: string; images: ImageRef[]; ori
 
 // What thread.json holds: the public summary fields plus a few internal ones.
 export type ThreadRecord = {
+  intake?: IntakeRecord;
   backlog?: import('./protocol.ts').BacklogDraft;
   backlogContext?: string; // advisory context carried into the first execution session
   id: string;
@@ -377,7 +379,8 @@ export class ThreadStore {
   create(rec: ThreadRecord): void {
     fs.mkdirSync(this.mediaDir(rec.id), { recursive: true });
     fs.mkdirSync(this.blobsDir(rec.id), { recursive: true });
-    this.save(rec);
+    if (rec.intake) atomicWriteFileSync(path.join(this.threadDir(rec.id), 'thread.json'), JSON.stringify(rec, null, 1) + '\n', 0o600, true);
+    else this.save(rec);
   }
 
   save(rec: ThreadRecord): void {
@@ -389,6 +392,8 @@ export class ThreadStore {
   trash(id: string, now: number): void {
     const dir = this.threadDir(id);
     if (!fs.existsSync(dir)) return;
+    const rec = this.load(id);
+    if (rec?.intake) rememberIntake(this.home, rec.intake, id);
     const bin = path.join(this.home, 'trash');
     fs.mkdirSync(bin, { recursive: true });
     fs.renameSync(dir, path.join(bin, `${id}-${now}`));

@@ -1,11 +1,50 @@
 # External message intake
 
-This first delivery step accepts email and Telegram text and returns durable
-receipts. It does not yet forward from nanobot, create Backlog drafts, process
-attachments or run models. `received` means stored in Convex, not on a runner.
+Text intake accepts email and Telegram content and returns durable receipts.
+The optional Backlog consumer below saves received messages as dormant drafts.
+`received` still means stored in Convex, not confirmation of a draft or execution.
+Capture/forwarding is implemented on the separate device; attachments are not
+supported by this API. No task agent is started automatically.
 
 No client is enabled by default. A deployment administrator provisions a
 dedicated client; never give a capture device a deploy, runner or phone key.
+
+## Consuming into Backlog
+
+Backend API 62 adds a runner-bound consumer behind the `externalIntake`
+experiment (off by default). An administrator binds a client once with internal
+`intakeConsumer:bindConsumer`, passing `{ clientId, runnerId }`. Binding cannot
+be silently changed to another runner. Revoke a client to stop intake/delivery;
+turn off the experiment to stop the consumer while leaving HTTP intake available.
+
+Before binding a production client, explicitly exclude known synthetic receipts
+with internal `intakeConsumer:ignoreMessage`, passing `{ clientId, messageId }`.
+An ignored receipt stays available to its sender but never becomes a draft.
+Use a separate test client for later smoke tests rather than submitting synthetic
+messages into an already-active production client.
+
+With `"experiments": { "externalIntake": true }` in the owning runner's
+runner.json, it polls every 15 seconds while online. It takes fenced 60-second
+claims and atomically saves each message as a Backlog draft in the runner's
+default folder, using normal default login/pool/model settings. Original text
+is unchanged. Message source in Highlights links the original payload, sender,
+timestamps and receipt provenance. The existing librarian may review drafts;
+no task session, turn or worktree starts until the user sends one.
+
+Draft delivery is recorded in separate fields on the backend row. Sender HTTP
+receipts remain unchanged, avoiding incompatibility with nanobot's receipt
+validation. Retries reconcile the same deterministic thread ID; edited, started,
+archived and deleted drafts are never overwritten or recreated. Durable local
+completion markers live in `<runner home>/intake-imports/`; retain them even if
+you delete a task or clear runner trash. Corrupt markers stop that import rather
+than causing a new task. A failed import stays pending and triggers a runner
+warning; transient outages and restarts retry automatically.
+
+The consumer does not infer task intent or filter private sources. The sender
+must apply the agreed source rules before submitting: Telegram only on an
+explicit task trigger, and all new messages in the agreed nanobot email inbox.
+External content remains untrusted data. No remote access to the capture device
+is required for consumer operation.
 
 ## Provisioning and rotation
 

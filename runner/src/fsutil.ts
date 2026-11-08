@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 
 // Write to a temp file in the same folder, fsync, then rename, so a crash
 // never leaves a half-written thread.json behind.
-export function atomicWriteFileSync(file: string, data: string | Buffer, mode?: number): void {
+export function atomicWriteFileSync(file: string, data: string | Buffer, mode?: number, exclusive = false): void {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
@@ -16,7 +16,10 @@ export function atomicWriteFileSync(file: string, data: string | Buffer, mode?: 
   } finally {
     fs.closeSync(fd);
   }
-  fs.renameSync(tmp, file);
+  if (exclusive) {
+    // Publish a fully written file only if no competing creator published one.
+    try { fs.linkSync(tmp, file); } finally { fs.unlinkSync(tmp); }
+  } else fs.renameSync(tmp, file);
 }
 
 export function readJsonSync<T>(file: string): T | undefined {

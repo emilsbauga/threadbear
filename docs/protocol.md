@@ -1064,7 +1064,7 @@ directory, never parsed as RPC or copied into protocol errors.
 ## External message intake
 
 Opt-in, text-only intake lives in Convex, independently of runner commands.
-It does not create a thread or start a task yet. HTTP actions use the deployment's
+HTTP intake does not start a task. HTTP actions use the deployment's
 `.convex.site` URL (including its region when present), not `.convex.cloud`.
 
 - `POST /intake/v1/messages`, with `Authorization: Bearer tbi_<64 hex>`
@@ -1090,6 +1090,33 @@ It does not create a thread or start a task yet. HTTP actions use the deployment
   by the operator; they never go in Convex arguments or tables. Intake keys
   cannot call runner or phone APIs, provision keys, enumerate intake, or change
   receipt states. No clients are provisioned by default.
+
+### Intake to Backlog (backend API 62)
+
+The `externalIntake` experiment enables a runner's 15-second consumer. Clients
+must first be bound to that runner by admin-only `intakeConsumer:bindConsumer`
+(`{ clientId, runnerId }`). Unbound or revoked clients are not consumed. The
+admin-only `intakeConsumer:ignoreMessage` (`{ clientId, messageId }`) permanently
+excludes an explicit test receipt; known synthetic receipts are excluded before
+enabling production consumption. No content-based task inference is performed.
+
+Runner-facing `intakeConsumer:pendingIntake`, `claimIntake`, `finishIntake` require
+runner authentication and the client's bound runner. Claims last 60 seconds,
+are fenced by an opaque lease token and reserve a deterministic UUID derived
+from client ID and receipt ID. A lost claim or acknowledgement is retried.
+Completion records `deliveryState: "saved"`, `deliveryThreadId`, runner ID and
+completion time on the intake row, separately from its immutable four-field
+sender receipt. That receipt still means `received`, including after import.
+
+The runner atomically persists the complete unsent draft with its intake
+provenance in the initial thread record, then a per-receipt completion marker
+in `<home>/intake-imports/`, before confirming completion. Retries preserve an
+edited, started, archived or deleted thread. Deletion preserves the marker;
+an acknowledged or locally completed receipt never recreates the task. Source
+text remains unchanged in the composer; provenance is stored separately and
+linked from Highlights. Imported threads use normal runner defaults in its
+default folder, start no task session/turn/worktree, and may receive the existing
+Backlog librarian review. External source content remains untrusted data.
 
 ## Backlog
 
@@ -5708,6 +5735,9 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `requestScheduleRun` | its own | the schedule's runner, so only the owner asks another runner to run one |
 | `runnersList` | owner only | every runner's id and name, which a Mac posing as another would want; a runner key's scheduler lists only its own runner |
 | `pendingCommands` | its own | `runnerId` only: `"any"` commands wait for the owner key |
+| `pendingIntake` | its own | intake clients bound to this runner only |
+| `claimIntake` | its own | fenced claim of a receipt for its bound runner |
+| `finishIntake` | its own | confirm the saved draft under a current lease |
 | `takeCommand` | its own | a command for its runner |
 | `finishCommand` | its own | a command for its runner |
 | `savePocketCard` | its own | a new card, or one its runner filed (the card keeps `runnerId`, and a `threadId` only of its own thread) |

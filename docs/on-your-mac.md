@@ -4,9 +4,14 @@ Optional external intake (`convex/intake.ts`) lets explicitly provisioned captur
 clients send email/Telegram text, source identifiers, sender and timestamp to
 your Convex backend over HTTPS. It stores the original content and receipts
 indefinitely, without runner secret scrubbing. Only credential hashes are stored
-on the backend. This step adds no Mac timer, remote-device process or runner
-consumer. An operator may keep a private intake credential file for transfer to
-their capture device; see `docs/intake.md`.
+on the backend. The opt-in `externalIntake` experiment polls explicitly bound
+clients every 15 seconds while sync is running and saves dormant Backlog drafts.
+It writes per-receipt completion markers in `intake-imports/` and source snapshots
+in each imported thread's `intake-source.json` and initial record. These retain
+original submitted text without secret scrubbing. It starts no task session,
+turn or worktree; the existing Backlog librarian may review the draft. No process
+is installed on the capture device. An operator may keep a private intake
+credential file for transfer to their device; see `docs/intake.md`.
 
 Everything Threadbear installs, runs in the background, reads, and talks to
 over the network. It's here so you, or the agent installing it for you, can

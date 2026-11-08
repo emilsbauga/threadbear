@@ -229,8 +229,13 @@ and these hooks leaves typed `$skill-name` messages working as before.
 
 External intake is independent: `convex/intake.ts`, the two `/intake/v1/` routes
 in `convex/http.ts`, and `intakeClients`/`intakeMessages` in `convex/schema.ts`.
-It is off until an administrator provisions a client; it starts no runner work.
-Revoke clients to disable it. To remove it, remove the routes and module, then
+It is off until an administrator provisions a client. Optional draft delivery
+lives in `convex/intakeConsumer.ts`, `runner/src/intake-consumer.ts`,
+`intake-record.ts`, `runner/new-threads.ts`, `store.ts`, `sync.ts` and `main.ts`.
+The `externalIntake` experiment and explicit runner binding gate consumption.
+Its manifest describes removal; it starts no task agent or worktree. Preserve
+local `intake-imports/` markers if delivery might resume after task deletion.
+Revoke clients to disable it. To remove intake entirely, remove routes/modules, then
 empty the two tables before dropping their schema definitions; regenerate API
 bindings. No deployment names, credentials or nanobot addresses are in code.
 See `docs/intake.md` for the operator contract.

@@ -322,6 +322,8 @@ const NOT_TEXT = new Set([
   "runnerId",
   "id",
   "commandId",
+  "receiptId",
+  "leaseToken",
   "storageId",
   "scheduleId",
   "approvalId",

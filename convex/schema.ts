@@ -199,7 +199,8 @@ export default defineSchema({
     revokedAt: v.optional(v.number()),
     hourStart: v.optional(v.number()),
     hourCount: v.optional(v.number()),
-  }).index('by_client', ['clientId']).index('by_hash', ['keyHash']),
+    consumerRunnerId: v.optional(v.string()),
+  }).index('by_client', ['clientId']).index('by_hash', ['keyHash']).index('by_consumer', ['consumerRunnerId']),
   intakeMessages: defineTable({
     clientId: v.string(),
     messageId: v.string(),
@@ -213,7 +214,13 @@ export default defineSchema({
     }),
     state: v.literal('received'),
     receivedAt: v.number(),
-  }).index('by_client_message', ['clientId', 'messageId']),
+    deliveryState: v.optional(v.union(v.literal('saved'), v.literal('ignored'))),
+    deliveryThreadId: v.optional(v.string()),
+    deliveredRunnerId: v.optional(v.string()),
+    deliveredAt: v.optional(v.number()),
+    leaseToken: v.optional(v.string()),
+    leaseUntil: v.optional(v.number()),
+  }).index('by_client_message', ['clientId', 'messageId']).index('by_client_delivery', ['clientId', 'deliveryState']),
 
   // Runner keys: own runner only, where RUNNER_KEY can do everything. Only
   // the hash is kept; sync:addRunnerKey returns the plain key once.
