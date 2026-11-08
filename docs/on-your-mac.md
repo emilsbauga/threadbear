@@ -182,7 +182,9 @@ started, errors), never what was said, and is started afresh past 256 KB.
   the runner and the app watch your local `main`, and look again every 5
   minutes. Within seconds of it changing, they rebuild themselves from it
   and redeploy your backend, so whatever reaches your `main` runs, with no
-  signature check; only Mike's release tags are signed (below). Turn it
+  signature check; only Mike's release tags are signed (below). Runner builds
+  read macOS's sleep counter with `pmset -g stats` around checks. A failed
+  check interrupted by sleep is retried later, without changing sleep settings. Turn it
   off for both with `followMain: false` in `runner.json` (ask any thread
   to; it left Settings on 2 Nov).
 - **Schedule checks** (`runner/src/schedule-check.ts`, experiment

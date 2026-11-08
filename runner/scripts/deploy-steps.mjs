@@ -38,15 +38,30 @@ function tail(file, lines = 40) {
   }
 }
 
+// A sleep interrupts wall-clock test deadlines. Read only macOS's counters,
+// not the user's power settings or activity log. Other platforms are unchanged.
+export function systemSleepCount() {
+  if (process.platform !== 'darwin') return undefined;
+  const result = spawnSync('/usr/bin/pmset', ['-g', 'stats'], { encoding: 'utf8', timeout: 5000 });
+  const count = /^Sleep Count:\s*(\d+)/m.exec(result.stdout ?? '');
+  return result.status === 0 && count ? Number(count[1]) : undefined;
+}
+
+export function checkSleep(before, after, name) {
+  if (before !== undefined && after !== undefined && after > before)
+    throw new Fail(`Mac slept during ${name}; retry after wake`);
+}
+
 // Runs a step with its output in a log file, printed only if it fails.
 // io: { say, write, error, spawn, tmpdir } for tests; the defaults are the
 // console and spawnSync.
 export function step(name, cmd, args, opts, io = {}) {
-  const { say = console.log, write = (s) => process.stdout.write(s), error = console.error, spawn = spawnSync, tmpdir = os.tmpdir() } = io;
+  const { say = console.log, write = (s) => process.stdout.write(s), error = console.error, spawn = spawnSync, tmpdir = os.tmpdir(), sleepCount = systemSleepCount } = io;
   write(`${name}... `);
   const started = Date.now();
   const logFile = path.join(tmpdir, `threadbear-deploy-${process.pid}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.log`);
   const fd = fs.openSync(logFile, 'w');
+  const beforeSleep = sleepCount();
   const r = spawn(cmd, args, { ...opts, stdio: ['ignore', fd, fd] });
   fs.closeSync(fd);
   const secs = `${((Date.now() - started) / 1000).toFixed(1)}s`;
@@ -55,6 +70,7 @@ export function step(name, cmd, args, opts, io = {}) {
     fs.rmSync(logFile, { force: true });
     return;
   }
+  checkSleep(beforeSleep, sleepCount(), name);
   const why = whyFailed(r, cmd);
   // In the log too, so the file named in the error says what happened.
   fs.appendFileSync(logFile, `\n[deploy] ${why}\n`);

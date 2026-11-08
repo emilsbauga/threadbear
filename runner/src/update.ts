@@ -37,7 +37,7 @@ export const BACKGROUND_WAIT_MS = 30 * 60_000;
 // change to these changes what runs, so a commit that only touches tests
 // or docs doesn't restart the runner.
 export const RELEASE_PATHS = ['src', 'bin', 'package.json', 'package-lock.json'];
-const TRANSIENT = /Another deploy \(pid/;
+const TRANSIENT = /Another deploy \(pid|Mac slept during .+; retry after wake/;
 
 export type UpdateState = 'off' | 'idle' | 'checking' | 'building' | 'waiting' | 'failed';
 

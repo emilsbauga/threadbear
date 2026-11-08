@@ -130,3 +130,15 @@ test('smoke hello keeps waiting when CPU load misses startup pressure', async ()
   assert.equal(result.state, 'up');
   assert.equal(attempts, 2);
 });
+
+test('sleep-interrupted failures defer the update instead of rerunning tests or marking code broken', () => {
+  const { io, calls } = fakeIo([{ status: 1, output: 'test at test/unit/upstream.test.ts:227:1\n' }]);
+  let reads = 0;
+  assert.throws(() => steps.unitTests(c, {}, { ...io, sleepCount: () => ++reads }), /Mac slept during Unit tests; retry after wake/);
+  assert.equal(calls.length, 1);
+});
+
+test('a failed step with no system sleep still reports the real failure', () => {
+  const { io } = fakeIo([{ status: 1 }]);
+  assert.throws(() => steps.step('Typecheck', c.npm, [], {}, { ...io, sleepCount: () => 4 }), /npm exited with 1/);
+});

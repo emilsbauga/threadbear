@@ -10,7 +10,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pointCurrent, readCurrentLink, readState, releaseExists, writeState } from '../launch.mjs';
 import { connectRpc } from './rpc-client.mjs';
-import { Fail, smokeHello, smokeTimedOut, step, unitTests } from './deploy-steps.mjs';
+import { Fail, checkSleep, systemSleepCount, smokeHello, smokeTimedOut, step, unitTests } from './deploy-steps.mjs';
 // THREADBARE_* was the old name for these variables (config.ts, adoptOldNames).
 for (const [k, v] of Object.entries(process.env)) {
   const name = k.startsWith('THREADBARE_') ? 'THREADBEAR_' + k.slice(11) : undefined;
@@ -768,6 +768,7 @@ function build(c, id, g, dirty) {
 // point nowhere: nothing outside the temp dir is read or written.
 async function smoke(c, id) {
   process.stdout.write('Smoke test... ');
+  const beforeSleep = systemSleepCount();
   const root = path.join(c.releases, id);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'threadbear-smoke-'));
   const home = path.join(tmp, 'home');
@@ -837,6 +838,7 @@ async function smoke(c, id) {
     say('failed');
     console.error(`Output:\n${tail(out)}\nRunner log:\n${tail(path.join(tmp, 'runner.log'))}`);
     fs.rmSync(tmp, { recursive: true, force: true });
+    checkSleep(beforeSleep, systemSleepCount(), 'smoke test');
     throw new Fail(`The smoke test failed: ${problem}. current is unchanged.`);
   }
   fs.rmSync(tmp, { recursive: true, force: true });
