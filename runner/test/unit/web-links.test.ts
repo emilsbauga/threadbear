@@ -131,7 +131,12 @@ test('a page full of long rows and links has a bounded cost', () => {
     for (let m = 41; m <= 80; m++) for (let l = 0; l < 700; l++) if (findStep(`z q${m}-${l}`, m, page) !== undefined) found++;
   });
   assert.equal(found, 0);
-  assert.ok(ms < 100, `took ${ms.toFixed(0)} ms`);
+  // A cold JIT and GC on the update host have taken 108–114 CPU ms here.
+  // Leave room for slower/busy hosts, but still catch the seconds-long
+  // regression. Check budget exhaustion directly as well as elapsed CPU.
+  assert.ok(ms < 500, `took ${ms.toFixed(0)} ms`);
+  assert.equal(findStep('z', 80, page), undefined, 'the page has exhausted its scan budget');
+  assert.equal(findStep('z', 80, [...page]), 40, 'a fresh page can still search');
   // Links that do find their step still do, on a fresh page.
   assert.equal(findStep('Run the tests', 9, [...rows]), 5);
 });
