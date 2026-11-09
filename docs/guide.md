@@ -1466,6 +1466,11 @@ branch. When several threads are ready together, their landings wait for
 one another before rebasing and checking, so each checks against the latest
 landed work.
 
+Automated Mac tests and scripted debug previews keep their windows invisible
+and leave your desktop mouse input alone. An agent can still capture a preview
+from the app's own drawing. Checks that need a visible window or real pointer
+input belong on a separate test desktop.
+
 The same goes for settings. The Settings window (⌘,) shows what's set and has
 controls for only a few common things, and the ⓘ beside each section says
 what it is and what to ask your agent. Click it to read it, or hover for a

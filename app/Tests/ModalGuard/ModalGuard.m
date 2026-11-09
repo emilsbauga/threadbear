@@ -13,6 +13,7 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #import "ModalGuard.h"
+@import DesktopGuard;
 
 static NSInteger TBRefuseModal(id self, SEL _cmd) {
     NSString *what = NSStringFromClass([self class]);
@@ -32,6 +33,7 @@ static NSInteger TBRefuseWindowModal(id self, SEL _cmd, NSWindow *window) {
 
 @implementation TBModalGuard
 + (void)load {
+    TBInstallDesktopGuard();
     method_setImplementation(class_getInstanceMethod([NSAlert class], @selector(runModal)), (IMP)TBRefuseModal);
     method_setImplementation(class_getInstanceMethod([NSSavePanel class], @selector(runModal)), (IMP)TBRefuseModal);
     method_setImplementation(class_getInstanceMethod([NSApplication class], @selector(runModalForWindow:)), (IMP)TBRefuseWindowModal);

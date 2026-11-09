@@ -453,8 +453,8 @@ command. Release builds don't include it.
 `Tools/dev-app.sh` is the way to use it. Each instance is a debug build in
 its own temp bundle with its own bundle id (so its own settings), data
 folder, notification name and pasteboard (`--automation-id`), so several
-run at once; its window opens with `open -g` and goes behind everything as
-soon as it's there. It's never in the Dock or the app switcher (the bundle
+run at once; it launches with `open -g` and keeps its windows invisible.
+It's never in the Dock or the app switcher (the bundle
 is `LSUIElement`), so Mike can't Cmd-Tab into one and type into it by
 mistake. Its mock runner runs in a session of its own: started from an
 agent's command it used to share that command's process group, which the
@@ -497,6 +497,19 @@ and Production but has no deploy keys. `{"cmd":"convex","deployment":"busy-bear-
 uses the picker's selection model; `{"cmd":"convex"}` reports the selection
 and browser URL. Calling `mock.convexPanel` again reports key requests so
 switching can be checked without a real Convex account.
+
+Automated test windows and scripted debug apps are invisible and ignore desktop
+mouse input. `Support/DesktopGuard` keeps AppKit's window ordering for direct
+event tests, forces transparency before ordering, and blocks app activation.
+Tests install it when their bundle loads; debug apps install it before opening
+windows for `--automation`, `--screenshots` or `--perf-run`. Normal app launches
+do not install it. `shot` uses in-process drawing for hidden windows; the sidebar
+glass is a flat fill and traffic lights are approximate.
+
+For tests needing real pointer input, native menus, foreground frame timings or
+WindowServer screenshots, use a separate Mac or VM desktop and start the debug
+app there with `THREADBEAR_AUTOMATION_VISIBLE=1`. This opt-in does not disable
+the guard in unit tests. Do not use it on the desktop someone is working on.
 
 `start` also takes `--appearance light|dark`, `--size WxH` and `--id NAME`;
 every other command takes `--id` (default: your newest), and `status` lists

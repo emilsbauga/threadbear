@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Debug builds of the app for an agent to look at and drive: each in a temp
 # bundle, against the mock runner or a dev runner, with its window kept
-# behind whatever Mike is working in. Several can run at once: each has its
+# invisible while Mike is working. Several can run at once: each has its
 # own id, bundle id (so its own settings), data folder, automation channel
 # and pasteboard. Nothing here touches the installed app, the live runner or
 # its data folder.
@@ -25,9 +25,9 @@
 # do       sends each command and prints its result line ("open ok ...");
 #          exits 1 on an error result or a timeout. The commands are in
 #          app/README.md, "Seeing and driving it from a script".
-# shot     saves the window as a PNG: screencapture -l from this shell, or
-#          the app's own drawing when that gives no image (screen locked,
-#          or no Screen Recording permission), which it says.
+# shot     saves a PNG from the app's own drawing for invisible windows.
+#          Visible instances on an isolated test desktop use screencapture,
+#          falling back to the app's drawing when that gives no image.
 # dump     what the window shows: the sidebar's rows by section, the open
 #          thread's rows (id, kind, height, open or closed, text; > marks
 #          the ones on screen), the selection, the composer (its text, and
@@ -391,6 +391,7 @@ launch_app() {
   local env_args=() bear_home=""
   [ -f "$I_DIR/browserbear.home" ] && bear_home="$(cat "$I_DIR/browserbear.home")"
   [[ -n "$bear_home" ]] && env_args+=(--env "BROWSERBEAR_HOME=$bear_home")
+  [ -f "$I_DIR/visible-desktop" ] && env_args+=(--env "THREADBEAR_AUTOMATION_VISIBLE=1")
   open -g -n ${env_args[@]+"${env_args[@]}"} "$I_BUNDLE" --stdout "$I_DIR/app.stdout" --stderr "$I_DIR/app.stderr" --args "${app_args[@]}"
   for i in $(seq 1 200); do
     pid="$(bundle_pid "$I_BUNDLE")"
@@ -536,6 +537,7 @@ cmd_start() {
     [ -z "$bear_date" ] || printf '%s\n' -ThreadbearBearDate "$bear_date"
   } >"$dir/app.args"
   [[ -n "${BROWSERBEAR_HOME:-}" ]] && printf '%s' "$BROWSERBEAR_HOME" >"$dir/browserbear.home"
+  [ "${THREADBEAR_AUTOMATION_VISIBLE:-}" = 1 ] && touch "$dir/visible-desktop"
   launch_app
   trap - ERR
   CLEANUP_ID=""
@@ -622,7 +624,7 @@ cmd_shot() {
   wid="$(printf '%s' "$line" | awk '{ print $3 }')"
   mkdir -p "$(dirname "$file")"
   rm -f "$file"
-  if [[ "$wid" =~ ^[0-9]+$ ]] && /usr/sbin/screencapture -o -x -l "$wid" "$file" >/dev/null 2>&1 && [ -s "$file" ]; then
+  if [[ "$line" != *" hidden" && "$wid" =~ ^[0-9]+$ ]] && /usr/sbin/screencapture -o -x -l "$wid" "$file" >/dev/null 2>&1 && [ -s "$file" ]; then
     echo "screenshot ok $file (screencapture)"
     return 0
   fi
@@ -635,7 +637,7 @@ cmd_shot() {
   send "{\"cmd\":\"screenshot\",\"inProcess\":true,\"sheet\":$sheet,\"settings\":$settings,\"path\":$(json_string "$drawn")}" >/dev/null || exit 1
   mv "$drawn" "$file"
   echo "screenshot ok $file (in-process)"
-  echo "dev-app: screencapture gave no image (the screen is locked or asleep, or this shell has no Screen Recording permission), so that's the app's own drawing: the sidebar's glass is a flat fill and the traffic lights are approximate." >&2
+  echo "dev-app: the app drew this image in-process; hidden windows stay invisible. The sidebar's glass is a flat fill and the traffic lights are approximate." >&2
 }
 
 cmd_dump() {

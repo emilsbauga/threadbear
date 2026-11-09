@@ -1,4 +1,5 @@
 import AppKit
+import DesktopGuard
 import ThreadbearCore
 
 /// `--screenshots <dir>`: opens the synthetic demo threads from the mock
@@ -558,7 +559,7 @@ enum ScreenshotRunner {
         // A shot left from an earlier run would pass for this one below.
         try? FileManager.default.removeItem(at: url)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !tryScreencapture { return drawInProcess(window, to: url) ? .inProcess : nil }
+        if !tryScreencapture || TBDesktopGuardInstalled() { return drawInProcess(window, to: url) ? .inProcess : nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         process.arguments = ["-o", "-x", "-l", String(window.windowNumber), url.path]

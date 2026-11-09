@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 import ThreadbearCore
 import UserNotifications
+#if DEBUG
+import DesktopGuard
+#endif
 
 @main
 struct ThreadbearApp: App {
@@ -11,6 +14,14 @@ struct ThreadbearApp: App {
     @State private var updater = AppUpdater.shared
 
     init() {
+        #if DEBUG
+        let scripted = ["--automation", "--screenshots", "--perf-run"].contains {
+            ProcessInfo.processInfo.arguments.contains($0)
+        }
+        if scripted && ProcessInfo.processInfo.environment["THREADBEAR_AUTOMATION_VISIBLE"] != "1" {
+            TBInstallDesktopGuard()
+        }
+        #endif
         // A build staged while the app was last running (and it was killed
         // rather than quit, or quitting couldn't swap it): put it in place
         // and start again as the new app, before anything else is set up.

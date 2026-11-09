@@ -1,6 +1,7 @@
 import BearDock
 #if DEBUG
 import AppKit
+import DesktopGuard
 import BearDock
 import ThreadbearCore
 
@@ -192,6 +193,7 @@ enum Automation {
         // left, in screen points. A gesture of SwiftUI's own ignores a window
         // that isn't key, so `point` can't reach those behind Mike's windows.
         if c["front"] as? Bool == true {
+            guard !TBDesktopGuardInstalled() else { return "error visible input needs a separate test desktop with THREADBEAR_AUTOMATION_VISIBLE=1" }
             // Floating: macOS can refuse a script's activate, and then a
             // normal window stays under whatever's in front.
             window.level = .floating
@@ -924,6 +926,7 @@ enum Automation {
             }
             return "ok " + (watch?.stop() ?? "no frames") + String(format: ", ended at %.0f", clip.bounds.minY)
         case "front":
+            guard !TBDesktopGuardInstalled() else { return "error foreground timing needs a separate test desktop with THREADBEAR_AUTOMATION_VISIBLE=1" }
             // Brings the window in front of everything, for frame timings.
             guard let window else { return "error no window" }
             // Out of tuckBehind's level first: ordering front within it
@@ -1345,10 +1348,11 @@ enum Automation {
             window.displayIfNeeded()
             try? await Task.sleep(for: .milliseconds(300))
             let size = AppDump.contentSize(window)
-            return "ok \(window.windowNumber) \(Int(size.width))x\(Int(size.height))"
+            return "ok \(window.windowNumber) \(Int(size.width))x\(Int(size.height))" + (TBDesktopGuardInstalled() ? " hidden" : "")
         case "settings":
             return await settings(c, app: app)
         case "runners-front":
+            guard !TBDesktopGuardInstalled() else { return "error visible input needs a separate test desktop with THREADBEAR_AUTOMATION_VISIBLE=1" }
             // The Runners panel open and the main window floating in front
             // and key, for real events on a desktop nobody's using (Tinker
             // Desk, app/README.md "A real drag"). Says the window's number
@@ -1390,6 +1394,7 @@ enum Automation {
         case "menu-popover":
             return menuPopover(c, app: app)
         case "realMenu":
+            guard !TBDesktopGuardInstalled() else { return "error native menus need a separate test desktop with THREADBEAR_AUTOMATION_VISIBLE=1" }
             return realMenu(c, window: window)
         case "drag-space":
             return dragSpace(c)

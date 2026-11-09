@@ -388,7 +388,12 @@ if `tb` isn't found (an older runner, or outside a thread), use
 ## Seeing and driving the app
 
 `app/Tools/dev-app.sh` runs a debug build in a temp bundle, against the
-mock runner or a dev runner, with its window kept behind Mike's. Never use
+mock runner or a dev runner, with invisible windows. Unit tests install the
+same process-local DesktopGuard before any test. `shot` draws hidden windows
+in-process (flat sidebar glass). Real pointer/menu tests and foreground timing
+checks need a separate Mac or VM desktop: only there, start the debug app with
+`THREADBEAR_AUTOMATION_VISIBLE=1`. Never use that opt-in on the working desktop.
+Never use
 `~/Applications/Threadbear.app` for this. Instances belong to the thread
 and checkout that started them: without `--id`, a command means your
 newest one, never another thread's, and `stop --all` stops only yours.

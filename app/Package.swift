@@ -30,6 +30,7 @@ let package = Package(
         .executableTarget(
             name: "Threadbear",
             dependencies: [
+                "DesktopGuard",
                 "ThreadbearCore",
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "Highlightr", package: "Highlightr"),
@@ -51,17 +52,19 @@ let package = Package(
             dependencies: ["ThreadbearCore"],
             path: "Tests/ThreadbearCoreTests"
         ),
+        .target(name: "DesktopGuard", path: "Support/DesktopGuard"),
         // Ends a test run that reaches a real modal (ModalGuard.m says why).
         // Linked only into the tests below, never the app.
         .target(
             name: "ModalGuard",
+            dependencies: ["DesktopGuard"],
             path: "Tests/ModalGuard"
         ),
         // AppKit-side checks (the composer, transcript text, renders,
         // AppModel's drafts) against the app target itself.
         .testTarget(
             name: "ThreadbearAppTests",
-            dependencies: ["Threadbear", "ThreadbearCore", "ModalGuard"],
+            dependencies: ["Threadbear", "ThreadbearCore", "ModalGuard", "DesktopGuard"],
             path: "Tests/ThreadbearAppTests",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
