@@ -22,7 +22,7 @@ test('configured Pi profiles register distinct accounts without reading a login 
   assert.equal(isCliProvider('pi'), false);
 });
 
-test('a Pi-only runner creates a runnable Pi thread with the configured model and normal completion events', async t => {
+test('a Pi-only runner creates a runnable Pi thread with the configured model and normal completion events', { timeout: 300_000 }, async t => {
   const home = tmpDir(), owned = new Set<number>();
   writeRunnerJson(home, { pi: { profiles: [{ id: 'test', connection: { provider: 'test', model: 'model-one' } }] } });
   const cfg = loadConfig({ THREADBEAR_HOME: home, THREADBEAR_CONNECTORS_URL: 'off' });
@@ -39,13 +39,23 @@ test('a Pi-only runner creates a runnable Pi thread with the configured model an
   assert.equal(h.runner.hello().defaults.accountId, 'pi:test');
   assert.ok(!h.runner.noticesForNewClient().some(n => n.message.includes('claude CLI')));
   assert.throws(() => h.runner.create({ text: 'plan', accountId: account.id, permissionMode: 'plan' }), /Plan first is not available for Pi/);
+  // Subscribe before starting the fixture. A completion event, rather than
+  // a four-second wall deadline, proves that the real adapter finished.
+  const completed = Promise.withResolvers<void>();
+  completed.promise.catch(() => {});
+  const unsubscribe = h.runner.onNotification(n => {
+    if (n.method !== 'thread.event') return;
+    if (n.params.event.type === 'turn.completed') completed.resolve();
+    if (n.params.event.type === 'error') completed.reject(new Error(n.params.event.message));
+  });
+  t.after(unsubscribe);
+  t.signal.addEventListener('abort', () => completed.reject(t.signal.reason), { once: true });
   const { thread } = h.runner.create({ text: 'hello', accountId: account.id, model: 'model-one' });
   assert.throws(() => h.runner.update({ threadId: thread.id, permissionMode: 'plan' }), /Plan first is not available for Pi/);
   assert.equal(h.runner.get(thread.id).permissionMode, 'full');
   assert.match(initialInstructions, /Keep the shared instructions/);
   assert.equal(thread.provider, 'pi'); assert.equal(thread.model, 'model-one');
-  const end = Date.now() + 4000;
-  while (!h.events(thread.id).some(e => e.type === 'turn.completed')) { if (Date.now() > end) throw new Error('Pi runner did not finish'); await new Promise(r => setTimeout(r, 5)); }
+  await completed.promise; // The test's overall timeout still bounds a broken fixture.
   assert.ok(h.events(thread.id).some(e => e.type === 'assistant.text' && e.text === 'final:hello'));
   await h.runner.shutdown(); await live?.end({ hard: true }); assert.equal(owned.size, 0);
 });

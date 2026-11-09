@@ -83,15 +83,35 @@ function startRunner(entry: string, home: string, extra: Record<string, string> 
   proc.stdout!.on('data', (d) => (out += d));
   proc.stderr!.on('data', (d) => (out += d));
   const exited = new Promise<number | null>((r) => proc.once('exit', (code) => r(code)));
-  const listening = new Promise<number>((resolve, reject) => {
-    proc.stdout!.on('data', () => {
-      const m = /listening on (\d+)/.exec(out);
-      if (m) resolve(Number(m[1]));
+  // Resolve from output already buffered or the next data event. Process
+  // exit and test cancellation fail promptly; the overall test timeout
+  // bounds a child that stays alive without ever becoming ready.
+  function nextListening(n: number, signal?: AbortSignal): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        proc.stdout!.off('data', check);
+        proc.off('exit', stopped);
+        proc.off('error', failed);
+        signal?.removeEventListener('abort', aborted);
+      };
+      const failed = (error: Error) => { cleanup(); reject(error); };
+      const stopped = () => failed(new Error(`exited before listening #${n}: ${out}`));
+      const aborted = () => failed(new Error(`cancelled waiting for listening #${n}: ${out}`, { cause: signal?.reason }));
+      const check = () => {
+        const ports = [...out.matchAll(/listening on (\d+)/g)].map(m => Number(m[1]));
+        if (ports.length >= n) { cleanup(); resolve(ports[n - 1]); }
+        else if (proc.exitCode !== null || proc.signalCode !== null) stopped();
+      };
+      proc.stdout!.on('data', check);
+      proc.once('exit', stopped);
+      proc.once('error', failed);
+      signal?.addEventListener('abort', aborted, { once: true });
+      if (signal?.aborted) aborted(); else check();
     });
-    void exited.then((code) => reject(new Error(`exited ${code}: ${out}`)));
-  });
+  }
+  const listening = nextListening(1);
   listening.catch(() => {});
-  return { proc, out: () => out, listening, exited };
+  return { proc, out: () => out, listening, nextListening, exited };
 }
 
 async function connect(home: string, port: number) {
@@ -106,12 +126,20 @@ async function connect(home: string, port: number) {
 
 // A release laid out the way deploy-runner.sh builds one, from this
 // working tree's code.
-function makeRelease(home: string, id: string): string {
+function makeRelease(home: string, id: string, fixture = false): string {
   const dir = path.join(home, 'runner', 'releases', id);
   fs.mkdirSync(dir, { recursive: true });
-  fs.cpSync(path.join(RUNNER_DIR, 'src'), path.join(dir, 'src'), { recursive: true });
-  fs.copyFileSync(path.join(RUNNER_DIR, 'package.json'), path.join(dir, 'package.json'));
-  fs.symlinkSync(path.join(RUNNER_DIR, 'node_modules'), path.join(dir, 'node_modules'));
+  if (fixture) {
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.copyFileSync(path.join(RUNNER_DIR, 'test/deploy/fake-runner.mjs'), path.join(dir, 'src/main.ts'));
+    fs.copyFileSync(path.join(RUNNER_DIR, 'src/rpc-auth.ts'), path.join(dir, 'src/rpc-auth.ts'));
+    fs.writeFileSync(path.join(dir, 'src/mode.json'), JSON.stringify({ goodAfterMs: -1 }));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+  } else {
+    fs.cpSync(path.join(RUNNER_DIR, 'src'), path.join(dir, 'src'), { recursive: true });
+    fs.copyFileSync(path.join(RUNNER_DIR, 'package.json'), path.join(dir, 'package.json'));
+    fs.symlinkSync(path.join(RUNNER_DIR, 'node_modules'), path.join(dir, 'node_modules'));
+  }
   fs.writeFileSync(path.join(dir, 'release.json'), JSON.stringify({ id, commit: 'abc1234', dirty: false, builtAt: new Date().toISOString(), node: process.version }));
   return dir;
 }
@@ -203,33 +231,25 @@ function installLaunch(home: string, current: string): string {
   return launch;
 }
 
-// The port the nth runner the supervisor started listens on.
-async function nthListening(out: () => string, n: number, ms = PATIENCE_MS): Promise<number> {
-  const end = Date.now() + ms;
-  for (;;) {
-    const ports = [...out().matchAll(/listening on (\d+)/g)].map((m) => Number(m[1]));
-    if (ports.length >= n) return ports[n - 1];
-    if (Date.now() > end) throw new Error(`no listening line #${n}:\n${out()}`);
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
-
-test('planned restarts under launch.mjs are clean stops, so several in a row are not a crash loop', async () => {
+test('planned restarts under launch.mjs are clean stops, so several in a row are not a crash loop', { timeout: 300_000 }, async t => {
   const home = tmpDir();
   const older = '20261025T101500Z-0000001';
   const id = '20261026T101500Z-abc1234';
-  makeRelease(home, older);
-  makeRelease(home, id);
+  // Exercise the real supervisor with the existing tiny authenticated runner
+  // fixture. main.ts/restart RPC integration is covered by the tests above;
+  // five complete app/SDK startups add no supervisor coverage here.
+  makeRelease(home, older, true);
+  makeRelease(home, id, true);
   const launch = installLaunch(home, id);
   writeState(home, { current: id, previous: older, lastGood: older, boots: [] });
-  // The supervisor starts it again after each planned restart; four of
-  // them well inside a minute, none long enough to be marked good.
-  const r = startRunner(launch, home, { THREADBEAR_GOOD_AFTER_MS: '600000', THREADBEAR_RESTART_MS: '50' });
+  // The fixture never marks itself good, regardless of scheduling delays.
+  const r = startRunner(launch, home, { THREADBEAR_RESTART_MS: '50' });
+  t.after(() => { r.proc.kill('SIGKILL'); });
   try {
     for (let i = 0; i < 5; i++) {
-      const port = await nthListening(r.out, i + 1);
+      const port = await r.nextListening(i + 1, t.signal);
       const { c, hello } = await connect(home, port);
-      assert.equal(hello.runnerVersion, `${PKG_VERSION}+${id}`, `start ${i + 1} runs the new release`);
+      assert.equal(hello.runnerVersion, `9.9.9+${id}`, `start ${i + 1} runs the new release`);
       if (i < 4) assert.deepEqual(await c.call('runner.restart', { reason: `restart ${i + 1}` }), { scheduled: true, waitingFor: [] });
       c.close();
     }

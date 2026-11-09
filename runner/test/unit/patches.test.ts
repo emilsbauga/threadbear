@@ -235,10 +235,6 @@ test('runCommand: output, exit codes, the time limit and the size cap', async ()
   assert.equal(failed.ok, false);
   assert.equal(failed.exitCode, 3);
   assert.equal(failed.text.trim(), 'nope');
-  const slow = await runCommand('echo start; sleep 5; echo never', { cwd, env, shell: sh, timeoutMs: 300 });
-  assert.equal(slow.ok, false);
-  assert.equal(slow.text, 'start\nStopped after 0.3 s.');
-  assert.ok(slow.durationMs < 3000);
   const big = await runCommand('yes abcdefghij | head -c 200000', { cwd, env, shell: sh });
   assert.equal(big.ok, true);
   assert.equal(big.truncated, true);
@@ -246,6 +242,29 @@ test('runCommand: output, exit codes, the time limit and the size cap', async ()
   const missing = await runCommand('true', { cwd, env, shell: ['/no/such/shell', '-c'] });
   assert.equal(missing.ok, false);
   assert.match(missing.text, /ENOENT/);
+});
+
+test('runCommand cancels a command that cannot finish by itself', { timeout: 300_000 }, async t => {
+  const cwd = tmpDir();
+  const pidFile = path.join(cwd, 'timeout-child.pid');
+  let pending = true;
+  // Keep cleanup registered even if cancellation breaks and the test aborts.
+  t.after(() => {
+    if (!pending || !fs.existsSync(pidFile)) return;
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    if (!Number.isSafeInteger(pid) || pid < 2) return;
+    try { process.kill(-pid, 'SIGKILL'); } catch {}
+  });
+  // No race against a finite sleep, and no assumption about how soon a busy
+  // host schedules our timeout callback. Output is covered separately above.
+  const result = await runCommand('printf "%s" "$$" > "$TB_PID_FILE"; exec sleep 86400', {
+    cwd, env: { PATH: '/usr/bin:/bin', TB_PID_FILE: pidFile }, shell: ['/bin/sh', '-c'], timeoutMs: 300,
+  });
+  pending = false;
+  assert.equal(result.ok, false);
+  assert.equal(result.text, 'Stopped after 0.3 s.');
+  assert.equal(result.exitCode, undefined, 'the child was stopped by a signal');
+  assert.equal(result.truncated, false);
 });
 
 import { hookApplies } from '../../src/patches.ts';
