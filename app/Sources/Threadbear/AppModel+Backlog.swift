@@ -27,7 +27,7 @@ extension AppModel {
         }
         let draft = (drafts["new"] ?? Draft()).normalized
         guard !draft.words().isEmpty || !draft.images.isEmpty || !draft.attachments.isEmpty else { return }
-        let request = newThreadRequest(text: draft.words(), images: draft.images)
+        let request = newThreadRequest(text: InlinePictures.messageText(draft.text), images: draft.images)
         creatingThread = true
         Task {
             defer { creatingThread = false }
@@ -60,7 +60,9 @@ extension AppModel {
                       let draft = drafts[id]?.normalized, draft != Self.composerDraft(saved),
                       let client = client(for: id) else { return }
                 do {
-                    let thread = try await client.saveDraft(threadId: id, text: draft.words(), images: draft.images, revision: saved.revision, attachments: draft.attachments)
+                    // Autosave must preserve word-boundary spaces and blank lines;
+                    // words() trims them for sending and would erase them on restore.
+                    let thread = try await client.saveDraft(threadId: id, text: InlinePictures.messageText(draft.text), images: draft.images, revision: saved.revision, attachments: draft.attachments)
                     guard !startingBacklog.contains(id), threads[id]?.backlog != nil else { return }
                     threads[id] = thread
                     // Replace transient inbox paths only if the user has
