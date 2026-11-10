@@ -35,6 +35,22 @@ final class BacklogTests: XCTestCase {
         XCTAssertEqual(ThreadSections.build([draft], now: Date()).running.map(\.id), ["draft"])
     }
 
+    func testDeferredConversationRoundTripsAndLeavesTheInboxBadge() throws {
+        var thread = ThreadSummary(id: "existing", title: "Continue later", needsYou: true)
+        thread.starredAt = Date()
+        thread = ThreadUpdate(backlogged: true).applied(to: thread)
+        XCTAssertEqual(ThreadUpdate(backlogged: true).params["backlogged"], .bool(true))
+        XCTAssertNil(thread.backlog)
+        let restored = try JSONDecoder().decode(ThreadSummary.self, from: JSONEncoder().encode(thread))
+        XCTAssertEqual(restored.backlogged, true)
+        let sections = ThreadSections.build([restored], now: Date())
+        XCTAssertEqual(sections.backlog.map(\.id), ["existing"])
+        XCTAssertTrue(sections.needsYou.isEmpty)
+        XCTAssertEqual(ThreadSections.needsYouCount([restored], now: Date()), 0)
+        thread = ThreadUpdate(backlogged: false).applied(to: thread)
+        XCTAssertEqual(ThreadSections.build([thread], now: Date()).starred.map(\.id), ["existing"])
+    }
+
     func testArchivedDraftReturnsToBacklogWhenRestored() {
         var draft = ThreadSummary(id: "draft", title: "Later", archivedAt: Date())
         draft.backlog = BacklogDraft(text: "A prepared prompt")

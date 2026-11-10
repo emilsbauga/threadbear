@@ -199,6 +199,7 @@ export type BacklogDraft = { text: string; images: ImageRef[]; attachments?: Att
 
 export type ThreadSummary = {
   backlog?: BacklogDraft;
+  backlogged?: boolean; // Existing conversation deferred manually.
   id: string;
   title: string;
   cwd: string;

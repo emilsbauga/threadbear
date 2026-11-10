@@ -245,6 +245,7 @@ public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
     public var unread: Bool
     public var preview: String
     public var backlog: BacklogPrompt? = nil
+    public var backlogged: Bool? = nil
     @FlexibleDate public var lastActivityAt: Date
     @OptionalFlexibleDate public var snoozedUntil: Date?
     public var snoozedUntilRestart: Bool?

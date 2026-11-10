@@ -592,6 +592,7 @@ is an error. Commands marked "the open thread" act on `id` when it's given
 | `debug-info`, `copy-thread-id`, `clipboard` | `row`, `id` | what "Copy debug info" and "Copy thread id" (the open thread) copy, copied to the instance's pasteboard as the menu items do; `clipboard` reads it back |
 | `appearance`, `resize` | `mode` (light, dark, system); `w`, `h`, `review` (a review's id: resize its window instead) | |
 | `zoom` | `to` (in, out, reset) or `percent` | the window's zoom, as ⌘=, ⌘- and ⌘0 set it; says the percent it's at |
+| `backlog`, `inbox` | `id` (else the open thread) | moves an existing conversation to Backlog or Inbox |
 | `archive`, `unarchive`, `snooze` | `id`, `seconds` (default 3600) | the open thread; says which thread it acted on |
 | `undo-archive`, `open-archived` | | the Archived note's Undo, or a click on the note (opens the thread) |
 | `mode` | `mode` (`inbox`, `scheduled`, `projects`, `librarian`; `archive` and `snoozed` show the inbox with that section unfolded), `time`, `frames` | which view the sidebar shows. `time: true` says how long until the main thread next goes idle; with `frames: true` too, how the next second of frames went (count, dropped, worst) |

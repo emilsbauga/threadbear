@@ -14,6 +14,7 @@ export type QueuedSend = { turnId: string; text: string; images: ImageRef[]; att
 export type ThreadRecord = {
   intake?: IntakeRecord;
   backlog?: import('./protocol.ts').BacklogDraft;
+  backlogged?: boolean; // Existing conversation deferred manually.
   backlogContext?: string; // advisory context carried into the first execution session
   id: string;
   title: string;

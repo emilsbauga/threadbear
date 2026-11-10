@@ -654,6 +654,11 @@ enum Automation {
             guard let id = target.id else { return target.error }
             app.archive(id)
             return "ok \(id)"
+        case "backlog", "inbox":
+            let target = target(c, app)
+            guard let id = target.id else { return target.error }
+            app.update(id, ThreadUpdate(backlogged: name == "backlog"))
+            return "ok \(id)"
         case "star", "unstar":
             let target = target(c, app)
             guard let id = target.id else { return target.error }

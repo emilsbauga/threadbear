@@ -249,6 +249,11 @@ Remove their access entry, API gating and routes together; never drop pending
 bytes or completion records during removal. See `docs/intake.md` for the
 operator contract.
 
+Existing conversations use a separate optional `backlogged` marker, changed
+through `threads.update`, cleared by a validated send, and mirrored from backend
+API 67. The Mac thread menu moves them to Backlog or Inbox without replacing
+their conversation or composer contents.
+
 Backlog uses an optional `backlog` first-prompt field on thread records and
 summaries (`runner/src/runner/new-threads.ts`, `store.ts`, `protocol.ts`).
 `threads.createDraft` and `threads.saveDraft` persist it without a session or

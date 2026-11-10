@@ -293,4 +293,5 @@
 // 65: includes this fork's external intake consumer (formerly 62).
 // 66: includes temporary intake attachment transfer (formerly fork API 63).
 // Older fork 61–63 and upstream 61–63 described different capabilities.
-export const API_VERSION = 66;
+// 67: existing conversations manually deferred to Backlog.
+export const API_VERSION = 67;

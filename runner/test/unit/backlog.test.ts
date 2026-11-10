@@ -78,3 +78,42 @@ for (const archived of [false, true]) {
     assert.equal(next.adapter.sessions.length, 0);
   });
 }
+
+
+test('existing inbox conversations move to Backlog durably without rewriting their prompt or history', async () => {
+  const h = makeHarness();
+  const { thread } = h.runner.create({ text: 'Original request' });
+  await tick();
+  h.adapter.last.result();
+  await tick();
+  const before = h.runner.get(thread.id);
+  const moved = h.runner.update({ threadId: thread.id, backlogged: true }).thread;
+  assert.equal(moved.backlogged, true);
+  assert.equal(moved.backlog, undefined);
+  assert.equal(moved.lastSeq, before.lastSeq);
+  assert.equal(moved.preview, before.preview);
+  h.runner.flush();
+  const next = h.restart();
+  await tick();
+  assert.equal(next.runner.get(thread.id).backlogged, true);
+  assert.equal(next.adapter.sessions.length, 0);
+  next.runner.update({ threadId: thread.id, archived: true });
+  next.runner.update({ threadId: thread.id, archived: false });
+  assert.equal(next.runner.get(thread.id).backlogged, true);
+  next.runner.update({ threadId: thread.id, backlogged: false });
+  assert.equal(next.runner.get(thread.id).backlogged, undefined);
+  next.runner.update({ threadId: thread.id, backlogged: true });
+  assert.throws(() => next.runner.send(thread.id, 'missing', [{ path: '/missing.png', mediaType: 'image/png' }]), /not found/);
+  assert.equal(next.runner.get(thread.id).backlogged, true);
+  next.runner.send(thread.id, 'Continue here');
+  assert.equal(next.runner.get(thread.id).backlogged, undefined);
+});
+
+test('moving a busy thread or an unsent draft to Backlog is refused without mutation', () => {
+  const h = makeHarness();
+  const { thread } = h.runner.create({ text: 'Working' });
+  assert.throws(() => h.runner.update({ threadId: thread.id, backlogged: true, title: 'Changed' }), /idle|running|busy/i);
+  assert.equal(h.runner.get(thread.id).title, thread.title);
+  const draft = h.runner.createDraft({ text: 'Unsent' }).thread;
+  assert.throws(() => h.runner.update({ threadId: draft.id, backlogged: false }), /draft|unsent/i);
+});

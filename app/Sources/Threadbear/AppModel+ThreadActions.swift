@@ -604,7 +604,7 @@ extension AppModel {
 
     /// Sidebar deletion is limited to saved tasks and archived chats.
     func deleteThread(_ threadId: String) {
-        guard !isBusy(BusyKey.deleteThread(threadId)), let thread = threads[threadId], thread.isArchived || thread.backlog != nil,
+        guard !isBusy(BusyKey.deleteThread(threadId)), let thread = threads[threadId], thread.isArchived || thread.backlog != nil || thread.backlogged == true,
               let client = client(for: threadId) else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -613,7 +613,7 @@ extension AppModel {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,
-              let current = threads[threadId], current.isArchived || current.backlog != nil else { return }
+              let current = threads[threadId], current.isArchived || current.backlog != nil || current.backlogged == true else { return }
         whileBusy(BusyKey.deleteThread(threadId), note: "Deleting chat…") { [self] in
             do {
                 try await client.deleteThread(threadId)

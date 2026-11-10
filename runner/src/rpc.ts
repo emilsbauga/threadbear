@@ -615,6 +615,10 @@ export class RpcServer {
           if (p.archived !== true) throw bad('verdict goes with archived: true');
           upd.verdict = p.verdict as ArchiveVerdict;
         }
+        if (p.backlogged !== undefined) {
+          if (typeof p.backlogged !== 'boolean') throw bad('backlogged must be a boolean');
+          upd.backlogged = p.backlogged;
+        }
         if (p.starred !== undefined) {
           if (typeof p.starred !== 'boolean') throw bad('starred must be a boolean');
           upd.starred = p.starred;

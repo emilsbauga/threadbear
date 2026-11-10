@@ -156,6 +156,10 @@ test('view follows hibernate and den; cost is to the cent; working comes from ba
   assert.equal(forBackend(draft, 60, now).backlog, undefined);
   for (const version of [61, 62, 63]) assert.equal(forBackend(draft, version, now).backlog, undefined, 'upstream API numbers overlap the old fork');
   assert.deepEqual(forBackend(draft, 64, now).backlog, draft.backlog);
+  const deferred = toThreadDoc({ ...base, backlogged: true }, 'r', now);
+  assert.equal(deferred.backlogged, true);
+  assert.equal(forBackend(deferred, 66, now).backlogged, undefined);
+  assert.equal(forBackend(deferred, 67, now).backlogged, true);
   const starredAt = '2026-10-27T09:20:00.000Z';
   const asleep = toThreadDoc({ ...base, starredAt, snoozedUntil: '2026-10-27T18:00:00.000Z' }, 'r', now);
   assert.equal(asleep.view, 'inbox');

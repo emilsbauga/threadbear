@@ -214,3 +214,11 @@ test('a hibernating row that waits for more than a time says so first', () => {
   // Awake again: the note is stale.
   assert.equal(wakeLine(row({ wakeNote: 'the runner updates' }), ['misc'], now), undefined);
 });
+
+
+test('existing deferred conversations share Backlog without becoming unsent prompts', () => {
+  const deferred = row({ backlogged: true });
+  const s = build([deferred], NOW, new Map(), 'needsYou');
+  assert.deepEqual(ids(s.backlog), [deferred.threadId]);
+  assert.equal(s.inbox.length, 0);
+});

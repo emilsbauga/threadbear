@@ -117,7 +117,7 @@ public struct InboxSections: Sendable, Equatable {
     public static func build(_ threads: some Sequence<PhoneThread>, now: Date, wakes: [String: PhoneSchedule] = [:]) -> InboxSections {
         var sections = InboxSections()
         for thread in threads where thread.archivedAt == nil {
-            if thread.backlog != nil {
+            if thread.backlog != nil || thread.backlogged == true {
                 sections.backlog.append(thread)
                 continue
             }

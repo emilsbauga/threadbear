@@ -3,6 +3,32 @@ import ThreadbearCore
 @testable import Threadbear
 
 final class BacklogComposerTests: XCTestCase {
+    @MainActor func testDeferringConversationPreservesComposerAndUpdatesSectionImmediately() async throws {
+        let app = AppModel()
+        let transport = BacklogTransport()
+        let client = RPCClient(transport: transport)
+        try await client.start()
+        defer { client.close() }
+        app.useClientForTesting(client)
+        let thread = ThreadSummary(id: "existing", title: "Continue later")
+        app.threads[thread.id] = thread
+        let draft = Draft(text: "Keep this unsent follow-up ")
+        app.drafts[thread.id] = draft
+        transport.answers["threads.update"] = { params in
+            ["thread": ["id": "existing", "title": "Continue later", "backlogged": params["backlogged"] ?? false]]
+        }
+        app.update(thread.id, ThreadUpdate(backlogged: true))
+        XCTAssertEqual(app.threads[thread.id]?.backlogged, true)
+        XCTAssertNil(app.threads[thread.id]?.backlog)
+        XCTAssertEqual(app.drafts[thread.id], draft)
+        let deadline = Date().addingTimeInterval(5)
+        while transport.params("threads.update").isEmpty && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(transport.params("threads.update").first?["backlogged"] as? Bool, true)
+        XCTAssertEqual(app.drafts[thread.id], draft)
+    }
+
     @MainActor func testAutosavePreservesWhitespaceWhileContinuingToType() async throws {
         let app = AppModel()
         let transport = BacklogTransport()

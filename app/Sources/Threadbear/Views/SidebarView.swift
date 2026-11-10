@@ -1181,6 +1181,15 @@ struct ThreadMenu: View {
         Button(thread.isStarred ? "Remove Star" : "Star", systemImage: thread.isStarred ? "star.slash" : "star") {
             app.setStarred(thread.id, !thread.isStarred)
         }
+        if thread.backlogged == true, !thread.isArchived {
+            Button("Move to Inbox", systemImage: "tray.and.arrow.up") {
+                app.update(thread.id, ThreadUpdate(backlogged: false))
+            }.tip("Return this conversation to Inbox")
+        } else if thread.backlog == nil, !thread.isArchived, thread.snoozedUntil == nil, !thread.status.isBusy, !thread.isWorkingInBackground {
+            Button("Move to Backlog", systemImage: "tray.full") {
+                app.update(thread.id, ThreadUpdate(backlogged: true))
+            }.tip("Save this conversation in Backlog for later")
+        }
         SnoozeMenu(threadId: thread.id)
         if thread.snoozedUntil != nil {
             Button("Wake", systemImage: "sun.max") { app.unsnooze(thread.id) }
@@ -1190,7 +1199,7 @@ struct ThreadMenu: View {
         } else {
             Button("Archive", systemImage: "archivebox") { app.archive(thread.id) }
         }
-        if thread.isArchived || thread.backlog != nil {
+        if thread.isArchived || thread.backlog != nil || thread.backlogged == true {
             Button("Delete…", systemImage: "trash", role: .destructive) { app.deleteThread(thread.id) }
         }
         // Projects are this Mac's runner's; another runner's threads

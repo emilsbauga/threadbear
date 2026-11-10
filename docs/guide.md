@@ -40,7 +40,12 @@ back to it days later and carry on.
 ### The list
 
 The threads view includes Backlog, Inbox, Running, Hibernating and Archived.
-Backlog holds saved first prompts that have not been sent. Write a new
+Backlog holds saved first prompts and conversations you want to return to
+later. Right-click an idle Inbox thread, or open its **…** menu, and choose
+**Move to Backlog**. Its conversation and session stay intact. Choose
+**Move to Inbox** to bring it back, or send another message to continue it.
+Moving it starts no work. Opening it alone leaves it in Backlog.
+Backlog also holds saved first prompts that have not been sent. Write a new
 prompt, add any pictures, choose its folder and model, then choose **Save to
 Backlog** from the composer's **+** menu or the send button's right-click
 menu. Saving starts no task agent. The librarian reviews saved prompts in

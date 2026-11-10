@@ -94,6 +94,7 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
     public var snoozedUntil: Date?
     public var archivedAt: Date?
     public var starredAt: Date?
+    public var backlogged: Bool?
     public var backlog: Bool?
     /// Who started it, when it wasn't Mike: the row's byline.
     public var startedBy: ThreadStartedBy?
@@ -140,6 +141,7 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
         lastActivityAt = text(.lastActivityAt).flatMap(ISO8601.parse) ?? createdAt
         snoozedUntil = text(.snoozedUntil).flatMap(ISO8601.parse)
         archivedAt = text(.archivedAt).flatMap(ISO8601.parse)
+        backlogged = try c.decodeIfPresent(Bool.self, forKey: .backlogged)
         backlog = try c.decodeIfPresent(Bool.self, forKey: .backlog)
         starredAt = text(.starredAt).flatMap(ISO8601.parse)
         startedBy = (try? c.decodeIfPresent(ThreadStartedBy.self, forKey: .startedBy)) ?? nil
@@ -148,7 +150,7 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
 
     enum CodingKeys: String, CodingKey {
         case runnerId, threadId, title, cwd, accountId, provider, model, status, needsYou, unread, preview
-        case backlog, createdAt, lastActivityAt, snoozedUntil, archivedAt, starredAt, startedBy, asked
+        case backlogged, backlog, createdAt, lastActivityAt, snoozedUntil, archivedAt, starredAt, startedBy, asked
     }
 
     /// As a summary the sidebar's rows and sections take like a local one.
@@ -165,6 +167,7 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
         // Hibernating until that runner restarts is kept as a date in the
         // year 9999 (`threads.update` with "restart").
         if let snoozedUntil, snoozedUntil > Self.restartFarOff { summary.snoozedUntilRestart = true }
+        summary.backlogged = backlogged
         if backlog == true { summary.backlog = BacklogDraft(text: "", revision: 0) }
         summary.runnerId = runnerId
         summary.startedBy = startedBy

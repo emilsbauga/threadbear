@@ -40,6 +40,7 @@ export const threadFields = {
   accountId: v.string(),
   provider: v.string(),
   model: v.optional(v.string()),
+  backlogged: v.optional(v.boolean()),
   backlog: v.optional(v.object({ text: v.string(), revision: v.number(), imageCount: v.number() })),
   status: v.string(),
   needsYou: v.boolean(),
@@ -294,6 +295,7 @@ export default defineSchema({
     snoozedUntil: v.optional(v.string()),
     archivedAt: v.optional(v.string()),
     starredAt: v.optional(v.string()), // since API 27
+    backlogged: v.optional(v.boolean()),
     backlog: v.optional(v.boolean()),
     // Who started it, when that wasn't Mike: the row's byline. Since API 23.
     startedBy: v.optional(v.object({ kind: v.string(), label: v.string(), icon: v.optional(v.string()), threadTitle: v.optional(v.string()), why: v.optional(v.string()) })),

@@ -133,7 +133,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 66;
+export const BACKEND_API_VERSION = 67;
 export const INTAKE_API_VERSION = 65;
 // From this one sync:sharedThreads lists a runner's rows shared by link, which
 // it checks against its own threads on every start and every
@@ -392,6 +392,7 @@ export type ThreadDoc = {
   asked?: string;
   archivedAt?: string;
   starredAt?: string;
+  backlogged?: boolean;
   backlog?: { text: string; revision: number; imageCount: number };
   costUsd?: number;
   projects?: { id: string; title: string }[];
@@ -537,7 +538,7 @@ export type CommandHost = {
   send(threadId: string, text: string, images: ImageRef[], opts: { origin?: 'phone'; answers?: AskAnswer[] }): unknown;
   respondApproval(p: { threadId: string; approvalId: string; decision: ApprovalDecision; message?: string; answers?: Record<string, string>; remote?: boolean }): unknown;
   answerSecret(p: { threadId: string; approvalId: string; secret?: string; decline?: boolean }): unknown;
-  update(p: { threadId: string; title?: string; snoozedUntil?: string | null; archived?: boolean; verdict?: ArchiveVerdict; starred?: boolean }): unknown;
+  update(p: { threadId: string; title?: string; snoozedUntil?: string | null; archived?: boolean; verdict?: ArchiveVerdict; starred?: boolean; backlogged?: boolean }): unknown;
   // Hibernate in Mike's words (threads.hibernateWhen): a `snooze: { said }` update from the main Mac.
   hibernateWhen?(p: { threadId: string; said: string }): unknown;
   // Seen up to the last event it has.
@@ -821,6 +822,7 @@ export function toThreadDoc(t: ThreadSummary, runnerId: string, now: number, pen
   if (t.asked) doc.asked = t.asked;
   if (t.archivedAt) doc.archivedAt = t.archivedAt;
   if (t.starredAt) doc.starredAt = t.starredAt;
+  if (t.backlogged) doc.backlogged = true;
   if (t.backlog) doc.backlog = { text: t.backlog.text, revision: t.backlog.revision, imageCount: t.backlog.images.length };
   // To the cent: a running thread's cost moves every turn and the phone
   // doesn't need a write for the fourth decimal.
@@ -894,8 +896,9 @@ function phoneAnswers(raw: unknown): AskAnswer[] | undefined {
 export function forBackend(d: ThreadDoc, v: number, now: number): ThreadDoc {
   const asks = d.asks !== undefined || d.asksSeq !== undefined || d.next !== undefined;
   const sections = d.needs !== undefined || d.pendingReviews !== undefined || d.waitingForRoom !== undefined;
-  if ((v >= BACKLOG_API_VERSION || !d.backlog) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= OPTION_NOTES_API_VERSION || !d.asks?.some((a) => a.optionNotes)) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= WAKE_NOTE_API_VERSION || !d.wakeNote) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined)) return d;
+  if ((v >= 67 || !d.backlogged) && (v >= BACKLOG_API_VERSION || !d.backlog) && (v >= SHARE_API_VERSION || !d.share) && (v >= WOKE_API_VERSION || !d.woke) && (v >= ASKS_API_VERSION || !asks) && (v >= OPTION_NOTES_API_VERSION || !d.asks?.some((a) => a.optionNotes)) && (v >= SECTIONS_API_VERSION || !sections) && (v >= STARTED_BY_API_VERSION || !d.startedBy) && (v >= STARS_API_VERSION || !d.starredAt) && (v >= LINKS_API_VERSION || !d.links) && (v >= ASKED_API_VERSION || !d.asked) && (v >= WAKE_NOTE_API_VERSION || !d.wakeNote) && (v >= NETWORK_WAIT_API_VERSION || !d.waitingForNetwork) && (v >= SECRETS_API_VERSION || d.pendingApproval?.kind !== 'secret') && (v >= RELAY_API_VERSION || d.pendingApproval?.seq === undefined)) return d;
   const out = { ...d };
+  if (v < 67) delete out.backlogged;
   if (v < BACKLOG_API_VERSION) delete out.backlog;
   if (v < SECTIONS_API_VERSION) {
     delete out.needs;
@@ -1339,6 +1342,7 @@ export class ConvexSync {
         takesStartedBy: () => (this.backendApiVersion ?? 0) >= INDEX_STARTED_BY_API_VERSION,
         takesStars: () => (this.backendApiVersion ?? 0) >= STARS_API_VERSION,
         takesAsked: () => (this.backendApiVersion ?? 0) >= INDEX_ASKED_API_VERSION,
+        takesBacklogged: () => (this.backendApiVersion ?? 0) >= 67,
         takesBacklog: () => (this.backendApiVersion ?? 0) >= BACKLOG_API_VERSION,
         takesSince: () => (this.backendApiVersion ?? 0) >= INDEX_SINCE_API_VERSION,
         takesOrder: () => (this.backendApiVersion ?? 0) >= RUNNER_ORDER_API_VERSION,
@@ -3904,6 +3908,7 @@ export class ConvexSync {
         }
         else if (a.unarchive) await host.update({ threadId: id, archived: false });
         else if (a.markSeen) await host.markSeen(id);
+        else if (typeof a.backlogged === 'boolean') await host.update({ threadId: id, backlogged: a.backlogged });
         else if (typeof a.star === 'boolean') await host.update({ threadId: id, starred: a.star });
         else if (typeof a.title === 'string') await host.update({ threadId: id, title: a.title });
         else throw new Error('nothing to change');

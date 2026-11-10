@@ -135,7 +135,7 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
       out = pick(a, ['approvalId', 'decision', 'message', 'answers', 'secret', 'sealed']);
       break;
     case 'update':
-      out = pick(a, ['snooze', 'wake', 'archive', 'unarchive', 'markSeen', 'title', 'star']);
+      out = pick(a, ['snooze', 'wake', 'archive', 'unarchive', 'markSeen', 'title', 'star', 'backlogged']);
       if (Object.keys(out).length !== 1) throw bad('an update changes one thing');
       // How it went, with an archive (API 42), as phone:update takes it.
       if (out.archive === true && ['worked', 'didntWork', 'notNeeded'].includes(String(a.verdict))) out.verdict = a.verdict;

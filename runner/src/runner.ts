@@ -1434,6 +1434,7 @@ export class Runner {
       }
     }
     delete rec.backlog;
+    delete rec.backlogged;
     if (needsBacklogTitle && text.trim()) void this.titleFromModel(st, text);
     // New work: its last finish no longer says it's done, for threads
     // waiting on it (runner/hibernation.ts).
@@ -2656,6 +2657,7 @@ export class Runner {
     archivedBy?: ArchivedBy;
     verdict?: ArchiveVerdict;
     starred?: boolean;
+    backlogged?: boolean;
     // A move Mike made (the app, tb) or allowed on a card: a thread shut in
     // a sandbox may leave it. Without it, a move or login change that would
     // take it out is refused (ThreadRecord.confined).
@@ -2663,6 +2665,12 @@ export class Runner {
   }): { thread: ThreadSummary } {
     const st = this.mustGet(params.threadId);
     const { rec, rt } = st;
+    if (params.backlogged !== undefined) {
+      if (rec.backlog) throw new RpcError(ErrorCode.badParams, 'An unsent draft stays in Backlog until sent.');
+      if (params.backlogged && (rt.turn || rec.archivedAt || rec.snoozedUntil || rt.tasks.length)) {
+        throw new RpcError(ErrorCode.badParams, 'Only idle Inbox threads can move to Backlog.');
+      }
+    }
     // Checked before anything changes, so a refused rename changes nothing else either.
     if (params.title !== undefined && params.titleBy === 'agent' && rec.titleByMike && params.title.trim() !== rec.title) {
       throw new RpcError(ErrorCode.badParams, `The user named this thread "${rec.title}" themselves, so it keeps that title. Only rename it if they ask you to.`);
@@ -2884,6 +2892,8 @@ export class Runner {
       this.reconcileWaits();
       this.recheckStarter(st);
     }
+    if (params.backlogged === true) rec.backlogged = true;
+    else if (params.backlogged === false) delete rec.backlogged;
     if (params.starred === true) rec.starredAt ??= this.isoNow();
     else if (params.starred === false) delete rec.starredAt;
     if (accountChanged && rt.turn && rt.session && !stop) {
@@ -3257,6 +3267,7 @@ export class Runner {
       lastSeq: rec.lastSeq,
       lastSeenSeq: rec.lastSeenSeq,
     };
+    if (rec.backlogged) s.backlogged = true;
     if (rec.backlog) s.backlog = structuredClone(rec.backlog);
     if (rec.poolId) s.poolId = rec.poolId;
     if (rec.waitingForRoom) s.waitingForRoom = { ...rec.waitingForRoom };

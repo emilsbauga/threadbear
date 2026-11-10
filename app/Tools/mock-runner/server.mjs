@@ -676,6 +676,7 @@ async function dispatch(client, method, p) {
     case 'threads.send': {
       const t = need(p.threadId);
       delete t.summary.backlog;
+      delete t.summary.backlogged;
       // A message declines any secret card still open, first (docs/
       // protocol.md, "Secrets"), as the real runner does.
       const resolved = new Set(t.events.filter((e) => e.type === 'approval.resolved').map((e) => e.approvalId));
@@ -775,6 +776,8 @@ async function dispatch(client, method, p) {
         s.archivedAt = p.archived ? iso() : undefined;
         if (p.archived) s.live = false;
       }
+      if (p.backlogged === true) s.backlogged = true;
+      else if (p.backlogged === false) delete s.backlogged;
       if (p.starred === true) s.starredAt ??= iso();
       else if (p.starred === false) delete s.starredAt;
       s.updatedAt = iso();

@@ -377,7 +377,7 @@ export class Relay {
       lastSeenSeq: 0,
       runnerId: t.runnerId,
     };
-    for (const k of ['model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'startedBy', 'asked'] as const) {
+    for (const k of ['model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'backlogged', 'startedBy', 'asked'] as const) {
       if (t[k] !== undefined) thread[k] = t[k];
     }
     if (t.lastActivityAt) thread.updatedAt = t.lastActivityAt;
@@ -959,12 +959,13 @@ export class Relay {
         if (typeof p.archived === 'boolean') {
           changes.push(p.archived ? [{ archive: true, ...(typeof p.verdict === 'string' ? { verdict: p.verdict } : {}), ...(p.archivedBy === 'agent' ? { by: 'agent' } : {}) }, { archivedAt: now }] : [{ unarchive: true }, { archivedAt: undefined }]);
         }
+        if (typeof p.backlogged === 'boolean') changes.push([{ backlogged: p.backlogged }, { backlogged: p.backlogged || undefined }]);
         if (typeof p.starred === 'boolean') changes.push([{ star: p.starred }, { starredAt: p.starred ? (t?.starredAt ?? now) : undefined }]);
         if ('snoozedUntil' in p) {
           const s = p.snoozedUntil;
           changes.push(s === null ? [{ wake: true }, { snoozedUntil: undefined }] : s === 'restart' ? [{ snooze: { untilRestart: true } }, { snoozedUntil: UNTIL_RESTART }] : [{ snooze: { until: String(s) } }, { snoozedUntil: String(s) }]);
         }
-        const known = new Set(['threadId', 'title', 'archived', 'verdict', 'archivedBy', 'starred', 'snoozedUntil']);
+        const known = new Set(['threadId', 'title', 'archived', 'verdict', 'archivedBy', 'starred', 'backlogged', 'snoozedUntil']);
         if (Object.keys(p).some((k) => !known.has(k) && p[k] !== undefined)) this.unsupported(w, 'Changing its login, model or settings');
         // Kept as each is done, so one failing after another went through
         // doesn't lose the one that did.

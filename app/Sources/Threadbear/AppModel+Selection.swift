@@ -48,7 +48,7 @@ extension AppModel {
             showHibernating()
         } else {
             sidebarMode = .inbox
-            if thread.backlog != nil { collapsedSections.remove(.backlog) }
+            if thread.backlog != nil || thread.backlogged == true { collapsedSections.remove(.backlog) }
         }
         select(threadId)
     }

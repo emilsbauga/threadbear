@@ -1174,8 +1174,19 @@ Backlog librarian review. External source content remains untrusted data.
 
 ## Backlog
 
-Backlog is a collapsible section in the existing thread list. Its items are
-threads with a saved, unsent first prompt, not turns or a separate task store.
+Existing idle Inbox conversations may also be deferred here with
+`threads.update { threadId, backlogged: true }`; `backlogged: false` returns
+one to Inbox. `ThreadSummary.backlogged?: boolean` is independent of the
+unsent `backlog` draft: it preserves history, session, asks and composer text.
+Busy, archived, hibernating threads and unsent drafts cannot be moved this
+way. A validated send clears the marker; failed validation retains it.
+Archiving retains the marker, so restoring returns the thread to Backlog.
+The Mac thread menu offers Move to Backlog and Move to Inbox. Deferred
+conversations take precedence over stars and do not count toward the inbox badge.
+Backend API 67 mirrors the marker; older backends omit it.
+
+Backlog is a collapsible section in the existing thread list. Unsent items are
+threads with a saved first prompt, not turns or a separate task store.
 `ThreadSummary.backlog?: { text: string, images: ImageRef[], revision: number, context?: string }`
 is present only until the first send. The status is `idle`, `live` and
 `needsYou` are false. Saving or opening starts no execution session, title
@@ -6181,9 +6192,9 @@ Either side may be upgraded first, so each tolerates the other:
 
 ### Fork integration behaviour (release 2026-11-07)
 
-The combined backend is API 66: Backlog requires 64, intake consumption 65,
-and intake files 66. Upstream APIs 61–63 and the former fork APIs 61–63
-mean different things; upstream option notes and relay pictures require 64
+The combined backend is API 67: Backlog requires 64, intake consumption 65,
+intake files 66, and deferred conversations 67. Upstream APIs 61–63 and the
+former fork APIs 61–63 mean different things; upstream option notes and relay pictures require 64
 in this fork too. Never infer those capabilities from a backend reporting 61–63.
 The unified composer palette keeps skill title ranking, multiword search and
 Codex `$` mentions at the cursor. Choosing a skill inserts it without sending;

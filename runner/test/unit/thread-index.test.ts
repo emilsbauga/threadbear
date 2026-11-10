@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick } from '../helpers/fakes.ts';
-import { ThreadIndex, runnerTokenFile, type RemoteThreads } from '../../src/thread-index.ts';
+import { ThreadIndex, toIndexRow, runnerTokenFile, type RemoteThreads } from '../../src/thread-index.ts';
 import { nullLogger } from '../../src/log.ts';
 import type { Notification } from '../../src/runner.ts';
 
@@ -446,4 +446,14 @@ test('an older backend is never asked for the order', async () => {
   assert.equal(asked.includes('sync:runnerOrder'), false);
   assert.equal(index.list().order, undefined);
   index.stop();
+});
+
+
+test('deferred conversation index marker is distinct from an unsent prompt and gated for older backends', () => {
+  const h = makeHarness();
+  const draft = h.runner.createDraft({ text: 'Later' }).thread;
+  const deferred = { ...draft, backlog: undefined, backlogged: true };
+  assert.equal(toIndexRow(deferred).backlogged, true);
+  assert.equal(toIndexRow(deferred).backlog, undefined);
+  assert.equal(toIndexRow(deferred, true, true, true, true, false).backlogged, undefined);
 });

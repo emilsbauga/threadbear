@@ -3,6 +3,18 @@ import Testing
 import ThreadbearKit
 
 @Suite struct BacklogTests {
+    @Test func deferredConversationsUseBacklogWithoutAnUnsentPrompt() throws {
+        var thread = PhoneThread(threadId: "existing", title: "Later", lastActivityAt: Date(), starredAt: Date())
+        thread.backlogged = true
+        let copy = try JSONDecoder().decode(PhoneThread.self, from: JSONEncoder().encode(thread))
+        #expect(copy.backlogged == true)
+        #expect(copy.backlog == nil)
+        let sections = InboxSections.build([copy], now: Date())
+        #expect(sections.backlog.map(\.threadId) == ["existing"])
+        #expect(sections.starred.isEmpty)
+        #expect(sections.needsYouCount == 0)
+    }
+
     @Test func savedPromptsUseTheirOwnSection() throws {
         var thread = PhoneThread(threadId: "draft", title: "Later", lastActivityAt: Date(), starredAt: Date())
         thread.backlog = try JSONDecoder().decode(BacklogPrompt.self, from: Data(#"{"text":"A saved prompt","revision":1,"imageCount":2}"#.utf8))

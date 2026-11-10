@@ -19,6 +19,7 @@ export type ThreadRow = {
   unread: boolean;
   lastActivityMs: number;
   starredAt?: string;
+  backlogged?: boolean;
   backlog?: { text: string; revision: number; imageCount: number };
   archivedAt?: string;
   snoozedUntil?: string;
@@ -96,7 +97,7 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
   const scheduled: T[] = [];
   for (const r of rows) {
     if (r.archivedAt) continue;
-    if (r.backlog) backlog.push(r);
+    if (r.backlog || r.backlogged) backlog.push(r);
     else if (r.starredAt) starred.push(r);
     else if (isSnoozed(r, now)) continue;
     // A question or approval goes in the inbox even while background work

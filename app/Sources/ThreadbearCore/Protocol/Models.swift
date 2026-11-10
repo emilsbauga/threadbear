@@ -1115,6 +1115,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     /// Image reviews still waiting for a response, independent of whether
     /// the last turn has been read. Absent on older runners.
     public var backlog: BacklogDraft? = nil
+    public var backlogged: Bool? = nil
     public var pendingReviews: Int?
     public var createdAt: Date
     public var updatedAt: Date
@@ -1288,6 +1289,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        backlogged = try c.decodeIfPresent(Bool.self, forKey: .backlogged)
         backlog = try c.decodeIfPresent(BacklogDraft.self, forKey: .backlog)
         func date(_ key: CodingKeys) throws -> Date? {
             guard let text = try c.decodeIfPresent(String.self, forKey: key) else { return nil }
@@ -1356,6 +1358,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(backlogged, forKey: .backlogged)
         try c.encodeIfPresent(backlog, forKey: .backlog)
         try c.encode(id, forKey: .id)
         try c.encode(title, forKey: .title)
@@ -1418,7 +1421,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case backlog, id, title, cwd, accountId, provider, model, effort, modelInUse, effortInUse, permissionMode, status, live, needsYou, pendingReviews
+        case backlogged, backlog, id, title, cwd, accountId, provider, model, effort, modelInUse, effortInUse, permissionMode, status, live, needsYou, pendingReviews
         case createdAt, updatedAt, lastActivityAt, snoozedUntil, snoozedUntilRestart, snoozedUntilRelease, wakeWhen, waitingOn, woke, archivedAt, starredAt, onOldRunner, preview
         case lastSeq, lastSeenSeq, nativeSessionId, contextTokens, contextWindow, costUsd, panels, actions, hooks, patches, background, subagents
         case projects, worktree, needs, asks, asksSeq, highlightsAt, schedule, startedBy, asked, poolId, waitingForRoom, waitingForNetwork, panelRequest, share, sample, looseEnds

@@ -151,7 +151,7 @@ public struct ThreadSections: Sendable, Equatable {
     /// Where `build` puts a thread.
     private static func section(of thread: ThreadSummary, now: Date, wakes: [String: Schedule]) -> InboxSection {
         if thread.isArchived { return .archived }
-        if thread.backlog != nil { return .backlog }
+        if thread.backlog != nil || thread.backlogged == true { return .backlog }
         if thread.isStarred { return .starred }
         if thread.isSnoozed(at: now) { return .hibernating }
         if thread.reviewWaiting || thread.status == .waiting || thread.waitingOnMike || (thread.needsYou && !thread.isWorkingInBackground) { return .inbox }
