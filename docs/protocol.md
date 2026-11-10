@@ -1144,7 +1144,10 @@ Older runners omit `includeAttachments` on `pendingIntake` and see text-only ite
 
 ### Intake to Backlog (backend API 65)
 
-The `externalIntake` experiment enables a runner's 15-second consumer. Clients
+The `externalIntake` experiment enables a runner's 15-second consumer.
+A failed pending poll is logged once per outage and retried quietly; it does
+not mean a message failed to save. Delivery failures after a receipt is found
+retain the warning, with receipt ID, stage and safe error diagnostics in the log. Clients
 must first be bound to that runner by admin-only `intakeConsumer:bindConsumer`
 (`{ clientId, runnerId }`). Unbound or revoked clients are not consumed. The
 admin-only `intakeConsumer:ignoreMessage` (`{ clientId, messageId }`) permanently

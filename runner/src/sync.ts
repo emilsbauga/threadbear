@@ -1403,8 +1403,11 @@ export class ConvexSync {
         supportsFiles: () => (this.backendApiVersion ?? 0) >= 66,
         prepareFiles: (item, leaseToken, signal) => downloadIntakeFiles({ home: this.deps.home!, item,
           origin: this.deps.config.url!.replace(/\.convex\.cloud$/, '.convex.site'), key: this.deps.key!, runnerId: this.runnerId, leaseToken, signal }),
-        failed: (receiptId) => {
-          this.deps.log.warn('external intake delivery failed; retained for retry or investigation', receiptId ? { receiptId } : undefined);
+        pollFailed: (failure) => {
+          this.deps.log.info('external intake poll failed; will retry', failure);
+        },
+        failed: (receiptId, failure) => {
+          this.deps.log.warn('external intake delivery failed; retained for retry or investigation', { receiptId, ...failure });
           this.deps.notice?.('warning', 'A received external message could not be saved to Backlog. Files remain retained. Check the runner log and intake transfer staging if this continues.');
         },
       });

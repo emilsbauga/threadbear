@@ -72,3 +72,65 @@ test('file transfers renew their lease and stop without acknowledgement after a 
   assert.equal(preparing, true); clock.advance(20000); await poll;
   assert.equal(claims, 2); assert.equal(acks, 0); assert.equal(imported, 0);
 });
+
+test('poll outages retry quietly and do not claim a message failed to save', async () => {
+  let offline = true, imported = 0, failures = 0;
+  const consumer = new IntakeConsumer({ clock: new FakeClock(), runnerId: 'mac', enabled: () => true,
+    post: async (_kind, fn) => {
+      if (offline) throw new TypeError('fetch failed');
+      if (fn.endsWith('pendingIntake')) return [item];
+      if (fn.endsWith('claimIntake')) return { state: 'claimed', threadId: intakeThreadId(item.clientId, item.receiptId) };
+      return true;
+    },
+    importDraft: () => { imported++; return intakeThreadId(item.clientId, item.receiptId); },
+    failed: () => { failures++; },
+  });
+  await consumer.poll();
+  await consumer.poll();
+  assert.equal(failures, 0, 'no message was received or imported during the failed poll');
+  offline = false;
+  await consumer.poll();
+  assert.equal(imported, 1);
+});
+
+test('poll diagnostics are private, once per outage, and reset after recovery', async () => {
+  let offline = true;
+  const diagnostics: unknown[] = [];
+  const consumer = new IntakeConsumer({ clock: new FakeClock(), runnerId: 'mac', enabled: () => true,
+    post: async () => {
+      if (offline) throw Object.assign(new TypeError('fetch failed: private URL and credentials'), { cause: { code: 'ECONNRESET' } });
+      return [];
+    }, importDraft: () => '', failed: () => assert.fail('poll is not delivery'),
+    pollFailed: detail => diagnostics.push(detail),
+  });
+  await consumer.poll(); await consumer.poll();
+  assert.deepEqual(diagnostics, [{ stage: 'poll', error: 'TypeError', code: 'ECONNRESET' }]);
+  offline = false; await consumer.poll(); offline = true; await consumer.poll();
+  assert.equal(diagnostics.length, 2);
+});
+
+test('delivery diagnostics identify import versus acknowledgement failures without logging payloads', async () => {
+  const diagnostics: unknown[] = [];
+  const consumer = new IntakeConsumer({ clock: new FakeClock(), runnerId: 'mac', enabled: () => true,
+    post: async (_kind, fn) => {
+      if (fn.endsWith('pendingIntake')) return [item];
+      if (fn.endsWith('claimIntake')) return { state: 'claimed', threadId: intakeThreadId(item.clientId, item.receiptId) };
+      return false;
+    },
+    importDraft: () => {
+      throw Object.assign(new Error('private message'), { code: 'ENOSPC' });
+    },
+    failed: (receiptId, detail) => diagnostics.push({ receiptId, ...detail }),
+  });
+  await consumer.poll();
+  assert.deepEqual(diagnostics[0], { receiptId: item.receiptId, stage: 'import', error: 'Error', code: 'ENOSPC' });
+  await consumer.stop();
+  const other = new IntakeConsumer({ clock: new FakeClock(), runnerId: 'mac', enabled: () => true,
+    post: async (_kind, fn) => fn.endsWith('pendingIntake') ? [item] : fn.endsWith('claimIntake')
+      ? { state: 'claimed', threadId: intakeThreadId(item.clientId, item.receiptId) } : false,
+    importDraft: () => intakeThreadId(item.clientId, item.receiptId),
+    failed: (receiptId, detail) => diagnostics.push({ receiptId, ...detail }),
+  });
+  await other.poll();
+  assert.deepEqual(diagnostics[1], { receiptId: item.receiptId, stage: 'finish', error: 'Intake completion not confirmed' });
+});
