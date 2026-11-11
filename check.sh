@@ -125,7 +125,7 @@ export THREADBEAR_NODE="$NODE"
 # THREADBEAR_CHECK_BUSY_EXIT is only for sending this run to a host: the
 # check-remote tests run under it would otherwise exit with it (Codex, 9 Nov).
 unset THREADBEAR_HOME THREADBEAR_DATA_DIR THREADBEAR_PORT THREADBEAR_URL THREADBEAR_LOG \
-  THREADBEAR_THREAD_ID THREADBEAR_RUNNER_VERSION THREADBEAR_RUNNER_HOME THREADBEAR_CHECK_BUSY_EXIT
+  THREADBEAR_THREAD_ID THREADBEAR_THREAD_KEY THREADBEAR_RUNNER_VERSION THREADBEAR_RUNNER_HOME THREADBEAR_CHECK_BUSY_EXIT
 # And their old names, which the runner and tb would otherwise take for these.
 for v in $(compgen -e | grep '^THREADBARE_' || true); do unset "$v"; done
 # No runner a check starts may install or update a CLI.
