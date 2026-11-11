@@ -12,6 +12,18 @@ Feature: Acting on a thread from its sidebar row
     Then the row "Morning brief" offers the buttons "Star: keep at the top, Hibernate, Archive"
 
   @sidebar.row.hoverbuttons
+  Scenario: Hovering a running row in a narrow window leaves the inbox usable
+    Given the "inbox" section is folded away
+    When I resize the window to 900 by 600
+    And I hover the row "Why is the build slow on CI?"
+    Then the row "Why is the build slow on CI?" offers the buttons "Star: keep at the top, Hibernate, Archive"
+    When the "inbox" section is unfolded
+    And I hover the row "Morning brief"
+    And I hover the row "Why is the build slow on CI?"
+    And I open the thread "Morning brief"
+    Then the open thread is "Morning brief"
+
+  @sidebar.row.hoverbuttons
   Scenario: Starring from the row's button moves it to Starred at once
     When I hover the row "Morning brief"
     And I press the row button "Star: keep at the top"

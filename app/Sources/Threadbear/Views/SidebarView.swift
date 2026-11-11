@@ -762,13 +762,16 @@ struct ThreadRowView: View {
                     }
                     .foregroundStyle(.secondary)
                     Spacer(minLength: zoomed(6))
-                    if !showsActions {
-                        // A new status ("Working" to the time) blurs
-                        // across rather than snapping.
-                        trailing(look)
-                            .id(look.status)
-                            .transition(Juice.reduceMotion ? .opacity : AnyTransition(BlurReplaceTransition(configuration: .downUp)))
-                    }
+                    // Keep the status's space while the buttons cover it.
+                    // Removing it changed a narrow running row's height
+                    // on hover (65 to 51 pt), moving the row out from
+                    // under a stationary pointer and back again forever.
+                    trailing(look)
+                        .id(look.status)
+                        .transition(Juice.reduceMotion ? .opacity : AnyTransition(BlurReplaceTransition(configuration: .downUp)))
+                        .opacity(showsActions ? 0 : 1)
+                        .allowsHitTesting(!showsActions)
+                        .accessibilityHidden(showsActions)
                 }
                 .animation(Juice.swap, value: look.status)
             }

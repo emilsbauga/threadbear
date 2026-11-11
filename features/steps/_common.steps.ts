@@ -12,6 +12,10 @@ When('I open the thread {string}', async function (this: ThreadbearWorld, title:
   await this.open(title);
 });
 
+When('I resize the window to {int} by {int}', async function (this: ThreadbearWorld, width: number, height: number) {
+  await this.app.do({ cmd: 'resize', w: width, h: height });
+});
+
 // `then.starts` is on a dump's row text, which the Swift app cuts short.
 Then('the transcript shows my message {string}', async function (this: ThreadbearWorld, words: string) {
   await this.until(`my message "${words}"`, (d) => d.transcript.rows.some((r) => r.kind === 'user' && r.text.startsWith(words)));
