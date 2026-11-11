@@ -825,9 +825,10 @@ test("R5: a repo's filter drivers don't run: its own are refused, and your own d
   git(repo, 'add', 'a.txt', '.gitattributes');
   git(repo, 'commit', '-qm', 'two');
   fs.rmSync(marker, { force: true });
-  // A size change lets git status report modified without running clean.
-  // Keep the size and force a stat change so it must compare the content,
-  // regardless of whether the index is still racy under a loaded test run.
+  // The same size and an old time, so git status has to read the content
+  // (and so run the filter) to see the change. A longer file told it the file
+  // had changed without reading it, whenever the index wasn't racy, and the
+  // last check below failed on a loaded run (emilsbauga's fork, 8 Nov).
   const file = path.join(repo, 'a.txt');
   fs.writeFileSync(file, 'two\n');
   fs.utimesSync(file, 1, 1);

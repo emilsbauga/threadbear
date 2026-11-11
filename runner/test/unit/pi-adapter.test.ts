@@ -18,13 +18,14 @@ async function until(check: () => boolean, timeout = 15_000) {
 function setup(t: { after(fn: () => Promise<void>): void }, extra: { mode?: string; resume?: boolean; root?: string; timeout?: number; maxLineBytes?: number; requestQuestion?: SessionSink['requestQuestion']; tools?: boolean } = {}) {
   const root = extra.root ?? tmpDir();
   const profile: PiProfile = { id: 'pi-test', engine: 'pi', title: 'Pi', executable: process.execPath, configDir: path.join(root, 'config'), connection: { provider: 'test-provider', model: 'test-model' }, capabilities: { threads: false } };
+  const owners: (string | undefined)[] = [];
   const outputs: AdapterOutput[] = [], exits: (Error | undefined)[] = [], owned = new Set<number>();
   const sink: SessionSink = { output: o => outputs.push(o), exited: e => exits.push(e), requestApproval: async () => { throw new Error('No tools'); }, requestQuestion: extra.requestQuestion ?? (async () => { throw new Error('No UI'); }) };
-  const adapter = new PiAdapter({ args: [fixture], log: nullLogger, registry: { add: pid => { owned.add(pid); }, remove: pid => { owned.delete(pid); } }, requestTimeoutMs: extra.timeout ?? 10_000, shutdownTimeoutMs: 150, maxLineBytes: extra.maxLineBytes, ...(extra.tools ? { toolsFor: () => [] } : {}) });
+  const adapter = new PiAdapter({ args: [fixture], log: nullLogger, registry: { add: (pid, _command, threadId) => { owned.add(pid); owners.push(threadId); }, remove: pid => { owned.delete(pid); } }, requestTimeoutMs: extra.timeout ?? 10_000, shutdownTimeoutMs: 150, maxLineBytes: extra.maxLineBytes, ...(extra.tools ? { toolsFor: () => [] } : {}) });
   const session = adapter.start({ threadId: 'thread-one', sessionId: 'session-one', resume: extra.resume ?? false, account: profile, cwd: root, permissionMode: 'ask', tmpDir: path.join(root, 'tmp'), mediaDir: root, blobsDir: root, env: { PI_RPC_TEST_MODE: extra.mode ?? '', PI_CODING_AGENT_DIR: '/wrong', PI_TELEMETRY: '1' } }, sink);
   t.after(() => session.end({ hard: true }));
   const results = () => outputs.filter(o => o.kind === 'result').map(o => o.result);
-  return { root, profile, outputs, exits, owned, session, results };
+  return { owners, root, profile, outputs, exits, owned, session, results };
 }
 
 test('Pi streams stable blocks, waits for acknowledgment and settles before completing', async t => {
@@ -44,6 +45,7 @@ test('Pi streams stable blocks, waits for acknowledgment and settles before comp
   assert.equal(launch.telemetry, '0'); assert.equal(launch.offline, '1');
   assert.equal(fs.statSync(path.join(h.root, 'tmp/pi-stderr.log')).mode & 0o777, 0o600);
   assert.equal(h.exits.length, 0);
+  assert.deepEqual(h.owners, ['thread-one']);
 });
 
 test('Pi explicitly loads native tool search while resource discovery stays disabled', async t => {

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync, readJsonSync } from '../fsutil.ts';
-import type { CliPolicy, CliStatus, CliProvider } from '../protocol.ts';
+import type { CliPolicy, CliStatus, Provider } from '../protocol.ts';
 
 export const HISTORY_MAX_LINES = 500;
 export const OUTPUT_MAX_BYTES = 10 * 1024;
@@ -19,11 +19,11 @@ export type ProviderState = {
   update?: CliStatus['update'];
   startFailures?: { version: string; count: number; warned?: boolean };
 };
-export type UpdatesFile = Partial<Record<CliProvider, ProviderState>>;
+export type UpdatesFile = Partial<Record<Provider, ProviderState>>;
 
 export type HistoryEntry = {
   at: string;
-  provider: CliProvider;
+  provider: Provider;
   action: 'check' | 'update' | 'install' | 'activate' | 'hold' | 'cleanup' | 'notice';
   ok: boolean;
   version?: string;

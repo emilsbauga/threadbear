@@ -1,24 +1,24 @@
 {
   "claude": {
-    "instructions": 2733,
-    "tools": 34949,
-    "total": 37682
+    "instructions": 2984,
+    "tools": 35615,
+    "total": 38599
   },
   "codex": {
-    "instructions": 2158,
-    "tools": 35048,
-    "total": 37206
+    "instructions": 2153,
+    "tools": 35714,
+    "total": 37867
   },
   "pi": {
     "full": {
-      "instructions": 2733,
-      "tools": 35480,
-      "total": 38213
+      "instructions": 2984,
+      "tools": 36146,
+      "total": 39130
     },
     "compact": {
-      "instructions": 2930,
+      "instructions": 3181,
       "tools": 1529,
-      "total": 4459
+      "total": 4710
     }
   },
   "worktreeInstructions": 498,
@@ -28,7 +28,7 @@
     "create_thread": 2375,
     "delete_schedule": 267,
     "delete_thread": 445,
-    "end_turn": 7884,
+    "end_turn": 8219,
     "interrupt_thread": 335,
     "join_project": 524,
     "leave_project": 460,
@@ -36,7 +36,7 @@
     "list_projects": 474,
     "list_schedules": 379,
     "list_threads": 734,
-    "move_thread": 1149,
+    "move_thread": 1480,
     "pin": 1120,
     "pocket": 1420,
     "read_project": 379,

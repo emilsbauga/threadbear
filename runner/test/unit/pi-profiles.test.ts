@@ -15,7 +15,7 @@ test('Pi is a configured engine without changing runnable providers', () => {
   assert.equal(isAgentEngine('codex'), true);
   assert.equal(isAgentEngine('other'), false);
   assert.equal(isProvider('pi'), true);
-  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi']);
+  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi', 'cursor', 'opencode']);
 });
 
 test('Pi configuration is opt-in and does not create or read profile files', () => {

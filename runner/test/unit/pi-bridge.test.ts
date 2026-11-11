@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import { remoteCardShowsAll } from '../../src/tools.ts';
+import { LIMITS } from '../../src/protocol.ts';
 import { PiBridge } from '../../src/adapters/pi/bridge.ts';
 import type { SessionSink } from '../../src/adapters/types.ts';
 
@@ -65,4 +67,20 @@ test('Pi edits to code Threadbear runs always ask and never save an allow rule',
   assert.equal(requests.length, 4);
   assert.ok(requests.every(req => !req.canAlwaysAllow && req.title.includes('runs this file as code')));
   assert.equal(rules.size, 0);
+});
+
+
+test('Pi approval cards keep whole arguments, refuse oversized values, and edits stay on the Mac', async t => {
+  const requests: any[] = [];
+  const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: async req => { requests.push(req); return { decision: 'allow' }; } };
+  const bridge = new PiBridge({ tools: [], sink, cwd: () => '/work', mode: () => 'ask', rules: () => [], addRules() {} });
+  t.after(() => bridge.close());
+  const { url, token } = await bridge.start();
+  const approve = (name: string, input: unknown) => fetch(url + '/approve', { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ name, input }) }).then(r => r.json()) as Promise<any>;
+  const content = 'a'.repeat(LIMITS.toolInputString);
+  assert.equal((await approve('write', { path: 'a.txt', content })).allow, true);
+  assert.equal(requests[0].input.content, content);
+  assert.equal((await approve('write', { path: 'a.txt', content: content + 'b' })).allow, false);
+  assert.equal(requests.length, 1, 'no card can approve unseen contents');
+  for (const name of ['pi__edit', 'pi__write']) assert.equal(remoteCardShowsAll(name, { path: 'a.txt', content: 'safe' }), false);
 });

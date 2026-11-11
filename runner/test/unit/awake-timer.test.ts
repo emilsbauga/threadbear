@@ -7,7 +7,8 @@ import { RpcServer } from '../../src/rpc.ts';
 import { nullLogger } from '../../src/log.ts';
 import { makeHarness } from '../helpers/fakes.ts';
 
-// Blocks the event loop the way a starved process stalls.
+// Blocks the event loop the way a starved process stalls. Asleep rather
+// than spinning, so it doesn't add to the load of a busy check host.
 function stall(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

@@ -13,12 +13,12 @@
 //    and a sentence, never a JSON-RPC error, and a tool whose arguments have
 //    changed takes the old ones too (formFor).
 import { z } from 'zod';
+import { gateThreadbearTool } from './adapters/tool-gate.ts';
 import type { ToolApprovalAnswer, ToolApprovalRequest } from './adapters/types.ts';
 import type { PermissionMode } from './protocol.ts';
-import { ALWAYS_ASK_TOOLS, NEVER_ASK_TOOLS, FILING_PROJECTS, guideLine, POCKET_LINE, SERVER_NAME, SHOWING_THE_USER } from './threadbear-mcp.ts';
+import { FILING_PROJECTS, guideLine, POCKET_LINE, SERVER_NAME, SHOWING_THE_USER } from './threadbear-mcp.ts';
 import { userLine } from './user-name.ts';
 import { CODEX_ONE_REPLY_DESCRIPTION, END_TURN_TOOL } from './needs.ts';
-import { toolTitle, truncateInput } from './tools.ts';
 import type { DynamicToolCallParams, DynamicToolCallResponse, DynamicToolSpec } from './adapters/codex/types.ts';
 
 // What the SDK's tool() makes (buildThreadbearTools' array), loosely typed
@@ -143,24 +143,11 @@ export class AgentTools {
     const parsed = z.object(tool.inputSchema as any).safeParse(raw);
     if (!parsed.success) return text(`Those arguments don't fit ${name}: ${z.prettifyError(parsed.error)}`, false);
     const args = parsed.data as Record<string, unknown>;
-    const fullName = `mcp__${NAMESPACE}__${name}`;
-    const alwaysAsk = ALWAYS_ASK_TOOLS.has(fullName);
-    const readOnly = NEVER_ASK_TOOLS.has(fullName) || tool.annotations?.readOnlyHint === true;
-    const allowed = !alwaysAsk && [...this.deps.rules()].includes(fullName);
-    if (alwaysAsk || (this.deps.mode() !== 'full' && !readOnly && !allowed)) {
-      const ans = await this.deps.requestApproval({
-        toolUseId: o.fromChild ? undefined : params.callId,
-        name: fullName,
-        title: toolTitle(fullName, args, this.deps.cwd()),
-        input: truncateInput(args),
-        canAlwaysAllow: !alwaysAsk,
-        signal: o.signal,
-      });
-      if (ans.decision !== 'allow' && ans.decision !== 'allowAlways') {
-        return text(ans.message || (ans.decision === 'expired' ? 'The request expired before the user answered.' : 'The user denied this. Ask them how to proceed.'), false);
-      }
-      if (ans.decision === 'allowAlways' && !alwaysAsk) this.deps.addRules([fullName]);
-    }
+    const gate = await gateThreadbearTool(this.deps, {
+      fullName: `mcp__${NAMESPACE}__${name}`, readOnlyHint: tool.annotations?.readOnlyHint,
+      args, toolUseId: o.fromChild ? undefined : params.callId, signal: o.signal,
+    });
+    if (!gate.allowed) return text(gate.message, false);
     try {
       if (o.signal.aborted) return text('The tool call was cancelled.', false);
       const result = await tool.handler(args, { signal: o.signal });

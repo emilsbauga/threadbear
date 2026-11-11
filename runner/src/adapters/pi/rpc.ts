@@ -9,6 +9,7 @@ export type RecordValue = Record<string, any>;
 export type PiRpcOptions = {
   command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv;
   diagnosticsDir: string;
+  threadId?: string;
   registry: Pick<ProcessRegistry, 'add' | 'remove'>;
   log: Logger;
   requestTimeoutMs: number; shutdownTimeoutMs: number; maxLineBytes?: number;
@@ -34,7 +35,7 @@ export class PiRpc {
     this.options = options;
     this.closed = new Promise(resolve => { this.resolveClosed = resolve; });
     this.child = spawn(options.command, options.args, { cwd: options.cwd, env: options.env, stdio: 'pipe', detached: true });
-    if (this.child.pid) options.registry.add(this.child.pid, options.command);
+    if (this.child.pid) options.registry.add(this.child.pid, options.command, options.threadId);
     options.log.debug('Pi RPC process started', { pid: this.child.pid });
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk: string) => this.read(chunk));

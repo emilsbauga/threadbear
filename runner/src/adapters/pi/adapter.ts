@@ -127,7 +127,7 @@ class PiSession implements AgentSession {
     if (instructions) args.push('--append-system-prompt', instructions);
     this.rpc = new PiRpc({ command: this.profile.executable, args, cwd: opts.cwd,
       env: { ...process.env, ...opts.env, PI_CODING_AGENT_DIR: this.profile.configDir, PI_OFFLINE: '1', PI_TELEMETRY: '0', ...bridgeEnv },
-      diagnosticsDir: opts.tmpDir, registry: deps.registry, log: deps.log,
+      threadId: opts.threadId, diagnosticsDir: opts.tmpDir, registry: deps.registry, log: deps.log,
       requestTimeoutMs: deps.requestTimeoutMs ?? 15_000, shutdownTimeoutMs: deps.shutdownTimeoutMs ?? 3000, maxLineBytes: deps.maxLineBytes,
       event: record => this.event(record), exited: error => this.onExit(error) });
     const state = await this.rpc.request('get_state');
