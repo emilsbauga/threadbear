@@ -82,7 +82,7 @@ enum InlineImages {
         guard text.contains("![") else { return [.words(text)] }
         var pieces: [Piece] = []
         var from = text.startIndex
-        var codeSpans = CodeSpans(text.ranges(of: /`+[^`]*`+/))
+        var codeSpans = CodeSpans(text)
         // No `[` in the alt or a bare src, nor `<` in a bracketed one: with
         // them, every `![` was tried to the end of the text again, 4 s on an
         // 8,000-character reply (the sweep after Daybreak's findings, 7 Nov
@@ -112,7 +112,36 @@ struct CodeSpans {
     private let spans: [Range<String.Index>]
     private var next = 0
 
-    init(_ spans: [Range<String.Index>]) { self.spans = spans }
+    init(_ text: String, singleLine: Bool = false) {
+        spans = Self.ranges(in: text, singleLine: singleLine)
+    }
+
+    // A delimiter scan avoids the regex engine's work for every code span
+    // in a long reply. Keep String's character boundaries, including marks
+    // combined with a backtick, just as the original Swift regex did.
+    static func ranges(in text: String, singleLine: Bool) -> [Range<String.Index>] {
+        var spans: [Range<String.Index>] = []
+        var cursor = text.startIndex
+        while cursor < text.endIndex, let start = text[cursor...].firstIndex(of: "`") {
+            var openingEnd = text.index(after: start)
+            while openingEnd < text.endIndex, text[openingEnd] == "`" { text.formIndex(after: &openingEnd) }
+            let stop = text[openingEnd...].firstIndex { $0 == "`" || (singleLine && $0 == "\n") }
+            if let stop, text[stop] == "`" {
+                var end = text.index(after: stop)
+                while end < text.endIndex, text[end] == "`" { text.formIndex(after: &end) }
+                spans.append(start..<end)
+                cursor = end
+            } else if text.index(after: start) < openingEnd {
+                // With no later delimiter, two adjacent ticks still form
+                // the empty span the regex matched by backtracking.
+                spans.append(start..<openingEnd)
+                cursor = openingEnd
+            } else {
+                cursor = stop.map { text.index(after: $0) } ?? text.endIndex
+            }
+        }
+        return spans
+    }
 
     /// Whether `range` overlaps a span. Ranges asked about must come in
     /// order, as `matches(of:)` gives them.
