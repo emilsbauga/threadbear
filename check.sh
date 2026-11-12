@@ -259,6 +259,23 @@ runner_unit_tests() {
 "
 }
 
+# Run latency checks before the bulk runner tests put pressure on the Mac.
+# The iPhone app's logic and source checks (ios/ThreadbearKit), on the Mac.
+# The app itself only builds with Xcode; ios/scripts/sim-shots.sh does that.
+# Convex's Swift library (convex-swift) ships for Apple silicon only, so
+# on an Intel Mac the kit can't build at all.
+if [ "$RUNNER_ONLY" = 1 ]; then
+  :
+elif [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" != arm64 ]; then
+  printf 'skip  %-20s (%s)\n' "iphone kit tests" "Convex's Swift library is Apple silicon only"
+elif needed "$IOS_NEEDS"; then
+  # The kit measures per-update latency. Run its cases one at a time so
+  # unrelated tests do not consume that measurement's CPU and actor time.
+  swift_test_step "iphone kit tests" "$ROOT/ios/ThreadbearKit" "${LIMITED[@]}" swift test --disable-keychain --no-parallel
+else
+  skip "iphone kit tests" "nothing in ios/ changed"
+fi
+
 if [ "$APP_ONLY" = 0 ]; then
   if [ ! -d "$ROOT/runner/node_modules" ]; then
     step "runner packages" "$ROOT/runner" npm ci --no-audit --no-fund
@@ -317,21 +334,6 @@ if [ "$QUICK" = 0 ]; then
   else
     skip "dock tests" "nothing in dock/ changed"
   fi
-fi
-# The iPhone app's logic and source checks (ios/ThreadbearKit), on the Mac.
-# The app itself only builds with Xcode; ios/scripts/sim-shots.sh does that.
-# Convex's Swift library (convex-swift) ships for Apple silicon only, so
-# on an Intel Mac the kit can't build at all.
-if [ "$RUNNER_ONLY" = 1 ]; then
-  :
-elif [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" != arm64 ]; then
-  printf 'skip  %-20s (%s)\n' "iphone kit tests" "Convex's Swift library is Apple silicon only"
-elif needed "$IOS_NEEDS"; then
-  # The kit measures per-update latency. Run its cases one at a time so
-  # unrelated tests do not consume that measurement's CPU and actor time.
-  swift_test_step "iphone kit tests" "$ROOT/ios/ThreadbearKit" "${LIMITED[@]}" swift test --disable-keychain --no-parallel
-else
-  skip "iphone kit tests" "nothing in ios/ changed"
 fi
 if [ "$E2E" = 1 ]; then
   # Claude's first, then Codex's (codex*.e2e.test.ts: the conversation
