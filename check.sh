@@ -327,7 +327,9 @@ if [ "$RUNNER_ONLY" = 1 ]; then
 elif [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" != arm64 ]; then
   printf 'skip  %-20s (%s)\n' "iphone kit tests" "Convex's Swift library is Apple silicon only"
 elif needed "$IOS_NEEDS"; then
-  swift_test_step "iphone kit tests" "$ROOT/ios/ThreadbearKit" "${LIMITED[@]}" swift test --disable-keychain
+  # The kit measures per-update latency. Run its cases one at a time so
+  # unrelated tests do not consume that measurement's CPU and actor time.
+  swift_test_step "iphone kit tests" "$ROOT/ios/ThreadbearKit" "${LIMITED[@]}" swift test --disable-keychain --no-parallel
 else
   skip "iphone kit tests" "nothing in ios/ changed"
 fi
