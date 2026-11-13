@@ -280,10 +280,15 @@ test('a landing whose tb is killed during the group check still lands, if its br
   await gone;
   assert.ok(fs.existsSync(path.join(main, 'b.txt')) && fs.existsSync(path.join(main, 'c.txt')), out.out.join('\n'));
   assert.ok(out.out.some((l) => /In the same check, and landed with it: thread\/c0000000/.test(l)));
-  // c's branch is on what landed, so its next tb land has nothing to land.
+  // The holder may move c itself, or leave its saved result for c's
+  // next caller to recover when the worktree lock isn't available yet.
+  // Both paths must reach the landed tip without replaying its empty commit.
   const again = capture();
   assert.equal(await land({ ...c, check: 'true' }, again.opts), 0);
-  assert.deepEqual(again.out, [`Nothing to land: ${c.branch} has no commits that aren't on main.`]);
+  const nothing = `Nothing to land: ${c.branch} has no commits that aren't on main.`;
+  const recovered = `An earlier tb land of ${c.branch} landed while its tb was stopped; the branch is moved to what landed.`;
+  assert.deepEqual(again.out, again.out.length === 2 ? [recovered, nothing] : [nothing]);
+  assert.equal(sh(c.path, 'git rev-parse HEAD'), sh(main, 'git rev-parse main'));
   assert.equal(sh(main, 'git log --format=%s main | grep -c "Empty on c"'), '1');
 });
 
