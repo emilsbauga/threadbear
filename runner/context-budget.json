@@ -1,34 +1,35 @@
 {
   "claude": {
     "instructions": 2984,
-    "tools": 35615,
-    "total": 38599
+    "tools": 39028,
+    "total": 42012
   },
   "codex": {
     "instructions": 2153,
-    "tools": 35714,
-    "total": 37867
+    "tools": 39127,
+    "total": 41280
   },
   "pi": {
     "full": {
       "instructions": 2984,
-      "tools": 36146,
-      "total": 39130
+      "tools": 39575,
+      "total": 42559
     },
     "compact": {
       "instructions": 3181,
-      "tools": 1529,
-      "total": 4710
+      "tools": 1657,
+      "total": 4838
     }
   },
-  "worktreeInstructions": 498,
+  "worktreeInstructions": 608,
   "perTool": {
+    "add_button": 1659,
     "ask_secret": 1241,
-    "create_project": 1335,
+    "create_project": 1433,
     "create_thread": 2375,
     "delete_schedule": 267,
     "delete_thread": 445,
-    "end_turn": 8219,
+    "end_turn": 8641,
     "interrupt_thread": 335,
     "join_project": 524,
     "leave_project": 460,
@@ -41,13 +42,13 @@
     "pocket": 1420,
     "read_project": 379,
     "read_thread": 520,
-    "schedule_message": 2818,
+    "schedule_message": 3296,
     "send_message": 562,
     "show_options": 2143,
-    "show_panel": 1299,
+    "show_panel": 1400,
     "unpin": 300,
-    "update_project": 2822,
-    "update_schedule": 1165,
+    "update_project": 2937,
+    "update_schedule": 1705,
     "update_thread": 1720,
     "wait_for_app_restart": 649
   }

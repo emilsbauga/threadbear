@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
+import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
 import { checkSequence, checkSummary } from '../helpers/protocol-check.ts';
 import { makePng } from '../helpers/png.ts';
 import { RpcError } from '../../src/protocol.ts';
@@ -173,7 +173,7 @@ test('coming back after a long gap asks the agent for a recap; the transcript ke
   h.clock.advance(14 * HOUR);
   h.runner.send(thread.id, 'on the bus', [], { origin: 'phone' });
   await tick();
-  assert.match(lastText(), /^\[This thread's last turn ended 14 hours ago.*\]\n\[Sent from the iPhone app\]\non the bus$/);
+  assert.match(lastText(), /^\[This thread's last turn ended 14 hours ago.*\]\n\[Sent from the phone app\]\non the bus$/);
   await finish();
 
   // Not for a schedule, another agent, the answer to a card, or a command.
@@ -262,12 +262,12 @@ test('a message from the phone tells the agent so, and where Mike is; the transc
   const { thread, turnId } = create(h, { origin: 'phone' });
   const s = h.adapter.last;
   // Presence not checked yet: just where it came from.
-  assert.deepEqual(s.sent, [{ id: turnId, text: '[Sent from the iPhone app]\nFix the tests\nmore detail here', images: [] }]);
+  assert.deepEqual(s.sent, [{ id: turnId, text: '[Sent from the phone app]\nFix the tests\nmore detail here', images: [] }]);
   s.init();
   // Steered into the running turn, while he's away.
   atMac = false;
   h.runner.send(thread.id, 'on the bus', [], { origin: 'phone' });
-  assert.equal(s.sent[1].text, '[Sent from the iPhone app, away from the Mac]\non the bus');
+  assert.equal(s.sent[1].text, '[Sent from the phone app, away from the Mac]\non the bus');
   // Typed at the Mac: nothing added.
   h.runner.send(thread.id, 'back at my desk');
   assert.equal(s.sent[2].text, 'back at my desk');
@@ -277,7 +277,7 @@ test('a message from the phone tells the agent so, and where Mike is; the transc
   atMac = true;
   h.runner.send(thread.id, 'from the couch', [], { origin: 'phone' });
   await tick();
-  assert.equal(h.adapter.last.sent.at(-1)?.text, '[Sent from the iPhone app, at the Mac]\nfrom the couch');
+  assert.equal(h.adapter.last.sent.at(-1)?.text, '[Sent from the phone app, at the Mac]\nfrom the couch');
   const typed = h.events(thread.id).filter((e) => e.type === 'user.message').map((e) => e.text);
   assert.deepEqual(typed, ['Fix the tests\nmore detail here', 'on the bus', 'back at my desk', 'from the couch']);
 });
@@ -1468,6 +1468,93 @@ test('snoozing a thread with background work stops it straight away and says so'
   assert.match(note.text, /Stopped background work.*npm run dev/);
   await tick();
   assert.equal(h.runner.get(thread.id).live, false);
+});
+
+// Thread 8a971407, 12 Nov 2026: hibernated with its CLI already released,
+// so the snooze's releaseWhenIdle had no CLI to go with and stayed set. It
+// woke on its timer, Mike's next message started a fresh CLI, and the end
+// of that turn hard-released it, killing the sub-agent it had just started.
+test('a hibernation with no CLI live leaves nothing to release the next one for', async () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  const first = h.adapter.last;
+  first.init();
+  first.result();
+  h.clock.advance(30 * MIN);
+  assert.equal(first.ended, true, 'released when idle');
+  await tick();
+  h.runner.update({ threadId: thread.id, snoozedUntil: new Date(h.clock.now() + 60 * MIN).toISOString() });
+  h.clock.advance(60 * MIN);
+  assert.equal(h.runner.get(thread.id).snoozedUntil, undefined, 'woke');
+  h.runner.send(thread.id, 'give the diagram more room');
+  await tick();
+  const s = h.adapter.last;
+  assert.notEqual(s, first);
+  s.init();
+  s.out({ kind: 'tasks', tasks: [{ id: 'a1', type: 'local_agent', kind: 'agent', description: 'Give the viewer more room' }] });
+  s.result();
+  assert.equal(s.ended, false, 'kept for the sub-agent');
+  assert.equal(h.events(thread.id).some((e) => e.type === 'system.note' && /Stopped background work/.test(e.text)), false);
+});
+
+// A change that wants a fresh CLI (here another login, asked for during the
+// turn) waits for background work, rather than stopping it as the turn ends.
+test('a fresh CLI asked for during a turn waits for background work to finish', async () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  const s = h.adapter.last;
+  s.init();
+  s.out({ kind: 'tasks', tasks: [{ id: 'a1', type: 'local_agent', kind: 'agent', description: 'Check the docs' }] });
+  h.runner.update({ threadId: thread.id, accountId: 'claude-main' });
+  s.result();
+  await tick();
+  assert.equal(s.ended, false, 'kept while the sub-agent works');
+  s.out({ kind: 'tasks', tasks: [] });
+  assert.equal(s.ended, false, 'kept for the turn that reads its result');
+  // That turn comes and goes; then the CLI is released for the move.
+  s.out({ kind: 'cliTurn', note: 'Agent "Check the docs" completed' });
+  s.result();
+  await tick();
+  assert.equal(s.ended, true, 'released once it finished');
+  assert.equal(s.endedHard, false);
+});
+
+test('another login picked between turns waits for background work too', async () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  const s = h.adapter.last;
+  s.init();
+  s.out({ kind: 'tasks', tasks: [{ id: 'a1', type: 'local_agent', kind: 'agent', description: 'Check the docs' }] });
+  s.result();
+  h.runner.update({ threadId: thread.id, accountId: 'claude-main' });
+  await tick();
+  assert.equal(s.ended, false, 'kept while the sub-agent works');
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'cliTurn', note: 'Agent "Check the docs" completed' });
+  s.result();
+  await tick();
+  assert.equal(s.ended, true, 'released once it finished');
+  assert.equal(s.endedHard, false);
+});
+
+// Moved to Codex during the turn: the Claude CLI still live wakes to read
+// its sub-agent's result, though the record now says Codex, which doesn't.
+test('a move to another provider keeps the old CLI for the turn that reads its result', async () => {
+  const h = makeHarness(undefined, {}, { accounts: new FakeAccounts(withCodex()) });
+  const { thread } = create(h);
+  const s = h.adapter.last;
+  s.init();
+  s.out({ kind: 'tasks', tasks: [{ id: 'a1', type: 'local_agent', kind: 'agent', description: 'Check the docs' }] });
+  h.runner.update({ threadId: thread.id, accountId: 'codex-main' });
+  s.result();
+  await tick();
+  s.out({ kind: 'tasks', tasks: [] });
+  assert.equal(s.ended, false, 'kept for the turn that reads the result');
+  s.out({ kind: 'cliTurn', note: 'Agent "Check the docs" completed' });
+  s.result();
+  await tick();
+  assert.equal(s.ended, true);
+  assert.equal(s.endedHard, false);
 });
 
 test('a CLI turn left open when its CLI is released ends as interrupted', async () => {

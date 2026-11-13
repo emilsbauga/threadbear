@@ -22,7 +22,9 @@ public struct RemoteThreads: Sendable, Hashable, Decodable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         runners = c.lossyArray(RemoteRunner.self, forKey: .runners)
-        threads = c.lossyArray(RemoteThread.self, forKey: .threads)
+        // A row whose id isn't a thread id's shape is left out: an extra Mac
+        // may be compromised, and ids go into shell lines (ThreadLink.isThreadId).
+        threads = c.lossyArray(RemoteThread.self, forKey: .threads).filter { ThreadLink.isThreadId($0.threadId) }
         order = try? c.decodeIfPresent([String].self, forKey: .order)
     }
 
@@ -100,8 +102,9 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
     public var startedBy: ThreadStartedBy?
     /// What Mike last said to it (backend API 32): the row's "You: ...".
     public var asked: String?
-    /// The librarian's recap (backend API 70): the recap box.
     public var recap: String?
+    /// The librarian's search words (backend API 74), for the sidebar's search.
+    public var keywords: String?
     /// A move the main Mac's runner knows of (docs/protocol.md, "Moving a
     /// thread to another runner"), put on the row by it, never by the backend.
     public var moving: ThreadMoving?
@@ -152,12 +155,13 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
         startedBy = (try? c.decodeIfPresent(ThreadStartedBy.self, forKey: .startedBy)) ?? nil
         asked = text(.asked).flatMap { $0.isEmpty ? nil : $0 }
         recap = text(.recap).flatMap { $0.isEmpty ? nil : $0 }
+        keywords = text(.keywords).flatMap { $0.isEmpty ? nil : $0 }
         moving = (try? c.decodeIfPresent(ThreadMoving.self, forKey: .moving)) ?? nil
     }
 
     enum CodingKeys: String, CodingKey {
         case runnerId, threadId, title, cwd, accountId, provider, model, status, needsYou, unread, preview
-        case backlogged, backlog, createdAt, lastActivityAt, snoozedUntil, archivedAt, starredAt, startedBy, asked, recap, moving
+        case backlogged, backlog, createdAt, lastActivityAt, snoozedUntil, archivedAt, starredAt, startedBy, asked, recap, keywords, moving
     }
 
     /// As a summary the sidebar's rows and sections take like a local one.
@@ -180,6 +184,7 @@ public struct RemoteThread: Sendable, Hashable, Decodable {
         summary.startedBy = startedBy
         summary.asked = asked
         summary.recap = recap
+        summary.keywords = keywords
         summary.moving = moving
         return summary
     }

@@ -135,6 +135,12 @@ final class AppModel {
     /// What the runner said about a thread archived elsewhere, held back
     /// while its row slides off, so the row's still there to slide.
     @ObservationIgnored var heldWhileSliding: [String: ThreadSummary] = [:]
+    /// Threads archived here that are already out of the list while the
+    /// runner's answer is on its way (`archive`). A summary that arrives
+    /// before the runner has it still says not archived; `threads`' didSet
+    /// keeps the guess, and leaves the thread's Terminal shell running till
+    /// the runner says yes.
+    @ObservationIgnored var archivesInFlight: Set<String> = []
     /// Archived threads whose panel is still dropping into the Archived
     /// heading (`ArchiveFlight`). The heading leaves them out of its count
     /// and rows until they land, so the count rolls on as one arrives.
@@ -190,8 +196,17 @@ final class AppModel {
     @ObservationIgnored var archivesNotSent: Set<String> = []
     var threads: [String: ThreadSummary] = [:] {
         didSet {
-            // An archived thread's Terminal shell stops (TerminalPanel.swift).
-            Terminals.shared.stopArchived(in: threads)
+            // An archive still on its way (`archive`): a summary from before
+            // the runner had it (thread.updated, a reconnect's list, another
+            // runner's) doesn't bring the row back. Setting threads in its
+            // own didSet doesn't run didSet again.
+            for id in archivesInFlight where threads[id] != nil && threads[id]?.archivedAt == nil {
+                threads[id]?.archivedAt = oldValue[id]?.archivedAt
+            }
+            // An archived thread's Terminal shell stops (TerminalPanel.swift),
+            // but not on the guess: a refused archive brings the row back,
+            // and its shell should still be there.
+            Terminals.shared.stopArchived(in: threads, except: archivesInFlight)
             // A summary from another runner never says which runner it's on
             // (runnerId is this app's own marker), so one stored over a
             // remote thread's (markSeen's reply, a rename's, an archive's)
@@ -317,6 +332,10 @@ final class AppModel {
     /// Answers sent from the Projects page's decision cards, by thread id,
     /// until the thread takes them (ProjectDecisions.isSending).
     var decisionSends: [String: DecisionSend] = [:]
+    /// The tab last picked on each project's page (ProjectTabs), while the
+    /// app runs, and the one each opened on this visit when none was.
+    var projectTabsPicked: [String: ProjectTab] = [:]
+    var projectTabsOpenedOn: [String: ProjectTab] = [:]
     /// The seq of the card of asks collapsed on each thread, by thread id.
     /// By card, so the next one, something new to decide, always opens.
     var collapsedCards: [String: Int] = [:]
@@ -586,6 +605,8 @@ final class AppModel {
     var devicesLoading = false
     /// Bumped by the automation to show the pairing code, for screenshots.
     var pairRequest = 0
+    /// Bumped by the automation to close it again, as its Done does.
+    var pairDoneRequest = 0
     /// The schedule editor sheet, when it's open (ScheduleEditor).
     var scheduleEditor: ScheduleEditorState?
     /// A sidebar row drawn as if the pointer were over it, so the screenshot
@@ -632,6 +653,18 @@ final class AppModel {
         didSet { UserDefaults.standard.set(threadsCollapsed, forKey: Self.threadsCollapsedKey) }
     }
     static let threadsCollapsedKey = "threadsCollapsed"
+    /// The sidebar's Projects view, folded to a row a project (the
+    /// projectDecisions experiment): the ones Mike has opened, by project id
+    /// (ProjectFolds.unfiledId for Not in a project). Folded by default;
+    /// remembered across launches (Mike, 11 Nov).
+    var openProjectRows: Set<String> = Set(UserDefaults.standard.stringArray(forKey: AppModel.openProjectRowsKey) ?? []) {
+        didSet { UserDefaults.standard.set(openProjectRows.sorted(), forKey: Self.openProjectRowsKey) }
+    }
+    static let openProjectRowsKey = "projectsList.openRows"
+
+    func toggleProjectRow(_ id: String) {
+        if openProjectRows.remove(id) == nil { openProjectRows.insert(id) }
+    }
     /// Inbox sections folded away under their heading, remembered across
     /// launches (Mike asked 27 Oct). Hibernating and Archive start folded.
     var collapsedSections: Set<InboxSection> = AppModel.storedCollapsedSections() {

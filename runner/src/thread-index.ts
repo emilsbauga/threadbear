@@ -17,6 +17,7 @@ import type { ThreadSummary } from './protocol.ts';
 import type { Notification } from './runner.ts';
 import { digest } from './sync-cache.ts';
 import { forbiddenText, type Post, type Subscribe } from './sync.ts';
+import { isThreadIdShape } from './thread-id.ts';
 
 export type IndexRow = {
   threadId: string;
@@ -39,6 +40,7 @@ export type IndexRow = {
   startedBy?: { kind: string; label: string; icon?: string; threadTitle?: string; why?: string };
   asked?: string;
   recap?: string;
+  keywords?: string;
 };
 
 // What the Mac app gets (docs/protocol.md, "Other runners' threads").
@@ -66,7 +68,7 @@ const ONLINE_MS = 3 * 60_000;
 const WATCH_CHECK_MS = 15_000;
 const UNWATCH_AFTER_MS = 2 * 60_000;
 
-export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withBacklog = true, withBacklogged = true, withRecap = true): IndexRow {
+export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withBacklog = true, withBacklogged = true, withRecap = true, withKeywords = true): IndexRow {
   const row: IndexRow = {
     threadId: t.id,
     title: t.title,
@@ -89,8 +91,9 @@ export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = t
   // Changes only when Mike sends, which moves the status anyway, so it
   // costs no writes of its own.
   if (withAsked && t.asked) row.asked = t.asked;
-  // Changes only after a turn, which moves the status anyway.
   if (withRecap && t.recap) row.recap = t.recap;
+  // Changes after a look or once from the keyword sweep, so rarely.
+  if (withKeywords && t.keywords) row.keywords = t.keywords;
   if (withStartedBy && t.startedBy) {
     // Not the thread's id: only the row's tooltip uses this, by that title.
     const { kind, label, icon, threadTitle, why } = t.startedBy;
@@ -131,6 +134,8 @@ export class ThreadIndex {
     takesBacklog?: () => boolean;
     takesBacklogged?: () => boolean;
     takesRecap?: () => boolean;
+    // Whether it knows `keywords` (API 74).
+    takesKeywords?: () => boolean;
     // Whether the backend can answer with only the rows changed since the
     // last answer (API 29). Without it, every re-run reads every row.
     takesSince?: () => boolean;
@@ -457,7 +462,7 @@ export class ThreadIndex {
   }
 
   private mark(t: ThreadSummary): void {
-    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true);
+    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true, this.deps.takesKeywords?.() ?? true);
     if (this.sent.get(t.id) === writeKey(row)) {
       this.dirty.delete(t.id);
       return;
@@ -534,7 +539,10 @@ export class ThreadIndex {
           ...(r.rpcUrl ? { rpcUrl: r.rpcUrl } : {}),
           ...(r.followProblem ? { followProblem: r.followProblem } : {}),
         })),
-      threads: value?.threads ?? [],
+      // Only ids of a thread id's shape reach the apps and the agent tools
+      // (thread-id.ts): the backend kept whatever a runner wrote before it
+      // checked, and an extra Mac may be compromised.
+      threads: (value?.threads ?? []).filter((t) => isThreadIdShape(t?.threadId)),
       ...(this.order ? { order: this.order } : {}),
     };
     this.deps.publish?.({ method: 'remoteThreads.updated', params: this.withTokens(this.remote) });
