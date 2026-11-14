@@ -335,6 +335,7 @@ const threads = new Map();
 // A reconnect spec's deliberately unreadable list, without damaging its
 // transcripts or real summaries. No live runner implements this method.
 let summaryListOverride;
+const skillsByFolder = new Map();
 loadFixtures();
 addFillers(fillerCount);
 addDemoPanels();
@@ -547,7 +548,7 @@ async function handle(client, { id, method, params = {} }) {
     // A new thread on bruce through this runner, as the relay files it.
     caller = { ...client, as: BRUCE };
   }
-  if (slow.ms > 0 && ['threads.send', 'threads.create', 'threads.update'].includes(method)) {
+  if (slow.ms > 0 && ['threads.send', 'threads.create', 'threads.update', 'threads.createDraft', 'threads.saveDraft', 'threads.delete'].includes(method)) {
     await new Promise((resolve) => setTimeout(resolve, slow.ms));
   }
   const result = await dispatch(caller, method, params);
@@ -577,6 +578,7 @@ async function dispatch(client, method, p) {
       };
     case 'skills.list':
       if (oldRunner) throw rpcError(-32601, 'Method not found');
+      if (skillsByFolder.has(p.cwd)) return { skills: skillsByFolder.get(p.cwd), errors: [] };
       return { skills: [
         { name: 'usage-budget', title: 'Usage budget', description: 'Conserve a stated allowance', path: '/mock/skills/usage-budget/SKILL.md', scope: 'user' },
         { name: 'github-create', description: 'Create a new repository', path: '/mock/skills/github-create/SKILL.md', scope: 'user' },
@@ -822,6 +824,7 @@ async function dispatch(client, method, p) {
     }
     case 'threads.send': {
       const t = need(p.threadId);
+      t.lastSend = { text: p.text, images: p.images ?? [], attachments: p.attachments ?? t.summary.backlog?.attachments ?? [] };
       delete t.summary.backlog;
       delete t.summary.backlogged;
       // A message declines any secret card still open, first (docs/
@@ -1875,6 +1878,9 @@ async function dispatch(client, method, p) {
     case 'mock.summaryList':
       summaryListOverride = p.value;
       return { ok: true };
+    case 'mock.skills':
+      skillsByFolder.set(p.cwd ?? defaults.cwd, p.skills ?? []);
+      return { ok: true };
     case 'mock.restart':
       return restartNow(p);
     // The runner going away with no notice first (it crashed, or was
@@ -1922,6 +1928,28 @@ async function dispatch(client, method, p) {
       threads.set(threadId, { summary, events: [], inProgress: new Map(), timers: [] });
       broadcastSummary(threadId);
       return { thread: summary };
+    }
+    case 'mock.backlog': {
+      const t = need(p.threadId);
+      const attachments = [];
+      if (p.file) {
+        const dir = path.join(dataDir, 'intake', t.summary.id);
+        fs.mkdirSync(dir, { recursive: true });
+        const filePath = path.join(dir, 'task-notes.txt');
+        const bytes = Buffer.from('Notes captured for the saved task.\n');
+        fs.writeFileSync(filePath, bytes);
+        attachments.push({ id: 'captured-notes', path: filePath, name: 'task-notes.txt', mediaType: 'text/plain', size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
+      }
+      t.summary.backlog = { text: p.text ?? t.summary.title, images: [], revision: 1, ...(p.context ? { context: p.context } : {}), attachments };
+      t.summary.status = 'idle';
+      t.summary.live = false;
+      t.summary.needsYou = false;
+      broadcastSummary(t.summary.id);
+      return { thread: t.summary };
+    }
+    case 'mock.backlogState': {
+      const t = need(p.threadId);
+      return { draft: t.summary.backlog ?? null, lastSend: t.lastSend ?? null };
     }
     case 'mock.wakes': {
       // Turns the agent started by itself as background jobs finished, for

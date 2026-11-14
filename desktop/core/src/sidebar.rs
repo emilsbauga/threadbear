@@ -92,6 +92,7 @@ pub fn working_label(since_ms: i64, now_ms: i64) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowMode {
     Inbox,
+    Backlog,
     Hibernating,
     Archive,
 }
@@ -114,6 +115,7 @@ impl RowMode {
             "starred" | "hibernating" if t.snoozed(now_ms) => RowMode::Hibernating,
             "starred" | "hibernating" => RowMode::Inbox,
             "archived" => RowMode::Archive,
+            "backlog" => RowMode::Backlog,
             _ => RowMode::Inbox,
         }
     }
@@ -121,6 +123,7 @@ impl RowMode {
     pub fn actions(self) -> &'static [RowAction] {
         match self {
             RowMode::Inbox => &[RowAction::Star, RowAction::Snooze, RowAction::Archive],
+            RowMode::Backlog => &[RowAction::Star, RowAction::Archive, RowAction::Delete],
             RowMode::Hibernating => &[RowAction::Star, RowAction::Unsnooze, RowAction::Archive],
             RowMode::Archive => &[RowAction::Unarchive, RowAction::Delete],
         }

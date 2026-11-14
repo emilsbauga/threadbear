@@ -54,6 +54,29 @@ pub(crate) fn projects_made(projects: &Value) -> usize {
 }
 
 impl Threadbear {
+    pub(crate) fn set_evolving_titles(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !matches!(self.status, threadbear_client::runner::Status::Connected { .. }) || self.librarian.busy.contains("titles") { return; }
+        let Some(before) = self.librarian.status.clone().filter(|s| s.evolving_titles.is_some()) else { return };
+        self.librarian.busy.insert("titles");
+        if let Some(s) = &mut self.librarian.status { s.evolving_titles = Some(on); }
+        let client = self.client.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = call(client, "librarian.update", json!({"evolvingTitles":on})).await;
+            this.update(cx, |this, cx| {
+                this.librarian.busy.remove("titles");
+                match result {
+                    Ok(v) => this.librarian.status = Some(Status::decode(&v["librarian"])),
+                    Err(e) => {
+                        if let Some(s) = &mut this.librarian.status { s.evolving_titles = before.evolving_titles; }
+                        this.show_error(e.message, cx);
+                    }
+                }
+                cx.notify();
+            }).ok();
+        }).detach();
+    }
+
     /// After the projects at connect (`loadProjects`).
     pub(crate) fn load_librarian(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
@@ -476,6 +499,7 @@ impl Threadbear {
         let reason = |r: threadbear_core::librarian::Reason| -> &'static str {
             use threadbear_core::librarian::Reason::*;
             match r {
+                Backlog => "backlog",
                 FirstMessage => "first-message",
                 FirstTurn => "first-turn",
                 NewFolder => "new-folder",

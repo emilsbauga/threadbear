@@ -25,11 +25,13 @@ const PAUSE: Duration = Duration::from_millis(500);
 pub(crate) struct Draft {
     pub(crate) text: String,
     pub(crate) images: Vec<ImageRef>,
+    backlog_revision: Option<i64>,
+    attachments: Vec<threadbear_core::backlog::Attachment>,
 }
 
 impl Draft {
     fn is_empty(&self) -> bool {
-        self.images.is_empty() && self.text.trim().is_empty()
+        self.images.is_empty() && self.attachments.is_empty() && self.text.is_empty()
     }
 }
 
@@ -55,7 +57,7 @@ fn read(path: &std::path::Path) -> HashMap<String, Draft> {
         .into_iter()
         .flatten()
         .filter_map(|(key, v)| {
-            let draft = Draft { text: v["text"].as_str().unwrap_or("").to_owned(), images: v["images"].as_array().into_iter().flatten().filter_map(ImageRef::decode).collect() };
+            let draft = Draft { text: v["text"].as_str().unwrap_or("").to_owned(), images: v["images"].as_array().into_iter().flatten().filter_map(ImageRef::decode).collect(), backlog_revision: v["backlogRevision"].as_i64(), attachments: v["attachments"].as_array().into_iter().flatten().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect() };
             (!draft.is_empty()).then(|| (key.clone(), draft))
         })
         .collect()
@@ -71,12 +73,42 @@ fn write(path: &std::path::Path, all: &HashMap<String, Draft>) -> std::io::Resul
             _ => Ok(()),
         };
     }
-    let value: serde_json::Map<String, Value> = all.iter().map(|(k, d)| (k.clone(), json!({ "text": d.text, "images": d.images.iter().map(image_ref_json).collect::<Vec<_>>() }))).collect();
+    let value: serde_json::Map<String, Value> = all.iter().map(|(k, d)| (k.clone(), json!({ "text": d.text, "images": d.images.iter().map(image_ref_json).collect::<Vec<_>>(), "backlogRevision":d.backlog_revision,"attachments":d.attachments.iter().map(threadbear_core::backlog::Attachment::json).collect::<Vec<_>>() }))).collect();
     let data = serde_json::to_vec(&Value::Object(value)).map_err(std::io::Error::other)?;
     threadbear_core::private_file::write(path, &data)
 }
 
 impl Threadbear {
+    pub(crate) fn composer_has_unsaved(&self, composer: &Entity<crate::composer::Composer>, cx: &App) -> bool {
+        let c = composer.read(cx);
+        match c.thread_id.as_ref().and_then(|id| self.threads.get(id)).and_then(|t| t.backlog.as_ref()) {
+            Some(saved) => c.backlog_has_changes(saved, cx),
+            None => c.holds_anything(cx),
+        }
+    }
+    pub(crate) fn restore_backlog_draft(&mut self, id: &str, mut saved: threadbear_core::backlog::Draft, composer: &Entity<crate::composer::Composer>, cx: &mut Context<Self>) {
+        if let Some(local) = self.drafts.saved.get(id).cloned() {
+            let already_saved = threadbear_core::composer::message_text(&local.text, 1) == saved.text && local.images == saved.images && local.attachments == saved.attachments;
+            if already_saved {
+                self.drafts.saved.remove(id);
+            } else if local.backlog_revision == Some(saved.revision) {
+                saved.text = threadbear_core::composer::message_text(&local.text, 1);
+                saved.images = local.images;
+                saved.attachments = local.attachments;
+            } else {
+                // Keep a conflicting local edit available through the drafts
+                // file instead of overwriting either version automatically.
+                self.drafts.saved.insert(format!("conflict:{id}"), local);
+                self.show_error("This task also has an older local edit, kept in desktop-drafts.json. Its saved prompt has been opened.".into(), cx);
+            }
+        }
+        composer.update(cx, |c, cx| {
+            c.backlog_attachments = saved.attachments;
+            let (text, order) = threadbear_core::composer::edit_draft(&saved.text, saved.images.len());
+            let images = order.into_iter().filter_map(|i| saved.images.get(i).cloned()).collect();
+            c.restore_draft(RestoreDraft::plain(text, images), cx);
+        });
+    }
     /// A box's draft from before, put back as the box is made (`restore`).
     pub(crate) fn restore_saved_draft(&self, key: &str, composer: &Entity<crate::composer::Composer>, cx: &mut App) {
         // A handover's incoming app: the drafts are the outgoing app's until
@@ -129,8 +161,13 @@ impl Threadbear {
             boxes.push((NEW_THREAD.to_owned(), new.clone()));
         }
         for (key, composer) in boxes {
-            let (text, images) = composer.read(cx).draft_for_saving(cx);
-            let draft = Draft { text, images };
+            let c = composer.read(cx);
+            if self.threads.get(&key).is_some_and(|t| t.backlog.is_some()) && !self.composer_has_unsaved(&composer, cx) {
+                all.remove(&key);
+                continue;
+            }
+            let (text, images) = c.draft_for_saving(cx);
+            let draft = Draft { text, images, backlog_revision: self.threads.get(&key).and_then(|t| t.backlog.as_ref()).map(|d| d.revision), attachments: c.backlog_attachments.clone() };
             if draft.is_empty() {
                 all.remove(&key);
             } else {
@@ -155,7 +192,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("desktop-drafts.json");
         let mut all = HashMap::new();
-        all.insert("t1".to_owned(), Draft { text: "half a thought \u{FFFC}".into(), images: vec![ImageRef::new("/tmp/a.png", "image/png")] });
+        all.insert("t1".to_owned(), Draft { text: "half a thought \u{FFFC}".into(), images: vec![ImageRef::new("/tmp/a.png", "image/png")], ..Default::default() });
         write(&path, &all).unwrap();
         assert_eq!(read(&path), all);
         #[cfg(unix)]

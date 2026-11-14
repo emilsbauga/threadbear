@@ -151,7 +151,7 @@ impl Threadbear {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish_new_thread(&mut self, res: Result<Value, RpcError>, stored: String, runner: Option<String>, runner_name: Option<String>, account: String, used_pool: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn finish_new_thread(&mut self, res: Result<Value, RpcError>, stored: String, runner: Option<String>, runner_name: Option<String>, account: String, used_pool: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.new_thread.creating = false;
         let thread = match res {
             Ok(value) => serde_json::from_value::<ThreadSummary>(value["thread"].clone()).ok().filter(|t| !t.id.is_empty()),

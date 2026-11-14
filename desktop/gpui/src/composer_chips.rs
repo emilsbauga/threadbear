@@ -120,6 +120,10 @@ impl Composer {
     }
 
     pub(crate) fn set_permission(&mut self, mode: &'static str, cx: &mut App) {
+        if mode == "plan" && self.chip_data(cx).summary.is_some_and(|t| t.provider == "pi") {
+            if let Some(app) = self.app.upgrade() { app.update(cx, |app, cx| app.show_error("Plan first is not available for Pi threads.".into(), cx)); }
+            return;
+        }
         self.change_thread(move |t| t.permission_mode = mode.to_owned(), json!({ "permissionMode": mode }), cx);
     }
 
@@ -343,6 +347,7 @@ impl Composer {
         // Not for another Mac's thread or a new one for another Mac: its
         // schedules are made there (the Swift app's Send menu says the same).
         let can_schedule = data.away.is_none() && self.app.upgrade().is_some_and(|a| a.read(cx).schedules_supported);
+        let can_save = self.thread_id.is_none() && data.away.is_none();
         let trigger = ChipTrigger { busy: self.chips_busy(cx).1, badge: None, id: "composer-plus-button".into(), kind: TriggerKind::Plus, title: SharedString::default(), icon: None, tip: "Attach images, change the folder or schedule the message".into(), selected: false };
         // Spinning while a folder change lands, and no menu till then.
         if trigger.busy {
@@ -358,6 +363,13 @@ impl Composer {
                 let (popover2, c2) = (popover.clone(), composer.clone());
                 v_flex()
                     .w(gpui_kit::px(260.))
+                    .when(can_save, |s| {
+                        let (popover, c) = (popover.clone(), composer.clone());
+                        s.child(menu_row("save-backlog", Some(IconName::Archive), "Save to Backlog", None, false, window, cx, move |window, cx| {
+                            popover.update(cx, |s, cx| s.dismiss(window, cx));
+                            if let Some(c) = c.upgrade() { c.update(cx, |c, cx| c.save_to_backlog(window, cx)); }
+                        }))
+                    })
                     .child(menu_row("attach", Some(IconName::Image), "Attach images…", None, false, window, cx, move |window, cx| {
                         popover.update(cx, |s, cx| s.dismiss(window, cx));
                         if let Some(c) = c1.upgrade() {
@@ -414,7 +426,7 @@ impl Composer {
             .trigger(ChipTrigger { busy: false, badge: None, id: "composer-permission-chip".into(), kind: TriggerKind::Chip, title: title.into(), icon: Some(if mode == "full" { crate::icons::symbol("lock.open") } else { Icon::from(icon) }), tip: help.into(), selected: false })
             .content(move |_, window, cx| {
                 let popover = cx.entity();
-                let modes: &[&str] = if threadbear_core::logins::has_auto_mode(&provider) || mode == "auto" { &["full", "auto", "ask", "plan"] } else { &["full", "ask", "plan"] };
+                let modes: &[&str] = if provider == "pi" { &["full", "ask", "auto"] } else if threadbear_core::logins::has_auto_mode(&provider) || mode == "auto" { &["full", "auto", "ask", "plan"] } else { &["full", "ask", "plan"] };
                 v_flex().w(gpui_kit::px(320.)).children(modes.iter().map(|m| {
                     let m = *m;
                     let (popover, composer) = (popover.clone(), composer.clone());
@@ -1338,6 +1350,7 @@ pub(crate) fn model_chip_badge_text(data: &ChipData) -> Option<String> {
 /// The modes the permission menu offers, in its order.
 #[cfg(feature = "automation")]
 pub(crate) fn permission_modes(summary: &ThreadSummary) -> Vec<&'static str> {
+    if summary.provider == "pi" { return vec!["full", "ask", "auto"]; }
     if threadbear_core::logins::has_auto_mode(&summary.provider) || summary.permission_mode == "auto" {
         vec!["full", "auto", "ask", "plan"]
     } else {

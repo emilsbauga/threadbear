@@ -163,6 +163,22 @@ runs the debug build (`cargo build -p threadbear-gpui`) on a virtual display
 `--home`), and saves screenshots: `0.png` before any step, then one after
 each.
 
+## Custom tasks and accounts
+
+The fork's saved tasks live in **Backlog**, separate from **Inbox**. Save a
+new prompt from the composer's + menu or Send's right-click menu without
+starting an agent. Reopen it to edit; changes, whitespace, pictures and
+imported files save to the runner. Imported files can be previewed or removed.
+Highlights shows prepared task context separately from the prompt.
+An idle conversation's menu offers Move to Backlog and Move to Inbox;
+Backlog and Archived chats offer confirmed deletion to the runner's trash.
+
+Configured Pi profiles and accounts retain their provider/model metadata.
+Pi's sign-in opens its interactive CLI with `/login` guidance, and its
+model picker avoids Claude aliases and only offers advertised effort levels. General settings
+includes Evolving titles; names you choose remain fixed. Codex skill results
+refresh after login/folder changes and rank their displayed titles first.
+
 ## Known gaps
 
 - On Windows, path handling (`folderName` splits on `/`) and the runner's

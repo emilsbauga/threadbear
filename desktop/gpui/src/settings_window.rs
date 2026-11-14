@@ -605,6 +605,7 @@ impl SettingsWindow {
             ));
         }
         if !settings.experiments.is_empty() {
+            // Experiments are rendered below; the title policy is a normal setting.
             let rows = settings
                 .experiments
                 .iter()
@@ -630,6 +631,21 @@ impl SettingsWindow {
             ));
         }
         let version = self.app.upgrade().map(|a| a.read(cx).runner_version.clone()).unwrap_or_default();
+        let titles = self.app.upgrade().and_then(|a| a.read(cx).librarian.status.as_ref().and_then(|s| s.evolving_titles));
+        if let Some(on) = titles {
+            let busy = self.app.upgrade().is_some_and(|a| a.read(cx).librarian.busy.contains("titles"));
+            let connected = self.app.upgrade().is_some_and(|a| matches!(a.read(cx).status, threadbear_client::runner::Status::Connected { .. }));
+            let toggle = if busy {
+                Spinner::new().with_size(px(14.)).into_any_element()
+            } else if !connected {
+                div().id("titles-disconnected").tip("Connect to the runner to change Evolving titles").child(crate::mac_switch::MacSwitch::new("settings-evolving-titles", on).disabled(true)).into_any_element()
+            } else {
+                self.switch("settings-evolving-titles", on, "Let the librarian update thread titles as the work moves on", cx, |this, on, cx| {
+                    this.app.update(cx, |app, cx| app.set_evolving_titles(on, cx)).ok();
+                })
+            };
+            sections.push(section("settings-thread-titles", "Thread titles", "The librarian updates titles as the work moves on. Names you choose stay fixed. Turning this off keeps existing titles; new threads still get an initial name.", "check why a thread's title has not changed.", vec![row("Evolving titles", toggle, cx)], cx));
+        }
         sections.push(section(
             "settings-runner",
             "Runner",
@@ -1145,6 +1161,7 @@ impl SettingsWindow {
             "keepAwake": settings.as_ref().and_then(|s| s.keep_awake),
             "fullSync": settings.as_ref().and_then(|s| s.full_sync),
             "labReview": settings.as_ref().map(|s| s.lab_review),
+            "evolvingTitles": self.app.upgrade().and_then(|a| a.read(cx).librarian.status.as_ref().and_then(|s| s.evolving_titles)),
             "privateFolders": settings.as_ref().map(|s| s.private_folders.clone()),
             "smallJobsPool": settings.as_ref().and_then(|s| s.pool.clone()),
             // General's Web runtime row, as it reads.

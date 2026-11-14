@@ -21,6 +21,7 @@ pub enum State {
 /// Why a look was queued (`LibrarianReason`); an unknown one reads as asked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Reason {
+    Backlog,
     FirstMessage,
     FirstTurn,
     NewFolder,
@@ -36,6 +37,7 @@ pub enum Reason {
 impl Reason {
     fn from_raw(raw: &str) -> Reason {
         match raw {
+            "backlog" => Reason::Backlog,
             "first-message" => Reason::FirstMessage,
             "first-turn" => Reason::FirstTurn,
             "new-folder" => Reason::NewFolder,
@@ -108,6 +110,7 @@ pub struct Entry {
 /// What the librarian is doing, has done and will do next (`LibrarianStatus`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Status {
+    pub evolving_titles: Option<bool>,
     pub state: State,
     /// Off: why.
     pub reason: Option<String>,
@@ -170,6 +173,7 @@ impl Status {
             None => State::Idle,
         };
         Status {
+            evolving_titles: v["evolvingTitles"].as_bool(),
             state,
             reason: v["reason"].as_str().map(str::to_owned),
             paused,
@@ -228,6 +232,7 @@ pub fn state_text(status: &Status) -> String {
 /// A queued look's reason when the runner gave no words for it.
 pub fn reason_text(reason: Reason) -> &'static str {
     match reason {
+        Reason::Backlog => "Its saved prompt needs a look",
         Reason::FirstMessage => "Its first message came in",
         Reason::FirstTurn => "Its first turn ended",
         Reason::NewFolder => "Edited files in a new folder",

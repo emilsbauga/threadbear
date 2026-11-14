@@ -8,6 +8,28 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiConnection {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiProfile {
+    pub id: String,
+    pub engine: String,
+    pub title: String,
+    pub executable: String,
+    pub config_dir: String,
+    pub connection: PiConnection,
+    pub capabilities: PiCapabilities,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct PiCapabilities { pub threads: bool }
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelChoice {
     #[serde(default, deserialize_with = "crate::wire::id")]
@@ -27,6 +49,12 @@ pub struct ModelChoice {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Account {
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub pi_profile_id: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub executable: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub connection: Option<PiConnection>,
     #[serde(default, deserialize_with = "crate::wire::id")]
     pub id: String,
     // The provider selects the CLI and credential folder. A wrong type must
@@ -128,6 +156,7 @@ impl RunnerDefaults {
 /// A runner's logins (RunnerLogins), filled from its `hello`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunnerLogins {
+    pub pi_profiles: Vec<PiProfile>,
     pub accounts: Vec<Account>,
     pub pools: Vec<Pool>,
     pub defaults: RunnerDefaults,
@@ -145,7 +174,7 @@ impl RunnerLogins {
             let command = p["loginCommand"].as_str()?;
             Some((id.to_owned(), command.trim().to_owned()))
         }).collect();
-        RunnerLogins { accounts: accounts_from(&hello["accounts"]), pools: pools_from(&hello["pools"]), defaults: hello.get("defaults").cloned().and_then(crate::wire::read).unwrap_or_default(), login_commands }
+        RunnerLogins { pi_profiles: lossy(&hello["piProfiles"]), accounts: accounts_from(&hello["accounts"]), pools: pools_from(&hello["pools"]), defaults: hello.get("defaults").cloned().and_then(crate::wire::read).unwrap_or_default(), login_commands }
     }
 
     /// `accounts.updated`: the logins, which replace the ones from `hello`.

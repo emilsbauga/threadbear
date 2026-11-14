@@ -1220,6 +1220,7 @@ pub struct LoginRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginStatus {
     NothingKnown,
+    PiUnavailable,
     LimitReached,
 }
 
@@ -1227,6 +1228,7 @@ impl LoginStatus {
     pub fn words(self) -> &'static str {
         match self {
             LoginStatus::NothingKnown => "Nothing known yet",
+            LoginStatus::PiUnavailable => "Pi usage statistics are not available yet.",
             LoginStatus::LimitReached => "Limit reached",
         }
     }
@@ -1286,6 +1288,7 @@ pub fn cards<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Option<&
 fn login_row<Tz: TimeZone>(account: &Account, notice: Option<&str>, stats: Option<&Stats>, show_model_weeks: bool, now: i64, zone: &Tz) -> LoginRow {
     let usage = usage(account);
     let status = match &usage {
+        None if account.provider_id() == "pi" => Some(LoginStatus::PiUnavailable),
         None => Some(LoginStatus::NothingKnown),
         Some(u) if u.blocked => Some(LoginStatus::LimitReached),
         _ => None,

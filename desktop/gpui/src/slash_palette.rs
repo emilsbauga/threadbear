@@ -33,31 +33,44 @@ pub(crate) struct SlashState {
     pub(crate) fetching: HashSet<String>,
 }
 
+async fn commands_with_skills(client: std::sync::Arc<threadbear_client::runner::Client>, method: &str, params: Value, skills: Option<Value>) -> Vec<SlashCommand> {
+    let mut commands = crate::call(client.clone(), method, params).await.ok().map(|v| slash::decode_commands(&v)).unwrap_or_default();
+    if let Some(params) = skills {
+        if let Ok(v) = crate::call(client, "skills.list", params).await {
+            commands.retain(|c| !c.is_skill());
+            for skill in v["skills"].as_array().into_iter().flatten() {
+                let mut entry = skill.clone();
+                entry["source"] = json!("skill");
+                if let Ok(command) = serde_json::from_value::<SlashCommand>(entry) {
+                    if !command.name.is_empty() { commands.push(command); }
+                }
+            }
+        }
+    }
+    commands
+}
+
 impl Threadbear {
     /// `loadSlashCommands`: an older runner (-32601) or one that couldn't
     /// list them: the palette says there are none rather than spinning.
+    pub(crate) fn thread_commands_key(&self, id: &str) -> String {
+        self.threads.get(id).map_or_else(|| id.to_owned(), |t| format!("{id}\0{}\0{}", t.account_id, t.cwd))
+    }
+
     pub(crate) fn load_slash_commands(&mut self, thread_id: String, cx: &mut Context<Self>) {
-        if !self.slash.fetching.insert(thread_id.clone()) {
-            return;
-        }
+        let key = self.thread_commands_key(&thread_id);
+        if !self.slash.fetching.insert(key.clone()) { return; }
+        let skills = self.threads.get(&thread_id).filter(|t| t.provider == "codex" && !t.is_remote())
+            .map(|t| json!({"accountId":t.account_id,"cwd":t.cwd}));
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = crate::call(client, "threads.commands", json!({ "threadId": thread_id })).await;
+            let commands = commands_with_skills(client, "threads.commands", json!({"threadId":thread_id}), skills).await;
             this.update(cx, |this, cx| {
-                this.slash.fetching.remove(&thread_id);
-                match res {
-                    Ok(value) => {
-                        this.slash.commands.insert(thread_id.clone(), slash::decode_commands(&value));
-                    }
-                    Err(_) => {
-                        this.slash.commands.entry(thread_id.clone()).or_default();
-                    }
-                }
+                this.slash.fetching.remove(&key);
+                this.slash.commands.insert(key, commands);
                 cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+            }).ok();
+        }).detach();
     }
 }
 
@@ -86,7 +99,7 @@ impl Threadbear {
             return;
         }
         let logins = self.draft_logins();
-        let (account, cwd, permission) = self.with_draft(&logins, |d| (d.account_id(), d.cwd(), d.permission()));
+        let (account, cwd, permission, provider) = self.with_draft(&logins, |d| (d.account_id(), d.cwd(), d.permission(), d.provider()));
         let mut params = json!({ "cwd": cwd, "permissionMode": permission });
         if !account.is_empty() {
             params["accountId"] = json!(account);
@@ -94,18 +107,11 @@ impl Threadbear {
         self.slash.fetching.insert(key.clone());
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = crate::call(client, "folders.commands", params).await;
+            let skills = (provider == "codex").then(|| params.clone());
+            let commands = commands_with_skills(client, "folders.commands", params, skills).await;
             this.update(cx, |this, cx| {
                 this.slash.fetching.remove(&key);
-                match res {
-                    Ok(value) => {
-                        this.slash.commands.insert(key.clone(), slash::decode_commands(&value));
-                    }
-                    // An older runner (-32601): none, as for a thread.
-                    Err(_) => {
-                        this.slash.commands.entry(key.clone()).or_default();
-                    }
-                }
+                this.slash.commands.insert(key.clone(), commands);
                 cx.notify();
             })
             .ok();
@@ -160,7 +166,8 @@ impl Composer {
     /// thread its runner, login and folder's (`paletteListKey`).
     fn palette_list_key(&self, cx: &App) -> String {
         match (&self.thread_id, self.app.upgrade()) {
-            (Some(id), _) => id.clone(),
+            (Some(id), Some(app)) => app.read(cx).thread_commands_key(id),
+            (Some(id), None) => id.clone(),
             (None, Some(app)) => app.read(cx).new_thread_commands_key(),
             (None, None) => String::new(),
         }
@@ -221,6 +228,7 @@ impl Composer {
     /// (or, partway through a message, the words after it). Only the typed
     /// word is replaced, so the words and chips before it stay, as one undo.
     pub(crate) fn palette_pick(&mut self, command: SlashCommand, run: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let run = run && !command.is_skill();
         if let Some(app) = self.app.upgrade() {
             app.update(cx, |app, _| {
                 app.new_thread.prefs.recent_slash = slash::used(&command.name, &app.new_thread.prefs.recent_slash);
@@ -228,7 +236,8 @@ impl Composer {
             });
         }
         self.palette = PaletteState::default();
-        let text = slash::fill(&command, !run);
+        let codex_skill = command.is_skill() && self.chip_data(cx).summary.is_some_and(|t| t.provider == "codex");
+        let text = if codex_skill { format!("${} ", command.name) } else { slash::fill(&command, !run) };
         let current = self.input.read(cx).value().to_string();
         let start = slash::typed(&current).map_or(0, |t| t.start);
         let end = current.len();
@@ -423,7 +432,7 @@ impl Composer {
 
     fn render_palette_row(&mut self, command: &SlashCommand, on: bool, mid_message: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let name = command.name.clone();
-        let title = format!("/{name}");
+        let title = command.title.clone().unwrap_or_else(|| format!("/{name}"));
         let tip: SharedString = if mid_message { format!("/{name}: double-click to put it in the message") } else { format!("/{name}: double-click to run it") }.into();
         let (fg, accent, hover) = (cx.theme().foreground, style::accent(cx).opacity(0.75), style::primary_opacity(cx, 0.05));
         let picked = command.clone();
@@ -465,6 +474,7 @@ impl Composer {
             words = words.child(div().text_size(px(size::LABEL + 1.)).text_color(style::secondary_text(cx)).child(slash::plain_description(text)));
         }
         words = words.child(div().text_size(px(size::CODE)).font_family(cx.theme().mono_font_family.clone()).px(px(10.)).py(px(8.)).w_full().rounded(px(7.)).bg(style::primary_opacity(cx, 0.06)).child(command.usage()));
+        words = words.child(div().text_size(px(size::LABEL)).text_color(style::secondary_text(cx)).child(if command.is_skill() { "Return inserts without sending" } else { "Return runs this command" }));
         if let Some(now) = view.current.get(&name) {
             words = words.child(div().text_size(px(size::LABEL + 1.)).child(format!("Now: {now}")));
         }
@@ -484,7 +494,7 @@ impl Composer {
     fn render_palette_buttons(&mut self, view: &PaletteView, command: &SlashCommand, cx: &mut Context<Self>) -> impl IntoElement {
         let (run, fill) = (command.clone(), command.clone());
         let mut row = h_flex().flex_none().gap(px(8.)).px(px(16.)).py(px(12.));
-        if view.mid_message {
+        if view.mid_message || command.is_skill() {
             row = row.child(palette_button("Insert", format!("Put /{} in the message, for the agent to run (Return or Tab)", command.name), cx, cx.listener(move |this, _: &ClickEvent, window, cx| this.palette_pick(fill.clone(), false, window, cx))));
         } else {
             row = row
@@ -533,7 +543,7 @@ impl Composer {
         let categories: Vec<Value> = slash::counts(&view.all, &query, &view.recent).into_iter().map(|(c, n)| json!({ "title": c.title(&view.provider), "count": n })).collect();
         let note = if view.loading { Some("Getting this thread's commands…".to_owned()) } else if matches.is_empty() { Some(if query.is_empty() { "Nothing here yet.".to_owned() } else { format!("No command matches /{query}. Send it and it goes to the agent as words.") }) } else { None };
         let detail = picked.as_ref().map(|c| {
-            let mut buttons = if view.mid_message { vec!["Insert"] } else { vec!["Run", "Add details"] };
+            let mut buttons = if view.mid_message || c.is_skill() { vec!["Insert"] } else { vec!["Run", "Add details"] };
             if c.path.is_some() && view.can_open_files {
                 buttons.push("Open file");
             }

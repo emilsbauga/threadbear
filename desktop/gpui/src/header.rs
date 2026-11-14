@@ -972,7 +972,7 @@ impl Threadbear {
         }
         let known = self.logins.account(&thread.account_id).map(|a| SignInAccount { id: a.id.clone(), provider: a.provider_id().to_owned(), title: a.title.clone(), config_dir: a.config_dir.clone() });
         let account = sign_in::account_for(&thread.account_id, &thread.provider, thread.runner_id.is_some(), known)?;
-        (!self.logins.login_command(&account.provider).is_empty()).then_some(account)
+        (account.provider == "pi" || !self.logins.login_command(&account.provider).is_empty()).then_some(account)
     }
 
     /// `remoteSignInRunner`: another Mac's thread whose login was refused,
@@ -1034,6 +1034,7 @@ impl Threadbear {
     pub(crate) fn sign_in(&mut self, account: SignInAccount, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let command = self.logins.login_command(&account.provider).to_owned();
+        let pi_script = self.pi_login_script(&account.id);
         cx.spawn(async move |this, cx| {
             let clis = call(client, "clis.list", json!({})).await.ok();
             let path = clis
@@ -1044,7 +1045,7 @@ impl Threadbear {
                 .unwrap_or("")
                 .to_owned();
             let file = std::env::temp_dir().join(format!("threadbear-sign-in-{}.command", sign_in::file_safe(&account.id)));
-            let written = write_script(&file, &sign_in::script_with_command(&account, &path, &command));
+            let written = write_script(&file, &pi_script.unwrap_or_else(|| sign_in::script_with_command(&account, &path, &command)));
             this.update(cx, |this, cx| match written {
                 // The script this app just wrote, every word of it quoted.
                 Ok(()) => crate::open_gate::open_own(&file, cx),
@@ -1053,6 +1054,11 @@ impl Threadbear {
             .ok();
         })
         .detach();
+    }
+
+    pub(crate) fn pi_login_script(&self, id: &str) -> Option<String> {
+        let known = self.logins.account(id).filter(|a| a.provider_id() == "pi" && !a.config_dir.trim().is_empty())?;
+        Some(sign_in::pi_script(&known.config_dir, known.executable.as_deref().unwrap_or("pi"), known.connection.as_ref().map_or("openrouter", |c| c.provider.as_str())))
     }
 
     /// Sends the thread's last message of his again, after signing in

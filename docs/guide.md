@@ -40,6 +40,8 @@ back to it days later and carry on.
 ### The list
 
 The threads view includes Backlog, Inbox, Running, Hibernating and Archived.
+These Backlog controls are available in the GPUI desktop app as well as the
+older Swift Mac app. Existing saved tasks appear there automatically.
 Backlog holds saved first prompts and conversations you want to return to
 later. Right-click an idle Inbox thread, or open its **…** menu, and choose
 **Move to Backlog**. Its conversation and session stay intact. Choose

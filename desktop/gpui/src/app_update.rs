@@ -547,7 +547,7 @@ impl Threadbear {
     /// under the first two (`hasDrafts`), as Mike may be halfway through.
     fn has_unsent_words(&self, cx: &App) -> bool {
         let boxes = self.composers.values().chain(self.new_thread.composer.iter());
-        boxes.into_iter().any(|c| c.read(cx).holds_anything(cx)) || self.schedule_editor.is_some() || crate::unsent::any(cx)
+        boxes.into_iter().any(|c| self.composer_has_unsaved(c, cx)) || self.schedule_editor.is_some() || crate::unsent::any(cx)
     }
 
     /// Something of the app's own under way that a restart would cut off: a
@@ -576,10 +576,10 @@ impl Threadbear {
     /// message box has words in it named, as that's the one he can't see.
     fn restart_hold(&self, windows: WindowsNow, cx: &App) -> String {
         let s = |text: &str| text.to_owned();
-        if let Some((id, _)) = self.composers.iter().find(|(_, c)| c.read(cx).holds_anything(cx)) {
+        if let Some((id, _)) = self.composers.iter().find(|(_, c)| self.composer_has_unsaved(c, cx)) {
             return format!("the message box in “{}” is sent or cleared", self.thread_title(id));
         }
-        if self.new_thread.composer.as_ref().is_some_and(|c| c.read(cx).holds_anything(cx)) {
+        if self.new_thread.composer.as_ref().is_some_and(|c| self.composer_has_unsaved(c, cx)) {
             return s("the new thread's message box is sent or cleared");
         }
         if self.schedule_editor.is_some() {

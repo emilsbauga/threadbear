@@ -36,6 +36,7 @@ impl SignInAccount {
             "claude" | "" => self.id == "claude-main" || !self.config_dir.trim().is_empty(),
             // codex-main's CODEX_HOME can also be customized by the runner.
             "codex" => !self.config_dir.trim().is_empty(),
+            "pi" => !self.config_dir.trim().is_empty(),
             _ => true,
         }
     }
@@ -73,6 +74,13 @@ pub fn file_safe(id: &str) -> String {
 /// PATH's.
 pub fn script(account: &SignInAccount, cli_path: &str) -> String {
     script_with_command(account, cli_path, login_command(&account.provider))
+}
+
+/// Pi's supported interactive login, isolated to the selected profile.
+pub fn pi_script(config_dir: &str, executable: &str, provider: &str) -> String {
+    let binary = quoted(if executable.is_empty() { "pi" } else { executable });
+    let guidance = quoted(&format!("In Pi, run /login {} to sign in.", one_line(provider)));
+    format!("#!/bin/zsh -l\nprintf '%s\\n' {guidance}\nPI_CODING_AGENT_DIR={} {binary} --no-tools --no-extensions --no-mcp --no-skills --no-context-files\n", quoted(config_dir))
 }
 
 /// The hello's command is a program and arguments, never shell source.

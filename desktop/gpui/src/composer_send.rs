@@ -26,7 +26,9 @@ impl Composer {
     /// The send button (or Stop, or a spinner, as it stands) with its
     /// right-click menu, when there's something for it to offer.
     pub(crate) fn with_send_menu(&self, button: AnyElement, cx: &mut Context<Self>) -> AnyElement {
-        if !self.schedules_from_send(cx) {
+        let can_save = self.thread_id.is_none() && self.chip_data(cx).away.is_none();
+        let can_schedule = self.schedules_from_send(cx);
+        if !can_schedule && !can_save {
             return button;
         }
         let composer = cx.entity().downgrade();
@@ -35,6 +37,13 @@ impl Composer {
             .flex_none()
             .child(button)
             .context_menu(move |menu, _, _| {
+                let menu = if can_save {
+                    let c = composer.clone();
+                    menu.item(PopupMenuItem::new("Save to Backlog").icon(crate::icons::symbol("tray.full")).on_click(move |_, window, cx| {
+                        if let Some(c) = c.upgrade() { c.update(cx, |c, cx| c.save_to_backlog(window, cx)); }
+                    }))
+                } else { menu };
+                if !can_schedule { return menu; }
                 let composer = composer.clone();
                 menu.item(PopupMenuItem::new(SCHEDULE_TITLE).icon(crate::icons::symbol("clock")).on_click(move |_, window, cx| {
                     let Some(composer) = composer.upgrade() else { return };

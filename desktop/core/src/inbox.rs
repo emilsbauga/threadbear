@@ -45,6 +45,10 @@ pub struct ThreadSummary {
     #[serde(deserialize_with = "crate::wire::id")]
     pub id: String,
     #[serde(default, deserialize_with = "crate::wire::field")]
+    pub backlog: Option<crate::backlog::Draft>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub backlogged: Option<bool>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub title: String,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub cwd: String,
@@ -504,7 +508,7 @@ pub fn needs_you_count<'a>(threads: impl IntoIterator<Item = &'a ThreadSummary>,
     threads
         .into_iter()
         .filter(|t| {
-            if !t.wants_you() || t.is_archived() {
+            if !t.wants_you() || t.is_archived() || t.backlog.is_some() || t.backlogged == Some(true) {
                 return false;
             }
             if t.is_starred() {
@@ -566,10 +570,11 @@ pub fn thread_in_tag(tag: &str) -> Option<&str> {
 /// (`inbox::wakes`): one that's idle with nothing for Mike waits for it under
 /// Hibernating rather than sitting in the Inbox.
 pub fn sections_ordered<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl IntoIterator<Item = &'a T>, now_ms: i64, order: InboxOrder, wakes: &HashMap<String, Wake>) -> Vec<Section<T>> {
-    let (mut starred, mut inbox, mut running, mut hibernating, mut archived) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut starred, mut backlog, mut inbox, mut running, mut hibernating, mut archived) = (vec![], vec![], vec![], vec![], vec![], vec![]);
     for row in threads {
         let section = match section_of(summary(row), now_ms, wakes) {
             "archived" => &mut archived,
+            "backlog" => &mut backlog,
             "starred" => &mut starred,
             "hibernating" => &mut hibernating,
             "running" => &mut running,
@@ -577,7 +582,11 @@ pub fn sections_ordered<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl
         };
         section.push(row.clone());
     }
-    sort_sections(starred, inbox, running, hibernating, archived, order, wakes)
+    let mut sections = sort_sections(starred, inbox, running, hibernating, archived, order, wakes);
+    backlog.sort_by_cached_key(|t| (std::cmp::Reverse(summary(t).activity_ms()), summary(t).id.clone()));
+    let at = sections.iter().position(|s| s.key != "starred").unwrap_or(sections.len());
+    sections.insert(at, Section { key: "backlog", title: "Backlog", rows: backlog });
+    sections
 }
 
 /// Which section a thread goes under: "starred", "inbox", "running",
@@ -586,6 +595,8 @@ pub fn sections_ordered<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl
 pub fn section_of(t: &ThreadSummary, now_ms: i64, wakes: &HashMap<String, Wake>) -> &'static str {
     if t.is_archived() {
         "archived"
+    } else if t.backlog.is_some() || t.backlogged == Some(true) {
+        "backlog"
     } else if t.is_starred() {
         "starred"
     } else if t.snoozed(now_ms) {
@@ -931,7 +942,7 @@ mod tests {
         assert!(thread(1, json!({ "lastSeq": 12 })).unread());
         assert!(!thread(1, json!({})).unread());
         let none: [ThreadSummary; 0] = [];
-        assert_eq!(sections(&none, now()).iter().map(|s| s.key).collect::<Vec<_>>(), ["inbox"]);
+        assert_eq!(sections(&none, now()).iter().map(|s| s.key).collect::<Vec<_>>(), ["backlog", "inbox"]);
     }
 
     #[test]

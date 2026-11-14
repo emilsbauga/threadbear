@@ -92,7 +92,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 
 | ID | Feature | What it does | How in GPUI | Route | Size | Swift |
 |---|---|---|---|---|---|---|
-| `sidebar.sections` | Sections | Starred, Inbox, Running, Hibernating, Archived, foldable with counts | Foldable headings over a gpui-kit list, from inbox logic. | build | M | `SidebarView` |
+| `sidebar.sections` | Sections | Starred, Backlog, Inbox, Running, Hibernating, Archived, foldable with counts; saved prompts and deferred conversations stay out of Inbox | Foldable headings over a gpui-kit list, from inbox logic. | build | M | `SidebarView` |
 | `sidebar.sort` | Inbox sort | Needs you first, Newest or Oldest, from the heading arrows | gpui-kit menu on the heading. | kit | S | `SidebarView` (`InboxOrderMenu`) |
 | `sidebar.search` | Thread search | Filters every section on title and last reply, opens folds | `Input` feeding a filter in the inbox logic. | kit | S | `SidebarView` (`ThreadSearch`) |
 | `sidebar.newthread` | New thread button | Compose icon, lit while drafting | Drawn button with `Tooltip`. | build | S | `SidebarView` |

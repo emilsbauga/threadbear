@@ -37,6 +37,8 @@ The shared files most features hook into:
 
 - Pi accounts: `runner/src/pi-profiles.ts`, `config.ts`, `accounts.ts`, the optional
   `hello.piProfiles` field and `ThreadbearCore/Protocol/PiProfile.swift`.
+  GPUI reads this metadata in `desktop/core/src/logins.rs`; its interactive
+  sign-in script is in `desktop/core/src/sign_in.rs` and `gpui/src/header.rs`.
   Omit `pi` in runner.json to leave it unused. RPC sessions, the authenticated
   loopback tool bridge and its explicit Pi extension live in
   `runner/src/adapters/pi/`, registered in `main.ts`. Shared tool policy lives in
@@ -270,8 +272,18 @@ list and handles selection; `ComposerView.swift` connects it to the editor.
 The `skills.list` RPC in `runner/src/rpc.ts` calls `Runner.listSkills`, which
 uses the Codex adapter's short-lived `skills/list` query. Removing the picker
 and these hooks leaves typed `$skill-name` messages working as before.
+The GPUI palette uses `desktop/gpui/src/slash_palette.rs` to merge Codex's
+`skills.list` into commands and `desktop/core/src/slash.rs` to rank titles.
 
 ## Backlog draft threads
+
+The GPUI client lives in `desktop/core/src/backlog.rs` (saved prompt and file
+metadata), `inbox.rs` and `remote.rs` (section placement), and
+`desktop/gpui/src/backlog.rs` (create, edit, start, file preview/removal).
+The sidebar supplies move/delete menus; `drafts.rs` keeps unsaved local edits
+across quits, and Highlights draws prepared context. Removing only the client
+does not remove saved runner data. The Evolving titles switch is in
+`gpui/src/settings_window.rs` and calls the existing librarian policy.
 
 External intake is independent: `convex/intake.ts`, the two `/intake/v1/` routes
 in `convex/http.ts`, and `intakeClients`/`intakeMessages` in `convex/schema.ts`.

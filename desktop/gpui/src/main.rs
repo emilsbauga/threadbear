@@ -6,6 +6,7 @@
 #![cfg_attr(not(feature = "automation"), allow(dead_code, unused_imports))]
 mod a11y;
 mod activity;
+mod backlog;
 mod activity_panels;
 mod agent_browser;
 mod about_window;

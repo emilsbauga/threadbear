@@ -1321,11 +1321,17 @@ impl SidePane {
         let asks = thread.asks.clone().unwrap_or_default();
         let tools: HashSet<String> = thread.patches().into_iter().filter(|p| !p.matched.clone().unwrap_or_default().is_empty()).map(|p| p.id).collect();
         let tool_panels: Vec<Panel> = thread.panels().into_iter().filter(|panel| tools.contains(&panel.patch)).collect();
-        if sections.is_empty() && asks.is_empty() && projects.is_empty() && tool_panels.is_empty() && scheduled.is_empty() && subagents.is_empty() && started.is_empty() {
+        let task_context = thread.backlog.as_ref().and_then(|d| d.context.as_deref()).filter(|c| !c.trim().is_empty());
+        if task_context.is_none() && sections.is_empty() && asks.is_empty() && projects.is_empty() && tool_panels.is_empty() && scheduled.is_empty() && subagents.is_empty() && started.is_empty() {
             return crate::files::pane_note("Nothing here yet. Files, links and commits from this thread show up here as it works.", p).into_any_element();
         }
         let flags = self.flags.get(&thread.id).copied().unwrap_or_default();
         let mut list = v_flex().pb(px(16.));
+        if let Some(context) = task_context {
+            list = list.child(v_flex().gap(px(4.)).px(px(LEADING)).pt(px(14.))
+                .child(div().id("backlog-context-heading").test_support().role(Role::Heading).aria_label("Context for this task").text_size(px(style::size::LABEL)).text_color(p.fg).child("Context for this task"))
+                .child(div().text_size(px(style::size::LABEL)).text_color(p.secondary).child(context.to_owned())));
+        }
 
         for panel in tool_panels {
             list = list.child(crate::patches::tool_card(&panel, thread.id.clone(), p, cx));
@@ -1883,6 +1889,9 @@ impl SidePane {
 
     #[cfg(feature = "automation")]
     fn fill_highlights_dump(&self, pane: &mut serde_json::Map<String, Value>, thread: &ThreadSummary, cx: &App) {
+        if let Some(context) = thread.backlog.as_ref().and_then(|d| d.context.as_deref()) {
+            pane.insert("taskContext".into(), json!(context));
+        }
         if self.highlights_unsupported {
             pane.insert("empty".into(), json!("This runner doesn't keep highlights yet."));
             return;

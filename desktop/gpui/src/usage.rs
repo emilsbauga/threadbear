@@ -224,9 +224,10 @@ impl Threadbear {
         let content = (width - style::zoomed(32.)).max(0.);
         let mut column = v_flex().w_full().p(px(16.)).gap(px(14.));
         if rules::needs_newer_runner(accounts) {
-            column = column.child(div().text_size(px(12.)).line_height(px(15.)).text_color(p.secondary).child(rules::NEWER_RUNNER));
+            let note = if !accounts.is_empty() && accounts.iter().all(|a| a.provider_id() == "pi") { "Pi usage statistics are not available yet." } else { rules::NEWER_RUNNER };
+            column = column.child(div().text_size(px(12.)).line_height(px(15.)).text_color(p.secondary).child(note));
         }
-        if let Some(stats) = stats {
+        if let Some(stats) = stats.filter(|_| accounts.iter().any(|a| a.provider_id() != "pi")) {
             let tiles = rules::tiles(stats, accounts, now, &zone);
             let chart = rules::chart(stats, accounts, self.usage.range, now, &zone);
             let measuring: &Window = window;

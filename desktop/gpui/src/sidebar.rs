@@ -280,6 +280,7 @@ pub(crate) enum MenuAction {
     Star(bool),
     Archive,
     Unarchive,
+    Backlog(bool),
     Wake,
     Hibernate(&'static str),
     HibernateUntilRestart,
@@ -758,7 +759,7 @@ impl Threadbear {
             return;
         }
         let Some(thread) = self.threads.get(&id) else { return };
-        if !thread.is_archived() {
+        if !thread.is_archived() && thread.backlog.is_none() && thread.backlogged != Some(true) {
             return;
         }
         let title = format!("Delete \u{201C}{}\u{201D}?", thread.title);
@@ -868,6 +869,9 @@ impl Threadbear {
             MenuAction::Star(on) => self.star_row(&id, on, cx),
             MenuAction::Archive => self.archive_row_sliding(id, window, cx),
             MenuAction::Unarchive => self.unarchive_row(&id, cx),
+            MenuAction::Backlog(later) => {
+                self.set_backlogged(&id, later, cx);
+            }
             MenuAction::Wake => self.wake_row(&id, cx),
             MenuAction::Hibernate(preset) => {
                 let until = rows::snooze_date(preset, &rows::local_now());
@@ -935,6 +939,14 @@ impl Threadbear {
             rows.push(MenuRow::item("Delete…", "trash", MenuAction::Delete));
         } else {
             rows.push(MenuRow::item("Archive", "archivebox", MenuAction::Archive));
+            if t.backlog.is_some() || t.backlogged == Some(true) {
+                rows.push(MenuRow::item("Delete…", "trash", MenuAction::Delete));
+            }
+            if t.backlogged == Some(true) {
+                rows.push(MenuRow::item("Move to Inbox", "tray.and.arrow.up", MenuAction::Backlog(false)));
+            } else if t.backlog.is_none() && !t.busy() && !t.working_in_background() && t.snoozed_until.is_none() {
+                rows.push(MenuRow::item("Move to Backlog", "tray.full", MenuAction::Backlog(true)));
+            }
         }
         // Projects ▸ (`ThreadProjectsMenu`): projects are this Mac's runner's,
         // and another runner's threads aren't in them.
@@ -1142,7 +1154,7 @@ impl Threadbear {
             for section in sections.iter() {
                 // Empty sections other than Inbox are left out, and Inbox too
                 // while searching (`ThreadSection`).
-                if section.rows.is_empty() && (section.key != "inbox" || searching) {
+                if section.rows.is_empty() && (!matches!(section.key, "inbox" | "backlog") || searching) {
                     continue;
                 }
                 let folded = !searching && self.folded.contains(section.key);
@@ -1194,7 +1206,7 @@ impl Threadbear {
                     });
                     body = place(t.id.clone(), far.row(&t.id, row, gap.unwrap_or(0.)), body);
                     // Its sub-agents' rows (a few, and rare) are always built.
-                    if !matches!(section.key, "hibernating" | "archived") {
+                    if !matches!(section.key, "backlog" | "hibernating" | "archived") {
                         for (i, sub) in self.render_subagents(t, section.key, now, &p, cx).into_iter().enumerate() {
                             body = place(format!("sub:{}:{i}", t.id), sub, body);
                         }
@@ -1348,6 +1360,7 @@ impl Threadbear {
         let symbol = match key {
             "starred" => "star",
             "inbox" => "tray",
+            "backlog" => "tray.full",
             "running" => "bolt",
             "hibernating" => "moon.zzz",
             _ => "archivebox",
@@ -2123,7 +2136,7 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
             // An inbox heading, as clicking it does. The Rust app's section keys
             // are the Swift enum's raw values.
             let section = cmd["section"].as_str().unwrap_or("");
-            let key: &'static str = ["starred", "inbox", "running", "hibernating", "archived"].into_iter().find(|k| *k == section).ok_or_else(|| format!("section must be one of starred, inbox, running, hibernating, archived, not {section:?}"))?;
+            let key: &'static str = ["starred", "backlog", "inbox", "running", "hibernating", "archived"].into_iter().find(|k| *k == section).ok_or_else(|| format!("section must be one of starred, inbox, running, hibernating, archived, not {section:?}"))?;
             app.update(cx, |t, cx| {
                 if name == "expand" {
                     t.folded.remove(key);

@@ -9,6 +9,8 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase", default)]
 pub struct SlashCommand {
     #[serde(default, deserialize_with = "crate::wire::field")]
+    pub title: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub name: String,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub description: Option<String>,
@@ -252,13 +254,32 @@ pub fn in_category(command: &SlashCommand, category: Category, recent: &[String]
 pub fn matches(commands: &[SlashCommand], query: &str, category: Category, recent: &[String]) -> Vec<SlashCommand> {
     let q = query.to_lowercase();
     let rank = |c: &SlashCommand| -> Option<u8> {
+        if q.is_empty() { return Some(0); }
+        if let Some(title) = &c.title {
+            let normalize = |s: &str| crate::inbox::fold(s).split(|ch: char| !ch.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+            let query = normalize(query);
+            let words: Vec<_> = query.split_whitespace().collect();
+            let title_rank = |s: &str| -> Option<u8> {
+                let s = normalize(s);
+                if s == query { Some(0) }
+                else if s.starts_with(&query) { Some(10) }
+                else if words.iter().all(|w| s.split_whitespace().any(|v| v.starts_with(w))) { Some(20) }
+                else if s.contains(&query) { Some(30) }
+                else if words.iter().all(|w| s.contains(w)) { Some(40) }
+                else { None }
+            };
+            if let Some(r) = title_rank(title) { return Some(r); }
+            if let Some(r) = title_rank(&c.name) { return Some(50 + r); }
+            let all = normalize(&format!("{title} {} {}", c.name, c.description.as_deref().unwrap_or("")));
+            return words.iter().all(|w| all.contains(w)).then_some(100);
+        }
         let name = c.name.to_lowercase();
-        if q.is_empty() || name.starts_with(&q) {
-            Some(0)
+        if name.starts_with(&q) {
+            Some(50)
         } else if name.contains(&q) {
-            Some(1)
+            Some(51)
         } else if c.description.as_deref().is_some_and(|d| d.to_lowercase().contains(&q)) {
-            Some(2)
+            Some(100)
         } else {
             None
         }
@@ -270,7 +291,19 @@ pub fn matches(commands: &[SlashCommand], query: &str, category: Category, recen
         .filter_map(|(i, c)| rank(c).map(|r| (r, i, c)))
         .map(|(r, i, c)| if category == Category::Recent { (r, recent.iter().position(|n| n == &c.name).unwrap_or(i), c) } else { (r, i, c) })
         .collect();
-    ranked.sort_by_key(|(r, i, _)| (*r, *i));
+    ranked.sort_by(|(ra, ia, a), (rb, ib, b)| {
+        ra.cmp(rb).then_with(|| {
+            if category == Category::Recent { return ia.cmp(ib); }
+            // Keep ordinary commands in their runner order, and sort equally
+            // ranked skill titles as the original skills picker did.
+            (a.title.is_some() as u8).cmp(&(b.title.is_some() as u8)).then_with(|| {
+                match (&a.title, &b.title) {
+                    (Some(a), Some(b)) => crate::inbox::fold(a).cmp(&crate::inbox::fold(b)),
+                    _ => ia.cmp(ib),
+                }
+            }).then_with(|| a.path.cmp(&b.path)).then_with(|| ia.cmp(ib))
+        })
+    });
     ranked.into_iter().map(|(_, _, c)| c.clone()).collect()
 }
 

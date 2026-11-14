@@ -45,6 +45,9 @@ pub(crate) struct PictureChip {
 }
 
 pub struct Composer {
+    pub(crate) backlog_save: Option<Task<()>>,
+    pub(crate) backlog_sending: bool,
+    pub(crate) backlog_attachments: Vec<threadbear_core::backlog::Attachment>,
     /// None for the new-thread page's box.
     pub(crate) thread_id: Option<String>,
     pub(crate) client: Arc<Client>,
@@ -189,6 +192,7 @@ impl Composer {
             // The send button, the picture strip and the slash palette follow
             // what's in the box.
             InputEvent::Change => {
+                this.backlog_changed(cx);
                 this.palette_text_changed(cx);
                 // Marks, and a correction as a word ends (composer_spelling.rs).
                 this.spelling_after_edit(window, cx);
@@ -204,6 +208,9 @@ impl Composer {
         });
         crate::text_services::register_text_box(&input);
         Composer {
+            backlog_save: None,
+            backlog_sending: false,
+            backlog_attachments: vec![],
             thread_id,
             client,
             app,
@@ -255,7 +262,7 @@ impl Composer {
     }
 
     /// A new thread is on its way from this box (`AppModel.creatingThread`).
-    fn creating(&self, cx: &App) -> bool {
+    pub(crate) fn creating(&self, cx: &App) -> bool {
         self.thread_id.is_none() && self.app.upgrade().is_some_and(|a| a.read(cx).new_thread.creating)
     }
 
@@ -436,8 +443,14 @@ impl Composer {
         threadbear_core::inline_chips::holds_anything(&text, &self.box_chips(cx))
     }
 
+    pub(crate) fn backlog_has_changes(&self, saved: &threadbear_core::backlog::Draft, cx: &App) -> bool {
+        let (text, images) = self.draft(cx);
+        self.backlog_sending || self.copying_picture(cx) || self.restore.is_some()
+            || composer::message_text(&text, 1) != saved.text || images != saved.images || self.backlog_attachments != saved.attachments
+    }
+
     /// A card's or thread's chip is its link in the draft (composer_inline.rs).
-    fn draft(&self, cx: &App) -> (String, Vec<ImageRef>) {
+    pub(crate) fn draft(&self, cx: &App) -> (String, Vec<ImageRef>) {
         let text = self.input.read(cx).value().to_string();
         let end = text.len();
         threadbear_core::inline_chips::draft_in(&text, &self.box_chips(cx), 0..end)
@@ -524,13 +537,17 @@ impl Composer {
 
     fn has_send_content(&self, cx: &App) -> bool {
         let (text, images) = self.draft(cx);
-        composer::can_send(&text, images.len()) || !self.card.picks.is_empty() || !self.card.next_picks.is_empty() || !self.card.explain.is_empty()
+        composer::can_send(&text, images.len()) || !self.backlog_attachments.is_empty() || !self.card.picks.is_empty() || !self.card.next_picks.is_empty() || !self.card.explain.is_empty()
     }
 
     /// AppModel.send: the box empties at once and the message shows dimmed
     /// at the end of the transcript until the runner has it; it comes back
     /// if the runner doesn't take it.
     pub(crate) fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.backlog_sending { return; }
+        if self.backlog_draft(cx).is_some() && !self.loading_pictures(cx) {
+            return self.send_backlog(window, cx);
+        }
         if self.loading_pictures(cx) { return; }
         // The arrow hops as Return lands, when there's something to send
         // (Mike picked it, 13 Nov). None under Reduce Motion.
@@ -1588,6 +1605,12 @@ impl Render for Composer {
         if self.editing.is_none() {
             if let Some(restore) = self.restore.take() {
                 self.apply_restore(restore, window, cx);
+                if self.backlog_draft(cx).is_some() {
+                    self.input.update(cx, |s, cx| {
+                        let end = s.value().len();
+                        s.set_selected_range(end..end, cx);
+                    });
+                }
             }
         }
         let mentions = threadbear_core::board::take_mentions(&mut self.pending_mentions, self.editing.as_ref().map(|e| e.seq), self.restore.is_some());
@@ -1618,7 +1641,8 @@ impl Render for Composer {
             self.stopping = None;
         }
         let strip = self.render_strip(cx);
-        let creating = self.creating(cx);
+        let backlog_files = self.render_backlog_files(cx);
+        let creating = self.creating(cx) || self.backlog_sending;
         // Typing, answering and sending wait while the thread moves.
         let locked = creating || moving.is_some();
         let send_button = self.render_send_button(running, creating, cx);
@@ -1640,6 +1664,7 @@ impl Render for Composer {
         // don't go with no sign of them (composer_answers.rs).
         let answer_chips = self.render_answer_chips(cx);
         let needs_you = self.open_card(cx).is_some_and(|c| !c.is_done());
+        self.palette_text_changed(cx);
         let palette = self.render_palette(window, cx);
         let width = self.card_width.clone();
         let top = self.box_top.clone();
@@ -1657,7 +1682,7 @@ impl Render for Composer {
             (Some(id), Some(app)) => crate::app::Threadbear::refusal_offer(&app, id, cx),
             _ => None,
         };
-        let body = v_flex().w_full().gap(px(style::COMPOSER_GAP)).p(px(style::COMPOSER_PADDING)).children(editing_banner).children(answer_chips).when_some(strip, |s, strip| s.child(strip)).child(self.render_text_field(locked, cx)).child(controls);
+        let body = v_flex().w_full().gap(px(style::COMPOSER_GAP)).p(px(style::COMPOSER_PADDING)).children(editing_banner).children(answer_chips).when_some(strip, |s, strip| s.child(strip)).children(backlog_files).child(self.render_text_field(locked, cx)).child(controls);
         // The transcript's reading column: 780 wide at most, centred, with
         // the same side insets once the window is narrower.
         h_flex()

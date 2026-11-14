@@ -461,7 +461,7 @@ impl Threadbear {
         let settings_open_rows = settings.saved.projects_open_rows.clone();
         let folded: HashSet<&'static str> = match &settings.saved.collapsed_sections {
             // The section keys are the Swift enum's raw values.
-            Some(saved) => ["starred", "inbox", "running", "hibernating", "archived"].into_iter().filter(|k| saved.iter().any(|s| s == k)).collect(),
+            Some(saved) => ["starred", "backlog", "inbox", "running", "hibernating", "archived"].into_iter().filter(|k| saved.iter().any(|s| s == k)).collect(),
             None => HashSet::from(["hibernating", "archived"]),
         };
         let mut this = Threadbear {
@@ -1315,7 +1315,11 @@ impl Threadbear {
         let (client, app) = (self.client.clone(), cx.entity().downgrade());
         let composer = cx.new(|cx| Composer::new(Some(id.to_owned()), client, app, window, cx));
         self.composers.insert(id.to_owned(), composer.clone());
-        self.restore_saved_draft(id, &composer, cx);
+        if let Some(saved) = self.threads.get(id).and_then(|t| t.backlog.clone()).filter(|d| d.revision > 0) {
+            self.restore_backlog_draft(id, saved, &composer, cx);
+        } else {
+            self.restore_saved_draft(id, &composer, cx);
+        }
         composer
     }
 
@@ -1616,6 +1620,7 @@ impl Threadbear {
             "draft": self.selected.clone().unwrap_or_else(|| "new".into()),
             "text": composer.map(|c| c.draft_text(cx)).unwrap_or_default(),
             "images": composer.map_or(0, |c| c.draft_images(cx)),
+            "attachments": composer.map(|c| c.backlog_attachments.iter().map(|a| a.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
             "creating": self.selected.is_none() && self.new_thread.creating,
         });
         if let Some(composer) = composer {

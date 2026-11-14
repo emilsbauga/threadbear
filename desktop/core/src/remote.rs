@@ -81,6 +81,8 @@ fn summary(row: &Value) -> Option<ThreadSummary> {
     let status = row["status"].as_str().filter(|s| !s.is_empty()).unwrap_or("idle").to_owned();
     Some(ThreadSummary {
         id,
+        backlog: (row["backlog"] == true).then(crate::backlog::Draft::default),
+        backlogged: row["backlogged"].as_bool(),
         title: text("title"),
         cwd: text("cwd"),
         account_id: text("accountId"),

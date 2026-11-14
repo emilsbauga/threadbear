@@ -12,6 +12,7 @@
 use crate::app::Threadbear;
 use crate::{call, RT};
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -353,6 +354,22 @@ fn text<'a>(cmd: &'a Value, key: &str) -> &'a str {
 /// is what's on screen now.
 fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
     match text(cmd, "cmd") {
+        "save-backlog" => {
+            let composer = app.read(cx).composer(cx).ok_or("no composer")?;
+            composer.update(cx, |c, cx| c.save_to_backlog(window, cx));
+            Ok(json!("ok"))
+        }
+        "backlog" | "inbox" => {
+            let id = cmd["id"].as_str().map(str::to_owned).or_else(|| app.read(cx).selected.clone()).ok_or("no selected thread")?;
+            app.update(cx, |app, cx| app.set_backlogged(&id, text(cmd, "cmd") == "backlog", cx));
+            Ok(json!("ok"))
+        }
+        "delete-backlog" => {
+            let id = app.read(cx).selected.clone().ok_or("no selected thread")?;
+            app.update(cx, |app, cx| app.run_menu_action(Some(id), crate::sidebar::MenuAction::Delete, window, cx));
+            Ok(json!("ok"))
+        }
+        "dialog-state" => Ok(json!({"open":window.has_active_dialog(cx)})),
         "point" | "window" | "room" | "account-ids" | "streaming" | "debug-info" | "runners-front" => crate::automation_compat::step(app, cmd, window, cx),
         "size" => shell_step(app, cmd, window, cx),
         // Whether anything's on its way across the window (the panels
@@ -1289,6 +1306,10 @@ fn shell_step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &m
             Ok(json!(if editing { "ok editing" } else { "error that message can't be edited" }))
         }
         "signin" => {
+            if cmd["script"].as_bool() == Some(true) {
+                let id = cmd["account"].as_str().ok_or("account is required")?;
+                return Ok(json!(app.read(cx).pi_login_script(id).ok_or("no configured Pi login")?));
+            }
             if cmd["sendAgain"].as_bool() == Some(true) {
                 let status = app.read(cx).signin_status(cx);
                 if status != "ok none" {

@@ -80,7 +80,7 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         "star.fill" => return Some(Icon::default().data(STAR_FILLED)),
         "bubble.left.fill" => return Some(Icon::default().data(BUBBLE_FILLED)),
         "star.slash" => IconName::StarOff,
-        "tray" => IconName::Inbox,
+        "tray" | "tray.full" => IconName::Inbox,
         "tray.and.arrow.up" => IconName::ArchiveRestore,
         "bolt" => IconName::Zap,
         "moon" | "moon.zzz" => IconName::Moon,
