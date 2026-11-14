@@ -26,6 +26,7 @@ Object.assign(process.env, {
 });
 
 export const TB = path.join(import.meta.dirname, '..', '..', 'bin', 'tb');
+const fixtureRoots = new Set<string>();
 
 export function sh(cwd: string, cmd: string): string {
   return execFileSync('/bin/sh', ['-c', cmd], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -43,6 +44,7 @@ export const PATCH = (w: string) => `export default { worktree: ${w} };\n`;
 // A repo at <root>/proj on main, with a runner/ folder and the given patch.
 export function makeRepo(patch = PATCH(`{ setup: "echo setting up in $PWD; touch .setup-ran" }`)): { root: string; main: string } {
   const root = fs.realpathSync(tmpDir('tb-wt-'));
+  fixtureRoots.add(root);
   const main = path.join(root, 'proj');
   fs.mkdirSync(main);
   sh(main, 'git init -q -b main');
@@ -64,6 +66,10 @@ export function makeBranch(main: string, id8 = 'abcd1234'): LandTarget {
 }
 
 export function commit(dir: string, files: Record<string, string>, message: string): void {
+  const real = fs.realpathSync(dir);
+  if (![...fixtureRoots].some((root) => real.startsWith(root + path.sep))) {
+    throw new Error(`Refusing test commit outside its fixture repositories: ${real}`);
+  }
   write(dir, files);
   sh(dir, `git add -A && git commit -qm "${message}"`);
 }

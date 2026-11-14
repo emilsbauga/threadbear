@@ -26,6 +26,12 @@ function branches(main: string, names: string[]): LandTarget[] {
   });
 }
 
+test('test commits refuse paths outside fixture repositories before writing', () => {
+  const { root } = makeRepo();
+  assert.throws(() => commit(root, { 'must-not-exist.txt': 'no' }, 'Unsafe'), /Refusing test commit/);
+  assert.equal(fs.existsSync(path.join(root, 'must-not-exist.txt')), false);
+});
+
 async function queuedBehindA(root: string, main: string, others: LandTarget[], a: LandTarget, check: string) {
   const first = land({ ...a, check }, capture().opts);
   await until(() => fs.existsSync(path.join(root, 'checking')), "a's check");
@@ -361,7 +367,12 @@ test('a commit made in the holder while its group check runs is carried onto its
     await until(() => caps.every((x) => x.out.some((l) => l.startsWith('Waiting for another landing'))), 'b and c waiting');
     write(root, { release: '' });
     assert.equal(await first, 0);
-    await until(() => fs.existsSync(path.join(root, 'holder')), 'the group check');
+    // Redirection creates the file before pwd writes it. An empty read
+    // resolves to this test process's cwd, outside the fixture repo.
+    await until(() => {
+      try { return fs.readFileSync(path.join(root, 'holder'), 'utf8').trim().length > 0; }
+      catch { return false; }
+    }, 'the group check');
     const holder = fs.realpathSync(fs.readFileSync(path.join(root, 'holder'), 'utf8').trim());
     commit(holder, { 'fix.txt': 'fix\n' }, 'Fix during the check');
   } finally {
