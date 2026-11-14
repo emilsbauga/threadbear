@@ -15,9 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).
 use crate::style::px;
-use serde_json::json;
-#[cfg(feature = "automation")]
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use threadbear_core::composer::effort_title;
 use threadbear_core::logins::model_title_with;
