@@ -22,6 +22,15 @@ Feature: Sending a message
     Then the composer holds a new line after "first line"
     And the transcript doesn't show my message "first line"
 
+  # Option-Return is Shift-Return (ComposerView's keyDown). The Swift
+  # automation's `return` only knows Shift, and it's frozen, so pending there.
+  @composer.return @swift-pending
+  Scenario: Option-Return starts a new line too
+    When I type "first line" in the composer
+    And I press Option-Return
+    Then the composer holds a new line after "first line"
+    And the transcript doesn't show my message "first line"
+
   @composer.listcontinue
   Scenario: Shift-Return carries a numbered list on
     When I type "1. first" in the composer
@@ -69,13 +78,45 @@ Feature: Sending a message
     And I type "and " in the composer
     And I paste the picture into the composer
     And I type "please" in the composer
-    And I press Return
+    Then the composer holds 2 pictures
+    When I press Return
     Then the transcript shows my message "compare [Picture 1] and [Picture 2] please"
 
   @composer.filedrop @composer.dropanywhere
   Scenario: Dropping a picture on the thread adds it to the composer
     When I drop the picture on the transcript
     Then the composer holds 1 picture
+
+  # Let go over the box's words, a drop goes in where it was let go
+  # (`characterIndexForInsertion`), not where the cursor was; anywhere else
+  # over the thread it goes at the cursor. The Swift app's `drop` can't aim at
+  # a letter, so it's pending there. FileDrop switches GPUI out of keyboard
+  # modality before hit testing, including when the box already has words.
+  @composer.filedrop @swift-pending
+  Scenario: A file let go over the message's words goes in where it was let go
+    When I type "and the rest" in the composer
+    And I drop a file on the first letter of the composer's words
+    Then the composer starts with the dropped file's path, then "and the rest"
+
+  @composer.filedrop @swift-pending
+  Scenario Outline: A file dropped among existing words keeps the words on both sides
+    When I paste "<words>" into the composer
+    And I drop a file at byte <offset> of the composer's words
+    Then the composer has the dropped file between "<before>" and "<after>"
+
+    Examples:
+      | words              | offset | before  | after       |
+      | before and after   | 7      | before  | and after   |
+      | first\nsecond line | 6      | first\n | second line |
+      | café and after     | 5      | café    | and after   |
+      | café and after     | 6      | café    | and after   |
+
+  @composer.filedrop @composer.dropanywhere
+  Scenario: Dropping a picture on the transcript preserves words already in the composer
+    When I type "look at this" in the composer
+    And I drop the picture on the transcript
+    Then the composer says the lines "look at this [Picture 1] "
+    And the composer holds 1 picture
 
   @composer.chiphover
   Scenario: Hovering a chip shows its picture

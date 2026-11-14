@@ -22,6 +22,19 @@ test('configured Pi profiles register distinct accounts without reading a login 
   assert.equal(isCliProvider('pi'), false);
 });
 
+test('Pi profiles coexist with installed ACP agents without the former experiment gate', () => {
+  const home = tmpDir();
+  const openCode = path.join(home, 'opencode');
+  fs.writeFileSync(openCode, '#!/bin/sh\n', { mode: 0o755 });
+  writeRunnerJson(home, { pi: { profiles: [{ id: 'local', connection: { provider: 'ollama', model: 'test-model' } }] }, opencodePath: openCode, cursorPath: path.join(home, 'no-cursor') });
+  const cfg = loadConfig({ HOME: home, PATH: '', THREADBEAR_HOME: home, THREADBEAR_CLAUDE_MAIN_DIR: path.join(home, 'no-claude'), THREADBEAR_CODEX_MAIN_DIR: path.join(home, 'no-codex'), THREADBEAR_ACCOUNTS_DIR: path.join(home, 'no-accounts'), THREADBEAR_CONNECTORS_URL: 'off' });
+  const accounts = discoverAccounts(cfg);
+  assert.deepEqual(accounts.map(a => a.id), ['pi:local', 'opencode-main']);
+  assert.equal(accounts[0].provider, 'pi');
+  assert.equal(accounts[1].provider, 'opencode');
+  assert.equal(accounts[0].defaultModel, 'test-model');
+});
+
 test('a Pi-only runner creates a runnable Pi thread with the configured model and normal completion events', { timeout: 300_000 }, async t => {
   const home = tmpDir(), owned = new Set<number>();
   writeRunnerJson(home, { pi: { profiles: [{ id: 'test', connection: { provider: 'test', model: 'model-one' } }] } });

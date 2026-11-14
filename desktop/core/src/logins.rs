@@ -10,30 +10,49 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelChoice {
+    #[serde(default, deserialize_with = "crate::wire::id")]
     pub id: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub model: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub title: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub description: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::list")]
     pub effort_levels: Vec<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub default_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Account {
+    #[serde(default, deserialize_with = "crate::wire::id")]
     pub id: String,
+    // The provider selects the CLI and credential folder. A wrong type must
+    // not turn a Codex account into Claude through provider_id's old fallback.
+    #[serde(default)]
     pub provider: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub title: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub default_model: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::list")]
     pub models: Vec<ModelChoice>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub default_effort: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub email: Option<String>,
     /// "Max", "Team", "Pro Lite": the Usage panel's tip on a login.
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub plan: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub note: Option<String>,
     /// Kept as it came (AccountUsage), for the badge a later slice draws.
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub usage: Option<Value>,
     /// Where the login's CLI keeps its sign-in, for Sign in… (sign_in.rs).
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub config_dir: String,
 }
 
@@ -67,23 +86,35 @@ impl Account {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Pool {
+    #[serde(default, deserialize_with = "crate::wire::id")]
     pub id: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub title: String,
+    #[serde(default, deserialize_with = "crate::wire::list")]
     pub account_ids: Vec<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub icon: Option<String>,
     /// Folders whose threads start in this pool (`Pools.forFolder`).
+    #[serde(default, deserialize_with = "crate::wire::list")]
     pub folders: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RunnerDefaults {
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub cwd: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub account_id: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub pool_id: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub model: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::map")]
     pub models: HashMap<String, String>,
+    #[serde(default, deserialize_with = "crate::wire::map")]
     pub efforts: HashMap<String, String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
     pub permission_mode: Option<String>,
 }
 
@@ -100,11 +131,21 @@ pub struct RunnerLogins {
     pub accounts: Vec<Account>,
     pub pools: Vec<Pool>,
     pub defaults: RunnerDefaults,
+    /// Sign-in commands declared by this runner, replaced on every hello.
+    pub login_commands: HashMap<String, String>,
 }
 
 impl RunnerLogins {
+    pub fn login_command(&self, provider: &str) -> &str {
+        self.login_commands.get(provider).map(String::as_str).unwrap_or_else(|| crate::sign_in::login_command(provider))
+    }
     pub fn from_hello(hello: &Value) -> RunnerLogins {
-        RunnerLogins { accounts: accounts_from(&hello["accounts"]), pools: pools_from(&hello["pools"]), defaults: serde_json::from_value(hello["defaults"].clone()).unwrap_or_default() }
+        let login_commands = hello["providers"].as_array().into_iter().flatten().filter_map(|p| {
+            let id = p["id"].as_str().filter(|s| !s.is_empty())?;
+            let command = p["loginCommand"].as_str()?;
+            Some((id.to_owned(), command.trim().to_owned()))
+        }).collect();
+        RunnerLogins { accounts: accounts_from(&hello["accounts"]), pools: pools_from(&hello["pools"]), defaults: hello.get("defaults").cloned().and_then(crate::wire::read).unwrap_or_default(), login_commands }
     }
 
     /// `accounts.updated`: the logins, which replace the ones from `hello`.
@@ -159,7 +200,7 @@ fn pools_from(v: &Value) -> Vec<Pool> {
 }
 
 fn lossy<T: serde::de::DeserializeOwned>(v: &Value) -> Vec<T> {
-    v.as_array().map(|items| items.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect()).unwrap_or_default()
+    v.as_array().map(|items| items.iter().filter_map(|item| crate::wire::read(item.clone())).collect()).unwrap_or_default()
 }
 
 /// How a provider id reads (Providers.info).

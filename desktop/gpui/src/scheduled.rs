@@ -469,7 +469,7 @@ impl Threadbear {
             .id(ElementId::Name(format!("schedule-{id}").into()))
             .test_support()
             // Named by its tip, as the Swift app's rows are found.
-            .aria_label(tip.clone())
+            .role(Role::ListItem).aria_label(tip.clone())
             .tip(tip.clone())
             .relative()
             .gap(px(3.))

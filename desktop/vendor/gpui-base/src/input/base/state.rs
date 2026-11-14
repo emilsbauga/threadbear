@@ -196,6 +196,16 @@ pub(crate) fn init(cx: &mut App) {
             },
             Some(CONTEXT),
         ),
+        // Option-Return is a new line too, as AppKit's text views take it
+        // (Threadbear's message box: ComposerView's keyDown treats Option as Shift).
+        KeyBinding::new(
+            "alt-enter",
+            Enter {
+                secondary: false,
+                shift: true,
+            },
+            Some(CONTEXT),
+        ),
         KeyBinding::new(
             if cx.platform_info().is_mac() {
                 "cmd-enter"
@@ -1263,6 +1273,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) {
         let content = value.into();
         self.inline_tokens = None;
+        self.extras.value_set();
         self.undo_manager.set_ignoring(true);
         self.emit_events = false;
         self.replace_text(content.text().clone(), window, cx);
@@ -3646,6 +3657,13 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// end of that row rather than at the start of the next one. Callers that place or extend a
     /// selection must pass it on, or clicking past the last glyph of a wrapped row leaves a
     /// caret one row below the pointer.
+    /// The text offset nearest a window point, as a click there would put
+    /// the caret: past a row's end is that row's end, above or below the text
+    /// its first or last row. For a drop to go where it's let go.
+    pub fn offset_for_point(&self, position: Point<Pixels>) -> usize {
+        self.index_for_mouse_position(position).0
+    }
+
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> (usize, bool) {
         let (offset, line_end_affinity, _) = self.resolve_mouse_position(position);
         (offset, line_end_affinity)

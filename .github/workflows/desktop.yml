@@ -86,6 +86,8 @@ jobs:
         run: node verify-pairing.mjs
       - name: Rust tests (with the mock runner)
         run: cargo test --manifest-path desktop/Cargo.toml
+      - name: File-drop regression tests
+        run: cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation --test file_drop
       - name: Behaviour specs
         run: |
           cargo build --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation

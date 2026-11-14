@@ -12,18 +12,24 @@
 # ~/Library/Caches/Threadbear/update-desktop, so nothing an agent has in the
 # checkout gets into the app, and an agent's own builds there aren't waited on.
 #
-# Where it's built: the release build takes every core for minutes, so it goes
-# to the first of runner.json's checkHosts that's a Mac and answers
+# Where it's built: the release build takes every core for minutes, so it can
+# go to the first of runner.json's updateBuildHosts that's a Mac and answers
 # (remote.sh, as install-app.sh --build-on does), and only the two binaries
-# come back; the bundle's made here, signed with this Mac's identity. With
-# check hosts set but none answering it builds nothing and exits 4, and the app
-# tries again at its next look: Mike's MacBook isn't for builds like this. With
-# none set at all (anyone else's copy) it builds here, at the background
-# priority the app runs it at, as the Swift app's update does.
+# come back; the bundle's made here, signed with this Mac's identity. Whatever
+# that host sends back is what this Mac runs next, and nothing here can tell
+# it from what main says, so a host is only trusted with that by being named
+# in updateBuildHosts: checkHosts, trusted only to run tests, never grants it
+# (Daybreak 108, 12 Nov 2026). With update build hosts set but none answering
+# it builds nothing and exits 4, and the app tries again at its next look.
+# With none of those but check hosts set (a Mac kept free of heavy builds, as
+# Mike's MacBook is) it builds nothing at all and exits 5: the app says to name
+# an update build host. With neither (anyone else's copy) it builds here, at
+# the background priority the app runs it at, as the Swift app's update does.
 #
 # Exit 0 with the bundle staged, 3 if another run holds the lock, 4 if no Mac
 # could build it (none answered, or the one building it went away or ran short
-# of disk), 1 on a failed build (an earlier staged bundle is left as it was).
+# of disk), 5 if no host is trusted to build it and this Mac doesn't build,
+# 1 on a failed build (an earlier staged bundle is left as it was).
 set -euo pipefail
 
 CHECKOUT=""
@@ -75,12 +81,21 @@ git -C "$SRC" fetch -q "$CHECKOUT" "refs/heads/main"
 git -C "$SRC" checkout -q --detach FETCH_HEAD
 git -C "$SRC" clean -qfd -e target
 
-# runner.json's checkHosts, from the data folder the app uses.
+# runner.json's updateBuildHosts and checkHosts, from the data folder the app
+# uses. A name ssh would read as an option is never one.
 CONFIG="${THREADBEAR_HOME:-$HOME/Library/Application Support/Threadbear}/runner.json"
-HOSTS="$(/usr/bin/python3 -I -c 'import json,sys
-try: hosts = json.load(open(sys.argv[1])).get("checkHosts") or []
+hosts_in() {
+  /usr/bin/python3 -I -c 'import json,sys
+try: hosts = json.load(open(sys.argv[1])).get(sys.argv[2]) or []
 except Exception: hosts = []
-print("\n".join(h for h in hosts if isinstance(h, str) and h))' "$CONFIG" 2>/dev/null || true)"
+if isinstance(hosts, str): hosts = [hosts]
+if not isinstance(hosts, list): hosts = []
+print("\n".join(h for h in hosts if isinstance(h, str) and h and not h.startswith("-") and h.strip() == h and " " not in h))' "$CONFIG" "$1" 2>/dev/null || true
+}
+HOSTS="$(hosts_in updateBuildHosts)"
+# checkHost, the one a runner.json from before the list has, counts too.
+CHECK_HOSTS="$(hosts_in checkHosts)"
+[[ -n "$CHECK_HOSTS" ]] || CHECK_HOSTS="$(hosts_in checkHost)"
 
 BINS="$CACHE/bins"
 rm -rf "$BINS"
@@ -93,10 +108,11 @@ if [[ -n "$HOSTS" ]]; then
     if [[ "$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$h" uname -s 2>/dev/null || true)" == Darwin ]]; then HOST="$h"; break; fi
   done <<<"$HOSTS"
   if [[ -z "$HOST" ]]; then
-    echo "None of the check hosts ($(tr '\n' ' ' <<<"$HOSTS")) is a Mac that answered, so nothing was built; the app tries again later." >&2
+    echo "None of the update build hosts ($(tr '\n' ' ' <<<"$HOSTS")) is a Mac that answered, so nothing was built; the app tries again later." >&2
     exit 4
   fi
   echo "Building on $HOST"
+  BUILT_ON="$HOST"
   # A run the host couldn't finish (it went away, ssh's own 255, or remote.sh's
   # disk check said no with 3) is tried again later, as when none answered. One
   # it finished and failed is a broken main: not tried again until main moves.
@@ -128,15 +144,21 @@ if [[ -n "$HOSTS" ]]; then
   for bin in threadbear-gpui threadbear-web-helper; do
     scp -q "$HOST:$built_in/release/$bin" "$BINS/$bin" || remote_failed "$?"
   done
+elif [[ -n "$CHECK_HOSTS" ]]; then
+  # Check hosts run tests; they don't get to say what this Mac runs. And a
+  # Mac with check hosts keeps its heavy builds off itself, so not here either.
+  echo "No update build hosts in $CONFIG, so nothing was built: check hosts ($(tr '\n' ' ' <<<"$CHECK_HOSTS")) only run tests. Add a Mac you trust with what this one runs to \"updateBuildHosts\" there." >&2
+  exit 5
 else
-  echo "No check hosts in $CONFIG: building here."
+  echo "No update build hosts or check hosts in $CONFIG: building here."
+  BUILT_ON=""
   (cd "$SRC/desktop" && CARGO_TARGET_DIR="$CACHE/target" CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=10 cargo build --release -p threadbear-gpui --features "$FEATURES")
   cp "$CACHE/target/release/threadbear-gpui" "$CACHE/target/release/threadbear-web-helper" "$BINS/"
 fi
 
 # Made beside where it goes and moved in whole, so the app never finds half a
 # bundle staged.
-"$SRC/desktop/scripts/make-bundle.sh" "$BINS" "$NEXT_DIR.making" "$CHECKOUT"
+THREADBEAR_BUILT_ON="$BUILT_ON" "$SRC/desktop/scripts/make-bundle.sh" "$BINS" "$NEXT_DIR.making" "$CHECKOUT"
 # The bundle has its own copies of the binaries (55 MB).
 rm -rf "$BINS"
 rm -rf "$NEXT_DIR"

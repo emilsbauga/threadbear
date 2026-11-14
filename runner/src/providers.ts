@@ -8,7 +8,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parsePiProfiles } from './pi-profiles.ts';
-import { experimentOn } from './experiments.ts';
 import { PROVIDERS, type Provider, type ProviderInfo } from './protocol.ts';
 
 export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
@@ -67,15 +66,11 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
   },
 };
 
-const ACP: readonly Provider[] = ['cursor', 'opencode'];
-
-// The providers this runner offers: the ACP agents only with the experiment
-// on, so with it off nothing of theirs turns up anywhere.
+// Pi is offered only with configured profiles; installed ACP agents are standard.
 export function activeProviders(home: string): Provider[] {
-  const acp = experimentOn(home, 'acpAgents');
   let pi = false;
   try { pi = parsePiProfiles(JSON.parse(fs.readFileSync(path.join(home, 'runner.json'), 'utf8')).pi, home).length > 0; } catch { /* Invalid config is handled at startup. */ }
-  return PROVIDERS.filter((p) => p === 'pi' ? pi : acp || !ACP.includes(p));
+  return PROVIDERS.filter((p) => p !== 'pi' || pi);
 }
 
 // One this build has no row for (a record or another runner's hello from a

@@ -13,4 +13,6 @@ crons.interval('finish intake file cleanup', { minutes: 15 }, internal.intakeFil
 crons.interval('remove abandoned intake blobs', { hours: 6 }, internal.intakeFiles.sweepOrphans, {});
 // Moves nobody answered, or frozen too long (moves.ts), and old ended ones.
 crons.interval('expire moves', { minutes: 5 }, internal.moves.expireMoves, {});
+// Pushes held for a Mac that went to sleep with Mike at it (sync.ts).
+crons.interval('send stale held pushes', { minutes: 2 }, internal.sync.sendStaleHeldPushes, {});
 export default crons;

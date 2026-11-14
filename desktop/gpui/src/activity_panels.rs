@@ -78,6 +78,7 @@ impl Threadbear {
         let slot = match panel {
             shell::RUNNERS => &mut self.runners_panel.view,
             shell::UPDATES => &mut self.updates_panel.view,
+            shell::SETUP => &mut self.setup.view,
             _ => &mut self.connectors_panel.view,
         };
         let view = slot.get_or_insert_with(|| cx.new(|cx| PanelView::new(&app, &dock, panel, cx))).clone();
@@ -88,6 +89,7 @@ impl Threadbear {
         match panel {
             shell::RUNNERS => self.render_runners_panel(window, cx),
             shell::UPDATES => self.render_updates_panel(window, cx),
+            shell::SETUP => self.render_setup_panel(cx),
             _ => self.render_connectors_panel(window, cx),
         }
     }
@@ -97,6 +99,7 @@ impl Threadbear {
         match panel {
             shell::RUNNERS => self.runners_panel_shown(showing, cx),
             shell::CONNECTORS if showing => self.refresh_connectors(false, cx),
+            shell::SETUP if showing => self.load_setup_devices(cx),
             _ => {}
         }
     }

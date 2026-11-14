@@ -88,7 +88,7 @@ fn login_row(item: &LoginItem, _window: &mut Window, cx: &App, action: impl Fn(&
     h_flex()
         .id(SharedString::from(format!("login-{}", item.id)))
         .test_support()
-        .aria_label(name)
+        .role(Role::Button).aria_label(name)
         .gap(px(8.))
         .px(px(10.))
         .py(px(5.))

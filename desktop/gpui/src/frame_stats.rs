@@ -24,6 +24,29 @@ thread_local! {
     /// What `frame-stats` with `reset` saw, so the next report is just what
     /// happened since (the perf tool resets before it starts scrolling).
     static BASELINE: RefCell<Option<FrameDurationSnapshot>> = const { RefCell::new(None) };
+    /// The main thread's CPU time at that `reset`, in nanoseconds.
+    static CPU_BASELINE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// CPU time this thread has used, in nanoseconds. Asked from the automation's
+/// commands, which run on the main thread, so it's the main thread's. It
+/// leaves out time spent waiting for a core, which a frame's wall-clock work
+/// doesn't, so it moves less with other processes' load; it still moves some
+/// (macOS may put the thread on an efficiency core), so builds are compared
+/// in turns under the same load (features/tools/render-ab.mjs).
+#[cfg(all(feature = "automation", unix))]
+fn thread_cpu_nanos() -> u64 {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a valid timespec to write into, and a clock every Unix has.
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
+        return 0;
+    }
+    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
+}
+
+#[cfg(all(feature = "automation", not(unix)))]
+fn thread_cpu_nanos() -> u64 {
+    0
 }
 
 #[derive(Default, Clone, Copy)]
@@ -101,8 +124,12 @@ pub(crate) fn report(window: &Window, reset: bool) -> Value {
             .collect();
         json!({ "screens": screens })
     });
+    let cpu = thread_cpu_nanos();
+    let mut out = out;
+    out["mainCpuMs"] = json!(ms(cpu.saturating_sub(CPU_BASELINE.with(|c| c.get()))));
     if reset {
         BASELINE.with(|b| *b.borrow_mut() = Some(now));
+        CPU_BASELINE.with(|c| c.set(cpu));
     }
     out
 }

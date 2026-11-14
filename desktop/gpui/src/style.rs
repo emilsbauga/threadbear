@@ -174,6 +174,60 @@ pub(crate) fn install_window_colours(cx: &mut App) {
         changed.colors.popover = Some(hex(popover));
         *config = Rc::new(changed);
     }
+    refresh_system_accent(cx);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct SystemAccent { light: Rgba, dark: Rgba }
+impl Global for SystemAccent {}
+
+/// System Settings can change the accent while this app is behind it. Read
+/// it at launch and on return, once for both appearances, rather than ask
+/// AppKit for every button in every frame.
+pub(crate) fn refresh_system_accent(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    {
+        use gpui_kit::component::Theme;
+        use std::rc::Rc;
+        let Some((light, dark)) = system_control_accent(false).zip(system_control_accent(true)) else { return };
+        let accent = SystemAccent { light, dark };
+        if cx.try_global::<SystemAccent>() == Some(&accent) { return; }
+        cx.set_global(accent);
+        let theme = Theme::global_mut(cx);
+        let mode = theme.mode;
+        for (config, color) in [(&mut theme.light_theme, light), (&mut theme.dark_theme, dark)] {
+            let hex: SharedString = format!("#{:02x}{:02x}{:02x}", (color.r * 255.).round() as u8, (color.g * 255.).round() as u8, (color.b * 255.).round() as u8).into();
+            let mut changed = (**config).clone();
+            changed.colors.primary = Some(hex.clone());
+            changed.colors.ring = Some(hex);
+            let shade = |toward: f32| -> SharedString {
+                let mix = |c: f32| ((c * 0.9 + toward * 0.1) * 255.).round() as u8;
+                format!("#{:02x}{:02x}{:02x}", mix(color.r), mix(color.g), mix(color.b)).into()
+            };
+            changed.colors.primary_hover = Some(shade(1.));
+            changed.colors.primary_active = Some(shade(0.));
+            *config = Rc::new(changed);
+        }
+        Theme::change(mode, None, cx);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = cx;
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn system_control_accent(dark: bool) -> Option<Rgba> {
+    use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace};
+    unsafe {
+        let name = if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua };
+        let appearance = NSAppearance::appearanceNamed(name)?;
+        let previous = NSAppearance::currentAppearance();
+        NSAppearance::setCurrentAppearance(Some(&appearance));
+        let color = NSColor::controlAccentColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace());
+        NSAppearance::setCurrentAppearance(previous.as_deref());
+        let color = color?;
+        Some(srgb_rgba(color.redComponent() as f32, color.greenComponent() as f32, color.blueComponent() as f32))
+    }
 }
 
 /// NSColor.windowBackgroundColor in the light and dark looks. On the Mac it's
@@ -368,9 +422,11 @@ fn srgb(r: f32, g: f32, b: f32, a: f32) -> Hsla {
     Hsla::from(Rgba { r, g, b, a })
 }
 
-/// macOS's default blue, as NSColor.controlAccentColor is for most people. The
-/// app doesn't follow the system's accent yet (foundation.theme).
+/// NSColor.controlAccentColor on a Mac, the existing blue elsewhere.
 pub fn control_accent(cx: &App) -> Hsla {
+    if let Some(accent) = cx.try_global::<SystemAccent>() {
+        return Hsla::from(if cx.theme().is_dark() { accent.dark } else { accent.light });
+    }
     pick(cx, srgb(0.04, 0.52, 1.0, 1.0), srgb(0.0, 0.48, 1.0, 1.0))
 }
 

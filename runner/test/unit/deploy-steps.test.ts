@@ -253,3 +253,39 @@ test('nodeBeforeLaunch: the Node a LaunchAgent or unit starts launch.mjs with', 
   // Compared as the caller says (deploy.mjs resolves links).
   assert.equal(steps.nodeBeforeLaunch([node, '/private/x/launch.mjs'], '/x/launch.mjs', (a: string, b: string) => a.replace('/private', '') === b), node);
 });
+
+// The backend deploy's steps (deploy-backend.mjs) go again when the network
+// dropped under them. A fork's website upload lost its connection to
+// Convex's storage once on 9 Nov 2026 (UND_ERR_CONNECT_TIMEOUT), which failed
+// the whole backend deploy and held its runner off main (teodorboev's fork).
+const DROPPED = "Upload failed: [TypeError: fetch failed] {\n  [cause]: ConnectTimeoutError: Connect Timeout Error\n    code: 'UND_ERR_CONNECT_TIMEOUT'\n}\n";
+
+test('stepRetryingNetwork: a step the network dropped goes again after a wait, and passes once it is back', () => {
+  const { io, said, calls } = fakeIo([{ status: 1, output: DROPPED }, { status: 0 }]);
+  const waits: number[] = [];
+  steps.stepRetryingNetwork('Uploading the website', '/opt/node/bin/npx', ['static-hosting', 'upload'], {}, { ...io, sleep: (ms: number) => waits.push(ms) });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(waits, [15_000]);
+  assert.ok(said.some((s) => /network dropped.*2 of 3/.test(s)), said.join('\n'));
+  assert.match(said.at(-1)!, /^ok/);
+});
+
+test('stepRetryingNetwork: three drops in a row fail, naming the last log', () => {
+  const { io, calls } = fakeIo([{ status: 1, output: DROPPED }, { status: 1, output: DROPPED }, { status: 1, output: DROPPED }]);
+  assert.throws(
+    () => steps.stepRetryingNetwork('Uploading the website', '/opt/node/bin/npx', [], {}, { ...io, sleep: () => {} }),
+    (e: Error & { logFile: string }) => /Uploading the website failed/.test(e.message) && /fetch failed/.test(fs.readFileSync(e.logFile, 'utf8')),
+  );
+  assert.equal(calls.length, 3);
+});
+
+test('stepRetryingNetwork: any other failure fails at once, with no wait', () => {
+  const { io, calls } = fakeIo([{ status: 1, output: 'convex/threads.ts:12: Type error: x is not assignable\n' }]);
+  assert.throws(() => steps.stepRetryingNetwork('Deploying the Convex functions', '/opt/node/bin/npx', [], {}, { ...io, sleep: () => assert.fail('no wait') }), /failed/);
+  assert.equal(calls.length, 1);
+});
+
+test('networkDropped: connection drops and DNS misses, not a failing step', () => {
+  for (const s of ['fetch failed', 'Error: connect ECONNREFUSED 127.0.0.1:3210', 'read ECONNRESET', 'getaddrinfo ENOTFOUND api.convex.dev', 'getaddrinfo EAI_AGAIN x', 'connect ETIMEDOUT 1.2.3.4:443', 'socket hang up', "code: 'UND_ERR_SOCKET'"]) assert.ok(steps.networkDropped(s), s);
+  for (const s of ['Type error: x is not assignable', 'npm ERR! code E404', '']) assert.ok(!steps.networkDropped(s), s);
+});

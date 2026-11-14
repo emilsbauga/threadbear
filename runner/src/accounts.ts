@@ -1,7 +1,6 @@
 import { piAccountId } from './pi-profiles.ts';
 import fs from 'node:fs';
 import { acpAccounts } from './adapters/acp/agents.ts';
-import { experimentOn } from './experiments.ts';
 import path from 'node:path';
 import { isEffortLevel, type Account, type EffortLevel, type ModelChoice } from './protocol.ts';
 import type { UsageStore } from './usage.ts';
@@ -86,7 +85,7 @@ export function isCodexLogin(dir: string): boolean {
   return store === 'keyring' || store === 'auto';
 }
 
-export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 'tokenStatsAccountsDir'> &
+export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 'tokenStatsAccountsDir' | 'userHome' | 'pathEnv'> &
   Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'accountsDir' | 'piProfiles' | 'home' | 'cursorPath' | 'opencodePath'>>;
 
 // claude-main is ~/.claude (its .claude.json sits at ~/.claude.json);
@@ -125,9 +124,7 @@ export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
     if (isCodexLogin(dir)) out.push(codexAccount(id, dir));
   }
   for (const profile of cfg.piProfiles ?? []) out.push({ id: piAccountId(profile.id), provider: 'pi', title: `Pi · ${profile.title}`, configDir: profile.configDir, executable: profile.executable, piProfileId: profile.id, connection: profile.connection, defaultModel: profile.connection.model, models: [{ id: profile.connection.model, model: profile.connection.model, title: profile.connection.model, effortLevels: [] }] });
-  if (cfg.home && experimentOn(cfg.home, 'acpAgents')) {
-    out.push(...acpAccounts({ paths: { cursor: cfg.cursorPath, opencode: cfg.opencodePath } }));
-  }
+  out.push(...acpAccounts({ home: cfg.userHome, pathEnv: cfg.pathEnv, paths: { cursor: cfg.cursorPath, opencode: cfg.opencodePath } }));
   for (const a of out) {
     const note = cfg.accountNotes?.[a.id];
     if (note) a.note = note;

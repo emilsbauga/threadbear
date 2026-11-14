@@ -116,7 +116,10 @@ struct ThreadView: View {
                 model.draftText = nil
             }
         }
-        .task(id: "\(threadId):\(model.hasMessagePages):\(model.connection)") { await followMessages() }
+        // hasLoginNotes too: the page is asked for with or without the notes,
+        // and a watch begun on the backend version kept from last time stays
+        // as it was asked when the real one arrives (Codex's review, 13 Nov).
+        .task(id: "\(threadId):\(model.hasMessagePages):\(model.hasLoginNotes):\(model.connection)") { await followMessages() }
         .task(id: "\(threadId):\(history.lateImagesFrom ?? -1):\(model.connection):\(model.apiVersion ?? 0)") { await followLateImages() }
         .task(id: "\(sent?.id ?? ""):\(model.connection)") { await followCommand() }
         .task(id: answeredCommand) {
@@ -180,6 +183,7 @@ struct ThreadView: View {
                         case let .tools(run): ToolRunView(items: run)
                         case let .worked(worked): WorkedView(worked: worked)
                         case let .gap(gap): GapView(gap: gap)
+                        case let .note(note): LoginNoteView(text: note.text)
                         }
                     }
                     ForEach(pins.trailing) { PinnedPicture(image: $0) }
@@ -200,9 +204,9 @@ struct ThreadView: View {
                         WorkingLine(text: thread.working)
                             .id("working:\(thread.status == .running)")
                     } else if let asks = thread.asks, !asks.isEmpty, showsAsks(thread) {
-                        AsksCard(asks: asks, picks: $picks, busy: sendingCard, send: {
+                        AsksCard(asks: asks, picks: $picks, busy: sendingCard) {
                             sendCard(thread, lastSeq: messages.last?.seq)
-                        }, run: { model.pressRun(threadId: thread.threadId, buttonId: $0.buttonId) }, pressingRuns: model.pressingRuns)
+                        }
                         .onChange(of: thread.asksSeq, initial: true) {
                             // A new card starts with nothing picked.
                             if pickedFor != thread.asksSeq { picks = [:]; pickedFor = thread.asksSeq }
@@ -533,7 +537,7 @@ struct ThreadView: View {
     private func followMessages() async {
         guard model.hasMessagePages, let backend = model.backend else { return }
         do {
-            for try await value in backend.messages(threadId, limit: ThreadView.firstPage) { receive(value) }
+            for try await value in backend.messages(threadId, limit: ThreadView.firstPage, notes: model.hasLoginNotes) { receive(value) }
         } catch {
             model.report(error)
         }
@@ -583,7 +587,7 @@ struct ThreadView: View {
         Task {
             defer { loadingChunk = false }
             do {
-                let chunk = try await backend.olderMessages(threadId, beforeSeq: seq, limit: ThreadView.morePerPage)
+                let chunk = try await backend.olderMessages(threadId, beforeSeq: seq, limit: ThreadView.morePerPage, notes: model.hasLoginNotes)
                 if scrolling { heldChunk = (chunk, seq) } else { putIn(chunk: chunk, before: seq) }
             } catch {
                 model.report(error)
@@ -934,6 +938,10 @@ struct MessageView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         case .tool:
             ToolRunView(items: [message])
+        // Drawn by the thread as an item of its own (ThreadItem.note); here
+        // only if one is ever handed a message view.
+        case .note:
+            LoginNoteView(text: message.text)
         }
     }
 
