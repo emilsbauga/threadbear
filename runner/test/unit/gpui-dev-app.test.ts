@@ -180,7 +180,7 @@ test('start, do, dump, stop, and the idle quit, with a stand-in app on the mock'
   fs.writeFileSync(app, FAKE_APP, { mode: 0o755 });
   fs.mkdirSync(path.join(tmp, 'tmp'));
   fs.mkdirSync(path.join(tmp, 'home'));
-  const env = { TMPDIR: path.join(tmp, 'tmp'), HOME: path.join(tmp, 'home'), TB_GPUI_BIN: app, THREADBEAR_THREAD_ID: 'thread-one', DEV_APP_IDLE_QUIT_SECONDS: '4' };
+  const env = { TMPDIR: path.join(tmp, 'tmp'), HOME: path.join(tmp, 'home'), TB_GPUI_BIN: app, THREADBEAR_THREAD_ID: 'thread-one', DEV_APP_IDLE_QUIT_SECONDS: '4', THREADBEAR_KEEP_BEHIND: undefined };
   const realHome = path.join(tmp, 'home', 'Library', 'Application Support', 'Threadbear');
   fs.mkdirSync(realHome, { recursive: true });
   try {
@@ -194,8 +194,9 @@ test('start, do, dump, stop, and the idle quit, with a stand-in app on the mock'
     assert.equal(started.out, 'mine1');
     const dir = path.join(fs.realpathSync(env.TMPDIR), 'threadbear-gpui-dev-app', 'mine1');
     const seen = JSON.parse(fs.readFileSync(path.join(dir, 'fake-env.json'), 'utf8'));
-    // Behind Mike's windows, with its own pasteboard, on the mock's data folder.
-    assert.equal(seen.THREADBEAR_KEEP_BEHIND, '1');
+    // Leave visibility to the app's testing switch, with a private pasteboard
+    // and mock data. An inherited caller flag must not mask this assertion.
+    assert.equal(seen.THREADBEAR_KEEP_BEHIND, '0');
     assert.equal(seen.THREADBEAR_PASTEBOARD, 'com.mikerosoft.threadbear.automation.gpui-mine1');
     assert.equal(seen.THREADBEAR_HOME, path.join(dir, 'home'));
     assert.equal(seen.THREADBEAR_AUTOMATION_LIVE, undefined);
@@ -236,7 +237,9 @@ test('start, do, dump, stop, and the idle quit, with a stand-in app on the mock'
     assert.ok(fs.existsSync(busy), "the other start's folder is left alone");
 
     // And a stop takes everything away, the mock with it.
-    assert.equal(run(env, 'start', '--mock', '--id', 'mine2').status, 0);
+    assert.equal(run({ ...env, THREADBEAR_KEEP_BEHIND: '1' }, 'start', '--mock', '--id', 'mine2').status, 0);
+    const kept = JSON.parse(fs.readFileSync(path.join(fs.realpathSync(env.TMPDIR), 'threadbear-gpui-dev-app', 'mine2', 'fake-env.json'), 'utf8'));
+    assert.equal(kept.THREADBEAR_KEEP_BEHIND, '1', 'explicit keep-behind remains available');
     const mockPids = spawnSync('pgrep', ['-f', path.join(fs.realpathSync(env.TMPDIR), 'threadbear-gpui-dev-app', 'mine2', 'home')], { encoding: 'utf8' }).stdout.trim();
     assert.ok(mockPids, 'its mock is running');
     // Even one that won't stop when asked (suspended: SIGTERM waits) is gone once stop says so.
