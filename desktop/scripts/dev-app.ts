@@ -17,8 +17,8 @@
 //          the mock runner (its demo threads, or only the --fixtures folders:
 //          `tb export` puts a thread in app/.fixtures/threads/<id>) or points at
 //          a dev runner's --home (runner/scripts/dev-runner.sh), launches the
-//          app with its window behind everything, out of the Dock and the app
-//          switcher, waits until it's connected with its thread list, and
+//          app with Mac test windows hidden by default (the General > Testing
+//          switch controls this), waits until its thread list is connected, and
 //          prints the id.
 //          The build is heavy, so it goes to the first of runner.json's
 //          updateBuildHosts that's a Mac and answers (remote.sh; those are
@@ -393,8 +393,8 @@ async function supervise(id: string): Promise<void> {
         ...process.env,
         THREADBEAR_HOME: current.home,
         THREADBEAR_AUTOMATION: path.join(dir, 'automation.json'),
-        // Behind everything, out of the Dock and the app switcher (scripted.rs).
-        THREADBEAR_KEEP_BEHIND: '1',
+        // The installed app's testing switch decides visibility.
+        THREADBEAR_KEEP_BEHIND: process.env.THREADBEAR_KEEP_BEHIND ?? '0',
         THREADBEAR_PASTEBOARD: `com.mikerosoft.threadbear.automation.gpui-${id}`,
         // Not the machine's web runtime in the real data folder, whose
         // Chromium profile has Mike's sign-ins and whose helpers the installed

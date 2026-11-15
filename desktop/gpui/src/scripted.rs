@@ -3,8 +3,9 @@
 // working on, as the Swift app's Automation has it (app/README.md): it won't
 // start against the real data folder and its live runner, anything it copies
 // goes to a pasteboard of its own rather than their clipboard, and with
-// THREADBEAR_KEEP_BEHIND=1 its window stays behind their work, out of the Dock
-// and the app switcher. Not covered: a program run in its Terminal panel
+// the testing preference hides Mac windows by default. A visible copy can use
+// THREADBEAR_KEEP_BEHIND=1 to stay behind, out of the Dock and app switcher.
+// Not covered: a program run in its Terminal panel
 // (`pbcopy` there reaches the real clipboard, as from any shell). An agent's app found all three missing (the parity
 // audit, "Agents can't safely drive GPUI on this Mac", 13 Nov).
 use gpui_kit::*;
@@ -14,9 +15,33 @@ pub(crate) fn scripted() -> bool {
     cfg!(feature = "automation") && std::env::var_os("THREADBEAR_AUTOMATION").is_some()
 }
 
-/// dev-app.sh's instances: the window behind everything, never in the Dock.
+/// Hidden copies and explicitly kept-behind copies stay out of the Dock.
 pub(crate) fn keep_behind() -> bool {
-    scripted() && std::env::var("THREADBEAR_KEEP_BEHIND").as_deref() == Ok("1")
+    scripted() && (hide_windows() || std::env::var("THREADBEAR_KEEP_BEHIND").as_deref() == Ok("1"))
+}
+
+/// Only scripted Mac copies consult the installed app's launch preference.
+/// An isolated test may supply a fixture settings file or force hiding.
+pub(crate) fn hide_windows() -> bool {
+    if !scripted() || !cfg!(target_os = "macos") { return false; }
+    static HIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HIDE.get_or_init(|| {
+        let path = std::env::var_os("THREADBEAR_TEST_WINDOW_SETTINGS").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| crate::settings::Settings::path_in(&threadbear_client::config::default_home()));
+        let settings = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
+        threadbear_core::test_windows::hidden(&settings, std::env::var("THREADBEAR_HIDE_TEST_WINDOWS").ok().as_deref())
+    })
+}
+
+#[cfg(feature = "automation")]
+pub(crate) fn windows_hidden() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" { fn TBTestingWindowsAreHidden() -> bool; }
+        unsafe { TBTestingWindowsAreHidden() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { false }
 }
 
 /// First thing in `main`, before the platform reads the pasteboard: a
@@ -59,6 +84,12 @@ pub(crate) fn guard() {
     }
     #[cfg(target_os = "macos")]
     pasteboard::install();
+    #[cfg(target_os = "macos")]
+    if hide_windows() {
+        unsafe extern "C" { fn TBHideTestingWindows(); }
+        // Process-local AppKit guard, installed before any windows exist.
+        unsafe { TBHideTestingWindows(); }
+    }
 }
 
 /// The application, out of the Dock and the app switcher from launch when

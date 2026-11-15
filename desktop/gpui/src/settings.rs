@@ -33,6 +33,8 @@ pub struct WindowFrame {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Saved {
+    /// Scripted Mac test copies read this at launch. None means hidden.
+    pub hide_testing_windows: Option<bool>,
     /// Highest thread-count milestone actually shown, as in the Swift app.
     pub thread_milestone_shown: Option<usize>,
     /// The window's frame, in points from the top left of the screens.

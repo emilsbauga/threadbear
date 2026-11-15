@@ -529,6 +529,18 @@ impl SettingsWindow {
             sections.push(web_runtime);
             return sections;
         };
+        #[cfg(target_os = "macos")]
+        {
+            let on = self.app.upgrade().is_none_or(|a| a.read(cx).settings.saved.hide_testing_windows != Some(false));
+            let switch = self.switch("settings-hide-testing-windows", on, "Hide windows from new Threadbear test and debug copies", cx, |this, on, cx| {
+                this.app.update(cx, |app, cx| {
+                    app.settings.saved.hide_testing_windows = Some(on);
+                    app.settings.save();
+                    cx.notify();
+                }).ok();
+            });
+            sections.push(section("settings-testing-windows", "Testing", "Applies when a new scripted Threadbear test or debug copy starts on this Mac. Hidden copies still run and can take screenshots. Turn this off to see their windows; it does not affect the app you use or copies already running.", "explain how to run a test copy.", vec![row("Hide all testing windows", switch, cx)], cx));
+        }
         let home = std::env::var("HOME").unwrap_or_default();
         let folder = abbreviate_home(&settings.default_cwd, &home);
         let full = settings.default_cwd.clone();
@@ -1162,6 +1174,7 @@ impl SettingsWindow {
             "fullSync": settings.as_ref().and_then(|s| s.full_sync),
             "labReview": settings.as_ref().map(|s| s.lab_review),
             "evolvingTitles": self.app.upgrade().and_then(|a| a.read(cx).librarian.status.as_ref().and_then(|s| s.evolving_titles)),
+            "hideTestingWindows": self.app.upgrade().map(|a| a.read(cx).settings.saved.hide_testing_windows != Some(false)),
             "privateFolders": settings.as_ref().map(|s| s.private_folders.clone()),
             "smallJobsPool": settings.as_ref().and_then(|s| s.pool.clone()),
             // General's Web runtime row, as it reads.

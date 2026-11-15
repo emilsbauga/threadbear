@@ -1,5 +1,11 @@
 # Forking Threadbear: what to change and what to take out
 
+The Mac test-window visibility switch lives in `desktop/gpui/src/scripted.rs`,
+`settings.rs`, `settings_window.rs`, and `native/testing_windows.m`. Remove the
+Testing settings section, the guard install, and its build.rs entry together to
+remove it. It reads only `hideTestingWindows` from desktop settings and adds no
+network service or installed helper.
+
 Everyone runs their own fork (README, `scripts/setup.mjs`). For a fork
 that just runs Threadbear and takes Mike's releases, there's nothing to
 change: setup makes your own Convex deployment, pins Mike's release key

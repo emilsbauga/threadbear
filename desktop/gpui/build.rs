@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/menu_icons.m");
     println!("cargo:rerun-if-changed=native/file_icons.m");
     println!("cargo:rerun-if-changed=native/composer_media.m");
+    println!("cargo:rerun-if-changed=native/testing_windows.m");
     // The main thread's stack as big as a Mac's (8 MB): Windows gives it 1 MB,
     // and the app overflowed it answering a card with a picture in a
     // Something else box, on GitHub's Windows runner (12 Nov). Zed does the
@@ -23,6 +24,7 @@ fn main() {
         cc::Build::new().file("native/media_views.m").flag("-fobjc-arc").flag("-Wno-deprecated-declarations").compile("threadbear_media_views");
         cc::Build::new().file("native/menu_icons.m").flag("-fobjc-arc").compile("threadbear_menu_icons");
         cc::Build::new().file("native/file_icons.m").flag("-fobjc-arc").compile("threadbear_file_icons");
+        cc::Build::new().file("native/testing_windows.m").flag("-fobjc-arc").compile("threadbear_testing_windows");
         let mut media = cc::Build::new();
         media.file("native/composer_media.m").flag("-fobjc-arc").flag("-Wno-deprecated-declarations");
         if std::env::var_os("CARGO_FEATURE_AUTOMATION").is_some() { media.define("TB_COMPOSER_AUTOMATION", None); }

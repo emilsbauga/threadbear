@@ -2173,6 +2173,15 @@ a thread you stopped yourself. Several threads finishing at once make one
 ding. Pick Chime, Bell or Droplet (each plays as you pick it), set the
 volume, and press Play to hear it again.
 
+### Testing windows
+
+Before testing Threadbear on a Mac, Settings > General > Testing has
+**Hide all testing windows**, on by default. It hides new scripted Threadbear
+test and debug copies, including dialogs and Settings, while they keep running
+and can take screenshots. Turn it off before starting a test to watch its
+windows. It does not change copies already running, your normal app, or windows
+from other programs.
+
 ### The activity log
 
 Turn on Keep an activity log in Settings (⌘,) > General and the app notes

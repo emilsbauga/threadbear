@@ -92,6 +92,16 @@ the same runner.
 
 ## Tests
 
+On a Mac, Settings > General > Testing > **Hide all testing windows** hides
+new scripted GPUI test and debug copies, including their Settings windows and
+dialogs. It is on by default. Turn it off before starting a copy to see its
+windows; existing copies and the installed app are unaffected. Screenshots
+still work while hidden. This controls Threadbear copies, not other apps.
+`THREADBEAR_HIDE_TEST_WINDOWS=1` or `0` overrides one launch; visible pointer
+tests belong on a separate test desktop. `THREADBEAR_TEST_WINDOW_SETTINGS`
+can point an isolated run at a fixture settings file instead of the installed
+app's `desktop-settings.json`.
+
 ```bash
 cargo test    # the connection (with the mock) and the app's rules
 ```
@@ -131,7 +141,7 @@ uploads each platform's binary as the run's artifacts.
 ## Seeing and driving it on a Mac
 
 `scripts/dev-app.sh start --mock` runs the debug build with the scripted
-control (`automation.rs`) behind your windows, against the mock runner or a
+control (`automation.rs`) with Mac windows hidden by default, against the mock runner or a
 dev runner's `--home`, then `do`, `dump`, `shot`, `rebuild`, `log` and
 `stop` drive it (`--help` says the rest). A scripted app refuses the real
 data folder and its live runner, and copies to a pasteboard of its own

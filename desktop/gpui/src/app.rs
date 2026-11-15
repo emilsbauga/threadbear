@@ -1559,6 +1559,7 @@ impl Threadbear {
         // bar: the sidebar's, when the list couldn't be read. Never the
         // connection's (Mike, 12 Nov: the raw error mid-restart).
         dump["notes"] = json!(self.list_error.iter().collect::<Vec<_>>());
+        dump["testingWindowsHidden"] = json!(crate::scripted::windows_hidden());
         // What came across from the Swift app, while its note's up. Set
         // after, as the literal above is as long as serde_json's macro goes.
         dump["importNote"] = json!(self.import_note);

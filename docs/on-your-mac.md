@@ -1,5 +1,11 @@
 # What Threadbear does on your Mac
 
+Scripted GPUI test/debug copies on a Mac read `hideTestingWindows` from the
+installed app's `desktop-settings.json` once at launch. The General > Testing
+switch defaults to hiding their windows without disabling screenshots. The
+guard is process-local; it does not hide other apps. An isolated run may supply
+`THREADBEAR_TEST_WINDOW_SETTINGS` or `THREADBEAR_HIDE_TEST_WINDOWS` instead.
+
 Optional external intake (`convex/intake.ts`) lets explicitly provisioned capture
 clients send email/Telegram text, source identifiers, sender and timestamp to
 your Convex backend over HTTPS. It stores the original content and receipts
