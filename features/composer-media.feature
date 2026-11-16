@@ -6,6 +6,14 @@ Feature: Pictures from other Mac apps
     Given the app is connected to a runner with the demo threads
     And I open the thread "Morning brief"
 
+  # Native file panels are outside the scripted app. On Mac, nonimages
+  # are disabled by the panel; other platforms reject them before attaching.
+  @composer.plus @manual
+  Scenario: Attach images accepts pictures only
+    When I open Attach images from the composer
+    Then choosing a document cannot add a file chip
+    And choosing a picture can add a picture chip
+
   # The native pasteboard driver is Mac GPUI's. Swift is frozen; Windows
   # and Linux use their own clipboard formats and the existing file specs.
   @composer.filedrop @composer.picturechips @swift-pending @windows-pending @linux-pending

@@ -3,7 +3,7 @@
 //
 //   desktop/scripts/dev-app.sh start [--mock [--fixtures DIR]...] [--home DIR] [--live]
 //                                    [--appearance light|dark] [--size WxH] [--id NAME]
-//                                    [--no-build] [--build-here]
+//                                    [--no-build] [--build-here] [--visible]
 //   desktop/scripts/dev-app.sh do '<json>'... [--timeout S]
 //   desktop/scripts/dev-app.sh dump [--json]
 //   desktop/scripts/dev-app.sh shot <file.png>
@@ -17,9 +17,18 @@
 //          the mock runner (its demo threads, or only the --fixtures folders:
 //          `tb export` puts a thread in app/.fixtures/threads/<id>) or points at
 //          a dev runner's --home (runner/scripts/dev-runner.sh), launches the
-//          app with Mac test windows hidden by default (the General > Testing
-//          switch controls this), waits until its thread list is connected, and
-//          prints the id.
+//          app headless: out of the Dock and the app switcher, its windows
+//          fully transparent, letting clicks through and at the back, so
+//          nobody sees one (a fork's owner found one behind their windows
+//          and took the demo threads for a leak, 15 Nov). It still draws, so
+//          dump and shot work. --visible is for a test that needs the window
+//          on screen: behind everything, with "test copy" in its title and an
+//          orange strip across its top saying what it is (not in shots). It
+//          waits until the app's connected with its thread list, and prints
+//          the id. In ps and Activity Monitor the app is "Threadbear Headless
+//          Tester" (a clone of the build in the instance's folder) and the
+//          mock "threadbear-test-mock-runner".
+//          On Mac, General > Testing remains the visibility preference.
 //          The build is heavy, so it goes to the first of runner.json's
 //          updateBuildHosts that's a Mac and answers (remote.sh; those are
 //          the Macs trusted with what this one runs, so checkHosts don't
@@ -68,10 +77,42 @@ const exe = process.platform === 'win32' ? 'threadbear-gpui.exe' : 'threadbear-g
 export const REAL_HOME = path.join(os.homedir(), 'Library', 'Application Support', 'Threadbear');
 const IDLE_QUIT_SECONDS = Number(process.env.DEV_APP_IDLE_QUIT_SECONDS ?? 3600);
 
-/** Every instance's folder: under TMPDIR, so nothing here is in Mike's own folders. */
-export function stateRoot(): string {
-  const dir = path.join(fs.realpathSync(process.env.TMPDIR ?? os.tmpdir()), 'threadbear-gpui-dev-app');
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+/** An instance's id, and so its folder's name: never a path (`..` or a `/`). */
+export const INSTANCE_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+/**
+ * Every instance's folder: under TMPDIR, so nothing here is in Mike's own folders. A folder only
+ * this account can use, or none: it's made here (0700) or was, isn't a symlink, is this user's and
+ * no one else can get into it. On a TMPDIR other accounts can write to (Linux's /tmp) the name
+ * has the uid in it, and one there already that's anyone else's is refused, never used: another
+ * account could make it first and put an instance.json in it whose id reached outside, and the
+ * reap deleted that (Daybreak, 13 Nov, finding 116). macOS's TMPDIR is already the user's own.
+ */
+export function stateRoot(tmp: string = process.env.TMPDIR ?? os.tmpdir()): string {
+  const parent = fs.realpathSync(tmp);
+  const uid = process.getuid?.();
+  // Windows has no uids, and its temp folder is the user's own.
+  if (uid === undefined) {
+    const dir = path.join(parent, 'threadbear-gpui-dev-app');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const up = fs.statSync(parent);
+  const shared = (up.mode & 0o022) !== 0;
+  // Writable by others without the sticky bit, anyone could rename our folder away and put theirs in its place.
+  if (shared && !(up.mode & 0o1000)) throw new Error(`${parent} (TMPDIR) can be changed by other accounts and isn't sticky: set TMPDIR to a folder of your own`);
+  // A sticky folder's owner can still rename anyone's folder in it, so it has to be root's or ours.
+  if (up.uid !== uid && up.uid !== 0) throw new Error(`${parent} (TMPDIR) belongs to someone else: set TMPDIR to a folder of your own`);
+  const dir = path.join(parent, shared ? `threadbear-gpui-dev-app-${uid}` : 'threadbear-gpui-dev-app');
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  }
+  const s = fs.lstatSync(dir);
+  if (!s.isDirectory() || s.uid !== uid || (s.mode & 0o077) !== 0) {
+    throw new Error(`${dir} isn't a folder of this account's own (mode 700), so it's not used: remove it if it's yours, or set TMPDIR to a folder of your own`);
+  }
   return dir;
 }
 
@@ -86,6 +127,8 @@ export type Instance = {
   live: boolean;
   appearance?: string;
   size?: string;
+  /** --visible: the window on screen (behind everything, labelled), for a test that needs it seen. */
+  visible?: boolean;
   binary: string;
   supervisor?: number;
   app?: number;
@@ -113,9 +156,18 @@ export function refuseHome(home: string, real: string, live: boolean): string | 
   return `${home} is the real data folder: its runner is the live one, with Mike's real threads. Use --mock or a dev runner's --home (runner/scripts/dev-runner.sh); --live only if Mike has said so.`;
 }
 
-const dirOf = (id: string) => path.join(stateRoot(), id);
+/** An instance's folder: a direct child of the state folder, whatever the id came from. */
+function dirOf(id: string): string {
+  if (!INSTANCE_ID.test(id)) throw new Error(`not an instance id: ${JSON.stringify(id)}`);
+  return path.join(stateRoot(), id);
+}
 
+/**
+ * The instance in the folder named `id`, or null. Its id is the folder's name, never what the
+ * file says, and the fields that become paths or pids have to be what start writes.
+ */
 export function readInstance(id: string): Instance | null {
+  if (typeof id !== 'string' || !INSTANCE_ID.test(id)) return null;
   let i: Instance;
   try {
     i = JSON.parse(fs.readFileSync(path.join(dirOf(id), 'instance.json'), 'utf8')) as Instance;
@@ -125,7 +177,27 @@ export function readInstance(id: string): Instance | null {
   try {
     Object.assign(i, JSON.parse(fs.readFileSync(path.join(dirOf(id), 'app.json'), 'utf8')));
   } catch {}
-  return i;
+  return validInstance(i, id) ? i : null;
+}
+
+export function validInstance(i: unknown, id: string): i is Instance {
+  if (!i || typeof i !== 'object') return false;
+  const r = i as Record<string, unknown>;
+  const str = (k: string) => typeof r[k] === 'string';
+  const pid = (k: string) => r[k] === undefined || (Number.isInteger(r[k]) && (r[k] as number) > 0);
+  return (
+    r.id === id &&
+    INSTANCE_ID.test(id) &&
+    str('thread') &&
+    str('checkout') &&
+    str('home') &&
+    str('binary') &&
+    Number.isFinite(r.created) &&
+    Array.isArray(r.fixtures) &&
+    (r.fixtures as unknown[]).every((f) => typeof f === 'string') &&
+    pid('supervisor') &&
+    pid('app')
+  );
 }
 
 function writeInstance(i: Instance): void {
@@ -220,7 +292,7 @@ function build(opts: { noBuild: boolean; here: boolean; logName: string }): stri
   let ok: boolean;
   if (host) {
     const fd = fs.openSync(log, 'w');
-    console.error(`Building on ${host} (an updateBuildHosts Mac), so the M5 stays free; the binaries come back here. Log: ${log}`);
+    console.error(`Building on ${host} (an updateBuildHosts Mac), so this Mac stays free; the binaries come back here. Log: ${log}`);
     let r;
     try {
       // Write both streams straight to the advertised file, as the local
@@ -386,7 +458,7 @@ async function supervise(id: string): Promise<void> {
     const current = readInstance(id) ?? i;
     fs.rmSync(path.join(dir, 'automation.json'), { force: true });
     const out = fs.openSync(path.join(dir, 'app.stderr'), 'a');
-    app = spawn(current.binary, [], {
+    app = spawn(namedCopy(current.binary, dir), [], {
       stdio: ['ignore', out, out],
       detached: true,
       env: {
@@ -395,6 +467,7 @@ async function supervise(id: string): Promise<void> {
         THREADBEAR_AUTOMATION: path.join(dir, 'automation.json'),
         // The installed app's testing switch decides visibility.
         THREADBEAR_KEEP_BEHIND: process.env.THREADBEAR_KEEP_BEHIND ?? '0',
+        ...(current.visible ? { THREADBEAR_SHOW_WINDOW: '1' } : {}),
         THREADBEAR_PASTEBOARD: `com.mikerosoft.threadbear.automation.gpui-${id}`,
         // Not the machine's web runtime in the real data folder, whose
         // Chromium profile has Mike's sign-ins and whose helpers the installed
@@ -484,10 +557,10 @@ function reap(): void {
   // A start's folder whose dev-app.sh has gone without finishing, unless it
   // got as far as a supervisor that's running (Codex's second look).
   for (const name of fs.readdirSync(stateRoot())) {
-    if (!fs.existsSync(path.join(stateRoot(), name, 'starting')) || starting(name)) continue;
+    if (!INSTANCE_ID.test(name) || !fs.existsSync(path.join(dirOf(name), 'starting')) || starting(name)) continue;
     const i = readInstance(name);
-    if (i && running(i)) fs.rmSync(path.join(stateRoot(), name, 'starting'), { force: true });
-    else fs.rmSync(path.join(stateRoot(), name), { recursive: true, force: true });
+    if (i && running(i)) fs.rmSync(path.join(dirOf(name), 'starting'), { force: true });
+    else fs.rmSync(dirOf(name), { recursive: true, force: true });
   }
   for (const i of allInstances()) {
     // A start between writing instance.json and recording its supervisor.
@@ -497,6 +570,33 @@ function reap(): void {
       quiet = Date.now() - fs.statSync(path.join(dirOf(i.id), 'supervisor.log')).mtimeMs;
     } catch {}
     if (mine(i, who) || quiet > 30 * 60_000) fs.rmSync(dirOf(i.id), { recursive: true, force: true });
+  }
+}
+
+/** What the app runs as (`ps`, Activity Monitor): anyone wondering what this
+ * process is sees it's a test copy, not their own Threadbear. */
+export const APP_PROCESS_NAME = 'Threadbear Headless Tester';
+
+/** The build, as a copy named APP_PROCESS_NAME in the instance's folder (a
+ * clone on APFS, so no space or time), with the web helper it looks for
+ * beside itself. The build itself if copying fails. */
+export function namedCopy(binary: string, dir: string): string {
+  try {
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    const named = path.join(bin, process.platform === 'win32' ? `${APP_PROCESS_NAME}.exe` : APP_PROCESS_NAME);
+    fs.rmSync(named, { force: true });
+    fs.copyFileSync(binary, named, fs.constants.COPYFILE_FICLONE);
+    fs.chmodSync(named, 0o755);
+    const helper = path.join(path.dirname(binary), 'threadbear-web-helper');
+    if (fs.existsSync(helper)) {
+      fs.rmSync(path.join(bin, 'threadbear-web-helper'), { force: true });
+      fs.copyFileSync(helper, path.join(bin, 'threadbear-web-helper'), fs.constants.COPYFILE_FICLONE);
+      fs.chmodSync(path.join(bin, 'threadbear-web-helper'), 0o755);
+    }
+    return named;
+  } catch {
+    return binary;
   }
 }
 
@@ -541,6 +641,7 @@ async function start(a: Args): Promise<void> {
     live,
     appearance,
     size,
+    visible: has(a, '--visible'),
     binary,
   };
   if (useMock) fs.mkdirSync(i.home, { recursive: true, mode: 0o700 });

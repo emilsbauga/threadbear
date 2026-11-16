@@ -660,7 +660,7 @@ impl Composer {
     /// appearance and text size, as its sizes are zoomed when it's built
     /// (see `rows::reading_style`).
     fn card_reading_style(&mut self, cx: &App) -> gpui_kit::base::TextViewStyle {
-        let key = (cx.theme().is_dark(), style::zoom_percent());
+        let key = crate::style::reading_style_key(cx);
         match &self.card_style {
             Some((k, style)) if *k == key => style.clone(),
             _ => {

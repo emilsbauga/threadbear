@@ -241,7 +241,7 @@ impl Threadbear {
             column = column.child(spend);
         }
         let dark = cx.theme().is_dark();
-        for card in rules::cards(&self.logins.pools, accounts, stats, self.usage.show_model_weeks, now, &zone) {
+        for card in rules::cards_named(&self.logins.pools, accounts, stats, self.usage.show_model_weeks, now, &zone, |p| self.logins.provider_title(p)) {
             column = column.child(pool_card(&card, accounts, content, dark, now, &p));
         }
         // Only when some login has a model's own week, or the switch would
@@ -300,7 +300,7 @@ impl Threadbear {
         }
         json!({
             "shown": self.dock.read(cx).controller.is_showing(shell::USAGE),
-            "lines": rules::lines(&self.logins.pools, accounts, stats, now, &zone),
+            "lines": rules::lines_named(&self.logins.pools, accounts, stats, now, &zone, |p| self.logins.provider_title(p)),
             "icon": {
                 "percent": (level * 100.).round() as i64,
                 "login": login,
@@ -311,7 +311,7 @@ impl Threadbear {
                 let c = rules::chart(s, accounts, self.usage.range, now, &zone);
                 json!({ "title": c.title, "range": c.range.name(), "key": c.spending.iter().map(|id| rules::login_label(id, accounts)).collect::<Vec<_>>(), "empty": c.empty })
             }),
-            "cards": rules::cards(&self.logins.pools, accounts, stats, self.usage.show_model_weeks, now, &zone).iter().map(|card| json!({
+            "cards": rules::cards_named(&self.logins.pools, accounts, stats, self.usage.show_model_weeks, now, &zone, |p| self.logins.provider_title(p)).iter().map(|card| json!({
                 "title": card.title,
                 "today": card.today.as_ref().map(|t| &t.0),
                 "logins": card.sections.iter().flat_map(|section| section.logins.iter().map(move |l| json!({

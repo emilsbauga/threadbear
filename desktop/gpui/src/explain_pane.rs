@@ -6,12 +6,13 @@
 //
 // It shows over the pane's section the way a file preview does, with Back to
 // the section, and a preview opened after it takes its place.
+use crate::spinner::Spinner;
 use crate::app::Threadbear;
 use crate::highlights::{palette, SidePane};
 use crate::style::{self, size};
 use crate::{call, icons};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::{h_flex, spinner::Spinner, v_flex, Sizable as _, StyledExt as _};
+use gpui_kit::component::{h_flex, v_flex, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.

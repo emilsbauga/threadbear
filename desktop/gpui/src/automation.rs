@@ -182,6 +182,7 @@ async fn run(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &Value,
     }
     // The web runtime (web_runtime.rs): its install, Not now, and a check
     // that it draws, each waited on as asked.
+    if cmd["cmd"] == "native-text" { return crate::native_text::automation(window, cmd, cx).await; }
     if cmd["cmd"] == "webRuntime" {
         return crate::web_runtime::automation(cmd, cx).await;
     }
@@ -258,6 +259,19 @@ async fn run(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &Value,
     } else {
         window
     };
+    if cmd["cmd"] == "screenshot" {
+        let path = std::path::PathBuf::from(text(cmd, "path"));
+        let image = cx.update_window(window, |_, window, cx| {
+            // A covered window gets no system frames. Draw its latest state
+            // before reading the pixels, including pictures just loaded.
+            window.render_frame(cx);
+            window.render_to_image().map_err(|e| e.to_string())
+        }).map_err(|e| e.to_string())??;
+        // Encoding and disk writes must not stall the app's thread. Await
+        // the save so the socket replies only when this shot is complete.
+        cx.background_executor().spawn(async move { crate::automation_screenshot::save(&image, &path) }).await?;
+        return Ok(json!("ok"));
+    }
     // The first-run tour (tour.rs): {"do": "start"|"next"|"back"|"end"|"pools"},
     // or nothing to read where it's at. Says the step, its title and what it
     // lights up, once the card and the spotlight have had their move.
@@ -459,7 +473,7 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         "shortcuts" => crate::settings_window::keyboard_automation(app, cmd, cx),
         // The sidebar's commands (sidebar.rs). Guarded ones only take the forms
         // that name a section, a row or a tip; the others fall through below.
-        "hover" | "sort" | "archive-more" | "star" | "unstar" | "unarchive" | "realMenu" | "menu-popover" => crate::sidebar::automation(app, cmd, window, cx),
+        "hover" | "sort" | "archive-more" | "star" | "unstar" | "unarchive" | "realMenu" | "menu-popover" | "group" => crate::sidebar::automation(app, cmd, window, cx),
         "new" | "options" => crate::new_thread::automation(app, cmd, window, cx),
         // A threadbear:// link handed over as macOS hands one (deep_links.rs).
         "open-url" => crate::deep_links::automation(app, cmd, window.window_handle(), cx),
@@ -727,11 +741,11 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
                 "permission" => {
                     let summary = data.summary.clone().unwrap_or_default();
                     if let Some(title) = cmd["click"].as_str() {
-                        let Some(mode) = crate::composer_chips::permission_modes(&summary).into_iter().find(|m| threadbear_core::logins::permission_title(m) == title) else { return Err(format!("no item {title}")) };
+                        let Some(mode) = crate::composer_chips::permission_modes(&summary, &data.logins).into_iter().find(|m| threadbear_core::logins::permission_title(m) == title) else { return Err(format!("no item {title}")) };
                         composer.update(cx, |c, cx| c.set_permission(mode, cx));
                         return Ok(json!("ok"));
                     }
-                    Ok(json!(crate::composer_chips::permission_lines(&summary)))
+                    Ok(json!(crate::composer_chips::permission_lines(&summary, &data.logins)))
                 }
                 "context" => match data.summary.as_ref().and_then(|t| threadbear_core::composer::ContextMeter::new(t.context_tokens, t.context_window).map(|m| (t.id.clone(), m))) {
                     // `show`: the ring clicked, as a person does, which opens
@@ -998,6 +1012,7 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         // Words selected in a reply, and the bar over them (selection_bar.rs),
         // as the Swift app's; a follow-up in the Explain pane (explain_pane.rs).
         "select-text" => crate::selection_bar::select_command(app, cmd, window, cx),
+        "text-selection-source" => Ok(json!({"words":crate::text_services::front_selection(window,cx).map(|(words,_)|words),"terminalFocused":crate::terminal::has_focus(window,cx)})),
         "text-lines" => crate::selection_bar::text_lines_command(app, cmd, window, cx),
         "selection" => crate::selection_bar::selection_command(app, window, cx),
         "explain" => crate::explain_pane::explain_command(app, cmd, window, cx),
@@ -1020,11 +1035,12 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         // As if the window had come to the front: both apps read a thread
         // only while it is, and a scripted one never is.
         "focus" => {
-            crate::thread::set_looking(crate::thread::SCRIPTED, true);
+            let active = cmd["on"].as_bool().unwrap_or(true);
+            if !active {
+                crate::thread::set_looking(crate::thread::window_key(window), false);
+            }
             app.update(cx, |t, cx| {
-                if let Some(pane) = t.pane.clone() {
-                    pane.read(cx).mark_seen();
-                }
+                t.looking_changed(crate::thread::SCRIPTED, active, cx);
             });
             Ok(json!("ok"))
         }
@@ -1067,16 +1083,6 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         }
         // The colour space the window's drawn in (colour_space.rs): "sRGB" once tagged.
         "colour-space" => Ok(json!(crate::colour_space::describe(window))),
-        "screenshot" => {
-            let path = text(cmd, "path");
-            // A fresh frame first, as `dump` draws one: a covered window gets
-            // no frames from the system, so a picture that's finished loading
-            // since the last one (a project's icon) was missing from the shot.
-            window.render_frame(cx);
-            let image = window.render_to_image().map_err(|e| e.to_string())?;
-            image.save(path).map_err(|e| e.to_string())?;
-            Ok(json!("ok"))
-        }
         other => Err(format!("unknown command {other:?}")),
     }
 }

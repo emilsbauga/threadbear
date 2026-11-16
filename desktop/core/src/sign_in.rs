@@ -85,6 +85,10 @@ pub fn pi_script(config_dir: &str, executable: &str, provider: &str) -> String {
 
 /// The hello's command is a program and arguments, never shell source.
 pub fn script_with_command(account: &SignInAccount, cli_path: &str, command: &str) -> String {
+    script_named(account, cli_path, command, &crate::logins::provider_title(&account.provider))
+}
+
+pub fn script_named(account: &SignInAccount, cli_path: &str, command: &str, name: &str) -> String {
     if !account.can_sign_in() || command.trim().is_empty() {
         return "#!/bin/zsh -l\nprintf '%s\\n' 'Sign-in is unavailable for this login. Refresh the accounts in Threadbear.'\n".into();
     }
@@ -96,7 +100,6 @@ pub fn script_with_command(account: &SignInAccount, cli_path: &str, command: &st
     if (account.provider == "claude" || account.provider.is_empty()) && account.id != "claude-main" && !account.config_dir.is_empty() {
         env = format!("CLAUDE_CONFIG_DIR={} ", quoted(&account.config_dir));
     }
-    let name = crate::logins::provider_title(&account.provider);
     // "claude auth login": the program, then what it's asked to do.
     let mut words = command.split_whitespace();
     let program = words.next().unwrap_or("claude");

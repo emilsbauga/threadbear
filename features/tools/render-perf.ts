@@ -56,10 +56,10 @@ const dragger = swiftTool('realdrag');
 
 type Screen = { hz: number; presented: number; late: number; missedRefreshes: number; workMs: Record<string, number> };
 type Stats = { screens: Screen[]; mainCpuMs: number };
-type Row = { scenario: string; load: boolean; frames: number; late: number; p50: number; p90: number; p99: number; max: number; cpuMs: number; cpuPerFrame: number };
+type Row = { scenario: string; load: boolean; frames: number; late: number; p50: number; p90: number; p99: number; max: number; cpuMs: number; cpuPerFrame: number; cpuPerSecond?: number };
 const results: Row[] = [];
 
-function record(scenario: string, load: boolean, stats: Stats) {
+function record(scenario: string, load: boolean, stats: Stats, seconds?: number) {
   // The screen it drew most of the frames on.
   const s = [...stats.screens].sort((a, b) => b.presented - a.presented)[0];
   if (!s) {
@@ -77,6 +77,7 @@ function record(scenario: string, load: boolean, stats: Stats) {
     max: s.workMs.max,
     cpuMs: stats.mainCpuMs,
     cpuPerFrame: Math.round((100 * stats.mainCpuMs) / Math.max(1, s.presented)) / 100,
+    ...(seconds ? { cpuPerSecond: Math.round(stats.mainCpuMs / seconds) } : {}),
   };
   results.push(row);
   const pct = Math.round((100 * row.late) / Math.max(1, row.frames));
@@ -136,15 +137,61 @@ try {
   const fling = (at: number, dy: number) => execFileSync(gesture, [String(at), String(midY), '0', ...Array(30).fill(`0,${dy}`), 'M']);
   const stats = async (): Promise<Stats> => JSON.parse(await app.do({ cmd: 'frame-stats', reset: true }));
 
-  const scenarios: { name: string; at: number; setup: () => Promise<void> }[] = [
+  // A reply streaming in at 30 chunks a second (the mock's `mock.stream`),
+  // measured for STREAM_SECONDS with nothing else moving: in the open thread,
+  // and in one kept loaded behind it (opened, then left for this one).
+  const streamSeconds = 6;
+  const other = (await app.dump()).sidebar.sections.flatMap((s) => s.threads).find((t) => t.id !== threadId)!.id;
+  const openThread = async (id: string) => {
+    await app.do({ cmd: 'open', id });
+    for (let i = 0; i < 400 && (await app.dump()).transcript.state !== 'loaded'; i += 1) await sleep(50);
+  };
+  const stream = async (id: string) => {
+    await app.do({ cmd: 'mock', method: 'stream', params: { threadId: id, hz: 30, seconds: streamSeconds + 3 } });
+    await sleep(1000);
+    await stats();
+    await sleep(streamSeconds * 1000);
+  };
+
+  type Scenario = { name: string; at: number; setup: () => Promise<void>; run?: () => Promise<void> };
+  const scenarios: Scenario[] = [
     { name: 'transcript', at: transcriptX, setup: async () => {} },
     { name: 'inbox', at: sidebarX, setup: async () => void (await app.do({ cmd: 'mode', mode: 'inbox' })) },
     { name: 'projects', at: sidebarX, setup: async () => void (await app.do({ cmd: 'mode', mode: 'projects' })) },
-  ].filter((s) => !only || only.includes(s.name));
+    { name: 'stream', at: 0, setup: async () => void (await app.do({ cmd: 'mode', mode: 'inbox' })), run: () => stream(threadId!) },
+    {
+      name: 'stream-kept',
+      at: 0,
+      setup: async () => {
+        await openThread(other);
+        await openThread(threadId!);
+      },
+      run: () => stream(other),
+    },
+  ].filter((s) => (only ? only.includes(s.name) : !s.name.startsWith('stream')));
 
-  const round = async (s: (typeof scenarios)[number], load: boolean) => {
+  const round = async (s: Scenario, load: boolean) => {
     await s.setup();
     await sleep(1200);
+    if (s.run) {
+      // The profile, when asked for, covers the measured seconds.
+      let sampledRun: Promise<unknown> | undefined;
+      let runProfile = '';
+      if (sampleOf === s.name && !load) {
+        runProfile = path.join(fs.realpathSync(process.env.TB_PROFILE_DIR ?? os.tmpdir()), `tb-${s.name}-sample.txt`);
+        const sampler = spawn('/usr/bin/sample', [String(app.pid), String(streamSeconds + 2), '-mayDie', '-file', runProfile], { stdio: 'ignore' });
+        sampledRun = new Promise((done) => sampler.on('exit', done));
+      }
+      await s.run();
+      record(s.name, load, await stats(), streamSeconds);
+      if (sampledRun) {
+        await sampledRun;
+        console.log(`  profile: ${runProfile}`);
+        console.log(execFileSync(process.execPath, [path.join(root, 'features/tools/sample-split.mjs'), runProfile]).toString());
+      }
+      await sleep(4000);
+      return;
+    }
     // TB_PERF_SHOTS=<dir>: what each scenario scrolls, to check it's the right thing.
     if (process.env.TB_PERF_SHOTS) await app.shot(path.join(process.env.TB_PERF_SHOTS, `${s.name}.png`));
     // A first pass so every row's been drawn once (the transcript opens at

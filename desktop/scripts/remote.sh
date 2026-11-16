@@ -2,7 +2,10 @@
 # Runs a command from this checkout on another machine, so the Rust builds and
 # the spec runs stay off the Mac you're working on (AGENTS.md).
 #
-#   desktop/scripts/remote.sh <ssh host> [--desk] [--perf] -- <command...>
+#   desktop/scripts/remote.sh <ssh host> [--desk] [--perf] [--try] -- <command...>
+#
+# --try is for automatic updates: exit 75 instead of queueing behind this
+# checkout's run or either host lease, leaving queued measurements ahead.
 #
 # It copies the checkout, committed or not, less its build folders, to a folder
 # of its own under ~/.cache/threadbear-check/gpui there (so two checkouts at once
@@ -24,10 +27,16 @@ set -euo pipefail
 host="${1:?usage: remote.sh <ssh host> [--desk] [--perf] -- <command>}"; shift
 desk=0
 perf=0
+try_flag=""
+# An older remote.sh ignores this request and still builds normally. The
+# updater lives in the app bundle but this script comes from main, which can
+# be rolled back to a version from before --try existed.
+[ "${THREADBEAR_REMOTE_TRY:-}" != 1 ] || try_flag="--try "
 while [ $# -gt 0 ]; do
   case "$1" in
     --desk) desk=1; shift ;;
     --perf) perf=1; shift ;;
+    --try) try_flag="--try "; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -123,6 +132,10 @@ else
 fi
 turn_cmd 0
 if ! "${turn[@]}"; then
+  if [ -n "$try_flag" ]; then
+    echo "Another remote.sh run from this checkout is busy; deferring the update build." >&2
+    exit 75
+  fi
   echo "$waiting" >&2
   turn_cmd 1
   "${turn[@]}" &
@@ -147,7 +160,11 @@ fi
 # guard files first: the worktree copy may not exist yet, or be queued for
 # eviction. No build or capture starts until the final whole-command turn.
 boot="$base/run-$tag-tools"
-"${SSH[@]}" "$host" "mkdir -p $boot"
+# The helpers are written here and then run, so every folder down to them must
+# be this account's own and closed to others, or the run stops: a group with
+# write on the cache could otherwise swap one in between (Codex's review of
+# Daybreak 114/116, 13 Nov). A fresh boot folder each run, never one found there.
+"${SSH[@]}" "$host" "umask 077 && mkdir -p $base && for d in .cache ${base%/*} $base; do [ -d \$d ] && [ ! -L \$d ] && [ -O \$d ] && chmod go-w \$d || { echo \"remote.sh: ~/\$d on $host isn't a folder of this account's own\" >&2; exit 1; }; done && rm -rf $boot && mkdir -m 700 $boot"
 for helper in perf-lock.pl perf-children.pl hangup-guard.sh; do
   "${SSH[@]}" "$host" "cat > $boot/$helper" <"$root/scripts/$helper"
 done
@@ -169,7 +186,7 @@ precopy="$old_target""mkdir -p $src $target; [ -e $target/.synced-by-content ] |
 cd \"\$HOME/$base\"
 bash \"\$HOME/$boot/trim-remote-cache.sh\" $key ${target##*/}"
 alive_stdin 7
-remote="env THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" THREADBEAR_REMOTE_TOOLS=\"\$HOME/$boot\" perl $boot/perf-lock.pl - bash -c $(single_quoted "$precopy")"
+remote="env THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" THREADBEAR_REMOTE_TOOLS=\"\$HOME/$boot\" perl $boot/perf-lock.pl ${try_flag}- bash -c $(single_quoted "$precopy")"
 "${SSH[@]}" "$host" "$remote" <&7 &
 ssh_pid=$!
 rc=0
@@ -178,7 +195,12 @@ if [ "$rc" = 9 ]; then
   echo "Couldn't mark this checkout's copy on $host to build again, so it may hold a stale build. Not running." >&2
   exit 1
 fi
-[ "$rc" = 0 ] || exit "$rc"
+if [ "$rc" != 0 ]; then
+  # A deferred attempt has only uploaded its own helpers. Give those back
+  # now rather than accumulate a tools folder at every five-minute retry.
+  [ "$rc" != 75 ] || "${SSH[@]}" "$host" "rm -rf $boot" </dev/null || true
+  exit "$rc"
+fi
 # Named by hand, not read from .gitignore: rsync takes those rules from the
 # receiving side when it decides what to delete, which removed part of a
 # Swift build and a node_modules here on 9 Nov.
@@ -293,9 +315,9 @@ label="remote.sh from $(basename "$root")$([ "$desk" = 1 ] && printf ' --desk' |
 label="THREADBEAR_PERF_LOCK_LABEL=$(single_quoted "${label:0:200}")"
 if [ "$desk" = 1 ]; then
   pidfile="$base/run-$tag.pid"
-  remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl --desk $pidfile bash $script $pidfile"
+  remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${try_flag}--desk $pidfile bash $script $pidfile"
 else
-  remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl - bash $script"
+  remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${try_flag}- bash $script"
 fi
 "${SSH[@]}" "$host" "$remote; rc=\$?; rm -f $script; rm -rf $boot; exit \$rc" <&7 &
 ssh_pid=$!

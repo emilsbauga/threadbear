@@ -12,7 +12,7 @@ use crate::{call, icons};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -987,11 +987,16 @@ impl Threadbear {
         let orange = style::needs_you(cx);
         let id = thread.id.clone();
         let provider = account.as_ref().map_or(thread.provider.as_str(), |a| a.provider.as_str());
-        let name = threadbear_core::logins::provider_title(provider);
+        let fallback = threadbear_core::logins::RunnerLogins::default();
+        let logins = match thread.runner_id.as_deref() {
+            Some(id) => self.remote.logins.get(id).unwrap_or(&fallback),
+            None => &self.logins,
+        };
+        let name = logins.provider_title(provider);
         let (text, tip) = match (&account, &remote) {
             (Some(a), _) => (format!("{name} needs you to sign in again."), format!("The login {} was refused: signed out, or its session ran out", a.title)),
             (None, Some(runner)) => {
-                let command = self.logins.login_command(provider);
+                let command = logins.login_command(provider);
                 let tip = if command.is_empty() { format!("Sign in on {runner} itself") } else { format!("Sign in on {runner} itself: {command} in its Terminal") };
                 (format!("{name} on {runner} needs you to sign in again."), tip)
             }
@@ -1035,6 +1040,7 @@ impl Threadbear {
         let client = self.client.clone();
         let command = self.logins.login_command(&account.provider).to_owned();
         let pi_script = self.pi_login_script(&account.id);
+        let name = self.logins.provider_title(&account.provider);
         cx.spawn(async move |this, cx| {
             let clis = call(client, "clis.list", json!({})).await.ok();
             let path = clis
@@ -1045,7 +1051,7 @@ impl Threadbear {
                 .unwrap_or("")
                 .to_owned();
             let file = std::env::temp_dir().join(format!("threadbear-sign-in-{}.command", sign_in::file_safe(&account.id)));
-            let written = write_script(&file, &pi_script.unwrap_or_else(|| sign_in::script_with_command(&account, &path, &command)));
+            let written = write_script(&file, &pi_script.unwrap_or_else(|| sign_in::script_named(&account, &path, &command, &name)));
             this.update(cx, |this, cx| match written {
                 // The script this app just wrote, every word of it quoted.
                 Ok(()) => crate::open_gate::open_own(&file, cx),

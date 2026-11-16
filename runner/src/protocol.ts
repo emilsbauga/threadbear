@@ -5,7 +5,7 @@
 export const PROTOCOL_VERSION = 1;
 
 export type CliProvider = 'claude' | 'codex';
-export type Provider = CliProvider | 'pi' | 'cursor' | 'opencode';
+export type Provider = CliProvider | 'pi' | 'cursor' | 'opencode' | 'grok';
 // Configured engines can precede executable adapters. Provider continues to
 // name runnable accounts so Pi metadata cannot enter CLI-only code paths.
 export type AgentEngine = Provider;
@@ -24,7 +24,7 @@ export type PiProfile = {
   toolContext?: 'auto' | 'compact' | 'full';
 };
 export const CLI_PROVIDERS: readonly CliProvider[] = ['claude', 'codex'];
-export const PROVIDERS: readonly Provider[] = [...CLI_PROVIDERS, 'pi', 'cursor', 'opencode'];
+export const PROVIDERS: readonly Provider[] = [...CLI_PROVIDERS, 'pi', 'cursor', 'opencode', 'grok'];
 export function isCliProvider(v: unknown): v is CliProvider {
   return typeof v === 'string' && (CLI_PROVIDERS as readonly string[]).includes(v);
 }
@@ -311,6 +311,9 @@ export type ThreadSummary = {
   // Who started it, when that wasn't Mike (docs/protocol.md, "Who started
   // a thread"). Absent for his own threads.
   startedBy?: ThreadStartedBy;
+  // Started by another thread but kept out from under it in the sidebar
+  // (docs/protocol.md, "Nested threads").
+  detached?: true;
   // Mike's last message to it, one line, for the sidebar's "You: ..."
   // (docs/protocol.md, "What Mike last asked"). Absent until he's sent one.
   asked?: string;
@@ -892,7 +895,7 @@ export type EventBody =
   // or was told not to wait (runner/pools.ts). The only notes the backend
   // gets (sync.ts toMessageDoc), so another Mac can say a thread changed
   // login by itself.
-  | { type: 'system.note'; text: string; wake?: true; login?: true; savedMessage?: true }
+  | { type: 'system.note'; text: string; wake?: true; login?: true; savedMessage?: true; supersededReminder?: string }
   | { type: 'error'; message: string }
   // A command action that ran (patches.ts): its output, truncated like a
   // tool result. Outside any turn.

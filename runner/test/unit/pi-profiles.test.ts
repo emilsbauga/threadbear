@@ -10,12 +10,12 @@ import { FakeAccounts, makeHarness, tmpDir, withCodex } from '../helpers/fakes.t
 
 const profile = () => ({ id: 'pi-local', connection: { provider: 'ollama', model: 'test/model' } });
 
-test('Pi is a configured engine without changing runnable providers', () => {
+test('Pi remains a distinct engine alongside CLI and ACP providers', () => {
   assert.equal(isAgentEngine('pi'), true);
   assert.equal(isAgentEngine('codex'), true);
   assert.equal(isAgentEngine('other'), false);
   assert.equal(isProvider('pi'), true);
-  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi', 'cursor', 'opencode']);
+  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi', 'cursor', 'opencode', 'grok']);
 });
 
 test('Pi configuration is opt-in and does not create or read profile files', () => {

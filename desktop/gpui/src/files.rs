@@ -14,6 +14,7 @@
 // own app (`file.quicklook`). A
 // local web page shows sealed in the web runtime, its scripts off until Run
 // them (`file.htmlpreview`, `file.runthem`: web_panels.rs `local_page`).
+use crate::spinner::Spinner;
 use crate::file_edit::{FileEdit, SaveFile};
 use crate::file_find::{FindBar, FindNext, FindPrevious};
 use crate::file_watch::FolderWatch;
@@ -23,7 +24,7 @@ use crate::{call, icons, style};
 use gpui_kit::base::{TestSupportExt as _, TextViewState, TextViewStyle};
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, spinner::Spinner, v_flex, ActiveTheme as _, Selectable, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Selectable, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).
@@ -109,7 +110,7 @@ pub(crate) struct FilesState {
     known_folders: HashSet<String>,
     /// The pane's own text style, built once per appearance.
     /// Keyed by appearance and zoom, as `rows`' is.
-    reading_style: Option<((bool, u32), TextViewStyle)>,
+    reading_style: Option<(crate::style::ReadingStyleKey, TextViewStyle)>,
     /// How files and folders show, remembered across launches.
     pub(crate) prefs: FilePrefs,
     /// What was last looked for, which the next ⌘F starts with, as AppKit's
@@ -944,7 +945,7 @@ impl SidePane {
                     .into_any_element()
             }
             FileBody::Markdown { doc, .. } => {
-                let key = (cx.theme().is_dark(), crate::style::zoom_percent());
+                let key = crate::style::reading_style_key(cx);
                 let style = match &self.files.reading_style {
                     Some((was, style)) if *was == key => style.clone(),
                     _ => {

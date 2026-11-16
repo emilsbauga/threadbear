@@ -111,3 +111,28 @@ pub fn default_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     let value = Value::deserialize(d)?;
     Ok(value.as_bool().unwrap_or_else(|| { dropped::<bool>("default-on field"); true }))
 }
+
+/// Sequence and count fields also arrive as strings from older mirrors.
+/// Keep them within JavaScript's exact integer range, as event seqs are.
+fn uint_value(value: &Value) -> Option<u64> {
+    const MOST: u64 = 9_007_199_254_740_991;
+    let integer = value.as_u64().or_else(|| value.as_str().and_then(|s| s.parse().ok())).or_else(|| {
+        value.as_f64().filter(|n| n.is_finite() && *n >= 0. && n.fract() == 0. && *n <= MOST as f64).map(|n| n as u64)
+    })?;
+    (integer <= MOST).then_some(integer)
+}
+
+#[track_caller]
+pub fn uint<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(uint_value(&value).unwrap_or_else(|| { dropped::<u64>("integer field"); 0 }))
+}
+
+#[track_caller]
+pub fn optional_uint<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let value = Value::deserialize(d)?;
+    if value.is_null() { return Ok(None); }
+    let number = uint_value(&value);
+    if number.is_none() { dropped::<Option<u64>>("integer field"); }
+    Ok(number)
+}

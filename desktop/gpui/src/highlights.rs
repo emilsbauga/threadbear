@@ -241,6 +241,7 @@ pub(crate) struct SidePane {
     pub(crate) highlights: HashMap<String, ThreadHighlights>,
     pub(crate) highlights_unsupported: bool,
     wanted: HashMap<String, u64>,
+    answered: HashMap<String, u64>,
     fetching: HashSet<String>,
     /// Folded headings, for every thread (`collapsedHighlights`).
     pub(crate) collapsed: HashSet<String>,
@@ -293,6 +294,7 @@ impl SidePane {
             highlights: HashMap::new(),
             highlights_unsupported: false,
             wanted: HashMap::new(),
+            answered: HashMap::new(),
             fetching: HashSet::new(),
             collapsed: crate::highlights_store::load_collapsed(),
             chosen: HashMap::new(),
@@ -463,6 +465,7 @@ impl SidePane {
                 cx.background_executor().timer(delay).await;
             }
             let mut fetched = 0;
+            let mut retry_delay = Duration::from_secs(1);
             loop {
                 let Ok(Some(wanted)) = this.update(cx, |t, _| (!t.highlights_unsupported).then(|| t.wanted.get(&id).copied().unwrap_or(0))) else { break };
                 if wanted == fetched {
@@ -471,25 +474,43 @@ impl SidePane {
                 fetched = wanted;
                 let res = call(client.clone(), "threads.highlights", json!({ "threadId": id })).await;
                 let id2 = id.clone();
-                let more = this.update(cx, |t, cx| {
+                let retry = this.update(cx, |t, cx| {
                     match res {
                         Ok(v) => {
                             let fresh = ThreadHighlights::decode(&v);
                             if t.highlights.get(&id2) != Some(&fresh) {
-                                t.highlights.insert(id2, fresh);
-                                cx.notify();
+                                t.highlights.insert(id2.clone(), fresh);
                             }
+                            // Even an unchanged answer can settle a missing
+                            // pin. Errors leave its requested fetch waiting.
+                            t.answered.insert(id2, fetched);
+                            cx.notify();
+                            false
                         }
                         // An older runner: says so in the pane rather than asking again.
                         Err(e) if e.code == -32601 => {
                             t.highlights_unsupported = true;
                             cx.notify();
+                            false
                         }
-                        Err(_) => {}
+                        Err(_) => t.waiting_for_pin(&id2, cx),
                     }
                 });
-                if more.is_err() {
-                    break;
+                let Ok(retry) = retry else { break };
+                if retry {
+                    // A quiet thread has no next event to retry its shown pin.
+                    // Back off, and stop when Mike leaves or the request goes.
+                    cx.background_executor().timer(retry_delay).await;
+                    if !this.update(cx, |t, cx| t.waiting_for_pin(&id, cx)).unwrap_or(false) {
+                        // Still honor a newer ordinary refresh queued while
+                        // waiting, without retrying this failed snapshot.
+                        retry_delay = Duration::from_secs(1);
+                        continue;
+                    }
+                    retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(5));
+                    fetched = 0;
+                } else {
+                    retry_delay = Duration::from_secs(1);
                 }
             }
             this.update(cx, |t, _| {
@@ -498,6 +519,28 @@ impl SidePane {
             .ok();
         })
         .detach();
+    }
+
+    pub(crate) fn highlights_wanted(&self, id: &str) -> u64 {
+        self.wanted.get(id).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn highlights_answered(&self, id: &str, target: u64) -> bool {
+        self.highlights_unsupported || self.answered.get(id).is_some_and(|answer| *answer >= target)
+    }
+
+    pub(crate) fn highlights_fetching(&self, id: &str) -> bool {
+        self.fetching.contains(id)
+    }
+
+    fn waiting_for_pin(&self, id: &str, cx: &App) -> bool {
+        let Some(app) = self.app.upgrade() else { return false };
+        let app = app.read(cx);
+        !app.shows_home
+            && crate::thread::is_looking()
+            && app.open_thread().is_some_and(|thread| {
+                thread.id == id && thread.panel_request.as_ref().is_some_and(|request| request.highlight.is_some())
+            })
     }
 
     // MARK: sections
@@ -1818,7 +1861,7 @@ impl SidePane {
             .filter(|id| self.dock_showing(id, cx))
             .map(|id| json!({ "id": id, "draws": self.drawn.get(&id).cloned().unwrap_or_default() }))
             .collect();
-        let mut out = json!({ "shown": true, "width": PANE_WIDTH as i64, "items": items, "preview": preview, "highlights": self.highlights_line(&thread.id), "pane": self.pane_dump(&thread, &section, cx), "drawn": drawn });
+        let mut out = json!({ "shown": true, "width": PANE_WIDTH as i64, "items": items, "preview": preview, "highlights": self.highlights_line(&thread.id), "fetchingHighlights": self.fetching.contains(&thread.id), "pane": self.pane_dump(&thread, &section, cx), "drawn": drawn });
         // The Browser pane's pages while it's on show, wherever it is, as
         // sections now draw side by side whichever one was last chosen.
         if self.dock_showing(BROWSER, cx) {

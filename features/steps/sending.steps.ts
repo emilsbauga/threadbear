@@ -2,6 +2,7 @@ import { Given, Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ThreadbearWorld } from '../support/world.ts';
 
 // A tiny real picture, for the steps that need a file (the runner reads it).
@@ -9,6 +10,11 @@ const samplePicture = path.join(path.dirname(fileURLToPath(import.meta.url)), '.
 
 When('I type {string} in the composer', async function (this: ThreadbearWorld, text: string) {
   await this.app.do({ cmd: 'type', text });
+});
+
+When('I leave the composer untouched for {int} seconds', async function (seconds: number) {
+  assert(seconds > 0 && seconds <= 30, 'The idle-composer check must be bounded.');
+  await delay(seconds * 1000);
 });
 
 When('I press Return', async function (this: ThreadbearWorld) {

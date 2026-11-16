@@ -338,8 +338,13 @@ function fingerprint(name) {
   return `/${hashed}`;
 }
 
-rmSync(dist, { recursive: true, force: true });
-mkdirSync(dist, { recursive: true });
+// A check builds into the folder mkdtemp just made (mode 0700, this account's), never a remade one:
+// removing it and making it again let another account on a shared /tmp put its own folder at that
+// name in between, with symlinks at the names written below (Daybreak, 13 Nov).
+if (!CHECK) {
+  rmSync(dist, { recursive: true, force: true });
+  mkdirSync(dist, { recursive: true });
+}
 cpSync(join(root, "public"), dist, { recursive: true, filter: (from) => !from.endsWith(".DS_Store") });
 
 const styles = fingerprint("styles.css");

@@ -12,7 +12,7 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, Selectable, Sizable as _, StyledExt as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;

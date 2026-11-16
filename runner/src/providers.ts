@@ -64,6 +64,22 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     smallJobs: true,
     usageReadings: false,
   },
+  grok: {
+    id: 'grok',
+    name: 'Grok',
+    cliName: 'Grok',
+    loginCommand: 'grok login',
+    // Its models list their own levels (low to xhigh), which narrow this
+    // (AcpSession sets them as the session's thought_level option).
+    effort: 'codex',
+    autoMode: 'asks',
+    sandbox: false,
+    rewind: false,
+    // Threadbear's hook denies every tool for a small job, reads included
+    // (adapters/acp/grok-guard.ts).
+    smallJobs: true,
+    usageReadings: false,
+  },
 };
 
 // Pi is offered only with configured profiles; installed ACP agents are standard.

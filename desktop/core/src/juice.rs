@@ -388,9 +388,63 @@ pub fn paw_pose(seed: u64, t: f32) -> PawPose {
     }
 }
 
+/// Something small turning up: the activity bar's count or dot
+/// (`Juice.popIn` under `Juice.pop`). It grows from a fifth of its size on a
+/// bouncy spring (response 0.3, damping 0.55), fading in as it starts, and
+/// under Reduce Motion only fades (0.12 s). Mike left the pick to us, 14 Nov:
+/// ported as the Swift app does it.
+pub const POP: Duration = Duration::from_millis(600);
+pub const POP_REDUCED: Duration = Duration::from_millis(120);
+
+/// The (scale, opacity) of something popping in, `elapsed` after it turned up.
+pub fn pop_in(elapsed: Duration, reduce: bool) -> (f32, f32) {
+    if reduce {
+        return (1., progress(elapsed, POP_REDUCED));
+    }
+    let t = elapsed.as_secs_f32();
+    (0.2 + 0.8 * spring(t, 0.3, 0.55), (t / 0.075).min(1.))
+}
+
+/// A row's status words changing ("Working 41s" to "now"), lighter than the
+/// Swift app's blur, which GPUI can't draw: the old words fade out and the new
+/// ones fade up from 3 pt above. Mike left the pick to us, 14 Nov. None under
+/// Reduce Motion, as `Juice.swap` has none.
+pub const STATUS_OUT: Duration = Duration::from_millis(120);
+pub const STATUS_IN: Duration = Duration::from_millis(180);
+pub const STATUS_DROP: f32 = 3.;
+
+/// The new words' (opacity, distance above their place), and the old words'
+/// opacity, `elapsed` after the status changed.
+pub fn status_swap(elapsed: Duration) -> (f32, f32, f32) {
+    let incoming = ease_out_settle(progress(elapsed, STATUS_IN));
+    (incoming, STATUS_DROP * (1. - incoming), 1. - progress(elapsed, STATUS_OUT))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_badge_pops_from_a_fifth_with_a_bounce() {
+        let ms = Duration::from_millis;
+        assert_eq!(pop_in(ms(0), false), (0.2, 0.));
+        assert!((0..60).any(|i| pop_in(ms(i * 10), false).0 > 1.05), "it overshoots, as Swift's spring does");
+        let (end, shown) = pop_in(POP, false);
+        assert!((end - 1.).abs() < 0.02 && shown == 1., "settled by the end ({end})");
+        // Reduce Motion: no growing, only a short fade.
+        assert_eq!(pop_in(ms(0), true), (1., 0.));
+        assert_eq!(pop_in(POP_REDUCED, true), (1., 1.));
+    }
+
+    #[test]
+    fn status_words_swap_quickly() {
+        let ms = Duration::from_millis;
+        assert_eq!(status_swap(ms(0)), (0., STATUS_DROP, 1.));
+        let (_, _, old) = status_swap(STATUS_OUT);
+        assert_eq!(old, 0., "the old words are gone before the new are all there");
+        let (shown, above, old) = status_swap(STATUS_IN);
+        assert!((shown - 1.).abs() < 1e-4 && above.abs() < 1e-3 && old == 0., "settled: ({shown}, {above}, {old})");
+    }
 
     #[test]
     fn bezier_ends_and_shape() {

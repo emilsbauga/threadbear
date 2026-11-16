@@ -22,3 +22,10 @@ Feature: Screen readers
     When I open the thread "Morning brief"
     Then the row of "Morning brief" is a list item to a screen reader
     And the row of "Morning brief" is selected to a screen reader
+
+  @manual @foundation.theme
+  Scenario: Increase Contrast follows the Mac's display preference
+    When I turn on Increase Contrast in macOS and return to Threadbear
+    Then text and borders use the Mac's higher contrast colours
+    When I turn off Increase Contrast in macOS and return to Threadbear
+    Then the ordinary colours return

@@ -127,11 +127,13 @@ profile with a loopback model stub and no real API credentials.
   own login, so it uses your Claude or Codex tokens like any other thread):
   the new app is built on your Mac from your checkout's `main`, so if there's no `cargo`
   it installs Rust first, with rustup's own installer from
-  `https://sh.rustup.rs` (the minimal profile, about 850 MB with the crates
+  `https://sh.rustup.rs` (the minimal profile, about 1 GB with the crates
   the build fetches, in `~/.rustup` and `~/.cargo`; it doesn't touch your
   shell's startup files). The build runs at background priority, takes
-  about 10 minutes the first time, and keeps about 1.6 GB in
-  `~/Library/Caches/Threadbear/update-desktop`, which its updates reuse. Its
+  20 to 40 minutes the first time (31 on a test Mac with no Rust, 15 Nov
+  2026), and keeps about 2.3 GB in
+  `~/Library/Caches/Threadbear/update-desktop`, which its updates reuse. It
+  checks there's room for all that before it starts. Its
   output is in that thread. `rustup self uninstall` takes Rust off again.
 - **The GPUI app's web runtime, only if you install it** (its Install web
   runtime button, or Settings > General > Web runtime; nothing is fetched
@@ -165,14 +167,17 @@ profile with a loopback model stub and no real API credentials.
   `~/.config/systemd/user/com.mikerosoft.threadbear.runner.service`, and no
   apps; it converts pictures with ImageMagick and rsvg-convert, and reads
   the account's full name from `getent passwd` rather than `id -F`.
-- **A one-shot reinstall job:** when the runner's LaunchAgent or
-  Threadbear Runner.app is behind main and you press Reinstall now in the
+- **A one-shot update job:** when the runner's LaunchAgent or
+  Threadbear Runner.app is behind main and you press Update it in the
   Updates panel (or the `selfReinstall` experiment is on), the runner
   writes `<data folder>/runner/reinstall/<label>.reinstall.plist` and
   loads it with `launchctl bootstrap` (it isn't in `~/Library/LaunchAgents`,
-  so it never starts at login). It runs `runner/scripts/install-runner.sh`
-  from your clone once, logging to `<data folder>/runner/reinstall.log`,
-  and is left loaded but stopped until the next one replaces it. On Linux
+  so it never starts at login). It runs `runner/scripts/install-runner.sh
+  --stage` from your clone once, which rebuilds Threadbear Runner.app and
+  rewrites the runner's own plist and launch.mjs without stopping
+  anything (they take over at your next login), logging to
+  `<data folder>/runner/reinstall.log`, and is left loaded but stopped
+  until the next one replaces it. On Linux
   it's a transient `systemd-run --user` unit instead (`runner/src/reinstall.ts`).
 - **Commands:** `~/.local/bin/threadbear`, a link into your clone, and
   `~/.local/bin/tb`, a three-line script that runs the `tb` of the runner
@@ -189,6 +194,15 @@ profile with a loopback model stub and no real API credentials.
   can put text on the clipboard (OSC 52) but not read it. Clicking a Terminal
   file link reads the OS hostname to recognize a link to this same machine;
   it does not look it up on the network. Links go through the usual open gate.
+- **The Mac’s text services:** the GPUI app keeps the current selected plain
+  words in memory for AppKit’s Services menu and discards that snapshot when
+  the window closes. Choosing Look Up, Translate, Writing Tools, Share or a
+  Service hands those words to that system feature or the service you picked.
+  Passwords, revealed secret fields and one-time-code fields are excluded. A
+  returned edit is checked against the same field, selection and original words.
+- **Display preferences:** the GPUI Mac app reads the system appearance,
+  accent colour, Reduce Motion, Increase Contrast and 12/24-hour clock
+  preference to draw its interface. These readings stay on this Mac.
 - **Files:** the data folder `~/Library/Application Support/Threadbear`
   (threads, settings, `secrets/`, runner releases, the pinned release key
   `upstream-signers`, the Mac app's `app-drafts.json` and the GPUI app's
@@ -238,6 +252,11 @@ profile with a loopback model stub and no real API credentials.
   Office and iWork documents and PDF link hovers, so Quick Look reads the file the open gate
   checked; removed after the thumbnail is made, with interrupted copies
   cleared after a day when another preview is made);
+  `~/Library/Caches/Threadbear/opened` (only for a file on a disk with no
+  file references, like ExFAT or a network share), and on Windows and Linux
+  `%LOCALAPPDATA%\Threadbear\opened` and `~/.cache/threadbear/opened`
+  (private, read-only copies of documents and programs you open from a thread, so the app that opens one gets the file the open gate
+  checked; cleared after a day when another is opened);
   `~/Library/Caches/Threadbear/rich` (pictures of the ```` ```mermaid ```` and
   ```` ```html ```` blocks in replies, and each one's page for the side pane,
   newest 900 files kept). They're drawn on this Mac in web views that load
@@ -306,12 +325,24 @@ profile with a loopback model stub and no real API credentials.
   connects, the runner runs `lsof` and `ps` on that one connection to see
   which process it is and whether it's under a thread's CLI
   (`runner/src/peer.ts`, docs/protocol.md "Who's really calling").
-- **When OpenCode or Cursor's CLI is installed and logged in** it also starts the
-  `opencode acp` and Cursor's `agent acp` CLIs for threads on them, runs each
+- **A pinned file being shown** (`desktop/gpui/src/highlights.rs`): if its
+  Highlights request fails, the app retries after 1 second, then 2, then 4,
+  up to 5 seconds between tries while you're looking at that thread. It
+  stops retrying when you leave or the request goes away.
+- **When OpenCode, Cursor or Grok's CLI is installed and logged in** it also starts the
+  `opencode acp`, Cursor's `agent acp` and `grok agent --no-leader stdio` CLIs for threads on them, runs each
   with `--version` when the runner starts, and runs its own updater
-  (`opencode upgrade`, `agent update`) only when you press Update in the app, and each
+  (`opencode upgrade`, `agent update`, `grok update`) only when you press Update in the app, and each
   live thread on one has a listener on `127.0.0.1` on a port the system picks,
   serving that thread's Threadbear tools, needing a random token made for it.
+  Grok is started with `--plugin-dir <data dir>/grok-guard/threadbear-<random>`:
+  a folder the runner makes for each start (and removes after a week),
+  holding a PreToolUse hook that runs `guard-ask.mjs` (`guard-deny.mjs` for a
+  small job) from `grok-guard` with the runner's own node before each of
+  Grok's tool calls, so they come to you first, and a UserPromptSubmit hook
+  (`seen.mjs`, which does nothing) whose running Grok reports, so a thread
+  whose plugin didn't load is stopped. The guard reads
+  `~/.grok/trusted_folders.toml` (`runner/src/adapters/acp/grok-guard.ts`).
 - **New installs start threads on Auto.** On Auto, Claude runs with its
   safety check approving or blocking each action, and Codex asks before
   edits. An install set up before 9 Nov 2026 keeps starting threads on
@@ -356,21 +387,32 @@ profile with a loopback model stub and no real API credentials.
   follows the `main` of the checkout it was installed from in the same way
   (`desktop/gpui/src/app_update.rs`): it reads main's `desktop/` tree with
   `git rev-parse` 20 seconds after it opens, every 5 minutes and within
-  seconds of main changing, and when that differs from what it runs, it runs
+  seconds of main changing. When that differs from what it runs, it waits
+  until that tree has stayed the same for ten minutes, then runs
   `stage-update.sh` from its own bundle at background priority
   (`desktop/scripts/stage-update.sh`). That clones the checkout into
   `~/Library/Caches/Threadbear/update-desktop`, and with `updateBuildHosts` in
   `runner.json` (never `checkHosts`), copies the clone's files (not its history) with rsync over
-  ssh to the first of them that's a Mac and answers, builds there under
+  ssh to the first of them that's a Mac, answers and is free, builds there under
   `~/.cache/threadbear-check/gpui` and copies the two binaries back with scp
   (`desktop/scripts/remote.sh`). Remote commands and performance tools keep
   `~/.cache/threadbear-perf.lock` and `~/.cache/threadbear-check/lock` on the
-  host while they run, waiting for other builds, checks and measurements,
-  with a note beside the first (`threadbear-perf.lock.holder`: its pid, when
+  host while they run, waiting for other builds, checks and measurements.
+  Real-input test tools read process names with `ps` and, on macOS,
+  executable paths through system Python's `ctypes` and `libproc`. They use
+  those names to refuse input while an ffmpeg encoder is running.
+  Automatic update builds try both locks without waiting, and leave a host
+  with live measurement waiters alone. A busy host makes the app try again
+  at a later look, reading the latest main then; a build already running
+  finishes with both locks held. The first has a note beside it
+  (`threadbear-perf.lock.holder`: its pid, when
   it took the lock and what it's running) so a waiting run can say who it's
   waiting for. The holder deletes it when it finishes. Each waiting run keeps
   a file in `threadbear-perf.lock.waiting` until it gets the lock, so the
-  others can say how many are queued ahead.
+  others can say how many are queued ahead. An updater also checks the
+  process start time, so a dead waiter's note whose pid has been reused
+  cannot keep deferring updates. A deferred attempt removes its own helper
+  folder on the host.
   Temporary wrappers under the run's temp folder background Cargo and Swift
   builds and are removed when the run ends. Performance runs register their
   process groups and start times in `~/.cache/threadbear-check/perf-children-*`
@@ -424,6 +466,16 @@ profile with a loopback model stub and no real API credentials.
   `$TMPDIR/threadbear-handover-<pid>`, deleted once it's over. It writes what it did and the build's output to
   `~/Library/Logs/threadbear-desktop-update.log` (the one before it in
   `.log.1` once that passes 2 MB). `followMain: false` stops it too.
+- **Idle benchmarks** (`features/tools/idle-perf.ts`), only when run explicitly:
+  compile CPU counters, a window watcher and (for Swift references) an
+  owned-PID activation helper into a temporary folder, removed at the end.
+  A Swift reference checks its private executable path and build UUID before
+  measurement and can activate that existing private app; it never launches
+  the installed app. Every 250 ms during a sample, the watcher reads the foreground
+  process, window bounds and stacking order, display sleep and console-session
+  state. It rejects covered or inactive samples without sending Accessibility
+  or automation requests to the app. Closing the benchmark's owner pipe stops
+  the watcher. These helpers never run as part of the installed app.
 - **Following GitHub on a second machine** (`runner/src/follow-origin.ts`):
   only with `followOrigin: true` in that machine's `runner.json`, which
   nothing sets for you. Every 5 minutes the runner runs `git fetch origin
@@ -574,6 +626,11 @@ profile with a loopback model stub and no real API credentials.
   `~/.cursor/cli-config.json` exists (never opened). OpenCode itself reads
   `~/.config/opencode` and, as it does anywhere, your `~/.claude/skills`; a
   folder's own OpenCode config and plugins are turned off.
+- Whether `~/.local/bin/grok`, `~/.grok/bin/grok` or a `grok` on your PATH
+  exists and where it really leads, and whether `~/.grok/auth.json` exists
+  (never opened). Grok itself reads `~/.grok`, and as it does anywhere your
+  `~/.claude` settings, hooks, skills and `CLAUDE.md`; its threads run your
+  own Grok and Claude hooks.
 - Token Stats' files, if you have that app, and any logins you've added
   under `accounts` in its data folder (`claude-1`, `codex-1`...).
 - Your first name, from your Mac account's full name (`id -F`), so its
@@ -613,6 +670,7 @@ profile with a loopback model stub and no real API credentials.
 | Anthropic, OpenAI | yours | Your threads, through the official CLIs on your own logins. With the `cardReviewer` experiment on (off by default), an approval card in a thread on Auto, with the thread's first and latest messages, goes to Opus through the same CLI so it can decide in your place. Unless you turn off Settings > General > Code review (`"labReview": false`), a thread's code change, with your message and the agent's reply, goes to your other provider's CLI as a review thread, as if you'd started one (or a fresh session of the same provider, with no other login). After a turn fails because the API couldn't be reached, the runner itself opens (and straight away closes) a connection to api.anthropic.com or chatgpt.com on port 443, at most once a minute, until one opens and the thread carries on. Nothing is sent over it (`runner/src/net-probe.ts`). |
 | OpenCode's Zen (opencode.ai), models.dev, and whichever providers you've logged it into | theirs | Only with a thread on OpenCode: that thread's prompts and tool output, through the official CLI, and small jobs' text when a pool of only OpenCode logins is picked for them in Settings |
 | Cursor (api2.cursor.sh) | theirs | Only with a thread on Cursor: the same, on your own login |
+| xAI (cli-chat-proxy.grok.com and Grok's other services) | theirs | Only with a thread on Grok: the same, on your own login, and small jobs' text when a pool of only Grok logins is picked for them in Settings. After a Grok turn fails because the API couldn't be reached, the runner opens (and closes) a connection to cli-chat-proxy.grok.com as it does for the others |
 | Mike's push relay | Mike's | Only when a paired iPhone or Android phone gets a notification (an Android phone's goes on to Google's Firebase Cloud Messaging, from the relay). It's sent from your Convex deployment, not the Mac. The text is encrypted for the phone; the relay sees the device token and thread id (`convex/push.ts`, `docs/push-relay.md`). The first time, your deployment registers with it, giving its own address; the relay keeps that address and checks it by posting a one-time code back to your deployment's `/relay/verify` (`convex/http.ts`). |
 | Pi profile's model endpoint | yours | Prompts, tool output and images through Pi, using that profile's provider settings and credentials. This can be a local server or a remote service such as OpenRouter. Threadbear does not read or copy Pi credentials. |
 | A Connectors gateway | whoever runs it | Only if one is set in `runner.json` or `~/.claude.json`. Its `/health` every few minutes (and once more at the end of a turn where a call to one of its services failed, to see if it needs signing in), and for a project with a Notion page, a Notion read or two every 5 minutes for its task board (`runner/src/notion-tasks.ts`), signed with the header the `headersHelper` command in that `connectors` entry prints, which it runs for each read |

@@ -117,6 +117,57 @@ pub(crate) fn install(cx: &mut gpui_kit::App) {
     let _ = cx;
 }
 
+/// The image-only attachment picker. AppKit filters the sheet by type;
+/// elsewhere GPUI's unfiltered picker is checked before anything is added.
+pub(crate) fn choose_images(window: &gpui_kit::Window, cx: &mut gpui_kit::App) -> impl std::future::Future<Output = Result<Option<Vec<PathBuf>>, String>> {
+    #[cfg(target_os = "macos")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let _ = cx;
+        let (send, receive) = oneshot::channel::<Option<Vec<PathBuf>>>();
+        match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+            Ok(RawWindowHandle::AppKit(handle)) => {
+                // The sheet owns this sender until its single completion;
+                // cancelling our task only closes the receiving end.
+                let context = Box::into_raw(Box::new(send)).cast();
+                unsafe { tb_composer_choose_images(handle.ns_view.as_ptr(), image_picker_finished, context); }
+            }
+            _ => { drop(send); }
+        }
+        async move { receive.await.map_err(|_| "Couldn't open the image picker".to_owned())?.map(image_selection).transpose() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        let selected = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Add".into()) });
+        async move {
+            selected.await.map_err(|error| error.to_string())?.map_err(|error| error.to_string())?.map(image_selection).transpose()
+        }
+    }
+}
+
+fn image_selection(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    if paths.iter().any(|path| !crate::composer::is_picture(path)) {
+        return Err("Choose image files to attach.".to_owned());
+    }
+    Ok(paths)
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn image_picker_finished(context: *mut std::ffi::c_void, names: *const *const std::ffi::c_char, count: usize) {
+    // AppKit calls once, while every UTF-8 name is still alive. Copy the
+    // paths before releasing the sender, even if the composer went away.
+    let send = unsafe { Box::from_raw(context.cast::<oneshot::Sender<Option<Vec<PathBuf>>>>()) };
+    let paths = if names.is_null() {
+        None
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(names, count) }.iter().map(|name| {
+            PathBuf::from(unsafe { std::ffi::CStr::from_ptr(*name) }.to_string_lossy().into_owned())
+        }).collect())
+    };
+    let _ = send.send(paths);
+}
+
 pub(crate) fn read(drag: bool) -> Option<Vec<PathBuf>> {
     #[cfg(target_os = "macos")]
     {
@@ -134,6 +185,7 @@ pub(crate) fn read(drag: bool) -> Option<Vec<PathBuf>> {
 type Sink = extern "C" fn(*mut std::ffi::c_void, i32, *const std::ffi::c_char, *const std::ffi::c_void, usize) -> bool;
 #[cfg(target_os = "macos")]
 extern "C" {
+    fn tb_composer_choose_images(view: *mut std::ffi::c_void, finished: extern "C" fn(*mut std::ffi::c_void, *const *const std::ffi::c_char, usize), context: *mut std::ffi::c_void);
     fn tb_composer_install(view: *mut std::ffi::c_void);
     fn tb_composer_read(drag: bool, sink: Sink, context: *mut std::ffi::c_void) -> bool;
     fn tb_composer_promise(object: *const std::ffi::c_void, destination: *const std::ffi::c_char, sink: Sink, context: *mut std::ffi::c_void);
@@ -458,6 +510,31 @@ pub(crate) fn fixture_drag(window: &gpui_kit::Window, phase: i32, vanish: Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_picker_does_not_turn_a_nonimage_into_a_file_chip() {
+        let image = std::path::PathBuf::from("photo.HEIC");
+        let document = std::path::PathBuf::from("notes.md");
+        assert_eq!(super::image_selection(vec![image.clone()]).unwrap(), vec![image.clone()]);
+        assert!(super::image_selection(vec![image, document]).is_err());
+        assert!(super::image_selection(vec!["photo.png.command".into()]).is_err());
+        assert!(super::image_selection(vec!["drawing.svg".into()]).is_err());
+        assert!(super::image_selection(vec!["icon.ico".into()]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn image_picker_cancellation_and_a_closed_composer_release_the_callback() {
+        let (send, receive) = super::oneshot::channel::<Option<Vec<std::path::PathBuf>>>();
+        super::image_picker_finished(Box::into_raw(Box::new(send)).cast(), std::ptr::null(), 0);
+        assert_eq!(futures::executor::block_on(receive).unwrap(), None);
+
+        let (send, receive) = super::oneshot::channel::<Option<Vec<std::path::PathBuf>>>();
+        drop(receive);
+        let name = std::ffi::CString::new("/picture.png").unwrap();
+        let names = [name.as_ptr()];
+        // The native sheet may outlive the composer that opened it.
+        super::image_picker_finished(Box::into_raw(Box::new(send)).cast(), names.as_ptr(), names.len());
+    }
     async fn wait_ready(path: &std::path::Path) -> Result<super::PreparedPictures, String> {
         super::ready(path, futures::future::pending()).await
     }

@@ -426,7 +426,8 @@ changed="$(mktemp)"
 # website's checks, so --quick, nothing changed under ios/ (ThreadbearKit's
 # tests), app/ or dock/ (the Mac app's release build) beyond what the GPUI
 # app shares (scripts/swift-freeze.sh --gpui-shared: the mock runner,
-# fixtures, art, which the Swift app's build no longer runs for), and
+# fixtures, art, which the Swift app's build no longer runs for, but not
+# the mock runner, whose Swift tests still run), and
 # something changed (with nothing, check.sh itself or --all, it runs
 # everything), no shots.
 linux_ok=0
@@ -434,8 +435,13 @@ GPUI_SHARED="$("$ROOT/scripts/swift-freeze.sh" --gpui-shared 2>/dev/null)"
 # Without it, nothing counts as shared: an empty pattern would match every
 # line, and every change would look like none.
 [ -n "$GPUI_SHARED" ] || GPUI_SHARED='^$'
+# The mock runner, though shared, has Swift tests check.sh runs whenever it
+# or they change (swift-freeze.sh --mock-tests), and those need a Mac.
+MOCK_TESTS="$("$ROOT/scripts/swift-freeze.sh" --mock-tests 2>/dev/null | head -1)"
+[ -n "$MOCK_TESTS" ] || MOCK_TESTS='^$'
 if [ "$QUICK" = 1 ] && [ "$ALL" = 0 ] && [ -z "$SHOTS" ] && [ -s "$changed" ] \
-  && ! grep -qE '^ios/|^check\.sh$' "$changed" && ! grep -vE "$GPUI_SHARED" "$changed" | grep -E '^(app|dock)/' >/dev/null; then linux_ok=1; fi
+  && ! grep -qE '^ios/|^check\.sh$' "$changed" && ! grep -vE "$GPUI_SHARED" "$changed" | grep -E '^(app|dock)/' >/dev/null \
+  && ! grep -E "$MOCK_TESTS" "$changed" >/dev/null; then linux_ok=1; fi
 # (grep to /dev/null, not -q: -q closing the pipe early fails grep -v under
 # pipefail, and a big change would have looked like none.)
 # --runner is only Node, whatever changed: the runner's self-update sends
@@ -848,7 +854,7 @@ while :; do
     # By content (-c), not size and time: an edit that keeps both would
     # otherwise leave the mirror's old copy in the run.
     copy_it() {
-      "${SSH[@]}" "$HOST" "umask 022 && mkdir -p '$mirror' '$remote_run' && touch '$mirror'" \
+      "${SSH[@]}" "$HOST" "umask 022 && mkdir -p '$mirror' '$remote_run' && touch '$mirror' && for d in '$remote_base/mirror' '$mirror' '$remote_run'; do [ -d \"\$d\" ] && [ ! -L \"\$d\" ] && [ -O \"\$d\" ] && chmod go-w \"\$d\" || { echo \"\$d on the check host isn't this account's own\" >&2; exit 1; }; done" \
         && rsync -azc --from0 --files-from="$files" -e "${SSH[*]}" "$ROOT/" "$HOST:$mirror/" \
         && rsync -a -e "${SSH[*]}" "$files" "$HOST:$remote_run.files" \
         && "${SSH[@]}" "$HOST" "rsync -a --from0 --files-from='$remote_run.files' '$mirror/' '$remote_run/' && rm -f '$remote_run.files'" \

@@ -15,6 +15,14 @@ Feature: Sending a message
     And the transcript shows my message "Can you check the backups?"
     And the reply streams in and the thread goes back to idle
 
+  @composer.idle
+  Scenario: An untouched composer keeps its draft and can be edited again
+    When I type "A draft to continue" in the composer
+    And I leave the composer untouched for 12 seconds
+    Then the composer says "A draft to continue"
+    When I type " later" in the composer
+    Then the composer says "A draft to continue later"
+
   @composer.return
   Scenario: Shift-Return starts a new line instead of sending
     When I type "first line" in the composer

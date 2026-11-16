@@ -15,8 +15,8 @@ use crate::open_gate::Origin;
 use crate::style::{self, px};
 use crate::{call, now_ms};
 use gpui_kit::component::input::{InputEvent, TextareaState};
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _};
+use crate::spinner::Spinner;
+use gpui_kit::component::{h_flex, v_flex, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -55,7 +55,7 @@ pub(crate) struct DecisionCard {
     /// The boxes under "Something else", by ask.
     inputs: HashMap<usize, Entity<TextareaState>>,
     subs: Vec<Subscription>,
-    style: Option<((bool, u32), gpui_kit::base::TextViewStyle)>,
+    style: Option<(crate::style::ReadingStyleKey, gpui_kit::base::TextViewStyle)>,
 }
 
 impl DecisionCard {
@@ -159,7 +159,7 @@ impl AskHost for DecisionCard {
     }
 
     fn ask_reading_style(&mut self, cx: &App) -> gpui_kit::base::TextViewStyle {
-        let key = (cx.theme().is_dark(), style::zoom_percent());
+        let key = crate::style::reading_style_key(cx);
         match &self.style {
             Some((k, style)) if *k == key => style.clone(),
             _ => {

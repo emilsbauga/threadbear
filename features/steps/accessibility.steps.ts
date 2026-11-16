@@ -1,7 +1,7 @@
 // Screen readers (features/accessibility.feature): the GPUI app's `a11y`
 // gives what an element labelled so tells a screen reader (AccessKit's role
 // and states), from the last frame drawn.
-import { Then } from '@cucumber/cucumber';
+import { When, Then } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
 import { okValue, sleep } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
@@ -43,3 +43,10 @@ Then('the row of {string} is selected to a screen reader', async function (this:
   const n = await node(this, title, true, (x) => x.selected === true);
   assert.equal(n.selected, true, `the row of "${title}" is ${JSON.stringify(n)}`);
 });
+
+// System Settings belongs to the person using the Mac. The scripted app can
+// compare palettes with THREADBEAR_INCREASE_CONTRAST without changing it.
+When('I turn on Increase Contrast in macOS and return to Threadbear', () => 'pending');
+When('I turn off Increase Contrast in macOS and return to Threadbear', () => 'pending');
+Then("text and borders use the Mac's higher contrast colours", () => 'pending');
+Then('the ordinary colours return', () => 'pending');

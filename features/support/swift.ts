@@ -55,6 +55,21 @@ export class SwiftDriver implements Driver {
     await this.script(['start', '--mock', ...fixtures, ...bearDate, '--no-build', '--id', this.id, '--size', '1180x800'], 120);
   }
 
+  /** The current private app process, for process-level performance counters. */
+  async processId(): Promise<number> {
+    const status = await this.script(['status']);
+    const line = status.split('\n').find(line => line.trim().replace(/^\*\s*/, '').startsWith(`${this.id} `));
+    const pid = line?.match(/running, pid (\d+)/)?.[1];
+    if (!pid) throw new Error(`The Swift test app ${this.id} is not running.`);
+    return Number(pid);
+  }
+
+  /** The owned bundle's executable, for PID-targeted benchmark activation. */
+  privateExecutablePath(): string {
+    const stateRoot = fs.realpathSync(path.join(process.env.TMPDIR || '/tmp', 'threadbear-dev-app'));
+    return path.join(stateRoot, this.id, 'Threadbear.app', 'Contents', 'MacOS', 'Threadbear');
+  }
+
   async do(cmd: Record<string, unknown>, timeoutSeconds = 30): Promise<string> {
     const out = await this.script(['--id', this.id, 'do', JSON.stringify(cmd), '--timeout', String(timeoutSeconds)], timeoutSeconds + 10);
     return out;

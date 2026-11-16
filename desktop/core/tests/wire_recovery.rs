@@ -275,3 +275,58 @@ fn provider_sign_in_uses_hello_login_command() {
     assert!(script.contains("'/opt/agent' login\n"), "{script}");
     assert!(!script.contains("auth login"));
 }
+
+#[test]
+fn summary_activity_uses_updated_then_created_and_counts_accept_numeric_strings() {
+    let decode = |v| serde_json::from_value::<ThreadSummary>(v).unwrap();
+    let summary = decode(json!({"id":"t", "createdAt":"2026-11-01T00:00:00Z", "updatedAt":"2026-11-02T00:00:00Z", "lastSeq":"12", "lastSeenSeq":"10", "asksSeq":"11", "pendingReviews":"2"}));
+    assert_eq!(summary.activity_ms(), 1_793_577_600_000);
+    let remote = decode_remote_threads(&json!({"threads":[{"runnerId":"r", "threadId":"12345678-1234-1234-1234-123456789abc", "createdAt":"2026-11-01T00:00:00Z", "updatedAt":"2026-11-02T00:00:00Z"}]}));
+    assert_eq!(remote.threads[0].activity_ms(), summary.activity_ms());
+
+    assert_eq!((summary.last_seq, summary.last_seen_seq, summary.asks_seq, summary.pending_reviews), (12, 10, Some(11), Some(2)));
+    assert!(summary.unread());
+    let summary = decode(json!({"id":"t", "lastActivityAt":"bad", "updatedAt":"bad", "createdAt":"2026-11-01T00:00:00Z"}));
+    assert_eq!(summary.activity_ms(), 1_793_491_200_000);
+    let summary = decode(json!({"id":"t", "lastActivityAt":"2026-11-03T00:00:00Z", "updatedAt":"2026-11-02T00:00:00Z"}));
+    assert_eq!(summary.activity_ms(), 1_793_664_000_000);
+    for bad in [json!("-1"), json!("1.5"), json!(-1), json!(1.5), json!("9007199254740992"), json!(false), json!({})] {
+        let summary = decode(json!({"id":"t", "lastSeq":bad, "pendingReviews":bad}));
+        assert_eq!(summary.last_seq, 0);
+        assert_eq!(summary.pending_reviews, None);
+    }
+}
+
+#[test]
+fn provider_capabilities_follow_hello_and_fall_back_field_by_field() {
+    use threadbear_core::logins::{ChipSettings, ModelChoice};
+    let logins = RunnerLogins::from_hello(&json!({"providers":[
+        {"id":"new", "name":"New agent", "cliName":"New CLI", "autoMode":"classifier", "effort":"codex", "rewind":true},
+        {"id":"claude", "name":42, "autoMode":"asks", "effort":"none", "rewind":false},
+        {"id":"codex", "autoMode":42, "effort":"future", "rewind":42}, false
+    ]}));
+    assert_eq!(logins.provider_title("new"), "New agent");
+    assert_eq!(logins.cli_name("new"), "New CLI");
+    let clis = threadbear_core::updates::decode_clis_with(&json!([{"provider":"new", "installedVersion":"1.0", "status":"current"}]), &logins);
+    assert_eq!(threadbear_core::updates::status_line(&clis[0]), "New CLI 1.0, up to date");
+    let command = threadbear_core::slash::SlashCommand { name:"status".into(), source:"cli".into(), scope:Some("system".into()), ..Default::default() };
+    assert_eq!(threadbear_core::slash::origin_named(&command, &logins.cli_name("new")), "New CLI's own");
+
+    assert!(logins.has_auto_mode("new") && logins.can_rewind("new"));
+    assert_eq!(logins.effort_levels(None, &[], "new").last().map(String::as_str), Some("ultra"));
+    assert!(!logins.has_auto_mode("claude"));
+    assert!(!logins.can_rewind("claude"));
+    assert_eq!(logins.provider_title("claude"), "Claude");
+    assert!(logins.effort_levels(None, &[], "claude").is_empty());
+    assert!(!logins.has_auto_mode("codex") && logins.can_rewind("codex"));
+    assert_eq!(logins.effort_levels(None, &[], "codex").last().map(String::as_str), Some("ultra"));
+    let choices = vec![ModelChoice { id:"m".into(), effort_levels:vec!["low".into()], ..Default::default() }];
+    assert_eq!(logins.effort_levels(Some("m"), &choices, "new"), ["low"]);
+    assert!(logins.effort_levels(Some("m"), &choices, "claude").is_empty(), "provider effort none overrides even a stale model list");
+    let settings = ChipSettings { logins:&logins, account:String::new(), provider:"new".into(), pool_id:None, model:None, model_in_use:None, effort:None, effort_in_use:None, permission_mode:"full".into(), cwd:String::new(), is_new:false };
+    assert!(settings.permission_modes().contains(&"auto"));
+    let old = RunnerLogins::from_hello(&json!({}));
+    assert!(old.has_auto_mode("claude") && old.can_rewind("codex"));
+    assert!(!old.has_auto_mode("new") && !old.can_rewind("new"));
+    assert!(old.effort_levels(None, &[], "new").is_empty());
+}

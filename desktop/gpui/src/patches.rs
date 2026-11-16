@@ -4,10 +4,11 @@
 // (`panels.render`), asked for when it's shown and every so often while it is.
 // A web panel's page is web_panels.rs's (`panel.web`): the side pane only
 // draws one if it's asked to anyway, as a placeholder with Open in browser.
+use crate::spinner::Spinner;
 use crate::call;
 use crate::highlights::{icon, palette, tipped, tipped_as, PaneRow, Palette, SidePane, OUTER_INSET};
 use crate::style;
-use gpui_kit::component::{h_flex, spinner::Spinner, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).

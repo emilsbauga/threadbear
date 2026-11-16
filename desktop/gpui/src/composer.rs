@@ -15,7 +15,7 @@ use crate::style;
 use crate::thread::ThreadPane;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Copy, Cut, Enter, Escape, IndentInline, InlineToken, InlineTokenContext, InlineTokenHoverEvent, InputEvent, MoveDown, MoveUp, Textarea, TextareaState};
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -88,7 +88,7 @@ pub struct Composer {
     /// Which card was last seen arriving, for it to settle in (composer_card.rs).
     pub(crate) card_arrival: crate::composer_card::CardArrival,
     /// The card's text style, one per appearance (`card_reading_style`).
-    pub(crate) card_style: Option<((bool, u32), gpui_kit::base::TextViewStyle)>,
+    pub(crate) card_style: Option<(crate::style::ReadingStyleKey, gpui_kit::base::TextViewStyle)>,
     shown_placeholder: SharedString,
     /// The slash palette's own state (`PaletteState`), and the list this
     /// opening of it has asked for (the thread's, or a new thread's login
@@ -1547,7 +1547,7 @@ impl Composer {
                     .disabled(creating)
                     // NSTextView's right-click menu: spelling, then Cut, Copy and
                     // Paste, then Spelling and Grammar to Speech.
-                    .context_menu(move |_, _, cx| crate::composer_spelling::context_menu(&menu_owner, &menu_input, cx))
+                    .context_menu(move |_, window, cx| crate::composer_spelling::context_menu(&menu_owner, &menu_input, window, cx))
                     .text_size(px(style::size::COMPOSER))
                     .line_height(px(style::size::BODY_LINE))
                     .token(move |ctx, _window, cx| match token_owner.upgrade() {

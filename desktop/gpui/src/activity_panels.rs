@@ -8,7 +8,7 @@ use crate::app::Threadbear;
 use crate::highlights::tipped;
 use crate::{icons, shell, style};
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;

@@ -23,6 +23,11 @@ fn decode_diagnostics_report_real_paths_without_values_or_map_keys() {
     expect_message("map entry", || {
         let _ = RunnerLogins::from_hello(&json!({"defaults":{"models":{"PRIVATE SENTINEL":false}}}));
     });
+    expect_message("event payload", || {
+        let event = threadbear_core::reducer::Event::decode(&json!({"seq":"17", "type":"plan.proposed", "text":"PRIVATE SENTINEL", "plan":42})).unwrap();
+        assert_eq!(event.seq, 17);
+        assert_eq!(event.payload, threadbear_core::reducer::EventPayload::Unknown);
+    });
     #[derive(serde::Deserialize)]
     struct Probe {
         #[serde(deserialize_with = "threadbear_core::wire::field")]

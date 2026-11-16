@@ -38,8 +38,8 @@ const median = (xs) => {
   return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : NaN;
 };
 const keys = [...new Set(Object.values(runs).flat().map((r) => `${r.scenario}${r.load ? ' loaded' : ''}`))];
-const fields = ['late%', 'p50', 'p90', 'p99', 'cpuPerFrame'];
-const pick = (rows, f) => rows.map((r) => (f === 'late%' ? (100 * r.late) / Math.max(1, r.frames) : r[f]));
+const fields = ['late%', 'p50', 'p90', 'p99', 'cpuPerFrame', 'cpuPerSecond'];
+const pick = (rows, f) => rows.map((r) => (f === 'late%' ? (100 * r.late) / Math.max(1, r.frames) : r[f])).filter((v) => v !== undefined);
 console.log(`\nMedians over ${rounds} rounds each (${names.map((n, i) => `${n}: ${bins[i]}`).join(', ')}); each one's share of A's in brackets`);
 for (const k of keys) {
   const of = (name) => runs[name].filter((r) => `${r.scenario}${r.load ? ' loaded' : ''}` === k);

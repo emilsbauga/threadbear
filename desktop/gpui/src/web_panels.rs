@@ -21,7 +21,7 @@ use crate::push_button::PushButton;
 use crate::style::{self, px};
 use crate::web_runtime::{self, Engine};
 use futures::StreamExt as _;
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;

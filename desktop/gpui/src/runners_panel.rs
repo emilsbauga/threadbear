@@ -14,7 +14,7 @@ use crate::activity_panels::{about_button, dot, icon_button, panel_column, small
 use crate::app::Threadbear;
 use crate::highlights::{tipped, tipped_as};
 use crate::{call, icons, now_ms, shell, style};
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;

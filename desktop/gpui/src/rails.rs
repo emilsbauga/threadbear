@@ -51,6 +51,9 @@ thread_local! {
     /// When each button was last clicked, for its bounce. The window draws
     /// on one thread.
     static TAPS: RefCell<HashMap<SharedString, Instant>> = RefCell::new(HashMap::new());
+    /// Whether each button's count and dot showed last time it was drawn,
+    /// and when the one showing turned up, to pop it in.
+    static SHOWN: RefCell<HashMap<String, (bool, Option<Instant>)>> = RefCell::new(HashMap::new());
     /// The view buttons' lit square: where each button was laid out this
     /// frame, the one lit, and the square on its way from the last one.
     static LIT: RefCell<Lit> = RefCell::new(Lit::default());
@@ -118,6 +121,24 @@ fn bouncing(id: &SharedString, icon: Icon) -> AnyElement {
     .into_any_element()
 }
 
+/// When the count or dot at `key` turned up, while it's still popping in
+/// (`Juice.popIn`): it pops only on turning up, not when the app first draws
+/// it, nor when it changes number (that rolls).
+fn turned_up(key: String, shown: bool) -> Option<Instant> {
+    SHOWN.with(|m| {
+        let mut m = m.borrow_mut();
+        let entry = m.entry(key).or_insert((shown, None));
+        if shown && !entry.0 {
+            entry.1 = Some(Instant::now());
+        }
+        entry.0 = shown;
+        if !shown {
+            entry.1 = None;
+        }
+        entry.1.filter(|at| at.elapsed() < juice::POP)
+    })
+}
+
 /// `ActivityButton`: an icon, the hover square, a lit square for the view on
 /// show, and a count or a dot in the corner.
 fn rail_button(button: RailButton, on_click: impl Fn(&mut Threadbear, &mut Window, &mut Context<Threadbear>) + 'static, cx: &mut Context<Threadbear>) -> AnyElement {
@@ -163,32 +184,53 @@ fn rail_button(button: RailButton, on_click: impl Fn(&mut Threadbear, &mut Windo
         }))
         .when(button.view, |s| s.child(marker))
         .child(face);
+    let reduce = cx.reduce_motion();
+    let pop_length = if reduce { juice::POP_REDUCED } else { juice::POP };
+    let badge_shown = button.badge.is_some_and(|b| b > 0);
+    let badge_pop = turned_up(format!("badge-{badge_key}"), badge_shown);
+    let dot_pop = turned_up(format!("dot-{badge_key}"), !badge_shown && (button.dot || button.quiet_dot));
     if let Some(badge) = button.badge.filter(|b| *b > 0) {
         // Grey, not accent: a count of what's there, not an alarm. It rolls
         // to a new number (row_motion.rs), as the Swift badge does.
         let text = crate::row_motion::rolling(&format!("rail-{}", badge_key), badge, 12., cx.reduce_motion(), |n| div().child(if n > 99 { "99+".to_string() } else { n.to_string() }).into_any_element());
-        el = el.child(
-            div()
-                .absolute()
-                .top(px(-2.))
-                .right(px(-3.))
-                .min_w(px(14.))
-                .h(px(14.))
-                .px(px(3.5))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .bg(background)
-                .border_1()
-                .border_color(separator)
-                .text_size(px(9.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(secondary)
-                .child(text),
-        );
+        let pill = div()
+            .absolute()
+            .top(px(-2.))
+            .right(px(-3.))
+            .min_w(px(14.))
+            .h(px(14.))
+            .px(px(3.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(background)
+            .border_1()
+            .border_color(separator)
+            .text_size(px(9.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(secondary)
+            .child(text);
+        el = match badge_pop {
+            // Turning up: it grows from a fifth of its size about its middle,
+            // drawn smaller rather than scaled (GPUI can't scale a box).
+            Some(at) => el.child(pill.with_animation(SharedString::from(format!("rail-badge-pop-{badge_key}-{at:?}")), Animation::new(pop_length), move |pill, t| {
+                let (scale, opacity) = juice::pop_in(pop_length.mul_f32(t), reduce);
+                let grow = 14. * (1. - scale) / 2.;
+                pill.top(px(-2. + grow)).right(px(-3. + grow)).min_w(px(14. * scale)).h(px(14. * scale)).px(px(3.5 * scale)).text_size(px(9. * scale)).opacity(opacity)
+            })),
+            None => el.child(pill),
+        };
     } else if button.dot || button.quiet_dot {
-        el = el.child(div().absolute().top(px(1.)).right(px(1.)).size(px(7.)).rounded_full().bg(dot_color).border_1().border_color(background));
+        let dot = div().absolute().top(px(1.)).right(px(1.)).size(px(7.)).rounded_full().bg(dot_color).border_1().border_color(background);
+        el = match dot_pop {
+            Some(at) => el.child(dot.with_animation(SharedString::from(format!("rail-dot-pop-{badge_key}-{at:?}")), Animation::new(pop_length), move |dot, t| {
+                let (scale, opacity) = juice::pop_in(pop_length.mul_f32(t), reduce);
+                let grow = 7. * (1. - scale) / 2.;
+                dot.top(px(1. + grow)).right(px(1. + grow)).size(px(7. * scale)).opacity(opacity)
+            })),
+            None => el.child(dot),
+        };
     }
     // Its key to the right while ⌘ is held (`shortcutHint(_, .after)`).
     el.children(crate::key_hints::hint(button.hint, crate::key_hints::Placement::After)).into_any_element()

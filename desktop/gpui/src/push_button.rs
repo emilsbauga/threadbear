@@ -7,7 +7,7 @@
 // pictures (features/tools/pixel-overlay.swift): 80 wide for "Try again",
 // #2e2e2e on #1c1c1c, #ebebeb on white, #474231 on the dark bar's #38321f.
 use crate::style::{self, px};
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;

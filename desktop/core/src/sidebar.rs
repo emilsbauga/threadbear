@@ -534,6 +534,7 @@ pub enum TrailingKind {
 
 /// What a row says at its right end (`ThreadRowView.trailing`). `kind` picks
 /// the style; `tip` is the tooltip when it has one.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Trailing {
     pub text: String,
     pub kind: TrailingKind,
@@ -954,7 +955,7 @@ mod tests {
     use serde_json::json;
 
     fn thread(over: serde_json::Value) -> ThreadSummary {
-        let mut v = json!({ "id": "t", "title": "A thread", "cwd": "/Users/mike/dev/misc", "status": "idle", "lastActivityAt": "2026-11-09T08:00:00Z", "preview": "", "lastSeq": 5, "lastSeenSeq": 5 });
+        let mut v = json!({ "id": "t", "title": "A thread", "cwd": "/Users/alex/dev/misc", "status": "idle", "lastActivityAt": "2026-11-09T08:00:00Z", "preview": "", "lastSeq": 5, "lastSeenSeq": 5 });
         v.as_object_mut().unwrap().extend(over.as_object().unwrap().clone());
         serde_json::from_value(v).unwrap()
     }
@@ -1181,7 +1182,7 @@ mod tests {
         let t = thread(json!({ "projects": [{ "id": "p1", "title": "Photo sync" }, { "id": "p2", "title": "Threadbear" }] }));
         assert_eq!(t.place(), "Photo sync, Threadbear");
         assert_eq!(tile(&t), (Tile::Letter("P".into()), true));
-        let loose = thread(json!({ "cwd": "/Users/mike/dev/me/misc" }));
+        let loose = thread(json!({ "cwd": "/Users/alex/code/misc" }));
         assert_eq!(loose.place(), "misc");
         assert_eq!(tile(&loose), (Tile::Folder, false));
         assert_eq!(project_letter("7 day plan"), "7");

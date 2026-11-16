@@ -62,7 +62,8 @@ again="$(run 'cargo build 2>&1')"
 # matches this Mac's but its build is of something else, with a later time.
 # Copying by content changes nothing there, so remote.sh rebuilds such a
 # target's crates once (.synced-by-content).
-on_host 'cp -p src/main.rs /tmp/freshness-$$ && sed -i.x s/2/9/ src/main.rs && cargo build -q && cp -p /tmp/freshness-$$ src/main.rs && rm -f /tmp/freshness-$$ src/main.rs.x && rm -f "$CARGO_TARGET_DIR/.synced-by-content"'
+# The copy goes in a folder mktemp makes, not a /tmp name another account could make first.
+on_host 'keep="$(mktemp -d)" && cp -p src/main.rs "$keep/" && sed -i.x s/2/9/ src/main.rs && cargo build -q && cp -p "$keep/main.rs" src/main.rs && rm -rf "$keep" src/main.rs.x && rm -f "$CARGO_TARGET_DIR/.synced-by-content"'
 old="$(run 'cargo run -q')"
 
 if [ "$got" != "answer 2" ]; then

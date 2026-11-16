@@ -1521,7 +1521,10 @@ impl Event {
         let thread_id = string(c, "threadId").unwrap_or_default();
         let turn_id = string(c, "turnId");
         let type_ = string(c, "type").unwrap_or_default();
-        let payload = decode_payload(&type_, c).unwrap_or(EventPayload::Unknown);
+        let payload = decode_payload(&type_, c).unwrap_or_else(|_| {
+            crate::wire::dropped::<EventPayload>("event payload");
+            EventPayload::Unknown
+        });
         Some(Event { seq, ts, thread_id, turn_id, type_, payload })
     }
 }

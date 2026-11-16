@@ -1,19 +1,19 @@
 {
   "claude": {
     "instructions": 2984,
-    "tools": 39314,
-    "total": 42298
+    "tools": 39498,
+    "total": 42482
   },
   "codex": {
     "instructions": 2153,
-    "tools": 39413,
-    "total": 41566
+    "tools": 39597,
+    "total": 41750
   },
   "pi": {
     "full": {
       "instructions": 2984,
-      "tools": 39861,
-      "total": 42845
+      "tools": 40045,
+      "total": 43029
     },
     "compact": {
       "instructions": 3181,
@@ -26,7 +26,7 @@
     "add_button": 1659,
     "ask_secret": 1241,
     "create_project": 1433,
-    "create_thread": 2375,
+    "create_thread": 2559,
     "delete_schedule": 267,
     "delete_thread": 445,
     "end_turn": 8927,

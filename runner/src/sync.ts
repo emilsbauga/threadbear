@@ -54,6 +54,7 @@ import { BodyCollector, prepareBody, type BodyDoc, type RawBody } from './full-s
 import type { ConvexUse, ConvexUseTally } from './convex-use.ts';
 import { cutSafely } from './safe-cut.ts';
 import { siteOf } from './convex-admin.ts';
+import { withNetworkCause } from './network-cause.ts';
 import { credentialUrlProblem } from './secure-url.ts';
 // How soon what the backend left out of a closed thread id goes again.
 const CLOSED_RETRY_MS = 30_000;
@@ -144,7 +145,7 @@ export type SyncConfig = {
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 80;
+export const BACKEND_API_VERSION = 81;
 // From this one a message row can be a login's note (role "note"): a thread
 // that moved to another login or is waiting for room says so on another Mac.
 export const LOGIN_NOTES_API_VERSION = 78;
@@ -741,8 +742,12 @@ export function convexPoster(url: string, fetchFn: typeof fetch = fetch): Post {
       body: wellFormedJson(JSON.stringify({ path: fn, args, format: 'json' })),
       redirect: 'error',
       signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-    });
-    const body = (await res.json().catch(() => undefined)) as { status?: string; value?: unknown; errorMessage?: string; errorData?: unknown } | undefined;
+    }).catch((e: unknown) => { throw withNetworkCause(e); });
+    const body = (await res.json().catch((e: unknown) => {
+      // A write may already have committed. Keep the read failure useful
+      // without copying JSON parser snippets from the private response.
+      throw withNetworkCause(new Error(`Couldn't read the Convex reply (HTTP ${res.status})`, { cause: e }));
+    })) as { status?: string; value?: unknown; errorMessage?: string; errorData?: unknown } | undefined;
     if (!res.ok || !body || body.status !== 'success') {
       // A ConvexError's data (`{ kind, message }`), as the Convex client
       // keeps it, so forbiddenText can tell a runner key's refusal.
@@ -1828,6 +1833,20 @@ export class ConvexSync {
     const r = (await this.backend('mutation', 'sync:issueToken', { key: this.deps.key, ...args })) as { id?: unknown; token?: unknown; expiresAt?: unknown } | null;
     if (!r || typeof r.id !== 'string' || typeof r.token !== 'string' || typeof r.expiresAt !== 'string') throw new Error('The backend gave no token back.');
     return { id: r.id, token: r.token, expiresAt: r.expiresAt };
+  }
+
+  /**
+   * A one-use pairing code for the phone's QR code (API 81 in this fork, convex/tokens.ts):
+   * the phone trades it for its token. A backend without it fails here,
+   * said as "older than this runner", and no token is ever put in a QR code
+   * instead (Daybreak 127).
+   */
+  async issuePairingCode(args: { name: string; days?: number }): Promise<{ id: string; code: string; expiresAt: string }> {
+    this.mustBeOn();
+    if (this.backendApiVersion !== undefined && this.backendApiVersion < 81) throw new Error('The Convex backend must be updated before pairing a phone. Try again after the runner update.');
+    const r = (await this.backend('mutation', 'sync:issuePairingCode', { key: this.deps.key, ...args })) as { id?: unknown; code?: unknown; expiresAt?: unknown } | null;
+    if (!r || typeof r.id !== 'string' || typeof r.code !== 'string' || typeof r.expiresAt !== 'string') throw new Error('The backend gave no pairing code back.');
+    return { id: r.id, code: r.code, expiresAt: r.expiresAt };
   }
 
   /** runners.setOrder: Mike's runner order, the one the phone sets too (API 58). */

@@ -33,7 +33,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `foundation.markdown` | Markdown renderer | GFM to styled blocks, each block cached by its text | `TextView` for Markdown, with our own per-block cache so only the open block re-renders. | kit | L | `MarkdownRenderer`, `MarkdownBlocks`, `MarkdownNesting` |
 | `foundation.highlighting` | Code highlighting | Colours code in the file pane | gpui-kit's code editor highlighter (tree-sitter or syntect). | kit | M | `TextFileView` (`CodeHighlighter`) |
 | `foundation.zoom` | Zoom | ⌘= ⌘- ⌘0 scale everything together, remembered | One scale value applied to the type scale and spacing, saved in the config file. | build | S | `Theme` (`TextZoom`, `TypeScale`) |
-| `foundation.theme` | Theme and appearance | Light, dark or system, picked per app | Our own colour tokens over gpui-kit's theme; following the OS accent colour per OS is (unverified). | build | M | `Theme`, `AppAppearance` |
+| `foundation.theme` | Theme and appearance | Light, dark or system, picked per app | Our colour tokens over gpui-kit's theme; Mac accent and Increase Contrast follow AppKit, read at launch and on return. Other systems' accent is unverified. | build | M | `Theme`, `AppAppearance` |
 | `foundation.icons` | Icon set | About 116 distinct literal SF Symbols (a floor, from my grep) | Bundled icon set, with a name map so each symbol use moves across. | build | M | Every view |
 | `foundation.bear` | Bear glyphs | The mascot as stroked paths at any size | Not needed: Mike passed over the bears on 13 Nov. The About window draws its one bear from an SVG. | build | M | `BearGeometry`, `Bear` |
 | `foundation.logos` | Provider logos | Model picker marks from SVG path data | Ship the marks as SVG assets beside the icon set. | build | S | `ProviderLogo` |
@@ -45,7 +45,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `foundation.dialogs` | Confirm dialogs | Delete, going back with jobs running, odd link schemes | gpui-kit dialog. | kit | S | 7 files |
 | `foundation.filepicker` | Native file pickers | Attach, folder choose, project icon | GPUI path prompts. | kit | S | 6 files, `ProjectFilePicker` |
 | `foundation.opengate` | Open gate | The one route to open links and files, with trust rules | Port the trust rules, then per-OS open and default-app lookup on macOS, Windows and Linux, and re-prove the security checks on each. | shim | M | `OpenGate`, `LinkPolicy` |
-| `foundation.spinner` | Spinner | Turning arc run by the render server | GPUI `Animation` on an arc, which stops if the foreground thread stalls because GPUI has no render-server equivalent. | build | S | `Spinner` |
+| `foundation.spinner` | Spinner | Turning arc run by the render server | Kit-style loaders share the display link and stay static under Reduce Motion. Working arcs keep their window layer and timer. GPUI still draws them on the main thread. | build | S | `Spinner` |
 | `foundation.busy` | Busy and optimistic pattern | Every click shows at once, double click blocked | Shared busy-key helper on entities, with a rule check like `EveryClickShowsTests`. | build | S | `AppModel+Busy`, `BusyControl` |
 | `foundation.firstclick` | First click counts | Clicks work with the app in the background | macOS: GPUI's window accepts the first mouse, and so do the web panels' pages (real clicks on Tinker Desk, `features/tools/first-click.ts`, 13 Nov); confirm the same on Windows and Linux. | shim | S | `FirstClick` |
 | `foundation.scrollers` | Overlay scrollers | Always overlay, so the reading column stays centred | Draw our own overlay scrollbar over the list (unverified whether stock scrollbars can stay overlay; Ghostex's fork added scrollbar control). | build | S | `Spinner` (`OverlayScrollView`) |
@@ -105,6 +105,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `sidebar.row.hoverbuttons` | Hover buttons | Star, Hibernate, Archive or Unarchive, Trash | Drawn on hover, with the busy pattern. | build | S | `SidebarView` |
 | `sidebar.row.menu` | Row context menu | Star, Hibernate, Archive, Move to, Projects, Rename, Open in New Panel, Copy thread id, Ask the librarian to look, Delete… | gpui-kit menu with submenus, in-window. | kit | M | `SidebarView` |
 | `sidebar.subagents` | Sub-agent tree | Indented sub-agents with a drawn trunk, click to read | Custom rows with a drawn trunk. | build | M | `SubagentViews`, `SubagentRows` |
+| `sidebar.nested` | Nested threads | Experiment `nestedThreads`: threads another thread started sit indented under it (one level, a grandchild under the top), in the section of the group's most urgent member; open by itself while one waits on Mike, folded otherwise, the starter's count ("1 needs you · 5 working") opening or folding it; a child's question in orange or where it's up to; archived ones as "N finished"; Move Out From Under and Put Back Under in the row menu; the Projects view nests the same way. Dragging rows in or out is planned, after a motion mockup | Rules in `core/src/nested.rs`; rows drawn as the inbox's own, indented with a guide line. | build | M | none (GPUI only) |
 | `sidebar.archived.paging` | Archived paging | Recent few, then Show more; the open thread is always included | Port the rule and draw a Show more row. | build | S | `SidebarView` (`ArchiveRows`) |
 | `sidebar.archived.foot` | Archived pinned to foot | Not present: tried 8 Nov, undone 9 Nov (cfbf3cb3); Archived sits directly under the other sections | Not ported: the Swift app no longer has it. | drop | none | none |
 | `sidebar.skeleton` | Loading skeleton | Pulsing grey rows until the first list lands | Drawn rows with `Animation`. | build | S | `SidebarView` (`LoadingRows`) |
@@ -123,6 +124,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | ID | Feature | What it does | How in GPUI | Route | Size | Swift |
 |---|---|---|---|---|---|---|
 | `header.title` | Title line | Title in the panel bar, click to rename inline | Text that becomes an `Input` on click. | build | S | `DetailView` (`HeaderTitle`, `ThreadTitleField`) |
+| `thread.startedby` | Started by | Experiment `nestedThreads`: a thread another thread started opens with one quiet line above its transcript, "Started by <starter>" (a link that opens it) and its `startedBy.why` | A line over the transcript in `thread.rs`. | build | S | none (GPUI only) |
 | `header.projectchip` | Project chip menu | In a project, take out, keep, add to another | gpui-kit menu. | kit | S | `DetailView` |
 | `header.schedulechip` | Schedule chip | Booked message in the header | Drawn chip. | build | S | `DetailView` (`ScheduleChip`) |
 | `header.backforward` | Back and forward | ‹ › with hover destination | Drawn buttons with `Tooltip`. | build | S | `HistoryButtons`, `Navigation`, `NavigationHistory` |
@@ -140,7 +142,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `toast.milestone` | Milestone toast | Thread count passes 100 and each thousand | `Toast`, using time since the last in-app input in place of the system idle time. | kit | S | `DetailView`, `AppModel+Milestones` |
 | `thread.newpage` | New-thread page | Centred composer, heading, project chip, note, room card | Drawn page reusing the composer. | build | M | `DetailView` (`ComposerPlacement`, `NewThreadHeading`, `AccountRoomCard`) |
 | `thread.loadfailure` | Load failure states | Couldn't load, Try again, no record, Nothing yet | Drawn. | build | S | `DetailView` |
-| `thread.loading` | Reading a thread | A small spinner in the middle of the transcript, no words, until its rows are read | Kit spinner over the list while the pane isn't loaded. | build | S | `DetailView` |
+| `thread.loading` | Reading a thread | A small spinner in the middle of the transcript, no words, until its rows are read | Loader over the list while the pane isn't loaded, on the shared loading-spinner clock. | build | S | `DetailView` |
 | `thread.kept` | Threads kept loaded | The last 24 threads opened stay loaded, so switching back shows one at once and catches up from its last seq | `PaneCache` of panes, still subscribed; least recently shown goes first. | build | M | `AppModel+Selection` (`sessions`, `maxSessions`) |
 
 ## 5. Transcript row kinds
@@ -208,6 +210,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `rich.picturechips` | Picture chips | "Picture 1" in sent words, hover picture, click Quick Look | Drawn chip, `Popover` picture, and `file.quicklook`'s in-app viewer. | build | M | `PictureChips`, `InlinePictures` |
 | `rich.worklinks` | Work links | ↑ link jumps to the step | Port the link parsing and scroll to the row. | build | S | `WorkLinks`, `TranscriptController` |
 | `rich.filerefs` | File path refs | Paths in text become links, relative to the thread folder | Port the parsing and add click runs. | build | S | `FilePathRefs`, `TextKit` |
+| `rich.textservices` | Mac text services | Look Up, Translate, Writing Tools and Services for selected words | Shared selection getter, checked undoable returns, AppKit responder proxy and system popovers. Other systems omit these Mac services. | shim | M | `ComposerTextView`, `TextKit` |
 | `rich.linkpeek` | Link hover peek | File picture or page address after a pause | macOS: `QLThumbnailGenerator`; Windows and Linux: images decoded in-app and addresses only, shown in a `Popover`. | shim | M | `LinkPeek`, `ThreadChips` (`ChipCardWindow`) |
 | `rich.filemenu` | File link menu | Open ways, Copy Path, Default sets the click | gpui-kit menu, with the list of apps coming from per-OS code on macOS, Windows and Linux. | shim | M | `FileLinks` |
 | `rich.webmenu` | Web link menu | Browser, panel, per Chrome profile, Copy Link, Default | gpui-kit menu, with Chrome's profile list read from a per-OS path on macOS, Windows and Linux. | shim | M | `FileLinks`, `ChromeProfiles` |
@@ -224,6 +227,7 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | ID | Feature | What it does | How in GPUI | Route | Size | Swift |
 |---|---|---|---|---|---|---|
 | `composer.textbox` | Text box | Multi-line, grows, undo, wrap, per-thread drafts | `Textarea`, tested early with IME and dictation (XIM on X11, text-input on Wayland). | kit | L | `ComposerView` (`ComposerTextView`) |
+| `composer.idle` | Idle text box | Keeps an untouched draft and accepts editing again | The caret stays visible after ten seconds without editing or cursor movement, then resumes on activity. | kit | S | `ComposerView` |
 | `composer.spelling` | Spelling | Misspelled words marked, guesses, Ignore and Learn Spelling on right-click, autocorrect and text replacements as a word ends, the right-click menu's Spelling and Grammar, Substitutions, Transformations and Speech | The Mac's spell checker (NSSpellChecker) and speech through objc2, the marks drawn by the kit's textarea (our `set_text_marks`); none on Windows or Linux. | build | M | `ComposerView` (`ComposerTextView`, NSTextView's own) |
 | `composer.return` | Return, Shift-Return | Send, new line | Key bindings on `Textarea`. | build | S | `ComposerView` |
 | `composer.listcontinue` | List continuation | "2. " after "1. x", empty item ends it, one undo | Port the rule on `Textarea` (unverified that it can make one undo step). | build | S | `ComposerView` (`insertLineContinuingList`) |

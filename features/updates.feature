@@ -23,14 +23,14 @@ Feature: The Updates panel
     And the Updates panel lists "Claude Code 2.1.312, up to date (automatic)"
 
   @updates.panel
-  Scenario: Reinstall now reinstalls the runner from the panel, with no command to copy
+  Scenario: Update it updates Threadbear Runner from the panel, with no command to copy
     When the runner says Threadbear Runner.app is behind main
     And I open the Updates panel
-    Then the Updates panel lists "Threadbear Runner.app was built from older launcher sources than main's. Reinstalling restarts the runner, so it waits until no thread is busy."
-    And the Updates panel lists "  [Reinstall now]"
-    When I press "Reinstall the runner once no thread is busy" in the Updates panel
-    Then the Updates panel lists "Reinstalling the runner. It restarts, and is back in a minute or so."
-    And the Updates panel lists "  [Reinstalling: busy]"
+    Then the Updates panel lists "Threadbear Runner.app was built from older launcher sources than main's. Updating it stops nothing; the new one starts next time your Mac restarts."
+    And the Updates panel lists "  [Update it]"
+    When I press "Put the new Threadbear Runner in place" in the Updates panel
+    Then the Updates panel lists "Updating Threadbear Runner. Nothing stops; the new one starts next time your Mac restarts."
+    And the Updates panel lists "  [Updating: busy]"
     And the Updates panel lists "The runner is up to date."
 
   @updates.panel
@@ -60,6 +60,16 @@ Feature: The Updates panel
 
   # The app's own update is made up (`updates` with `preview`): a scripted
   # app never follows main, as only the installed one does.
+  # Exercised by core's BuildDebounce tests and remote lease tests. An
+  # installed updater is required to observe this over real landings.
+  @system.selfupdate @swift-pending @manual
+  Scenario: Automatic update builds leave queued screen tests and timings ahead
+    When several changes to the desktop app land on main within ten minutes
+    Then the updater waits until the latest desktop tree has settled for ten minutes
+    And it requests only that latest tree once no update build is running
+    And a busy build Mac or one with timings queued makes it try again later
+    And a build already running finishes with the host kept exclusive
+
   @system.selfupdate
   Scenario: The app's next version waiting says so in the Updates panel
     When the app's next version, def5678, is ready
@@ -91,6 +101,12 @@ Feature: The Updates panel
     When the app's next version is waiting for a Mac to build it on
     And I open the Updates panel
     Then the Updates panel lists "The app has a new version on main, waiting for a Mac to build it on."
+
+  @system.selfupdate @swift-pending
+  Scenario: A new version waits for nearby changes to settle before building
+    When the app's next version is waiting for main to settle
+    And I open the Updates panel
+    Then the Updates panel lists "The app has a new version on main, waiting for ten quiet minutes before building."
 
   # Check hosts only run tests: what an update's build host sends back runs
   # here, so it's only one named in updateBuildHosts (Daybreak 108). With

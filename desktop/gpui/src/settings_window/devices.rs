@@ -13,7 +13,7 @@ use crate::push_button::PushButton;
 use crate::{call, icons, style};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::dialog::Dialog;
-use gpui_kit::component::spinner::Spinner;
+use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;

@@ -379,7 +379,8 @@ impl SettingsWindow {
         // adds the note, or the id with none, and the note isn't said twice.
         let twin = twin_label(account, accounts);
         let note = account.note.clone().filter(|_| twin.is_none());
-        let detail: Vec<String> = [Some(provider_title(account.provider_id())), note].into_iter().flatten().filter(|s| !s.is_empty()).collect();
+        let provider = self.app.upgrade().map_or_else(|| provider_title(account.provider_id()), |app| app.read(cx).logins.provider_title(account.provider_id()));
+        let detail: Vec<String> = [Some(provider), note].into_iter().flatten().filter(|s| !s.is_empty()).collect();
         let (pool_id, login) = (pool.id.clone(), account.id.clone());
         let me = cx.entity().downgrade();
         let title = match twin {

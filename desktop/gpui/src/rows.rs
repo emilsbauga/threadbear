@@ -17,9 +17,10 @@ mod work;
 use self::metrics::*;
 use crate::style::{self, size, MAX_CONTENT_WIDTH, SIDE_INSET};
 use crate::thread::ThreadPane;
+use crate::tips::Tip as _;
 use gpui_kit::base::{SelectableText, TextView};
 use gpui_kit::component::menu::ContextMenuExt as _;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
@@ -43,7 +44,7 @@ pub(crate) struct RowsState {
     pub(crate) documents: HashMap<String, Entity<gpui_kit::base::TextViewState>>,
     pub(crate) document_order: Vec<String>,
     /// Keyed by appearance and zoom: its sizes are zoomed when it's built.
-    pub(crate) reading_style: Option<((bool, u32), gpui_kit::base::TextViewStyle)>,
+    pub(crate) reading_style: Option<(crate::style::ReadingStyleKey, gpui_kit::base::TextViewStyle)>,
     /// Question cards' "Something else" fields, and their typed text.
     pub(crate) others: HashMap<String, Entity<gpui_kit::component::input::InputState>>,
     /// Secret cards' masked fields. Never kept past the card's own answer.
@@ -238,10 +239,10 @@ impl ThreadPane {
             .on_mouse_down(MouseButton::Left, crate::selection_bar::pressed(self.summary.id.clone(), &row))
             .children(glow)
             .child(body)
-            .context_menu(move |menu, _, cx| {
+            .context_menu(move |menu, window, cx| {
                 // An open tool or thinking row says Collapse, as a group does.
                 let open = weak.upgrade().is_some_and(|pane| pane.read(cx).row_open(&menu_row));
-                Self::row_context_menu(menu_row.clone(), menu, weak.clone(), open, cx)
+                Self::row_context_menu(menu_row.clone(), menu, weak.clone(), open, window, cx)
             })
             .into_any_element()
     }
@@ -271,8 +272,8 @@ impl ThreadPane {
             match pending {
                 // A spinner while it's on its way, a clock when queued behind
                 // the running turn; the note below says the rest.
-                Some(Pending::Sending) => line = line.child(mark_box().child(self.spinner(14., cx))),
-                Some(Pending::Queued) => line = line.child(mark_box().child(work::icon("clock", 14., quiet))),
+                Some(Pending::Sending) => line = line.child(mark_box().id(("sending", ix)).tip("Sending to the runner").child(self.spinner(14., cx))),
+                Some(Pending::Queued) => line = line.child(mark_box().id(("queued", ix)).tip("Waiting for the current turn to finish").child(work::icon("clock", 14., quiet))),
                 _ => {}
             }
             let text = if message.text.is_empty() { " ".to_string() } else { message.text.clone() };
@@ -310,7 +311,7 @@ impl ThreadPane {
                 .when_some(answered_words, |d, words| d.child(answers_body(ix, &words, cx)));
             // The pencil, left of the bubble and level with its last line, on
             // hover, as Codex and ChatGPT put theirs (`Cells.updateEdit`).
-            let editable = message.editable && pending.is_none() && threadbear_core::composer::can_rewind(&self.summary.provider) && self.subagent_id.is_none();
+            let editable = message.editable && pending.is_none() && self.can_rewind(cx) && self.subagent_id.is_none();
             if editable {
                 let (row_id, group) = (row.id.clone(), SharedString::from(format!("user-row-{ix}")));
                 let hover = style::primary_opacity(cx, 0.08);
@@ -550,14 +551,14 @@ impl ThreadPane {
         h_flex().w_full().px(px(SIDE_INSET)).justify_center().child(div().w_full().max_w(px(MAX_CONTENT_WIDTH)).child(box_)).into_any_element()
     }
 
-    pub(crate) fn spinner(&self, side: f32, cx: &App) -> impl IntoElement {
+    pub(crate) fn spinner(&self, side: f32, cx: &App) -> crate::spinner::Spinner {
         let color = style::quiet_text(cx);
-        gpui_kit::component::spinner::Spinner::new().with_size(gpui_kit::component::Size::Size(px(side))).color(color)
+        crate::spinner::Spinner::new().with_size(px(side)).color(color)
     }
 
     /// The reading column's text style, one per appearance (see `reading_style`).
     pub(crate) fn reading_style(&mut self, cx: &mut Context<Self>) -> gpui_kit::base::TextViewStyle {
-        let key = (cx.theme().is_dark(), style::zoom_percent());
+        let key = crate::style::reading_style_key(cx);
         match &self.rows.reading_style {
             Some((k, style)) if *k == key => style.clone(),
             _ => {
@@ -668,27 +669,34 @@ pub(crate) fn row_wrap(row: &Row, inner: impl IntoElement) -> AnyElement {
 /// shown as it is. His words used to be dropped (thread 3fdaaeec, 12 Nov).
 pub(crate) struct AnsweredWords {
     pub lines: Vec<(String, String)>,
+    pub review: bool,
     pub extra: String,
 }
 
 pub(crate) fn answered_words(message: &UserMessage) -> Option<AnsweredWords> {
     if let Some(review) = &message.review {
-        return Some(AnsweredWords { lines: review.lines.iter().map(|l| (l.label.clone(), l.text.clone())).collect(), extra: String::new() });
+        return Some(AnsweredWords { lines: review.lines.iter().map(|l| (l.label.clone(), l.text.clone())).collect(), extra: String::new(), review: true });
     }
     let extra = threadbear_core::composer::answers_extra(&message.text, &message.answers)?;
-    Some(AnsweredWords { lines: message.answers.iter().map(|a| (a.action.clone(), a.answer.clone())).collect(), extra })
+    Some(AnsweredWords { lines: message.answers.iter().map(|a| (a.action.clone(), a.answer.clone())).collect(), extra, review: false })
 }
 
 /// The body of a message that answered asks or a review (`userWords`): each
 /// question small and quiet, its answer as his own words, then the rest.
 fn answers_body(ix: usize, words: &AnsweredWords, cx: &App) -> Div {
     let question = style::secondary_label(cx);
-    let AnsweredWords { lines, extra } = words;
+    let AnsweredWords { lines, extra, review } = words;
     let mut body = v_flex().gap(px(8.));
     for (i, (label, text)) in lines.iter().enumerate() {
+        let heading = h_flex().items_center().gap(px(4.)).text_size(px(size::SMALL)).line_height(px(18.)).text_color(question)
+            .when(*review && i == 0, |d| d.child(div().id(("review-answer", ix)).tip("Review").child(work::icon("rectangle.on.rectangle", size::SMALL, question))))
+            // A long question wraps inside the bubble: as a bare row child its
+            // text kept its one-line width and ran out past the bubble's edge
+            // (Mike, 15 Nov), while the short answer under it set nothing.
+            .child(div().flex_1().min_w_0().child(label.clone()));
         body = body.child(
             v_flex()
-                .when(!label.is_empty(), |d| d.child(div().text_size(px(size::SMALL)).line_height(px(18.)).text_color(question).child(label.clone())))
+                .when(!label.is_empty() || (*review && i == 0), |d| d.child(heading))
                 .child(SelectableText::new(("answer-text", ix * 1000 + i), text.clone())),
         );
     }

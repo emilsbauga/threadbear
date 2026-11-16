@@ -6,6 +6,56 @@
 #import <objc/runtime.h>
 #include <stdbool.h>
 
+static NSArray<NSString *> *attachmentExtensions(void) {
+  return @[@"png", @"jpg", @"jpeg", @"gif", @"webp", @"heic", @"heif", @"tif", @"tiff", @"bmp"];
+}
+
+// A UTType can include more suffixes than media.import accepts. Disable
+// those too, so every selectable file is one the composer can attach.
+@interface TBImagePanelDelegate : NSObject <NSOpenSavePanelDelegate>
+@end
+@implementation TBImagePanelDelegate
+- (BOOL)panel:(id)sender shouldEnableURL:(NSURL *)url {
+  NSNumber *directory;
+  [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
+  return directory.boolValue || [attachmentExtensions() containsObject:url.pathExtension.lowercaseString];
+}
+@end
+static char imagePanelDelegateKey;
+
+// This sheet belongs to the composer window, and completes once on Add or
+// Cancel. It never accepts a document that would become a generic file chip.
+void tb_composer_choose_images(void *view, void (*finished)(void *, const char *const *, size_t), void *context) {
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = YES;
+  // Match the image formats media.import can read; SVGs cannot be attached.
+  NSMutableArray<UTType *> *types = [NSMutableArray array];
+  for (NSString *extension in attachmentExtensions()) {
+    UTType *type = [UTType typeWithFilenameExtension:extension];
+    if (type && [type conformsToType:UTTypeImage]) [types addObject:type];
+  }
+  TBImagePanelDelegate *delegate = [TBImagePanelDelegate new];
+  panel.delegate = delegate;
+  // NSOpenPanel's delegate is weak; the panel owns this one for the sheet.
+  objc_setAssociatedObject(panel, &imagePanelDelegateKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  panel.allowedContentTypes = types;
+  panel.allowsOtherFileTypes = NO;
+  panel.prompt = @"Add";
+  void (^complete)(NSModalResponse) = ^(NSModalResponse result) {
+    if (result != NSModalResponseOK) { finished(context, NULL, 0); return; }
+    NSArray<NSURL *> *urls = panel.URLs;
+    const char **names = calloc(urls.count, sizeof(char *));
+    for (NSUInteger i = 0; i < urls.count; i++) names[i] = urls[i].path.UTF8String;
+    finished(context, names, urls.count);
+    free(names);
+  };
+  NSWindow *window = ((__bridge NSView *)view).window;
+  if (window) [panel beginSheetModalForWindow:window completionHandler:complete];
+  else [panel beginWithCompletionHandler:complete];
+}
+
 typedef bool (*TBMediaSink)(void *, int, const char *, const void *, size_t);
 // Only valid during the synchronous sink call. Rust copies these bytes
 // before returning, so a later file-open failure never rereads a pasteboard.

@@ -58,3 +58,54 @@ difference (9.20 to 9.05 ms), so it was left out. Where a frame goes
 14%, prepaint 15% and building elements 7%; the composer, drawn again on
 every frame of the transcript's scroll though nothing in it changed, is
 about a fifth of that.
+
+## 14 Nov: the transcript's rows and the box as cached views (dropped)
+
+GPUI draws again every view above one that changed, and a cached view that
+draws again makes every cached view inside it draw again too (`refreshing`
+in gpui-pre's view.rs). So with the main panel cached, nothing inside it
+could be kept from the frame before: a transcript scroll built the box
+again, and the caret's blink (every 500 ms) built the transcript's rows
+again. Tried: the rows (`TranscriptList` as a view) and the box each a
+cached view of their own, the main panel cached only when it isn't showing
+a thread, the pane passing its own and the app's changes on to both. Codex
+found four ways that went stale, all fixed, and a profile showed the box no
+longer built during a scroll. Against main, 3 rounds each, with an
+accessibility client present (the tool's hit test turns GPUI's
+accessibility on, for both builds alike):
+
+| | CPU a frame, ms (main, cached) | Late frames |
+|---|---|---|
+| Real thread, scrolled | 8.76, 8.93 | 2.3%, 3.1% |
+| Made-up thread, scrolled | 8.55, 8.32 | 0%, 0% |
+| A reply streaming into the open thread | 8.08, 11.47 | 0%, 12% |
+| A reply streaming into one kept loaded | 7.78, 15.67 | 0%, 39% |
+
+No gain scrolling, and streaming's frames got heavier, so it was left out
+(the branch perf2-cached-panes has it). The measurement worth keeping from
+it: on main, a reply streaming into a thread kept loaded behind the open one
+costs the main thread 438 ms a second, nearly half a core, for a thread
+nobody's looking at, as every event draws the whole app again.
+
+## 14 Nov: a reply streaming in no longer draws the whole app again
+
+Every `thread.event` (each few words of a reply coming in, for the open
+thread and any kept loaded) ended in a notify of the whole app, which drew
+the sidebar, the main panel and the side pane again, as often as the words
+came. The thread's own pane already draws its events again every 33 ms. Now
+the app isn't told; what else an event changes (a title, a status) comes as
+`thread.updated`, which still tells it. Against main, 3 rounds each, a
+reply at 30 chunks a second for 6 seconds on the real thread:
+
+| | Main-thread CPU a second (main, change) | Frames drawn |
+|---|---|---|
+| Into a thread kept loaded behind the open one | 437, 370 ms | 330, 142 |
+| Into the open thread | 444, 429 ms | 346, 306 |
+
+Per frame the change looks worse (16 ms a frame, a third of them late, for
+the kept thread), but that's the same work spread over fewer frames: what's
+left drawing is the streaming thread's spinner in the sidebar, which costs
+the same on main with nothing streaming (perf 3 measured 22 frames a second
+at about 17 ms each). Main's extra 190 frames were the whole app drawn again
+per chunk. `sample` attached to the app halves what it gets through, so
+profiles here are for where time goes, not how much.

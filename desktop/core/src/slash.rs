@@ -155,6 +155,10 @@ pub fn mid_message(commands: &[SlashCommand]) -> Vec<SlashCommand> {
 
 /// Where a command came from, for the detail pane.
 pub fn origin(command: &SlashCommand, provider: &str) -> String {
+    origin_named(command, &cli_name(provider))
+}
+
+pub fn origin_named(command: &SlashCommand, name: &str) -> String {
     if command.is_threadbear() {
         return "Threadbear's own: it changes this thread's settings".to_owned();
     }
@@ -183,12 +187,12 @@ pub fn origin(command: &SlashCommand, provider: &str) -> String {
         },
         Some("claude.ai") => "Synced from claude.ai".to_owned(),
         Some("admin") => "Set up by your organisation".to_owned(),
-        Some("system") => format!("{}'s own", cli_name(provider)),
+        Some("system") => format!("{}'s own", name),
         _ => {
             if command.is_skill() {
                 "A skill".to_owned()
             } else {
-                format!("{}'s own", cli_name(provider))
+                format!("{}'s own", name)
             }
         }
     }
@@ -507,7 +511,7 @@ mod tests {
             { "name": "compact", "description": "Clear but keep a summary", "argumentHint": "<optional instructions>", "source": "cli" },
             { "name": "context", "description": "Show current context usage", "source": "cli" },
             { "name": "cost", "description": "Show the total cost", "source": "cli", "scope": "system", "aliases": ["usage", "stats"] },
-            { "name": "code-review", "description": "Review the current diff", "argumentHint": "[low|medium|high] [target]", "source": "skill", "scope": "user", "path": "/home/mike/.claude/skills/code-review/SKILL.md" },
+            { "name": "code-review", "description": "Review the current diff", "argumentHint": "[low|medium|high] [target]", "source": "skill", "scope": "user", "path": "/home/alex/.claude/skills/code-review/SKILL.md" },
             { "name": "deslop", "description": "A second-pass cleanup", "source": "skill", "scope": "project", "path": "/x/.claude/skills/deslop/SKILL.md" },
             { "name": "ship", "description": "Drive a branch to merge-ready", "source": "skill" },
             { "bad": true }
@@ -521,7 +525,7 @@ mod tests {
         assert_eq!((mid.query.as_str(), mid.start, mid.mid_message()), ("de", 9, true));
         assert_eq!(typed("first line\n/sh").map(|t| t.start), Some(11), "after a line break");
         assert_eq!(typed("the /tmp/ folder"), None, "a space after it ends it");
-        assert_eq!(typed("look in /Users/mike"), None, "a path isn't a command");
+        assert_eq!(typed("look in /Users/alex"), None, "a path isn't a command");
         assert_eq!(typed("a/b"), None, "a slash inside a word");
         assert_eq!(typed("just words"), None);
         assert_eq!(typed("é then /x").map(|t| t.start), Some(8), "bytes, as the box counts");
@@ -548,7 +552,7 @@ mod tests {
         assert_eq!(query("/co"), Some("co"));
         assert_eq!(query("/code-review big"), None);
         assert_eq!(query("hello"), None);
-        assert_eq!(query("/Users/mike"), None);
+        assert_eq!(query("/Users/alex"), None);
         assert_eq!(query("/a\nb"), None);
     }
 
@@ -631,8 +635,8 @@ mod tests {
 
     #[test]
     fn short_paths_use_a_tilde() {
-        assert_eq!(short_path("/home/mike/.claude/x", "/home/mike"), "~/.claude/x");
-        assert_eq!(short_path("/opt/x", "/home/mike"), "/opt/x");
+        assert_eq!(short_path("/home/alex/.claude/x", "/home/alex"), "~/.claude/x");
+        assert_eq!(short_path("/opt/x", "/home/alex"), "/opt/x");
     }
 
     #[test]
