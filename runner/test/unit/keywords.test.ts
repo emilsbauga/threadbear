@@ -147,5 +147,5 @@ test('search words go up to a backend of API 74 or later, and not to an older on
   assert.equal(forBackend(doc, KEYWORDS_API_VERSION, Date.now()).keywords, 'dentist dental');
   assert.equal(forBackend(doc, KEYWORDS_API_VERSION - 1, Date.now()).keywords, undefined);
   assert.equal(toIndexRow(summary).keywords, 'dentist dental');
-  assert.equal(toIndexRow(summary, true, true, true, true, true, true, false).keywords, undefined);
+  assert.equal(toIndexRow(summary, true, true, true, false).keywords, undefined);
 });
