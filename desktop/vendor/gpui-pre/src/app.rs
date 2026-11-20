@@ -3032,6 +3032,18 @@ impl App {
         }
     }
 
+    /// Starts `drag` as an element's `on_drag` does once the pointer has
+    /// moved far enough. Threadbear's: a link in a text view is a run of
+    /// text, not an element, so it can't have an `on_drag` of its own, and
+    /// a press on one decides for itself when it's become a drag. Does
+    /// nothing while something else is being dragged.
+    pub fn start_drag(&mut self, drag: AnyDrag, window: &mut Window) {
+        if self.active_drag.is_none() {
+            self.active_drag = Some(drag);
+            window.refresh();
+        }
+    }
+
     pub(crate) fn hand_active_drag_to_platform(&mut self, source_window: WindowId) -> bool {
         let Some(drag) = self.active_drag.take() else {
             return false;

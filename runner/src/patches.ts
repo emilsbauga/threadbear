@@ -53,6 +53,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
 import { loginShell } from './system-tools.ts';
+import { CLICKS_ONLY_NOTE, clicksOnly, IS_WINDOWS, realPathSync } from './platform.ts';
 import type { Action, Hook, ImageRef, Panel, PanelItem, PatchInfo } from './protocol.ts';
 import { LIMITS } from './protocol.ts';
 import { imageRefFor } from './media.ts';
@@ -96,7 +97,7 @@ type LoadedPatch = { info: PatchInfo; panels: Panel[]; actions: Action[]; hooks:
 // branch landed by a squashed PR never counts as merged here.
 // `setupRun` and `teardownRun` are `setup` and `teardown` as they run, for
 // a patch trusted by its hash (bindAutomatic); absent, they run as written.
-export type WorktreeConfig = { setup?: string; check?: string; teardown?: string; keep?: string[]; setupRun?: string; teardownRun?: string };
+export type WorktreeConfig = { setup?: string; check?: string; teardown?: string; keep?: string[]; setupRun?: string; teardownRun?: string; heldSetup?: string };
 
 // A folder of one of the thread's projects.
 export type ProjectFolder = { folder: string; projectId: string };
@@ -229,14 +230,14 @@ export function projectRoots(cwd: string, projectFolders: ProjectFolder[]): Proj
 function inWorktree(folder: string, worktree: { top: string; main: string }, own: string): string {
   let real: string;
   try {
-    real = fs.realpathSync(folder);
+    real = realPathSync(folder);
   } catch {
     return folder;
   }
   if (!isInside(real, worktree.main)) return folder;
   let ownReal: string;
   try {
-    ownReal = fs.realpathSync(own);
+    ownReal = realPathSync(own);
   } catch {
     return folder;
   }
@@ -376,6 +377,105 @@ function patchFiles(dir: string, dirs: FolderCache): string[] {
     .map((n) => path.join(dir, n));
 }
 
+// Box mode (box-mode.ts): a repo's patch code never runs in the runner's
+// process, where a timer or a worker it starts could write behind a save's
+// copy with no process to stop. Each patch file is imported in a child
+// process of its own (patch-child.ts) that sends back what's static in it
+// (its actions, panels, hooks and worktree config, as JSON) and exits: so
+// under the spawn gate and the save's stop like any process. Its
+// functions (when, badge, label, summary, a list panel's items) aren't
+// run at all, and what has one isn't shown: a box's thread has only the
+// patches' static actions and panels.
+let isolated = false;
+export function isolatePatchCode(on = true): void {
+  isolated = on;
+}
+
+const CHILD = path.join(import.meta.dirname, 'patch-child.ts');
+const CHILD_TIMEOUT_MS = 30_000;
+
+export type ChildLoad = {
+  id: string;
+  source: 'home' | 'project';
+  file: string;
+  mtimeMs: number;
+  verified?: { hash: string; root: string; code: Map<string, Buffer>; edges: Map<string, Map<string, string>> };
+};
+
+// The reply comes on a channel of its own (fd 3), one line of JSON, so
+// whatever the patch prints on stdout or stderr (thrown away) can't spoil
+// it. The loader runs in a process group of its own, and the read settles on
+// that line, the loader's exit or the timeout, never on its pipes closing,
+// which a process the patch left running could hold open for ever; then the
+// whole group is killed, with whatever the patch started in it.
+async function loadInChild(p: ChildLoad): Promise<LoadedPatch> {
+  const input = JSON.stringify({
+    id: p.id,
+    source: p.source,
+    file: p.file,
+    mtimeMs: p.mtimeMs,
+    ...(p.verified
+      ? { verified: { hash: p.verified.hash, root: p.verified.root, code: [...p.verified.code].map(([f, b]) => [f, b.toString('base64')]), edges: [...p.verified.edges].map(([f, m]) => [f, [...m]]) } }
+      : {}),
+  });
+  const child = spawn(process.execPath, [CHILD], { cwd: path.dirname(p.file), detached: true, stdio: ['pipe', 'ignore', 'ignore', 'pipe'] });
+  const reply = child.stdio[3] as NodeJS.ReadableStream & { destroy(): void };
+  const end = () => {
+    try {
+      if (child.pid) process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // the group's gone already
+    }
+    child.stdin?.destroy();
+    reply.destroy();
+  };
+  try {
+    const line = await new Promise<string>((resolve, reject) => {
+      let got = '';
+      let exited = false;
+      const timer = setTimeout(() => reject(new Error(`its loader took over ${CHILD_TIMEOUT_MS / 1000} seconds`)), CHILD_TIMEOUT_MS);
+      const done = (f: () => void) => {
+        clearTimeout(timer);
+        f();
+      };
+      reply.on('data', (d: Buffer) => {
+        got += d.toString('utf8');
+        const at = got.indexOf('\n');
+        if (at >= 0) done(() => resolve(got.slice(0, at)));
+      });
+      reply.on('error', () => {});
+      child.on('error', (e) => done(() => reject(e)));
+      child.on('exit', (code) => {
+        if (exited) return;
+        exited = true;
+        // What it wrote before it exited is still on its way: a moment for it.
+        setTimeout(() => done(() => reject(new Error(`its loader exited ${code ?? 'killed'} without a reply`))), 2000).unref();
+      });
+      child.stdin!.on('error', () => {});
+      child.stdin!.end(input);
+    });
+    return JSON.parse(line) as LoadedPatch;
+  } finally {
+    end();
+  }
+}
+
+/**
+ * What's static in a loaded patch: everything but what has a function (a
+ * list panel, an action or panel with when, badge, label or summary),
+ * which box mode never runs (patch-child.ts). Read in the process that
+ * imported it, where the functions were kept aside.
+ */
+export function staticPatch(loaded: LoadedPatch): LoadedPatch {
+  const file = loaded.info.file ?? '';
+  const live = (x: { id: string; patch: string }) => liveFunctions.has(listKey(file, x.id.slice(x.patch.length)));
+  return {
+    ...loaded,
+    actions: loaded.actions.filter((a) => !live(a)),
+    panels: loaded.panels.filter((x) => x.kind !== 'list' && !live(x)),
+  };
+}
+
 async function loadPatchFile(file: string, source: 'home' | 'project', cache: PatchCache, dirs: FolderCache = new FolderCache(), gate: PatchGate = TRUST_ALL): Promise<LoadedPatch> {
   const id = path.basename(file, path.extname(file));
   const mtimeMs = dirs.mtimeMs(file);
@@ -411,9 +511,12 @@ async function loadPatchFile(file: string, source: 'home' | 'project', cache: Pa
   try {
     // The query makes Node load the file again after an edit: a module URL
     // is loaded once per process.
-    const url = verified ? verifiedUrl(verified.root, verified.hash, verified.code, verified.edges) : `${pathToFileURL(file).href}?mtime=${mtimeMs}`;
-    const mod = (await import(url)) as { default?: unknown };
-    loaded = readPatchModule(id, source, file, mod.default);
+    if (isolated) loaded = await loadInChild({ id, source, file, mtimeMs, ...(verified ? { verified } : {}) });
+    else {
+      const url = verified ? verifiedUrl(verified.root, verified.hash, verified.code, verified.edges) : `${pathToFileURL(file).href}?mtime=${mtimeMs}`;
+      const mod = (await import(url)) as { default?: unknown };
+      loaded = readPatchModule(id, source, file, mod.default);
+    }
   } catch (e) {
     loaded = { info: { id, source, file, error: firstLine(e) }, panels: [], actions: [], hooks: [] };
   }
@@ -492,10 +595,15 @@ function bindAutomatic(loaded: LoadedPatch, file: string, files: string[], block
   const folder = path.dirname(path.dirname(path.dirname(file)));
   // Without a hash there's nothing to check a command against, so a live
   // function's sh refuses everything (liveSh).
-  liveBindings.set(file, { folder: fs.realpathSync(folder), files: [file, fs.realpathSync(file), ...files], ...(blocked ? { blocked } : {}), hash: hash ?? '', tool: loaded.appliesTo !== undefined });
+  liveBindings.set(file, { folder: realPathSync(folder), files: [file, realPathSync(file), ...files], ...(blocked ? { blocked } : {}), hash: hash ?? '', tool: loaded.appliesTo !== undefined });
   const refuse = (what: string, problem: string): LoadedPatch => ({ info: { ...loaded.info, error: `Not run: its ${what} ${problem}` }, panels: [], actions: [], hooks: [] });
+  // Windows, for now (platform.ts, clicksOnly): nothing of a patch trusted
+  // by its hash runs by itself. Its hooks, setup and teardown go, not just
+  // their bound form: one without it runs as written (runner/patches.ts).
+  const quiet = Boolean(hash) && clicksOnly();
+  const skipped = quiet && (loaded.hooks.length > 0 || Boolean(loaded.worktree?.setup || loaded.worktree?.teardown));
   const hooks: Hook[] = [];
-  for (const hook of loaded.hooks) {
+  for (const hook of quiet ? [] : loaded.hooks) {
     const bound = automaticCommand(hook.command, folder, files, blocked);
     if ('problem' in bound) return refuse(`hook "${hook.title}"`, bound.problem);
     hooks.push({ ...hook, exec: note(bound.run) });
@@ -507,12 +615,17 @@ function bindAutomatic(loaded: LoadedPatch, file: string, files: string[], block
   const actions: BoundAction[] = [];
   for (const action of loaded.actions) {
     if (action.kind === 'command' && action.command) {
-      const problem = actionCommandProblem(action.command, folder, [file, fs.realpathSync(file), ...files], blocked);
+      const problem = actionCommandProblem(action.command, folder, [file, realPathSync(file), ...files], blocked);
       if (problem) return refuse(`action "${action.title}"`, problem);
-      actions.push({ ...action, folder: action.folder ?? fs.realpathSync(folder), ...(hash ? { [ACTION_TRUST]: { file, hash } } : {}) });
+      actions.push({ ...action, folder: action.folder ?? realPathSync(folder), ...(hash ? { [ACTION_TRUST]: { file, hash } } : {}) });
     } else actions.push(action);
   }
   let worktree = loaded.worktree;
+  if (quiet && worktree) {
+    // `heldSetup`, so a new worktree's thread is told its setup didn't run.
+    const { setup, teardown: _teardown, ...rest } = worktree;
+    worktree = { ...rest, ...(setup ? { heldSetup: setup } : {}) };
+  }
   if (worktree?.setup) {
     const bound = automaticCommand(worktree.setup, folder, files, blocked);
     if ('problem' in bound) return refuse('worktree setup', bound.problem);
@@ -524,7 +637,7 @@ function bindAutomatic(loaded: LoadedPatch, file: string, files: string[], block
     if ('problem' in bound) return refuse('worktree teardown', bound.problem);
     worktree = { ...worktree, teardownRun: note(bound.run) };
   }
-  return { ...loaded, actions, hooks, ...(worktree ? { worktree } : {}) };
+  return { ...loaded, ...(skipped ? { info: { ...loaded.info, liveError: CLICKS_ONLY_NOTE } } : {}), actions, hooks, ...(worktree ? { worktree } : {}) };
 }
 
 // Turns a patch module's default export into actions and panels, with ids
@@ -556,6 +669,7 @@ export function readPatchModule(id: string, source: 'home' | 'project', file: st
   // panels, kept aside (see liveFunctions) once the whole file has passed.
   // Only actions have a label and only panels a summary.
   const live: [string, LiveFunctions][] = [];
+  const toggles = new Map<string, ToggleFunction>();
   const liveOf = (kind: string, i: number, title: string, raw: { when?: unknown; badge?: unknown; label?: unknown; summary?: unknown }, itemId: string): string | undefined => {
     const fns: LiveFunctions = {};
     for (const key of kind === 'panels' ? (['when', 'badge', 'summary'] as const) : (['when', 'badge', 'label'] as const)) {
@@ -616,7 +730,7 @@ export function readPatchModule(id: string, source: 'home' | 'project', file: st
   if (v.panels !== undefined) {
     if (!Array.isArray(v.panels)) return problem('panels should be an array.');
     for (const [i, raw] of v.panels.entries()) {
-      const p = raw as { title?: unknown; url?: unknown; note?: unknown; icon?: unknown; items?: unknown; when?: unknown; badge?: unknown; summary?: unknown };
+      const p = raw as { title?: unknown; url?: unknown; note?: unknown; icon?: unknown; items?: unknown; toggle?: unknown; when?: unknown; badge?: unknown; summary?: unknown };
       if (!p || typeof p !== 'object' || typeof p.title !== 'string' || !p.title.trim()) return problem(`panels[${i}] needs a title.`);
       const ownIcon = readIcon(p.icon, file);
       if (typeof ownIcon === 'string') return problem(`panels[${i}] ("${p.title}"): icon ${ownIcon}`);
@@ -628,6 +742,9 @@ export function readPatchModule(id: string, source: 'home' | 'project', file: st
         if (p.url !== undefined) return problem(`panels[${i}] ("${p.title}") should have url or items, not both.`);
         panel = { id: panelId, title: p.title.trim(), kind: 'list', patch: id };
         listFunctions.set(listKey(file, panelId.slice(id.length)), p.items as ItemsFunction);
+        // What a row's switch calls (panels.toggle, "Row toggles").
+        if (p.toggle !== undefined && typeof p.toggle !== 'function') return problem(`panels[${i}] ("${p.title}") has a toggle that isn't a function.`);
+        if (typeof p.toggle === 'function') toggles.set(panelId.slice(id.length), p.toggle as ToggleFunction);
       } else {
         // A page the web view can open: a scheme with //, or a data: page.
         if (typeof p.url !== 'string' || !/^([a-z][a-z0-9+.-]*:\/\/\S|data:)/i.test(p.url.trim())) return problem(`panels[${i}] ("${p.title}") needs a url, or an items function.`);
@@ -665,6 +782,8 @@ export function readPatchModule(id: string, source: 'home' | 'project', file: st
   }
   for (const key of [...liveFunctions.keys()]) if (key.startsWith(file + '\u0000')) liveFunctions.delete(key);
   for (const [suffix, fns] of live) liveFunctions.set(listKey(file, suffix), fns);
+  for (const key of [...toggleFunctions.keys()]) if (key.startsWith(file + '\u0000')) toggleFunctions.delete(key);
+  for (const [suffix, fn] of toggles) toggleFunctions.set(listKey(file, suffix), fn);
   const loaded: LoadedPatch = { info, panels, actions, hooks };
   if (worktree) loaded.worktree = worktree;
   if (appliesTo) loaded.appliesTo = appliesTo;
@@ -1015,6 +1134,7 @@ function liveSh(file: string | undefined, cwd: string, ctx: LiveContext): LiveSh
     close,
     run: async (command) => {
       if (closed) return refuse('its function had already finished or timed out.');
+      if (bound.hash && clicksOnly()) return refuse(CLICKS_ONLY_NOTE);
       if (!bound.hash || !(ctx.verify?.(file!, bound.hash) ?? false)) return refuse('its patch, or a file it runs, changed since it was trusted.');
       // A tool patch runs in the folder it applies in, but its own repo's
       // files are bound by the hash too: checked from both, so an absolute
@@ -1065,6 +1185,11 @@ type ItemsFunction = (ctx: ItemsContext) => unknown;
 const listFunctions = new Map<string, ItemsFunction>();
 const listKey = (file: string, suffix: string) => `${file}\u0000${suffix}`;
 
+// The `toggle` functions of list panels, keyed like listFunctions: what a
+// row's switch calls (panels.toggle), with the row's `id` and the new `on`.
+type ToggleFunction = (ctx: ItemsContext & { id: string; on: boolean }) => unknown;
+const toggleFunctions = new Map<string, ToggleFunction>();
+
 export const LIST_ITEMS_KEPT = 200;
 export const LIST_TIMEOUT_MS = 20_000;
 
@@ -1078,6 +1203,8 @@ export async function renderListPanel(
   const info = set.patches.find((p) => p.id === panel.patch);
   const fn = info?.file ? listFunctions.get(listKey(info.file, panel.id.slice(panel.patch.length))) : undefined;
   if (!fn) return { note: 'This panel has nothing to show.' };
+  // A row's switch only means something when the panel can answer a press.
+  const switches = info?.file ? toggleFunctions.has(listKey(info.file, panel.id.slice(panel.patch.length))) : false;
   // A project folder's patch runs in that folder, as its actions do.
   const cwd = info?.folder ?? ctx.cwd;
   const shIn = liveSh(info?.file, cwd, ctx);
@@ -1091,12 +1218,50 @@ export async function renderListPanel(
       }),
     ]);
     if (!Array.isArray(value)) return { note: "The panel's items function didn't return a list." };
-    return { items: value.slice(0, LIST_ITEMS_KEPT).map(panelItem).filter((x): x is PanelItem => x !== undefined) };
+    const items = value.slice(0, LIST_ITEMS_KEPT).map(panelItem).filter((x): x is PanelItem => x !== undefined);
+    return { items: switches ? items : items.map(({ toggle: _, ...rest }) => rest) };
   } catch (e) {
     return { note: `Couldn't fill this panel: ${firstLine(e)}` };
   } finally {
     clearTimeout(timer);
     shIn.close();
+  }
+}
+
+// A row's switch pressed (panels.toggle): calls the list panel's toggle
+// function with the row's id and the new state, then fills the panel again
+// so the row shows what the patch now says. A throw or a timeout rejects
+// with its first line; a panel with no toggle function rejects at once.
+export async function toggleListPanel(panel: Panel, set: PatchSet, ctx: LiveContext, id: string, on: boolean): Promise<PanelRender> {
+  const info = set.patches.find((p) => p.id === panel.patch);
+  const fn = info?.file ? toggleFunctions.get(listKey(info.file, panel.id.slice(panel.patch.length))) : undefined;
+  if (!fn) throw new NoSwitches();
+  const cwd = info?.folder ?? ctx.cwd;
+  const shIn = liveSh(info?.file, cwd, ctx);
+  const sh = async (command: string) => shText(command, await shIn.run(command));
+  const timeoutMs = ctx.timeoutMs ?? LIST_TIMEOUT_MS;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => callThenClose(() => fn({ cwd, threadId: ctx.threadId, thread: ctx.thread ?? NO_THREAD, matched: info?.matched ?? [], sh, id, on }), shIn)),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`took over ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs);
+      }),
+    ]);
+  } catch (e) {
+    throw new Error(`Couldn't switch it: ${firstLine(e)}`);
+  } finally {
+    clearTimeout(timer);
+    shIn.close();
+  }
+  return renderListPanel(panel, set, ctx);
+}
+
+// toggleListPanel's refusal for a panel with no toggle function: the
+// caller's mistake (-32602), not the patch's.
+export class NoSwitches extends Error {
+  constructor() {
+    super('This panel has no switches.');
   }
 }
 
@@ -1217,16 +1382,22 @@ function badgeCount(v: unknown): number | undefined {
   return Math.min(Math.floor(n), 9999);
 }
 
-function panelItem(raw: unknown): PanelItem | undefined {
+export function panelItem(raw: unknown): PanelItem | undefined {
   if (typeof raw === 'string') return raw.trim() ? { title: raw.trim().slice(0, 300) } : undefined;
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Record<string, unknown>;
   if (typeof r.title !== 'string' || !r.title.trim()) return undefined;
   const item: PanelItem = { title: r.title.trim().slice(0, 300) };
   for (const k of ['detail', 'url', 'path', 'icon'] as const) if (typeof r[k] === 'string' && (r[k] as string).trim()) item[k] = (r[k] as string).trim().slice(0, 2000);
-  if (r.tone === 'attention' || r.tone === 'failed' || r.tone === 'done') item.tone = r.tone;
+  if (r.tone === 'attention' || r.tone === 'failed' || r.tone === 'warning' || r.tone === 'working' || r.tone === 'done') item.tone = r.tone;
   if (typeof r.section === 'string' && r.section.trim()) item.section = r.section.trim().slice(0, 80);
   if (typeof r.trailing === 'string' && r.trailing.trim()) item.trailing = r.trailing.trim().slice(0, 24);
+  const t = r.toggle as Record<string, unknown> | undefined;
+  if (t && typeof t === 'object' && typeof t.id === 'string' && t.id.trim() && typeof t.on === 'boolean') {
+    item.toggle = { id: t.id.trim().slice(0, 200), on: t.on };
+    if (typeof t.icon === 'string' && t.icon.trim()) item.toggle.icon = t.icon.trim().slice(0, 100);
+    if (typeof t.title === 'string' && t.title.trim()) item.toggle.title = t.title.trim().slice(0, 80);
+  }
   return item;
 }
 
@@ -1326,7 +1497,7 @@ export function runCommand(
     };
     let child;
     try {
-      child = spawn(bin, args, { cwd: opts.cwd, env: opts.env as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      child = spawn(bin, args, { cwd: opts.cwd, env: (IS_WINDOWS ? { ...opts.env, CHERE_INVOKING: '1' } : opts.env) as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'], detached: !IS_WINDOWS });
     } catch (e) {
       resolve({ ok: false, text: String((e as Error).message ?? e), truncated: false, durationMs: Date.now() - started });
       return;

@@ -22,3 +22,23 @@ Then('exactly one context menu offers {string}', async function (this: Threadbea
   assert.equal(menus.length, 1, `one row menu, got ${JSON.stringify(menus)}`);
   for (const item of expected.split(' | ')) assert.ok(menus[0].includes(item), `${item} in ${JSON.stringify(menus)}`);
 });
+
+// Any right-click menu drawn in the window (the sidebar's, a pane row's,
+// a reply link's), as `context-menus` finds them.
+async function openMenus(world: ThreadbearWorld, want: (n: number) => boolean): Promise<string[][]> {
+  let menus: string[][] = [];
+  for (let n = 0; n < 20; n += 1) {
+    menus = JSON.parse(okValue(await world.app.do({cmd: 'context-menus'})));
+    if (want(menus.length)) break;
+    await sleep(100);
+  }
+  return menus;
+}
+Then('a right-click menu is open', async function (this: ThreadbearWorld) {
+  const menus = await openMenus(this, (n) => n > 0);
+  assert.ok(menus.length > 0, 'no right-click menu open');
+});
+Then('no right-click menu is open', async function (this: ThreadbearWorld) {
+  const menus = await openMenus(this, (n) => n === 0);
+  assert.equal(menus.length, 0, `still open: ${JSON.stringify(menus)}`);
+});

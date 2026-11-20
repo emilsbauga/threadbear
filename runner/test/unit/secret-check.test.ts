@@ -1,6 +1,6 @@
 // The silent on-device check (src/secret-check.ts), with its helper faked: the
 // real one needs Apple's model, which a test mustn't depend on.
-import { test } from 'node:test';
+import { macOnlyTest as test } from '../helpers/platform.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

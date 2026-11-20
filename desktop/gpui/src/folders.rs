@@ -246,15 +246,16 @@ fn document_image() -> Arc<Image> {
 }
 
 /// A picture's own thumbnail, made off the main thread from the file on this
-/// machine, small (the tile's 84 points at 2x), never more than 8192 pixels a
-/// side or 256 MB decoded, whatever the file says.
+/// machine, small (the tile's 84 points at 2x), never more than 256 MB
+/// decoded, whatever the file says.
 fn make_thumbnail(path: &str) -> Option<Arc<Image>> {
     use image::imageops::FilterType;
     let bytes = threadbear_core::open_policy::local_read(std::path::Path::new(path), 24 * 1024 * 1024).ok()?;
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
+    // Any shape, a full-page phone shot too: max_alloc is what holds it.
+    limits.max_image_width = Some(65_536);
+    limits.max_image_height = Some(65_536);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let picture = reader.decode().ok()?;

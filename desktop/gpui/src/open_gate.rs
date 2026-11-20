@@ -351,7 +351,7 @@ fn open_other(url: &str, cx: &mut App) {
         return;
     };
     let url = url.to_owned();
-    ask(policy::link_question(&url, &app), cx, move |cx| system_open(&url, cx));
+    ask(policy::link_question(&url, &app), cx, move |cx, _| system_open(&url, cx));
 }
 
 // ---------------------------------------------------------------- rich text
@@ -389,19 +389,75 @@ fn clicked(url: &str, event: &ClickEvent, origin: Origin, base: &str, cx: &mut A
 // ---------------------------------------------------------------- files
 
 /// A file in its own app, after its symlinks are followed: a document opens,
-/// a program asks first, another Mac's file never opens here. `path` is
-/// absolute.
+/// a program asks first, another Mac's file never opens here. A kind of file
+/// it can't place opens without asking once Mike has said always open that
+/// kind in that app. `path` is absolute.
 pub(crate) fn open_file(path: &str, origin: Origin, cx: &mut App) {
     match policy::decide_file(path, origin, &app_for) {
-        FileVerdict::Open { url, look, with, .. } => open_checked(path, &look, &with, &url, cx),
+        FileVerdict::Open { url, look, with, .. } => {
+            open_checked(path, &look, &with, &url, cx);
+        }
         FileVerdict::Refuse(why) => refuse(why, cx),
-        FileVerdict::Ask { question, url, look, with } => {
+        FileVerdict::Ask { mut question, url, look, with } => {
+            // Always, and a remembered kind, only for the Mac's own app for
+            // that kind, so a file a thread pointed at another app with its
+            // own "open with" never matches one (Codex and Gemini, second
+            // round). Looked up only for a kind that could be remembered.
+            let default = look.trustable.as_ref().is_some_and(is_default_opener);
+            if default && policy::remembered(&look, &crate::reply_links::trusted_openers()) {
+                open_checked(&path, &look, &with, &url, cx);
+                return;
+            }
+            if !default {
+                question.always = None;
+            }
             let path = path.to_owned();
             // What was said yes to, still: not a file swapped in while the
-            // question was up (`open_checked` looks again).
-            ask(question, cx, move |cx| open_checked(&path, &look, &with, &url, cx));
+            // question was up (`open_checked` looks again). Always is kept
+            // only once that file has passed and opened.
+            ask(question, cx, move |cx, always| {
+                if open_checked(&path, &look, &with, &url, cx) && always {
+                    if let Some(kind) = look.trustable.clone() {
+                        crate::reply_links::trust_opener(kind);
+                    }
+                }
+            });
         }
     }
+}
+
+/// Whether `kind`'s app is the one this Mac opens that kind of file in by
+/// default: asked about an empty file of that kind in the app's own cache
+/// folder, which nothing in a project can give an "open with" of its own.
+#[cfg(target_os = "macos")]
+fn is_default_opener(kind: &policy::TrustedOpener) -> bool {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+    if kind.extension.is_empty() || !kind.extension.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return false;
+    }
+    static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Some(folder) = opened_folder().map(|f| f.join("kinds")) else { return false };
+    if threadbear_core::private_file::dir(&folder).is_err() {
+        return false;
+    }
+    // A new empty file each time, named for this process and this look, so
+    // no "open with" left on an old one counts and two apps (a handover)
+    // never share one. Nothing to sync: it's only ever asked about.
+    let n = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let probe = folder.join(format!("probe-{}-{n}.{}", std::process::id(), kind.extension));
+    if std::fs::File::create_new(&probe).is_err() {
+        return false;
+    }
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&probe.to_string_lossy()));
+    let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url);
+    let _ = std::fs::remove_file(&probe);
+    app.and_then(|a| a.path()).and_then(|p| policy::real_path(Path::new(&p.to_string())).ok()).is_some_and(|real| real == kind.app)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_default_opener(_kind: &policy::TrustedOpener) -> bool {
+    false
 }
 
 /// Opens a file `decide_file` checked: only if it's still the same file (its
@@ -412,14 +468,16 @@ pub(crate) fn open_file(path: &str, origin: Origin, cx: &mut App) {
 /// Tinker Desk, an app or script moved into the path after the reference was
 /// made never ran, and the one asked about did. Elsewhere a file opens from
 /// a private copy of the checked file.
-fn open_checked(path: &str, look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut App) {
+fn open_checked(path: &str, look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut App) -> bool {
     if !policy::still_same(path, look, &app_for) {
         refuse(format!("{} changed while Threadbear was opening it, so it didn't open it.", threadbear_core::highlights::last_component(path)), cx);
-        return;
+        return false;
     }
     if let Err(why) = open_the_file(look, with, url, cx) {
         refuse(format!("{} {why}", threadbear_core::highlights::last_component(path)), cx);
+        return false;
     }
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -478,7 +536,14 @@ fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut
         }
         // Shown selected in Finder: a window rooted at it, or Finder asked
         // to open it, launched an app swapped in there; revealing didn't.
-        policy::Opener::FileViewer => ws.activateFileViewerSelectingURLs(&files),
+        //
+        // Asked from a task of its own, once the click has finished: macOS
+        // waits for Finder to answer and runs the app's other tasks while it
+        // does, and a spinner's frame borrowing the app the click still
+        // held aborted Threadbear (crash report, 18 Nov 2026). GPUI's own
+        // reveal_path is never called from inside the click for the same
+        // reason.
+        policy::Opener::FileViewer => cx.spawn(async move |_| ws.activateFileViewerSelectingURLs(&files)).detach(),
         // What was said yes to (an app opening as itself), by its reference.
         policy::Opener::System => {
             ws.openURL(&files.objectAtIndex(0));
@@ -750,18 +815,34 @@ pub(crate) fn reveal(path: &str, origin: Origin, cx: &mut App) {
 // ---------------------------------------------------------------- asking
 
 /// The question as an alert over the app's window, Cancel first so Return is
-/// no; `yes` runs only on the yes button. Asked once the click that led here
-/// has finished, as the window is busy with it until then. With no window
-/// to ask over, the answer is no.
-fn ask(question: Question, cx: &mut App, yes: impl FnOnce(&mut App) + 'static) {
+/// no; `yes` runs only on a yes button, told whether it was the one that
+/// remembers (`Question::always`). That one sits between Cancel and Open, so
+/// the key focus GPUI gives the last button is on Open, never on Always.
+/// Critical, as only that style draws the caution sign (Warning draws nothing
+/// on a sheet, so it looked like any other question; Mike, 19 Nov). Asked
+/// once the click that led here has finished, as the window is busy with it
+/// until then. With no window to ask over, the answer is no.
+fn ask(question: Question, cx: &mut App, yes: impl FnOnce(&mut App, bool) + 'static) {
     cx.defer(move |cx| {
         let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
-        let answers = [PromptButton::cancel("Cancel"), PromptButton::new(question.yes.clone())];
-        let Ok(answer) = handle.update(cx, |_, window, cx| window.prompt(PromptLevel::Warning, &question.title, Some(&question.detail), &answers, cx)) else { return };
+        let mut answers = vec![PromptButton::cancel("Cancel")];
+        if let Some(always) = &question.always {
+            answers.push(PromptButton::new(always.clone()));
+        }
+        answers.push(PromptButton::new(question.yes.clone()));
+        let always_at = question.always.is_some().then_some(1);
+        let open_at = answers.len() - 1;
+        let Ok(answer) = handle.update(cx, |_, window, cx| window.prompt(PromptLevel::Critical, &question.title, Some(&question.detail), &answers, cx)) else { return };
         cx.spawn(async move |cx| {
-            if let Ok(1) = answer.await {
-                cx.update(yes);
-            }
+            // Only a yes button's own index: a sheet ended any other way (its
+            // window closed under it) gives a code that's neither, and that's
+            // a no (Gemini's review, 19 Nov).
+            let always = match answer.await {
+                Ok(i) if i == open_at => false,
+                Ok(i) if Some(i) == always_at => true,
+                _ => return,
+            };
+            cx.update(|cx| yes(cx, always));
         })
         .detach();
     });
@@ -776,7 +857,13 @@ fn app_for(file: &Path) -> Option<OpeningApp> {
     use objc2_foundation::{NSString, NSURL};
     let url = NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));
     let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url)?;
-    describe_app(&app)
+    // Named and identified as the real app, links followed, so a link in
+    // the project named after one app and pointing at another never shows
+    // the first's name over the second's id (Gemini's review, 19 Nov).
+    match app.path().and_then(|p| policy::real_path(Path::new(&p.to_string())).ok()) {
+        Some(real) => describe_app(&NSURL::fileURLWithPath(&NSString::from_str(&real.to_string_lossy()))),
+        None => describe_app(&app),
+    }
 }
 
 /// Elsewhere nothing says, and the extension rules stand alone.

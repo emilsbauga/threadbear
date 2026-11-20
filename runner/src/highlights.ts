@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { PersistedEvent } from './protocol.ts';
 import { replaceLinks, trimEndOf } from './linear-text.ts';
+import { isLocalPath } from './platform.ts';
 
 export type HighlightKind = 'file' | 'link' | 'pr' | 'commit';
 export type HighlightHow = 'pinned' | 'written' | 'opened' | 'mentioned' | 'created' | 'committed';
@@ -282,6 +283,10 @@ export function linksIn(text: string, ctx: { cwd: string; home: string; isFile: 
     const p = stripFileUrl(raw.trim().replace(/:\d+(:\d+)?$/, '')); // file.ts:12 → file.ts
     if (!p.startsWith('/') && !p.startsWith('~/')) return;
     const abs = absolute(p, ctx.cwd, ctx.home);
+    // On Windows `//host/share/x.png` in the agent's text is a network path:
+    // looking for the file would open a connection to that host, so such a
+    // path isn't looked at (platform.ts's isLocalPath).
+    if (!isLocalPath(abs)) return;
     const id = `file:${abs}`;
     if (seen.has(id) || !ctx.isFile(abs)) return;
     seen.add(id);
@@ -302,6 +307,105 @@ export function linksIn(text: string, ctx: { cwd: string; home: string; isFile: 
   });
   for (const m of rest.matchAll(/https?:\/\/[^\s<>()\[\]`"']+/gi)) addUrl(m[0]);
   return [...out.values()];
+}
+
+// The Markdown links in a reply to an absolute or ~/ path that isn't there,
+// as written. On 16 Nov 2026 an agent handed Mike the finished clip as
+// [threadbear-cross-platform.mp4](~/dev/me/misc/threadbear-cross-platform.mp4),
+// leaving out the project folder it was in, and the click only said
+// "Couldn't find" (thread 4e8b6ac9). Only links: a path in backticks can be
+// a file the reply says is gone. Relative paths are left out, as the app
+// looks for those from the thread's folder and what its tools touched.
+export function missingFileLinks(text: string, ctx: { cwd: string; home: string; exists: (p: string) => boolean }): string[] {
+  const out: string[] = [];
+  const check = (target: string) => {
+    // A ( in the address can end it early for this reader ("clip(final).mp4"),
+    // so it isn't judged. Nor is <...>, which the reader cuts at a space.
+    if (target.includes('(') || target.startsWith('<')) return;
+    // file.ts:12, file.md#heading and a query aren't part of the file's name;
+    // an escaped %23 is, so the address is cut before it's decoded, once.
+    const bare = target.replace(/[?#].*$/, '');
+    const p = decodeURIComponentSafe(bare.startsWith('file://') ? bare.slice('file://'.length).replace(/^localhost(?=\/)/, '') : bare).replace(/:\d+(:\d+)?$/, '');
+    if (!(p.startsWith('/') || p.startsWith('~/')) || p.startsWith('//') || out.includes(target)) return;
+    const full = absolute(p, ctx.cwd, ctx.home);
+    // A network share can hang a look, and this runs on the event loop. On
+    // Windows /\host\x resolves to \\host\x, and looking sends the user's
+    // sign-in to that host (isLocalPath; Codex's review, 18 Nov 2026).
+    if (/^\/(Volumes|Network|net)\//.test(full) || !isLocalPath(full)) return;
+    if (!ctx.exists(full)) out.push(target);
+  };
+  const prose = markdownProse(text)
+    // [words]( /path "Title" ): the address alone, for the reader below.
+    .replace(/\]\([ \t]*([^\s()]+)(?:[ \t]+"[^"\n]*")?[ \t]*\)/g, '](' + '$1)');
+  replaceLinks(prose, MARKDOWN_LINK, (_title, target) => {
+    check(target);
+    return ' ';
+  });
+  for (const m of prose.matchAll(/<(file:\/\/[^\s<>]+)>/g)) check(m[1]!);
+  return out;
+}
+
+// A reply's text with what Markdown draws as code or as plain brackets left
+// out, for missingFileLinks: blockquote marks come off first, then fenced
+// blocks (``` or ~~~), lines indented as code, code spans and escaped [.
+// Each in one pass, as a long reply is read on the runner's event loop: a
+// regex for code spans was quadratic on a run of unclosed backticks (from
+// Codex's review).
+function markdownProse(text: string): string {
+  const lines: string[] = [];
+  let fence: string | undefined;
+  for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
+    const line = raw.replace(/^ {0,3}(> ?)+/, '');
+    // A fence can open a list item ("- ```md") and close indented under it.
+    const marker = /^\s*(?:(?:[-*+]|\d{1,9}[.)])\s+)?(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.slice(line.indexOf(marker) + marker.length).trim()) fence = undefined;
+      lines.push('');
+    } else if (marker) {
+      fence = marker;
+      lines.push('');
+    } else lines.push(/^( {4}|\t)/.test(line) ? '' : line);
+  }
+  return withoutCodeSpans(lines.join('\n').replace(/\\[`[]/g, '  '));
+}
+
+// Code spans out: a run of n backticks up to the next run of exactly n.
+// Every run is found once, and each length's runs are matched in order.
+function withoutCodeSpans(text: string): string {
+  const runs: { at: number; len: number }[] = [];
+  for (let i = 0; i < text.length; ) {
+    if (text[i] !== '`') {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (text[j] === '`') j++;
+    runs.push({ at: i, len: j - i });
+    i = j;
+  }
+  if (!runs.length) return text;
+  const byLength = new Map<number, number[]>();
+  runs.forEach((r, k) => {
+    const list = byLength.get(r.len);
+    if (list) list.push(k);
+    else byLength.set(r.len, [k]);
+  });
+  const next = new Map<number, number>(); // per length, how far through its list
+  let out = '';
+  let at = 0;
+  for (let k = 0; k < runs.length; k++) {
+    const open = runs[k]!;
+    if (open.at < at) continue;
+    const same = byLength.get(open.len)!;
+    let n = next.get(open.len) ?? 0;
+    while (n < same.length && same[n]! <= k) n++;
+    next.set(open.len, n);
+    if (n >= same.length) continue; // never closed: literal backticks
+    const close = runs[same[n]!]!;
+    out += text.slice(at, open.at) + ' ';
+    at = close.at + close.len;
+  }
+  return out + text.slice(at);
 }
 
 // The files and URLs a shell command passes to `open`. `-a App`, `-b id`

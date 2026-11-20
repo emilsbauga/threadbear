@@ -3,7 +3,7 @@
 //
 //   desktop/scripts/dev-app.sh start [--mock [--fixtures DIR]...] [--home DIR] [--live]
 //                                    [--appearance light|dark] [--size WxH] [--id NAME]
-//                                    [--no-build] [--build-here] [--visible]
+//                                    [--no-build] [--build-here] [--visible | --film]
 //   desktop/scripts/dev-app.sh do '<json>'... [--timeout S]
 //   desktop/scripts/dev-app.sh dump [--json]
 //   desktop/scripts/dev-app.sh shot <file.png>
@@ -25,7 +25,12 @@
 //          on screen: behind everything, with "test copy" in its title and an
 //          orange strip across its top saying what it is (not in shots). It
 //          waits until the app's connected with its thread list, and prints
-//          the id. In ps and Activity Monitor the app is "Threadbear Headless
+//          the id. --film is for filming a clip, and only on a Mac nobody's
+//          working at (desktop/scripts/film.sh runs it on Tinker Desk): a
+//          normal window, in front and drawing, with no label, as the
+//          installed app's. It needs THREADBEAR_FILM_HOST=1, which film.sh
+//          sets there, so it can't come up over Mike's work by mistake.
+//          In ps and Activity Monitor the app is "Threadbear Headless
 //          Tester" (a clone of the build in the instance's folder) and the
 //          mock "threadbear-test-mock-runner".
 //          On Mac, General > Testing remains the visibility preference.
@@ -70,6 +75,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ownFolder } from './own-folder.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const CHECKOUT = fs.realpathSync(path.join(here, '../..'));
@@ -89,31 +95,7 @@ export const INSTANCE_ID = /^[A-Za-z0-9_-]{1,40}$/;
  * reap deleted that (Daybreak, 13 Nov, finding 116). macOS's TMPDIR is already the user's own.
  */
 export function stateRoot(tmp: string = process.env.TMPDIR ?? os.tmpdir()): string {
-  const parent = fs.realpathSync(tmp);
-  const uid = process.getuid?.();
-  // Windows has no uids, and its temp folder is the user's own.
-  if (uid === undefined) {
-    const dir = path.join(parent, 'threadbear-gpui-dev-app');
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
-  }
-  const up = fs.statSync(parent);
-  const shared = (up.mode & 0o022) !== 0;
-  // Writable by others without the sticky bit, anyone could rename our folder away and put theirs in its place.
-  if (shared && !(up.mode & 0o1000)) throw new Error(`${parent} (TMPDIR) can be changed by other accounts and isn't sticky: set TMPDIR to a folder of your own`);
-  // A sticky folder's owner can still rename anyone's folder in it, so it has to be root's or ours.
-  if (up.uid !== uid && up.uid !== 0) throw new Error(`${parent} (TMPDIR) belongs to someone else: set TMPDIR to a folder of your own`);
-  const dir = path.join(parent, shared ? `threadbear-gpui-dev-app-${uid}` : 'threadbear-gpui-dev-app');
-  try {
-    fs.mkdirSync(dir, { mode: 0o700 });
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-  }
-  const s = fs.lstatSync(dir);
-  if (!s.isDirectory() || s.uid !== uid || (s.mode & 0o077) !== 0) {
-    throw new Error(`${dir} isn't a folder of this account's own (mode 700), so it's not used: remove it if it's yours, or set TMPDIR to a folder of your own`);
-  }
-  return dir;
+  return ownFolder(tmp, 'threadbear-gpui-dev-app', { hint: 'TMPDIR', uidSuffix: true });
 }
 
 export type Instance = {
@@ -129,6 +111,8 @@ export type Instance = {
   size?: string;
   /** --visible: the window on screen (behind everything, labelled), for a test that needs it seen. */
   visible?: boolean;
+  /** --film: a normal window in front, no label (film.sh, on Tinker Desk). */
+  film?: boolean;
   binary: string;
   supervisor?: number;
   app?: number;
@@ -155,6 +139,10 @@ export function refuseHome(home: string, real: string, live: boolean): string | 
   if (resolved(home) !== resolved(real)) return null;
   return `${home} is the real data folder: its runner is the live one, with Mike's real threads. Use --mock or a dev runner's --home (runner/scripts/dev-runner.sh); --live only if Mike has said so.`;
 }
+
+/** Why `start --film` won't run here: its window comes to the front. */
+export const filmRefusal =
+  "--film puts a window in front of whatever's on this screen, so it's for a Mac nobody's working at. Film on Tinker Desk with desktop/scripts/film.sh, which sets THREADBEAR_FILM_HOST=1 there.";
 
 /** An instance's folder: a direct child of the state folder, whatever the id came from. */
 function dirOf(id: string): string {
@@ -297,7 +285,7 @@ function build(opts: { noBuild: boolean; here: boolean; logName: string }): stri
     try {
       // Write both streams straight to the advertised file, as the local
       // build does, so even a long compile can be followed while it runs.
-      r = spawnSync(path.join(CHECKOUT, 'desktop/scripts/remote.sh'), [host, '--', 'bash', '-c', 'cd desktop && nice cargo build -p threadbear-gpui --features automation && echo "BUILT_IN=$CARGO_TARGET_DIR"'], { stdio: ['ignore', fd, fd] });
+      r = spawnSync(path.join(CHECKOUT, 'desktop/scripts/remote.sh'), [host, '--build', '--', 'bash', '-c', 'cd desktop && nice cargo build -p threadbear-gpui --features automation && echo "BUILT_IN=$CARGO_TARGET_DIR"'], { stdio: ['ignore', fd, fd] });
     } finally {
       fs.closeSync(fd);
     }
@@ -465,8 +453,8 @@ async function supervise(id: string): Promise<void> {
         ...process.env,
         THREADBEAR_HOME: current.home,
         THREADBEAR_AUTOMATION: path.join(dir, 'automation.json'),
-        // The installed app's testing switch decides visibility.
-        THREADBEAR_KEEP_BEHIND: process.env.THREADBEAR_KEEP_BEHIND ?? '0',
+        // Filming opts into a visible app; other launches follow the testing-window preference.
+        ...(current.film ? { THREADBEAR_FILMING: '1' } : { THREADBEAR_KEEP_BEHIND: process.env.THREADBEAR_KEEP_BEHIND ?? '0' }),
         ...(current.visible ? { THREADBEAR_SHOW_WINDOW: '1' } : {}),
         THREADBEAR_PASTEBOARD: `com.mikerosoft.threadbear.automation.gpui-${id}`,
         // Not the machine's web runtime in the real data folder, whose
@@ -474,6 +462,10 @@ async function supervise(id: string): Promise<void> {
         // app runs (Codex's review). One for every instance, so the 135 MB
         // download happens once.
         THREADBEAR_WEB_RUNTIME_DIR: process.env.THREADBEAR_WEB_RUNTIME_DIR || path.join(stateRoot(), 'web-runtime'),
+        // Chromium's profile, though, is the instance's own: two processes
+        // can't share one, so a second thread's app found its web panels
+        // dead while another's held it (16 Nov).
+        THREADBEAR_WEB_PROFILE_DIR: process.env.THREADBEAR_WEB_PROFILE_DIR || path.join(dir, 'web-profile'),
         ...(current.live ? { THREADBEAR_AUTOMATION_LIVE: '1' } : {}),
       },
     });
@@ -611,6 +603,8 @@ async function start(a: Args): Promise<void> {
     const why = refuseHome(home, REAL_HOME, live);
     if (why) die(why);
   }
+  if (has(a, '--film') && has(a, '--visible')) die('--film or --visible, not both');
+  if (has(a, '--film') && process.env.THREADBEAR_FILM_HOST !== '1') die(filmRefusal);
   const id = flag(a, '--id') ?? `g${Date.now().toString(36).slice(-5)}`;
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) die(`--id is letters, digits, - and _`);
   const existing = readInstance(id);
@@ -642,6 +636,7 @@ async function start(a: Args): Promise<void> {
     appearance,
     size,
     visible: has(a, '--visible'),
+    film: has(a, '--film'),
     binary,
   };
   if (useMock) fs.mkdirSync(i.home, { recursive: true, mode: 0o700 });

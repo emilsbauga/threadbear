@@ -13,7 +13,7 @@
 // hand over an agent's tab already on that page (`handoff`), so the agent's
 // waiting tab comes to him instead of a second one opening in his browser
 // (the Qantas sign-in, 30 Oct). open_gate.rs calls it.
-use crate::highlights::{icon, palette, tipped_as, SidePane};
+use crate::highlights::{icon, palette, tipped_as, with_scroll_bar, SidePane};
 use crate::push_button::PushButton;
 use crate::style::{self, px};
 use futures::channel::oneshot;
@@ -666,6 +666,8 @@ impl AgentBrowser {
 #[derive(Default)]
 pub(crate) struct BrowserPaneState {
     address: Option<Entity<InputState>>,
+    /// The list of pages' scroll, for its scroll bar.
+    scroll: ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -717,7 +719,8 @@ impl SidePane {
             return pane.child(crate::files::pane_note(&bear::empty_note(error.as_deref(), available), p)).into_any_element();
         }
         let rows: Vec<AnyElement> = tabs.iter().map(|tab| self.browser_row(tab, &thread.id, &browser_name, &model, cx)).collect();
-        pane = pane.child(div().id("browser-pages").flex_1().min_h_0().overflow_y_scroll().child(v_flex().gap(px(8.)).p(px(10.)).children(rows)));
+        let pages = div().id("browser-pages").overflow_y_scroll().child(v_flex().gap(px(8.)).p(px(10.)).children(rows));
+        pane = pane.child(with_scroll_bar(pages, &self.browser.scroll, "browser-pages-bar").flex_1().min_h_0());
         if let Some(error) = error {
             pane = pane.child(div().flex_none().p(px(6.)).text_size(px(style::size::LABEL)).text_color(p.secondary).child(error));
         }

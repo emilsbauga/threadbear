@@ -2,7 +2,13 @@ plugins {
     id("org.jetbrains.kotlin.jvm")
 }
 
-kotlin { jvmToolchain(17) }
+// Java 17 bytecode from whatever JDK runs Gradle (17 or later), rather than a
+// toolchain that needs a JDK 17 itself: F-Droid's build image only has 21.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {
     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")

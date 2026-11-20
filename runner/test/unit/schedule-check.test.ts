@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
+import { sleepCommand } from '../helpers/platform.ts';
 import { Scheduler } from '../../src/schedules.ts';
 import { nullLogger } from '../../src/log.ts';
 import { checkLimitMs, checkOutcome, checkRunningElsewhere, keptCheckFile, markCheckRunning, runCheck, type CheckResult } from '../../src/schedule-check.ts';
@@ -112,7 +113,7 @@ test('runCheck: runs in the folder with a state file, keeps what it prints, and 
   assert.deepEqual(await runCheck({ command: 'true', cwd, home, scheduleId: 'abc' }), { ok: true, output: '' });
   const bad = await runCheck({ command: 'echo nope >&2; exit 3', cwd, home, scheduleId: 'abc' });
   assert.deepEqual(bad, { ok: false, output: 'nope', why: 'it exited with 3' });
-  const slow = await runCheck({ command: 'sleep 5', cwd, home, scheduleId: 'abc', timeoutMs: 200 });
+  const slow = await runCheck({ command: sleepCommand(5), cwd, home, scheduleId: 'abc', timeoutMs: 200 });
   assert.equal(slow.ok, false);
   assert.match((slow as { why: string }).why, /longer than/);
   assert.deepEqual(checkOutcome({ ok: true, output: '' }), { skip: 'Its check found nothing new.' });

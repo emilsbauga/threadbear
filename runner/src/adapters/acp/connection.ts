@@ -60,6 +60,8 @@ export type AcpProcessOptions = {
   label: string; // the thread id, or "models:opencode-main", for log lines
   maxLineBytes?: number;
   timings?: Partial<AcpTimings>;
+  // Offer form elicitation (questions for Mike): only a thread can show one.
+  forms?: boolean;
 };
 
 // The ACP version this client speaks; initialize's answer must match it.
@@ -146,7 +148,7 @@ export class AcpProcess {
         protocolVersion: ACP_VERSION,
         // Nothing the agent could use to read or write through the client:
         // it works on the files itself, and asks first (AcpSession).
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, ...(opts.forms ? { elicitation: { form: {} } } : {}) },
         clientInfo: { name: 'threadbear', title: 'Threadbear', version: RUNNER_VERSION },
       })
         .then((init) => {

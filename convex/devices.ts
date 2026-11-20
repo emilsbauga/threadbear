@@ -4,7 +4,8 @@ import { v } from 'convex/values';
 import { internalMutation, internalQuery } from './_generated/server';
 import { hasLiveToken } from './pushTargets';
 import { runnerName } from './sync';
-import { hasLiveKey, PRESENCE_FRESH_MS } from './lib';
+import { internal } from './_generated/api';
+import { hasLiveKey, PRESENCE_FRESH_MS, presentAt } from './lib';
 import { nextHealth } from './pushHealth';
 
 // Only phones whose token is still good (pushTargets.ts): revoking deletes
@@ -12,14 +13,14 @@ import { nextHealth } from './pushHealth';
 // with no tokenId (from before 5 Nov 2026), is skipped here.
 export const targets = internalQuery({
   args: {},
-  returns: v.array(v.object({ apnsToken: v.string(), environment: v.union(v.literal('sandbox'), v.literal('production')), notify: v.union(v.literal('away'), v.literal('always'), v.literal('off')), pushKey: v.optional(v.string()), platform: v.optional(v.literal('android')) })),
+  returns: v.array(v.object({ apnsToken: v.string(), environment: v.union(v.literal('sandbox'), v.literal('production')), notify: v.union(v.literal('away'), v.literal('always'), v.literal('off')), pushKey: v.optional(v.string()), platform: v.optional(v.union(v.literal('android'), v.literal('webpush'))), webPush: v.optional(v.object({ p256dh: v.string(), auth: v.string() })) })),
   handler: async (ctx) => {
     const now = Date.now();
     const tokens = await ctx.db.query('tokens').collect();
     const out = [];
     for await (const d of ctx.db.query('devices')) {
       if (!hasLiveToken(d, tokens, now)) continue;
-      out.push({ apnsToken: d.apnsToken, environment: d.environment, notify: d.notify ?? ('away' as const), ...(d.pushKey ? { pushKey: d.pushKey } : {}), ...(d.platform ? { platform: d.platform } : {}) });
+      out.push({ apnsToken: d.apnsToken, environment: d.environment, notify: d.notify ?? ('away' as const), ...(d.pushKey ? { pushKey: d.pushKey } : {}), ...(d.platform ? { platform: d.platform } : {}), ...(d.webPush ? { webPush: d.webPush } : {}) });
     }
     return out;
   },
@@ -119,16 +120,25 @@ export const pushOutcome = internalMutation({
 });
 
 // Marks a thread's push as held for "away" phones while Mike is at the Mac;
-// sync:setPresence sends it when he leaves.
+// sync:setPresence sends it when he leaves. push.notify read that he was
+// there, but he may have left since, and the drain his leaving started may
+// be over: a push held now would wait for his next leave, maybe for good
+// (Codex's review of Daybreak 148). So it asks again here, in the same
+// transaction as the write, and sends it to the away phones instead. Once:
+// a push that comes back here away again (`retried`, a runner flipping its
+// presence between notify's read and this) is held, so no flipping can keep
+// one push bouncing between notify and here (verify-fix on that change).
 export const holdPush = internalMutation({
-  args: { threadId: v.string() },
+  args: { threadId: v.string(), retried: v.optional(v.boolean()) },
   returns: v.null(),
-  handler: async (ctx, { threadId }) => {
+  handler: async (ctx, { threadId, retried }) => {
     const t = await ctx.db
       .query('threads')
       .withIndex('by_threadId', (q) => q.eq('threadId', threadId))
       .unique();
-    if (t && t.needsYou) await ctx.db.patch(t._id, { pushHeldAt: Date.now() });
+    if (!t || !t.needsYou) return null;
+    if (retried || (await presentAt(ctx, t.runnerId))) await ctx.db.patch(t._id, { pushHeldAt: Date.now() });
+    else await ctx.scheduler.runAfter(0, internal.push.notify, { threadId, held: true, retried: true });
     return null;
   },
 });
@@ -177,5 +187,28 @@ export const list = internalQuery({
     const out = [];
     for await (const d of ctx.db.query('devices')) out.push({ platform: d.platform ?? 'apple', environment: d.environment, tokenName: d.tokenName, updatedAt: new Date(d.updatedAt).toISOString(), tokenTail: d.apnsToken.slice(-6), notify: d.notify ?? 'away' });
     return out;
+  },
+});
+
+// This deployment's VAPID key (API 93, webPush.ts): the one that's there, or
+// `candidate` (made by the caller, as a mutation can't make keys) when there's
+// none yet. Two callers racing both get whichever was saved first.
+export const vapidKey = internalQuery({
+  args: {},
+  returns: v.union(v.null(), v.object({ x: v.string(), y: v.string(), d: v.string() })),
+  handler: async (ctx) => {
+    const row = await ctx.db.query('webPushVapid').first();
+    return row ? { x: row.x, y: row.y, d: row.d } : null;
+  },
+});
+
+export const putVapidKey = internalMutation({
+  args: { x: v.string(), y: v.string(), d: v.string() },
+  returns: v.object({ x: v.string(), y: v.string(), d: v.string() }),
+  handler: async (ctx, candidate) => {
+    const row = await ctx.db.query('webPushVapid').first();
+    if (row) return { x: row.x, y: row.y, d: row.d };
+    await ctx.db.insert('webPushVapid', { ...candidate, createdAt: Date.now() });
+    return candidate;
   },
 });

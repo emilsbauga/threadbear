@@ -381,11 +381,15 @@ impl InputModeKind for TextareaMode {
 #[derive(Default)]
 pub struct TextareaExtras {
     pub(crate) marks: Vec<TextDecoration>,
+    /// How many times the value's been set whole, which emits no change
+    /// event: the app's autocorrect starts afresh on a new value.
+    pub(crate) values_set: u64,
 }
 
 impl InputExtras for TextareaExtras {
     fn value_set(&mut self) {
         self.marks.clear();
+        self.values_set += 1;
     }
 
     fn decoration_layers(&self) -> Vec<&[TextDecoration]> {

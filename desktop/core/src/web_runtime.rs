@@ -195,8 +195,14 @@ impl Layout {
 
     /// Chromium's own folder: the panels' sign-ins and storage, kept between
     /// launches. The transcript's sealed pages keep nothing (desktop/web).
+    /// THREADBEAR_WEB_PROFILE_DIR puts it elsewhere: each scripted dev app
+    /// has its own, as two processes can't share one and their runtime is
+    /// shared (desktop/scripts/dev-app.ts).
     pub fn profile(&self) -> PathBuf {
-        self.root.join("profile")
+        match std::env::var_os("THREADBEAR_WEB_PROFILE_DIR") {
+            Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+            _ => self.root.join("profile"),
+        }
     }
 
     /// Chromium's log, warnings and worse.
@@ -208,6 +214,41 @@ impl Layout {
     pub fn helper_executable(&self) -> PathBuf {
         helper_executable_in(&Self::frameworks_in(&self.version_dir()), "")
     }
+}
+
+/// The pid in Chromium's profile lock (`SingletonLock`, a link to
+/// "<host>-<pid>"), if the link is there and reads that way.
+pub fn profile_lock_pid(profile: &Path) -> Option<u32> {
+    let target = std::fs::read_link(profile.join("SingletonLock")).ok()?;
+    parse_lock_target(&target.to_string_lossy())
+}
+
+fn parse_lock_target(target: &str) -> Option<u32> {
+    // The host can have dashes in it; the pid is after the last.
+    let (_, pid) = target.rsplit_once('-')?;
+    pid.parse().ok().filter(|&p| p > 0)
+}
+
+/// Another live process that has the profile: the copy of the app being
+/// handed over from, until it quits. Chromium in this one can't start
+/// until it lets go (CEF refuses a profile in use, and a failed start can't
+/// be tried again in the same process). A lock left by a process that has
+/// gone doesn't count: Chromium takes that one over.
+pub fn profile_holder(profile: &Path) -> Option<u32> {
+    let pid = profile_lock_pid(profile)?;
+    (pid != std::process::id() && process_alive(pid)).then_some(pid)
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only asks whether the pid exists. EPERM means it
+    // does, as someone else's.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 fn helper_executable_in(dir: &Path, suffix: &str) -> PathBuf {
@@ -613,6 +654,35 @@ mod tests {
     }
 
     const TOP: &str = "cef_binary_test_macosarm64_minimal";
+
+    #[test]
+    fn profile_lock_is_read_from_its_link() {
+        assert_eq!(parse_lock_target("m5-mike.localdomain-9146"), Some(9146));
+        assert_eq!(parse_lock_target("host-with-dashes-12"), Some(12));
+        assert_eq!(parse_lock_target("nopid"), None);
+        assert_eq!(parse_lock_target("host-abc"), None);
+        assert_eq!(parse_lock_target("host-0"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn profile_holder_is_a_live_process_other_than_this_one() {
+        let profile = temp("profile-holder");
+        assert_eq!(profile_holder(&profile), None, "no lock");
+        let lock = profile.join("SingletonLock");
+        // A live process that isn't this one: whatever started the tests.
+        let parent = std::os::unix::process::parent_id();
+        std::os::unix::fs::symlink(format!("some-host-{parent}"), &lock).unwrap();
+        assert_eq!(profile_holder(&profile), Some(parent));
+        // One that's gone: past any pid the system hands out.
+        std::fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink("some-host-2147483000", &lock).unwrap();
+        assert_eq!(profile_holder(&profile), None, "its holder has gone");
+        std::fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink(format!("some-host-{}", std::process::id()), &lock).unwrap();
+        assert_eq!(profile_holder(&profile), None, "this process's own");
+        let _ = std::fs::remove_dir_all(&profile);
+    }
 
     /// A small archive shaped like CEF's: the framework under Release (files
     /// and folders, no links, as the real one), with the headers and a

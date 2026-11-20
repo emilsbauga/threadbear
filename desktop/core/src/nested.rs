@@ -72,9 +72,17 @@ pub fn needs_mike(t: &ThreadSummary, now_ms: i64) -> bool {
     !t.is_archived() && !t.snoozed(now_ms) && (t.review_waiting() || t.status == "waiting" || t.waiting_on_mike() || (t.needs_you && !t.working_in_background()))
 }
 
-/// Working: a turn under way or background work, not hibernating.
+/// Working: a turn under way or background work, not hibernating, or
+/// hibernating to wait on its own work, as the sidebar has it under Running
+/// (`ThreadSummary::waiting_on_work`).
 pub fn working(t: &ThreadSummary, now_ms: i64) -> bool {
-    !t.is_archived() && !t.snoozed(now_ms) && !needs_mike(t, now_ms) && (t.busy() || t.working_in_background())
+    if t.is_archived() || needs_mike(t, now_ms) {
+        return false;
+    }
+    if t.snoozed(now_ms) {
+        return t.waiting_on_work();
+    }
+    t.busy() || t.working_in_background()
 }
 
 /// A starter's threads, and where the group goes.
@@ -94,6 +102,8 @@ pub struct Group {
     /// member's urgency, its newest activity.
     pub urgency: u8,
     pub activity_ms: i64,
+    /// A card waits on Mike in one of its awake threads (`ThreadSummary::on_card`).
+    pub card: bool,
 }
 
 impl Group {
@@ -156,6 +166,7 @@ impl Nesting {
             };
             let awake = live.iter().filter(|t| !t.snoozed(now_ms));
             let urgency = awake.clone().map(|t| t.urgency()).chain([starter.urgency()]).min().unwrap_or(4);
+            let card = awake.clone().any(|t| t.on_card()) || starter.on_card();
             let activity_ms = awake.map(|t| t.activity_ms()).chain([starter.activity_ms()]).max().unwrap_or(0);
             groups.insert(
                 starter_id.to_owned(),
@@ -167,6 +178,7 @@ impl Nesting {
                     section,
                     urgency,
                     activity_ms,
+                    card,
                 },
             );
         }
@@ -399,6 +411,16 @@ mod tests {
         let s = sections(&all);
         assert_eq!(ids(&s, "running"), ["boss"], "the group, under Running for its working thread");
         assert_eq!(ids(&s, "inbox"), ["loose"], "no rows of their own");
+    }
+
+    #[test]
+    fn a_group_whose_thread_waits_on_its_own_work_is_under_running() {
+        let waiting = json!({ "needs": "nothing", "snoozedUntil": "2026-11-14T12:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] });
+        let all = [thread("boss", json!({})), child("a", "boss", waiting.clone()), thread("solo", waiting)];
+        let n = build(&all);
+        assert_eq!(n.group("boss").unwrap().working, 1, "counted as working, so the group doesn't fold it away");
+        let s = sections(&all);
+        assert_eq!(ids(&s, "running"), ["boss", "solo"]);
     }
 
     #[test]

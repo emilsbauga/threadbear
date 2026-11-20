@@ -59,6 +59,12 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     if (body.status !== 'success') throw new Error(body.errorMessage ?? `HTTP ${res.status}`);
     return body.value;
   };
+  // A browser's token, the only way one is made since API 81: a one-use
+  // sign-in code, traded with tokens:claim.
+  const browserToken = async (name: string): Promise<{ token: string }> => {
+    const { code } = (await api('mutation', 'sync:issuePairingCode', { key, kind: 'browser', name })) as { code: string };
+    return (await api('mutation', 'tokens:claim', { code })) as { token: string };
+  };
   const until = async <T,>(what: string, fn: () => Promise<T | undefined>, ms = 20_000): Promise<T> => {
     const end = Date.now() + ms;
     for (;;) {
@@ -299,7 +305,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     assert.deepEqual(await beat(runnerId), { apiVersion: BACKEND_API_VERSION });
 
     const acct = (id: string, title: string) => ({ id, provider: 'claude', title, usage: { windows: [{ kind: 'week', title: 'Week', remainingPercent: 40 }], readAt: '2026-11-05T00:00:00Z', source: 'x' } });
-    const { token } = await api('mutation', 'sync:issueToken', { key, kind: 'browser', name: 'e2e-37' });
+    const { token } = await browserToken('e2e-37');
     const mine = async () => ((await api('query', 'phone:accounts', { token })) as { id: string; title: string; runnerId: string }[]).filter((a) => a.runnerId === runnerId).map((a) => `${a.id}:${a.title}`).sort();
     await api('mutation', 'sync:setAccounts', { key, runnerId, accounts: [acct('a', 'A'), acct('b', 'B')] });
     await api('mutation', 'sync:upsertAccounts', { key, runnerId, accounts: [acct('a', 'A2'), acct('c', 'C')], removed: ['b', 'never-there'] });
@@ -351,7 +357,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     const word = 'zq' + crypto.randomBytes(5).toString('hex');
     const secret = `sk-${'e2e3'.repeat(12)}`;
     await api('mutation', 'sync:heartbeat', { key, runner: { runnerId, name: runnerId, version: 'x', startedAt: 'x', draining: false, threadCount: 0 } });
-    const { token } = (await api('mutation', 'sync:issueToken', { key, kind: 'browser', name: 'e2e-48' })) as { token: string };
+    const { token } = await browserToken('e2e-48');
     const doc = { id: pid, title: `Title ${secret}`, folders: ['/x'], goals: `the ${word} goal`, state: 'going', notes: 'long notes', createdBy: 'user', archived: false, createdAt: 'x', updatedAt: 'x', threadCount: 0 };
     await api('mutation', 'sync:setProjects', { key, runnerId, projects: [doc] });
     type Row = { runnerId: string; id: string; title: string; goals: string; notes: string };
@@ -386,13 +392,13 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     const runnerId = 'e2e-links-' + crypto.randomBytes(4).toString('hex');
     const pid = 'e2e-proj-' + crypto.randomBytes(4).toString('hex');
     const other = pid + '-other';
-    const { token } = await api('mutation', 'sync:issueToken', { key, kind: 'browser', name: 'e2e-40' });
+    const { token } = await browserToken('e2e-40');
     const doc = (n: number, view: string, projects: string[]) => ({
       threadId: `${runnerId}-t${n}`, runnerId, title: `T${n}`, cwd: '/x', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: 'p',
       createdAt: 'x', lastActivityAt: 'x', lastActivityMs: n, view, projects: projects.map((id) => ({ id, title: id })),
     });
     const titles = async (projectId: string, limit?: number) =>
-      ((await api('query', 'phone:projectThreads', { token, projectId, ...(limit ? { limit } : {}) })) as { title: string; view: string }[]).map((t) => `${t.title}:${t.view}`);
+      ((await api('query', 'phone:projectThreads', { token, runnerId, projectId, ...(limit ? { limit } : {}) })) as { title: string; view: string }[]).map((t) => `${t.title}:${t.view}`);
     await api('mutation', 'sync:upsertThreads', { key, threads: [doc(1, 'den', [pid]), doc(2, 'inbox', [pid, other]), doc(3, 'hibernating', [pid]), doc(4, 'inbox', [])] });
     assert.deepEqual(await titles(pid), ['T3:hibernating', 'T2:inbox', 'T1:den']);
     assert.deepEqual(await titles(other), ['T2:inbox']);
@@ -408,7 +414,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     await api('mutation', 'sync:heartbeat', { key, runner: { runnerId, name: runnerId, version: 'x', startedAt: 'x', draining: false, threadCount: 0 } });
     await new Promise((r) => setTimeout(r, 1000));
     assert.deepEqual(await titles(pid), ['T1:inbox']);
-    await assert.rejects(api('query', 'phone:projectThreads', { token: 'tb_wrong', projectId: pid }), /auth|token/);
+    await assert.rejects(api('query', 'phone:projectThreads', { token: 'tb_wrong', runnerId, projectId: pid }), /auth|token/);
     await api('mutation', 'sync:removeThreads', { key, threadIds: [`${runnerId}-t1`, `${runnerId}-t4`] });
     await api('mutation', 'sync:bye', { key, runnerId });
   });
@@ -452,7 +458,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
   test('scrubbing: the backend checks what an old runner sends, and scrub-stored rewrites old rows', async () => {
     const secret = `sk-${'e2e1'.repeat(12)}`;
     const threadId = `scrub-${crypto.randomBytes(4).toString('hex')}`;
-    const { token } = (await api('mutation', 'sync:issueToken', { key, kind: 'browser', name: 'scrub-e2e' })) as { token: string };
+    const { token } = await browserToken('scrub-e2e');
     const runnerId = readRunnerJson(home).sync?.runnerId;
     const at = new Date().toISOString();
     await api('mutation', 'sync:upsertThreads', {
@@ -547,7 +553,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     const runnerId = `e2e-full-${crypto.randomBytes(3).toString('hex')}`;
     const threadId = `body-${crypto.randomBytes(4).toString('hex')}`;
     const at = new Date().toISOString();
-    const { token } = (await api('mutation', 'sync:issueToken', { key, kind: 'browser', name: 'e2e-50' })) as { token: string };
+    const { token } = await browserToken('e2e-50');
     await api('mutation', 'sync:heartbeat', { key, runner: { runnerId, name: runnerId, version: 'x', startedAt: 'x', draining: false, threadCount: 0 } });
     await api('mutation', 'sync:upsertThreads', { key, threads: [{ threadId, runnerId, title: 't', cwd: '/tmp/x', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: 'p', createdAt: at, lastActivityAt: at, lastActivityMs: Date.now(), view: 'inbox' }] });
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();

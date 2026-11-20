@@ -62,12 +62,21 @@
 # (a new worktree), as SwiftPM's cache only works where it was made. Run
 # it in the background rather than waiting on it.
 #   --e2e         also the runner's end-to-end tests: the real claude CLI on
-#                 claude-haiku-5-5 and login claude-main (TB_E2E_ACCOUNT), then Codex on
+#                 claude-haiku-5-5 and the first Claude login that works (TB_E2E_ACCOUNT,
+#                 else runner/src/test-login.ts's pick), then Codex on
 #                 gpt-6-luna at low effort and a Codex install into a temp
 #                 folder, all in temp folders (several minutes, a few cents;
 #                 TB_E2E_SKIP_CODEX=1 leaves the Codex ones out)
 #   --shots DIR   also save the app's design screenshots to DIR
 #                 (app/Tools/screenshots.sh; look at them afterwards)
+#   --only STEPS  just these steps of the run the other options ask for,
+#                 by the names it prints, ";" between them, and for the
+#                 runner's unit tests optionally the files:
+#                 "site build;runner unit tests=test/unit/a.test.ts test/unit/b.test.ts".
+#                 A failed run ends with the --only that runs what failed
+#                 again. tb land uses it to find which landing of a group
+#                 broke the group's check (THREADBEAR_CHECK_ONLY is the same
+#                 thing, for a check command it can't add options to).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,6 +91,21 @@ ALL=0
 E2E=0
 SHOTS=""
 LOCAL=0
+ONLY=""
+# tb land runs whatever command the repo's patch names as its check, so it
+# asks for --only through the environment; from here on it's the option, which
+# is what reaches a check host.
+if [ -n "${THREADBEAR_CHECK_ONLY:-}" ]; then
+  set -- "$@" --only "$THREADBEAR_CHECK_ONLY"
+  unset THREADBEAR_CHECK_ONLY
+fi
+# And --all: tb land's run of what failed on main, where the Swift steps
+# would otherwise skip with nothing changed and blame nobody (17 Nov: four
+# hours of group checks halving instead).
+if [ "${THREADBEAR_CHECK_ALL:-}" = 1 ]; then
+  set -- "$@" --all
+fi
+unset THREADBEAR_CHECK_ALL
 ARGS=("$@")
 
 while [ $# -gt 0 ]; do
@@ -96,6 +120,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "--shots needs a folder" >&2; exit 2; }
       case "$2" in /*) SHOTS="$2" ;; *) SHOTS="$PWD/$2" ;; esac
       shift ;;
+    --only)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "--only needs the steps to run" >&2; exit 2; }
+      ONLY="$2"
+      shift ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -104,6 +132,28 @@ done
 
 if [ "$QUICK" = 1 ] && [ "$APP_ONLY" = 1 ]; then
   echo "--quick is the runner's checks and --app the app's; pick one (or neither for both)." >&2
+  exit 2
+fi
+# THREADBEAR_CHECK_HOST_ONLY (below, where the host is picked): a run that's
+# for a check host or nowhere. A check command that itself says --local or
+# --e2e would run it here all the same (Codex's review, 17 Nov), in tb
+# land's own checkout with no packages installed. On a host this isn't set:
+# ssh doesn't carry it.
+if [ -n "${THREADBEAR_CHECK_HOST_ONLY:-}" ] && { [ "$LOCAL" = 1 ] || [ "$E2E" = 1 ]; }; then
+  echo "This check runs on this Mac (--local or --e2e), and this run was only for a check host."
+  exit 4
+fi
+# plain <text> <regex>: whether all of it matches, a line break included
+# (grep would take each line by itself), whatever the locale's letters are.
+plain() {
+  local LC_ALL=C
+  [[ "$1" =~ $2 ]]
+}
+# Step names and test file paths only: it's passed to a check host's shell
+# and its file names to node.
+ONLY_CHARS='^[A-Za-z0-9 ._/=;()-]*$'
+if ! plain "$ONLY" "$ONLY_CHARS" || [ "${ONLY#-}" != "$ONLY" ]; then
+  echo "--only takes step names with ; between them (and =files for the runner's unit tests), not: $ONLY" >&2
   exit 2
 fi
 
@@ -134,10 +184,24 @@ if [ "$LOCAL" = 0 ] && [ "$E2E" = 0 ]; then
   else
     CHECK_HOST="$(configured_hosts)"
   fi
+  # THREADBEAR_CHECK_HOST_ONLY: a run that's for a check host or nowhere. tb
+  # land sets it for the runs that look for the landing that broke a group
+  # (--only, above): those are in a checkout of its own with no packages
+  # installed, and several in a row on the Mac someone's working on would be
+  # worse than the halving it falls back to. 4, with no step having failed,
+  # is nobody's fault.
+  if [ -z "$CHECK_HOST" ] && [ -n "${THREADBEAR_CHECK_HOST_ONLY:-}" ]; then
+    echo "No check host is set, and this run was only for one."
+    exit 4
+  fi
   if [ -n "$CHECK_HOST" ]; then
     "$ROOT/scripts/check-remote.sh" "$CHECK_HOST" ${ARGS[@]+"${ARGS[@]}"}
     code=$?
     [ "$code" = 255 ] || exit "$code"
+    if [ -n "${THREADBEAR_CHECK_HOST_ONLY:-}" ]; then
+      echo "No check host could take it, and this run was only for one."
+      exit 4
+    fi
     echo "So the checks run on this Mac instead, at low priority."
     # How low is runner.json's jobPriority (runner/src/background.ts), or
     # THREADBEAR_JOB_PRIORITY: background is taskpolicy -b (Mike's, for his
@@ -175,7 +239,7 @@ FALLBACK="${THREADBEAR_CHECK_FALLBACK:-}"
 # check-remote tests run under it would otherwise exit with it (Codex, 9 Nov).
 unset THREADBEAR_HOME THREADBEAR_DATA_DIR THREADBEAR_PORT THREADBEAR_URL THREADBEAR_LOG \
   THREADBEAR_THREAD_ID THREADBEAR_THREAD_KEY THREADBEAR_RUNNER_VERSION THREADBEAR_RUNNER_HOME THREADBEAR_CHECK_BUSY_EXIT THREADBEAR_CHECK_FALLBACK \
-  THREADBEAR_CHECK_PREFER THREADBEAR_CHECK_GROUP
+  THREADBEAR_CHECK_PREFER THREADBEAR_CHECK_GROUP THREADBEAR_CHECK_ONLY THREADBEAR_CHECK_HOST_ONLY
 # And their old names, which the runner and tb would otherwise take for these.
 for v in $(compgen -e | grep '^THREADBARE_' || true); do unset "$v"; done
 # The jobs the tests' runners start get no lower than the check itself
@@ -261,9 +325,44 @@ TMP_ROOT="${TMPDIR:-/tmp}"
 LOGS="$(mktemp -d "${TMP_ROOT%/}/threadbear-check.XXXXXX")"
 FAILED=""
 
+# only_entry <step>: --only's entry for it ("name" or "name=files"), failing
+# when --only was given and doesn't name it. (Loops, not a case: step names
+# have spaces and brackets in them.)
+only_entry() {
+  [ -n "$ONLY" ] || return 0
+  local rest="$ONLY;" e
+  while [ -n "$rest" ]; do
+    e="${rest%%;*}"
+    rest="${rest#*;}"
+    if [ "${e%%=*}" = "$1" ]; then
+      printf '%s' "$e"
+      return 0
+    fi
+  done
+  return 1
+}
+# ran_asked <step>: notes a step --only named as run, for the line a run
+# with --only ends with. tb land runs what failed on main too before it
+# blames a landing, and exit 0 alone wouldn't tell main passing a step from
+# main skipping it (the Swift steps never run on main with nothing changed).
+ONLY_RAN=""
+ran_asked() {
+  if [ -n "$ONLY" ] && only_entry "$1" >/dev/null; then ONLY_RAN="$ONLY_RAN${ONLY_RAN:+;}$1"; fi
+}
+# left_out <step>: says so and succeeds when --only leaves the step out. The
+# steps that install packages always run: they aren't checks, and the ones
+# asked for need them.
+left_out() {
+  [ "${1% packages}" = "$1" ] || return 1
+  only_entry "$1" >/dev/null && return 1
+  printf 'skip  %-20s (--only left it out)\n' "$1"
+}
+
 # step <name> <dir> <command...>: runs it with its output in a log file.
 step() {
   local name="$1" dir="$2"
+  if left_out "$name"; then return; fi
+  ran_asked "$name"
   shift 2
   local log="$LOGS/$(printf '%s' "$name" | tr -c 'a-zA-Z0-9' '-').log"
   local start=$SECONDS
@@ -296,19 +395,57 @@ LIMITED=("$NODE" "$ROOT/scripts/limit-step.mjs"
 # says which tests needed it, so one that keeps turning up gets fixed. A
 # test that fails on its own as well still fails the step.
 RERUN_MAX_FILES=8
+UNIT_FAILED_FILES=""
 runner_unit_tests() {
   local name="runner unit tests" dir="$ROOT/runner"
   local log="$LOGS/runner-unit-tests.log" list="$LOGS/runner-unit-tests.failed"
   local start=$SECONDS
+  if left_out "$name"; then return; fi
+  # (Run, for --only's last line, also when none of its files are here:
+  # files this checkout doesn't have are files it can't fail.)
+  ran_asked "$name"
+  # All of them, or the files --only names for this step. One this checkout
+  # doesn't have can't fail here: tb land runs a group's failed files on each
+  # of its landings alone, and another landing's new test isn't in this one.
+  local targets=("test/unit/**/*.test.ts") asked f
+  asked="$(only_entry "$name")"
+  if [ "$asked" != "${asked#*=}" ]; then
+    targets=()
+    set -f
+    for f in ${asked#*=}; do
+      if [ "${f#test/unit/}" != "$f" ] && [ "${f%.test.ts}" != "$f" ] && [ "${f#*..}" = "$f" ] && [ -f "$dir/$f" ]; then
+        targets+=("$f")
+      fi
+    done
+    set +f
+    if [ "${#targets[@]}" = 0 ]; then
+      printf 'skip  %-20s (none of the files --only names are in this checkout)\n' "$name"
+      return
+    fi
+  fi
   local run=(node --import=./test/helpers/clean-env.ts --test --test-timeout=300000 --test-force-exit --test-reporter=spec)
   if (cd "$dir" && "${run[@]}" --test-reporter-destination=stdout \
       --test-reporter=./test/helpers/failed-files-reporter.mjs --test-reporter-destination="$list" \
-      "test/unit/**/*.test.ts") >"$log" 2>&1; then
+      "${targets[@]}") >"$log" 2>&1; then
     printf 'ok    %-20s %4ss\n' "$name" "$((SECONDS - start))"
     return
   fi
-  local files=() f
+  local files=()
   [ -f "$list" ] && while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done <"$list"
+  # For the --only line a failed run ends with: the files, when they're few
+  # enough to have been run again and are plain test paths.
+  if [ "${#files[@]}" -ge 1 ] && [ "${#files[@]}" -le "$RERUN_MAX_FILES" ]; then
+    # The reporter gives whole paths; --only takes them from runner/, as
+    # another checkout (and a check host's copy) is somewhere else.
+    local real rel=()
+    real="$(cd "$dir" && pwd -P)"
+    for f in "${files[@]}"; do
+      f="${f#"$dir"/}"
+      rel+=("${f#"$real"/}")
+    done
+    UNIT_FAILED_FILES="${rel[*]}"
+    if ! plain "$UNIT_FAILED_FILES" '^test/unit/[A-Za-z0-9._/-]+( test/unit/[A-Za-z0-9._/-]+)*$'; then UNIT_FAILED_FILES=""; fi
+  fi
   if [ "${#files[@]}" -ge 1 ] && [ "${#files[@]}" -le "$RERUN_MAX_FILES" ]; then
     local relog="$LOGS/runner-unit-tests-again.log"
     if (cd "$dir" && "${run[@]}" --test-concurrency=1 "${files[@]}") >"$relog" 2>&1; then
@@ -363,6 +500,27 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   step "convex typecheck" "$ROOT" npm run convex:typecheck
   step "web typecheck" "$ROOT" npm run web:typecheck
   step "web tests" "$ROOT" npm run web:test
+  # ESLint with mikecann-lint's rules (eslint.config.mjs; old problems are
+  # recorded in eslint-suppressions.json). The whole thing takes about 40 s
+  # and 3 GB, so a landing lints only the code files it changed, and all of
+  # it when the lint setup or packages changed, with --all, or on main.
+  # Old problems fixed by hand don't fail it (--pass-on-unpruned-suppressions):
+  # `npx eslint . --prune-suppressions` tidies the file whenever.
+  # grep to /dev/null, not -q (see swift_needed).
+  if [ "$ALL" = 1 ] || [ -z "$CHANGED" ] \
+    || printf '%s\n' "$CHANGED" | grep -E '^(eslint\.config\.mjs|eslint-suppressions\.json|package(-lock)?\.json)$' >/dev/null; then
+    step "lint" "$ROOT" npm run lint:files -- .
+  else
+    LINT_FILES=()
+    while IFS= read -r f; do
+      if [ -f "$ROOT/$f" ]; then LINT_FILES+=("$f"); fi
+    done < <(printf '%s\n' "$CHANGED" | grep -E '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' || true)
+    if [ "${#LINT_FILES[@]}" -gt 0 ]; then
+      step "lint" "$ROOT" npm run lint:files -- "${LINT_FILES[@]}"
+    else
+      skip "lint" "no code changed"
+    fi
+  fi
   # The public site (site/) makes its docs pages from docs/guide.md (and the
   # experiments list from docs/experiments.md), and its build refuses some
   # guide content: a section with no icon in site/docs-icons.json, a link
@@ -427,6 +585,9 @@ DESKTOP_BUILT_IN=(app/Sources/Threadbear/Resources/Art app/Sources/Threadbear/Re
 # everything that differs again next time (Codex's review).
 cargo_step() {
   local name="$1" sums="" record="" before="$FAILED"
+  # Before anything below: a step --only leaves out builds nothing, so it
+  # mustn't write down these files as what the shared target was built from.
+  if left_out "$name"; then return; fi
   shift
   if [ -z "$CARGO" ]; then
     if [ -n "${THREADBEAR_CHECK_CHANGED_FILE:-}" ]; then
@@ -495,9 +656,11 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
     # imports can't break it.
     if [ "$QUICK" = 1 ] && needed '^desktop/|^app/Sources/Threadbear/Resources/(Art|Rich)/|^features/support/sample\.png$'; then
       cargo_step "desktop app check" check --locked -p threadbear-gpui --features automation --all-targets
-      # The installed app excludes automation. Imports hidden by that feature
-      # can pass the dev check and still break the updater's release build.
-      cargo_step "desktop release check" check --locked -p threadbear-gpui --features frame-stats
+      # And as it's installed (install-app.sh, stage-update.sh: frame-stats,
+      # no automation), so code that slips out of its automation cfg fails
+      # here rather than in self-update. Two forks' updates were stuck on
+      # just that (emilsbauga's and TeeLusk's, 14 to 16 Nov).
+      cargo_step "desktop app check (as installed)" check --locked -p threadbear-gpui --features frame-stats
     fi
     [ "$QUICK" = 1 ] || cargo_step "desktop build" check --locked --workspace --all-targets
   fi
@@ -561,6 +724,10 @@ fi
 if [ "$E2E" = 1 ]; then
   # Claude's first, then Codex's (codex*.e2e.test.ts: the conversation
   # tests and the install test), which TB_E2E_SKIP_CODEX=1 leaves out.
+  # One login for every e2e file, named here so a failure says which.
+  TB_E2E_ACCOUNT="$("$NODE" "$ROOT/runner/src/test-login.ts")"
+  export TB_E2E_ACCOUNT
+  echo "e2e login: $TB_E2E_ACCOUNT"
   E2E_RUN=(node --test --test-reporter=spec --test-concurrency=1 --test-timeout=600000)
   CLAUDE_E2E=()
   CODEX_E2E=()
@@ -593,9 +760,28 @@ if [ -n "$FAILED" ]; then
     echo "--- $name: end of $log"
     tail -n 30 "$log"
   done
+  # What failed, as a whole ./check.sh --only command: run by hand it's the
+  # quick way to see a fix work. It names check.sh, as tb land takes no
+  # --only and an agent told just "--only" tried it there (19 Nov). tb land
+  # reads this line off a group's failed check to run
+  # just that on each of the group's landings alone (worktrees.ts, findBroken).
+  AGAIN=""
+  while IFS='|' read -r name log; do
+    [ -n "$name" ] || continue
+    if [ "$name" = "runner unit tests" ] && [ -n "$UNIT_FAILED_FILES" ]; then name="$name=$UNIT_FAILED_FILES"; fi
+    AGAIN="$AGAIN${AGAIN:+;}$name"
+  done <<EOF_FAILED
+$FAILED
+EOF_FAILED
+  if [ -n "$AGAIN" ] && plain "$AGAIN" "$ONLY_CHARS"; then
+    echo
+    echo "To run only what failed again: ./check.sh --only \"$AGAIN\""
+  fi
+  [ -z "$ONLY" ] || echo "--only ran: \"$ONLY_RAN\""
   echo
   echo "Logs kept in $LOGS; rm -rf it when you're done."
   exit 1
 fi
+[ -z "$ONLY" ] || echo "--only ran: \"$ONLY_RAN\""
 rm -rf "$LOGS"
 [ -z "$SHOTS" ] || echo "Screenshots are in $SHOTS."

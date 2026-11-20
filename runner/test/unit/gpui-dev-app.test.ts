@@ -112,14 +112,15 @@ test('remote builds expose the full live log and still find the built binaries',
   for (const dir of [scripts, bin, home, temp]) fs.mkdirSync(dir, { recursive: true });
   // dev-app refuses a group-writable TMPDIR, and a umask of 0002 (some Linux boxes) makes one.
   fs.chmodSync(temp, 0o700);
-  fs.copyFileSync(path.join(path.dirname(DEV_APP), 'dev-app.ts'), path.join(scripts, 'dev-app.ts'));
+  // With what it imports (its state folder's check, shared with the spec driver).
+  for (const f of ['dev-app.ts', 'own-folder.ts']) fs.copyFileSync(path.join(path.dirname(DEV_APP), f), path.join(scripts, f));
   fs.writeFileSync(path.join(checkout, 'package.json'), '{"type":"module"}');
   const config = path.join(home, 'Library', 'Application Support', 'Threadbear');
   fs.mkdirSync(config, { recursive: true });
   fs.writeFileSync(path.join(config, 'runner.json'), JSON.stringify({ updateBuildHosts: ['build-mac'] }));
   fs.writeFileSync(path.join(bin, 'ssh'), '#!/bin/sh\nprintf "Darwin\\n"\n', { mode: 0o755 });
   // Execute the actual remote build command, with a tiny stand-in for cargo.
-  fs.writeFileSync(path.join(scripts, 'remote.sh'), '#!/bin/sh\ncd "$TEST_CHECKOUT" || exit 1\nshift 2\nexec "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(scripts, 'remote.sh'), '#!/bin/sh\ncd "$TEST_CHECKOUT" || exit 1\n# The host and any options (--build), up to --.\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n', { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'cargo'), `#!${process.execPath}
 const fs = require('node:fs'), assert = require('node:assert/strict');
 fs.writeSync(1, 'first stdout\\n');
@@ -195,6 +196,11 @@ test('start, do, dump, stop, and the idle quit, with a stand-in app on the mock'
     assert.equal(refused.status, 1);
     assert.match(refused.err, /real data folder/);
 
+    // --film brings a window to the front, so only where film.sh says it may.
+    const filmHere = run(env, 'start', '--mock', '--film', '--id', 'f0');
+    assert.equal(filmHere.status, 1);
+    assert.match(filmHere.err, /film\.sh/);
+
     const started = run(env, 'start', '--mock', '--id', 'mine1');
     assert.equal(started.status, 0, started.err);
     assert.equal(started.out, 'mine1');
@@ -244,6 +250,15 @@ test('start, do, dump, stop, and the idle quit, with a stand-in app on the mock'
     fs.writeFileSync(path.join(busy, 'starting'), JSON.stringify({ pid: process.pid, since: since(process.pid) }));
     assert.match(run(env, 'start', '--mock', '--id', 'busy').err, /being started by another/);
     assert.ok(fs.existsSync(busy), "the other start's folder is left alone");
+
+    // Filming: a normal app in front, no label, every other safety kept.
+    assert.equal(run({ ...env, THREADBEAR_FILM_HOST: '1' }, 'start', '--mock', '--film', '--id', 'film').status, 0);
+    const filmed = JSON.parse(fs.readFileSync(path.join(fs.realpathSync(env.TMPDIR), 'threadbear-gpui-dev-app', 'film', 'fake-env.json'), 'utf8'));
+    assert.equal(filmed.THREADBEAR_FILMING, '1');
+    assert.equal(filmed.THREADBEAR_KEEP_BEHIND, undefined);
+    assert.equal(filmed.THREADBEAR_PASTEBOARD, 'com.mikerosoft.threadbear.automation.gpui-film');
+    assert.equal(filmed.THREADBEAR_AUTOMATION_LIVE, undefined);
+    assert.equal(run(env, 'stop', '--id', 'film').out, 'stopped film');
 
     // And a stop takes everything away, the mock with it.
     assert.equal(run({ ...env, THREADBEAR_KEEP_BEHIND: '1' }, 'start', '--mock', '--id', 'mine2').status, 0);

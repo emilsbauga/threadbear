@@ -131,7 +131,9 @@ if [[ "$VALIDATE" == 1 ]]; then
   waited=0
   while kill -0 $pid 2>/dev/null && (( waited < limit )); do sleep 1; (( waited += 1 )); done
   if kill -0 $pid 2>/dev/null; then
-    pkill -TERM -P $pid 2>/dev/null || true
+    # Its children by ps, not pkill -P: Homebrew's proctools pkill is reported
+    # to take -P with no pattern as every process (scripts/hangup-guard.sh).
+    for kid in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$pid" '$2 == p { print $1 }'); do kill -TERM "$kid" 2>/dev/null || true; done
     kill -TERM $pid 2>/dev/null || true
     wait $pid 2>/dev/null || true
     echo "WARNING: validation gave no answer in ${limit}s and was stopped (see $OUT/validate.log)."

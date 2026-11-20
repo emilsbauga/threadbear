@@ -9,7 +9,7 @@ import { tmpDir } from '../helpers/fakes.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { type GitOptions, MAC_SK_PROVIDER, TOUCH_SIGN_TIMEOUT_MS, touchKey, gitAsync, SETTLE_MS, signersPath } from '../../src/upstream.ts';
 import { ADD_DELAY_MS, keyStatePath, revokedPath } from '../../src/release-keys.ts';
-import { LATER, alive, commit, git, kept, key, keyLine, objectsIn, pinnedKeys, pubOf, release, signedTag, upstreamFor, world } from '../helpers/upstream-harness.ts';
+import { alive, commit, git, hangAlias, kept, key, keyLine, LATER, objectsIn, pinnedKeys, pubOf, release, signedTag, startedPid, upstreamFor, world } from '../helpers/upstream-harness.ts';
 
 test('a fetch bigger than the limit is stopped, and brings nothing into the checkout', async () => {
   const w = world();
@@ -69,11 +69,11 @@ test("gitAsync's watcher stops a command it says is over its limit, and what it 
   const pidFile = path.join(dir, 'pid');
   let asked = 0;
   await assert.rejects(
-    gitAsync(dir, ['-c', `alias.hang=!sleep 600 & echo $! >${pidFile}; wait`, 'hang'], { timeoutMs: 60_000, over: () => (++asked >= 2 ? 'fetched more than 1 MB' : undefined) }),
+    gitAsync(dir, ['-c', hangAlias(dir, pidFile), 'hang'], { timeoutMs: 60_000, over: () => (++asked >= 2 ? 'fetched more than 1 MB' : undefined) }),
     /fetched more than 1 MB/,
   );
   await new Promise((r) => setTimeout(r, 200));
-  assert.ok(!alive(Number(fs.readFileSync(pidFile, 'utf8'))));
+  assert.ok(!alive(startedPid(pidFile)));
 });
 
 // Security review finding 3 (c), 9 Nov 2026: a key used to sign a tag on a

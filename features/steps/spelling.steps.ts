@@ -45,3 +45,14 @@ Given('{string} is ticked in the composer\'s right-click menu', async function (
   }
   assert.ok(ticked(await menu(this, '')), `"${item}" didn't tick`);
 });
+
+When('I undo in the composer', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'menu-key', key: 'z', modifiers: ['cmd'] });
+});
+
+Then('the composer marks nothing as misspelled', async function (this: ThreadbearWorld) {
+  // Given the marks' pause after typing to settle first.
+  await sleep(600);
+  const marks = JSON.parse(okValue(await this.app.do({ cmd: 'composer-spelling' }))) as string[];
+  assert.deepEqual(marks, [], `the box marks ${JSON.stringify(marks)}`);
+});

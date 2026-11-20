@@ -95,7 +95,8 @@ test('runner.json parsing keeps only well-formed entries, and off turns them all
   ];
   const got = extraUpdatesFrom(raw, undefined, '/Users/me');
   assert.deepEqual(got, [
-    { name: 'grok', command: ['/Users/me/x/grok', 'update'] },
+    // (Joined the way the platform joins, with backslashes on Windows.)
+    { name: 'grok', command: [path.join('/Users/me', 'x', 'grok'), 'update'] },
     { name: 'muse', command: ['muse'], env: { A: '1' } },
   ]);
   assert.deepEqual(extraUpdatesFrom(raw, 'off', '/Users/me'), []);

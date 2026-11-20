@@ -13,10 +13,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { RunnerClient } from '../../src/client.ts';
+import { testLogin } from '../../src/test-login.ts';
 import { checkSequence, isTransient } from '../helpers/protocol-check.ts';
 import { projectDirName } from '../../src/transcripts.ts';
 
-const FROM = process.env.TB_E2E_ACCOUNT ?? 'claude-main';
+const FROM = testLogin();
 const TO = process.env.TB_E2E_OTHER_ACCOUNT ?? 'claude-1';
 const MODEL = process.env.TB_E2E_MODEL ?? 'claude-haiku-5-5';
 const RUNNER_DIR = path.join(import.meta.dirname, '..', '..');

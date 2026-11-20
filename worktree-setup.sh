@@ -104,3 +104,15 @@ else
   cp "$ROOT/scripts/swift-freeze-pre-commit" "$hooks/pre-commit"
   chmod +x "$hooks/pre-commit"
 fi
+
+# docs/experiments.md merges line by line (.gitattributes' merge=lines,
+# scripts/merge-lines.mjs), so a rebase in `tb land` neither conflicts on
+# two threads' new experiments nor brings back one either side took out,
+# as union merging did (17 Nov). Git's config is shared by every worktree,
+# so this covers them all; rewritten each time, so it follows node moving.
+# A relative script path, as git runs a merge driver from the worktree's
+# top, and each worktree uses its own copy.
+if [ -f "$ROOT/scripts/merge-lines.mjs" ]; then
+  git -C "$ROOT" config merge.lines.name "one-line entries, in any order (scripts/merge-lines.mjs)"
+  git -C "$ROOT" config merge.lines.driver "'$NODE' scripts/merge-lines.mjs %O %A %B"
+fi

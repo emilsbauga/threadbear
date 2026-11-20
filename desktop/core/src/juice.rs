@@ -251,6 +251,80 @@ pub fn tick_drawn(elapsed: Duration) -> f32 {
     cubic_bezier(0.3, 0., 0.2, 1., progress(elapsed.saturating_sub(TICK_DRAW_DELAY), TICK_DRAW))
 }
 
+// MARK: Picking an answer
+
+/// An answer picked on a card: its button fills with the accent from the
+/// left, the tick with it, then hops (Mike picked this from clips on 18 Nov:
+/// it's the button he presses most, and it only changed colour). The fill
+/// is over before the hop peaks, and both before a paged card moves on to
+/// its next ask (300 ms after the click). Not under Reduce Motion.
+pub const PICK_FILL: Duration = Duration::from_millis(160);
+pub const PICK_HOP_DELAY: Duration = Duration::from_millis(110);
+pub const PICK: Duration = Duration::from_millis(270);
+
+/// How much of the button is filled, 0 to 1, from its left edge.
+pub fn pick_fill(elapsed: Duration) -> f32 {
+    cubic_bezier(0.3, 0., 0.2, 1., progress(elapsed, PICK_FILL))
+}
+
+/// The button's offset (negative is up): up 3 points and back.
+pub fn pick_hop(elapsed: Duration) -> f32 {
+    Track { start: 0., keys: &[(0.06, -3.), (0.09, 0.)] }.at(elapsed.saturating_sub(PICK_HOP_DELAY).as_secs_f32())
+}
+
+/// A row's circle ticked (an answer in a list of rows, a follow-up on the
+/// done card): its ring pops, a little over its size and back, as the tick
+/// draws itself in.
+pub const TICK_POP: Duration = Duration::from_millis(240);
+
+/// The ring's size against its own (1 at rest) and how much of the tick is
+/// drawn, 0 to 1.
+pub fn tick_pop(elapsed: Duration) -> (f32, f32) {
+    let t = elapsed.as_secs_f32();
+    let scale = timed(&[(0., 0.55), (0.12, 1.18), (0.24, 1.)], t);
+    let drawn = cubic_bezier(0.3, 0., 0.2, 1., ((t - 0.05) / 0.16).clamp(0., 1.));
+    (scale, drawn)
+}
+
+// MARK: A picture pasted or dropped in the box
+
+/// A picture arriving in the message box: the strip over the words opens
+/// to its height, and the picture drops into it from above, a touch past
+/// its place and back, fading in as it comes (18 Nov, with the answer's
+/// fill). Under Reduce Motion it's there at once.
+pub const STRIP_OPEN: Duration = Duration::from_millis(150);
+pub const PICTURE_DROP_DELAY: Duration = Duration::from_millis(60);
+pub const PICTURE_DROP: Duration = Duration::from_millis(320);
+pub const PICTURE_DROP_FROM: f32 = -22.;
+
+/// How open the strip is, 0 to 1, when its first picture arrives.
+pub fn strip_open(elapsed: Duration) -> f32 {
+    ease_out_settle(progress(elapsed, STRIP_OPEN))
+}
+
+/// The arriving picture's (opacity, offset from its place; negative is up).
+pub fn picture_drop(elapsed: Duration) -> (f32, f32) {
+    let t = elapsed.saturating_sub(PICTURE_DROP_DELAY).as_secs_f32();
+    if elapsed < PICTURE_DROP_DELAY {
+        return (0., PICTURE_DROP_FROM);
+    }
+    let offset = timed(&[(0., PICTURE_DROP_FROM), (0.17, 3.), (0.25, -1.), (0.32, 0.)], t);
+    ((t / 0.12).clamp(0., 1.), offset)
+}
+
+pub fn picture_dropping(elapsed: Duration) -> bool {
+    elapsed < PICTURE_DROP_DELAY + PICTURE_DROP
+}
+
+// MARK: A reply streaming in
+
+/// Each piece of a reply fades in as it lands rather than popping onto the
+/// page: over `REPLY_FADE`, each further word of a piece starting
+/// `REPLY_FADE_WORD` after the one before (the text view's own stream fade,
+/// rows/markdown.rs; 18 Nov). Not under Reduce Motion.
+pub const REPLY_FADE: Duration = Duration::from_millis(170);
+pub const REPLY_FADE_WORD: Duration = Duration::from_millis(14);
+
 // MARK: The working line's paw
 
 /// While a turn runs, the paw by "Bear with me" does something every
@@ -300,12 +374,42 @@ fn mix(mut x: u64) -> u64 {
 
 /// The move the paw makes the `n`th time, for a turn whose seed is `seed`
 /// (when it started): random, but never the one before.
+///
+/// Worked out from `n` alone, at the same small cost however long the turn:
+/// each even step is a free pick, and each odd step picks from the moves its
+/// two even neighbours didn't, so no two running are the same. It used to
+/// walk every step since the turn began, so a turn start years back (a
+/// secondary runner can write one, Daybreak 147) froze the app's UI thread.
 pub fn paw_move(seed: u64, n: u64) -> PawMove {
-    let mut at = (mix(seed) % 5) as usize;
-    for i in 1..=n {
-        at = (at + 1 + (mix(seed ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15)) % 4) as usize) % 5;
+    let pick = |i: u64| mix(seed ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(1));
+    let free = |i: u64| PawMove::ALL[(pick(i) % 5) as usize];
+    if n % 2 == 0 {
+        return free(n);
     }
-    PawMove::ALL[at]
+    let (before, after) = (free(n - 1), free(n.wrapping_add(1)));
+    let open: Vec<PawMove> = PawMove::ALL.into_iter().filter(|m| *m != before && *m != after).collect();
+    open[(pick(n) % open.len() as u64) as usize]
+}
+
+/// The longest a turn's working line counts up from (a week): anything
+/// older isn't a turn this app could have watched start, so it's taken as
+/// not known.
+pub const TURN_START_MAX_AGE: f64 = 7. * 24. * 3600.;
+/// How far ahead of this Mac's clock a turn's start may be (another
+/// machine's clock running fast) before it's taken as not known.
+pub const TURN_START_SKEW: f64 = 5. * 60.;
+
+/// A turn's start (seconds since 1970) as the working line may use it, or
+/// None when it can't be real: in the future, older than a week, or before
+/// the thread was made (`created`, when known). The start comes from the
+/// transcript, which another runner writes for its own threads, so the app
+/// checks it against its own clock before timing anything from it.
+pub fn turn_start(started: f64, now: f64, created: Option<f64>) -> Option<f64> {
+    let real = started.is_finite()
+        && started <= now + TURN_START_SKEW
+        && started >= now - TURN_START_MAX_AGE
+        && created.is_none_or(|c| started >= c - TURN_START_SKEW);
+    real.then_some(started)
 }
 
 /// Where the paw is: turned (degrees, clockwise), squashed (x, y) and moved
@@ -504,6 +608,41 @@ mod tests {
     }
 
     #[test]
+    fn the_paw_costs_the_same_however_old_the_turn() {
+        // Daybreak 147: a secondary runner's turn.started at 0001-01-01 put
+        // ~26.6 billion steps behind the paw, walked twice a frame.
+        let started = -62_135_596_800.; // 0001-01-01T00:00:00Z
+        let t = (1_763_400_000. - started) as f32;
+        let clock = std::time::Instant::now();
+        for seed in [0u64, 1, u64::MAX] {
+            let _ = paw_pose(seed, t);
+            let _ = paw_now(seed, t);
+            let _ = paw_move(seed, u64::MAX);
+            let _ = paw_move(seed, u64::MAX - 1);
+        }
+        assert!(clock.elapsed() < std::time::Duration::from_millis(50), "{:?}", clock.elapsed());
+        // Far along a turn the moves still never repeat.
+        let far: Vec<PawMove> = (0..40).map(|n| paw_move(9, u64::MAX - 40 + n)).collect();
+        assert!(far.windows(2).all(|w| w[0] != w[1]), "{far:?}");
+    }
+
+    #[test]
+    fn a_turn_start_the_app_cant_have_seen_isnt_timed() {
+        let now = 1_763_400_000.;
+        assert_eq!(turn_start(now - 41., now, None), Some(now - 41.));
+        assert_eq!(turn_start(now - 3. * 3600., now, Some(now - 4. * 3600.)), Some(now - 3. * 3600.));
+        // A little clock skew between machines is fine.
+        assert_eq!(turn_start(now + 30., now, Some(now + 60.)), Some(now + 30.));
+        // Year 1, the future, before the thread, older than a week, not a number.
+        assert_eq!(turn_start(-62_135_596_800., now, None), None);
+        assert_eq!(turn_start(now + 3600., now, None), None);
+        assert_eq!(turn_start(now - 3600., now, Some(now - 60.)), None);
+        assert_eq!(turn_start(now - 8. * 24. * 3600., now, None), None);
+        assert_eq!(turn_start(f64::NAN, now, None), None);
+        assert_eq!(turn_start(f64::NEG_INFINITY, now, None), None);
+    }
+
+    #[test]
     fn the_paw_rests_between_moves_and_ends_where_it_started() {
         assert_eq!(paw_pose(3, 0.2), PawPose::STILL);
         assert_eq!(paw_now(3, PAW_FIRST + 2.), None);
@@ -540,6 +679,31 @@ mod tests {
         assert_eq!(view_settle(0., false), (0., VIEW_SETTLE_RISE));
         assert!(view_settle(VIEW_SETTLE.as_secs_f32(), false).1.abs() < 0.1);
         assert_eq!(view_settle(1., true), (1., 0.));
+    }
+
+    #[test]
+    fn a_picked_answer_fills_then_hops_before_the_card_moves_on() {
+        assert_eq!(pick_fill(Duration::ZERO), 0.);
+        assert_eq!(pick_fill(PICK_FILL), 1.);
+        assert_eq!(pick_hop(PICK_HOP_DELAY), 0.);
+        assert!((pick_hop(PICK_HOP_DELAY + Duration::from_millis(60)) + 3.).abs() < 1e-3);
+        assert_eq!(pick_hop(PICK), 0.);
+        // The card pages on 300 ms after the click.
+        assert!(PICK < Duration::from_millis(300));
+        let (scale, drawn) = tick_pop(Duration::ZERO);
+        assert!(scale < 0.6 && drawn == 0.);
+        assert!((0..24).any(|i| tick_pop(Duration::from_millis(i * 10)).0 > 1.1));
+        assert_eq!(tick_pop(TICK_POP), (1., 1.));
+    }
+
+    #[test]
+    fn a_pasted_picture_drops_in_past_its_place_and_back() {
+        assert_eq!(strip_open(Duration::ZERO), 0.);
+        assert_eq!(strip_open(STRIP_OPEN), 1.);
+        assert_eq!(picture_drop(Duration::ZERO), (0., PICTURE_DROP_FROM));
+        assert!((0..32).any(|i| picture_drop(PICTURE_DROP_DELAY + Duration::from_millis(i * 10)).1 > 1.));
+        assert_eq!(picture_drop(PICTURE_DROP_DELAY + PICTURE_DROP), (1., 0.));
+        assert!(picture_dropping(Duration::from_millis(100)) && !picture_dropping(PICTURE_DROP_DELAY + PICTURE_DROP));
     }
 
     #[test]

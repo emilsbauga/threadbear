@@ -13,7 +13,8 @@
 // threads opening (opening.feature): switch, arrows, new-thread, and the
 // Swift app's small motions beside GPUI's: select, finish, archive-row,
 // inbox-zero, send, bear-hover, woke, background, activity, librarian,
-// milestone. `--busy` blocks each app's
+// milestone, and GPUI's own: year-token, pick-answer, paste-picture,
+// reply-flow. `--busy` blocks each app's
 // main thread for that long straight after the click (the automation's
 // `stall`), as opening a heavy next thread would. Writes <scene>.mp4 at full
 // speed and <scene>-slow.mp4 at a quarter of it, both apps in dark mode.
@@ -179,6 +180,60 @@ const scenes: Record<string, Scene> = {
     },
     seconds: 4,
   },
+  // The small motions of 18 Nov (the GPUI app only). Picking an answer: its
+  // button fills from the left and hops, then the card pages on.
+  'pick-answer': {
+    setup: async (app) => {
+      const t = await until(app, 'Ship the beta', (d) => titled(d, 'Ship the beta to TestFlight'));
+      await app.do({ cmd: 'open', id: t.id });
+      await until(app, 'its transcript', (d) => d.transcript.threadId === t.id && d.transcript.state === 'loaded');
+    },
+    act: async (app) => {
+      await app.do({ cmd: 'ask', action: 'pick:0:0' });
+    },
+    seconds: 3,
+  },
+  // A picture pasted into the box: the strip opens and it drops in.
+  'paste-picture': {
+    setup: async (app) => scenes.archive.setup(app),
+    act: async (app) => {
+      await app.do({ cmd: 'paste-image', path: path.join(root, 'features/support/sample.png') });
+      await sleep(1200);
+      await app.do({ cmd: 'paste-image', path: path.join(root, 'features/support/sample.png') });
+    },
+    seconds: 3.5,
+  },
+  // A reply streaming in: each piece fades in as it lands.
+  'reply-flow': {
+    setup: async (app) => scenes.archive.setup(app),
+    act: async (app) => {
+      await app.do({ cmd: 'send', text: 'Any follow-ups?' });
+    },
+    seconds: 6,
+  },
+  // A login getting its year-long token while its Usage row's in sight:
+  // confetti pops from the row's new "Year-long token until" line (the
+  // GPUI app only, confetti.rs).
+  'year-token': {
+    setup: async (app) => {
+      await scenes.archive.setup(app);
+      await app.do({ cmd: 'usage', show: true });
+      // Down the panel, which brings alex+3's row into sight.
+      await app.do({ cmd: 'usage', scrollToSettings: true });
+      await sleep(600);
+    },
+    act: async (app) => {
+      const got = await app.do({ cmd: 'mock', method: 'accounts', params: {} });
+      const { accounts } = JSON.parse(got.slice(got.indexOf('{'))) as { accounts: { id: string; yearToken?: { madeAt: string }; loginEndsAt?: string }[] };
+      // alex+3, whose row is in sight as the panel opens.
+      const a = accounts.find((x) => x.id === 'claude-3');
+      if (!a) throw new Error('no claude-3 on the mock');
+      const made = new Date();
+      Object.assign(a, { yearToken: { madeAt: made.toISOString() }, loginEndsAt: new Date(made.getTime() + 365 * 86_400_000).toISOString() });
+      await app.do({ cmd: 'mock', method: 'accounts', params: { accounts } });
+    },
+    seconds: 3,
+  },
   // Sending a message: it lifts into the thread, the arrow hops, the bear
   // pops up and waves while the turn runs, and the done card settles in
   // with its tick drawing on.
@@ -250,14 +305,15 @@ const scenes: Record<string, Scene> = {
     },
     seconds: 3.5,
   },
-  // The milestone toast dropping in with its bear waving (GPUI has none yet,
-  // so its side shows nothing happening).
+  // The milestone toast: Swift's drops in with its bear waving; GPUI's is
+  // still, with confetti from its paw (`tier` is the Swift command's, `count`
+  // and `shown` the GPUI one's).
   milestone: {
     setup: async (app) => scenes.archive.setup(app),
     act: async (app) => {
-      await app.do({ cmd: 'milestone', tier: 1000 }).catch(() => {});
+      await app.do({ cmd: 'milestone', tier: 1000, count: 1000, shown: 100 }).catch(() => {});
     },
-    seconds: 3,
+    seconds: 3.5,
   },
   hibernate: {
     setup: async (app) => scenes.archive.setup(app),

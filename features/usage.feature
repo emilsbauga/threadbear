@@ -24,18 +24,55 @@ Feature: The Usage panel and its honey pot
     And in the "Claude" card, "alex+4@example.com" says "Limit reached"
     And the "Personal" card names each login's provider: "Codex: alex@example.com, Claude: alex+3@example.com"
 
-  @usage.pools
-  Scenario: Weekly Fable can be switched off in the panel's settings, and stays off
+  # Option B of Mike's 17 Nov review: a card per login with its logo, a ring
+  # with its week, and one line where "Limit reached" sat over "Used up". A
+  # login with no number says why. The frozen Swift app has none of it.
+  @usage.pools @swift-pending
+  Scenario: Each login's card has its logo, a ring and one line saying how it stands
     When I click the honey pot in the activity bar
-    Then the Usage panel's "Show Weekly Fable" switch is on
-    When I turn off "Show Weekly Fable" in the Usage panel
+    Then in the "Claude" card, "alex@example.com" has the "claude" logo and a ring at 78%
+    And in the "Claude" card, "alex+4@example.com" has the "claude" logo and a ring at 31%
+    And in the "Claude" card, "alex+4@example.com"'s line starts "Used up, back"
+    When a Grok login with no reading is added
+    Then in the "Not in a pool" card, "Grok" has the "grok" logo and no ring
+    And in the "Not in a pool" card, "Grok" says why: "Grok reports its limit only from its background service"
+
+  # Mike, 18 Nov: the panel's settings were dumped at its foot; they're in
+  # Settings › General › Usage now. The frozen Swift app keeps its card.
+  @usage.pools @swift-pending
+  Scenario: Weekly Fable can be switched off in Settings, and stays off
+    When I open Settings
+    Then Settings' "Show Weekly Fable" switch is on
+    When I press "A login's own limit on one model" in Settings
+    Then Settings' "Show Weekly Fable" switch is off
+    When I click the honey pot in the activity bar
     Then in the "Claude" card, "alex@example.com" has "Weekly 78% left"
     # The GPUI app writes its settings at most every 300 ms, and the spec's
     # quit doesn't wait for that.
     When I wait a moment
     And the app is quit and opened again
-    Then the Usage panel's "Show Weekly Fable" switch is off
-    And in the "Claude" card, "alex@example.com" has "Weekly 78% left"
+    And I click the honey pot in the activity bar
+    Then in the "Claude" card, "alex@example.com" has "Weekly 78% left"
+
+  # Option C of Mike's 18 Nov review: the action beside "will go unused".
+  @usage.pools @swift-pending
+  Scenario: A login whose week will go unused offers Find work for it, which opens a thread on it
+    When I click the honey pot in the activity bar
+    Then in the "Claude" card, "alex@example.com"'s line starts "About"
+    And in the "Claude" card, "alex@example.com" offers Find work for it
+    And in the "Claude" card, "alex+4@example.com" doesn't offer Find work for it
+    When I press Find work for it on "claude-main"
+    Then the open thread is "Ideas for alex@example.com's spare week"
+    When I press Find work for it on "claude-main"
+    Then the open thread is "Ideas for alex@example.com's spare week"
+    And there is one thread called "Ideas for alex@example.com's spare week"
+
+  @settings.general @swift-pending
+  Scenario: The spare week nudge can be turned off in Settings
+    When I open Settings
+    Then Settings says spare week nudges are on
+    When I press "Start a thread with ideas a day before" in Settings
+    Then Settings says spare week nudges are off
 
   @rail.honeypot
   Scenario: The honey pot is filled to the room the next thread would get, and follows it
@@ -48,10 +85,41 @@ Feature: The Usage panel and its honey pot
     When "claude-main"'s week resets
     Then the honey pot is 100% full, for "claude-main"
 
-  # Swift's scripted form switch waits for an actual mouse-up.
-  @usage.pools @swift-pending
-  Scenario: Clicking the model limit switch changes the card
+  # From Claude Code 2.1.325 a sign-in ends 28 days after it was made, and
+  # claude-1's ended unnoticed on 14 Nov 2026. The frozen Swift app has none of it.
+  @usage.sign-in @swift-pending
+  Scenario: A login that's signed out, or whose sign-in ends in days, says so with a dot on the honey pot
+    Then the honey pot has no dot
+    When "claude-3"'s sign-in ends in 50 hours
+    And I click the honey pot in the activity bar
+    Then in the "Claude" card, "alex+3@example.com" warns its sign-in ends
+    And the honey pot has a dot
+    And a line of the honey pot's tooltip starts "claude-3 (alex+3@example.com): sign-in ends"
+    When "claude-4" is signed out
+    Then in the "Claude" card, "alex+4@example.com" says "Signed out"
+    And the honey pot's tooltip says "claude-4 (alex+4@example.com) is signed out"
+    When "claude-4" is signed in again
+    Then confetti was thrown for "claude-4" signing back in
+
+  # A Claude sign-in lasts 28 days; `claude setup-token` makes a token that
+  # lasts a year. Mike, 17 Nov 2026: let each login opt in. The frozen Swift
+  # app has none of it.
+  @usage.sign-in @swift-pending
+  Scenario: Each Claude login offers a year-long token, and one on a token says until when
     When I click the honey pot in the activity bar
-    And I scroll to settings in Usage
-    And I press "A login's own limit on one model. Hide it if you don't use that model" in the Usage panel
-    Then in the "Claude" card, "alex@example.com" has "Weekly 78% left"
+    Then in the "Claude" card, "alex+3@example.com" offers a year-long token
+    When "claude-3" runs on a year-long token made today
+    Then in the "Claude" card, "alex+3@example.com" says it has a year-long token
+    And confetti was thrown from "claude-3"'s Usage row
+    And the honey pot has no dot
+
+  # claude-main's cancelled Max ran out on 16 Nov 2026 while its row still
+  # offered Sign in… and a weekly reset. The frozen Swift app has none of it.
+  @usage.sign-in @swift-pending
+  Scenario: A login whose paid plan has ended says so, with no sign-in warning
+    When "claude-3"'s sign-in ends in 50 hours
+    And "claude-3"'s plan has ended
+    And I click the honey pot in the activity bar
+    Then in the "Claude" card, "alex+3@example.com" says "Plan ended"
+    And the honey pot has no dot
+

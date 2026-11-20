@@ -44,6 +44,50 @@ Feature: Links in a reply
     Then the pane is showing that file
     And nothing was opened in another app
 
+  # Data, logs and code open in the pane too, not in whichever app claims
+  # them (Xcode takes .json). The Swift app is frozen and still sends them to
+  # their app.
+  @rich.filerefs @swift-pending
+  Scenario: A click on a data file's link opens it in the pane, not in its app
+    Given a file "put-1.json" saying "[1, 2, 3]" in a folder of its own
+    When I open the thread "Morning brief"
+    And a reply linking "the request" to that file streams in
+    And I click the link "the request"
+    Then the pane is showing that file
+    And nothing was opened in another app
+
+  @rich.filerefs @swift-pending
+  Scenario: A click on a TypeScript file's link opens it in the pane, not in its editor
+    Given a file "server.ts" saying "export const port = 3000;" in a folder of its own
+    When I open the thread "Morning brief"
+    And a reply linking "the server" to that file streams in
+    And I click the link "the server"
+    Then the pane is showing that file
+    And nothing was opened in another app
+
+  # A path with lines after it (`server.ts:2-3`) opens with those lines
+  # tinted and scrolled to, and typing in the file takes the tint off.
+  @rich.filerefs @swift-pending
+  Scenario: A link to a file's lines tints them in the pane, until I type
+    Given a file "server.ts" saying "const host = 'a';\nconst port = 3000;\nconst tls = false;\nexport {};" in a folder of its own
+    When I open the thread "Morning brief"
+    And a reply linking "the port" to lines "2-3" of that file streams in
+    And I click the link "the port"
+    Then the pane is showing that file
+    And the pane tints lines "2-3" of the file
+    And nothing was opened in another app
+    When I type "// mine" at the end of the pane's file
+    Then the pane tints no lines of the file
+
+  @rich.filerefs @swift-pending
+  Scenario: A file's name and lines in a reply's code open it at those lines
+    Given a file "server.ts" saying "const host = 'a';\nconst port = 3000;\nconst tls = false;" in a folder of its own
+    When I open the thread "Morning brief"
+    And a reply that read that file and names lines "2-3" of it in code streams in
+    And I click the link "server.ts:2-3"
+    Then the pane is showing that file
+    And the pane tints lines "2-3" of the file
+
   @rich.cmdclick
   Scenario: A ⌘-click on a document opens it in its app, not the pane
     Given a file "notes.md" saying "# Notes" in a folder of its own

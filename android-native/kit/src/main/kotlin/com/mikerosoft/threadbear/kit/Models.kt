@@ -138,6 +138,20 @@ data class PhoneProject(
     }
 }
 
+/**
+ * The projects by runner and id. A project id is only its runner's own, and
+ * another runner can use the same one, so a thread's project is looked up
+ * under the thread's own runner (Daybreak finding 141), never by id alone.
+ */
+class ProjectsByRunner(projects: List<PhoneProject>) {
+    private val byKey = projects.associateBy { key(it.runnerId ?: "", it.id) }
+
+    /** The project `id` on the runner `runnerId`, if that runner has it. */
+    fun find(runnerId: String, id: String): PhoneProject? = byKey[key(runnerId, id)]
+
+    private fun key(runnerId: String, id: String) = "$runnerId\n$id"
+}
+
 /** "C" for "Convex docs", "7" for "7 day plan", "?" for neither. */
 object ProjectMark {
     fun letter(title: String): String {
@@ -387,7 +401,12 @@ data class MessageImage(
     val url: String,
     val width: Int? = null,
     val height: Int? = null,
+    /** What it is (API 95): text/html for a live page, which this app doesn't run yet. */
+    val mediaType: String? = null,
 ) {
+    /** A live page an agent showed in its reply (the livePages experiment). */
+    val isPage: Boolean get() = mediaType == "text/html"
+
     companion object {
         fun read(o: JsonObject) = MessageImage(
             seq = o.needNum("seq").wholeCount() ?: throw BadRow("Not a seq"),
@@ -396,6 +415,7 @@ data class MessageImage(
             url = o.needStr("url"),
             width = o.num("width")?.wholeCount(),
             height = o.num("height")?.wholeCount(),
+            mediaType = o.str("mediaType"),
         )
     }
 }
@@ -486,6 +506,11 @@ object BackendApi {
     const val BUTTONS = 59
     const val SLASH_COMMANDS = 62
     const val PLANS = 72
+    /**
+     * From 93 a phone can register a Web Push endpoint (platform "webpush",
+     * phone:webPushKey for the VAPID key): the fdroid build's UnifiedPush.
+     */
+    const val WEB_PUSH = 93
 }
 
 enum class CommandState { PENDING, TAKEN, DONE, FAILED }

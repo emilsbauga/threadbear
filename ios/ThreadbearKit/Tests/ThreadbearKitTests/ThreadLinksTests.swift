@@ -51,7 +51,7 @@ import Testing
 
     @Test func readsEachKindOfLink() {
         #expect(ThreadLinks.target(of: URL(string: "thread:a1b2c3d4")!) == .thread("a1b2c3d4"))
-        #expect(ThreadLinks.target(of: URL(string: "review:abc")!) == .review)
+        #expect(ThreadLinks.target(of: URL(string: "review:abc")!) == .review("abc"))
         #expect(ThreadLinks.target(of: URL(string: "https://a.b")!) == nil)
     }
 

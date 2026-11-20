@@ -16,6 +16,7 @@ import { PatchTrust } from '../../src/patch-trust.ts';
 import { checkStateFile } from '../../src/schedule-check.ts';
 import { Scheduler } from '../../src/schedules.ts';
 import { patiently } from '../helpers/patience.ts';
+import { appRestartsPath } from '../../src/app-restarts.ts';
 
 const RUNNER_DIR = path.join(import.meta.dirname, '..', '..');
 
@@ -86,6 +87,32 @@ test('a second runner on the same data dir refuses to start and touches nothing'
   } finally {
     killGroup(owned.pid!, 'SIGKILL');
     a.proc.kill('SIGKILL');
+  }
+});
+
+// THREADBEAR-2D: Runner.start() saves the threads it recovers before main.ts
+// had made AppRestarts, so a done thread hibernating for an app restart
+// threw reading `isWatching` of undefined and its thread.updated was lost.
+test('a thread waiting on an app restart gets its summary while the runner starts', async () => {
+  const home = tmpDir();
+  const h = makeHarness(home);
+  const { thread } = h.runner.create({ text: 'Land it', cwd: fs.realpathSync(tmpDir()), accountId: 'claude-3' });
+  h.adapter.last.init();
+  h.runner.flush();
+  // Cut off mid-turn, so start() has it to save; hibernating for the app.
+  const file = path.join(h.store.threadDir(thread.id), 'thread.json');
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(rec.status, 'running');
+  fs.writeFileSync(file, JSON.stringify({ ...rec, hibernatedForApp: true, snoozedUntil: new Date(Date.now() + 86_400_000).toISOString() }));
+  fs.writeFileSync(appRestartsPath(home), JSON.stringify({ watching: [{ threadId: thread.id, requestedAt: new Date().toISOString() }] }));
+  const r = startRunner(home);
+  try {
+    await r.listening;
+    const log = fs.readFileSync(path.join(home, 'runner.log'), 'utf8');
+    assert.doesNotMatch(log, /couldn't make a thread's summary/, log);
+  } finally {
+    r.proc.kill('SIGTERM');
+    await r.exited;
   }
 });
 

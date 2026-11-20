@@ -1,12 +1,17 @@
-use std::ops::Range;
+use std::{ops::Range, rc::Rc};
 
 use gpui::{
-    App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels, Point,
-    SharedString, StyledText, TextStyleRefinement, Window, transparent_black,
+    App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId, GlobalElementId,
+    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, SharedString, StyledText,
+    TextLayout, TextStyleRefinement, Window, transparent_black,
 };
 
-use crate::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
+use crate::{TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
+
+/// What a click on one of a [`SelectableText`]'s links does: handed the
+/// link's text and the mouse up that ended the click.
+pub type SelectableLinkHandler = dyn Fn(SharedString, &MouseUpEvent, &mut Window, &mut App);
 
 /// Plain text that participates in the window-scoped [`TextSelection`](crate::TextSelection).
 ///
@@ -24,6 +29,11 @@ pub struct SelectableText {
     document_order: u64,
     text_style: Option<TextStyleRefinement>,
     selection_color: Option<Hsla>,
+    // Not in the kit as published (Threadbear, 16 Nov): byte ranges of the
+    // text drawn as links, which a click (not a drag) follows. Mike's
+    // bubble is plain text, so an address he pasted was plain words.
+    links: Rc<Vec<Range<usize>>>,
+    on_link: Option<Rc<SelectableLinkHandler>>,
 }
 
 impl SelectableText {
@@ -50,7 +60,110 @@ impl SelectableText {
             document_order: 0,
             text_style: None,
             selection_color: None,
+            links: Rc::default(),
+            on_link: None,
         }
+    }
+
+    /// Draws these byte ranges of the text in `color` as links: the pointer
+    /// is a hand over them, and a click on one (not a drag that selects)
+    /// calls `on_click` with its text. Ranges that don't fall on character
+    /// boundaries of the text are left out.
+    pub fn links(
+        mut self,
+        links: impl IntoIterator<Item = Range<usize>>,
+        color: Hsla,
+        on_click: impl Fn(SharedString, &MouseUpEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let text = self.text.clone();
+        let links: Vec<Range<usize>> = links
+            .into_iter()
+            .filter(|r| {
+                r.start < r.end
+                    && r.end <= text.len()
+                    && text.is_char_boundary(r.start)
+                    && text.is_char_boundary(r.end)
+            })
+            .collect();
+        if links.is_empty() {
+            return self;
+        }
+        let style = HighlightStyle {
+            color: Some(color),
+            ..Default::default()
+        };
+        self.styled_text =
+            StyledText::new(text).with_highlights(links.iter().map(|r| (r.clone(), style)));
+        self.links = Rc::new(links);
+        self.on_link = Some(Rc::new(on_click));
+        self
+    }
+
+    fn link_at(
+        layout: &TextLayout,
+        links: &[Range<usize>],
+        position: Point<Pixels>,
+    ) -> Option<Range<usize>> {
+        let index = layout.index_for_position(position).ok()?;
+        links.iter().find(|r| r.contains(&index)).cloned()
+    }
+
+    /// The hand over a link, a redraw when the pointer goes onto or off
+    /// one so the hand follows it, and a click following it. Only the
+    /// pointer over this text is read, as the kit's TextView does, so moving
+    /// it elsewhere draws nothing again.
+    fn paint_links(&self, layout: &TextLayout, hitbox: &Hitbox, window: &mut Window) {
+        let Some(on_link) = self.on_link.clone() else {
+            return;
+        };
+        let hovered = hitbox
+            .is_hovered(window)
+            .then(|| Self::link_at(layout, &self.links, window.mouse_position()))
+            .flatten();
+        if hovered.is_some() {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+        let view = window.current_view();
+        window.on_mouse_event({
+            let (hitbox, layout, links) = (hitbox.clone(), layout.clone(), self.links.clone());
+            let mut hovered = hovered;
+            move |event: &MouseMoveEvent, phase, window, cx| {
+                if !phase.bubble() {
+                    return;
+                }
+                let now = hitbox
+                    .is_hovered(window)
+                    .then(|| Self::link_at(&layout, &links, event.position))
+                    .flatten();
+                if now != hovered {
+                    hovered = now;
+                    cx.notify(view);
+                }
+            }
+        });
+        window.on_mouse_event({
+            let (hitbox, layout, links, text) =
+                (hitbox.clone(), layout.clone(), self.links.clone(), self.text.clone());
+            move |event: &MouseUpEvent, phase, window, cx| {
+                if !phase.bubble()
+                    || event.button != MouseButton::Left
+                    || !hitbox.is_hovered(window)
+                {
+                    return;
+                }
+                let Some(range) = Self::link_at(&layout, &links, event.position) else {
+                    return;
+                };
+                // A drag that selected some of it, or a double click on a
+                // word, is selecting, not following.
+                if !TextSelection::selected_text(window, cx).is_empty() {
+                    return;
+                }
+                TextSelection::end(window, cx);
+                cx.stop_propagation();
+                on_link(SharedString::from(text[range].to_owned()), event, window, cx);
+            }
+        });
     }
 
     /// Places this run in reading order among the others sharing its handle.
@@ -252,6 +365,7 @@ impl Element for SelectableText {
             };
             handle.register(registration, window, cx);
         }
+        self.paint_links(&layout, hitbox, window);
         self.styled_text.paint(
             global_id,
             inspector_id,
@@ -370,6 +484,52 @@ mod tests {
         });
 
         assert_eq!(copies.get(), 0);
+    }
+
+    struct LinkTestView {
+        followed: Rc<std::cell::RefCell<Vec<String>>>,
+    }
+
+    impl Render for LinkTestView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let followed = self.followed.clone();
+            div().size_full().child(TextSelectionLayer).child(
+                div().w(px(400.)).h(px(32.)).child(
+                    SelectableText::new("linked", "https://example.com and words").links(
+                        [0..19],
+                        gpui::blue(),
+                        move |url, _, _, _| followed.borrow_mut().push(url.to_string()),
+                    ),
+                ),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn a_click_on_a_link_follows_it_and_a_drag_selects(cx: &mut TestAppContext) {
+        let followed = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let view_followed = followed.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| LinkTestView { followed: view_followed });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        // A click on the address.
+        cx.simulate_mouse_down(point(px(10.), px(8.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(point(px(10.), px(8.)), MouseButton::Left, Modifiers::default());
+        assert_eq!(*followed.borrow(), ["https://example.com"]);
+
+        // A drag across it selects instead.
+        cx.simulate_mouse_down(point(px(1.), px(8.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(point(px(60.), px(8.)), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(point(px(60.), px(8.)), MouseButton::Left, Modifiers::default());
+        assert_eq!(followed.borrow().len(), 1);
+
+        // A click on the words after it isn't a link.
+        cx.update(|window, cx| TextSelection::clear(window, cx));
+        cx.simulate_mouse_down(point(px(390.), px(8.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(point(px(390.), px(8.)), MouseButton::Left, Modifiers::default());
+        assert_eq!(followed.borrow().len(), 1);
     }
 
     #[test]

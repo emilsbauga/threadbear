@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { pointCurrent, readCurrentLink, readState, releaseExists, runnerJsonBroken, writeState } from '../launch.mjs';
 import { connectRpc } from './rpc-client.mjs';
-import { ChecksUnavailable, Fail, SLEPT_EXIT, SleptThrough, UNAVAILABLE_EXIT, checkHostsFrom, checkSlept, nodeBeforeLaunch, remoteChecks, sleepCount, smokeHello, smokeTimedOut, step, unitTests } from './deploy-steps.mjs';
+import { endTask, restartCommandText, schtasks, taskArgs, taskExists, taskName } from './windows-task.mjs';
+import { ChecksUnavailable, Fail, SLEPT_EXIT, SleptThrough, UNAVAILABLE_EXIT, checkHostsFrom, checkSlept, nodeBeforeLaunch, packagesInstalled, remoteChecks, sleepCount, smokeHello, smokeTimedOut, step, unitTests } from './deploy-steps.mjs';
 // THREADBARE_* was the old name for these variables (config.ts, adoptOldNames).
 for (const [k, v] of Object.entries(process.env)) {
   const name = k.startsWith('THREADBARE_') ? 'THREADBEAR_' + k.slice(11) : undefined;
@@ -66,10 +67,15 @@ For install-runner.sh:
 `;
 
 const DEFAULT_LABEL = 'com.mikerosoft.threadbear.runner';
-const DEFAULT_HOME = path.join(os.homedir(), 'Library', 'Application Support', 'Threadbear');
+// Windows' as src/platform.ts's dataDirFor has it.
+const DEFAULT_HOME = process.platform === 'win32' ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Threadbear') : path.join(os.homedir(), 'Library', 'Application Support', 'Threadbear');
 // On Linux the data dir keeps its macOS name, so every path in the docs and
 // scripts is the same; systemd takes launchd's place (install-runner.sh).
 const LINUX = process.platform === 'linux';
+// A runner on Windows is a Scheduled Task (windows-task.mjs), whose
+// definition install-windows.mjs keeps as <home>/runner/task.xml: that
+// stands in for the plist here.
+const WINDOWS = process.platform === 'win32';
 // What a release holds from runner/, besides node_modules and release.json.
 const RELEASE_PATHS = ['src', 'bin', 'package.json', 'package-lock.json', '.npmrc'];
 const KEEP_RELEASES = 5;
@@ -164,8 +170,10 @@ function tail(file, lines = 40) {
 // tests or a smoke-test runner must never pick that up.
 function cleanEnv(extra = {}) {
   const env = {};
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('THREADBEAR_')) env[k] = v;
-  env.PATH = `${path.dirname(process.execPath)}:${process.env.PATH ?? ''}`;
+  // Windows spells it Path, and a child given both Path and PATH may get
+  // either, so whatever it's called comes off and goes back as PATH.
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('THREADBEAR_') && k.toUpperCase() !== 'PATH') env[k] = v;
+  env.PATH = [path.dirname(process.execPath), process.env.PATH ?? ''].join(path.delimiter);
   return { ...env, ...extra };
 }
 
@@ -203,20 +211,26 @@ function setup(v) {
     // the real runner, so a sandbox has to name its own.
     labelKnown: v.label !== undefined || isDefaultHome,
     follow: v.follow ? path.resolve(expandHome(v.follow)) : undefined,
-    target: `gui/${process.getuid()}/${label}`,
+    target: WINDOWS ? '' : `gui/${process.getuid()}/${label}`,
+    windows: WINDOWS,
+    task: taskName(label, os.userInfo().username),
     // A runner on Linux is a systemd user service of the same name
     // (install-runner.sh), and its unit file stands in for the plist.
     linux: LINUX,
     unit: `${label}.service`,
-    plist: LINUX
+    plist: WINDOWS
+      ? path.join(home, 'runner', 'task.xml')
+      : LINUX
       ? path.join(env.THREADBEAR_SYSTEMD_UNITS_DIR || path.join(os.homedir(), '.config', 'systemd', 'user'), `${label}.service`)
       : path.join(env.THREADBEAR_LAUNCH_AGENTS_DIR || path.join(os.homedir(), 'Library', 'LaunchAgents'), `${label}.plist`),
-    log: isDefaultHome ? path.join(os.homedir(), 'Library', 'Logs', 'threadbear-runner.log') : path.join(home, 'runner.log'),
+    log: isDefaultHome ? (WINDOWS ? path.join(home, 'Logs', 'threadbear-runner.log') : path.join(os.homedir(), 'Library', 'Logs', 'threadbear-runner.log')) : path.join(home, 'runner.log'),
     threadId,
     inThread: Boolean(threadId) || underRunner,
     launchctl: env.THREADBEAR_LAUNCHCTL || 'launchctl',
     systemctl: env.THREADBEAR_SYSTEMCTL || 'systemctl',
-    npm: path.join(path.dirname(process.execPath), 'npm'),
+    // npm beside this Node; on Windows its script, which step() runs on
+    // Node, as npm.cmd can't be started without a shell.
+    npm: process.platform === 'win32' ? path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js') : path.join(path.dirname(process.execPath), 'npm'),
     runnerDir: path.resolve(import.meta.dirname, '..'),
   };
 }
@@ -262,6 +276,7 @@ function installedAs(c) {
 function programArgs(c) {
   if (!c.labelKnown || !fs.existsSync(c.plist)) return [];
   if (c.linux) return unitExecStart(fs.readFileSync(c.plist, 'utf8'));
+  if (c.windows) return taskArgs(c.plist);
   const r = spawnSync('plutil', ['-convert', 'json', '-o', '-', c.plist], { encoding: 'utf8' });
   try {
     return JSON.parse(r.stdout).ProgramArguments ?? [];
@@ -338,7 +353,7 @@ function sameFile(a, b) {
 function requireReleases(c) {
   const how = installedAs(c);
   if (how === 'releases') return;
-  const what = how === 'missing' ? `isn't installed as a LaunchAgent (${c.label})` : `runs from a checkout (${c.plist} doesn't start ${path.join(c.dir, 'launch.mjs')})`;
+  const what = how === 'missing' ? `isn't installed as ${c.windows ? 'a Scheduled Task' : 'a LaunchAgent'} (${c.label})` : `runs from a checkout (${c.plist} doesn't start ${path.join(c.dir, 'launch.mjs')})`;
   if (c.isDefaultHome || c.inThread) {
     throw new Fail(
       `The runner at ${c.home} ${what}, so a release would never start. the user has to switch it to releases once, from a terminal:\n  ${path.join(c.runnerDir, 'scripts', 'install-runner.sh')}\nDon't run that from a thread: it stops the runner the thread runs on. Until then, runner changes wait for him.`,
@@ -458,6 +473,7 @@ function unitExecStart(text) {
 }
 
 function jobLoaded(c) {
+  if (c.windows) return taskExists(c.task);
   if (c.linux) return spawnSync(c.systemctl, ['--user', 'is-active', '--quiet', c.unit], { stdio: 'ignore' }).status === 0;
   return spawnSync(c.launchctl, ['print', c.target], { stdio: 'ignore' }).status === 0;
 }
@@ -471,6 +487,17 @@ async function kickstart(c) {
   }
   // systemd's restart, like kickstart -k, returns once the old one is gone
   // and the new one started.
+  if (c.windows) {
+    // End, wait for the old runner to let go of the data dir, then run:
+    // Task Scheduler has no restart of its own (windows-task.mjs, endTask).
+    try {
+      if (!(await endTask(c.task, c.home))) throw new Error("the old runner hadn't stopped 45 s after its task was ended");
+      schtasks(['/Run', '/TN', c.task]);
+    } catch (e) {
+      throw new Fail(`${restartCommand(c)} failed: ${String(e.stderr || e.message).trim()}`);
+    }
+    return;
+  }
   const [cmd, args] = c.linux ? [c.systemctl, ['--user', 'restart', c.unit]] : [c.launchctl, ['kickstart', '-k', c.target]];
   const r = await new Promise((resolve) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -637,12 +664,23 @@ function pruneList(c, extraKeep = []) {
 }
 
 function prune(c, extraKeep) {
-  const gone = pruneList(c, extraKeep);
-  for (const id of gone) fs.rmSync(path.join(c.releases, id), { recursive: true, force: true });
+  // Tidying only: the new release is already current, so a folder that
+  // won't go (on Windows, one a process still runs from or has open) is
+  // left for the next deploy rather than failing this one (18 Nov).
+  const remove = (dir) => {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return true;
+    } catch (e) {
+      say(`Left ${path.basename(dir)} for next time: ${e.code ?? e.message}`);
+      return false;
+    }
+  };
+  const gone = pruneList(c, extraKeep).filter((id) => remove(path.join(c.releases, id)));
   // Builds a killed deploy left behind; this one holds the lock, so no
   // other deploy is building.
   for (const name of fs.existsSync(c.releases) ? fs.readdirSync(c.releases) : []) {
-    if (name.startsWith('.building-')) fs.rmSync(path.join(c.releases, name), { recursive: true, force: true });
+    if (name.startsWith('.building-')) remove(path.join(c.releases, name));
   }
   if (gone.length) say(`Removed ${plural(gone.length, 'old release')}: ${gone.join(', ')}`);
 }
@@ -751,7 +789,14 @@ function deployBackend(c, g, v) {
 function checks(c, g) {
   const opts = { cwd: c.runnerDir, env: cleanEnv() };
   if (remoteChecks(checkHostsFrom(readJson(path.join(c.home, 'runner.json'))), g.root, opts)) return;
-  if (!fs.existsSync(path.join(c.runnerDir, 'node_modules'))) step('Installing the checkout\'s packages', c.npm, ['ci', '--no-audit', '--no-fund'], opts);
+  if (!packagesInstalled(c.runnerDir)) step('Installing the checkout\'s packages', c.npm, ['ci', '--no-audit', '--no-fund'], opts);
+  // The repo root's too, when the runner sits in a repo that has them: the
+  // backend tests load convex/server and the state machines library from
+  // there (test/helpers/convex-memory.ts). Without them every self-update
+  // that ran its checks here (bruce, Hetzner Cloud, the Pixel) failed from
+  // 17 Nov, while the M5's passed on check hosts, where check.sh installs both.
+  if (g.prefix && fs.existsSync(path.join(g.root, 'package-lock.json')) && !packagesInstalled(g.root))
+    step('Installing the repo\'s packages', c.npm, ['ci', '--no-audit', '--no-fund'], { ...opts, cwd: g.root });
   step('Typecheck', c.npm, ['run', 'typecheck'], opts);
   unitTests(c, opts);
 }
@@ -763,7 +808,10 @@ function snapshotHead(c, g, dest) {
   const tar = path.join(dest, '.snapshot.tar');
   git(g.root, ['archive', '--format=tar', `--output=${tar}`, 'HEAD', '--', ...present]);
   const strip = g.prefix.split('/').filter(Boolean).length;
-  const r = spawnSync('tar', ['-xf', tar, '-C', dest, '--strip-components', String(strip)], { encoding: 'utf8' });
+  // Windows' own bsdtar by its full path: a GNU tar on the PATH (Git's)
+  // reads C:\ as a remote host.
+  const tarBin = WINDOWS ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+  const r = spawnSync(tarBin, ['-xf', tar, '-C', dest, '--strip-components', String(strip)], { encoding: 'utf8' });
   fs.rmSync(tar, { force: true });
   if (r.status !== 0) throw new Fail(`Couldn't unpack the snapshot: ${r.stderr.trim()}`);
 }
@@ -800,7 +848,7 @@ function installPackages(c, dest) {
     const dir = path.join(c.releases, id);
     try {
       if (readJson(path.join(dir, 'release.json'))?.node !== process.versions.node) continue;
-      if (!fs.existsSync(path.join(dir, 'node_modules')) || !lock.equals(fs.readFileSync(path.join(dir, 'package-lock.json')))) continue;
+      if (!packagesInstalled(dir) || !lock.equals(fs.readFileSync(path.join(dir, 'package-lock.json')))) continue;
     } catch {
       continue;
     }
@@ -856,7 +904,7 @@ async function smoke(c, id) {
   const fd = fs.openSync(out, 'a');
   const child = spawn(process.execPath, [path.join(root, 'src', 'main.ts')], {
     cwd: root,
-    detached: true, // its own process group, so it can be stopped whole
+    detached: !WINDOWS, // its own process group, so it can be stopped whole (a tree kill on Windows)
     stdio: ['ignore', fd, fd],
     env: cleanEnv({
       THREADBEAR_HOME: home,
@@ -878,7 +926,8 @@ async function smoke(c, id) {
   const gone = new Promise((r) => child.once('exit', (code, signal) => r((exited = { code, signal }))));
   const kill = (sig) => {
     try {
-      process.kill(-child.pid, sig);
+      if (WINDOWS) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      else process.kill(-child.pid, sig);
     } catch {
       // already gone
     }
@@ -929,6 +978,7 @@ async function smoke(c, id) {
 // ---------------------------------------------------------------- restart and health
 
 function restartCommand(c) {
+  if (c.windows) return restartCommandText(c.task);
   return c.linux ? `systemctl --user restart ${c.unit}` : `launchctl kickstart -k ${c.target}`;
 }
 
@@ -1190,7 +1240,7 @@ async function wentWrong(c, id, before, r, waitMs) {
         console.error(e.message);
       }
     } else {
-      console.error(LINUX ? 'Restart it with its label: systemctl --user restart <label>.service' : `Restart it with its label: launchctl kickstart -k gui/${process.getuid()}/<label>`);
+      console.error(WINDOWS ? 'Restart its Scheduled Task, in the Threadbear folder of Task Scheduler.' : LINUX ? 'Restart it with its label: systemctl --user restart <label>.service' : `Restart it with its label: launchctl kickstart -k gui/${process.getuid()}/<label>`);
     }
   } else {
     console.error('There is no earlier release to go back to.');

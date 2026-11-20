@@ -81,6 +81,7 @@ test("this repo's Desktop app workflow holds landings to desktop/ and features/"
   const desktop = held.find((w) => w.file === 'desktop.yml');
   assert.ok(desktop, 'desktop.yml has the mark');
   assert.equal(desktop.name, 'Desktop app');
+  assert.equal(desktop.onlyIn, 'mikecann/threadbear', "its jobs don't run in forks");
   assert.deepEqual(filesThatRunIt(desktop.paths, ['desktop/gpui/src/terminal.rs', 'features/terminal.feature', 'runner/src/cli.ts', 'docs/guide.md']), ['desktop/gpui/src/terminal.rs', 'features/terminal.feature']);
 });
 
@@ -137,6 +138,24 @@ test('a landing touching what a red workflow checks is held, with what failed an
   assert.equal(await landHold(root, ['desktop/a'], () => {}, fakeGh([run(8, 'success', 'a')])), undefined);
   assert.equal(await landHold(root, ['desktop/a'], (l) => notes.push(l), fakeGh('offline')), undefined);
   assert.match(notes.join('\n'), /Couldn't ask GitHub whether Desktop app \(desktop\.yml\) is green on main \(error connecting to api\.github\.com\), so this lands without that check/);
+});
+
+test("a workflow that only runs in Mike's repo holds only there, not in a fork", async () => {
+  const guarded = WORKFLOW.replace('on:\n', "jobs:\n  build:\n    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'\n\non:\n");
+  const root = workflows({ 'desktop.yml': guarded });
+  assert.equal(holdingWorkflows(root)[0].onlyIn, 'mikecann/threadbear');
+  const red = () => fakeGh([run(7, 'failure', 'a')], { 7: [{ name: 'Windows', conclusion: 'failure' }] });
+  sh(root, 'git init -q');
+  // A fork: its own main, which these jobs never run on (gh would read upstream's runs).
+  sh(root, 'git remote add origin git@github.com:someone/threadbear.git && git remote add upstream https://github.com/mikecann/threadbear.git');
+  const fork = red();
+  assert.equal(await landHold(root, ['desktop/a'], () => {}, fork), undefined);
+  assert.deepEqual(fork.calls, []);
+  // Mike's own copy, however origin's URL is written.
+  sh(root, 'git remote remove upstream && git remote set-url origin https://github.com/MikeCann/threadbear.git');
+  assert.ok(await landHold(root, ['desktop/a'], () => {}, red()));
+  // One that names no repo holds anywhere, as before.
+  assert.equal(holdingWorkflows(workflows({ 'desktop.yml': WORKFLOW }))[0].onlyIn, undefined);
 });
 
 test("GitHub's answer is shared for a minute, and an old red one still holds when GitHub won't answer", async () => {

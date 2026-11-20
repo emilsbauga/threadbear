@@ -7,12 +7,12 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { AcpAdapter, AcpSession, EDIT_RULE, modelChoices } from '../../src/adapters/acp/adapter.ts';
-import { ACP_AGENTS, acpAccounts, isCursorBinary, opencodeEnv } from '../../src/adapters/acp/agents.ts';
+import { ACP_AGENTS, acpAccounts, folderPlugins, isCursorBinary, opencodeEnv } from '../../src/adapters/acp/agents.ts';
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
 import { commandRule } from '../../src/adapters/codex/approvals.ts';
 import { remoteCardShowsAll } from '../../src/tools.ts';
-import type { AdapterOutput, SessionSink, StartSessionOptions, ToolApprovalAnswer, ToolApprovalRequest } from '../../src/adapters/types.ts';
+import type { AdapterOutput, QuestionAnswer, QuestionRequest, SessionSink, StartSessionOptions, ToolApprovalAnswer, ToolApprovalRequest } from '../../src/adapters/types.ts';
 import type { Account, PermissionMode } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import { ProcessRegistry } from '../../src/proc.ts';
@@ -44,7 +44,7 @@ afterEach(async () => {
   for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer> } = {}) {
+function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer> } = {}) {
   const root = tmp();
   made.push(root);
   const cwd = path.join(root, 'work');
@@ -53,6 +53,7 @@ function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, 
   const account: Account = { id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: root };
   const outputs: AdapterOutput[] = [];
   const cards: ToolApprovalRequest[] = [];
+  const questions: QuestionRequest[] = [];
   let exitedWith: Error | undefined | null = null;
   let exitWaiters: (() => void)[] = [];
   const results: (() => void)[] = [];
@@ -65,8 +66,9 @@ function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, 
       cards.push(req);
       return o.answer ? o.answer(req) : { decision: o.deny ? 'deny' : 'allow' };
     },
-    async requestQuestion() {
-      return { answers: null };
+    async requestQuestion(req) {
+      questions.push(req);
+      return o.question ? o.question(req) : { answers: null };
     },
     exited(e) {
       exitedWith = e;
@@ -93,7 +95,7 @@ function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, 
   const nextResult = () => new Promise<void>((r) => results.push(r));
   const exited = () => (exitedWith !== null ? Promise.resolve() : new Promise<void>((r) => exitWaiters.push(r)));
   const log = (): Record<string, unknown>[] => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
-  return { root, cwd, adapter, start, cards, outputs, nextResult, exited, log, account, exitError: () => exitedWith };
+  return { root, cwd, adapter, start, cards, questions, outputs, nextResult, exited, log, account, exitError: () => exitedWith };
 }
 
 async function until(cond: () => boolean, ms = 3000): Promise<void> {
@@ -159,6 +161,63 @@ test('the row turns the folder config, plugins and the agent\'s updates off', ()
   assert.equal(conf.agent.build.permission['*'], 'ask', "an agent's own rules outrank the top level");
   assert.equal(conf.agent.plan.permission['*'], 'ask');
   assert.ok(ACP_AGENTS.opencode.args().includes('--pure'));
+  assert.deepEqual(conf.plugins, ['-*', 'opencode.*'], "OpenCode 2's: the user's plugins off, its own back on");
+});
+
+test('OpenCode 1 refuses an asking thread under a folder with plugins; 2 and Full go ahead', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-oc-plugins-'));
+  const fake = (name: string, out: string) => {
+    const f = path.join(dir, name);
+    fs.writeFileSync(f, `#!/bin/sh\necho '${out}'\n`, { mode: 0o755 });
+    return f;
+  };
+  try {
+    const one = fake('one', '1.19.5');
+    const two = fake('two', 'opencode v2.3.0');
+    const cwd = path.join(dir, 'repo', 'pkg');
+    fs.mkdirSync(cwd, { recursive: true });
+    const refuses = ACP_AGENTS.opencode.refuses!;
+    assert.equal(refuses({ cwd, mode: 'ask', binary: one }), undefined, 'no plugins, no refusal');
+    fs.mkdirSync(path.join(dir, 'repo', '.opencode', 'plugins'), { recursive: true });
+    assert.equal(refuses({ cwd, mode: 'ask', binary: one }), undefined, 'an empty plugins folder is nothing');
+    fs.writeFileSync(path.join(dir, 'repo', '.opencode', 'plugins', 'x.js'), '');
+    assert.match(refuses({ cwd, mode: 'ask', binary: one }) ?? '', /OpenCode plugins/, 'a parent folder counts');
+    assert.match(refuses({ cwd, mode: 'plan', binary: path.join(dir, 'gone') }) ?? '', /OpenCode plugins/, 'an unknown version is treated as 1');
+    assert.equal(refuses({ cwd, mode: 'full', binary: one }), undefined);
+    assert.equal(refuses({ cwd, mode: 'ask', binary: two }), undefined);
+    // Up to the home folder, not into it: its own is the user's.
+    assert.equal(folderPlugins(cwd, path.join(dir, 'repo')), undefined);
+    assert.equal(folderPlugins(cwd, dir), path.join(dir, 'repo', '.opencode', 'plugins'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode gets the runner's own config folder, named for its pid, with the project and OPENCODE_CONFIG off", () => {
+  const a = opencodeEnv();
+  const b = opencodeEnv({ noTools: true });
+  assert.equal(a.OPENCODE_CONFIG_DIR, b.OPENCODE_CONFIG_DIR, 'one for the runner');
+  assert.ok(path.basename(a.OPENCODE_CONFIG_DIR).startsWith(`threadbear-opencode-config-${process.pid}-`));
+  assert.equal(a.OPENCODE_CONFIG_PROJECT_DISABLE, '1');
+  assert.equal(a.OPENCODE_CONFIG, '');
+  assert.equal(JSON.parse(b.OPENCODE_CONFIG_CONTENT).permission['*'], 'deny');
+});
+
+test('OpenCode 2 gets no --pure, which it would refuse; 1 and an unknown version keep it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-oc-major-'));
+  const fake = (name: string, out: string) => {
+    const f = path.join(dir, name);
+    fs.writeFileSync(f, `#!/bin/sh\necho '${out}'\n`, { mode: 0o755 });
+    return f;
+  };
+  try {
+    assert.deepEqual(ACP_AGENTS.opencode.args({ binary: fake('two', 'opencode v2.3.0') }), ['acp']);
+    assert.deepEqual(ACP_AGENTS.opencode.args({ binary: fake('one', '1.19.5') }), ['acp', '--pure']);
+    assert.deepEqual(ACP_AGENTS.opencode.args({ binary: fake('odd', 'who knows') }), ['acp', '--pure']);
+    assert.deepEqual(ACP_AGENTS.opencode.args({ binary: path.join(dir, 'gone') }), ['acp', '--pure']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a folder's plugin doesn't run", async () => {
@@ -264,11 +323,6 @@ test('a plain command can be always allowed, exactly', async () => {
 });
 
 // ---- Refusals
-
-test('a thread in the sandbox is refused', () => {
-  const r = rig({ opts: { confined: true } });
-  assert.throws(() => r.start(), /runs in a sandbox, and OpenCode can't/);
-});
 
 test("the wrong program under the agent's name is refused", async () => {
   const r = rig({ env: { FAKE_ACP_NAME: 'Grok' }, agent: ACP_AGENTS.cursor });
@@ -733,6 +787,52 @@ test('a mode change during a turn reaches the agent straight away', async () => 
   await ready(r, s);
   await s.setPermissionMode('ask');
   assert.ok(r.log().some((l) => (l.set as { mode?: string } | undefined)?.mode === 'ask'));
+});
+
+test('a refusal an asking mode had when the process started holds after the folder changes', async () => {
+  let plugins = true;
+  const agent: AcpAgent = { ...ACP_AGENTS.opencode, refuses: ({ mode }) => (mode !== 'full' && plugins ? 'has plugins' : undefined) };
+  const r = rig({ mode: 'full', agent });
+  const s = r.start();
+  await ready(r, s);
+  plugins = false; // taken away, or a new version, before the mode comes down
+  await s.setPermissionMode('ask');
+  assert.ok(events(r.outputs, 'system.note').some((e: { text: string }) => e.text === 'has plugins'));
+  await r.exited();
+});
+
+const formAnswer = (r: ReturnType<typeof rig>) => r.log().find((l) => 'formAnswer' in l)?.formAnswer;
+
+test("an agent's form (OpenCode 2's question tool) is a question card, and the choice goes back as the form's answer", async () => {
+  const r = rig({ mode: 'ask', question: (q) => ({ answers: { [q.questions[0].question]: 'Green' } }) });
+  const s = r.start();
+  await turn(r, s, 'form');
+  assert.equal(r.questions.length, 1);
+  assert.equal(r.questions[0].toolUseId, 'q-call', 'on the question tool\'s own row');
+  assert.deepEqual(r.questions[0].questions, [{ question: 'Which colour?', header: 'Colour', multiSelect: false, options: [{ label: 'Blue' }, { label: 'Green' }] }]);
+  assert.deepEqual(formAnswer(r), { action: 'accept', content: { q0: 'Green' } });
+});
+
+test('words typed instead of a choice go back as the form\'s own answer; a dismissed card declines', async () => {
+  const typed = rig({ mode: 'full', question: (q) => ({ answers: { [q.questions[0].question]: 'Orange' } }) });
+  await turn(typed, typed.start(), 'form');
+  assert.deepEqual(formAnswer(typed), { action: 'accept', content: { q0_custom: 'Orange' } });
+  const dismissed = rig({ mode: 'ask' });
+  await turn(dismissed, dismissed.start(), 'form');
+  assert.deepEqual(formAnswer(dismissed), { action: 'decline' });
+});
+
+test('a form open when the turn is stopped is answered as cancelled', async () => {
+  let asked: () => void = () => {};
+  const shown = new Promise<void>((resolve) => (asked = resolve));
+  const r = rig({ mode: 'ask', question: (q) => (asked(), new Promise<QuestionAnswer>((resolve) => q.signal.addEventListener('abort', () => resolve({ answers: null })))) });
+  const s = r.start();
+  await ready(r, s);
+  s.send({ id: 'turn-1', text: 'form', images: [] });
+  await shown;
+  await s.interrupt();
+  await until(() => formAnswer(r) !== undefined);
+  assert.deepEqual(formAnswer(r), { action: 'cancel' });
 });
 
 test('a malformed request is cancelled, never left to hang the turn', async () => {

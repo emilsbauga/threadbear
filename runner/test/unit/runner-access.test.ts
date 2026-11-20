@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { convexPoster, forbiddenText } from '../../src/sync.ts';
-import { ACCESS, actsAs, badRunnerStats, callerFrom, isIsoTime, mayCall, mayClaim, mayFinish, mayTake, mayTouch, mayUseStorage, mayWrite, ownsCard, sameKey, wholeIn, type Caller } from '../../../convex/runnerAccess.ts';
+import { ACCESS, actsAs, badRunnerStats, BOX_CALLS, BOX_READS, callerFrom, isIsoTime, mayCall, mayClaim, mayFinish, mayTake, mayTouch, mayUseStorage, mayWrite, ownsCard, sameKey, wholeIn, type Caller } from '../../../convex/runnerAccess.ts';
 
 const OWNER_KEY = 'owner-key-of-the-deployment';
 const LAPTOP = 'laptop000001';
@@ -131,18 +131,31 @@ test('the owner key can do everything', () => {
   assert.equal(mayFinish(owner, { runnerId: 'any' }), true);
 });
 
-test('every function in convex/sync.ts, relay.ts and moves.ts is sorted, and asks the gate under its own name', () => {
-  const src = ['sync.ts', 'relay.ts', 'moves.ts', 'intakeConsumer.ts', 'intakeFiles.ts'].map((f) => fs.readFileSync(path.join(import.meta.dirname, '../../../convex', f), 'utf8')).join('\n');
-  const exported = [...src.matchAll(/^export const (\w+) = (?:mutation|query)\(/gm)].map((m) => m[1]!);
+// boxes:exchange is a box's first call: it has a boot token, not a key.
+const KEYLESS = ['exchange'];
+
+test('every function in convex/sync.ts, relay.ts, moves.ts, boxes.ts and boxService.ts is sorted, and asks the gate under its own name', () => {
+  const src = ['sync.ts', 'relay.ts', 'moves.ts', 'boxes.ts', 'boxService.ts', 'intakeConsumer.ts', 'intakeFiles.ts'].map((f) => fs.readFileSync(path.join(import.meta.dirname, '../../../convex', f), 'utf8')).join('\n');
+  const exported = [...src.matchAll(/^export const (\w+) = (?:mutation|query|action)\(/gm)].map((m) => m[1]!);
   assert.ok(exported.length > 40, 'found the functions');
-  assert.deepEqual([...exported].sort(), Object.keys(ACCESS).sort());
+  assert.deepEqual([...exported].sort(), [...Object.keys(ACCESS), ...KEYLESS].sort());
   // Each function's body, up to the next export.
-  const parts = src.split(/^(?=export const \w+ = (?:mutation|query|internalMutation)\()/m);
+  const parts = src.split(/^(?=export )/m);
   for (const name of exported) {
+    if (KEYLESS.includes(name)) continue;
     const body = parts.find((p) => p.startsWith(`export const ${name} =`))!;
-    assert.match(body, new RegExp(`runnerAuth\\(ctx, key, '${name}'\\)`), `${name} asks runnerAuth as '${name}'`);
+    // An action has no database, so it asks the gate through a query (boxes.ts actionAuth).
+    // An options argument may follow (a box's housekeeping, lib.ts runnerAuth).
+    assert.match(body, new RegExp(`(runnerAuth|actionAuth)\\(ctx, key, '${name}'(, \\{[^}]*\\})?\\)`), `${name} asks runnerAuth as '${name}'`);
     assert.doesNotMatch(body, /checkRunnerKey/, `${name} doesn't use the old check`);
   }
+});
+
+// A box call that can write can make work (lib.ts keyUsed): BOX_READS is exactly its queries.
+test("BOX_READS is exactly the box calls that are queries", () => {
+  const src = ['sync.ts', 'relay.ts', 'moves.ts', 'boxes.ts'].map((f) => fs.readFileSync(path.join(import.meta.dirname, '../../../convex', f), 'utf8')).join('\n');
+  const queries = new Set([...src.matchAll(/^export const (\w+) = query\(/gm)].map((m) => m[1]!));
+  assert.deepEqual([...BOX_CALLS].filter((f) => queries.has(f)).sort(), [...BOX_READS].sort());
 });
 
 test("docs/protocol.md's table lists every function as ACCESS sorts it", () => {
@@ -183,4 +196,75 @@ test("a runner key's startedAt has to be a time, and its figures in range", () =
   for (const [field, value] of [['cores', 1e20], ['cores', 8.5], ['cores', -1], ['cpuPercent', 101], ['memUsed', 1e300], ['diskFree', -5], ['uptimeSec', Infinity], ['load1', NaN], ['memTotal', undefined]] as const) {
     assert.match(badRunnerStats({ ...stats, [field]: value }) ?? '', new RegExp(`stats\\.${field}`), `${field} ${value}`);
   }
+});
+
+// Box keys (docs/virtual-runners.md, decision 4): one box's, for one
+// runnerId and one thread. convex/boxes.ts makes them; box-access.test.ts
+// plays them against the backend.
+const BOX_RUNNER = 'box0runner01';
+const boxRow = { _id: 'boxes:1', runnerId: BOX_RUNNER, threadId: 'T1', boxKeyHash: 'h', boxState: { kind: 'awake' } };
+const boxKey = 'tbb_' + 'a'.repeat(64);
+const box = callerFrom(boxKey, OWNER_KEY, null, boxRow) as Caller;
+
+test("a box key is its box's runner and thread, and only while the box has that key", () => {
+  assert.deepEqual(box, { owner: false, runnerId: BOX_RUNNER, box: { id: 'boxes:1', threadId: 'T1', keyHash: 'h' } });
+  // Replaced or revoked (the machine clears the hash), or the box is past running.
+  assert.equal(callerFrom(boxKey, OWNER_KEY, null, { ...boxRow, boxKeyHash: undefined }), null);
+  for (const kind of ['destroying', 'gone', 'failed']) assert.equal(callerFrom(boxKey, OWNER_KEY, null, { ...boxRow, boxState: { kind } }), null, kind);
+  // Only a key that looks like a box key is ever one.
+  assert.equal(callerFrom('tbr_mac-mini', OWNER_KEY, null, boxRow), null);
+});
+
+test('a box key calls only what running its one thread needs', () => {
+  for (const fn of BOX_CALLS) {
+    assert.ok(ACCESS[fn] === 'own' || ACCESS[fn] === 'shared', `${fn} is a runner key's too`);
+    assert.equal(mayCall(box, fn), true, fn);
+  }
+  for (const fn of Object.keys(ACCESS).filter((f) => !BOX_CALLS.has(f))) assert.equal(mayCall(box, fn), false, fn);
+  for (const fn of ['saveSchedule', 'savePocketCard', 'setAccounts', 'sharedUsage', 'pools', 'memorySince', 'offerMemory', 'setPresence', 'prune', 'setProjects', 'issueToken', 'queueCommand', 'startMove', 'setCloudToken', 'mintBootToken']) assert.equal(mayCall(box, fn), false, fn);
+  assert.equal(mayCall(box, 'somethingNew'), false);
+});
+
+test("a box key reaches its own thread's rows only", () => {
+  assert.equal(mayWrite(box, BOX_RUNNER, undefined, 'T1'), true);
+  assert.equal(mayWrite(box, BOX_RUNNER, BOX_RUNNER, 'T1'), true);
+  // Another thread under its own runner id, new or there.
+  assert.equal(mayWrite(box, BOX_RUNNER, undefined, 'T2'), false);
+  assert.equal(mayWrite(box, BOX_RUNNER, BOX_RUNNER, 'T2'), false);
+  // A check that doesn't say which thread is refused to a box (a schedule).
+  assert.equal(mayWrite(box, BOX_RUNNER, undefined), false);
+  assert.equal(mayWrite(box, MINI, undefined, 'T1'), false);
+  assert.equal(mayTouch(box, BOX_RUNNER, 'T1'), true);
+  assert.equal(mayTouch(box, BOX_RUNNER, 'T2'), false);
+  assert.equal(mayTouch(box, BOX_RUNNER), false);
+  assert.equal(mayTouch(box, MINI, 'T1'), false);
+  assert.equal(mayClaim(box, { claimedBy: [], leftovers: false, threadId: 'T1' }), true);
+  assert.equal(mayClaim(box, { claimedBy: [], leftovers: false, threadId: 'T2' }), false);
+  assert.equal(mayClaim(box, { claimedBy: [], leftovers: false }), false);
+  // A runner key's rules don't change: no thread named is fine for it.
+  assert.equal(mayWrite(mini, MINI, undefined), true);
+  assert.equal(mayTouch(mini, MINI), true);
+  assert.equal(mayClaim(mini, { claimedBy: [], leftovers: false }), true);
+});
+
+test("a box key takes its own thread's commands and its runner's, never another thread's", () => {
+  assert.equal(mayTake(box, { runnerId: BOX_RUNNER, threadId: 'T1' }), true);
+  assert.equal(mayTake(box, { runnerId: BOX_RUNNER }), true);
+  assert.equal(mayTake(box, { runnerId: BOX_RUNNER, threadId: 'T2' }), false);
+  assert.equal(mayTake(box, { runnerId: MINI, threadId: 'T1' }), false);
+  assert.equal(mayTake(box, { runnerId: 'any' }), false);
+  assert.equal(mayFinish(box, { runnerId: BOX_RUNNER, threadId: 'T2' }), false);
+  assert.equal(actsAs(box, BOX_RUNNER), true);
+  assert.equal(actsAs(box, MINI), false);
+  // Its own uploads only; no Pocket cards at all.
+  assert.equal(mayUseStorage(box, BOX_RUNNER), true);
+  assert.equal(mayUseStorage(box, MINI), false);
+  assert.equal(ownsCard(box, { runnerId: BOX_RUNNER }), false);
+});
+
+test("docs/protocol.md lists what a box key may call", () => {
+  const doc = fs.readFileSync(path.join(import.meta.dirname, '../../../docs/protocol.md'), 'utf8').replace(/\r\n/g, '\n');
+  const listed = /<!-- box-calls -->\n([\s\S]*?)\n<!-- \/box-calls -->/.exec(doc)?.[1];
+  assert.ok(listed, 'docs/protocol.md has the box-calls list');
+  assert.deepEqual([...listed.matchAll(/`(\w+)`/g)].map((m) => m[1]).sort(), [...BOX_CALLS].sort());
 });

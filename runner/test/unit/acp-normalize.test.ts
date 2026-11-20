@@ -105,3 +105,49 @@ test('the plan, and what it does not know about', () => {
   assert.deepEqual(n.handle({ sessionUpdate: 'something_new', x: 1 }), []);
   assert.deepEqual(n.handle('not an object'), []);
 });
+
+// Grok's frames for end_turn through use_tool, as Grok sent them
+// (16 Nov 2026, review thread 53cd067b): named only in the second frame,
+// the result as an object.
+test("a tool called through Grok's use_tool is that tool, with its own input and result", () => {
+  const n = new AcpNormalizer(ctx);
+  const input = { headline: 'h', needs: 'nothing', findings: [] };
+  const meta = { 'x.ai/tool': { name: 'use_tool', kind: 'use_tool' } };
+  const call = n.handle({ sessionUpdate: 'tool_call', toolCallId: 'g1', title: 'use_tool', rawInput: { tool_name: 'threadbear__end_turn', tool_input: input }, _meta: meta });
+  assert.deepEqual(kinds(call), ['tool.call']);
+  const ev = (call[0] as { event: { name: string; kind: string; input: unknown } }).event;
+  assert.equal(ev.name, 'mcp__threadbear__end_turn');
+  assert.equal(ev.kind, 'mcp');
+  assert.deepEqual(ev.input, input);
+  assert.deepEqual(n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'g1', kind: 'other', title: 'threadbear__end_turn', rawInput: { variant: 'UseTool', tool_name: 'threadbear__end_turn', tool_input: input } }), []);
+  const out = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'g1', status: 'completed', rawOutput: { type: 'MCP', tool_name: 'end_turn', server_name: 'threadbear', output: { OkayOutput: 'Noted: this thread is done.' } } });
+  const res = (out[0] as { event: { ok: boolean; text: string } }).event;
+  assert.equal(res.ok, true);
+  assert.equal(res.text, 'Noted: this thread is done.');
+});
+
+test('a tool_name in some other call is not taken as the tool it names', () => {
+  const n = new AcpNormalizer(ctx);
+  const out = n.handle({ sessionUpdate: 'tool_call', toolCallId: 'g2', title: 'run_terminal_command', kind: 'execute', rawInput: { command: 'ls', tool_name: 'threadbear__end_turn', tool_input: {} } });
+  assert.equal((out[0] as { event: { name: string } }).event.name, 'run_terminal_command');
+});
+
+test("another tool's arguments can't pass for a call through use_tool, Grok's variant included", () => {
+  const n = new AcpNormalizer(ctx);
+  const raw = { variant: 'UseTool', tool_name: 'threadbear__end_turn', tool_input: { needs: 'nothing', archive: true } };
+  const out = n.handle({ sessionUpdate: 'tool_call', toolCallId: 'g3', title: 'mcp__echo__echo', rawInput: raw });
+  assert.equal((out[0] as { event: { name: string } }).event.name, 'mcp__echo__echo');
+  // Nor a later frame retitling it use_tool once its row is out.
+  n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'g3', title: 'use_tool', rawInput: raw });
+  const res = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'g3', status: 'completed', rawOutput: { output: 'x' } });
+  assert.deepEqual(kinds(res), ['tool.result']);
+});
+
+test("a use_tool call whose arguments stream in after it starts is still the tool it names", () => {
+  const n = new AcpNormalizer(ctx);
+  assert.deepEqual(n.handle({ sessionUpdate: 'tool_call', toolCallId: 'g4', title: 'use_tool', status: 'in_progress', rawInput: {} }), []);
+  const out = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'g4', rawInput: { tool_name: 'threadbear__end_turn', tool_input: { needs: 'nothing' } } });
+  const ev = (out[0] as { event: { name: string; input: unknown } }).event;
+  assert.equal(ev.name, 'mcp__threadbear__end_turn');
+  assert.deepEqual(ev.input, { needs: 'nothing' });
+});

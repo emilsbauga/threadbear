@@ -33,8 +33,15 @@ pub fn timeout_for(method: &str, params: &Value) -> Duration {
     match method {
         "actions.run" if params["actionId"] == "worktree.land" => Duration::from_secs(61 * 60),
         "actions.run" => Duration::from_secs(11 * 60),
+        // claude setup-token waits on Mike in the browser, 10 minutes at most.
+        "cloudTokens.make" => Duration::from_secs(11 * 60),
         // A slow parse of "when" on the pool's CLI, a Convex CLI's first key.
         "threads.hibernateWhen" | "panels.convexDeployments" | "panels.convexKey" => Duration::from_secs(150),
+        // A message stays dimmed in the transcript while it's on its way,
+        // and a runner on a Mac that's out of memory can stall for minutes
+        // and still take it (19 Nov: four minutes, then it went). Better a
+        // long wait than a box that says it wasn't sent when it was.
+        "threads.send" => Duration::from_secs(5 * 60),
         _ => Duration::from_secs(120),
     }
 }
@@ -250,6 +257,9 @@ pub struct Client {
     /// one a restart turned away waits for the new runner. Only tests
     /// change them.
     waits: Mutex<(Duration, Duration)>,
+    /// The longest any request waits for its answer, under `timeout_for`.
+    /// Only tests set it.
+    timeout_cap: Mutex<Option<Duration>>,
     /// The last reason it couldn't connect, so the log says each once.
     last_down: Mutex<Option<String>>,
 }
@@ -272,6 +282,7 @@ impl Client {
             order: Arc::new(Order::default()),
             holding_stopped: Mutex::new(false),
             waits: Mutex::new((PATIENCE, Duration::from_secs(30))),
+            timeout_cap: Mutex::new(None),
             last_down: Mutex::new(None),
         })
     }
@@ -319,6 +330,11 @@ impl Client {
         *self.waits.lock().unwrap() = (hold, resend);
     }
 
+    /// Every request waits at most `cap` for its answer. Only tests.
+    pub fn set_timeout_cap(&self, cap: Duration) {
+        *self.timeout_cap.lock().unwrap() = Some(cap);
+    }
+
     /// "Try again" in the connection banner: stop waiting and reconnect now.
     pub fn retry_now(&self) {
         self.retry.notify_one();
@@ -346,6 +362,7 @@ impl Client {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         let wait = timeout_for(method, &params);
+        let wait = self.timeout_cap.lock().unwrap().map_or(wait, |cap| wait.min(cap));
         let text = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string();
         {
             let out = self.out.lock().unwrap();
@@ -487,8 +504,43 @@ impl Client {
                 progress(Progress::Held);
                 self.resend_cut_off(e, params.clone(), resend.expect("may_resend has one"), progress).await
             }
+            // No answer in time from a runner that's still there: a stalled
+            // one may have taken it all the same, so look before saying it
+            // didn't go (19 Nov: "wasn't sent", and it had been). Only for
+            // an idle thread with nothing else on its way: another message
+            // with the same words could otherwise pass for this one, and a
+            // busy thread's runner may have queued it unseen.
+            Err(e) if e.code == TIMED_OUT && method == "threads.send" && resend.is_some_and(|r| r.was_idle) => {
+                let resend = resend.expect("checked");
+                match self.has_landed(resend, None).await {
+                    Ok(true) => {
+                        log::write("send", &format!("a send with no answer in time had arrived: {}", resend.thread_id));
+                        Ok(None)
+                    }
+                    _ => Err(e),
+                }
+            }
             other => other.map(Some),
         }
+    }
+
+    /// Whether the message `resend` is about is in its thread yet: every
+    /// page of events since it was sent, up to `last_seq` when that's
+    /// known, or until a page brings nothing new.
+    async fn has_landed(&self, resend: &Resend, last_seq: Option<i64>) -> Result<bool, RpcError> {
+        let mut after = resend.after_seq;
+        for _ in 0..20 {
+            let page = self.call("threads.events", json!({ "threadId": resend.thread_id, "afterSeq": after })).await?;
+            let events = page["events"].as_array().cloned().unwrap_or_default();
+            if events.iter().any(|e| (resend.landed)(e)) {
+                return Ok(true);
+            }
+            match events.last().and_then(|e| e["seq"].as_i64()) {
+                Some(last) if last > after && last_seq.is_none_or(|end| last < end) => after = last,
+                _ => break,
+            }
+        }
+        Ok(false)
     }
 
     async fn resend_cut_off(&self, error: RpcError, params: Value, resend: &Resend, progress: &ProgressFn) -> Result<Option<Value>, RpcError> {
@@ -511,18 +563,9 @@ impl Client {
         }
         let last_seq = summary["lastSeq"].as_i64().unwrap_or(0);
         // Every page since it was sent, not just the first.
-        let mut after = resend.after_seq;
-        for _ in 0..20 {
-            let page = self.call("threads.events", json!({ "threadId": id, "afterSeq": after })).await?;
-            let events = page["events"].as_array().cloned().unwrap_or_default();
-            if events.iter().any(|e| (resend.landed)(e)) {
-                log::write("send", &format!("a send the restart cut off had arrived: {id}"));
-                return Ok(None);
-            }
-            match events.last().and_then(|e| e["seq"].as_i64()) {
-                Some(last) if last > after && last < last_seq => after = last,
-                _ => break,
-            }
+        if self.has_landed(resend, Some(last_seq)).await? {
+            log::write("send", &format!("a send the restart cut off had arrived: {id}"));
+            return Ok(None);
         }
         log::write("send", &format!("sending again after the restart cut it off: {id}"));
         self.go(progress)?;
@@ -686,7 +729,8 @@ impl Client {
 
         let me = self.clone();
         let url_owned = url.to_string();
-        let hello = tokio::spawn(async move {
+        // Its error, if it failed: the session ends on that, below.
+        let mut hello = tokio::spawn(async move {
             let mut params = json!({ "client": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION") });
             // The Browser pane and BrowserBear's handoff (docs/protocol.md,
             // "Showing panels"): BrowserBear is a Mac thing.
@@ -706,15 +750,35 @@ impl Client {
                     let session = me.sessions.fetch_add(1, Ordering::SeqCst) + 1;
                     me.set_status(Status::Connected { url: url_owned, hello });
                     me.session.send_replace(session);
+                    None
                 }
-                Err(e) => log::write("connection", &format!("hello failed: {}", e.message)),
+                Err(e) => {
+                    log::write("connection", &format!("hello failed: {}", e.message));
+                    Some(e.message)
+                }
             }
         });
 
-        while let Some(msg) = read.next().await {
+        // A hello that fails (an error, or its timeout) ends the session, as
+        // the Swift app's connect loop does: else the window sat on
+        // "Connecting" with no threads for as long as the socket stayed open,
+        // and "Try again" only cuts short a wait between sessions.
+        let mut hello_done = false;
+        let hello_failed = loop {
+            let msg = tokio::select! {
+                msg = read.next() => msg,
+                done = &mut hello, if !hello_done => {
+                    hello_done = true;
+                    match done {
+                        Ok(Some(e)) => break Some(e),
+                        _ => continue,
+                    }
+                }
+            };
+            let Some(msg) = msg else { break None };
             let text = match msg {
                 Ok(Message::Text(t)) => t,
-                Ok(Message::Close(_)) | Err(_) => break,
+                Ok(Message::Close(_)) | Err(_) => break None,
                 Ok(_) => continue,
             };
             let v = match serde_json::from_str::<Value>(text.as_str()) {
@@ -730,11 +794,14 @@ impl Client {
                 }
             };
             self.dispatch(v);
-        }
+        };
         hello.abort();
         self.out.lock().unwrap().take();
         let _ = writer.await;
-        Ok(())
+        match hello_failed {
+            Some(e) => Err(format!("The runner didn't answer hello: {e}")),
+            None => Ok(()),
+        }
     }
 
     fn dispatch(&self, v: Value) {
@@ -796,6 +863,8 @@ mod tests {
         assert_eq!(timeout_for("threads.hibernateWhen", &json!({})), Duration::from_secs(150));
         assert_eq!(timeout_for("panels.convexKey", &json!({})), Duration::from_secs(150));
         assert_eq!(timeout_for("threads.list", &json!({})), Duration::from_secs(120));
+        assert_eq!(timeout_for("threads.send", &json!({})), Duration::from_secs(300));
+        assert_eq!(timeout_for("cloudTokens.make", &json!({ "login": "a@b" })), Duration::from_secs(11 * 60), "it waits on claude.ai in the browser");
     }
 
     #[test]

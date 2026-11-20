@@ -30,10 +30,14 @@
 // hand on: the runner it's running is main's, has been marked good and up
 // for an hour, and main's tip is an hour old, so a commit that crashes
 // the runner or is about to be followed by its fix isn't what goes out.
-// And GitHub's checks have passed on that exact commit (ciVerdict): the
-// runner staying up says nothing about the apps building. release/2026-11-04
+// And GitHub's checks have passed on that exact commit (ciVerdict), and
+// each workflow that didn't run on it (its paths didn't change) passed on
+// the last commit it did run on (earlierVerdict): the runner staying up
+// says nothing about the apps building. release/2026-11-04
 // to -06 went out not building on Xcode 26.6, and people installing it
 // found out before Mike did (PR #1, Maroš's fork).
+// When the tip is red, the newest older commit that passes the same checks
+// goes out instead (newestGreen).
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -41,9 +45,17 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
-import { applyKeyChanges, KeysBusy, keysIn, revokedPath, REVOKED_FILE, signerKey, SIGNERS_FILE } from './release-keys.ts';
+import { IS_WINDOWS } from './platform.ts';
+import { killGroup } from './proc.ts';
+import { ADD_DELAY_MS, applyKeyChanges, KeysBusy, keysIn, revokedPath, REVOKED_FILE, signerKey, SIGNERS_FILE } from './release-keys.ts';
+import { changelogFor, type ReleaseChangelog } from './changelog.ts';
 
 export const FETCH_INTERVAL_MS = 6 * 60 * 60_000;
+// After a look that failed (no network yet after waking, GitHub down) the
+// next one is this soon. Waiting the full six hours, a Mac that sleeps a lot
+// missed releases for days (a fork's runner, 8 to 15 Nov), and the Updates
+// panel took their commits for the copy's own.
+export const RETRY_AFTER_FAILURE_MS = 15 * 60_000;
 export const PUBLISH_INTERVAL_MS = 60 * 60_000;
 // The first look, a while after the runner starts: never in the way of a
 // start that's about to be rolled back.
@@ -102,7 +114,11 @@ export type UpstreamRelease = {
   // Plain-words notes for people, from each release main doesn't have yet,
   // newest first. Each verified tag's commit subjects fill in when its
   // message has no plain-words notes.
-  notes?: { tag: string; lines: string[] }[];
+  notes?: { tag: string; date?: string; lines: string[] }[];
+  // The What's new page's cards for those releases, when upstream is a
+  // repo with one and it could be read (changelog.ts). Not signed: only
+  // something to look at, with the notes as the fallback.
+  changelog?: ReleaseChangelog;
 };
 
 // runner.status's `upstream`, and RunnerUpdates' (docs/protocol.md).
@@ -123,7 +139,8 @@ export type UpstreamStatus = {
 };
 
 // One GitHub Actions run of a workflow on a commit, as ciVerdict needs it.
-export type CiRun = { workflow: string; name: string; status: string; conclusion: string | null; attempt: number };
+// file: its workflow file (.github/workflows/x.yml); sha: the commit it ran on.
+export type CiRun = { workflow: string; name: string; status: string; conclusion: string | null; attempt: number; file?: string; sha?: string };
 
 // signingKey: a key file, as `git tag -s` takes it (user.signingkey): a
 // plain private key (a fork of a fork, or Mike's before Touch ID), or a
@@ -181,6 +198,12 @@ export type UpstreamDeps = {
   stageMaxBytes?: number;
   // The Actions runs on a commit, from GitHub (githubRuns). Replaced in tests.
   ciRuns?: (repo: string, commit: string) => Promise<CiRun[]>;
+  // One workflow's latest push runs on main, newest first, from GitHub
+  // (githubWorkflowRuns). Replaced in tests.
+  ciHistory?: (repo: string, file: string) => Promise<CiRun[]>;
+  // The What's new page's cards for some release tags (changelogFor).
+  // Replaced in tests.
+  changelog?: (upstreamKey: string, tags: string[]) => Promise<ReleaseChangelog | undefined>;
 };
 
 // The push runs on one commit of a public GitHub repo ("owner/name"). No
@@ -192,8 +215,35 @@ export async function githubRuns(repo: string, commit: string): Promise<CiRun[]>
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
-  const body = (await res.json()) as { workflow_runs?: { workflow_id: number; name: string; status: string; conclusion: string | null; run_attempt?: number }[] };
-  return (body.workflow_runs ?? []).map((r) => ({ workflow: String(r.workflow_id), name: r.name, status: r.status, conclusion: r.conclusion, attempt: r.run_attempt ?? 1 }));
+  return ciRunsFrom(await res.json());
+}
+
+// A workflow's latest push runs on main (`file`, .github/workflows/x.yml),
+// newest first: earlierVerdict looks back through them. One page is a day
+// or two of a busy main, and a workflow quiet for longer than that has
+// nothing on main since to have broken.
+export async function githubWorkflowRuns(repo: string, file: string): Promise<CiRun[]> {
+  const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(path.basename(file))}/runs?branch=main&event=push&per_page=${HISTORY_PAGE}`, {
+    headers: { accept: 'application/vnd.github+json', 'user-agent': 'threadbear-runner' },
+    signal: AbortSignal.timeout(30_000),
+  });
+  // A workflow GitHub doesn't know (only just added, never run) has no verdict.
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+  return ciRunsFrom(await res.json());
+}
+
+function ciRunsFrom(json: unknown): CiRun[] {
+  const body = json as { workflow_runs?: { workflow_id: number; name: string; status: string; conclusion: string | null; run_attempt?: number; path?: string; head_sha?: string }[] };
+  return (body.workflow_runs ?? []).map((r) => ({
+    workflow: String(r.workflow_id),
+    name: r.name,
+    status: r.status,
+    conclusion: r.conclusion,
+    attempt: r.run_attempt ?? 1,
+    ...(r.path ? { file: r.path } : {}),
+    ...(r.head_sha ? { sha: r.head_sha } : {}),
+  }));
 }
 
 // Whether a commit's checks let it be a release: undefined when they do,
@@ -212,6 +262,39 @@ export function ciVerdict(runs: CiRun[]): string | undefined {
   if (failed.length) return `${failed.map((r) => `"${r.name}"`).join(', ')} didn't pass on it`;
   if (runsOf.some((r) => r.status !== 'completed')) return "GitHub's checks are still running on it";
   return undefined;
+}
+
+// A run that says nothing about the commit it ran on (skipped). Not a
+// cancelled one: a push that cancels the run before it has a run of its
+// own, newer and on a commit the tip has, so one reached here was cancelled
+// by hand, or by a push this Mac's main hasn't got, and its changes were
+// never checked (Codex's reviews, 16 Nov).
+const NO_VERDICT = new Set(['skipped', 'neutral', 'stale']);
+
+// How many of a workflow's runs on main earlierVerdict is given.
+export const HISTORY_PAGE = 100;
+// How far back along main newestGreen looks for a green commit.
+export const GREEN_LOOKBACK = 80;
+
+// A workflow that didn't run on the tip, as its paths didn't change: what
+// its last finished run on a commit the tip has says, from `history`
+// (newest first, as githubWorkflowRuns gives them). Without this, a red run
+// is passed over by the next push that doesn't touch its paths, and that
+// tip goes out with the break: release/2026-11-15 was tagged on a commit
+// only Android and the desktop app had run on. Undefined when it passed,
+// or it has never run on main. A full page with none of its runs on a
+// commit the tip has can't say, so that holds too (Codex's review, 16 Nov).
+export function earlierVerdict(history: CiRun[], has: ReadonlySet<string>): string | undefined {
+  for (const r of history) {
+    if (!r.sha || !has.has(r.sha)) continue;
+    const on = r.sha.slice(0, 8);
+    if (r.status !== 'completed') return `"${r.name}" is still running on ${on}`;
+    if (r.conclusion === 'cancelled') return `"${r.name}" was cancelled on ${on}, the last commit it ran on`;
+    if (NO_VERDICT.has(r.conclusion ?? '')) continue;
+    return r.conclusion === 'success' ? undefined : `"${r.name}" didn't pass on ${on}, the last commit it ran on`;
+  }
+  const name = history[0]?.name;
+  return history.length >= HISTORY_PAGE ? `none of "${name}"'s last ${HISTORY_PAGE} runs on GitHub were on a commit main has here` : undefined;
 }
 
 export function signersPath(home: string): string {
@@ -279,7 +362,8 @@ function runGit(cwd: string, args: string[], opts: GitOptions): Promise<Buffer> 
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['-C', cwd, ...bareRepoArgs(cwd), ...args], {
       stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-      detached: true,
+      detached: !IS_WINDOWS,
+      windowsHide: true,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...opts.env },
     });
     const out: Buffer[] = [];
@@ -289,11 +373,9 @@ function runGit(cwd: string, args: string[], opts: GitOptions): Promise<Buffer> 
     const stop = (reason: string) => {
       if (why) return;
       why = reason;
-      try {
-        process.kill(-child.pid!, 'SIGKILL');
-      } catch {
-        child.kill('SIGKILL');
-      }
+      // The group, or on Windows the process tree (proc.ts killGroup), so a
+      // git helper that hangs goes with git; git alone if that can't be done.
+      if (!killGroup(child.pid!, 'SIGKILL')) child.kill('SIGKILL');
     };
     const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS;
     const timer = setTimeout(() => stop(`timed out after ${Math.round(timeoutMs / 1000)} s`), timeoutMs);
@@ -418,6 +500,8 @@ export class Upstream {
   // list (keyChanges).
   private newestVerified?: SignedTag & { tag: string };
   private readonly git: (cwd: string, args: string[], opts?: GitOptions) => Promise<string>;
+  // The release tags GitHub had at publishOnce's last look.
+  private pushedTags = new Set<string>();
   private readonly deps: UpstreamDeps;
 
   private get fetchTimeoutMs(): number {
@@ -457,9 +541,12 @@ export class Upstream {
 
   private tick(): void {
     this.timer = undefined;
-    void this.check().finally(() => {
-      if (!this.stopped) this.timer = this.deps.clock.setTimeout(() => this.tick(), FETCH_INTERVAL_MS);
-    });
+    void this.check()
+      .catch(() => undefined)
+      .then((s) => {
+        const wait = !s || s.state === 'failed' ? RETRY_AFTER_FAILURE_MS : FETCH_INTERVAL_MS;
+        if (!this.stopped) this.timer = this.deps.clock.setTimeout(() => this.tick(), wait);
+      });
   }
 
   private publishTick(): void {
@@ -538,6 +625,10 @@ export class Upstream {
       }
       if (!release) return this.set({ state: 'idle', checkedAt, reason: 'no signed releases yet' });
       const state = release.changes > 0 ? 'available' : 'idle';
+      if (state === 'available') {
+        const changelog = await this.changelogFor(urls.upstream, release);
+        if (changelog) release = { ...release, changelog };
+      }
       if (state === 'available' && this.st.release?.tag !== release.tag) this.deps.log.info('a newer release from upstream', { tag: release.tag, changes: release.changes });
       const status = this.set({ state, checkedAt, release });
       try {
@@ -549,6 +640,18 @@ export class Upstream {
     } catch (e) {
       this.deps.log.warn('could not check upstream for releases', { error: String(e) });
       return this.set({ state: 'failed', checkedAt, reason: String((e as Error).message ?? e).slice(0, 300) });
+    }
+  }
+
+  // The page's cards for the releases main doesn't have. A failure only
+  // leaves them out: the panel shows the notes instead.
+  private async changelogFor(upstream: string, release: UpstreamRelease): Promise<ReleaseChangelog | undefined> {
+    const tags = release.notes?.length ? release.notes.map((n) => n.tag) : [release.tag];
+    try {
+      return await (this.deps.changelog ?? changelogFor)(repoKey(upstream), tags);
+    } catch (e) {
+      this.deps.log.info('could not read the changelog page; the notes stand in', { error: String(e) });
+      return undefined;
     }
   }
 
@@ -812,20 +915,22 @@ export class Upstream {
   // same way, and the text comes from the verified bytes, never from a ref
   // git could move. Their history is only in `staged` (whose objects fall
   // back on the checkout's), so that's where it's compared with main's.
-  private async notesSince(checkout: string, newest: SignedTag & { name: string }, signers: string, staged: string | undefined): Promise<{ tag: string; lines: string[] }[]> {
+  private async notesSince(checkout: string, newest: SignedTag & { name: string }, signers: string, staged: string | undefined): Promise<{ tag: string; date?: string; lines: string[] }[]> {
     const main = await this.git(checkout, ['rev-parse', 'refs/heads/main']);
     const older = [...(staged ? await this.refs(staged, STAGED_NS) : [])]
       .filter(([name]) => RELEASE_NAME.test(name) && name < newest.name)
       .sort(([x], [y]) => (x < y ? 1 : -1))
       .slice(0, 9);
-    const out: { tag: string; lines: string[] }[] = [];
+    const out: { tag: string; date?: string; lines: string[] }[] = [];
     const add = (name: string, signed: SignedTag) => {
       const message = signed.payload.toString('utf8');
       const notes = parseNotes(message);
       // A failed model call, or a tag from before notes existed, still
       // describes that release instead of disappearing behind older notes.
       const lines = notes.length ? notes : message.split('\n').filter((l) => l.startsWith('- ')).slice(0, 5).map((l) => l.slice(2).trim().slice(0, 200)).filter(Boolean);
-      if (lines.length) out.push({ tag: TAG_PREFIX + name, lines });
+      // The date too, so the app can head each one with its day where the
+      // reader is, not Mike's (the name is his day).
+      if (lines.length) out.push({ tag: TAG_PREFIX + name, ...(signed.date ? { date: signed.date } : {}), lines });
     };
     add(newest.name, newest);
     for (const [name, ref] of older) {
@@ -905,16 +1010,42 @@ export class Upstream {
     // Tags made on another Mac, or by hand, count too.
     await this.git(checkout, ['fetch', '-q', '--no-tags', 'origin', `+refs/tags/${TAG_PREFIX}*:refs/tags/${TAG_PREFIX}*`], { timeoutMs: this.fetchTimeoutMs });
     const tag = tagFor(new Date(now));
-    const tags = (await this.git(checkout, ['tag', '--list', '--sort=-refname', `${TAG_PREFIX}*`])).split('\n').filter(Boolean);
+    // Only tags GitHub has are releases: one made here and never pushed (its
+    // push failed, or it didn't verify and couldn't be deleted, perhaps
+    // before a restart) would otherwise pass for today's, then the last.
+    const pushed = new Set((await this.git(checkout, ['ls-remote', '--refs', 'origin', `refs/tags/${TAG_PREFIX}*`], { timeoutMs: this.fetchTimeoutMs }))
+      .split('\n').map((l) => l.split('\t')[1]?.slice('refs/tags/'.length)).filter(Boolean));
+    const local = (await this.git(checkout, ['tag', '--list', '--sort=-refname', `${TAG_PREFIX}*`])).split('\n').filter(Boolean);
+    // Named as forks take them (RELEASE_NAME): a release/latest isn't one.
+    const tags = local.filter((t) => pushed.has(t) && RELEASE_NAME.test(t.slice(TAG_PREFIX.length)));
+    this.pushedTags = new Set(tags);
     if (tags.includes(tag)) return this.hold(undefined);
+    if (local.includes(tag)) {
+      const oid = await this.git(checkout, ['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`]).catch(() => '');
+      if (oid && !(await this.dropTag(checkout, tag, oid))) {
+        this.hold({ commit: tip, why: `today's tag ${tag} was made here but never pushed, and it can't be deleted (git tag -d ${tag})`, at: new Date(now).toISOString() });
+        return undefined;
+      }
+    }
     const last = tags[0];
     if (last && (await this.isAncestor(checkout, tip, last))) return this.hold(undefined);
     const why = await this.checksSay(checkout, tip);
-    if (why) {
+    // The tip held by a red check: the newest settled commit since the last
+    // release that's green on everything goes out instead (newestGreen).
+    const target = !why ? tip : this.lastSaid ? await this.newestGreen(checkout, tip, last, now).catch(() => undefined) : undefined;
+    if (why && !target) {
       this.hold({ commit: tip, why, at: new Date(now).toISOString() });
       return undefined;
     }
+    if (why) this.deps.log.info('main is held, so the newest commit green on everything goes out', { tip, commit: target, why });
     this.hold(undefined);
+    return this.tagRelease(checkout, target!, last, tag, now);
+  }
+
+  // Tags `tip` as today's release `tag`, signed, and pushes it.
+  private async tagRelease(checkout: string, tip: string, last: string | undefined, tag: string, now: number): Promise<string | undefined> {
+    const { publish } = this.deps;
+    if (!publish?.signingKey) return undefined;
 
     const range = last ? `${last}..${tip}` : tip;
     const subjects = (await this.git(checkout, ['log', '--no-merges', '--format=- %s', range, '--max-count=200'])).trim();
@@ -947,17 +1078,89 @@ export class Upstream {
       this.deps.log.info('release signature not given; asking again next hour', { tag, error: String(e).slice(0, 200) });
       return undefined;
     }
+    // Checked as a fork checks it before it goes anywhere: on 19 Nov 2026
+    // the Secure Enclave handed back a signature with nothing in it (empty
+    // r and s), git called that signed, and release/2026-11-19 went out
+    // verifying nowhere. The object checked is the one pushed, by its id.
+    const oid = await this.git(checkout, ['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`]).catch(() => '');
+    const bad = !oid ? 'the tag was not there to check' : await this.selfCheck(checkout, tag, oid, tip, last, now).catch((e: unknown) => `ssh-keygen couldn't check it (${String(e).slice(0, 120)})`);
+    if (bad) {
+      const dropped = !oid || (await this.dropTag(checkout, tag, oid));
+      this.hold({ commit: tip, why: `its signature didn't verify, so it wasn't pushed: ${bad}${dropped ? '' : ` (its local tag couldn't be deleted yet; the next look tries again)`}`, at: new Date(now).toISOString() });
+      this.deps.log.warn('release signature does not verify; not pushed', { tag, commit: tip, why: bad, tagDeleted: dropped });
+      return undefined;
+    }
     this.hold(undefined);
     try {
-      await this.git(checkout, ['push', '-q', 'origin', `refs/tags/${tag}`], { timeoutMs: this.fetchTimeoutMs });
+      await this.git(checkout, ['push', '-q', 'origin', `${oid}:refs/tags/${tag}`], { timeoutMs: this.fetchTimeoutMs });
     } catch (e) {
       // Taken back, so the next look tries the push again.
-      await this.git(checkout, ['tag', '-d', tag]).catch(() => undefined);
+      await this.dropTag(checkout, tag, oid);
       throw e;
     }
     this.deps.log.info('tagged a release', { tag, commit: tip });
     this.set({ ...this.st, published: { tag, at: new Date(now).toISOString() } });
     return tag;
+  }
+
+  // Deletes the local tag if it's still `oid`. One left behind isn't on
+  // GitHub, so the next look doesn't count it and tries again (publishOnce).
+  private async dropTag(checkout: string, tag: string, oid: string): Promise<boolean> {
+    for (let i = 0; i < 2; i++) {
+      if (await this.git(checkout, ['update-ref', '-d', `refs/tags/${tag}`, oid]).then(() => true, () => false)) return true;
+    }
+    this.deps.log.error('could not delete an unpushed release tag', { tag, oid });
+    return false;
+  }
+
+  // Why the tag object `oid` wouldn't count as `tag` for a fork, or
+  // undefined if it would: the same size limit, split and ssh-keygen check
+  // as verified(), on the commit it was made for. The keys are what forks
+  // hold: those in release-signers at the commit, and at the newest release
+  // a day older than ADD_DELAY_MS (the wait before an announced key counts),
+  // or the oldest release when none is; revoked are those the last
+  // release revoked, as a release that revokes its own key must still go
+  // out for forks to take the revocation in.
+  private async selfCheck(checkout: string, tag: string, oid: string, tip: string, last: string | undefined, now: number): Promise<string | undefined> {
+    const size = Number(await this.git(checkout, ['cat-file', '-s', oid]));
+    if (!(size > 0 && size <= MAX_TAG_BYTES)) return `the tag is ${size} bytes, more than forks read`;
+    const raw = await (this.deps.gitBytes ?? gitBytes)(checkout, ['cat-file', 'tag', oid]);
+    const split = splitSignedTag(raw, tag);
+    if (!split) return 'the tag is not one SSH-signed release tag';
+    if (split.commit !== tip) return `the tag names ${split.commit.slice(0, 8)}, not ${tip.slice(0, 8)}`;
+    const signers = await this.git(checkout, ['show', `${tip}:${SIGNERS_FILE}`]).catch(() => '');
+    if (!keysIn(signers).length) return `${SIGNERS_FILE} has no keys at that commit`;
+    const signer = signerKey(split.signature);
+    const settled = await this.settledRelease(checkout, now);
+    if (settled && signer && !keysIn(await this.git(checkout, ['show', `refs/tags/${settled}:${SIGNERS_FILE}`]).catch(() => '')).includes(signer)) {
+      return `its key wasn't in ${SIGNERS_FILE} at ${settled}, so forks don't take it yet`;
+    }
+    const revoked = last ? keysIn(await this.git(checkout, ['show', `refs/tags/${last}:${REVOKED_FILE}`]).catch(() => '')) : [];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-release-self-'));
+    try {
+      const signersFile = path.join(dir, 'signers');
+      const revokedFile = path.join(dir, 'revoked');
+      fs.writeFileSync(signersFile, signers.endsWith('\n') ? signers : `${signers}\n`);
+      if (revoked.length) fs.writeFileSync(revokedFile, revoked.join('\n') + '\n');
+      return (await sshVerified(split, signersFile, revoked.length ? revokedFile : undefined)) ? undefined : `ssh-keygen says it isn't good for any key in ${SIGNERS_FILE}`;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // The newest release tag dated a day more than ADD_DELAY_MS ago (forks
+  // look every six hours, and a Mac sleeps), or else the oldest there is.
+  private async settledRelease(checkout: string, now: number): Promise<string | undefined> {
+    const lines = (await this.git(checkout, ['for-each-ref', '--sort=-taggerdate', '--format=%(refname:lstrip=2)%09%(taggerdate:unix)', `refs/tags/${TAG_PREFIX}*`])).split('\n');
+    let oldest: string | undefined;
+    for (const line of lines) {
+      const [name, at] = line.split('\t');
+      if (!name || !(Number(at) > 0) || !this.pushedTags.has(name)) continue;
+      if (Number(at) * 1000 <= now - ADD_DELAY_MS - 24 * 60 * 60_000) return name;
+      oldest = name;
+    }
+    // None that old: the first release's keys are the ones forks pinned.
+    return oldest;
   }
 
   // Plain-words notes for a release, from its commits' subjects and bodies.
@@ -1001,6 +1204,7 @@ export class Upstream {
   // them waits for them, and is held when they can't be read: a release
   // that can wait a day is better than one that doesn't build.
   private async checksSay(checkout: string, tip: string): Promise<string | undefined> {
+    this.lastSaid = false;
     const workflows = (await this.git(checkout, ['ls-tree', '--name-only', tip, '.github/workflows/'])).split('\n').filter((f) => /\.ya?ml$/.test(f));
     if (!workflows.length) return undefined;
     // The URL as configured, not as an insteadOf rewrites it for fetching.
@@ -1008,11 +1212,82 @@ export class Upstream {
     if (!key.startsWith('github.com/')) return "origin isn't on GitHub, so its checks can't be read";
     const pushed = await this.pushMain(checkout, tip);
     if (pushed) return pushed;
+    const repo = key.slice('github.com/'.length);
     try {
-      return ciVerdict(await (this.deps.ciRuns ?? githubRuns)(key.slice('github.com/'.length), tip));
+      const runs = await (this.deps.ciRuns ?? githubRuns)(repo, tip);
+      const said = ciVerdict(runs);
+      this.lastSaid = Boolean(said);
+      if (said) return said;
+      const ran = new Set(runs.map((r) => r.file));
+      const quiet = workflows.filter((f) => !ran.has(f));
+      if (!quiet.length) return undefined;
+      // Every commit the tip has, however far back: a workflow whose paths
+      // nothing touches (the frozen Swift app's) can go thousands of
+      // commits without a run.
+      const has = new Set((await this.git(checkout, ['rev-list', tip])).split('\n').filter(Boolean));
+      const held: string[] = [];
+      for (const file of quiet) {
+        const why = earlierVerdict(await (this.deps.ciHistory ?? githubWorkflowRuns)(repo, file), has);
+        if (why) held.push(why);
+      }
+      this.lastSaid = held.length > 0;
+      return held.length ? held.join('; ') : undefined;
     } catch (e) {
       return `couldn't read GitHub's checks (${String(e)})`;
     }
+  }
+
+  // Whether checksSay's last answer came from GitHub's runs (a red, running
+  // or cancelled check), not from main being just pushed, gone another way,
+  // or GitHub not answering: only then is an older commit looked for.
+  private lastSaid = false;
+
+  // The newest commit since `last` (main's first-parent line, the tip left
+  // out) that is as safe to hand on as a green tip: an hour old, the head of
+  // a push GitHub ran checks on, and every workflow in it green by the same
+  // rule as the tip's (earlierVerdict: its run on that commit, or for one
+  // its paths didn't set off, its last finished run on a commit it has).
+  // A commit inside a push isn't one: nothing ran on its changes alone.
+  // Without this one red push held every release: none went out from 16 to
+  // 19 Nov while Windows failed on main, with green commits in between.
+  // It's the same bar the Xcode 26 lesson set (release/2026-11-04 to -06
+  // went out unchecked), only on an older commit. One GitHub request a
+  // workflow, as the hourly look's are counted (60 an hour without a token).
+  private async newestGreen(checkout: string, tip: string, last: string | undefined, now: number): Promise<string | undefined> {
+    const key = repoKey(await this.git(checkout, ['config', '--get', 'remote.origin.url']).catch(() => ''));
+    if (!key.startsWith('github.com/')) return undefined;
+    const repo = key.slice('github.com/'.length);
+    const line = (await this.git(checkout, ['log', '--first-parent', `--max-count=${GREEN_LOOKBACK}`, '--format=%H %ct', tip, ...(last ? [`^${last}`] : [])]))
+      .split('\n')
+      .map((l) => l.trim().split(' '))
+      .filter((p): p is [string, string] => p.length === 2 && p[0] !== tip)
+      .filter(([, ct]) => now - Number(ct) * 1000 >= SETTLE_MS);
+    if (!line.length) return undefined;
+    const histories = new Map<string, CiRun[]>();
+    const historyOf = async (file: string) => {
+      let h = histories.get(file);
+      if (!h) histories.set(file, (h = await (this.deps.ciHistory ?? githubWorkflowRuns)(repo, file)));
+      return h;
+    };
+    const tipHas = new Set((await this.git(checkout, ['rev-list', tip])).split('\n').filter(Boolean));
+    const files = (await this.git(checkout, ['ls-tree', '--name-only', tip, '.github/workflows/'])).split('\n').filter((f) => /\.ya?ml$/.test(f));
+    for (const f of files) await historyOf(f);
+    const ranOn = new Set([...histories.values()].flat().map((r) => r.sha).filter(Boolean));
+    for (const [sha] of line) {
+      if (!ranOn.has(sha)) continue;
+      const mine = (await this.git(checkout, ['ls-tree', '--name-only', sha, '.github/workflows/'])).split('\n').filter((f) => /\.ya?ml$/.test(f));
+      const after = new Set((await this.git(checkout, ['rev-list', `${sha}..${tip}`])).split('\n').filter(Boolean));
+      const has = new Set([...tipHas].filter((c) => !after.has(c)));
+      let green = true;
+      for (const f of mine) {
+        if (earlierVerdict(await historyOf(f), has)) {
+          green = false;
+          break;
+        }
+      }
+      if (green) return sha;
+    }
+    return undefined;
   }
 
   // Says (or stops saying) why today's release is waiting, logging only a

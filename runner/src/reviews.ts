@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expandHome } from './config.ts';
 import { readImageInfo, readVideoInfo } from './media.ts';
-import type { DesignReview, ReviewDraft } from './protocol.ts';
+import type { DesignReview, ImageRef, ReviewDraft } from './protocol.ts';
 import { ErrorCode, RpcError } from './protocol.ts';
 
 // An option's pictures: `path` and then `shots`, or `shots` alone. One option
@@ -150,6 +150,11 @@ export function fitReview(raw: unknown): DesignReview | undefined {
     if (!d || typeof d !== 'object' || Array.isArray(d)) continue;
     const draft = { ...d };
     set(draft, 'reply', 8000);
+    // A reply's pictures name the other runner's files, which an extra Mac
+    // could point anywhere on this one (Codex's review, 17 Nov): they don't
+    // come with the move, and the words say so where they were.
+    if (Array.isArray(draft.images) && typeof draft.reply === 'string') draft.reply = keepPictureMarkers(draft.reply, draft.images.map(() => false));
+    delete draft.images;
     if (draft.notes && typeof draft.notes === 'object' && !Array.isArray(draft.notes)) {
       const notes: Record<string, string> = Object.create(null);
       for (const [id, note] of Object.entries(draft.notes).slice(0, 12)) {
@@ -197,20 +202,53 @@ export function reviewDraft(review: DesignReview, raw: unknown, answer = false):
     if (note) notes[id] = note;
   }
   const reply = text(d.reply, 'reply', 8000);
-  if (answer && !picks.length && !none && !reply && !Object.keys(notes).length) bad('Pick an option or write a reply.');
+  const images = replyImages(d.images);
+  if (answer && !picks.length && !none && !reply && !images.length && !Object.keys(notes).length) bad('Pick an option or write a reply.');
   return {
     // pickedIds only for more than one, so a single pick saves as it always did.
     ...(picks.length ? { pickedId: picks[0] } : {}),
     ...(picks.length > 1 ? { pickedIds: picks } : {}),
     notes: { ...notes },
     ...(reply ? { reply } : {}),
+    ...(images.length ? { images } : {}),
     ...(none ? { none: true as const } : {}),
   };
+}
+
+// The reply's pictures as sent: their shape only. Where they may come from,
+// and copying them in with the review, is the runner's (runner/reviews.ts).
+export const maxReplyImages = 20;
+function replyImages(raw: unknown): ImageRef[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return bad('images must be a list of pictures.');
+  if (raw.length > maxReplyImages) bad(`A reply can have at most ${maxReplyImages} pictures; this has ${raw.length}.`);
+  return raw.map((img, i) => {
+    if (!img || typeof img !== 'object' || Array.isArray(img) || typeof (img as ImageRef).path !== 'string' || !(img as ImageRef).path) bad(`images[${i}] must be a picture with a path.`);
+    const { path: file, mediaType, width, height } = img as ImageRef;
+    return { path: file, mediaType: typeof mediaType === 'string' ? mediaType : 'application/octet-stream', ...(typeof width === 'number' ? { width } : {}), ...(typeof height === 'number' ? { height } : {}) };
+  });
+}
+
+// Words whose pictures were cut to those `keep` marks: each [Picture N]
+// follows its picture to its new number, or says "[Picture N unavailable]"
+// for one left out, so a later picture never lands on an earlier one's
+// marker (Codex's review, 17 Nov). A marker past the list stays as written.
+export function keepPictureMarkers(text: string, keep: boolean[]): string {
+  if (typeof text !== 'string' || keep.every(Boolean)) return text;
+  const numbers: (number | undefined)[] = [];
+  let next = 0;
+  for (const k of keep) numbers.push(k ? ++next : undefined);
+  return text.replace(/\[Picture (\d{1,3})\]/g, (marker, n) => {
+    const i = Number(n) - 1;
+    if (i < 0 || i >= keep.length) return marker;
+    return numbers[i] ? `[Picture ${numbers[i]}]` : `[Picture ${n} unavailable]`;
+  });
 }
 
 export function sameDraft(a: ReviewDraft | undefined, b: ReviewDraft): boolean {
   if (!a || a.pickedId !== b.pickedId || (a.pickedIds ?? []).join('\n') !== (b.pickedIds ?? []).join('\n')) return false;
   if ((a.reply ?? '') !== (b.reply ?? '') || !!a.none !== !!b.none) return false;
+  if ((a.images ?? []).map(i => i.path).join('\n') !== (b.images ?? []).map(i => i.path).join('\n')) return false;
   const ids = Object.keys(a.notes);
   return ids.length === Object.keys(b.notes).length && ids.every(id => a.notes[id] === b.notes[id]);
 }

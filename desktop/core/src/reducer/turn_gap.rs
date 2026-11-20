@@ -13,6 +13,11 @@ pub struct TurnGap {
     /// What finished and woke it; empty for a wake with no finished work or
     /// from a runner too old to say.
     pub woke_by: Vec<BackgroundTask>,
+    /// What the runner said woke it, when its own message started the turn
+    /// ("The Threadbear GPUI app restarted onto 1f103ac18"): a thread that
+    /// hibernated for the app to restart sat 14 hours under its last reply
+    /// with nothing to say so (Mike, 19 Nov). Empty: "Threadbear woke it".
+    pub runner_wake: Option<String>,
 }
 
 impl TurnGap {
@@ -23,7 +28,11 @@ impl TurnGap {
     /// "6 min later · Mine the repo finished".
     pub fn label(&self) -> String {
         let time = Self::later(self.milliseconds());
-        match Self::cause(&self.woke_by) {
+        let runner = self.runner_wake.as_deref().map(|why| match text::trim_ws_nl(why) {
+            "" => "Threadbear woke it".to_owned(),
+            why => why.to_owned(),
+        });
+        match runner.or_else(|| Self::cause(&self.woke_by)) {
             Some(cause) => format!("{time} · {cause}"),
             None => time,
         }
@@ -124,7 +133,10 @@ pub(crate) fn parse_iso8601(ts: &str) -> Option<f64> {
     let minute = digits(bytes, &mut pos)?;
     expect(bytes, &mut pos, b':')?;
     let second = digits(bytes, &mut pos)?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // Each part held to its range, so a crafted time from another runner's
+    // transcript (an hour of i64::MAX, a year of 19 digits) can't overflow
+    // the sums below (the cross-lab review of Daybreak 147).
+    if !(0..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) || !(0..=24).contains(&hour) || !(0..=59).contains(&minute) || !(0..=60).contains(&second) {
         return None;
     }
     // Fractional seconds, then the zone.
@@ -180,4 +192,19 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_iso8601;
+
+    #[test]
+    fn times_out_of_range_are_not_times() {
+        assert_eq!(parse_iso8601("1970-01-01T00:00:01Z"), Some(1.));
+        assert_eq!(parse_iso8601("2026-11-17T09:30:00.500+01:00"), Some(1_794_904_200.5));
+        assert_eq!(parse_iso8601("0001-01-01T00:00:00.000Z"), Some(-62_135_596_800.));
+        for bad in ["2026-11-17T9223372036854775807:00:00Z", "2026-11-17T00:99:00Z", "2026-11-17T00:00:61Z", "922337203685477580-01-01T00:00:00Z", "2026-11-17T25:00:00Z"] {
+            assert_eq!(parse_iso8601(bad), None, "{bad}");
+        }
+    }
 }

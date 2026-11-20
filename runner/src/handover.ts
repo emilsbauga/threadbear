@@ -33,6 +33,7 @@ import type { Scheduler } from './schedules.ts';
 import type { CommandHost } from './sync.ts';
 import type { DrainProjectOp, MembershipChange, Projects } from './projects.ts';
 import { processInfo } from './proc.ts';
+import { IS_WINDOWS } from './platform.ts';
 
 // `auth: 'challenge'`: this runner answers the RPC's auth challenge
 // (docs/protocol.md, "Auth"). A drain file without it is from an older
@@ -74,10 +75,15 @@ export function listDrainInfos(home: string): DrainInfo[] {
   return out.sort((a, b) => a.pid - b.pid);
 }
 
-// A runner process (main.ts under a supervisor), not a recycled pid.
-export function runnerAlive(pid: number): boolean {
-  const info = processInfo(pid);
-  return Boolean(info && /main\.ts/.test(info.command));
+// A runner process (main.ts under a supervisor), not a recycled pid. On
+// Windows processInfo has only the program's name, so node is all it can
+// tell; a pid reused by some other node fails the connect after. Matching
+// main.ts alone there took every draining runner for gone, so the new one
+// swept its threads and left it running, holding its release's folder,
+// which then failed the next update's prune (18 Nov).
+export function runnerAlive(pid: number, info = processInfo(pid), windows = IS_WINDOWS): boolean {
+  if (!info) return false;
+  return /main\.ts/.test(info.command) || (windows && /^node(\.exe)?$/i.test(info.command.trim()));
 }
 
 export function bucketOf(t: Pick<ThreadSummary, 'archivedAt' | 'snoozedUntil'>, now: number): Bucket {
@@ -133,7 +139,7 @@ export function isMoved(e: unknown): boolean {
 
 // Only installed on the draining server. Older releases refuse this method,
 // so the primary keeps their run due rather than steering into a busy turn.
-export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'findScheduledSend' | 'has' | 'mustGet' | 'unqueue' | 'draining' | 'clock'>) {
+export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'findScheduledSend' | 'dropScheduled' | 'has' | 'mustGet' | 'unqueue' | 'draining' | 'clock'>) {
   const deliver = (p: Record<string, unknown>) => {
     if (typeof p.threadId !== 'string' || typeof p.text !== 'string' || typeof p.scheduleId !== 'string') throw new RpcError(ErrorCode.badParams, 'threadId, text and scheduleId must be strings');
     if (p.run !== undefined && (typeof p.run !== 'string' || !p.run || p.run.length > 200)) throw new RpcError(ErrorCode.badParams, 'run must be a nonempty string of at most 200 characters');
@@ -156,6 +162,12 @@ export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'fin
     return sent;
   };
   return {
+    // A deleted schedule's messages queued here before the handover began.
+    'drain.dropScheduled': (p: Record<string, unknown>) => {
+      if (typeof p.threadId !== 'string' || typeof p.scheduleId !== 'string') throw new RpcError(ErrorCode.badParams, 'threadId and scheduleId must be strings');
+      if (!runner.has(p.threadId)) throw new RpcError(ErrorCode.moved, 'That thread has moved to the new runner.');
+      return { dropped: runner.dropScheduled(p.threadId, p.scheduleId) };
+    },
     'drain.sendScheduled': deliver,
     'drain.sendScheduledOnce': (p: Record<string, unknown>) => {
       if (typeof p.run !== 'string' || !p.run) throw new RpcError(ErrorCode.badParams, 'run is required');
@@ -177,6 +189,19 @@ export async function sendScheduled(runner: Pick<Runner, 'sendScheduled' | 'has'
     // An unkeyed fallback cannot recognize a delivery after a lost reply.
     // Keep this one-time handover wait instead of restoring that duplicate.
     if (e instanceof RpcError && e.code === ErrorCode.methodNotFound) throw new RpcError(ErrorCode.busy, 'The old runner cannot deliver scheduled messages yet; try again after its thread moves across.');
+    throw e;
+  }
+}
+
+// A deleted schedule's queued messages, wherever its thread is now: the
+// draining runner keeping it, or here once it has come across. An old
+// draining release without the method keeps its queue (protocol.md).
+export async function dropScheduled(runner: Pick<Runner, 'dropScheduled' | 'has'>, peers: Pick<Peers, 'call'>, threadId: string, scheduleId: string): Promise<number> {
+  try {
+    const r = await peers.call(threadId, 'drain.dropScheduled', { threadId, scheduleId }) as { dropped?: number };
+    return typeof r?.dropped === 'number' ? r.dropped : 0;
+  } catch (e) {
+    if (isMoved(e) && runner.has(threadId)) return runner.dropScheduled(threadId, scheduleId);
     throw e;
   }
 }
@@ -776,6 +801,10 @@ export class ThreadRouter implements ThreadControl {
     return this.runner.cardReopened(threadId);
   }
 
+  replyRewrite(threadId: string): boolean {
+    return this.runner.replyRewrite(threadId);
+  }
+
   openSubagentCards(threadId: string): string[] {
     return this.runner.openSubagentCards(threadId);
   }
@@ -841,6 +870,10 @@ export class ThreadRouter implements ThreadControl {
     return this.runner.createButton(threadId, input);
   }
 
+  folderPanel(cwd: string, name: string): ReturnType<Runner['folderPanel']> {
+    return this.runner.folderPanel(cwd, name);
+  }
+
   // Only a thread's own agent asks, from its CLI on the runner that has the
   // thread, so this never goes elsewhere.
   requestSecret(threadId: string, req: SecretRequest): Promise<SecretAnswer> {
@@ -851,15 +884,6 @@ export class ThreadRouter implements ThreadControl {
   // can't see what its turn started with (threadbear-mcp.ts, "Raising access").
   async accessOf(threadId: string): Promise<PermissionMode> {
     return this.away(threadId) ? 'full' : this.runner.accessOf(threadId);
-  }
-
-  // Likewise outside any sandbox, which is the most it could have.
-  async confinedOf(threadId: string): Promise<boolean> {
-    return this.away(threadId) ? false : this.runner.confinedOf(threadId);
-  }
-
-  sandboxed(cwd: string): boolean {
-    return this.runner.sandboxed(cwd);
   }
 
   // Likewise for a threadbear tool's own card (threadbear-mcp.ts, "Raising access").
@@ -885,8 +909,10 @@ export class ThreadRouter implements ThreadControl {
 
   async update(upd: Parameters<Runner['update']>[0]): Promise<ReturnType<Runner['update']>> {
     const e = this.away(upd.threadId);
-    // Said either way, as the primary takes a move with neither as Mike's.
-    return e ? e.call('threads.update', { ...upd, unconfine: upd.unconfine === true }) : this.runner.update(upd);
+    // An older runner reads a move without `unconfine: false` as the user's
+    // (the sandbox experiment's flag, taken out here 16 Nov 2026), so an
+    // agent's says so that way too.
+    return e ? e.call('threads.update', { ...upd, unconfine: upd.byAgent !== true }) : this.runner.update(upd);
   }
 
   async interrupt(threadId: string): Promise<Record<string, never>> {
@@ -920,7 +946,9 @@ export function phoneCommands(runner: Runner, remote?: Pick<Peers, 'owns' | 'cal
     // Opened by sync.ts already; a thread still on a draining runner gets
     // it over the local link, both runners sharing the one data dir.
     answerSecret: (p) => at(p.threadId, 'secrets.answer', { ...p }, () => runner.answerSecret(p)),
-    update: (p) => at(p.threadId, 'threads.update', { ...p }, () => runner.update(p)),
+    // An older runner reads a change without `unconfine: false` as the
+    // user's (the sandbox experiment's flag), so an agent's says so.
+    update: (p) => at(p.threadId, 'threads.update', { ...p, ...(p.byAgent ? { unconfine: false } : {}) }, () => runner.update(p)),
     hibernateWhen: (p) => at(p.threadId, 'threads.hibernateWhen', { ...p }, () => runner.hibernateWhen(p)),
     // Up to whatever it has: markSeen keeps it within the thread's events.
     markSeen: (id) => at(id, 'threads.markSeen', { seq: Number.MAX_SAFE_INTEGER }, () => runner.markSeen(id, runner.get(id).lastSeq)),
@@ -929,6 +957,9 @@ export function phoneCommands(runner: Runner, remote?: Pick<Peers, 'owns' | 'cal
     interrupt: (id) => at(id, 'threads.interrupt', {}, () => runner.interrupt(id, { byMike: true })),
     quickAsk: (p) => runner.quickAsk(p),
     pressButton: (id, buttonId) => at(id, 'buttons.press', { buttonId }, () => runner.pressButton(id, buttonId)),
+    listReviews: (id) => at(id, 'reviews.list', {}, () => runner.listReviews(id)),
+    getReview: (id, reviewId) => at(id, 'reviews.get', { reviewId }, () => runner.getReview(id, reviewId)),
+    respondReview: (id, reviewId, revision, draft) => at(id, 'reviews.respond', { reviewId, revision, draft }, () => runner.respondReview(id, reviewId, revision, draft)),
     threadCommands: (id) => at(id, 'threads.commands', {}, () => runner.threadCommands(id)),
   };
 }
@@ -1030,6 +1061,12 @@ export function projectRouter(
     update: async (projectId, params) => {
       const l = primary();
       return l ? there(l, 'update', [projectId, params]) : local.update(projectId, params);
+    },
+    // An older primary has no editNotes, and refuses it rather than saving
+    // edits worked out here on notes it may have changed.
+    editNotes: async (projectId, edits, o) => {
+      const l = primary();
+      return l ? there(l, 'editNotes', [projectId, edits, o]) : local.editNotes(projectId, edits, o);
     },
     appendNote: async (projectId, text) => {
       const l = primary();

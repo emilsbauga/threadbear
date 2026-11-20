@@ -31,6 +31,8 @@ use threadbear_core::reducer::ImageRef;
 pub(crate) struct MentionChip {
     pub(crate) title: String,
     pub(crate) kind: MentionKind,
+    /// What it points at: the card's or thread's address, or the file's path.
+    pub(crate) url: String,
 }
 
 /// The chip's measures at the composer's 15 pt (PictureChip.Metrics): the
@@ -61,13 +63,47 @@ impl Render for DraggedThread {
     }
 }
 
+/// A file chip's symbol, by the file's name: a film for a video, a waveform
+/// for sound, a page for anything else (a folder's name rarely says it's one).
+pub(crate) fn file_symbol(name: &str) -> &'static str {
+    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match extension.as_str() {
+        "mp4" | "mov" | "m4v" | "webm" | "mkv" | "avi" => "film",
+        "mp3" | "m4a" | "wav" | "aiff" | "aif" | "flac" | "ogg" | "caf" => "waveform",
+        _ => "doc",
+    }
+}
+
+/// A file's path for its card, with the home folder as `~`.
+pub(crate) fn short_path(path: &str) -> String {
+    let home = crate::files::home_dir();
+    if home.is_empty() { path.to_owned() } else { threadbear_core::new_thread::abbreviate_home(path, &home) }
+}
+
+/// What a file chip's tooltip says about its dot.
+pub(crate) const FILE_TIP: &str = "Not uploaded: only an agent on this Mac can open it";
+
+/// The small dot at a file chip's end that says it isn't uploaded, only
+/// named, as Mike asked for (18 Nov): a video can be gigabytes, so it stays
+/// where it is and the agent reads it there.
+pub(crate) const FILE_DOT: f32 = 5.;
+
+pub(crate) fn file_dot(cx: &App) -> Div {
+    div().flex_none().size(px(FILE_DOT)).rounded_full().bg(style::tertiary_label(cx))
+}
+
 /// A chip's body: its symbol and label on the chips' fill, with a hairline
-/// edge, the accent one while it's selected (CardChip.draw).
+/// edge, the accent one while it's selected (CardChip.draw). A file's has
+/// its dot after the label.
 fn mention_chip_body(title: &str, kind: MentionKind, selected: bool, cx: &App) -> Div {
     let secondary = style::secondary_label(cx);
     let edge = if selected { style::accent(cx) } else { style::hairline(cx) };
-    // A speech bubble for a thread, a card for a Notion card.
-    let symbol = if kind == MentionKind::Thread { "bubble.left" } else { "square.text.square" };
+    // A speech bubble for a thread, a card for a Notion card, the file's kind for a file.
+    let symbol = match kind {
+        MentionKind::Thread => "bubble.left",
+        MentionKind::Card => "square.text.square",
+        MentionKind::File => file_symbol(title),
+    };
     div()
         .flex_none()
         .h(px(size::CHIP_HEIGHT))
@@ -85,6 +121,7 @@ fn mention_chip_body(title: &str, kind: MentionKind, selected: bool, cx: &App) -
         // SF's symbols fill their box; Lucide's draw a little inside it.
         .child(div().size(px(ICON)).flex().items_center().justify_center().child(crate::icons::symbol(symbol).size(px(13.)).text_color(secondary)))
         .child(div().max_w(px(LABEL_MAX)).truncate().whitespace_nowrap().text_size(px(LABEL)).line_height(px(16.)).text_color(secondary).child(title.to_owned()))
+        .when(kind == MentionKind::File, |d| d.child(file_dot(cx)))
 }
 
 impl Composer {
@@ -98,10 +135,18 @@ impl Composer {
     fn mention_token(&mut self, mention: &Mention, link: &str) -> InlineToken {
         self.next_picture += 1;
         let id: SharedString = format!("mention-{}", self.next_picture).into();
-        self.mentions.insert(id.clone(), MentionChip { title: mention.title.clone(), kind: mention.kind });
+        self.mentions.insert(id.clone(), MentionChip { title: mention.title.clone(), kind: mention.kind, url: mention.url.clone() });
         // A label with nothing in it isn't a token the box takes.
         let label = if mention.title.trim().is_empty() { "Link".to_owned() } else { mention.title.clone() };
         InlineToken::new(id, link.to_owned()).with_label(label)
+    }
+
+    /// A click on a file's chip in the box opens the file, as one in the
+    /// bubble does. True when it was a file's.
+    pub(crate) fn open_file_chip(&self, id: &SharedString, cx: &mut App) -> bool {
+        let Some(chip) = self.mentions.get(id).filter(|c| c.kind == MentionKind::File) else { return false };
+        crate::open_gate::open_file(&threadbear_core::reducer::text::expanding_tilde(&chip.url), crate::open_gate::Origin::ThisMac, cx);
+        true
     }
 
     /// The box's chips by range, as the draft reads them.
@@ -128,7 +173,12 @@ impl Composer {
     pub(crate) fn render_mention_chip(&self, ctx: &InlineTokenContext, cx: &App) -> AnyElement {
         let chip = self.mentions.get(ctx.token().id());
         let (title, kind) = chip.map_or_else(|| (ctx.token().label().to_string(), MentionKind::Card), |c| (c.title.clone(), c.kind));
-        div().h_full().flex().items_center().child(mention_chip_body(&title, kind, ctx.is_selected(), cx)).into_any_element()
+        let body = div().h_full().flex().items_center().child(mention_chip_body(&title, kind, ctx.is_selected(), cx));
+        if kind == MentionKind::File {
+            use crate::tips::Tip as _;
+            return body.id(ElementId::Name(format!("composer-file-{}", ctx.token().id()).into())).tip(FILE_TIP).into_any_element();
+        }
+        body.into_any_element()
     }
 
     /// The text and tokens for a draft shown in the box (a send refused, an
@@ -147,7 +197,7 @@ impl Composer {
                     let start = words.len();
                     words.push_str(threadbear_core::composer::PICTURE_MARK_STR);
                     tokens.push((start..words.len(), crate::composer::picture_token(&id)));
-                    self.pictures.insert(id, PictureChip { source: PathBuf::from(&image.path), image: Some(image) });
+                    self.pictures.insert(id, PictureChip { source: PathBuf::from(&image.path), image: Some(image), dropping: None });
                 }
                 DraftPiece::Mention(mention, link) => {
                     let token = self.mention_token(&mention, &link);
@@ -183,7 +233,7 @@ impl Composer {
                 DraftPiece::Picture(index) => {
                     let image = images[*index].clone();
                     let id = self.fresh_picture_id();
-                    self.pictures.insert(id.clone(), PictureChip { source: PathBuf::from(&image.path), image: Some(image) });
+                    self.pictures.insert(id.clone(), PictureChip { source: PathBuf::from(&image.path), image: Some(image), dropping: None });
                     Some(crate::composer::picture_token(&id))
                 }
                 DraftPiece::Mention(mention, link) => Some(self.mention_token(mention, link)),
@@ -250,15 +300,23 @@ impl Composer {
     /// are any, and a cut takes the selection out. False with no chips in
     /// it, for the box's own copy.
     pub(crate) fn copy_chips(&mut self, cut: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let selection = self.input.read(cx).selected_range();
+        let target = self.input.clone();
+        self.copy_chips_in(&target, cut, window, cx)
+    }
+
+    /// The same for `target`: the box, or a Something else box. Without it
+    /// those boxes copied and cut a picture as a bare marker, and pasting
+    /// it back brought no picture.
+    pub(crate) fn copy_chips_in(&mut self, target: &Entity<TextareaState>, cut: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let selection = target.read(cx).selected_range();
         if selection.is_empty() {
             return false;
         }
-        let chips = self.box_chips(cx);
+        let chips = self.box_chips_in(target, cx);
         if !chips.iter().any(|(range, _)| range.start < selection.end && range.end > selection.start) {
             return false;
         }
-        let text = self.input.read(cx).value().to_string();
+        let text = target.read(cx).value().to_string();
         let (draft, images) = inline::draft_in(&text, &chips, selection);
         if images.is_empty() {
             // Cards alone copy as their links.
@@ -268,7 +326,7 @@ impl Composer {
             cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(clip.plain.clone(), clip.metadata()));
         }
         if cut {
-            self.input.update(cx, |s, cx| s.replace("", window, cx));
+            target.update(cx, |s, cx| s.replace("", window, cx));
             cx.notify();
         }
         true
@@ -284,7 +342,8 @@ impl Composer {
     }
 
     /// The box's chips as the automation's `composer-chips` lists them:
-    /// "picture: Picture 1", "card: Fix the button", "thread: Morning brief".
+    /// "picture: Picture 1", "card: Fix the button", "thread: Morning brief",
+    /// "file: Screen Recording.mp4".
     #[cfg(feature = "automation")]
     pub(crate) fn chip_descriptions(&self, cx: &App) -> Vec<String> {
         let mut number = 0;
@@ -295,7 +354,14 @@ impl Composer {
             .map(|span| {
                 let id = span.token().id();
                 match self.mentions.get(id) {
-                    Some(chip) => format!("{}: {}", if chip.kind == MentionKind::Thread { "thread" } else { "card" }, chip.title),
+                    Some(chip) => {
+                        let kind = match chip.kind {
+                            MentionKind::Thread => "thread",
+                            MentionKind::Card => "card",
+                            MentionKind::File => "file",
+                        };
+                        format!("{kind}: {}", chip.title)
+                    }
                     None => {
                         number += 1;
                         format!("picture: Picture {number}")

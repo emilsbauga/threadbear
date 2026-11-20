@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The fdroid flavour's own pieces: ZXing's scanner and UnifiedPush. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The pairing scanner, asked for at the Scan tap (QrScanner.kt). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application>
+        <!-- ZXing's scanner turns with the phone, not stuck in landscape. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="fullSensor"
+            tools:replace="screenOrientation" />
+
+        <!-- Notifications through the phone's UnifiedPush distributor (UnifiedPushTransport.kt). -->
+        <service
+            android:name=".ThreadbearPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

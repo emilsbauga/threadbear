@@ -2,16 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
+import { FakeAccounts, makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { describeAt, describeCron, nextRuns, parseCron } from '../../src/cron.ts';
 import { SAVE_RETRY_MS, Scheduler, scheduleMethods, type ScheduleBackend, type StoredSchedule } from '../../src/schedules.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { ErrorCode, RpcError } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
+import type { CheckResult } from '../../src/schedule-check.ts';
 import { readRunnerJson } from '../../src/config.ts';
 import { convexPoster, toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION } from '../../src/sync.ts';
 import { keptCheckFile } from '../../src/schedule-check.ts';
-import { scheduledSendMethods, sendScheduled } from '../../src/handover.ts';
+import { dropScheduled, scheduledSendMethods, sendScheduled } from '../../src/handover.ts';
 import { DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from '../../src/runner.ts';
 import { PatchTrust } from '../../src/patch-trust.ts';
 
@@ -743,6 +744,45 @@ test('a cron starts a new thread each time, and skips a run while the last threa
   sched.stop();
 });
 
+test('a cron pinned to a signed-out login alone in its pool: one failed thread, then skips until it is cleared or signed in (16 Nov)', async () => {
+  const fake = new FakeAccounts();
+  const pools = [
+    { id: 'claude', title: 'Claude', accountIds: ['claude-main'] },
+    { id: 'work', title: 'Work', accountIds: ['claude-3'] },
+  ];
+  const { h, sched } = setup(makeHarness(undefined, { pools }, { accounts: fake }));
+  const signOut = (out: boolean) => (fake.base = fake.base.map((a) => (a.id === 'claude-3' ? { ...a, signedOut: out || undefined } : a)));
+  signOut(true);
+  const sc = await sched.create({ text: 'Daily brief', title: 'Daily brief', cron: '*/30 * * * *', accountId: 'claude-3' });
+  const runs = () => h.runner.list().filter((t) => t.schedule?.id === sc.id);
+  h.clock.advance(30 * MIN);
+  await tick();
+  assert.equal(runs().length, 1, 'the first run still makes its thread, whose banner offers the sign-in');
+  assert.equal(runs()[0].accountId, 'claude-3');
+  h.adapter.last.init();
+  h.adapter.last.result('failed', undefined, 'Not logged in', { errorKind: 'auth' });
+  await tick();
+  assert.equal(h.runner.get(runs()[0].id).status, 'error');
+
+  h.clock.advance(30 * MIN);
+  await tick();
+  assert.equal(runs().length, 1, 'no second failed thread');
+  assert.match(sched.find(sc.id).lastRun?.note ?? '', /three@example\.com is signed out/);
+  h.clock.advance(30 * MIN);
+  await tick();
+  assert.equal(runs().length, 1, 'still the one, after a skip');
+  h.clock.advance(30 * MIN);
+  await tick();
+  assert.equal(runs().length, 1, 'and after two skips in a row');
+
+  // Signed back in: it runs again.
+  signOut(false);
+  h.clock.advance(30 * MIN);
+  await tick();
+  assert.equal(runs().length, 2);
+  sched.stop();
+});
+
 test('runs missed while the runner was stopped happen once, then the cron carries on from now', async () => {
   const { h, sched } = setup();
   const { thread } = idleThread(h);
@@ -987,8 +1027,9 @@ function fakeBackend(clock: { now(): number }, runners: { id: string; name: stri
         r.lastRun = p.lastRun;
         r.runs += p.sent ? 1 : 0;
       }
-      if (r.claim?.holder === holder) delete r.claim;
       if (p.request !== undefined && r.runRequestedAt === p.request) delete r.runRequestedAt;
+      // As convex/sync.ts: the claim stays while the run leaves the slot due.
+      if (r.claim?.holder === holder && ((r.updatedAt === p.expectUpdatedAt && !older) || p.request !== undefined)) delete r.claim;
       if (r.updatedAt === p.expectUpdatedAt && !older) {
         if (p.nextRunAt) r.nextRunAt = p.nextRunAt;
         else delete r.nextRunAt;
@@ -1110,6 +1151,304 @@ test('a due run is claimed, so two runner processes under one id send it once', 
   assert.equal(row.claim, undefined, 'the claim is let go once it ran');
   old.stop();
   now.stop();
+});
+
+// A claim lasts two minutes and a check can take five (checkTimeoutSecs):
+// the claim is renewed while its holder checks, sends and records the run,
+// and confirmed just before the send, so another process of the same runner
+// (a restart's handover) can't take the lapsed claim and send it again.
+test('a run whose check outlasts the claim is renewed, so a second runner process never sends it too', async () => {
+  const h = makeHarness();
+  const { thread } = idleThread(h);
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  let finishCheck!: () => void;
+  const slow = (p: { command: string }) => new Promise<CheckResult>((done) => (finishCheck = () => done({ ok: true, output: `news from ${p.command}` })));
+  const quick = async () => ({ ok: true as const, output: 'news' });
+  const make = (home: string, runCheck: (p: { command: string }) => Promise<CheckResult>) => {
+    fs.mkdirSync(home, { recursive: true });
+    const s = new Scheduler({ runner: h.runner, home, clock: h.clock, log: nullLogger, zone: () => 'UTC', self: LAPTOP, syncOn: true, runCheck });
+    s.start();
+    return s;
+  };
+  const old = make(path.join(h.home, 'old'), slow);
+  await old.attach(b.for('laptop-old', LAPTOP.id));
+  const sc = await old.create({ text: 'Look', title: 'Slow check', at: iso(h.clock.now() + MIN), threadId: thread.id, check: 'slow' });
+  await tick();
+  h.clock.advance(MIN);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.ok(finishCheck, 'the old process is checking');
+  // The new process starts while the check runs on past the claim's two minutes.
+  const now = make(path.join(h.home, 'new'), quick);
+  await now.attach(b.for('laptop-new', LAPTOP.id));
+  for (let i = 0; i < 8; i++) {
+    h.clock.advance(MIN / 2);
+    for (let j = 0; j < 5; j++) await tick();
+  }
+  assert.equal(h.events(thread.id).filter((e) => e.type === 'user.message' && e.scheduleId === sc.id).length, 0, 'the new process left it alone');
+  finishCheck();
+  for (let i = 0; i < 10; i++) await tick();
+  h.clock.advance(MIN);
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(h.events(thread.id).filter((e) => e.type === 'user.message' && e.scheduleId === sc.id).length, 1, 'sent once');
+  assert.equal(b.rows.get(sc.id)!.runs, 1);
+  assert.equal(b.rows.get(sc.id)!.claim, undefined, 'let go once recorded');
+  old.stop();
+  now.stop();
+});
+
+// The run went out but the backend can't be told yet (its answer lost, a
+// blip on that call): the claim is kept until it is, so another process
+// doesn't find the run still due and send it again.
+test('a sent run whose record keeps failing keeps its claim, so a second runner process never sends it too', async () => {
+  const h = makeHarness();
+  const { thread } = idleThread(h);
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  let recordFails = true;
+  const oldBe = b.for('laptop-old', LAPTOP.id);
+  const old = backendScheduler(h, LAPTOP, path.join(h.home, 'old'));
+  await old.attach({ ...oldBe, ran: async (p) => {
+    if (recordFails) throw new Error('fetch failed');
+    return oldBe.ran(p);
+  } });
+  const sc = await old.create({ text: 'Ping', at: iso(h.clock.now() + MIN), threadId: thread.id });
+  await tick();
+  h.clock.advance(MIN);
+  for (let i = 0; i < 5; i++) await tick();
+  // What the new process sends it records: none, while the old one holds it.
+  const newBe = b.for('laptop-new', LAPTOP.id);
+  let newRan = 0;
+  const now = backendScheduler(h, LAPTOP, path.join(h.home, 'new'));
+  await now.attach({ ...newBe, ran: async (p) => (newRan++, newBe.ran(p)) });
+  for (let i = 0; i < 10; i++) {
+    h.clock.advance(MIN / 2);
+    for (let j = 0; j < 5; j++) await tick();
+  }
+  assert.equal(newRan, 0, 'not sent again while its record waited');
+  recordFails = false;
+  for (let i = 0; i < 4; i++) {
+    h.clock.advance(MIN / 2);
+    for (let j = 0; j < 5; j++) await tick();
+  }
+  assert.equal(newRan, 0);
+  assert.equal(b.rows.get(sc.id)!.runs, 1);
+  assert.equal(b.rows.get(sc.id)!.claim, undefined, 'let go once recorded');
+  old.stop();
+  now.stop();
+});
+
+// Codex's review: the old process can't renew (asleep past the claim, or
+// its calls failing) and can't record, so the claim lapses. The new one
+// shares its data folder, where the old one wrote the run down before
+// telling the backend: it sees the run went and doesn't send it again.
+test('a run another process sent and wrote down is never sent again, even once its claim has lapsed', async () => {
+  const h = makeHarness();
+  const { thread } = idleThread(h);
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  const oldBe = b.for('laptop-old', LAPTOP.id);
+  let cut = false;
+  const old = backendScheduler(h, LAPTOP, h.home);
+  await old.attach({
+    ...oldBe,
+    claim: async (...a) => {
+      if (cut) throw new Error('fetch failed');
+      return oldBe.claim(...a);
+    },
+    ran: async () => {
+      throw new Error('fetch failed');
+    },
+  });
+  // The new process has started (and read the data folder) before the run.
+  const now = backendScheduler(h, LAPTOP, h.home);
+  const sc = await old.create({ text: 'Ping', at: iso(h.clock.now() + MIN), threadId: thread.id });
+  await tick();
+  h.clock.advance(MIN);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(b.rows.get(sc.id)!.claim?.holder, 'laptop-old', 'the old process sent it');
+  // Then the old one can't reach the backend, and its claim lapses.
+  cut = true;
+  const newBe = b.for('laptop-new', LAPTOP.id);
+  let newRan = 0;
+  await now.attach({ ...newBe, ran: async (p) => (newRan++, newBe.ran(p)) });
+  for (let i = 0; i < 10; i++) {
+    h.clock.advance(MIN / 2);
+    for (let j = 0; j < 5; j++) await tick();
+  }
+  // The new process told the backend of the old one's run rather than sending its own.
+  assert.ok(newRan >= 1);
+  assert.equal(b.rows.get(sc.id)!.runs, 1);
+  assert.equal(b.rows.get(sc.id)!.lastRun!.at, '2026-10-26T12:01:00.000Z', 'the old process’s run, not a second one');
+  old.stop();
+  now.stop();
+});
+
+// Codex's review: the schedule paused while the last check of the claim
+// was on its way back isn't sent.
+test('a schedule paused while its claim is confirmed just before the send isn’t sent', async () => {
+  const h = makeHarness();
+  const { thread } = idleThread(h);
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  const be = b.for('laptop-a', LAPTOP.id);
+  let claims = 0;
+  let paused!: Promise<unknown>;
+  const sched = backendScheduler(h, LAPTOP, h.home);
+  await sched.attach({
+    ...be,
+    claim: async (...a) => {
+      const ok = await be.claim(...a);
+      // The second: the confirmation, which the backend says yes to and
+      // whose answer a pause overtakes on its way back.
+      if (++claims === 2) {
+        paused = sched.update({ scheduleId: a[0], paused: true });
+        await paused;
+        await tick();
+      }
+      return ok;
+    },
+  });
+  const before = h.events(thread.id).filter((e) => e.type === 'user.message').length;
+  const sc = await sched.create({ text: 'Ping', at: iso(h.clock.now() + MIN), threadId: thread.id });
+  await tick();
+  h.clock.advance(MIN);
+  for (let i = 0; i < 8; i++) await tick();
+  assert.ok(claims >= 2, 'it was confirmed');
+  assert.equal(h.events(thread.id).filter((e) => e.type === 'user.message').length - before, 0, 'not sent');
+  assert.equal(b.rows.get(sc.id)!.paused, true);
+  sched.stop();
+});
+
+// Codex's review: a check's result, and the output kept from it, is for
+// the folder it ran in. One moved
+// to another folder while its claim was confirmed is checked again there.
+test('a schedule moved to another folder while its claim is confirmed is checked again there before it goes', async () => {
+  const h = makeHarness();
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  const be = b.for('laptop-a', LAPTOP.id);
+  const a = tmpDir();
+  const other = tmpDir();
+  const checkedIn: string[] = [];
+  let checkedWhenSent: string | undefined;
+  let claims = 0;
+  const sched = new Scheduler({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, zone: () => 'UTC', self: LAPTOP, syncOn: true, runCheck: async (p) => (checkedIn.push(p.cwd), { ok: true, output: 'news' }) });
+  sched.start();
+  await sched.attach({
+    ...be,
+    claim: async (...args) => {
+      const ok = await be.claim(...args);
+      if (++claims === 2) {
+        await sched.update({ scheduleId: args[0], cwd: other });
+        await tick();
+      }
+      return ok;
+    },
+    ran: async (p) => {
+      if (p.sent) checkedWhenSent ??= checkedIn.at(-1);
+      return be.ran(p);
+    },
+  });
+  const sc = await sched.create({ text: 'build', title: 'Build', at: iso(h.clock.now() + MIN), cwd: a, accountId: 'claude-3', check: 'ready' });
+  await tick();
+  h.clock.advance(MIN);
+  for (let i = 0; i < 6; i++) {
+    for (let j = 0; j < 5; j++) await tick();
+    h.clock.advance(MIN / 2);
+  }
+  assert.ok(claims >= 2, 'it was confirmed');
+  assert.equal(checkedIn[0], path.resolve(a));
+  assert.equal(checkedWhenSent, path.resolve(other), 'sent only after a check in its new folder');
+  assert.equal(b.rows.get(sc.id)!.runs, 1);
+  sched.stop();
+});
+
+test('a schedule moved to another folder while its check runs is checked again there before it goes', async () => {
+  const h = makeHarness();
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  const a = tmpDir();
+  const other = tmpDir();
+  const checkedIn: string[] = [];
+  let checkedWhenSent: string | undefined;
+  let finish: (() => void) | undefined;
+  const sched = new Scheduler({
+    runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, zone: () => 'UTC', self: LAPTOP, syncOn: true,
+    runCheck: (p) => {
+      checkedIn.push(p.cwd);
+      // The first waits until the move; any after answers at once.
+      if (checkedIn.length > 1) return Promise.resolve({ ok: true, output: 'news' });
+      return new Promise((done) => (finish = () => done({ ok: true, output: 'news' })));
+    },
+  });
+  sched.start();
+  const be = b.for('laptop-a', LAPTOP.id);
+  await sched.attach({ ...be, ran: async (p) => {
+    if (p.sent) checkedWhenSent ??= checkedIn.at(-1);
+    return be.ran(p);
+  } });
+  const sc = await sched.create({ text: 'build', title: 'Build', at: iso(h.clock.now() + MIN), cwd: a, accountId: 'claude-3', check: 'ready' });
+  await tick();
+  h.clock.advance(MIN);
+  for (let j = 0; j < 5; j++) await tick();
+  assert.ok(finish, 'checking in the first folder');
+  await sched.update({ scheduleId: sc.id, cwd: other });
+  await tick();
+  finish!();
+  for (let i = 0; i < 6; i++) {
+    for (let j = 0; j < 5; j++) await tick();
+    h.clock.advance(MIN / 2);
+  }
+  assert.equal(checkedIn[0], path.resolve(a));
+  assert.equal(checkedWhenSent, path.resolve(other), 'sent only after a check in its new folder');
+  assert.equal(b.rows.get(sc.id)!.runs, 1);
+  sched.stop();
+});
+
+test('a schedule moved while its check runs, whose confirmation then fails, is checked again in its new folder', async () => {
+  const h = makeHarness();
+  const b = fakeBackend(h.clock, [LAPTOP]);
+  const a = tmpDir();
+  const other = tmpDir();
+  const checkedIn: string[] = [];
+  let checkedWhenSent: string | undefined;
+  let finish: (() => void) | undefined;
+  const sched = new Scheduler({
+    runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, zone: () => 'UTC', self: LAPTOP, syncOn: true,
+    runCheck: (p) => {
+      checkedIn.push(p.cwd);
+      // The first waits until the move; any after answers at once.
+      if (checkedIn.length > 1) return Promise.resolve({ ok: true, output: 'news' });
+      return new Promise((done) => (finish = () => done({ ok: true, output: 'news' })));
+    },
+  });
+  sched.start();
+  const be = b.for('laptop-a', LAPTOP.id);
+  let claims = 0;
+  await sched.attach({
+    ...be,
+    // The second claim, the confirmation, doesn't get through.
+    claim: async (...args) => {
+      if (++claims === 2) throw new Error('fetch failed');
+      return be.claim(...args);
+    },
+    ran: async (p) => {
+      if (p.sent) checkedWhenSent ??= checkedIn.at(-1);
+      return be.ran(p);
+    },
+  });
+  const sc = await sched.create({ text: 'build', title: 'Build', at: iso(h.clock.now() + MIN), cwd: a, accountId: 'claude-3', check: 'ready' });
+  await tick();
+  h.clock.advance(MIN);
+  for (let j = 0; j < 5; j++) await tick();
+  assert.ok(finish, 'checking in the first folder');
+  await sched.update({ scheduleId: sc.id, cwd: other });
+  await tick();
+  finish!();
+  for (let i = 0; i < 6; i++) {
+    for (let j = 0; j < 5; j++) await tick();
+    h.clock.advance(MIN / 2);
+  }
+  assert.ok(claims >= 3, 'tried again after the failed confirmation');
+  assert.equal(checkedIn[0], path.resolve(a));
+  assert.equal(checkedWhenSent, path.resolve(other), 'sent only after a check in its new folder');
+  assert.equal(b.rows.get(sc.id)!.runs, 1);
+  sched.stop();
 });
 
 test('a check\'s output survives a handover in the backend too, and is sent once by the next runner', async () => {
@@ -1766,4 +2105,98 @@ test('a later failure of the schedules save is reported again, and stop ends the
   h.clock.advance(SAVE_RETRY_MS);
   // A stopped runner mustn't write over what the runner taking over has saved.
   assert.equal(fs.existsSync(file), false, 'the retry went with the scheduler');
+});
+
+// ae88bd2c, 20 Nov: deleted schedules kept delivering what they'd queued
+// for a busy thread. Deleted elsewhere counts too, one-offs included.
+test('a one-off deleted on the phone takes back its message queued for a busy thread', async () => {
+  const h = makeHarness();
+  const { thread } = h.runner.create({ text: 'Measure', accountId: 'claude-3' });
+  h.adapter.last.init();
+  const shared = fakeBackend(h.clock, [LAPTOP]);
+  const sched = new Scheduler({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, self: LAPTOP, syncOn: true });
+  sched.start();
+  await sched.attach(shared.for('primary', LAPTOP.id));
+  await tick(8);
+  try {
+    const sc = await sched.create({ text: 'Land it', at: iso(h.clock.now() + MIN), threadId: thread.id });
+    const kept = await sched.create({ text: 'Keep me', at: iso(h.clock.now() + MIN), threadId: thread.id });
+    h.clock.advance(MIN);
+    await tick(20);
+    assert.equal(h.runner.mustGet(thread.id).rec.queue.length, 2);
+    assert.ok(sched.find(sc.id).finishedAt);
+    await shared.for('phone', LAPTOP.id).remove(sc.id);
+    await tick(8);
+    assert.deepEqual(h.runner.mustGet(thread.id).rec.queue.map(q => q.scheduleId), [kept.id]);
+  } finally { sched.stop(); }
+});
+
+test('a schedule saved here but not yet in the backend\'s rows keeps its queued message', async () => {
+  const h = makeHarness();
+  const { thread } = h.runner.create({ text: 'Measure', accountId: 'claude-3' });
+  h.adapter.last.init();
+  const sched = new Scheduler({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, self: LAPTOP, syncOn: true });
+  sched.start();
+  // Rows reach the scheduler only when the test says, as a late snapshot would.
+  const be = fakeBackend(h.clock, [LAPTOP]).for('primary', LAPTOP.id);
+  let deliver: (rows: StoredSchedule[]) => void = () => {};
+  await sched.attach({ ...be, subscribe: (onRows) => { deliver = onRows; return () => {}; } });
+  deliver([]);
+  await tick(8);
+  try {
+    const sc = await sched.create({ text: 'Land it', cron: '*/5 * * * *', threadId: thread.id });
+    h.runner.sendScheduled(thread.id, 'Land it', sc.id, 'slot-1');
+    deliver([]);
+    assert.equal(h.runner.mustGet(thread.id).rec.queue.length, 1);
+    // Once the backend has shown it, leaving it out is a delete.
+    deliver([{ ...sc, runnerId: LAPTOP.id } as unknown as StoredSchedule]);
+    deliver([]);
+    assert.equal(h.runner.mustGet(thread.id).rec.queue.length, 0);
+  } finally { sched.stop(); }
+});
+
+test('deleting a schedule reaches a thread a draining runner still keeps', async () => {
+  const old = makeHarness();
+  const h = makeHarness(old.home);
+  const { thread } = old.runner.create({ text: 'Measure', accountId: 'claude-3' });
+  old.adapter.last.init();
+  const methods = scheduledSendMethods(old.runner) as Record<string, (p: Record<string, unknown>) => unknown>;
+  const peers = { call: async (_id: string, method: string, p: Record<string, unknown>) => methods[method](p) };
+  const sched = new Scheduler({
+    runner: h.runner, home: h.home, clock: h.clock, log: nullLogger,
+    elsewhere: () => true,
+    dropElsewhere: (id, scheduleId) => dropScheduled(h.runner, peers, id, scheduleId),
+  });
+  sched.start();
+  try {
+    const sc = await sched.create({ text: 'Land it', cron: '*/5 * * * *', threadId: thread.id });
+    old.runner.sendScheduled(thread.id, 'Land it', sc.id, 'slot-1');
+    old.runner.sendScheduled(thread.id, 'Other', 'other', 'slot-1');
+    await sched.delete(sc.id);
+    await tick(4);
+    assert.deepEqual(old.runner.mustGet(thread.id).rec.queue.map(q => q.scheduleId), ['other']);
+  } finally { sched.stop(); }
+});
+
+test('a schedule deleted on the phone while this runner was off is known as deleted from its first snapshot', async () => {
+  const h = makeHarness();
+  const { thread } = h.runner.create({ text: 'Measure', accountId: 'claude-3' });
+  h.adapter.last.init();
+  const shared = fakeBackend(h.clock, [LAPTOP]);
+  const first = new Scheduler({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, self: LAPTOP, syncOn: true });
+  first.start();
+  await first.attach(shared.for('primary', LAPTOP.id));
+  await tick(8);
+  const sc = await first.create({ text: 'Land it', cron: '*/5 * * * *', threadId: thread.id });
+  await tick(8);
+  first.stop();
+  await shared.for('phone', LAPTOP.id).remove(sc.id);
+  const again = new Scheduler({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, self: LAPTOP, syncOn: true });
+  again.start();
+  try {
+    assert.equal(again.wasDeleted(sc.id), false);
+    await again.attach(shared.for('primary', LAPTOP.id));
+    await tick(8);
+    assert.equal(again.wasDeleted(sc.id), true);
+  } finally { again.stop(); }
 });

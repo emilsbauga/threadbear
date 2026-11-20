@@ -24,6 +24,17 @@ exclude = ["vendor"]
 # snapshot's `visible_bounds`, what's drawn of an element inside its clips,
 # so scripted clicks land on it rather than its whole middle, which for one
 # scrolled half out of a pane is over its neighbour (13 Nov).
+# And links in a SelectableText (`links`), drawn in a colour and followed on a
+# click that isn't a drag, for the web addresses in Mike's bubble (16 Nov).
+# And a paste longer than a textarea scrolled to its end: `scroll_to` clamped
+# its target with the old text's height and left the box at the top (Mike,
+# 17 Nov: a dictated brain dump showed its start, the end cut off).
+# And a press whose release a click handler stopped (a PR tab's close) is
+# ended by the next press, not taken for a drag still going on: the link
+# clicked next did nothing until clicked again (Mike, 19 Nov;
+# `released_unseen` in text_selection.rs).
+# And a press on a link in text sends a sheen across its words, which Mike
+# picked from four mockups (19 Nov; `text/link_glint.rs`).
 [patch.crates-io]
 gpui-component = { path = "vendor/gpui-component" }
 gpui-base = { path = "vendor/gpui-base" }
@@ -32,7 +43,17 @@ gpui-base = { path = "vendor/gpui-base" }
 # reaches no target. Keep this patch when updating the snapshot. Also
 # Window::element_opacity made public, for the sidebar's turning arcs
 # (gpui/src/spinner.rs).
+# And ListState::scroll_px_offset_for_scrollbar reading an anchor past the
+# last item (following the tail, before the next layout) as the end of the
+# range, not a viewport beyond it: ScrollBounce took that gap for a pull past
+# the transcript's bottom and stretched it the wrong way (Ian, 17 Nov).
 gpui-pre = { path = "vendor/gpui-pre" }
+# gpui-pre-macos 0.3.11 as published, except that with a native view inside
+# the window holding the keyboard (a web panel's page), a key without ⌘ or
+# Control isn't GPUI's key equivalent: it goes to that view. Otherwise
+# Backspace and the arrows went to a GPUI text box out of sight (Mike, 19 Nov,
+# the YouTube panel). See another_view_has_the_keyboard in its window.rs.
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 
 # Scripted screenshots run in debug apps, often at background priority. An
 # unoptimized PNG encode stalled the app for 30 seconds (14 Nov). Optimize

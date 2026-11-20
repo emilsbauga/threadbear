@@ -128,7 +128,8 @@ test('an app that exits mid-command fails it at once, with the exit and the pani
 
 test('pruning old evidence leaves alone anything else in its folder', { skip }, async (t) => {
   const { app, kept } = await driver(t, 'drop');
-  fs.mkdirSync(kept, { recursive: true });
+  fs.mkdirSync(kept, { recursive: true, mode: 0o755 });
+  fs.chmodSync(kept, 0o755);
   for (let i = 0; i < 25; i++) fs.writeFileSync(path.join(kept, `000-report-${i}`), '');
   for (let i = 0; i < 22; i++) fs.mkdirSync(path.join(kept, `2020-01-01T00-00-${String(i).padStart(2, '0')}-000Z-abcdef`));
   await app.do({ cmd: 'dump' }).catch(() => {});
@@ -142,4 +143,91 @@ test("an ordinary refusal stays short and keeps nothing: specs poll for those", 
   const error = await app.do({ cmd: 'label-point', label: 'Nope' }, 5).then(() => assert.fail('it answered'), (e: Error) => e.message);
   assert.equal(error, 'label-point: no button called Nope');
   assert.equal(fs.existsSync(kept), false);
+});
+
+// Daybreak 149 (17 Nov): the evidence folder defaulted to /tmp/tb-spec-evidence and was used
+// whoever had made it. On Linux's /tmp another account could make it first, writable by all and
+// not sticky, rename a run's folder away and put its own in its place with output.txt a symlink to
+// a file of ours, and the write truncated that file. One account can't play the other here, so a
+// folder anyone can write to stands in for theirs: now it's never used, and the default has the
+// uid in its name on a temp folder others share.
+const POSIX = process.platform !== 'win32';
+
+function sharedTmp(t: TestContext): string {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tb-driver-evidence-shared-')));
+  const shared = path.join(dir, 'tmp');
+  fs.mkdirSync(shared);
+  fs.chmodSync(shared, 0o1777);
+  const before = process.env.TMPDIR;
+  t.after(() => {
+    if (before === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = before;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return shared;
+}
+
+async function failWith(t: TestContext, env: Record<string, string | undefined>): Promise<{ app: Driver; error: string }> {
+  const { app } = await driver(t, 'drop');
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  const error = await app.do({ cmd: 'dump' }).then(() => assert.fail('it answered'), (e: Error) => e.message);
+  return { app, error };
+}
+
+test("on a shared temp folder, another account's tb-spec-evidence is never written into", { skip: skip || !POSIX }, async (t) => {
+  const shared = sharedTmp(t);
+  // Theirs, made first, writable by anyone: the one the old code used.
+  const theirs = path.join(shared, 'tb-spec-evidence');
+  fs.mkdirSync(theirs);
+  fs.chmodSync(theirs, 0o777);
+  const { app, error } = await failWith(t, { TB_SPEC_EVIDENCE: undefined, TMPDIR: shared });
+  assert.deepEqual(fs.readdirSync(theirs), [], 'nothing went in theirs');
+  const mine = path.join(shared, `tb-spec-evidence-${process.getuid!()}`);
+  const [dir] = app.keptEvidence;
+  assert.equal(path.dirname(dir), mine);
+  assert.ok(error.includes(`Kept in ${dir}`));
+  assert.equal(fs.lstatSync(mine).mode & 0o777, 0o700);
+});
+
+test('an evidence folder others can write to, a symlink, or in a parent anyone can rename in, is refused and says so', { skip: skip || !POSIX }, async (t) => {
+  const shared = sharedTmp(t);
+  const mine = path.join(shared, `tb-spec-evidence-${process.getuid!()}`);
+  // Made first at our own name, writable by anyone.
+  fs.mkdirSync(mine);
+  fs.chmodSync(mine, 0o777);
+  let r = await failWith(t, { TB_SPEC_EVIDENCE: undefined, TMPDIR: shared });
+  assert.match(r.error, /Not kept: .*isn't a folder of this account's own/);
+  assert.deepEqual(fs.readdirSync(mine), []);
+  assert.equal(r.app.keptEvidence.length, 0);
+  fs.rmdirSync(mine);
+  // A symlink to a private folder of ours: what's written would land wherever it points.
+  const target = path.join(path.dirname(shared), 'target');
+  fs.mkdirSync(target, { mode: 0o700 });
+  fs.symlinkSync(target, mine);
+  r = await failWith(t, { TB_SPEC_EVIDENCE: undefined, TMPDIR: shared });
+  assert.match(r.error, /Not kept: .*isn't a folder of this account's own/);
+  assert.deepEqual(fs.readdirSync(target), []);
+  fs.unlinkSync(mine);
+  // A named one others can write to.
+  const named = path.join(path.dirname(shared), 'named');
+  fs.mkdirSync(named);
+  fs.chmodSync(named, 0o775);
+  r = await failWith(t, { TB_SPEC_EVIDENCE: named });
+  assert.match(r.error, /Not kept: .*isn't a folder of this account's own that only it can write to.*TB_SPEC_EVIDENCE/);
+  assert.deepEqual(fs.readdirSync(named), []);
+  // Ours, but under a folder anyone can rename things in: the whole tree could be swapped after the check.
+  const open = path.join(path.dirname(shared), 'open');
+  fs.mkdirSync(open);
+  fs.chmodSync(open, 0o777);
+  r = await failWith(t, { TB_SPEC_EVIDENCE: path.join(open, 'mine', 'evidence') });
+  assert.match(r.error, /Not kept: .*open can be changed by other accounts and isn't sticky/);
+  assert.equal(fs.existsSync(path.join(open, 'mine', 'evidence')), false);
+  // A shared temp folder without the sticky bit: anyone could rename ours away.
+  fs.chmodSync(shared, 0o777);
+  r = await failWith(t, { TB_SPEC_EVIDENCE: undefined, TMPDIR: shared });
+  assert.match(r.error, /Not kept: .*isn't sticky/);
+  fs.chmodSync(shared, 0o1777);
 });

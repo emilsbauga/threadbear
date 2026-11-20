@@ -42,10 +42,13 @@ for (const f of fs.readdirSync(here).filter((n) => n.endsWith('.feature')).sort(
 }
 
 function results(key) {
-  const file = path.join(reports, `${key}.json`);
-  if (!fs.existsSync(file)) return undefined;
+  // A run split into shards (TB_SHARD in cucumber.mjs) leaves one report each.
+  const files = fs.existsSync(reports)
+    ? fs.readdirSync(reports).filter((n) => n === `${key}.json` || (n.startsWith(`${key}.shard-`) && n.endsWith('.json')))
+    : [];
+  if (!files.length) return undefined;
   const out = new Map();
-  for (const feature of JSON.parse(fs.readFileSync(file, 'utf8'))) {
+  for (const feature of files.flatMap((n) => JSON.parse(fs.readFileSync(path.join(reports, n), 'utf8')))) {
     for (const el of feature.elements ?? []) {
       if (el.type !== 'scenario') continue;
       const passed = el.steps.every((s) => s.result?.status === 'passed' || s.result?.status === 'skipped');

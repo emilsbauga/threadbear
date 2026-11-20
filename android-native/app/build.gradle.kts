@@ -6,7 +6,7 @@ plugins {
 }
 
 /**
- * Push (FCM): the Firebase project's app config, read here into BuildConfig
+ * Push (FCM, the github flavour only): the Firebase project's app config, read here into BuildConfig
  * rather than through Google's google-services plugin, so a build without
  * it (the Hetzner box, someone's fork) still builds, with push off. It's
  * kept out of git (the repo is public): android-native/app/google-services.json
@@ -35,10 +35,14 @@ fun quoted(s: String?) = "\"" + (s ?: "") + "\""
  * Releases (docs/android-native.md, "Releases"): each release/YYYY-MM-DD tag
  * gets a signed APK on its GitHub release, built by .github/workflows/android.yml.
  * THREADBEAR_RELEASE is that tag's date; its digits make the versionCode, so
- * every release installs over the last. Without it (a local build) the
- * version is 0, and the app never offers itself an update.
+ * every release installs over the last. F-Droid's recipe passes the same
+ * date as a Gradle property instead (-PthreadbearRelease=2026-11-19), as it
+ * builds without our environment; the property wins when both are set.
+ * Without either (a local build) the version is 0, and the app never
+ * offers itself an update.
  */
-val releaseDate: String? = System.getenv("THREADBEAR_RELEASE")?.takeIf { Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(it) }
+val releaseDate: String? = ((findProperty("threadbearRelease") as String?) ?: System.getenv("THREADBEAR_RELEASE"))
+    ?.takeIf { Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(it) }
 
 /**
  * The release key: the workflow writes it from the repo's secrets and says
@@ -70,11 +74,32 @@ android {
         buildConfigField("String", "UPDATE_REPO", quoted(updateRepo))
         // Phones only: keeps the APK (and this box's disk) small.
         ndk { abiFilters += "arm64-v8a" }
-        // Empty when there's no google-services.json: push is off (Push.kt).
-        buildConfigField("String", "FIREBASE_PROJECT_ID", quoted(firebase["projectId"]))
-        buildConfigField("String", "FIREBASE_SENDER_ID", quoted(firebase["senderId"]))
-        buildConfigField("String", "FIREBASE_APP_ID", quoted(firebase["appId"]))
-        buildConfigField("String", "FIREBASE_API_KEY", quoted(firebase["apiKey"]))
+    }
+
+    /**
+     * Two stores (docs/android-native.md, "Flavours"): `github` is the APK
+     * on GitHub releases, with Firebase push through the relay, ML Kit's
+     * code scanner and its own update check; `fdroid` has no Google or
+     * other closed code (F-Droid's rule): UnifiedPush for notifications,
+     * ZXing for the scanner, and F-Droid does the updating. Only what
+     * differs lives in src/github and src/fdroid.
+     */
+    flavorDimensions += "store"
+    productFlavors {
+        create("github") {
+            dimension = "store"
+            buildConfigField("boolean", "SELF_UPDATE", "true")
+            // Empty when there's no google-services.json: push is off (FirebasePush.kt).
+            buildConfigField("String", "FIREBASE_PROJECT_ID", quoted(firebase["projectId"]))
+            buildConfigField("String", "FIREBASE_SENDER_ID", quoted(firebase["senderId"]))
+            buildConfigField("String", "FIREBASE_APP_ID", quoted(firebase["appId"]))
+            buildConfigField("String", "FIREBASE_API_KEY", quoted(firebase["apiKey"]))
+        }
+        create("fdroid") {
+            dimension = "store"
+            // F-Droid updates the app itself; no asking GitHub.
+            buildConfigField("boolean", "SELF_UPDATE", "false")
+        }
     }
 
     signingConfigs {
@@ -112,7 +137,9 @@ android {
 
 }
 
-kotlin { jvmToolchain(17) }
+// Java 17 bytecode from whatever JDK runs Gradle (17 or later), not a JDK 17
+// toolchain: F-Droid's build image only has 21 (compileOptions above).
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {
     implementation(project(":kit"))
@@ -135,8 +162,15 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.10.2")
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
-    implementation(platform("com.google.firebase:firebase-bom:35.1.0"))
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+
+    // github: Google's code scanner and Firebase push (src/github).
+    "githubImplementation"("com.google.android.gms:play-services-code-scanner:16.1.0")
+    "githubImplementation"(platform("com.google.firebase:firebase-bom:35.1.0"))
+    "githubImplementation"("com.google.firebase:firebase-messaging")
+    "githubImplementation"("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+
+    // fdroid: free software only (src/fdroid), both Apache-2.0. CI fails the
+    // build if a Firebase, Play services or ML Kit class gets into its APK.
+    "fdroidImplementation"("org.unifiedpush.android:connector:3.3.6")
+    "fdroidImplementation"("com.journeyapps:zxing-android-embedded:4.3.0")
 }

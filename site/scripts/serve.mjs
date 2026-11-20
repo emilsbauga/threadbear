@@ -12,7 +12,7 @@ import { headersFor } from "../headers.mjs";
 
 const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml", ".xml": "application/xml",
-  ".txt": "text/plain; charset=utf-8", ".webmanifest": "application/manifest+json", ".mp4": "video/mp4" };
+  ".txt": "text/plain; charset=utf-8", ".json": "application/json", ".webmanifest": "application/manifest+json", ".mp4": "video/mp4" };
 
 // The bytes a Range header asks for, as [start, end] (both included); undefined to send the
 // whole file, as a header this doesn't understand (several ranges, other units) is ignored; or

@@ -104,6 +104,12 @@ pub(crate) struct LimitAdvice {
     pub(crate) carry_on: bool,
     /// It's waiting, and carries on by itself at this time.
     pub(crate) carries_on_at: Option<i64>,
+    /// A Codex login it would carry on with that's out of room but has a
+    /// usage reset left: its id and the Use a reset button's tip (Mike, 16
+    /// Nov: he found two resets unused in Codex's settings after a pool
+    /// had sat out of room). Only this Mac's threads: the reset is spent
+    /// through this runner, with that login's own Codex.
+    pub(crate) reset: Option<(String, String)>,
 }
 
 impl Threadbear {
@@ -285,6 +291,17 @@ impl Threadbear {
             .into_any_element()
     }
 
+    /// Whether this panel's bar shows the rename field now: the main panel
+    /// on the open thread, or a thread's own panel (thread_panels.rs). The
+    /// dock then lets the field take the bar's free width.
+    pub(crate) fn header_is_renaming(&self, panel: &str) -> bool {
+        let Some(renaming) = self.renaming.as_deref() else { return false };
+        match crate::thread_panels::pinned_thread(panel) {
+            Some(id) => id == renaming,
+            None => panel == crate::shell::MAIN && self.home_page().is_none() && self.projects.open.is_none() && self.open_thread().is_some_and(|t| t.id == renaming),
+        }
+    }
+
     /// Makes the title a field, as a click on it does (`startRenaming`).
     pub(crate) fn start_renaming(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(title) = self.threads.get(&id).map(|t| t.title.clone()) else { return };
@@ -293,7 +310,7 @@ impl Threadbear {
         }
         let field = cx.new(|cx| InputState::new(window, cx).placeholder("Thread title").default_value(title));
         // A new name typed and not yet taken: an update's restart waits for it.
-        crate::unsent::watch(&field, "a thread's new title", cx);
+        crate::unsent::watch_in(&field, "the title box", Some(id.clone()), cx);
         // The whole name selected, so typing replaces it, as a click on the
         // Swift app's title does (Mike, 11 Nov).
         field.update(cx, |s, cx| s.select_all(window, cx));
@@ -377,15 +394,36 @@ impl Threadbear {
         let hover = style::sidebar_hover(cx);
         let mut button = tipped!(div().id("header-share").relative().w(px(26.)).h(px(26.)).flex().items_center().justify_center().rounded(px(6.)).hover(move |s| s.bg(hover)), tip)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.share_popover = if this.share_popover.as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) };
-                cx.notify();
-            }))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_share_popover(id.clone(), window, cx)))
             .child(icon("square.and.arrow.up", style::size::LABEL, color));
         if open {
             button = button.child(self.render_share_popover(thread, cx));
         }
         button.into_any_element()
+    }
+
+    /// Opens the share popover on `id`, or closes it if it's up. Open, it
+    /// has the keyboard, so Escape closes it as the Swift app's NSPopover
+    /// does by itself (the fuzzing run found it didn't, 18 Nov).
+    pub(crate) fn toggle_share_popover(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.share_popover.as_deref() == Some(id.as_str()) {
+            self.close_share_popover(window, cx);
+            return;
+        }
+        if self.share_popover.is_none() {
+            self.share_before = window.focused(cx).filter(|f| *f != self.share_focus);
+        }
+        self.share_popover = Some(id);
+        window.focus(&self.share_focus, cx);
+        crate::web_panels::keyboard_to_app(window);
+        cx.notify();
+    }
+
+    /// Puts the share popover away, giving the keyboard back if it still has it.
+    pub(crate) fn close_share_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.share_popover = None;
+        crate::sidebar::give_back_focus(&self.share_focus, self.share_before.take().as_ref(), window, cx);
+        cx.notify();
     }
 
     /// Who can read the thread, the link, and Copy (`SharePopover`).
@@ -395,8 +433,24 @@ impl Threadbear {
         let id = thread.id.clone();
         let busy = self.share_busy;
         let (secondary, bg, border) = (style::secondary_text(cx), cx.theme().popover, cx.theme().border);
-        let option = |label: &'static str, access: &'static str, selected: bool, id: String, cx: &mut Context<Self>| {
-            tipped!(div().id(label).flex_1().flex().justify_center().px(px(8.)).py(px(4.)).rounded(px(6.)).when(selected, |s| s.bg(style::primary_opacity(cx, 0.08))).text_size(px(style::size::LABEL)), "Who can read it")
+        // Each choice is named by its own words to a screen reader, and says
+        // whether it's the one chosen (both were "Who can read it" until 18 Nov).
+        let option = |label: &'static str, tip: &'static str, access: &'static str, selected: bool, id: String, cx: &mut Context<Self>| {
+            div()
+                .id(label)
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_toggled(if selected { Toggled::True } else { Toggled::False })
+                .aria_label(label)
+                .tip(tip)
+                .flex_1()
+                .flex()
+                .justify_center()
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .when(selected, |s| s.bg(style::primary_opacity(cx, 0.08)))
+                .text_size(px(style::size::LABEL))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     if !this.share_busy {
                         this.set_share(id.clone(), access, false, cx);
@@ -404,7 +458,10 @@ impl Threadbear {
                 }))
                 .child(label)
         };
-        let rows = vec![option("Only you", "off", !on, id.clone(), cx).into_any_element(), option("Anyone with the link", "link", on, id.clone(), cx).into_any_element()];
+        let rows = vec![
+            option("Only you", "Only you can read it", "off", !on, id.clone(), cx).into_any_element(),
+            option("Anyone with the link", "Anyone with the link can read it", "link", on, id.clone(), cx).into_any_element(),
+        ];
         let id_for_new = id.clone();
         let link_row = link.clone().map(|link| {
             let (copy, open) = (link.clone(), link.clone());
@@ -428,15 +485,19 @@ impl Threadbear {
                     .border_1()
                     .border_color(border)
                     .shadow_lg()
-                    .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        this.share_popover = None;
-                        cx.notify();
+                    .track_focus(&self.share_focus)
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                        if ev.keystroke.key == "escape" {
+                            this.close_share_popover(window, cx);
+                            cx.stop_propagation();
+                        }
                     }))
+                    .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| this.close_share_popover(window, cx)))
                     .child(
                         v_flex()
                             .gap(px(12.))
                             .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(style::size::LABEL)).child("Share this thread"))
-                            .child(h_flex().gap(px(4.)).children(rows))
+                            .child(h_flex().id("share-who").test_support().role(Role::RadioGroup).aria_label("Who can read it").gap(px(4.)).children(rows))
                             .when(busy, |s| s.child(div().size(px(14.)).child(Spinner::new().icon(IconName::LoaderCircle).color(secondary).with_size(px(14.)))))
                             .when_some(link_row, |s, l| s.child(l)),
                     ),
@@ -834,6 +895,16 @@ impl Threadbear {
         }
     }
 
+    /// A move of `now` that has just failed says so in the error bar, with
+    /// why (ThreadSummary::move_failure). A thread the app hadn't seen
+    /// before (`before` None) says nothing: that's an old failure, already
+    /// on its row.
+    pub(crate) fn note_failed_move(&mut self, before: Option<&ThreadSummary>, now: &ThreadSummary, cx: &mut Context<Self>) {
+        if let Some(message) = before.and_then(|b| now.move_failure(b)) {
+            self.show_error(message, cx);
+        }
+    }
+
     /// The same over a new list of every thread, against the one before it.
     pub(crate) fn note_failed_accounts(&mut self, before: &std::collections::HashMap<String, std::sync::Arc<ThreadSummary>>) {
         let now: Vec<ThreadSummary> = self.threads.values().map(|t| &**t).cloned().collect();
@@ -847,7 +918,7 @@ impl Threadbear {
     /// `limitAdvice`: when a thread can't go on where it is, says so, and
     /// where it could go instead.
     pub(crate) fn limit_advice(&self, thread: &ThreadSummary, cx: &App) -> Option<LimitAdvice> {
-        use threadbear_core::new_thread::{continue_title, has_room, pool_logins, switch_targets, usage_of};
+        use threadbear_core::new_thread::{continue_title, has_room, pool_logins, reset_target, reset_tip, switch_targets, usage_of};
         // Another runner's thread is judged by that runner's own logins and
         // offered them, never this Mac's: a login id like "claude-main" is
         // that runner's, and one of the same id here is a different login
@@ -861,6 +932,15 @@ impl Threadbear {
         let accounts = &logins.accounts;
         let targets: Vec<(String, String)> = switch_targets(accounts, &thread.account_id).into_iter().map(|a| (a.id.clone(), continue_title(a, accounts))).collect();
         let local = thread.runner_id.is_none();
+        // The thread's own login first, then the rest of its pool.
+        let pool_of = thread.pool_id.as_deref().filter(|_| logins.uses_pools()).and_then(|id| logins.pool(id));
+        let reset_offer = if local {
+            let own = logins.account(&thread.account_id);
+            let pooled = pool_of.map(|p| pool_logins(p, accounts, None)).unwrap_or_default();
+            reset_target(own.into_iter().chain(pooled)).map(|a| (a.id.clone(), reset_tip(a, accounts, &threadbear_core::sidebar::local_now())))
+        } else {
+            None
+        };
         // A pool thread is the runner's to move: nothing while its pool has a
         // login with room, and when it carries on once it's waiting. Once
         // the whole pool is out it asks: Continue now on a login outside
@@ -868,7 +948,7 @@ impl Threadbear {
         if logins.uses_pools() {
             if let Some(pool) = thread.pool_id.as_deref().and_then(|id| logins.pool(id)) {
                 if let Some(until) = thread.waiting_for_room_until_ms() {
-                    return Some(LimitAdvice { text: format!("Every login in {} is out of room.", pool.title), targets, stopped: local, carry_on: true, carries_on_at: Some(until) });
+                    return Some(LimitAdvice { text: format!("Every login in {} is out of room.", pool.title), targets, stopped: local, carry_on: true, carries_on_at: Some(until), reset: reset_offer });
                 }
                 if pool_logins(pool, accounts, None).into_iter().any(has_room) {
                     return None;
@@ -876,7 +956,10 @@ impl Threadbear {
             }
         }
         let usage = logins.account(&thread.account_id).and_then(usage_of);
-        let blocked = usage.as_ref().is_some_and(|u| u.blocked);
+        // A signed-out login isn't at a limit that resets: the sign-in line
+        // and its row in Usage say what to do instead.
+        let signed_out = logins.account(&thread.account_id).is_some_and(|a| a.signed_out);
+        let blocked = usage.as_ref().is_some_and(|u| u.blocked) && !signed_out;
         // Only while the thread is still on the login the turn failed on:
         // after "Switch to ..." the status stays error until the next turn,
         // and the line would blame the new login.
@@ -888,7 +971,10 @@ impl Threadbear {
         if !blocked && !failed_on_limit && waiting.is_none() {
             return None;
         }
-        let mut text = format!("{} has reached its limit", threadbear_core::logins::short_account_name(&thread.account_id, accounts));
+        let ended = logins.account(&thread.account_id).is_some_and(|a| a.plan_ended);
+        let name = threadbear_core::logins::short_account_name(&thread.account_id, accounts);
+        // A lapsed plan has no reset coming (the runner sends no usage for it).
+        let mut text = if ended { format!("{name}'s plan has ended") } else { format!("{name} has reached its limit") };
         // The soonest of the windows that are used up (`mainWindows`).
         let reset = usage.as_ref().and_then(|u| threadbear_core::new_thread::main_windows(u).into_iter().filter(|w| w.remaining_percent < 1.).filter_map(|w| w.resets_at).min());
         if let Some(ms) = reset {
@@ -905,7 +991,7 @@ impl Threadbear {
         // (runner.ts update, limitHitTurn), so asking is safe (Codex's
         // second review, 13 Nov).
         let carry_on = failed_on_limit || waiting.is_some() || !local;
-        Some(LimitAdvice { text, targets, stopped: local && carry_on, carry_on, carries_on_at: waiting })
+        Some(LimitAdvice { text, targets, stopped: local && carry_on, carry_on, carries_on_at: waiting, reset: reset_offer })
     }
 
     /// The limit box's Carry on by itself (`setCarryOnAtReset`): shown at
@@ -926,7 +1012,91 @@ impl Threadbear {
         let picked = self.limit_pick.get(&thread.id).filter(|id| advice.targets.iter().any(|(t, _)| t == *id)).cloned();
         let button = picked.as_deref().and_then(|id| advice.targets.iter().find(|(t, _)| t == id)).or(advice.targets.first()).map(|(_, title)| format!("Continue now on {title}"));
         let menu: Vec<&String> = advice.targets.iter().map(|(_, title)| title).collect();
-        json!({ "text": advice.text, "button": button, "logins": menu, "carryOn": carry_on })
+        json!({ "text": advice.text, "button": button, "logins": menu, "carryOn": carry_on, "reset": advice.reset.as_ref().map(|(id, tip)| json!({ "accountId": id, "tip": tip, "busy": self.resetting.contains(id) })) })
+    }
+
+    /// The limit box's Use a reset (`accounts.useReset`): spends one of the
+    /// Codex login's usage resets. The button spins and can't be pressed
+    /// again until the runner answers; the runner's reading after the reset
+    /// lifts the block, and a thread waiting for room carries on by itself.
+    pub(crate) fn use_reset(&mut self, account: String, cx: &mut Context<Self>) {
+        if !self.resetting.insert(account.clone()) {
+            return;
+        }
+        cx.notify();
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let res = call(client, "accounts.useReset", json!({ "accountId": account })).await;
+            this.update(cx, |t, cx| {
+                t.resetting.remove(&account);
+                let name = threadbear_core::logins::short_account_name(&account, &t.logins.accounts);
+                match res {
+                    Ok(v) => {
+                        // The login as the runner has it after the reset, so
+                        // the box goes now rather than with the next
+                        // accounts.updated (up to 5 s later).
+                        if v["account"].is_object() {
+                            t.logins.replace_account(&v["account"]);
+                        }
+                        match v["outcome"].as_str() {
+                            Some("reset") | Some("alreadyRedeemed") => t.flash_done(&format!("Reset {name}'s limits"), cx),
+                            Some("nothingToReset") => t.show_error(format!("Codex says {name} has nothing to reset yet."), cx),
+                            Some("noCredit") => t.show_error(format!("{name} has no resets left."), cx),
+                            _ => {}
+                        }
+                    }
+                    Err(e) if e.code == -32601 => t.show_error("This Mac's runner is too old to use a reset. It updates by itself.".into(), cx),
+                    Err(e) => t.show_error(e.message, cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The Usage panel's Find work for it (`accounts.findWork`): the runner
+    /// starts a thread on that login suggesting work for the rest of its
+    /// week, or answers the one it already started, and it opens. The button
+    /// spins and takes no clicks until then.
+    pub(crate) fn find_work(&mut self, account: String, cx: &mut Context<Self>) {
+        if !self.usage.finding_work.insert(account.clone()) {
+            return;
+        }
+        cx.notify();
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let res = call(client, "accounts.findWork", json!({ "accountId": account })).await;
+            this.update(cx, |t, cx| {
+                t.usage.finding_work.remove(&account);
+                match res {
+                    Ok(v) => {
+                        let id = v["threadId"].as_str().unwrap_or_default().to_owned();
+                        if id.is_empty() {
+                            t.show_error("The runner didn't say what thread it made.".to_owned(), cx);
+                        } else {
+                            // Listed now, so it opens before threads.created.
+                            if let Ok(thread) = serde_json::from_value::<threadbear_core::inbox::ThreadSummary>(v["thread"].clone()) {
+                                if thread.id == id {
+                                    t.threads.insert(id.clone(), std::sync::Arc::new(thread));
+                                }
+                            }
+                            // Not from inside this update: opening needs the
+                            // window, whose update would come back here.
+                            let (me, window) = (cx.entity().downgrade(), t.main_window);
+                            cx.defer(move |cx| {
+                                window.update(cx, |_, window, cx| me.update(cx, |this, cx| this.open(id, window, cx)).ok()).ok();
+                            });
+                        }
+                    }
+                    Err(e) if e.code == -32601 => t.show_error("This Mac's runner is too old for Find work for it. It updates by itself.".into(), cx),
+                    Err(e) => t.show_error(e.message, cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn switch_account(&mut self, thread: &str, account: String, cx: &mut Context<Self>) {
@@ -986,6 +1156,9 @@ impl Threadbear {
         let hairline = style::hairline(cx);
         let orange = style::needs_you(cx);
         let id = thread.id.clone();
+        // Where this login's confetti pops from once it's signed back in,
+        // if the line's still up (confetti.rs).
+        let anchor = account.as_ref().map(|a| crate::confetti::anchor(format!("sign-in-line:{}", a.id)));
         let provider = account.as_ref().map_or(thread.provider.as_str(), |a| a.provider.as_str());
         let fallback = threadbear_core::logins::RunnerLogins::default();
         let logins = match thread.runner_id.as_deref() {
@@ -993,14 +1166,24 @@ impl Threadbear {
             None => &self.logins,
         };
         let name = logins.provider_title(provider);
+        // Which login, by id and email: Mike has several of each provider,
+        // and "Claude needs you to sign in again" left him guessing which
+        // (claude-1, 14 Nov).
+        let who = match logins.account(&thread.account_id) {
+            Some(a) => threadbear_core::usage::sign_in_label(a),
+            None => thread.account_id.clone(),
+        };
+        // The id already names the provider (claude-1, codex-main), and the
+        // line has to fit beside the Highlights pane.
+        let login = if who.is_empty() { name.clone() } else { who };
         let (text, tip) = match (&account, &remote) {
-            (Some(a), _) => (format!("{name} needs you to sign in again."), format!("The login {} was refused: signed out, or its session ran out", a.title)),
+            (Some(_), _) => (format!("{login} is signed out."), format!("{login} was refused: signed out, or its sign-in ended. Sign in… opens its own sign-in")),
             (None, Some(runner)) => {
                 let command = logins.login_command(provider);
                 let tip = if command.is_empty() { format!("Sign in on {runner} itself") } else { format!("Sign in on {runner} itself: {command} in its Terminal") };
-                (format!("{name} on {runner} needs you to sign in again."), tip)
+                (format!("{login} on {runner} is signed out."), tip)
             }
-            (None, None) => (format!("{name} needs you to sign in again."), "Sign in using that login's CLI, then send your last message again".into()),
+            (None, None) => (format!("{login} is signed out."), "Sign in using that login's CLI, then send your last message again".into()),
         };
         h_flex()
             .flex_none()
@@ -1012,7 +1195,7 @@ impl Threadbear {
             .border_color(hairline)
             .text_size(px(style::size::LABEL))
             .child(icon("person.crop.circle.badge.exclamationmark", 13., orange))
-            .child(tipped!(div().id("signin-text").flex_1().min_w_0().truncate(), tip, gpui_kit::Role::GenericContainer).child(text))
+            .child(tipped!(div().id("signin-text").relative().flex_1().min_w_0().truncate(), tip, gpui_kit::Role::GenericContainer).child(text).children(anchor))
             // Another Mac's login is signed in on that Mac: Terminal here would
             // sign in this Mac's CLI.
             .when_some(account, |s, account| {
@@ -1031,12 +1214,32 @@ impl Threadbear {
             .into_any_element()
     }
 
+    /// Sign in… on a login's row in the Usage panel: this Mac's login by id.
+    pub(crate) fn sign_in_login(&mut self, id: &str, cx: &mut Context<Self>) {
+        let known = self.logins.account(id).map(|a| SignInAccount { id: a.id.clone(), provider: a.provider_id().to_owned(), title: a.title.clone(), config_dir: a.config_dir.clone() });
+        let provider = known.as_ref().map(|a| a.provider.clone()).unwrap_or_default();
+        match sign_in::account_for(id, &provider, false, known) {
+            Some(account) if !self.logins.login_command(&account.provider).is_empty() => self.sign_in(account, cx),
+            _ => self.show_error(format!("Threadbear can't sign {id} in from here: run its CLI's sign-in in Terminal."), cx),
+        }
+    }
+
     /// Sign in…: Terminal on the CLI's own sign-in for that login, as the
     /// runner starts that CLI (`signIn`). A .command file rather than
     /// AppleScript, so macOS doesn't ask to let Threadbear control Terminal.
     /// The CLI's path is the runner's (Codex is often Threadbear's own copy,
     /// not on the PATH), asked for now so it's the one in use.
     pub(crate) fn sign_in(&mut self, account: SignInAccount, cx: &mut Context<Self>) {
+        self.sign_in_as(account, false, cx);
+    }
+
+    /// Sign in…, then a year-long token for the same Claude login in the
+    /// same Terminal window: the setup cards' Sign in… and Add.
+    pub(crate) fn sign_in_for_a_year(&mut self, account: SignInAccount, cx: &mut Context<Self>) {
+        self.sign_in_as(account, true, cx);
+    }
+
+    fn sign_in_as(&mut self, account: SignInAccount, year: bool, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let command = self.logins.login_command(&account.provider).to_owned();
         let pi_script = self.pi_login_script(&account.id);
@@ -1051,7 +1254,8 @@ impl Threadbear {
                 .unwrap_or("")
                 .to_owned();
             let file = std::env::temp_dir().join(format!("threadbear-sign-in-{}.command", sign_in::file_safe(&account.id)));
-            let written = write_script(&file, &pi_script.unwrap_or_else(|| sign_in::script_named(&account, &path, &command, &name)));
+            let script = if year { sign_in::sign_in_for_a_year_script(&account, &path, &command, &name) } else { sign_in::script_named(&account, &path, &command, &name) };
+            let written = write_script(&file, &pi_script.unwrap_or(script));
             this.update(cx, |this, cx| match written {
                 // The script this app just wrote, every word of it quoted.
                 Ok(()) => crate::open_gate::open_own(&file, cx),
@@ -1065,6 +1269,36 @@ impl Threadbear {
     pub(crate) fn pi_login_script(&self, id: &str) -> Option<String> {
         let known = self.logins.account(id).filter(|a| a.provider_id() == "pi" && !a.config_dir.trim().is_empty())?;
         Some(sign_in::pi_script(&known.config_dir, known.executable.as_deref().unwrap_or("pi"), known.connection.as_ref().map_or("openrouter", |c| c.provider.as_str())))
+    }
+
+    /// Year-long token… on a Claude login's Usage row: Terminal on
+    /// `claude setup-token` for that login, through the app's own helper,
+    /// which keeps the token in the login's folder (sign_in::token_script).
+    /// The runner sees the new file on its next look at the logins.
+    pub(crate) fn make_year_token(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(account) = self.logins.account(id).map(|a| SignInAccount { id: a.id.clone(), provider: a.provider_id().to_owned(), title: a.title.clone(), config_dir: a.config_dir.clone() }).filter(|a| a.provider == "claude" && a.can_sign_in()) else {
+            self.show_error(format!("Threadbear can't make a token for {id} from here: run claude setup-token for it in Terminal."), cx);
+            return;
+        };
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let clis = call(client, "clis.list", json!({})).await.ok();
+            let path = clis
+                .as_ref()
+                .and_then(|v| v["clis"].as_array())
+                .and_then(|list| list.iter().find(|c| c["provider"].as_str() == Some("claude")))
+                .and_then(|c| c["path"].as_str())
+                .unwrap_or("")
+                .to_owned();
+            let file = std::env::temp_dir().join(format!("threadbear-token-{}.command", sign_in::file_safe(&account.id)));
+            let written = write_script(&file, &sign_in::token_script(&account, &path));
+            this.update(cx, |this, cx| match written {
+                Ok(()) => crate::open_gate::open_own(&file, cx),
+                Err(e) => this.show_error(format!("Couldn't open Terminal to make a token: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Sends the thread's last message of his again, after signing in
@@ -1229,12 +1463,10 @@ impl Threadbear {
             NOT_CONNECTED if held => return self.show_connection_error(crate::thread::NOT_CONNECTED_TEXT.to_owned(), cx),
             NOT_CONNECTED => "Couldn't reach the runner.".to_owned(),
             CLOSED => "Lost the connection to the runner.".to_owned(),
-            TIMED_OUT => "The runner didn't answer threads.send in time.".to_owned(),
+            TIMED_OUT => "The runner didn't answer in time.".to_owned(),
             _ => return self.show_error(error.message.clone(), cx),
         };
-        let title = title.trim();
-        let name = if title.is_empty() { "this thread".to_owned() } else { format!("\u{201C}{title}\u{201D}") };
-        self.show_error(format!("{what} Your message to {name} wasn't sent. It's back in its box."), cx);
+        self.show_error(send_failed_text(&what, title, error.code == TIMED_OUT), cx);
     }
 
     fn dismiss_error(&mut self, cx: &mut Context<Self>) {
@@ -1362,11 +1594,45 @@ impl Threadbear {
     }
 
     /// "Archived" and the thread's name with Undo; a click on it opens the
-    /// thread in the Archived section (`ArchivedToast`).
+    /// thread in the Archived section (`ArchivedToast`). An x, or a
+    /// sideways swipe on a trackpad, puts it away; it follows the fingers
+    /// and goes past `SWIPE_AWAY`, else springs back.
     fn render_archived_toast(&mut self, note: shell::ArchivedNote, cx: &mut Context<Self>) -> AnyElement {
+        const SWIPE_AWAY: f32 = 60.;
         let (secondary, separator, accent) = (style::secondary_text(cx), style::hairline(cx), style::accent(cx));
         let title = if note.title.is_empty() { "Untitled".to_string() } else { note.title.clone() };
+        let shift = self.toast_swipe.x;
+        let fade = (1. - (f32::from(shift).abs() / (SWIPE_AWAY * 2.))).clamp(0.3, 1.);
         self.toast_capsule("archived-toast", cx)
+            .relative()
+            .left(shift)
+            .opacity(fade)
+            .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
+                // A trackpad's own pixels only: a mouse wheel's lines have
+                // no end to the gesture to spring back on.
+                if !ev.delta.precise() {
+                    return;
+                }
+                match ev.touch_phase {
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        if f32::from(this.toast_swipe.x).abs() > SWIPE_AWAY && ev.touch_phase == TouchPhase::Ended {
+                            this.dismiss_archived_note(cx);
+                        } else {
+                            this.toast_swipe = Point::default();
+                            cx.notify();
+                        }
+                    }
+                    _ => {
+                        let d = ev.delta.pixel_delta(px(16.));
+                        // Sideways only: an up or down scroll is for the page under it.
+                        if f32::from(d.x).abs() > f32::from(d.y).abs() || this.toast_swipe.x != px(0.) {
+                            this.toast_swipe.x += d.x;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }
+                }
+            }))
             .child(
                 tipped!(h_flex().id("archived-open").gap(px(7.)).items_center(), "Open this thread")
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_archived_note(window, cx)))
@@ -1379,6 +1645,11 @@ impl Threadbear {
                 tipped!(div().id("archived-undo").text_color(accent).font_weight(FontWeight::MEDIUM), "Put it back in the inbox")
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.undo_archive(window, cx)))
                     .child("Undo"),
+            )
+            .child(
+                tipped!(div().id("archived-dismiss").flex().items_center().justify_center().size(px(18.)).rounded_full().cursor_pointer().hover(|d| d.bg(separator)), "Dismiss (⌘Z still brings it back)")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_archived_note(cx)))
+                    .child(icon("xmark", style::size::LABEL - 2., secondary)),
             )
             .into_any_element()
     }
@@ -1480,11 +1751,7 @@ fn icon(name: &str, size: f32, color: Hsla) -> Icon {
 
 /// `abbreviatingHome`, for tooltips.
 fn abbreviate(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path == home => "~".into(),
-        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
-    }
+    threadbear_core::new_thread::abbreviate_home(path, &crate::files::home_dir())
 }
 
 /// The sign-in script, readable and runnable by Mike only, written whole:
@@ -1493,4 +1760,35 @@ fn abbreviate(path: &str) -> String {
 /// Swift's `write(to:atomically:)` does (`private_file`).
 fn write_script(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     threadbear_core::private_file::write_with_mode(path, text.as_bytes(), 0o700)
+}
+
+/// The error bar's words for a send that didn't go (`show_send_failed`).
+/// `unanswered`: the runner never answered, and the message wasn't in the
+/// thread when the app looked, but a stalled runner may still take it, so
+/// it doesn't say it wasn't sent.
+fn send_failed_text(what: &str, title: &str, unanswered: bool) -> String {
+    let title = title.trim();
+    let name = if title.is_empty() { "this thread".to_owned() } else { format!("\u{201C}{title}\u{201D}") };
+    if unanswered {
+        format!("{what} Your message to {name} hasn't shown up there, so it's back in its box. It may still arrive: look before sending it again.")
+    } else {
+        format!("{what} Your message to {name} wasn't sent. It's back in its box.")
+    }
+}
+
+#[cfg(test)]
+mod send_failed_tests {
+    use super::send_failed_text;
+
+    #[test]
+    fn a_send_with_no_answer_doesnt_say_it_wasnt_sent() {
+        let text = send_failed_text("The runner didn't answer in time.", "Daily brief", true);
+        assert!(!text.contains("wasn't sent"), "{text}");
+        assert!(text.contains("\u{201C}Daily brief\u{201D}") && text.contains("back in its box"), "{text}");
+    }
+
+    #[test]
+    fn a_lost_connection_says_it_wasnt_sent() {
+        assert_eq!(send_failed_text("Couldn't reach the runner.", "  ", false), "Couldn't reach the runner. Your message to this thread wasn't sent. It's back in its box.");
+    }
 }

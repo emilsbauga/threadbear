@@ -8,11 +8,14 @@ import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { Projects, projectMethods } from '../../src/projects.ts';
 import { Librarian, ICON_SOON_MS, ICON_SWEEP_MS } from '../../src/librarian.ts';
 import { findIcon, imageSize, phonePicture, storeIcon, SYMBOLS } from '../../src/project-icons.ts';
-import { magickCommand, pictureKind, svgToPng } from '../../src/images.ts';
+import { magickCommand, pictureKind, svgToPng, winCommand } from '../../src/images.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
 import type { GenerateParams, ModelResult } from '../../src/models/index.ts';
+import { skipOnWindows } from '../helpers/platform.ts';
+
+const NO_RESIZE = "Pictures are resized with sips or ImageMagick, which the Windows port doesn't use yet";
 
 // A real PNG of one colour, so sips can read it.
 function png(w: number, h: number, rgb: [number, number, number] = [200, 80, 40]): Buffer {
@@ -118,7 +121,7 @@ function setup(models?: (p: GenerateParams) => ModelResult<string>) {
   return { h, root, home, clock, projects, librarian, asked, settle };
 }
 
-test('the librarian copies a project icon in, follows the file when it changes, and takes it away with the project', async () => {
+test('the librarian copies a project icon in, follows the file when it changes, and takes it away with the project', skipOnWindows(NO_RESIZE), async () => {
   const s = setup();
   const app = folder(s.root, 'walkies', { 'Walkies/Assets.xcassets/AppIcon.appiconset/AppIcon.png': png(1024, 1024) });
   const p = s.projects.create({ title: 'Walkies', folders: [app], by: 'mike' });
@@ -202,7 +205,7 @@ test("Alex's and agents' choices stay until set back to automatic", async () => 
   s.librarian.stop();
 });
 
-test('the phone gets a PNG as it is and an SVG drawn to a 256 px PNG', async () => {
+test('the phone gets a PNG as it is and an SVG drawn to a 256 px PNG', skipOnWindows(NO_RESIZE), async () => {
   const dir = tmpDir();
   const pngPath = path.join(dir, 'p1-aaa.png');
   fs.writeFileSync(pngPath, png(8, 8));
@@ -284,4 +287,19 @@ test('an SVG is never drawn by ImageMagick on Linux', { skip: process.platform =
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, PATH: bin }, encoding: 'utf8' });
   assert.equal(out.trim(), 'false');
   assert.ok(!fs.existsSync(path.join(dir, 'ran')), 'ImageMagick was not run');
+});
+
+test("Windows' converter is only ever handed a picture, with what to do passed in base64 in front of its script", () => {
+  const dir = tmpDir();
+  const out = path.join(dir, "it's out.jpg");
+  const write = (name: string, body: string | Buffer) => (fs.writeFileSync(path.join(dir, name), body), path.join(dir, name));
+  assert.equal(winCommand(write('icon.png', MSL), out, { format: 'png' }, 'SCRIPT', 'ps.exe'), undefined);
+  const real = write('real.png', png(8, 8));
+  const cmd = winCommand(real, out, { format: 'jpeg', quality: 80, maxPx: 2048 }, 'SCRIPT', 'ps.exe');
+  assert.equal(cmd?.[0], 'ps.exe');
+  const at = cmd![1].indexOf('-EncodedCommand');
+  const text = Buffer.from(cmd![1][at + 1]!, 'base64').toString('utf16le');
+  const m = /^\$p = '([A-Za-z0-9+/=]+)'\nSCRIPT$/.exec(text);
+  assert.ok(m, text);
+  assert.deepEqual(Buffer.from(m[1]!, 'base64').toString('utf8').split('\0'), [real, out, 'jpeg', '80', '2048']);
 });

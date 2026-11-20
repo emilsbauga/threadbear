@@ -18,6 +18,7 @@ import type { CliRequest, CliResponse } from '../../src/models/claude-pool.ts';
 import { ledgerPath } from '../../src/models/ledger.ts';
 import { SettingsService, settingsMethods } from '../../src/settings.ts';
 import type { Account, Pool } from '../../src/protocol.ts';
+import { skipOnWindows } from '../helpers/platform.ts';
 
 function acct(id: string, opts: { provider?: 'claude' | 'codex'; room?: number; blocked?: boolean } = {}): Account {
   const a: Account = { id, provider: opts.provider ?? 'claude', title: id, configDir: `/tmp/no-such/${id}` };
@@ -275,7 +276,7 @@ process.stdin.on('end', () => {
   return file;
 }
 
-test('cli: askCli sends the prompt on stdin, runs in the empty folder on the login\'s config dir, and times out', async () => {
+test('cli: askCli sends the prompt on stdin, runs in the empty folder on the login\'s config dir, and times out', skipOnWindows('askCli starts claude itself, and Windows cannot start a script as a program (the real one is claude.exe)'), async () => {
   const dir = tmpDir();
   const claudePath = fakeClaude(dir);
   const added: number[] = [];

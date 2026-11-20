@@ -15,6 +15,15 @@
 # macOS minutes. Everything both builds read is under app/, dock/ and ios/
 # (the iPhone project takes ../app/SentryBinary, and ThreadbearKit links
 # files from app/Sources), so a new path outside those belongs here too.
+#
+# tb land holds a landing that changes what this checks while its last run
+# on main failed (runner/src/land-gate.ts, docs/thread-worktrees.md "Red on
+# GitHub"), and main's runs aren't cancelled by newer pushes, so each one
+# finishes and says something (only a pull request's are). From 16 to 19
+# Nov this workflow was red on Windows while landings went on top, and
+# with every workflow having to pass on one commit for the daily release,
+# none went out (runner/src/upstream.ts).
+# tb land: hold while red
 name: Builds on Xcode 26
 
 on:
@@ -39,10 +48,17 @@ permissions:
 
 concurrency:
   group: xcode-26-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Only in Mike's repo (or when started by hand): in a fork, a push of its
+# main ran every job here on Linux, Mac, Windows and Android, though its
+# owner only builds and checks for their own system (./check.sh does that
+# before tb land), and most of those runs went red for reasons that were
+# never theirs (Wayne, 19 Nov 2026; 9 forks had Actions on). PRs to Mike's
+# repo still run, as they run in his repo.
 jobs:
   build:
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
     name: ${{ matrix.app }} on the ${{ matrix.xcode }} Xcode 26
     runs-on: macos-26
     timeout-minutes: 45

@@ -371,6 +371,31 @@ test("Threadbear's own tokens are redacted", () => {
   const runnerKey = "tbr_" + "ab12".repeat(16);
   assert.equal(redactSecrets(`runner key ${runnerKey} saved`).text.includes(runnerKey), false);
   assert.equal(redactSecrets("tbr_short is a name").redacted, false);
+  // A one-use pairing or sign-in code, and the pairing text with one inside
+  // (Grok's review of the sign-in fix: tokens:issueCode's output was kept).
+  const code = "tbp_" + "ab12".repeat(12);
+  assert.equal(redactSecrets(`{ code: '${code}' }`).text.includes(code), false);
+  const pairing = "TBPAIR1_" + Buffer.from(`url=x&code=${code}`).toString("base64url");
+  assert.equal(redactSecrets(`scan ${pairing}`).text.includes(pairing), false);
+  assert.equal(redactSecrets("tbp_short is a name").redacted, false);
+});
+
+// A virtual runner's box key and boot token (convex/boxes.ts): an agent in a
+// box that prints either mustn't leave it in a stored or shared message.
+test("a box key and a boot token are redacted, whole or cut short", async () => {
+  const backend = (await import("../../../convex/redaction.ts")) as { redactSecrets: typeof redactSecrets };
+  for (const redact of [redactSecrets, backend.redactSecrets]) {
+    for (const prefix of ["tbb_", "tbt_"]) {
+      const secret = prefix + "0f9e".repeat(16);
+      const { text, redacted } = redact(`export THREADBEAR_KEY=${secret} # box`);
+      assert.equal(redacted, true, prefix);
+      assert.equal(text.includes(secret), false, prefix);
+      assert.equal(text.includes(secret.slice(0, 20)), false, prefix);
+      // Cut off at the end of a message.
+      assert.equal(redact(`the key is ${secret.slice(0, 30)}`).text.includes(secret.slice(4, 30)), false, `${prefix} cut short`);
+      assert.equal(redact(`${prefix}short is a name`).redacted, false, prefix);
+    }
+  }
 });
 
 test("scrubbing twice changes nothing more", () => {
@@ -398,6 +423,26 @@ test("scrubDoc scrubs free text at any depth and leaves identity fields", () => 
   assert.equal(out.count, 3);
   assert.equal(out.none, null);
   assert.equal(doc.title, `see ${secret}`, "the original isn't touched");
+});
+
+// Codex's second review of the virtual runners slice (18 Nov 2026): a box's
+// secrets by name, and a credential put in a field that's otherwise left
+// alone (a message's `turn`), which share:view hands to anyone with the link.
+test("a box's secrets are redacted by name, and a credential in an identity field goes whole", async () => {
+  const backend = (await import("../../../convex/redaction.ts")) as { scrubText: typeof scrubText; scrubDoc: typeof scrubDoc };
+  const value = "q8Zr3vT1yLmN0pXc5bWd7eFa9gHk2jQs4uVo6iRt8w0=";
+  for (const [scrubT, scrubD] of [[scrubText, scrubDoc], [backend.scrubText, backend.scrubDoc]] as const) {
+    for (const name of ["threadKey", "boxKey", "bootToken", "claudeToken", "sealedThreadKey", "sealed"]) {
+      assert.equal(scrubT(JSON.stringify({ [name]: value })).includes(value), false, name);
+    }
+    const key = "tbb_" + "0f9e".repeat(16);
+    const msg = { threadId: "t1", seq: 1, role: "assistant", text: "hi", turn: key, at: "x" };
+    const out = scrubD(msg);
+    assert.equal(JSON.stringify(out).includes(key.slice(4, 30)), false, "turn");
+    // An ordinary turn id, and the other identity fields, stay as they are.
+    const plain = { ...msg, turn: "7f3c2a10-1b2c-4d5e-8f90-123456789abc" };
+    assert.equal(scrubD(plain), plain);
+  }
 });
 
 test("scrubDoc hands back the same object when nothing changed", () => {

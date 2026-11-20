@@ -110,10 +110,24 @@ impl Threadbear {
     }
 }
 
+thread_local! {
+    /// Each panel column's scroll, by its id, so a script's click can
+    /// scroll to a control below a panel's bottom (`panel_scrolls`).
+    static PANEL_SCROLLS: std::cell::RefCell<std::collections::HashMap<&'static str, ScrollHandle>> = Default::default();
+}
+
+/// The panel columns' scrolls, for a script's click by tip to bring a
+/// control drawn out of sight into view, as a person scrolls to it.
+#[cfg(feature = "automation")]
+pub(crate) fn panel_scrolls() -> Vec<ScrollHandle> {
+    PANEL_SCROLLS.with(|s| s.borrow().values().cloned().collect())
+}
+
 /// The panel's scrolling column: 16 points in from its edges, as the Swift
 /// panels' `.padding(zoomed(16))`.
 pub(crate) fn panel_column(id: &'static str, gap: f32, children: Vec<AnyElement>) -> AnyElement {
-    div().id(id).size_full().overflow_y_scroll().child(v_flex().w_full().p(px(16.)).gap(px(gap)).children(children)).into_any_element()
+    let scroll = PANEL_SCROLLS.with(|s| s.borrow_mut().entry(id).or_default().clone());
+    div().id(id).size_full().overflow_y_scroll().track_scroll(&scroll).child(v_flex().w_full().p(px(16.)).gap(px(gap)).children(children)).into_any_element()
 }
 
 /// A line of text with SwiftUI's own line height for its size.

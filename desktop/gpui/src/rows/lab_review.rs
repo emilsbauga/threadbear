@@ -1,12 +1,16 @@
 // Another lab's review as a row over the turn's reply (RowRenderer.reviewText):
-// a quiet line saying who reviewed and how it came out, which opens the
-// review's thread, then each finding with what the agent did about it
-// (fixed, disputed and why, left for Mike, or no answer) and where. It was on
+// a quiet line saying who reviewed and how it came out, then each finding with
+// what the agent did about it (fixed, disputed and why, left for Mike, or no
+// answer), where, and, when a panel reviewed together, who found it. It was on
 // the done card until 12 Nov 2026; Mike moved it into the transcript, as the
-// review runs in the background and needn't draw his eye. The ledger is
-// `turn.completed`'s `review` (docs/protocol.md, "Review by another lab").
+// review runs in the background and needn't draw his eye. Since 20 Nov it
+// folds as the line of work does: a panel's eight answered findings ran a
+// screen tall over a reply that already said what was fixed. Folded, it's the
+// heading and any finding still open (LabReview::shown_findings). The ledger
+// is `turn.completed`'s `review` (docs/protocol.md, "Review by another lab").
 use super::row_wrap;
-use super::metrics::ROW_TOP;
+use super::metrics::{ROW_BOTTOM, TITLE_INDENT};
+use super::work::{work_line, Runs};
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
 use gpui_kit::assets::IconName;
@@ -31,8 +35,8 @@ fn outcome(finding: &ReviewFinding, cx: &App) -> (IconName, &'static str, Hsla) 
 }
 
 /// The line under a finding: what was done, the agent's note, how serious,
-/// and where.
-fn finding_detail(finding: &ReviewFinding, word: &str) -> String {
+/// where, and who found it when a panel reviewed (LabReview::found_by).
+fn finding_detail(finding: &ReviewFinding, word: &str, by: Option<String>) -> String {
     let mut detail = word.to_owned();
     if let Some(note) = finding.note.as_deref().filter(|n| !n.is_empty()) {
         detail.push_str(&format!(": {note}"));
@@ -43,48 +47,82 @@ fn finding_detail(finding: &ReviewFinding, word: &str) -> String {
     if let Some(place) = finding.where_.as_deref().filter(|w| !w.is_empty()) {
         detail.push_str(&format!(" · {place}"));
     }
+    if let Some(by) = by {
+        detail.push_str(&format!(" · found by {by}"));
+    }
     detail
 }
 
 impl ThreadPane {
-    /// The ledger's row: all of it small and quiet, the heading grey rather
-    /// than in the link colour, as the Swift line's `.tbAction` run is.
-    pub(crate) fn lab_review_row(&mut self, row: &Row, review: &LabReview, cx: &mut Context<Self>) -> AnyElement {
+    /// The ledger's row: a work line with the heading, its chevron when there
+    /// are answered findings to fold away, the findings under it small and
+    /// quiet, and once open a last line to the review's thread. A review with
+    /// nothing to fold (no findings, or every one still open) doesn't open,
+    /// so its line goes straight to the review's thread, as it always did.
+    pub(crate) fn lab_review_row(&mut self, ix: usize, row: &Row, review: &LabReview, cx: &mut Context<Self>) -> AnyElement {
         let (quiet, secondary) = (style::quiet_text(cx), style::secondary_label(cx));
-        // The words start past the mark.
-        let words = (size::SMALL * 1.2).ceil() + 8.;
+        let folds = review.folds();
+        let open = folds && self.row_open(row);
         let thread = review.thread_id.clone();
         let row_id = row.id.clone();
-        let heading = div()
-            .id(SharedString::from(format!("lab-review-{}", row.id)))
-            .text_size(px(size::SMALL))
-            .line_height(px(19.))
-            .text_color(quiet)
-            .child(review.heading())
-            .when(!thread.is_empty(), |s| {
-                s.cursor_pointer()
-                    .hover(|s| s.text_color(secondary))
-                    .tip("Open the review's thread")
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.link_clicked(&format!("thread:{thread}"), &row_id, window, cx);
-                    }))
-            });
-        let mut column = v_flex().w_full().py(px(ROW_TOP)).child(heading);
-        for finding in &review.findings {
+        let to_thread = (!thread.is_empty()).then(|| {
+            Box::new(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.link_clicked(&format!("thread:{thread}"), &row_id, window, cx);
+            })) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>
+        });
+        let runs: Runs = vec![(review.heading(), quiet)];
+        let mut line = if folds {
+            let tip = if open { "Hide the findings" } else { "Show every finding" };
+            let toggle = self.toggle_listener(row, cx);
+            work_line(("lab-review", ix).into(), "checklist", style::faint_icon(cx), &runs, None, Some(open), Some(tip), cx, Some(toggle))
+        } else {
+            let tip = to_thread.is_some().then_some("Open the review's thread");
+            work_line(("lab-review", ix).into(), "checklist", style::faint_icon(cx), &runs, None, None, tip, cx, None)
+        };
+        if !folds {
+            if let Some(click) = to_thread {
+                let hover = style::hover_fill(cx);
+                line = line.cursor_pointer().hover(move |s| s.bg(hover)).on_click(move |e, window, cx| click(e, window, cx));
+            }
+        }
+        let shown = review.shown_findings(open);
+        let mut column = v_flex().w_full().child(line).when(!shown.is_empty(), |c| c.pb(px(ROW_BOTTOM)));
+        for finding in shown {
             let (symbol, word, color) = outcome(finding, cx);
             column = column.child(
                 h_flex()
                     .w_full()
                     .items_start()
                     .mt(px(4.))
-                    .child(div().flex_none().w(px(words)).h(px(19.)).flex().items_center().child(Icon::from(symbol).with_size(px(13.)).text_color(color)))
+                    .child(div().flex_none().w(px(TITLE_INDENT)).h(px(19.)).flex().items_center().child(Icon::from(symbol).with_size(px(13.)).text_color(color)))
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
                             .child(div().text_size(px(size::SMALL)).line_height(px(19.)).text_color(secondary).child(finding.claim.clone()))
-                            .child(div().text_size(px(size::SMALL)).line_height(px(17.)).text_color(quiet).child(finding_detail(finding, word))),
+                            .child(div().text_size(px(size::SMALL)).line_height(px(17.)).text_color(quiet).child(finding_detail(finding, word, review.found_by(finding)))),
                     ),
+            );
+        }
+        if open && !review.thread_id.is_empty() {
+            let (thread, row_id) = (review.thread_id.clone(), row.id.clone());
+            column = column.child(
+                div()
+                    .id(("lab-review-thread", ix))
+                    .role(Role::Button)
+                    .aria_label("Open the review's thread")
+                    .mt(px(6.))
+                    .ml(px(TITLE_INDENT))
+                    .text_size(px(size::SMALL))
+                    .line_height(px(19.))
+                    .text_color(quiet)
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(secondary))
+                    .tip("Open the review's thread")
+                    .child("Open the review's thread")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.link_clicked(&format!("thread:{thread}"), &row_id, window, cx);
+                    })),
             );
         }
         row_wrap(row, column)

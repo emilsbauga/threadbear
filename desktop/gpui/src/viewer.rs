@@ -21,19 +21,36 @@ use threadbear_core::folders::picture_size;
 use threadbear_core::highlights::{looks_like_picture, runs_code};
 use threadbear_core::reducer::ImageRef;
 
+/// One picture of the message the viewer is on.
+struct Shown {
+    path: String,
+    /// Its bytes once they've been read.
+    image: Option<Arc<Image>>,
+    size: Option<(u32, u32)>,
+    /// Read and found wanting (refused, cut short, not a picture): it says
+    /// "Couldn't show", not "Loading…" for ever (Codex, 18 Nov).
+    failed: bool,
+}
+
 /// What's open in the viewer.
 pub(crate) struct ViewerState {
-    /// Each picture's path in this message, and its bytes once it's been read.
-    pictures: Vec<(String, Option<Arc<Image>>, Option<(u32, u32)>)>,
+    pictures: Vec<Shown>,
     index: usize,
     open: bool,
+    /// Counts the openings, so a read that lands after the viewer has moved
+    /// on (closed, opened on another message or another Mac's same path)
+    /// is dropped, not put in the wrong picture's place (Codex, 18 Nov).
+    opening: u64,
+    /// Another Mac's thread: its pictures are that Mac's, asked of it through
+    /// this runner (`files.read` with its `runnerId`), never read here.
+    runner: Option<String>,
     /// Holds the keys while it's up: Escape and the arrows.
     focus: FocusHandle,
 }
 
 impl ViewerState {
     pub(crate) fn new(cx: &mut App) -> Self {
-        Self { pictures: vec![], index: 0, open: false, focus: cx.focus_handle() }
+        Self { pictures: vec![], index: 0, open: false, opening: 0, runner: None, focus: cx.focus_handle() }
     }
 }
 
@@ -45,7 +62,26 @@ impl ViewerState {
     }
 
     fn current_path(&self) -> Option<&str> {
-        self.pictures.get(self.index).map(|p| p.0.as_str())
+        self.pictures.get(self.index).map(|p| p.path.as_str())
+    }
+
+    /// For scripts: "" while it's closed, else "<n> of <total> <path>", with
+    /// " (loading)" until the picture's drawn, " (couldn't show)" if it won't be.
+    #[cfg(feature = "automation")]
+    pub(crate) fn describe(&self) -> String {
+        if !self.open {
+            return String::new();
+        }
+        format!("{} of {} {}{}", self.index + 1, self.pictures.len(), self.current_path().unwrap_or(""), self.state_words())
+    }
+
+    #[cfg(feature = "automation")]
+    fn state_words(&self) -> &'static str {
+        match self.pictures.get(self.index) {
+            Some(p) if p.image.is_some() => "",
+            Some(p) if p.failed => " (couldn't show)",
+            _ => " (loading)",
+        }
     }
 }
 
@@ -61,15 +97,26 @@ fn opens_here(path: &str) -> bool {
     looks_like_picture(path) && !runs_code(path)
 }
 
-/// A click on a tile: the viewer on that picture, stepping through the
-/// message's other real pictures.
-pub(crate) fn open_from_tile(images: &[ImageRef], index: usize, window: &mut Window, cx: &mut App) {
+/// The same for another Mac's picture, which also may be one that Mac hasn't
+/// put up yet (a `threadbear-relay:` place, remote_pictures.rs): the viewer
+/// asks for it and says if it couldn't be got. Its bytes are decoded here,
+/// never handed to an app, as this Mac's are.
+fn opens_from(path: &str, remote: bool) -> bool {
+    opens_here(path) || (remote && crate::remote_pictures::not_up_yet(path))
+}
+
+/// A click on a tile or a picture's chip in a message: the viewer on that
+/// picture, stepping through the message's other real pictures. `runner`
+/// is the thread's when it's another Mac's (Mike, 18 Nov: its pictures
+/// showed, but a click on one opened nothing).
+pub(crate) fn open_from_tile(images: &[ImageRef], index: usize, runner: Option<&str>, window: &mut Window, cx: &mut App) {
     let Some(handle) = cx.try_global::<ViewerHandle>().cloned() else { return };
-    let paths: Vec<String> = images.iter().map(|i| i.path.clone()).filter(|p| opens_here(p)).collect();
+    let paths: Vec<String> = images.iter().map(|i| i.path.clone()).filter(|p| opens_from(p, runner.is_some())).collect();
     let Some(chosen) = images.get(index).map(|i| i.path.clone()).filter(|p| paths.contains(p)) else { return };
+    let runner = runner.map(str::to_owned);
     handle
         .0
-        .update(cx, |pane, cx| pane.open_viewer(paths, &chosen, window, cx))
+        .update(cx, |pane, cx| open_on(pane, paths, &chosen, runner, window, cx))
         .ok();
 }
 
@@ -94,135 +141,208 @@ pub(crate) fn open_from_composer(paths: Vec<String>, chosen: &str, window: &mut 
     Some((shown, index))
 }
 
+/// A window that shows the viewer over itself: the main window's side pane,
+/// and the design review window, whose reply's picture chips open it (Mike,
+/// 17 Nov). Its state, and the runner to read pictures through.
+pub(crate) trait HostsViewer: Sized + 'static {
+    fn viewer_state(&mut self) -> &mut ViewerState;
+    fn viewer_client(&self) -> Arc<threadbear_client::runner::Client>;
+}
+
+impl HostsViewer for SidePane {
+    fn viewer_state(&mut self) -> &mut ViewerState {
+        &mut self.viewer
+    }
+    fn viewer_client(&self) -> Arc<threadbear_client::runner::Client> {
+        self.client.clone()
+    }
+}
+
 impl SidePane {
     pub(crate) fn open_viewer(&mut self, paths: Vec<String>, chosen: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let index = paths.iter().position(|p| p == chosen).unwrap_or(0);
-        self.viewer.pictures = paths.into_iter().map(|p| (p, None, None)).collect();
-        self.viewer.index = index;
-        self.viewer.open = true;
-        // The overlay holds the keys: Escape closes, the arrows step.
-        window.focus(&self.viewer.focus, cx);
-        crate::web_panels::keyboard_to_app(window);
-        self.read_viewer_picture(index, cx);
-        cx.notify();
+        open(self, paths, chosen, window, cx);
     }
 
     pub(crate) fn close_viewer(&mut self, cx: &mut Context<Self>) {
-        self.viewer.open = false;
-        cx.notify();
+        close(self, cx);
     }
 
     pub(crate) fn viewer_step(&mut self, delta: i64, cx: &mut Context<Self>) {
-        let count = self.viewer.pictures.len() as i64;
-        if !self.viewer.open || count == 0 {
-            return;
-        }
-        let next = (self.viewer.index as i64 + delta).rem_euclid(count) as usize;
-        self.viewer.index = next;
-        self.read_viewer_picture(next, cx);
-        cx.notify();
-    }
-
-    /// Reads the picture through the runner, so another Mac's works the same.
-    /// Anything that doesn't decode just shows "Couldn't show this picture":
-    /// the bytes are never handed to another app.
-    fn read_viewer_picture(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some((path, image, _)) = self.viewer.pictures.get(index) else { return };
-        if image.is_some() {
-            return;
-        }
-        let path = path.clone();
-        let client = self.client.clone();
-        cx.spawn(async move |this, cx| {
-            let res = crate::call(client, "files.read", json!({ "path": path })).await;
-            let read = res.ok().as_ref().and_then(threadbear_core::folders::FileRead::decode);
-            this.update(cx, |t, cx| {
-                let Some(slot) = t.viewer.pictures.iter_mut().find(|p| p.0 == path) else { return };
-                if let Some(read) = read {
-                    let format = format_of(&path, &read.data);
-                    if let Some(format) = format {
-                        slot.2 = picture_size(&read.data);
-                        slot.1 = Some(Arc::new(Image::from_bytes(format, read.data)));
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        step(self, delta, cx);
     }
 
     /// The overlay, drawn over the whole window while it's open.
     pub(crate) fn viewer_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.viewer.open {
-            return None;
-        }
-        let bounds = window.viewport_size();
-        let (index, total) = (self.viewer.index, self.viewer.pictures.len());
-        let current = self.viewer.pictures.get(index)?;
-        let (path, image) = (current.0.clone(), current.1.clone());
-        let name = threadbear_core::highlights::last_component(&path).to_owned();
-        let backdrop = gpui_kit::hsla(0., 0., 0., 0.82);
-        let fg = gpui_kit::hsla(0., 0., 1., 0.92);
-        let dim = gpui_kit::hsla(0., 0., 1., 0.55);
-        let body: AnyElement = match image {
-            Some(image) => img(ImageSource::Image(image)).max_w(bounds.width - px(120.)).max_h(bounds.height - px(120.)).object_fit(ObjectFit::Contain).into_any_element(),
-            None => div().text_size(px(style::size::LABEL)).text_color(dim).child(if self.viewer_loading(index) { "Loading…".to_owned() } else { format!("Couldn't show {name}") }).into_any_element(),
-        };
-        let arrow = |id: &'static str, symbol: &'static str, delta: i64, tip: &'static str, cx: &mut Context<Self>| {
-            crate::highlights::tipped(
-                div().id(id).size(px(44.)).flex().items_center().justify_center().rounded_full().bg(gpui_kit::hsla(0., 0., 1., 0.1)).hover(|s| s.bg(gpui_kit::hsla(0., 0., 1., 0.2))).cursor_pointer().child(icon(symbol, 18., fg)),
-                tip,
-            )
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                // Not the backdrop's click, which closes it.
-                cx.stop_propagation();
-                this.viewer_step(delta, cx);
-            }))
-            .into_any_element()
-        };
-        let many = total > 1;
-        let prev = many.then(|| arrow("viewer-prev", "chevron.left", -1, "Previous picture", cx));
-        let next = many.then(|| arrow("viewer-next", "chevron.right", 1, "Next picture", cx));
-        let close = crate::highlights::tipped(div().id("viewer-close").size(px(32.)).flex().items_center().justify_center().rounded_full().bg(gpui_kit::hsla(0., 0., 1., 0.12)).hover(|s| s.bg(gpui_kit::hsla(0., 0., 1., 0.24))).cursor_pointer().child(icon("xmark", 14., fg)), "Close")
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_viewer(cx)));
-        let caption = if total > 1 { format!("{name}  ·  {} of {total}", index + 1) } else { name };
-        let overlay = div()
-            .id("picture-viewer").a11y_role(Role::GenericContainer)
-            .track_focus(&self.viewer.focus)
-            .w(bounds.width)
-            .h(bounds.height)
-            .bg(backdrop)
-            .flex()
-            .items_center()
-            .justify_center()
-            .occlude()
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| match ev.keystroke.key.as_str() {
-                "escape" => this.close_viewer(cx),
-                "left" => this.viewer_step(-1, cx),
-                "right" => this.viewer_step(1, cx),
-                _ => {}
-            }))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_viewer(cx)))
-            .child(
-                h_flex()
-                    .size_full()
-                    .items_center()
-                    .justify_between()
-                    .px(px(16.))
-                    .child(div().w(px(44.)).when_some(prev, |s, b| s.child(b)))
-                    // Clicks on the picture itself don't close it.
-                    .child(v_flex().flex_1().min_w_0().items_center().gap(px(10.)).child(div().id("viewer-body").a11y_role(Role::GenericContainer).on_click(|_, _, cx| cx.stop_propagation()).child(body)).child(div().text_size(px(style::size::DETAIL)).text_color(dim).child(caption)))
-                    .child(div().w(px(44.)).when_some(next, |s, b| s.child(b))),
-            )
-            .child(div().absolute().top(px(16.)).right(px(16.)).child(close));
-        Some(deferred(anchored().position(point(px(0.), px(0.))).child(overlay)).with_priority(2).into_any_element())
+        overlay(self, window, cx)
     }
+}
 
-    fn viewer_loading(&self, index: usize) -> bool {
-        // A picture only reads once; "Couldn't" after that means it failed.
-        self.viewer.pictures.get(index).is_some_and(|p| p.1.is_none())
+/// The viewer on `chosen`, stepping through `paths`, in `host`'s window.
+/// Only paths named like pictures that don't run code (`opens_here`).
+pub(crate) fn open<T: HostsViewer>(host: &mut T, paths: Vec<String>, chosen: &str, window: &mut Window, cx: &mut Context<T>) {
+    open_on(host, paths, chosen, None, window, cx);
+}
+
+/// `open`, for pictures on `runner` when it's another Mac.
+fn open_on<T: HostsViewer>(host: &mut T, paths: Vec<String>, chosen: &str, runner: Option<String>, window: &mut Window, cx: &mut Context<T>) {
+    let paths: Vec<String> = paths.into_iter().filter(|p| opens_from(p, runner.is_some())).collect();
+    let Some(index) = paths.iter().position(|p| p == chosen) else { return };
+    let viewer = host.viewer_state();
+    viewer.pictures = paths.into_iter().map(|path| Shown { path, image: None, size: None, failed: false }).collect();
+    viewer.index = index;
+    viewer.open = true;
+    viewer.opening += 1;
+    viewer.runner = runner;
+    // The overlay holds the keys: Escape closes, the arrows step.
+    let focus = viewer.focus.clone();
+    window.focus(&focus, cx);
+    crate::web_panels::keyboard_to_app(window);
+    read_picture(host, index, cx);
+    cx.notify();
+}
+
+pub(crate) fn close<T: HostsViewer>(host: &mut T, cx: &mut Context<T>) {
+    host.viewer_state().open = false;
+    cx.notify();
+}
+
+pub(crate) fn step<T: HostsViewer>(host: &mut T, delta: i64, cx: &mut Context<T>) {
+    let viewer = host.viewer_state();
+    let count = viewer.pictures.len() as i64;
+    if !viewer.open || count == 0 {
+        return;
     }
+    let next = (viewer.index as i64 + delta).rem_euclid(count) as usize;
+    viewer.index = next;
+    read_picture(host, next, cx);
+    cx.notify();
+}
+
+/// Reads the picture through the runner, and another Mac's through it from
+/// that Mac. Anything that doesn't decode just shows "Couldn't show this
+/// picture": the bytes are never handed to another app.
+fn read_picture<T: HostsViewer>(host: &mut T, index: usize, cx: &mut Context<T>) {
+    let viewer = host.viewer_state();
+    let (runner, opening) = (viewer.runner.clone(), viewer.opening);
+    let Some(shown) = viewer.pictures.get_mut(index) else { return };
+    if shown.image.is_some() || shown.failed {
+        return;
+    }
+    // Another Mac's picture its tile has drawn: the same bytes, not asked again.
+    if let Some(drawn) = runner.as_deref().and_then(|runner| crate::remote_pictures::ready(runner, &shown.path, cx)) {
+        shown.size = picture_size(drawn.bytes());
+        shown.image = Some(drawn);
+        return;
+    }
+    let path = shown.path.clone();
+    let params = match &runner {
+        Some(runner) => json!({ "path": path, "runnerId": runner, "maxBytes": crate::remote_pictures::MAX_BYTES }),
+        None => json!({ "path": path }),
+    };
+    let client = host.viewer_client();
+    cx.spawn(async move |this, cx| {
+        let res = crate::call(client, "files.read", params).await;
+        // Only its start, from another Mac, won't draw.
+        let read = res.ok().as_ref().and_then(threadbear_core::folders::FileRead::decode).filter(|read| runner.is_none() || !read.truncated);
+        // Shrunk to what the GPU can draw (fit_picture.rs), off this thread.
+        let path2 = path.clone();
+        let picture = cx.background_executor().spawn(async move { read.and_then(|read| format_of(&path2, &read.data).and_then(|format| crate::fit_picture::fit_bytes(format, read.data))) }).await;
+        this.update(cx, |t, cx| {
+            let viewer = t.viewer_state();
+            // Only into the opening that asked for it.
+            if viewer.opening != opening {
+                return;
+            }
+            let Some(slot) = viewer.pictures.iter_mut().find(|p| p.path == path) else { return };
+            match picture {
+                Some((format, data)) => {
+                    slot.size = picture_size(&data);
+                    slot.image = Some(Arc::new(Image::from_bytes(format, data)));
+                }
+                None => slot.failed = true,
+            }
+            cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+}
+
+/// The overlay, drawn over the whole of `host`'s window while it's open.
+pub(crate) fn overlay<T: HostsViewer>(host: &mut T, window: &mut Window, cx: &mut Context<T>) -> Option<AnyElement> {
+    let viewer = host.viewer_state();
+    if !viewer.open {
+        return None;
+    }
+    let bounds = window.viewport_size();
+    let (index, total) = (viewer.index, viewer.pictures.len());
+    let current = viewer.pictures.get(index)?;
+    let (path, image) = (current.path.clone(), current.image.clone());
+    // A picture only reads once; "Couldn't" after that means it failed.
+    let loading = !current.failed;
+    let focus = viewer.focus.clone();
+    let name = threadbear_core::highlights::last_component(&path).to_owned();
+    let backdrop = gpui_kit::hsla(0., 0., 0., 0.82);
+    let fg = gpui_kit::hsla(0., 0., 1., 0.92);
+    let dim = gpui_kit::hsla(0., 0., 1., 0.55);
+    let body: AnyElement = match image {
+        // With an id, so a GIF plays (files.rs, the pane's picture).
+        Some(image) => img(ImageSource::Image(image)).id(SharedString::from(format!("viewer-picture-{index}"))).max_w(bounds.width - px(120.)).max_h(bounds.height - px(120.)).object_fit(ObjectFit::Contain).into_any_element(),
+        None => div().text_size(px(style::size::LABEL)).text_color(dim).child(if loading { "Loading…".to_owned() } else { format!("Couldn't show {name}") }).into_any_element(),
+    };
+    let arrow = |id: &'static str, symbol: &'static str, delta: i64, tip: &'static str, cx: &mut Context<T>| {
+        crate::highlights::tipped(
+            div().id(id).size(px(44.)).flex().items_center().justify_center().rounded_full().bg(gpui_kit::hsla(0., 0., 1., 0.1)).hover(|s| s.bg(gpui_kit::hsla(0., 0., 1., 0.2))).cursor_pointer().child(icon(symbol, 18., fg)),
+            tip,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            // Not the backdrop's click, which closes it.
+            cx.stop_propagation();
+            step(this, delta, cx);
+        }))
+        .into_any_element()
+    };
+    let many = total > 1;
+    let prev = many.then(|| arrow("viewer-prev", "chevron.left", -1, "Previous picture", cx));
+    let next = many.then(|| arrow("viewer-next", "chevron.right", 1, "Next picture", cx));
+    let close_button = crate::highlights::tipped(div().id("viewer-close").size(px(32.)).flex().items_center().justify_center().rounded_full().bg(gpui_kit::hsla(0., 0., 1., 0.12)).hover(|s| s.bg(gpui_kit::hsla(0., 0., 1., 0.24))).cursor_pointer().child(icon("xmark", 14., fg)), "Close")
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| close(this, cx)));
+    let caption = if total > 1 { format!("{name}  ·  {} of {total}", index + 1) } else { name };
+    let overlay = div()
+        .id("picture-viewer").a11y_role(Role::GenericContainer)
+        .track_focus(&focus)
+        .w(bounds.width)
+        .h(bounds.height)
+        .bg(backdrop)
+        .flex()
+        .items_center()
+        .justify_center()
+        .occlude()
+        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+            match ev.keystroke.key.as_str() {
+                "escape" => close(this, cx),
+                "left" => step(this, -1, cx),
+                "right" => step(this, 1, cx),
+                _ => return,
+            }
+            // Not the window's own keys under it (the review window steps
+            // its stage with the arrows).
+            cx.stop_propagation();
+        }))
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| close(this, cx)))
+        .child(
+            h_flex()
+                .size_full()
+                .items_center()
+                .justify_between()
+                .px(px(16.))
+                .child(div().w(px(44.)).when_some(prev, |s, b| s.child(b)))
+                // Clicks on the picture itself don't close it.
+                .child(v_flex().flex_1().min_w_0().items_center().gap(px(10.)).child(div().id("viewer-body").a11y_role(Role::GenericContainer).on_click(|_, _, cx| cx.stop_propagation()).child(body)).child(div().text_size(px(style::size::DETAIL)).text_color(dim).child(caption)))
+                .child(div().w(px(44.)).when_some(next, |s, b| s.child(b))),
+        )
+        .child(div().absolute().top(px(16.)).right(px(16.)).child(close_button));
+    Some(deferred(anchored().position(point(px(0.), px(0.))).child(overlay)).with_priority(2).into_any_element())
 }
 
 /// The image format from its bytes, so a mislabelled file still decodes as
@@ -264,9 +384,7 @@ pub(crate) fn viewer_command(side: &Entity<SidePane>, cmd: &Value, cx: &mut App)
     if !viewer.open {
         return Ok(json!("ok closed"));
     }
-    let state = viewer.pictures.get(viewer.index);
-    let drawn = state.is_some_and(|p| p.1.is_some());
-    Ok(json!(format!("ok showing {} of {} {}{}", viewer.index + 1, viewer.pictures.len(), viewer.current_path().unwrap_or(""), if drawn { "" } else { " (loading)" })))
+    Ok(json!(format!("ok showing {} of {} {}{}", viewer.index + 1, viewer.pictures.len(), viewer.current_path().unwrap_or(""), viewer.state_words())))
 }
 
 /// The thread's action chips, for the thread pane to draw over the composer

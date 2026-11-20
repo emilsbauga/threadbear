@@ -8,6 +8,16 @@ pub const ROW_BOTTOM: f32 = 6.;
 pub const USER_TOP: f32 = 26.;
 /// Space under the bubble before the turn's work.
 pub const USER_BOTTOM: f32 = 22.;
+
+/// `USER_TOP` and `USER_BOTTOM`, closer together with Appearance's Compact
+/// spacing.
+pub fn user_top() -> f32 {
+    if crate::style::compact() { 16. } else { USER_TOP }
+}
+
+pub fn user_bottom() -> f32 {
+    if crate::style::compact() { 12. } else { USER_BOTTOM }
+}
 pub const WAITING_NOTE_GAP: f32 = 4.;
 pub const WAITING_NOTE_HEIGHT: f32 = 16.;
 /// One line of work: a group summary, a tool call, a thinking block.

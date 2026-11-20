@@ -8,7 +8,7 @@
 // the section, and a preview opened after it takes its place.
 use crate::spinner::Spinner;
 use crate::app::Threadbear;
-use crate::highlights::{palette, SidePane};
+use crate::highlights::{palette, with_scroll_bar, SidePane};
 use crate::style::{self, size};
 use crate::{call, icons};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
@@ -34,6 +34,8 @@ pub(crate) struct ExplainState {
     /// The follow-up box per thread, made at its first draw (it needs the
     /// window), with what it says when Return's pressed.
     boxes: HashMap<String, (Entity<TextareaState>, Subscription)>,
+    /// The explanation's scroll, for its scroll bar.
+    scroll: ScrollHandle,
 }
 
 /// The selection bar's Explain: a fresh side conversation for this thread,
@@ -58,16 +60,20 @@ pub(crate) fn explain(app: &Entity<Threadbear>, thread: &ThreadSummary, selectio
             t.show_pane(&section, cx);
         }
     });
-    fetch(&side, &thread.id, 0, cx);
+    side.update(cx, |side, cx| side.fetch_explanation(&thread.id, 0, cx));
 }
 
-/// Asks the runner for turn `index`'s answer (`threads.explain`).
-fn fetch(side: &Entity<SidePane>, thread_id: &str, index: usize, cx: &mut App) {
-    let Some(session) = side.read(cx).explain.sessions.get(thread_id).cloned() else { return };
-    let client = side.read(cx).client.clone();
-    let params = session.params(thread_id, index);
-    let thread_id = thread_id.to_owned();
-    side.update(cx, |_, cx| {
+impl SidePane {
+    /// Asks the runner for turn `index`'s answer (`threads.explain`). On the
+    /// pane itself, not through its entity: a follow-up and Try Again ask
+    /// from inside the pane's own update, where reading it through the
+    /// entity is a second hold on it, and GPUI aborts the app on that. Every
+    /// follow-up question took the app down that way (found 18 Nov).
+    fn fetch_explanation(&mut self, thread_id: &str, index: usize, cx: &mut Context<Self>) {
+        let Some(session) = self.explain.sessions.get(thread_id).cloned() else { return };
+        let client = self.client.clone();
+        let params = session.params(thread_id, index);
+        let thread_id = thread_id.to_owned();
         cx.spawn(async move |this, cx| {
             let answer = call(client, "threads.explain", params).await;
             this.update(cx, |side, cx| {
@@ -84,10 +90,8 @@ fn fetch(side: &Entity<SidePane>, thread_id: &str, index: usize, cx: &mut App) {
             .ok();
         })
         .detach();
-    });
-}
+    }
 
-impl SidePane {
     /// Whether this thread's pane is showing its explanation.
     pub(crate) fn explaining(&self, thread_id: &str) -> bool {
         self.explain.showing.contains_key(thread_id) && self.explain.sessions.contains_key(thread_id)
@@ -110,13 +114,13 @@ impl SidePane {
         let Some(index) = self.explain.sessions.get_mut(thread_id).and_then(|s| s.ask(&question)) else { return };
         input.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
-        fetch(&cx.entity(), thread_id, index, cx);
+        self.fetch_explanation(thread_id, index, cx);
     }
 
     fn retry_explain(&mut self, thread_id: &str, index: usize, cx: &mut Context<Self>) {
         if self.explain.sessions.get_mut(thread_id).is_some_and(|s| s.retry(index)) {
             cx.notify();
-            fetch(&cx.entity(), thread_id, index, cx);
+            self.fetch_explanation(thread_id, index, cx);
         }
     }
 
@@ -217,7 +221,7 @@ impl SidePane {
             .child(send);
         v_flex()
             .size_full()
-            .child(div().id("explain-scroll").flex_1().min_h_0().overflow_y_scroll().child(div().p(px(14.)).child(turns)))
+            .child(with_scroll_bar(div().id("explain-scroll").overflow_y_scroll().child(div().p(px(14.)).child(turns)), &self.explain.scroll, "explain-scroll-bar").flex_1().min_h_0())
             .child(div().flex_none().w_full().h(gpui_kit::px(1.)).bg(p.hairline))
             .child(follow_up)
             .into_any_element()
@@ -230,7 +234,7 @@ impl SidePane {
         }
         let input = cx.new(|cx| TextareaState::new(window, cx).placeholder("Ask a follow-up").auto_grow(1, 5).submit_on_enter(true));
         // A question typed and not asked: an update's restart waits for it.
-        crate::unsent::watch(&input, "a follow-up question in Explain", cx);
+        crate::unsent::watch_in(&input, "Explain's follow-up box", Some(thread_id.to_owned()), cx);
         let id = thread_id.to_owned();
         let sub = cx.subscribe_in(&input, window, move |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { shift: false, .. } => this.ask_follow_up(&id, window, cx),

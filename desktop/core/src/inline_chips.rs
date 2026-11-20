@@ -4,7 +4,7 @@
 // and threadReference), and the words and pictures a copy or cut of the box
 // carries (ComposerTextView's Clip). The GPUI composer draws what's here
 // (desktop/gpui/src/composer_inline.rs).
-use crate::chips::{find_mentions, Mention};
+use crate::chips::{find_chips, Mention};
 use crate::composer::{draft_words, message_text, PICTURE_MARK};
 use crate::reducer::ImageRef;
 use serde_json::{json, Value};
@@ -67,7 +67,7 @@ pub fn draft_pieces(text: &str, image_count: usize) -> Vec<DraftPiece> {
             return;
         }
         let mut last = 0;
-        for mention in find_mentions(run) {
+        for mention in find_chips(run) {
             if mention.range.start > last {
                 pieces.push(DraftPiece::Words(run[last..mention.range.start].to_owned()));
             }
@@ -94,9 +94,9 @@ pub fn draft_pieces(text: &str, image_count: usize) -> Vec<DraftPiece> {
 }
 
 /// Whether a paste of `text` has anything to draw as a chip: a card or
-/// thread linked in it.
+/// thread linked in it, or a file's path in backticks.
 pub fn has_mentions(text: &str) -> bool {
-    !find_mentions(text).is_empty()
+    !find_chips(text).is_empty()
 }
 
 /// What a chip in the box stands for, for `draft_in`.
@@ -207,7 +207,7 @@ pub fn image_json(image: &ImageRef) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chips::MentionKind;
+    use crate::chips::{find_mentions, MentionKind};
 
     #[test]
     fn a_thread_reference_is_a_link_with_its_title() {
@@ -265,6 +265,9 @@ mod tests {
         assert_eq!(draft_pieces("a\u{FFFC}b", 0), vec![DraftPiece::Words("ab".into())]);
         assert!(draft_pieces("", 0).is_empty());
         assert!(has_mentions("[x](thread:abc)"));
+        assert!(has_mentions("look at `/Users/m/clip.mp4`"), "a pasted file's path comes back as its chip");
+        let pieces = draft_pieces("see `/Users/m/clip.mp4` ok", 0);
+        assert!(matches!(&pieces[1], DraftPiece::Mention(m, link) if m.kind == MentionKind::File && m.title == "clip.mp4" && link == "`/Users/m/clip.mp4`"));
         assert!(!has_mentions("[x](https://example.com/abc)"));
     }
 

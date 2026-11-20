@@ -18,12 +18,11 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     loginCommand: 'claude auth login',
     effort: 'claude',
     autoMode: 'classifier',
-    sandbox: true,
     rewind: true,
     smallJobs: true,
     usageReadings: true,
   },
-  pi: { id: 'pi', name: 'Pi', cliName: 'Pi', loginCommand: 'pi', effort: 'none', autoMode: 'asks', sandbox: false, rewind: false, smallJobs: false, usageReadings: false },
+  pi: { id: 'pi', name: 'Pi', cliName: 'Pi', loginCommand: 'pi', effort: 'none', autoMode: 'asks', rewind: false, smallJobs: false, usageReadings: false },
   codex: {
     id: 'codex',
     name: 'Codex',
@@ -31,12 +30,11 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     loginCommand: 'codex login',
     effort: 'codex',
     autoMode: 'asks',
-    sandbox: false,
     rewind: true,
     smallJobs: false,
     usageReadings: true,
   },
-  // Over ACP (adapters/acp/): Auto behaves like Ask, and neither sandbox,
+  // Over ACP (adapters/acp/): Auto behaves like Ask, and neither
   // rewind nor usage readings exist for them.
   cursor: {
     id: 'cursor',
@@ -45,7 +43,6 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     loginCommand: 'agent login',
     effort: 'none',
     autoMode: 'asks',
-    sandbox: false,
     rewind: false,
     // Its read tools work in any mode and nothing turns them off, and a small
     // job's text can come from anywhere.
@@ -59,7 +56,6 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     loginCommand: 'opencode auth login',
     effort: 'none',
     autoMode: 'asks',
-    sandbox: false,
     rewind: false,
     smallJobs: true,
     usageReadings: false,
@@ -73,7 +69,6 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     // (AcpSession sets them as the session's thought_level option).
     effort: 'codex',
     autoMode: 'asks',
-    sandbox: false,
     rewind: false,
     // Threadbear's hook denies every tool for a small job, reads included
     // (adapters/acp/grok-guard.ts).
@@ -93,7 +88,7 @@ export function activeProviders(home: string): Provider[] {
 // build that has more): it can do nothing, so no check takes it for Claude
 // and lets it into something only Claude can do.
 function unknownProvider(id: string): ProviderInfo {
-  return { id, name: id, cliName: id, loginCommand: '', effort: 'none', autoMode: 'asks', sandbox: false, rewind: false, smallJobs: false, usageReadings: false };
+  return { id, name: id, cliName: id, loginCommand: '', effort: 'none', autoMode: 'asks', rewind: false, smallJobs: false, usageReadings: false };
 }
 
 // No provider at all is a Claude one, as a record from before Codex is

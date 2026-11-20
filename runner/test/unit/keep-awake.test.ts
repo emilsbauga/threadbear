@@ -3,11 +3,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
-import { KeepAwake, LINGER_MS, SWEEP_MS, parsePower, type Power } from '../../src/keep-awake.ts';
+import { KeepAwake, LINGER_MS, SWEEP_MS, parsePower, parseWinPower, type Power } from '../../src/keep-awake.ts';
+import { parseIdle } from '../../src/presence.ts';
 
 function setup(o: { on?: boolean; power?: Power } = {}) {
   const clock = new FakeClock();
-  const state = { busy: 0, on: o.on ?? true, held: 0, stopped: 0, power: o.power };
+  const state = { busy: 0, on: o.on ?? true, held: 0, stopped: 0, renewed: 0, power: o.power };
   const k = new KeepAwake({
     busy: () => state.busy,
     on: () => state.on,
@@ -15,7 +16,7 @@ function setup(o: { on?: boolean; power?: Power } = {}) {
     log: nullLogger,
     hold: () => {
       state.held++;
-      return { stop: () => void state.stopped++ };
+      return { stop: () => void state.stopped++, renew: () => void state.renewed++ };
     },
     power: async () => state.power,
   });
@@ -82,4 +83,24 @@ test('keepAwake: reads pmset -g batt', () => {
   assert.deepEqual(parsePower("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1234)\t12%; discharging; 1:02 remaining present: true"), { onBattery: true, percent: 12 });
   assert.deepEqual(parsePower("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1234)\t100%; charged; 0:00 remaining present: true"), { onBattery: false, percent: 100 });
   assert.deepEqual(parsePower("Now drawing from 'AC Power'\n"), { onBattery: false });
+});
+
+test("keepAwake: a hold that can be lost unseen (Windows' helper started again) is asked for again each sweep, not started again", () => {
+  const { clock, state } = setup();
+  state.busy = 1;
+  clock.advance(SWEEP_MS);
+  clock.advance(SWEEP_MS * 3);
+  assert.equal(state.held, 1);
+  assert.equal(state.renewed, 3);
+});
+
+test("keepAwake and presence: read the Windows helper's answers", () => {
+  assert.deepEqual(parseWinPower('1 12'), { onBattery: true, percent: 12 });
+  assert.deepEqual(parseWinPower('0 100'), { onBattery: false, percent: 100 });
+  assert.deepEqual(parseWinPower('0 -1'), { onBattery: false });
+  assert.equal(parseWinPower('nonsense'), undefined);
+  assert.equal(parseIdle('176215890'), 176215890);
+  assert.equal(parseIdle('12\r\n'), 12);
+  assert.equal(parseIdle(''), undefined);
+  assert.equal(parseIdle('-5'), undefined);
 });

@@ -309,6 +309,15 @@ impl UndoManager {
         self.coalescing_boundary = true;
     }
 
+    /// Commits whatever's being collected, brackets and all, and stops the
+    /// next edit joining it: `take_history` hands over only finished
+    /// transactions, as an open one taken away from its IME composition
+    /// would gather every later edit into itself.
+    pub(super) fn finish(&mut self) {
+        self.commit_all_transactions();
+        self.coalescing_boundary = true;
+    }
+
     /// Close every open bracket, committing whatever they collected.
     fn commit_all_transactions(&mut self) {
         if self.transaction_depth == 0 {
@@ -362,6 +371,15 @@ impl UndoManager {
         self.undo_transactions.push(transaction);
         self.coalescing_boundary = true;
         Some(replay)
+    }
+
+    /// Whether an undo would take anything back: a committed transaction, or
+    /// one still being collected (`undo` commits that first, as during an
+    /// IME composition). Threadbear's ⌘Z goes to the box's own typing while
+    /// this holds, and only otherwise brings back an archived thread.
+    pub(super) fn can_undo(&self) -> bool {
+        !self.undo_transactions.is_empty()
+            || self.pending.as_ref().is_some_and(|p| !p.changes.is_empty())
     }
 
     #[cfg(test)]

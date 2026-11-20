@@ -11,7 +11,10 @@ final class AppModel {
     private(set) var pairing: Pairing?
     private(set) var backend: (any Backend)?
     private(set) var runners: [PhoneRunner] = []
-    /// The projects by id, for the rows' icons (backend API 5 carries them).
+    /// The projects by runner and id (projectKey), for the rows' icons
+    /// (backend API 5 carries them). A project id is only its runner's own:
+    /// another runner can use the same one, so a thread's project is looked
+    /// up under the thread's own runner (Daybreak finding 141).
     private(set) var projects: [String: PhoneProject] = [:]
     /// The logins and their models (backend API 20), for the new thread pickers.
     private(set) var accounts: [PhoneAccount] = []
@@ -39,6 +42,9 @@ final class AppModel {
     @ObservationIgnored var threadOpen = false
     /// Rows sinking towards the Hibernating heading on their way out (`hibernate`).
     private(set) var sinking: Set<String> = []
+    /// Renamed from this phone: the new title shows at once, and goes back
+    /// if the runner refuses it (`rename`).
+    private(set) var renamed: [String: String] = [:]
     /// Hibernated from this phone, kept out of the lists and on the heading's
     /// count until Convex catches up.
     private(set) var tucks = Tucks()
@@ -77,6 +83,7 @@ final class AppModel {
     var hasMessagePages: Bool { (apiVersion ?? 0) >= BackendCompatibility.messagePagesAPIVersion }
     /// Whether to ask for the lines a thread writes when its login runs out
     /// (role `note`): an older backend refuses the argument.
+    var hasDesignReviews: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.designReviewsAPIVersion }
     var hasLoginNotes: Bool { (apiVersion ?? 0) >= BackendCompatibility.loginNotesAPIVersion }
 
     /// Archived threads past the den's newest 100 with these words in
@@ -798,7 +805,10 @@ final class AppModel {
         return "\(name) offline since \(RelativeTime.clock(newest.lastSeenAt, now: now))"
     }
 
-    func project(_ id: String) -> PhoneProject? { projects[id] }
+    /// A thread's project: the one with that id on the thread's own runner.
+    func project(_ id: String, runnerId: String) -> PhoneProject? { projects[Self.projectKey(runnerId: runnerId, id: id)] }
+
+    static func projectKey(runnerId: String, id: String) -> String { "\(runnerId)\n\(id)" }
 
     func runnerName(_ runnerId: String) -> String? {
         runners.count > 1 ? runners.first { $0.runnerId == runnerId }?.name : nil
@@ -1003,8 +1013,7 @@ final class AppModel {
         if !isFake { pocket = PocketStore.standard.load() }
         tasks.append(follow(backend.runners()) { $0.receiveRunners($1) })
         tasks.append(follow(backend.projects()) { model, list in
-            // Two runners could use the same id; the first one wins.
-            model.projects = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            model.projects = Dictionary(list.map { (AppModel.projectKey(runnerId: $0.runnerId ?? "", id: $0.id), $0) }, uniquingKeysWith: { first, _ in first })
         })
         loaded = []
         followLists()
@@ -1215,6 +1224,36 @@ final class AppModel {
 
     /// The thread's turn is over: its Stop is done.
     func stopped(_ threadId: String) { stopping.remove(threadId) }
+
+    /// A thread's title as shown here: one just typed on this phone until
+    /// Convex has it, else the thread's own.
+    func title(of thread: PhoneThread) -> String {
+        let title = renamed[thread.threadId] ?? thread.title
+        return title.isEmpty ? "Untitled" : title
+    }
+
+    /// Renames a thread, showing the new title straight away. The runner
+    /// applies it as the Mac's rename does; a refusal puts the old one back
+    /// with the error.
+    func rename(_ threadId: String, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let backend, !title.isEmpty else { return }
+        renamed[threadId] = title
+        Task {
+            do {
+                let command = try await Deadline.run(seconds: 20) { try await backend.update(threadId: threadId, change: .rename(title)) }
+                if let status = await commandOutcome(command), status.state == .failed {
+                    throw TransportError.server(status.note ?? "The runner couldn't rename that thread.")
+                }
+                // Done: the live thread carries the new title within a moment.
+                try? await Task.sleep(for: .seconds(3))
+            } catch {
+                report(error)
+            }
+            // A later rename may have replaced this one meanwhile.
+            if renamed[threadId] == title { renamed[threadId] = nil }
+        }
+    }
 
     func clearError() { lastError = nil }
 

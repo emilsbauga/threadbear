@@ -82,7 +82,7 @@ pub(crate) fn picker(composer: WeakEntity<Composer>, window: &mut Window, cx: &m
 fn login_row(item: &LoginItem, _window: &mut Window, cx: &App, action: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     use gpui_kit::base::TestSupportExt as _;
     let subtitle_color = match item.badge {
-        Some(ChipBadge::Blocked) => cx.theme().danger,
+        Some(ChipBadge::Blocked | ChipBadge::SignedOut | ChipBadge::PlanEnded) => cx.theme().danger,
         Some(ChipBadge::Low(_)) => style::needs_you(cx),
         None => style::secondary_label(cx),
     };

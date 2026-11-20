@@ -22,8 +22,11 @@ Feature: Answering the agent
   Scenario: Denying it stops that action
     When I open the thread "Make uploads resume after a crash"
     And I press "Deny"
+    Then the transcript shows a reply starting "OK, I left it alone"
+    # The card belongs to its turn, so once that turn ends it folds into
+    # the turn's work line with the rest.
+    When I open the last folded work line
     Then the approval for "rm -rf .build DerivedData" says it was denied
-    And the transcript shows a reply starting "OK, I left it alone"
 
   @transcript.question
   Scenario: A question card offers its answers

@@ -36,8 +36,8 @@ p { margin-top: 24px; font-size: 24px; line-height: 32px; color: #46413a; }
 </style></head><body>
 <div class="copy">
   <div class="brand"><img src="${data("public/img/icon-192.png", "image/png")}">Threadbear</div>
-  <h1>The agent app you can patch yourself</h1>
-  <p>A Mac app for your Claude Code and Codex threads, and all of its source.</p>
+  <h1>Get to your next decision fast</h1>
+  <p>A desktop app for your Claude Code and Codex threads, and all of its source.</p>
 </div>
 <img class="mac" src="${data("public/screens/mac-thread.webp", "image/webp")}">
 </body></html>`;

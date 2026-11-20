@@ -60,7 +60,8 @@ impl RowLook {
                 _ => RowStatus::Background,
             }
         };
-        let done = status == RowStatus::Time && !t.needs_you && t.said_done() && t.unread();
+        // One waiting on its own work hasn't finished, whatever it said.
+        let done = status == RowStatus::Time && !t.needs_you && t.said_done() && t.unread() && !t.waiting_on_work();
         let unread = status == RowStatus::NeedsYou || (t.needs_you && status != RowStatus::Working && status != RowStatus::Background) || done;
         let emphasised = t.needs_you || status == RowStatus::NeedsYou || done;
         let labelled = !(status == RowStatus::Working && section == Some("running"));
@@ -433,6 +434,8 @@ struct WakeWhen {
     topic: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pending: bool,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    agent: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -482,11 +485,32 @@ pub fn wake_row<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Option<(
         return Some(("Thinking…".into(), format!("Working out when from \"{}\"", wake.said)));
     }
     let topic = wake.topic?;
-    let mut tip = format!("Back when you next talk about {topic}");
+    // Its own agent waits for something to happen; Mike's waits for him.
+    let mut tip = if wake.agent { format!("Back when {topic}") } else { format!("Back when you next talk about {topic}") };
     if let Some(time) = wake_time(t) {
         tip += &format!(", or {} at the latest", until_words(time, now));
     }
-    Some((topic, format!("{tip}. You said \"{}\".", wake.said)))
+    let who = if wake.agent { "The agent" } else { "You" };
+    Some((topic, format!("{tip}. {who} said \"{}\".", wake.said)))
+}
+
+/// What a thread waiting on its own work is waiting for, and the tooltip
+/// (`ThreadSummary::waiting_on_work`): threads it waits to hear from, as a
+/// Hibernating row says them, or Mike's app restarting onto what it landed.
+pub fn work_wait_row<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Option<(String, String)> {
+    if t.waiting_on.iter().flatten().any(|w| w.get("done").and_then(serde_json::Value::as_bool) != Some(true)) {
+        return wake_row(t, now);
+    }
+    if t.awaiting_app_restart == Some(true) {
+        return Some(("Waiting for the app update".to_string(), "Carries on once Threadbear restarts onto what this thread landed, which it does by itself when you leave it idle.".to_string()));
+    }
+    let unlanded = t.waiting_to_land()?;
+    let wake: WakeWhen = crate::wire::read(t.wake_when.clone()?)?;
+    let mut tip = format!("{unlanded}. Back when {}", wake.topic?);
+    if let Some(time) = wake_time(t) {
+        tip += &format!(", or {} at the latest", until_words(time, now));
+    }
+    Some(("Waiting to land".to_string(), format!("{tip}.")))
 }
 
 /// The tooltip for "Woke up": "Woke up after hibernating for 2 days"
@@ -565,6 +589,13 @@ pub fn trailing<Tz: TimeZone>(t: &ThreadSummary, look: &RowLook, mode: RowMode, 
     let time = || relative_short(if mode == RowMode::Archive { t.archived_ms().unwrap_or(t.activity_ms()) } else { t.activity_ms() }, now);
     match look.status {
         RowStatus::Time => {
+            // Under Running, waiting on its own work: what for, with the
+            // grey spinner a background job has, as it's still going.
+            if mode != RowMode::Archive && t.waiting_on_work() {
+                if let Some((text, tip)) = work_wait_row(t, now) {
+                    return Trailing { text, kind: TrailingKind::Background, tip: Some(tip) };
+                }
+            }
             if mode == RowMode::Hibernating {
                 if let Some((text, tip)) = wake_row(t, now) {
                     return Trailing { text, kind: TrailingKind::Quiet, tip: Some(tip) };
@@ -602,6 +633,21 @@ pub fn trailing<Tz: TimeZone>(t: &ThreadSummary, look: &RowLook, mode: RowMode, 
         RowStatus::Failed => Trailing { text: "Failed".into(), kind: TrailingKind::Failed, tip: Some("The last turn failed".into()) },
         RowStatus::Stopped => Trailing { text: "Stopped".into(), kind: TrailingKind::Stopped, tip: Some("Stopped when the runner restarted".into()) },
     }
+}
+
+/// The small grey arc beside the time on a row that's waiting on Mike while
+/// a job it left keeps running (a landing in the queue, a long test). Without
+/// it the row looks finished: Mike asked why a thread with "1 job running"
+/// sat in his inbox (17 Nov) and picked this over a badge, the job's name on
+/// the row or a moving line. Returns the tip, in the transcript's own words
+/// ("1 job running in the background · Land the card fix"). A row whose
+/// status already says it (Working, "2 jobs") gets none.
+pub fn job_mark(t: &ThreadSummary, look: &RowLook) -> Option<String> {
+    if !matches!(look.status, RowStatus::Time | RowStatus::NeedsYou) {
+        return None;
+    }
+    let tasks: Vec<crate::reducer::event::BackgroundTask> = t.background.iter().flatten().filter_map(crate::reducer::event::BackgroundTask::decode).collect();
+    (!tasks.is_empty()).then(|| crate::reducer::groups::BackgroundWork::line_with_detail(&tasks))
 }
 
 /// Whether a hover button should ask first: a turn underway, or background
@@ -948,6 +994,50 @@ pub fn archive_rows(count: usize, limit: usize, searching: bool, selected_index:
     (shown, count - shown)
 }
 
+/// What a thread on a virtual runner's row says at its right, from its box
+/// (`RemoteRunner.box`), in place of the time: None when the box is up and
+/// the thread's own status is what matters. Starting and waking take the
+/// grey spinner background work has; asleep reads as plainly as a time.
+pub fn box_trailing(b: &crate::remote::RunnerBox) -> Option<Trailing> {
+    use crate::remote::TokenNeed;
+    let line = |text: &str, kind: TrailingKind, tip: String| Some(Trailing { text: text.to_owned(), kind, tip: Some(tip) });
+    if b.needs_token() {
+        let login = b.login.as_deref().unwrap_or("its Claude login");
+        let tip = if b.token == Some(TokenNeed::Dead) {
+            format!("Claude refused the cloud token for {login}. Open the thread to make a new one; the message goes once it's set.")
+        } else {
+            format!("{login} has no cloud token yet. Open the thread to make one; the message goes once it's set.")
+        };
+        return line("Needs a cloud token", TrailingKind::Quiet, tip);
+    }
+    if b.waiting {
+        return line("Waiting for room", TrailingKind::Quiet, "Its virtual runner has as many machines up as it's allowed. It wakes, with the message, when one sleeps.".into());
+    }
+    if b.unreachable {
+        return line("Not answering", TrailingKind::Quiet, "Its machine hasn't checked in for five minutes. Threadbear is asking the provider about it.".into());
+    }
+    match b.state.as_str() {
+        "creating" | "starting" => line("Starting a machine", TrailingKind::Background, "A machine is booting for it and getting the repo. The message goes once it's up.".into()),
+        "waking" | "retiring" => line("Waking", TrailingKind::Background, "Its machine is coming back for the message.".into()),
+        "asleep" => line("Asleep", TrailingKind::Quiet, "Its machine sleeps while the thread's idle. A message wakes it.".into()),
+        "failed" => line("Couldn't start", TrailingKind::Failed, "A machine couldn't be started for it. The next message tries again.".into()),
+        _ => None,
+    }
+}
+
+/// A thread on a virtual runner whose box waits on a cloud token needs Mike:
+/// its row takes the needs-you dot, as a question does, rather than the
+/// Working look its sidebar row's "starting" would give it.
+pub fn dress_box(t: &mut ThreadSummary, b: &crate::remote::RunnerBox) {
+    if !b.needs_token() {
+        return;
+    }
+    t.needs_you = true;
+    if matches!(t.status.as_str(), "starting" | "running") {
+        t.status = "idle".to_owned();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1088,20 @@ mod tests {
         let job = thread(json!({ "needs": "you", "needsYou": true, "background": [{ "kind": "shell", "description": "npm test" }] }));
         assert_eq!(RowLook::of(&job, Some("inbox")).status, RowStatus::Time);
         assert!(RowLook::of(&job, Some("inbox")).unread);
+    }
+
+    #[test]
+    fn job_mark_on_a_row_waiting_with_a_job() {
+        // Waiting on Mike with a job left running: the paw, saying what runs.
+        let job = thread(json!({ "needs": "you", "needsYou": true, "background": [{ "kind": "shell", "description": "Land the card fix on Threadbear main" }] }));
+        let look = RowLook::of(&job, Some("inbox"));
+        assert_eq!(job_mark(&job, &look).as_deref(), Some("1 job running in the background · Land the card fix on Threadbear main"));
+        // Nothing running: no paw.
+        let quiet = thread(json!({ "needs": "you", "needsYou": true }));
+        assert_eq!(job_mark(&quiet, &RowLook::of(&quiet, Some("inbox"))), None);
+        // Under Running its status already says "1 job": no paw as well.
+        let busy = thread(json!({ "background": [{ "kind": "shell", "description": "npm test" }] }));
+        assert_eq!(job_mark(&busy, &RowLook::of(&busy, Some("running"))), None);
     }
 
     #[test]
@@ -1079,6 +1183,24 @@ mod tests {
         let out = trailing(&topic, &RowLook::PLAIN, RowMode::Hibernating, &now, None);
         assert_eq!(out.text, "wood");
         assert!(out.tip.unwrap().starts_with("Back when you next talk about wood."));
+        let agents = thread(json!({ "snoozedUntil": "9999-12-31T00:00:00.000Z", "wakeWhen": { "said": "when the landing finishes", "topic": "the landing has finished", "agent": true } }));
+        let out = trailing(&agents, &RowLook::PLAIN, RowMode::Hibernating, &now, None);
+        assert_eq!(out.tip.as_deref(), Some("Back when the landing has finished. The agent said \"when the landing finishes\"."));
+
+        let waiting = thread(json!({ "needs": "nothing", "lastSeq": 5, "lastSeenSeq": 1, "snoozedUntil": "2026-11-10T09:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] }));
+        let look = RowLook::of(&waiting, Some("running"));
+        assert!(!look.done, "no tick: it hasn't finished");
+        let out = trailing(&waiting, &look, RowMode::Inbox, &now, None);
+        assert_eq!((out.text.as_str(), out.kind), ("Waiting on \"Fix main's CI\"", TrailingKind::Background));
+        let for_app = thread(json!({ "needs": "nothing", "snoozedUntil": "2026-11-10T09:00:00Z", "awaitingAppRestart": true }));
+        let out = trailing(&for_app, &RowLook::of(&for_app, Some("running")), RowMode::Inbox, &now, None);
+        assert_eq!((out.text.as_str(), out.kind), ("Waiting for the app update", TrailingKind::Background));
+        let landing = thread(json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00.000Z", "wakeWhen": { "said": "when the landing finishes", "topic": "the landing has finished", "agent": true }, "looseEnds": { "seq": 4, "ends": [{ "kind": "unlanded", "text": "1 commit on thread/x isn't on main" }] } }));
+        let look = RowLook::of(&landing, Some("running"));
+        assert!(!look.done, "no tick: nothing has landed");
+        let out = trailing(&landing, &look, RowMode::Inbox, &now, None);
+        assert_eq!((out.text.as_str(), out.kind), ("Waiting to land", TrailingKind::Background));
+        assert_eq!(out.tip.as_deref(), Some("1 commit on thread/x isn't on main. Back when the landing has finished."));
 
         let thinking = thread(json!({ "snoozedUntil": "9999-12-31T00:00:00.000Z", "wakeWhen": { "said": "soon", "pending": true } }));
         assert_eq!(trailing(&thinking, &RowLook::PLAIN, RowMode::Hibernating, &now, None).text, "Thinking…");
@@ -1204,8 +1326,14 @@ mod tests {
         let all = [a, b, c];
         let inbox = |s: &[Section]| s.iter().find(|x| x.key == "inbox").unwrap().rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
         assert_eq!(inbox(&sections_ordered(&all, 0, InboxOrder::NeedsYou, &Default::default())), ["asking", "new", "old"]);
-        assert_eq!(inbox(&sections_ordered(&all, 0, InboxOrder::Newest, &Default::default())), ["new", "asking", "old"]);
-        assert_eq!(inbox(&sections_ordered(&all, 0, InboxOrder::Oldest, &Default::default())), ["old", "asking", "new"]);
+        // A card waiting on Mike (ask_secret, a question) goes first in every
+        // order, as it runs out: oldest first had it at the bottom (19 Nov).
+        assert_eq!(inbox(&sections_ordered(&all, 0, InboxOrder::Newest, &Default::default())), ["asking", "new", "old"]);
+        assert_eq!(inbox(&sections_ordered(&all, 0, InboxOrder::Oldest, &Default::default())), ["asking", "old", "new"]);
+        // Only a live card: a finished turn asking him keeps its place.
+        let d = thread(json!({ "id": "asked", "needsYou": true, "needs": "you", "lastActivityAt": "2026-11-09T06:00:00Z" }));
+        let all = [all[0].clone(), all[1].clone(), all[2].clone(), d];
+        assert_eq!(inbox(&sections_ordered(&all, 0, InboxOrder::Oldest, &Default::default())), ["asking", "old", "asked", "new"]);
     }
 
     /// The shared urgency rule (`app/Tests/Fixtures/inbox-urgency-cases.json`):
@@ -1235,4 +1363,46 @@ mod tests {
         let evening = snooze_presets(&now).iter().find(|p| p.id == "tomorrow").unwrap().until_ms;
         assert_eq!(evening, tz.with_ymd_and_hms(2026, 11, 10, 9, 0, 0).unwrap().timestamp_millis());
     }
+    // A thread on a virtual runner says what its box is doing, quietly
+    // (docs/virtual-runners.md, "What it's like when it's done").
+    #[test]
+    fn a_box_threads_row_says_what_its_box_is_doing() {
+        use crate::remote::{RunnerBox, TokenNeed};
+        let b = |state: &str| RunnerBox { state: state.into(), ..Default::default() };
+        let line = |r: RunnerBox| box_trailing(&r).map(|t| (t.text, t.kind));
+        assert_eq!(line(b("creating")), Some(("Starting a machine".into(), TrailingKind::Background)));
+        assert_eq!(line(b("starting")), Some(("Starting a machine".into(), TrailingKind::Background)));
+        assert_eq!(line(b("waking")), Some(("Waking".into(), TrailingKind::Background)));
+        assert_eq!(line(b("asleep")), Some(("Asleep".into(), TrailingKind::Quiet)));
+        assert_eq!(line(b("awake")), None, "an awake box's thread says what the thread's doing");
+        assert_eq!(line(b("saving")), None);
+        assert_eq!(line(b("something new")), None);
+        let needs = RunnerBox { state: "needsToken".into(), token: Some(TokenNeed::None), login: Some("mike@example.com".into()), ..Default::default() };
+        let t = box_trailing(&needs).unwrap();
+        assert_eq!((t.text.as_str(), t.kind), ("Needs a cloud token", TrailingKind::Quiet));
+        assert!(t.tip.unwrap().contains("mike@example.com"));
+        let dead = RunnerBox { state: "awake".into(), token: Some(TokenNeed::Dead), login: Some("mike@example.com".into()), ..Default::default() };
+        assert!(box_trailing(&dead).unwrap().tip.unwrap().contains("refused"));
+        let waiting = RunnerBox { state: "asleep".into(), waiting: true, ..Default::default() };
+        assert_eq!(line(waiting), Some(("Waiting for room".into(), TrailingKind::Quiet)));
+        let silent = RunnerBox { state: "awake".into(), unreachable: true, ..Default::default() };
+        assert_eq!(line(silent), Some(("Not answering".into(), TrailingKind::Quiet)));
+    }
+
+    // Needing a token is needing Mike: the needs-you dot, not a new mark,
+    // and not the Working look its index row's "starting" would give.
+    #[test]
+    fn a_box_thread_waiting_on_a_token_needs_you() {
+        use crate::remote::{RunnerBox, TokenNeed};
+        let mut t = thread(json!({ "status": "starting" }));
+        dress_box(&mut t, &RunnerBox { state: "needsToken".into(), token: Some(TokenNeed::None), ..Default::default() });
+        let look = RowLook::of(&t, Some("inbox"));
+        assert!(t.needs_you && look.unread && look.emphasised);
+        assert_eq!(look.status, RowStatus::Time);
+        let mut booting = thread(json!({ "status": "starting" }));
+        dress_box(&mut booting, &RunnerBox { state: "starting".into(), ..Default::default() });
+        assert!(!booting.needs_you);
+        assert_eq!(booting.status, "starting", "a box that's starting isn't changed");
+    }
 }
+

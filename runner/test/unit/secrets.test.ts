@@ -9,6 +9,8 @@ import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { SecretStore, SECRET_TTL_MS, openSealed, seal } from '../../src/secrets.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { WROTE_INSTEAD } from '../../src/runner.ts';
+// NTFS has no modes: a file in the user's profile is already private to them (chmodSafe in src/platform.ts).
+import { IS_WINDOWS, SHELL } from '../helpers/platform.ts';
 
 const VALUE = 'hunter2 ✓';
 
@@ -40,7 +42,7 @@ test('the store makes one key pair, keeps it, and opens what is sealed to it', (
   const a = new SecretStore(dir);
   const pub = a.publicKey();
   assert.equal(Buffer.from(pub, 'base64').length, 32);
-  assert.equal(fs.statSync(path.join(dir, 'secret-box.key')).mode & 0o777, 0o600);
+  if (!IS_WINDOWS) assert.equal(fs.statSync(path.join(dir, 'secret-box.key')).mode & 0o777, 0o600);
   const b = new SecretStore(dir);
   assert.equal(b.publicKey(), pub, 'a second start uses the same key');
   assert.equal(b.open(seal(pub, VALUE, 'ap1'), 'ap1'), VALUE);
@@ -51,10 +53,11 @@ test('an answer goes to an owner-only file, with an askpass helper that prints i
   const store = new SecretStore(dir);
   const { file, askpass } = store.write(VALUE);
   assert.equal(path.dirname(file), store.dir);
-  assert.equal(fs.statSync(store.dir).mode & 0o777, 0o700);
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (!IS_WINDOWS) assert.equal(fs.statSync(store.dir).mode & 0o777, 0o700);
+  if (!IS_WINDOWS) assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   assert.equal(fs.readFileSync(file, 'utf8'), VALUE);
-  assert.equal(execFileSync(askpass, { encoding: 'utf8' }), VALUE);
+  // The helper is an sh script: Windows has no way to start one as a program, so Git Bash runs it there.
+  assert.equal(IS_WINDOWS ? execFileSync(SHELL[0], [askpass], { encoding: 'utf8' }) : execFileSync(askpass, { encoding: 'utf8' }), VALUE);
   const second = store.write('other');
   assert.notEqual(second.file, file, 'each answer gets a file of its own');
 });

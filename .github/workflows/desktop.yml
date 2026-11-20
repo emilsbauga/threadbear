@@ -9,6 +9,12 @@
 # main failed (runner/src/land-gate.ts, docs/thread-worktrees.md): it was red
 # for two days of GPUI landings (10 to 12 Nov) over what only GitHub's Macs,
 # Linux and Windows see, which tb land's quick check on Tinker Desk can't.
+#
+# The paths are everything the app builds and tests from, the files outside
+# desktop/ included (the Swift app's pictures and pele.js, the shared inbox
+# fixture, the runner files the mock runner imports):
+# runner/test/unit/desktop-ci-paths.test.ts finds those in the code and fails
+# when one's missing here, as a change to only them ran no desktop CI.
 # tb land: hold while red
 name: Desktop app
 
@@ -19,9 +25,16 @@ on:
       - desktop/**
       - runner/src/protocol.ts
       - runner/src/rpc-auth.ts
+      - runner/src/reviews.ts
+      - runner/src/samples.ts
       - web/src/sections.ts
       - web/src/format.ts
       - app/Tools/mock-runner/**
+      - app/Sources/Threadbear/Resources/Art/**
+      - app/Sources/Threadbear/Resources/Rich/**
+      - app/Sources/Threadbear/Views/Tour.swift
+      - app/Tests/Fixtures/**
+      - site/app-doc-slugs.json
       - features/**
       - .github/workflows/desktop.yml
   pull_request:
@@ -29,9 +42,16 @@ on:
       - desktop/**
       - runner/src/protocol.ts
       - runner/src/rpc-auth.ts
+      - runner/src/reviews.ts
+      - runner/src/samples.ts
       - web/src/sections.ts
       - web/src/format.ts
       - app/Tools/mock-runner/**
+      - app/Sources/Threadbear/Resources/Art/**
+      - app/Sources/Threadbear/Resources/Rich/**
+      - app/Sources/Threadbear/Views/Tour.swift
+      - app/Tests/Fixtures/**
+      - site/app-doc-slugs.json
       - features/**
       - .github/workflows/desktop.yml
   workflow_dispatch:
@@ -49,19 +69,41 @@ concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Only in Mike's repo (or when started by hand): in a fork, a push of its
+# main ran every job here on Linux, Mac, Windows and Android, though its
+# owner only builds and checks for their own system (./check.sh does that
+# before tb land), and most of those runs went red for reasons that were
+# never theirs (Wayne, 19 Nov 2026; 9 forks had Actions on). PRs to Mike's
+# repo still run, as they run in his repo.
 jobs:
   build:
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    # Windows needs time for its release build after the behaviour specs.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 45 }}
+    # Windows needs time for its release build after the behaviour specs, and
+    # the Mac for its web runtime specs (about 40 minutes without them).
+    # Linux too since 17 Nov: its specs alone grew past 39 minutes, and 45
+    # cancelled the run on main.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
+        # Linux's behaviour specs are split in two (TB_SHARD, features/cucumber.mjs):
+        # run whole they took 28 to 31 minutes and then passed the 45 (17 Nov),
+        # about 620 scenarios at three seconds each. The second job only builds
+        # the app and runs its half, so a share is about 16 minutes. Split
+        # further, with a third job, rather than raising the limit.
+        # Mac and Windows the same since 20 Nov: their whole runs took 40
+        # minutes after 15 of Rust tests, and Mac's passed the 60 while
+        # building the release app, so no run on main finished and the land
+        # gate went by an old failure (run 44661350867).
         include:
-          - { name: Linux, os: ubuntu-24.04 }
-          - { name: Mac, os: macos-26 }
-          - { name: Windows, os: windows-latest }
+          - { name: Linux, os: ubuntu-24.04, shard: 1/2 }
+          - { name: Linux specs 2 of 2, os: ubuntu-24.04, shard: 2/2, specsOnly: true }
+          - { name: Mac, os: macos-26, shard: 1/2 }
+          - { name: Mac specs 2 of 2, os: macos-26, shard: 2/2, specsOnly: true }
+          - { name: Windows, os: windows-latest, shard: 1/2 }
+          - { name: Windows specs 2 of 2, os: windows-latest, shard: 2/2, specsOnly: true }
     defaults:
       run:
         shell: bash
@@ -77,6 +119,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: desktop
+          # The specs-only job builds less, so it keeps a cache of its own.
+          key: ${{ matrix.specsOnly && 'specs-only' || '' }}
       - name: Linux libraries
         if: runner.os == 'Linux'
         # xvfb, mesa and dbus are for the behaviour specs: a window with no screen.
@@ -89,13 +133,16 @@ jobs:
         working-directory: features
         run: node verify-pairing.mjs
       - name: Rust tests (with the mock runner)
+        if: ${{ !matrix.specsOnly }}
         run: cargo test --manifest-path desktop/Cargo.toml
       - name: Native text bridge contract
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && !matrix.specsOnly
         run: bash desktop/scripts/test-native-text.sh
       - name: File-drop regression tests
+        if: ${{ !matrix.specsOnly }}
         run: cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation --test file_drop
       - name: Loader repaint and lifetime regressions
+        if: ${{ !matrix.specsOnly }}
         run: |
           cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation,frame-stats --bin threadbear-gpui spinner:: -- --list > loader-tests.txt
           cat loader-tests.txt
@@ -107,11 +154,28 @@ jobs:
           count=$(awk '/^frame_stats::loader_probe_tests::.*: test$/ { n++ } END { print n+0 }' loader-probe-tests.txt)
           test "$count" -ge 1
           cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation,frame-stats --bin threadbear-gpui frame_stats::loader_probe_tests::
+      # The web runtime's pinned archive, for the @web-runtime specs (web
+      # panels, diagrams and pages in replies, file previews, installing the
+      # runtime): without it all 30 were skipped, and cucumber counts a skip
+      # as a pass (16 Nov). Kept in the Actions cache by its name and hash,
+      # and checked against the pinned SHA-256 every run.
+      - name: Web runtime archive key
+        if: runner.os == 'macOS'
+        id: web-runtime
+        run: echo "key=$(desktop/scripts/web-runtime-archive.sh --key)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'macOS'
+        with:
+          path: ~/web-runtime-archive
+          key: web-runtime-${{ steps.web-runtime.outputs.key }}
+      - name: Web runtime archive
+        if: runner.os == 'macOS'
+        run: echo "TB_WEB_RUNTIME_ARCHIVE=$(desktop/scripts/web-runtime-archive.sh ~/web-runtime-archive)" >> "$GITHUB_ENV"
       - name: Behaviour specs
         run: |
           cargo build --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation
           cd features
-          TB_APP=gpui TB_RETRY=1 node_modules/.bin/cucumber-js
+          TB_APP=gpui TB_RETRY=1 TB_SHARD=${{ matrix.shard }} node_modules/.bin/cucumber-js
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -119,8 +183,10 @@ jobs:
           path: features/reports/
           if-no-files-found: ignore
       - name: Build the GPUI app
+        if: ${{ !matrix.specsOnly }}
         run: cargo build --release --manifest-path desktop/Cargo.toml -p threadbear-gpui
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !matrix.specsOnly }}
         with:
           name: threadbear-desktop-${{ matrix.name }}
           path: |

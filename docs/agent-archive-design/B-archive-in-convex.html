@@ -1,0 +1,32 @@
+<!doctype html><meta charset=utf-8><style>
+body{font:14px/1.45 -apple-system,system-ui,sans-serif;background:#16171a;color:#e6e6e6;margin:0;padding:28px 34px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:#9aa;margin:0 0 20px}
+.diag{display:flex;gap:14px;align-items:stretch;margin:0 0 22px;flex-wrap:wrap}
+.col{display:flex;flex-direction:column;gap:8px;min-width:150px}
+.box{border:1px solid #3a3d45;border-radius:8px;padding:8px 10px;background:#1f2126}
+.box b{display:block}.box small{color:#9aa}
+.hot{border-color:#d9a441;background:#2a2418}.gone{opacity:.45;text-decoration:line-through}
+.arrow{align-self:center;color:#777;font-size:20px}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-top:1px solid #30333a;padding:7px 8px;vertical-align:top;text-align:left}
+th{color:#9aa;font-weight:500;width:150px}.good{color:#8fd18f}.bad{color:#e48c7a}
+</style>
+<h1>B. The archive lives in Threadbear's Convex</h1>
+<p class=sub>Literally one backend: opt-in archive tables, vector index and file storage beside the mirror. Agent Archive's server is retired.</p>
+<div class=diag>
+ <div class=col><div class=box><b>Every runner</b><small>uploads threads + CLI folders</small></div><div class="box gone"><b>Bruce archive server</b></div></div>
+ <div class=arrow>→</div>
+ <div class=col><div class="box hot"><b>Threadbear's Convex</b><small>mirror + archive tables + vectors + files. Paid plan, or self-hosted</small></div></div>
+ <div class=arrow>→</div>
+ <div class=col><div class=box><b>Agents</b><small>Convex queries</small></div><div class=box><b>Phone + website</b><small>Archive tab, search, Ask as an HTTP action</small></div></div>
+</div>
+<table>
+<tr><th>Daemons</th><td class=good>One: the runner.</td></tr>
+<tr><th>Backends</th><td class=good>One.</td></tr>
+<tr><th>Search</th><td>Rebuilt on Convex's search and vector indexes (the version that was retired on 24 Oct).</td></tr>
+<tr><th>MCP tools</th><td>Same five, answered from Convex.</td></tr>
+<tr><th>Web reader</th><td class=good>An Archive section of Threadbear's website, signed in, anywhere.</td></tr>
+<tr><th>Quick Ask</th><td>Back to a Convex HTTP action. Sydney instead of US East helps; vector calls still go out to OpenRouter.</td></tr>
+<tr><th>Migrating 27 GB</th><td class=bad>Export from Bruce, import into Convex, re-embed or copy ~1M vectors, 12 GB of files into file storage. Days, and real money.</td></tr>
+<tr><th>A stranger</th><td class=bad>Impossible on the free plan (0.5 GB storage). Paid or self-hosted only.</td></tr>
+<tr><th>Risk</th><td class=bad>Mike's mirror is Convex cloud, so his archive would be too: the setup that hit 137 GB of I/O in a month and the spending limit. Self-hosting Convex on Bruce means Docker on 8 GB that already swaps.</td></tr>
+</table>

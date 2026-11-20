@@ -10,6 +10,7 @@ use crate::app::Threadbear;
 use crate::{call, icons, now_ms, style};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -49,6 +50,8 @@ pub(crate) enum Target {
     File(String),
     Folder(String),
     Page(String),
+    /// A GitHub pull request's tab, by its own URL (pr_view.rs).
+    Pr(String),
 }
 
 /// A folder's selection and open rows, kept so coming Back to it finds it as
@@ -75,11 +78,17 @@ pub(crate) struct PanePreview {
     pub memory: FolderMemory,
     /// A text file with its own text up, raw (the Markdown menu's Markdown).
     pub editing: bool,
+    /// A live page opened big from its card (live_pages.rs, Full size): the
+    /// running page shows here in place of the file's own preview.
+    pub live: bool,
+    /// The lines a reply's link named (`a.ts:12-18`), first and last,
+    /// counted from 1: tinted and scrolled to once its text is up.
+    pub lines: Option<(usize, usize)>,
 }
 
 impl PanePreview {
     pub(crate) fn new(target: Target, title: String, from: String) -> Self {
-        PanePreview { target, title, from, opened: 0, back: vec![], memory: Default::default(), editing: false }
+        PanePreview { target, title, from, opened: 0, back: vec![], memory: Default::default(), editing: false, live: false, lines: None }
     }
 
     pub(crate) fn file_path(&self) -> Option<&str> {
@@ -97,7 +106,8 @@ fn remembered_open(p: &PanePreview) -> Option<crate::pane_store::Open> {
     let (path, folder) = match &p.target {
         Target::File(path) => (path.clone(), false),
         Target::Folder(path) => (path.clone(), true),
-        Target::Page(_) => return None,
+        // A PR is read from GitHub again each launch, so isn't kept.
+        Target::Page(_) | Target::Pr(_) => return None,
     };
     let back = p.back.iter().filter_map(remembered_open).collect();
     Some(crate::pane_store::Open { path, folder, title: p.title.clone(), from: p.from.clone(), back })
@@ -227,6 +237,10 @@ pub(crate) enum MenuAction {
     // A row of Threads it started (`startedRow`'s menu).
     OpenThread { id: String },
     OpenThreadInPanel { id: String },
+    // A PR tab's Merge and Review menus (pr_view.rs).
+    PrMerge { url: String, method: String },
+    PrMergeDefault { method: String },
+    PrReview { url: String, action: String },
 }
 
 /// The app's window of files read so far and folders looked at lives in
@@ -280,6 +294,8 @@ pub(crate) struct SidePane {
     pub(crate) explain: crate::explain_pane::ExplainState,
     /// The Browser pane's address bar (agent_browser.rs).
     pub(crate) browser: crate::agent_browser::BrowserPaneState,
+    /// The PRs open as tabs (pr_view.rs).
+    pub(crate) prs: crate::pr_view::PrPanes,
     _subs: Vec<Subscription>,
 }
 
@@ -318,6 +334,7 @@ impl SidePane {
             drawn: HashMap::new(),
             explain: Default::default(),
             browser: Default::default(),
+            prs: Default::default(),
             _subs: vec![],
         };
         pane.chosen = pane.places.iter().filter_map(|(id, p)| Some((id.clone(), p.section.clone()?))).collect();
@@ -359,6 +376,15 @@ impl SidePane {
             this.update(cx, |this, cx| {
                 if let Some(thread) = this.thread(cx) {
                     this.refresh_highlights(thread.id, Duration::ZERO, cx);
+                }
+                // Files opened while the runner was away: read now, or when
+                // their thread is next shown (reread_file puts that off).
+                let waiting: Vec<String> = this.files.open.iter().filter(|(_, f)| f.waiting_for_runner).map(|(id, _)| id.clone()).collect();
+                for id in waiting {
+                    if let Some(open) = this.files.open.get_mut(&id) {
+                        open.waiting_for_runner = false;
+                    }
+                    this.reread_file(&id, cx);
                 }
             })
             .ok();
@@ -668,6 +694,13 @@ impl SidePane {
             }
             return;
         }
+        // A PR opens as its own tab here, with the inlinePrs experiment.
+        if let (Some(_), Some(thread)) = (crate::pr_view::pr_url(url), self.thread(cx)) {
+            if self.app.upgrade().is_some_and(|app| crate::pr_view::on(app.read(cx))) {
+                self.open_pr(url, &thread, cx);
+                return;
+            }
+        }
         if core::is_web_page(url) {
             // Where Default says, as a web link in a reply goes: the browser
             // unless Mike picked the pane (`openLink`).
@@ -699,11 +732,17 @@ impl SidePane {
     }
 
     pub(crate) fn preview_path(&mut self, path: &str, title: Option<String>, thread: &ThreadSummary, cx: &mut Context<Self>) {
+        self.preview_path_at(path, title, None, thread, cx);
+    }
+
+    /// `preview_path`, with lines of its text to tint and scroll to.
+    pub(crate) fn preview_path_at(&mut self, path: &str, title: Option<String>, lines: Option<(usize, usize)>, thread: &ThreadSummary, cx: &mut Context<Self>) {
         let section = self.section_for(thread);
         // A folder browsed in place of its picture; the runner says which it is.
         let target = if self.files.is_known_folder(path) { Target::Folder(path.to_owned()) } else { Target::File(path.to_owned()) };
         let title = title.unwrap_or_else(|| core::last_component(path).to_owned());
-        let preview = PanePreview::new(target, title, section);
+        let mut preview = PanePreview::new(target, title, section);
+        preview.lines = lines;
         self.show_preview(preview, &thread.id.clone(), cx);
     }
 
@@ -713,8 +752,9 @@ impl SidePane {
         // A file being worked on is saved before anything takes its place.
         self.leave_edit(thread_id, cx);
         preview.opened = self.previews.get(thread_id).map_or(0, |p| p.opened) + 1;
-        // A Markdown file opens as its bar's menu last left it, on this
-        // runner's machine (`MarkdownView.opensRaw`).
+        // A Markdown file opens as its bar's menu last left it, and code and
+        // plain text ready to type in, on this runner's machine
+        // (`MarkdownView.opensRaw`).
         let here = self.thread(cx).is_some_and(|t| t.id == thread_id && !t.is_remote());
         if let Some(path) = preview.file_path() {
             preview.editing = here && threadbear_core::text_file::MarkdownView::opens_raw(path, self.files.prefs.markdown_view);
@@ -870,6 +910,13 @@ impl SidePane {
                     app.update(cx, |app, cx| app.open(id, window, cx));
                 }
             }
+            MenuAction::PrMerge { url, method } => self.pr_menu_action(&url, "merge", Some(&method), window, cx),
+            MenuAction::PrMergeDefault { method } => {
+                if let Some(m) = threadbear_core::pull_requests::MergeMethod::parse(&method) {
+                    crate::reply_links::set_pr_merge_method(m);
+                }
+            }
+            MenuAction::PrReview { url, action } => self.pr_menu_action(&url, &action, None, window, cx),
             MenuAction::OpenThreadInPanel { id } => {
                 if let Some(app) = self.app.upgrade() {
                     app.update(cx, |app, cx| app.open_thread_in_panel(id, cx));
@@ -884,9 +931,11 @@ impl SidePane {
         let entity = cx.entity().downgrade();
         let build = items.clone();
         let view = PopupMenu::build(window, cx, move |menu, window, cx| fill_menu(menu, &build, entity.clone(), window, cx));
+        let (menu_focus, before) = crate::sidebar::focus_menu(&view, self.menu.as_ref().map(|m| &m.view), window, cx);
         // The menu closes itself on Escape, a click outside or a choice.
-        let dismissed = cx.subscribe(&view, |this, _, _: &DismissEvent, cx| {
+        let dismissed = cx.subscribe_in(&view, window, move |this, _, _: &DismissEvent, window, cx| {
             this.menu = None;
+            crate::sidebar::give_back_focus(&menu_focus, before.as_ref(), window, cx);
             cx.notify();
         });
         self.menu = Some(OpenMenu { position, view, _dismissed: dismissed });
@@ -1004,6 +1053,11 @@ pub(crate) struct Palette {
     pub accent: Hsla,
     pub failed: Hsla,
     pub needs_you: Hsla,
+    /// The status marks' colours (`style::status_failed` and on): a row's
+    /// failed, warning, working and done, apart from an error's red words.
+    pub status_failed: Hsla,
+    pub warning: Hsla,
+    pub progress: Hsla,
     pub card: Hsla,
     pub card_border: Hsla,
 }
@@ -1021,6 +1075,9 @@ pub(crate) fn palette(cx: &App) -> Palette {
         accent: style::accent(cx),
         failed: style::failed(cx),
         needs_you: style::needs_you_text(cx),
+        status_failed: style::status_failed(cx),
+        warning: style::status_warning(cx),
+        progress: style::status_progress(cx),
         card: style::primary_opacity(cx, 0.05),
         card_border: style::card_border(cx),
     }
@@ -1031,6 +1088,20 @@ pub(crate) fn icon(name: &str, size: f32, color: Hsla) -> Icon {
     // A patch can name any SF Symbol; one with no bundled twin gets a plain
     // square rather than `icons::symbol`'s question mark.
     icons::try_symbol(name).unwrap_or_else(|| Icon::new(gpui_kit::assets::IconName::SquareDashed)).with_size(px(size)).text_color(color)
+}
+
+/// One of the pane's scrolling lists or pages with the kit's scroll bar over
+/// its right edge, shown only while it scrolls, as the transcript's is
+/// (rows/list.rs). Mike was reading a long Markdown file in the pane with
+/// nothing to say how far down it he was (18 Nov), and its lists were the
+/// same. The list fills what comes back, which the caller sizes. `bar` is the
+/// bar's own id: two lists side by side share a parent, and so would share a
+/// bar's fade if both took their id from this line.
+pub(crate) fn with_scroll_bar(list: Stateful<Div>, scroll: &ScrollHandle, bar: impl Into<ElementId>) -> Div {
+    div()
+        .relative()
+        .child(list.size_full().track_scroll(scroll))
+        .child(div().id(bar).absolute().inset_0().child(div().size_full().vertical_scrollbar(scroll)))
 }
 
 /// A control's tooltip and the label scripts find it by, as Swift's `.tip`:
@@ -1069,6 +1140,25 @@ pub(crate) struct PaneRow {
     pub on_menu: Option<Rc<dyn Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>)>>,
     /// A file on this Mac it drags out as (file_drag.rs).
     pub drag: Option<String>,
+    /// A Files row's preview, drawn in place of its symbol (file_thumbs.rs).
+    pub thumb: Option<AnyElement>,
+    /// Its symbol turns, as a list row whose tone is `working` (the sidebar's
+    /// arc, so working looks the same in both).
+    pub turning: bool,
+    /// A switch at the end of the title's line (a list panel row's `toggle`).
+    pub switch: Option<RowSwitch>,
+}
+
+/// `PaneRow.switch`: its icon, lit when on, its tooltip, and what a press
+/// does. While `pending` (a press on its way to the runner) it shows the new
+/// state and takes no more presses.
+pub(crate) struct RowSwitch {
+    pub id: SharedString,
+    pub symbol: String,
+    pub on: bool,
+    pub pending: bool,
+    pub tip: String,
+    pub press: Rc<dyn Fn(&mut SidePane, &mut Context<SidePane>)>,
 }
 
 impl PaneRow {
@@ -1091,6 +1181,9 @@ impl PaneRow {
             on_click: None,
             on_menu: None,
             drag: None,
+            thumb: None,
+            turning: false,
+            switch: None,
         }
     }
 
@@ -1176,6 +1269,21 @@ impl PaneRow {
         self
     }
 
+    pub(crate) fn turning(mut self, turning: bool) -> Self {
+        self.turning = turning;
+        self
+    }
+
+    pub(crate) fn thumb(mut self, thumb: Option<AnyElement>) -> Self {
+        self.thumb = thumb;
+        self
+    }
+
+    pub(crate) fn switch(mut self, switch: Option<RowSwitch>) -> Self {
+        self.switch = switch;
+        self
+    }
+
     pub(crate) fn render(self, p: Palette, cx: &mut Context<SidePane>) -> impl IntoElement + use<> {
         let hover = p.hover;
         let label_color = if self.quiet { p.secondary } else { p.fg };
@@ -1187,7 +1295,8 @@ impl PaneRow {
             .child(div().min_w_0().truncate().text_size(px(style::size::LABEL)).line_height(px(style::natural_line(style::size::LABEL))).text_color(label_color).child(self.title.clone()))
             .child(div().flex_1().min_w(px(4.)))
             .when_some(self.trailing, |s, t| s.child(div().flex_none().text_size(px(style::size::SMALL)).line_height(px(style::natural_line(style::size::SMALL))).text_color(p.faint).child(t)))
-            .when_some(self.trailing_symbol, |s, symbol| s.child(icon(&symbol, 11., p.secondary)));
+            .when_some(self.trailing_symbol, |s, symbol| s.child(icon(&symbol, 11., self.icon_color.unwrap_or(p.secondary))))
+            .when_some(self.switch, |s, switch| s.child(row_switch(switch, p, cx)));
         let body = v_flex()
             .flex_1()
             .min_w_0()
@@ -1199,15 +1308,24 @@ impl PaneRow {
                 d = if self.detail_lines > 1 { d.line_clamp(self.detail_lines).overflow_hidden().text_ellipsis() } else { d.truncate() };
                 s.child(d.child(detail))
             });
-        let needs_blank_icon = self.reserves_icon && self.icon.is_none();
+        let needs_blank_icon = self.reserves_icon && self.icon.is_none() && self.thumb.is_none();
+        // A preview takes the symbol's place, with the words centred beside it.
+        let has_thumb = self.thumb.is_some();
+        let symbol = if has_thumb { None } else { self.icon };
         let row = h_flex()
-            .items_start()
-            .gap(px(8.))
+            .when(!has_thumb, |s| s.items_start())
+            .when(has_thumb, |s| s.items_center())
+            .gap(px(if has_thumb { 10. } else { 8. }))
             .pl(px(LEADING - OUTER_INSET + if self.indent { 24. } else { 0. }))
             .pr(px(TRAILING))
             .py(px(6.))
             .rounded(px(CORNER))
-            .when_some(self.icon, |s, symbol| s.child(div().w(px(16.)).flex_none().flex().justify_center().pt(px(1.)).child(icon(&symbol, 12., self.icon_color.unwrap_or(p.icon)))))
+            .when_some(self.thumb, |s, thumb| s.child(thumb))
+            .when_some(symbol, |s, symbol| {
+                let color = self.icon_color.unwrap_or(p.icon);
+                let mark = if self.turning { crate::spinner::TurningArc::new(12., color).layered().into_any_element() } else { icon(&symbol, 12., color).into_any_element() };
+                s.child(div().w(px(16.)).flex_none().flex().justify_center().pt(px(1.)).child(mark))
+            })
             .when(needs_blank_icon, |s| s.child(div().w(px(16.)).flex_none()))
             .child(body);
         let row = row.when(self.on_click.is_some(), |s| s.hover(move |st| st.bg(hover)).cursor_pointer());
@@ -1230,6 +1348,36 @@ impl PaneRow {
         crate::file_drag::FileDragExt::file_drag(wrapper, self.drag)
     }
 
+}
+
+/// A row's switch: its icon on a soft fill when on, faint when off. Its
+/// press is its own, so the row's click (opening the link) doesn't fire.
+fn row_switch(switch: RowSwitch, p: Palette, cx: &mut Context<SidePane>) -> impl IntoElement + use<> {
+    let (fill, color) = if switch.on { (style::primary_opacity(cx, 0.14), p.accent) } else { (gpui_kit::transparent_black(), p.faint) };
+    let hover = style::primary_opacity(cx, 0.22);
+    let (pending, press) = (switch.pending, switch.press.clone());
+    tipped(
+        div()
+            .id(switch.id)
+            .flex_none()
+            .size(px(20.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.))
+            .bg(fill)
+            .when(pending, |s| s.opacity(0.6))
+            .when(!pending, |s| s.hover(move |st| st.bg(hover)).cursor_pointer())
+            .child(icon(&switch.symbol, 12., color)),
+        switch.tip,
+    )
+    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+        cx.stop_propagation();
+        if !pending {
+            (press)(this, cx);
+        }
+    }))
 }
 
 /// `SectionHeading`: a quiet heading, a hairline to the edge, the count when
@@ -1315,6 +1463,18 @@ impl SidePane {
 
     /// `row`, a highlight (`HighlightsView.row`).
     fn highlight_row(&mut self, item: &Highlight, thread: &ThreadSummary, index: &str, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        self.highlight_row_with(item, thread, index, None, p, cx)
+    }
+
+    /// A Files row's preview (file_thumbs.rs): only for a file of this Mac's,
+    /// as another Mac's paths name nothing here.
+    fn file_thumb(&self, item: &Highlight, thread: &ThreadSummary, p: Palette, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let path = item.path.as_deref().filter(|_| !thread.is_remote())?;
+        let thumb = crate::file_thumbs::current(path, item.last_seq, window, cx);
+        Some(crate::file_thumbs::element(path, thumb.as_ref(), core::highlight_symbol(item), p, cx))
+    }
+
+    fn highlight_row_with(&mut self, item: &Highlight, thread: &ThreadSummary, index: &str, thumb: Option<AnyElement>, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let is_commit = item.is_commit();
         let detail = if let Some(path) = &item.path {
             Some(core::text::folder(path, Some(&thread.cwd), &crate::files::home_dir()))
@@ -1326,12 +1486,19 @@ impl SidePane {
         };
         // A pin says why in its note; the rest say how they turned up.
         let how = if item.is_pinned() || is_commit { None } else { Some(item.how.word()).filter(|w| !w.is_empty()).map(str::to_owned) };
+        // A PR's symbol in its state's colour, with the inlinePrs experiment.
+        let pr_tint = match (&item.url, item.kind == HighlightKind::Pr && self.app.upgrade().is_some_and(|app| crate::pr_view::on(app.read(cx)))) {
+            (Some(url), true) => self.pr_link_state(url, cx).map(|s| crate::pr_view::state_colour(s, cx)),
+            _ => None,
+        };
         let mut pr = PaneRow::new(SharedString::from(format!("hl-row-{index}-{}", item.id)), item.title.clone())
             .icon(core::highlight_symbol(item))
+            .tinted(pr_tint)
             .lead(is_commit.then(|| item.sha.clone()).flatten())
             .trailing(how)
             .note(item.note.clone())
-            .detail(detail);
+            .detail(detail)
+            .thumb(thumb);
         if !is_commit {
             let (open, thread2) = (item.clone(), thread.clone());
             pr = pr.on_click(move |this, _window, cx| {
@@ -1439,7 +1606,7 @@ impl SidePane {
                     let (symbol, color) = match s.status.as_str() {
                         "running" => ("circle.dashed", None),
                         "completed" => ("checkmark", None),
-                        "failed" => ("xmark", Some(p.failed)),
+                        "failed" => ("xmark", Some(p.status_failed)),
                         _ => ("minus", None),
                     };
                     let id = thread.id.clone();
@@ -1475,7 +1642,7 @@ impl SidePane {
                 for row in shown {
                     let color = match row.state {
                         core::StartedState::NeedsYou => Some(p.accent),
-                        core::StartedState::Failed => Some(p.failed),
+                        core::StartedState::Failed => Some(p.status_failed),
                         _ => None,
                     };
                     let (id, title) = (row.thread.id.clone(), row.thread.title.clone());
@@ -1511,7 +1678,9 @@ impl SidePane {
             list = list.child(self.heading(Heading { key: fold::PINNED.to_owned(), title: "Pinned".into(), icon: Some(icon("pin", 11., p.secondary).into_any_element()), count: Some(sections.pinned.len()), folded, foldable: true, accessory: None }, p, cx));
             if !folded {
                 for item in &sections.pinned {
-                    list = list.child(self.highlight_row(item, thread, "pinned", p, cx));
+                    // A pinned file gets its preview too; a pinned link has none.
+                    let thumb = self.file_thumb(item, thread, p, window, cx);
+                    list = list.child(self.highlight_row_with(item, thread, "pinned", thumb, p, cx));
                 }
             }
         }
@@ -1520,7 +1689,8 @@ impl SidePane {
             list = list.child(self.heading(Heading { key: fold::FILES.to_owned(), title: "Files".into(), icon: Some(icon("doc", 11., p.secondary).into_any_element()), count: Some(sections.files.len()), folded, foldable: true, accessory: None }, p, cx));
             if !folded {
                 for item in &sections.files {
-                    list = list.child(self.highlight_row(item, thread, "files", p, cx));
+                    let thumb = self.file_thumb(item, thread, p, window, cx);
+                    list = list.child(self.highlight_row_with(item, thread, "files", thumb, p, cx));
                 }
             }
         }
@@ -1555,7 +1725,8 @@ impl SidePane {
             }
         }
         let _ = window;
-        div().id("highlights-scroll").size_full().overflow_y_scroll().restrict_scroll_to_axis().track_scroll(&self.scroll).child(list).into_any_element()
+        let list = div().id("highlights-scroll").overflow_y_scroll().restrict_scroll_to_axis().child(list);
+        with_scroll_bar(list, &self.scroll, "highlights-scroll-bar").size_full().into_any_element()
     }
 
     pub(crate) fn schedule_rows(&self, thread: &ThreadSummary, cx: &App) -> Vec<core::ScheduleRow> {
@@ -1680,6 +1851,9 @@ impl SidePane {
         if let Some(preview) = &preview {
             let thread_id = thread.id.clone();
             let back_to = preview.back.last().map_or_else(|| self.section_title(thread, &preview.from), |b| b.title.clone());
+            if let Target::Pr(url) = &preview.target {
+                return row.child(self.render_pr_header(thread, url, back_to, p, cx));
+            }
             row = row.child(self.header_button("hl-back", "chevron.left", format!("Back to {back_to}"), p, cx, move |this, cx| this.preview_back(&thread_id.clone(), cx)));
             row = row.child(div().flex_1().min_w_0().truncate().text_size(px(style::size::LABEL)).font_semibold().child(preview.title.clone()));
             row = row.child(self.preview_buttons(preview, thread, p, cx));
@@ -2060,7 +2234,8 @@ impl SidePane {
 /// Scripted commands for the pane, the same names and shapes as the Swift
 /// app's (app/README.md): `panel`, `highlight`, `preview`, `folder`,
 /// `trust`, `action`, `project-why`, and `collapse`/`expand` with
-/// `highlightSection`.
+/// `highlightSection`. `switch` (`row`, a list row's title) is GPUI's own:
+/// it presses that row's switch in the list panel showing.
 #[cfg(feature = "automation")]
 pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
     let side = app.read(cx).side.clone();
@@ -2102,6 +2277,7 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         "folder" => crate::folders::folder_command(&side, &thread, cmd, window, cx),
         "trust" => crate::patches::trust_command(&side, &thread, cmd, cx),
         "action" => crate::patches::action_command(&side, &thread, cmd, cx),
+        "switch" => crate::patches::switch_command(&side, &thread, cmd, cx),
         other => Err(format!("unknown pane command {other:?}")),
     }
 }

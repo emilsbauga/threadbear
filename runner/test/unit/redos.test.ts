@@ -515,8 +515,8 @@ function cheap<T>(what: string, fn: () => T): T {
 // namedFiles as it was before, to hold the new one to.
 function oldNamedFiles(text: string, base: string, root: string): string[] {
   const refs: string[] = [];
-  for (const m of text.matchAll(/\b(?:src|href|poster|data)\s*=\s*["']([^"']+)["']/gi)) refs.push(m[1]!);
-  for (const m of text.matchAll(/\bsrcset\s*=\s*["']([^"']+)["']/gi)) refs.push(...m[1]!.split(',').map((s) => s.trim().split(/\s+/)[0]!));
+  for (const m of text.matchAll(/\b(?:src|href|poster|data)\s*=\s*(?:["']([^"']+)["']|([^\s"'<>=`]+))/gi)) refs.push((m[1] ?? m[2])!);
+  for (const m of text.matchAll(/\bsrcset\s*=\s*(?:["']([^"']+)["']|([^\s"'<>=`]+))/gi)) refs.push(...(m[1] ?? m[2])!.split(',').map((s) => s.trim().split(/\s+/)[0]!));
   for (const m of text.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)) refs.push(m[1]!);
   for (const m of text.matchAll(/@import\s+["']([^"']+)["']/gi)) refs.push(m[1]!);
   const files: string[] = [];
@@ -537,7 +537,7 @@ function oldNamedFiles(text: string, base: string, root: string): string[] {
 }
 
 test("a review page's files are found as before", () => {
-  const root = '/r';
+  const root = path.resolve('/r'); // (Windows puts it on a drive)
   const page = `<!doctype html><link rel="stylesheet" href="style.css?v=2"><img src='img/a.png#top' srcset="img/a.png 1x, img/a@2x.png 2x">
 <video poster="poster.jpg" src="clip.mp4"></video><object data="chart.svg"></object><a href="next.html">next</a>
 <div style="background: url( 'bg/one.png' ) , URL(bg/two.png), url(&quot;x&quot;), url(&quot; spaced name.png &quot;)"></div>
@@ -548,8 +548,17 @@ test("a review page's files are found as before", () => {
   assert.deepEqual(namedFiles(page, root, root).sort(), want.sort());
   assert.deepEqual(namedFiles(page, root, root), oldNamedFiles(page, root, root));
   const css = `body{background:url("img/bg.png")} a{b:url( "x y.png" )} c{d:url(z.png) url('w.png')} e{f:url(bad"quote)} @import 'more.css';`;
-  assert.deepEqual(namedFiles(css, '/r/css', root), oldNamedFiles(css, '/r/css', root));
-  assert.deepEqual(namedFiles(css, '/r/css', root), ['/r/css/img/bg.png', '/r/css/x y.png', '/r/css/z.png', '/r/css/w.png', '/r/css/more.css']);
+  const cssDir = path.join(root, 'css');
+  assert.deepEqual(namedFiles(css, cssDir, root), oldNamedFiles(css, cssDir, root));
+  assert.deepEqual(namedFiles(css, cssDir, root), ['img/bg.png', 'x y.png', 'z.png', 'w.png', 'more.css'].map((f) => path.join(cssDir, f)));
+});
+
+test("a review page's bare attribute values name files too", () => {
+  // The Car page mockups (19 Nov): `href=base.css` wasn't copied, so the
+  // review showed the pages unstyled.
+  const root = path.resolve('/r');
+  const page = `<html><head><link rel=stylesheet href=base.css></head><body><img src=img/a.png alt=x><img srcset=b.png><a href=next.html>n</a><a\nhref=c.css>`;
+  assert.deepEqual(namedFiles(page, root, root), ['base.css', 'img/a.png', 'c.css', 'b.png'].map((f) => path.join(root, f)));
 });
 
 test('url() captures and namedFiles give what the regexes they replaced gave', () => {
@@ -593,6 +602,9 @@ test("a review page's long runs are read in linear time", () => {
     `src="${'?'.repeat(size)}${'\n'}"`,
     `src="${'#?'.repeat(size / 2)} x"`,
     'src= '.repeat(size / 5),
+    `src=${'x'.repeat(size)}`,
+    'src=x '.repeat(size / 6),
+    `srcset=${'a,'.repeat(size / 8)}`,
     // Linear before too, but each piece is a name: a quarter of the size.
     `srcset="${' ,'.repeat(size / 8)}"`,
     `@import ${' '.repeat(size)}`,

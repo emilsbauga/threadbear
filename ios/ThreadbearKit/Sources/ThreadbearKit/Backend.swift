@@ -4,6 +4,15 @@ import Foundation
 /// Reads are live; writes are commands the owning runner picks up and
 /// applies, each returning a command id the app can watch.
 public extension Backend {
+    func designReviews(threadId: String, reviewId: String?) async throws -> String {
+        throw TransportError.server("Reviews are unavailable on this backend.")
+    }
+    func respondReview(threadId: String, review: PhoneDesignReview, draft: DesignReviewDraft) async throws -> String {
+        throw TransportError.server("Reviews are unavailable on this backend.")
+    }
+    func reviewImages(threadId: String, sources: [String]) -> AsyncThrowingStream<[MessageImage], Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
     func send(threadId: String, text: String) async throws -> String {
         try await send(threadId: threadId, text: text, answers: [])
     }
@@ -22,6 +31,9 @@ public extension Backend {
 }
 
 public protocol Backend: Sendable {
+    func designReviews(threadId: String, reviewId: String?) async throws -> String
+    func respondReview(threadId: String, review: PhoneDesignReview, draft: DesignReviewDraft) async throws -> String
+    func reviewImages(threadId: String, sources: [String]) -> AsyncThrowingStream<[MessageImage], Error>
     func me() async throws -> PhoneIdentity
     func runners() -> AsyncThrowingStream<[PhoneRunner], Error>
     /// Every runner's projects (not archived ones), with their icons from
@@ -191,6 +203,21 @@ public final class ConvexBackend: Backend, @unchecked Sendable {
         let data = try await transport.mutation(name, args(extra))
         // The mutation answers the command id as a bare string.
         return try Self.decode(String.self, data)
+    }
+
+    public func designReviews(threadId: String, reviewId: String?) async throws -> String {
+        var extra: [String: JSONValue] = ["threadId": .string(threadId)]
+        if let reviewId { extra["reviewId"] = .string(reviewId) }
+        return try await command("phone:designReviews", extra)
+    }
+
+    public func respondReview(threadId: String, review: PhoneDesignReview, draft: DesignReviewDraft) async throws -> String {
+        try await command("phone:respondReview", ["threadId": .string(threadId), "reviewId": .string(review.id),
+            "revision": .number(review.revision), "draft": draft.arguments])
+    }
+
+    public func reviewImages(threadId: String, sources: [String]) -> AsyncThrowingStream<[MessageImage], Error> {
+        live("phone:reviewImages", ["threadId": .string(threadId), "sources": .array(sources.map(JSONValue.string))], as: [MessageImage].self)
     }
 
     public func me() async throws -> PhoneIdentity {

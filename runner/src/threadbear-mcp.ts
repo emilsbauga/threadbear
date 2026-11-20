@@ -11,22 +11,24 @@ import type { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 const tool: typeof sdkTool = (name, description, inputSchema, handler, extras) => ({ name, description, inputSchema, handler, ...extras });
 import { z } from 'zod';
 import type { Runner } from './runner.ts';
-import type { Account, EffortLevel, PermissionMode, PersistedEvent, Project, Schedule, ThreadSummary } from './protocol.ts';
+import { diffLines, splitLines } from './diff.ts';
+import type { Account, EffortLevel, ImageRef, PermissionMode, PersistedEvent, Project, Schedule, ThreadSummary } from './protocol.ts';
 import type { ToolApprovalAnswer } from './adapters/types.ts';
 import { cardInput, tooLongForCard } from './tools.ts';
-import { usageLine } from './usage.ts';
+import { resetTime, usageLine } from './usage.ts';
+import { signInWords } from './sign-in-state.ts';
 import { findPool, poolLine } from './pools.ts';
 import { AGENT_MESSAGE_PREFIX, EFFORT_LEVELS, ErrorCode, MOVE_MESSAGE_PREFIX, RpcError, sentByAgent } from './protocol.ts';
 import type { Scheduler } from './schedules.ts';
 import { MAX_CHECK_TIMEOUT_SECS } from './schedule-check.ts';
 import { checkDigest, type CheckCard } from './patch-trust.ts';
-import type { Projects } from './projects.ts';
+import { applyNoteEdits, type Projects } from './projects.ts';
 import { parseWhen, relativeFuture, relativeTime } from './when.ts';
 import { SAID_MAX } from './wake-when.ts';
 
 export { parseWhen, relativeFuture, relativeTime };
 import { RUNNER_VERSION, expandHome } from './config.ts';
-import { droppedOpenLines, OPEN_GONE, ALREADY_ENDED, ARCHIVE_ADDED, MAX_UNTIL, MAX_WAIT_FOR, SNOOZE_ADDED, snoozeFromTool, endTurnDescription, endTurnForm, endTurnMisfit, endTurnTaken, openCardsNote, END_TURN_TOOL, BULLETS_ONLY, ENDED, takenEndTurn, MAX_BYLINE, NARRATION_ONLY, NO_REPLY, needsFromTool, oneReplyAccepted, offersToTakeItBack, oneReplyAlreadyWritten, summaryFromTool, triedFirstNudged, tryFirstNudge, turnReply, unreadMessageRefusal, type TurnReply } from './needs.ts';
+import { droppedOpenLines, OPEN_GONE, ALREADY_ENDED, ARCHIVE_ADDED, MAX_UNTIL, MAX_WAIT_FOR, SNOOZE_ADDED, snoozeFromTool, endTurnDescription, endTurnForm, endTurnMisfit, endTurnTaken, strayAskFields, strayAskProblem, openCardsNote, END_TURN_TOOL, BULLETS_ONLY, ENDED, takenEndTurn, MAX_BYLINE, NARRATION_ONLY, NO_REPLY, needsFromTool, oneReplyAccepted, handsOverAStep, oneReplyAlreadyWritten, summaryFromTool, triedFirstNudged, tryFirstNudge, projectStepNudge, projectStepNudged, unansweredItems, deadEndNudge, deadEndNudged, hasDeadEnd, plainCardNudge, plainCardNudged, wantsPlainCard, turnReply, unreadMessageRefusal, type TurnReply } from './needs.ts';
 
 // end_turn's needs, both forms: "done" meant this turn's step until 11 Nov
 // 2026, when thread 0222c475 said nothing with three draft PRs unmerged in
@@ -35,9 +37,9 @@ import { droppedOpenLines, OPEN_GONE, ALREADY_ENDED, ARCHIVE_ADDED, MAX_UNTIL, M
 const WHOLE_JOB = "Done is the whole job, not this step: if the next step to finish it is theirs (a merge, a deploy), it's an ask.";
 import { asksForAppRestart, type AppRestarts } from './app-restarts.ts';
 import { PANEL_PLACES } from './panel-requests.ts';
-import { nudgedThisTurn, signInNudge, turnSignIns, uncovered, type ConnectorService } from './connectors.ts';
+import { notSignIns, nudgedThisTurn, signInNudge, turnSignIns, uncovered, type ConnectorService } from './connectors.ts';
 import type { PanelPlace } from './protocol.ts';
-import { providerInfo, providerName } from './providers.ts';
+import { providerName } from './providers.ts';
 import { readRelease, type ReleaseJson } from './release.ts';
 import { userLine } from './user-name.ts';
 import type { ConvexSync } from './sync.ts';
@@ -59,6 +61,7 @@ export type ThreadControl = {
   hello: Runner['hello'];
   createReview?: (...args: Parameters<Runner['createReview']>) => Aw<ReturnType<Runner['createReview']>>;
   createButton?: (...args: Parameters<Runner['createButton']>) => Aw<ReturnType<Runner['createButton']>>;
+  folderPanel?: (...args: Parameters<Runner['folderPanel']>) => ReturnType<Runner['folderPanel']>;
   pin?: (...args: Parameters<Runner['pin']>) => Aw<ReturnType<Runner['pin']>>;
   unpin?: (...args: Parameters<Runner['unpin']>) => Aw<ReturnType<Runner['unpin']>>;
   showPanel?: (threadId: string, ask: Parameters<Runner['showPanel']>[1]) => ReturnType<Runner['showPanel']>;
@@ -66,6 +69,8 @@ export type ThreadControl = {
   // The Stop hook sent the turn back for a card its reply asked for, after an
   // end_turn it took (needs.ts, REPLY_ASKS): the next one isn't a repeat.
   cardReopened?: (threadId: string) => boolean;
+  // ...for dead file links in its reply: the reply written doesn't stand.
+  replyRewrite?: (threadId: string) => boolean;
   // A message the agent can't have read when it wrote this end_turn
   // (needs.ts, UNREAD_MESSAGE). Asking counts as a refusal for it.
   unreadMessage?: (threadId: string) => boolean;
@@ -79,10 +84,6 @@ export type ThreadControl = {
   requestAgentApproval?: (threadId: string, req: AgentApprovalRequest) => Promise<ToolApprovalAnswer>;
   // The most access a thread's agent has now (Runner.accessOf).
   accessOf?: (threadId: string) => Aw<PermissionMode>;
-  // Whether a thread's CLI runs in a sandbox (sandbox.ts, Runner.confinedOf),
-  // and whether a new Claude thread in a folder would.
-  confinedOf?: (threadId: string) => Aw<boolean>;
-  sandboxed?: (cwd: string) => boolean;
   // cross-runner.ts: a new thread on another runner (undefined: it's this one).
   startOn?: (threadId: string, req: StartRequest) => Promise<string | undefined>;
   // list, but failing when the other runner of a handover can't be asked
@@ -119,12 +120,14 @@ export type ScheduleControl = Async<Scheduler, 'create' | 'list' | 'find' | 'upd
 
 // On a draining runner these are the primary's projects (projectRouter in
 // handover.ts), so they may be promises too.
-export type ProjectControl = Async<Projects, 'list' | 'get' | 'find' | 'create' | 'update' | 'appendNote' | 'changeMembership'> &
+export type ProjectControl = Async<Projects, 'list' | 'get' | 'find' | 'create' | 'update' | 'editNotes' | 'appendNote' | 'changeMembership'> &
   Partial<Async<Projects, 'chooseIcon' | 'addLinks' | 'removeLinks'>>;
 
 export const SERVER_NAME = 'threadbear';
 
-export type AgentApprovalRequest = { name: string; title: string; input: Record<string, unknown>; signal?: AbortSignal };
+// `review`: what the call changes, worked out by Threadbear itself (a project
+// brief's line diff), for the card reviewer (runner/card-review.ts) alone.
+export type AgentApprovalRequest = { name: string; title: string; input: Record<string, unknown>; review?: string; signal?: AbortSignal };
 
 // Permission modes by how much an agent may do in them without asking.
 // Plan first ranks with ask: its agent changes nothing, and only Mike's
@@ -132,11 +135,15 @@ export type AgentApprovalRequest = { name: string; title: string; input: Record<
 const ACCESS: Record<PermissionMode, number> = { ask: 0, plan: 0, auto: 1, full: 2 };
 export const MODE_NAMES: Record<PermissionMode, string> = { full: 'Full access', auto: 'Auto', ask: 'Ask before edits', plan: 'Plan first' };
 export const raises = (to: PermissionMode, from: PermissionMode): boolean => ACCESS[to] > ACCESS[from];
-// What a thread's agent can do: its mode, and whether its CLI is shut in a
-// sandbox (sandbox.ts), where even Full access reaches only its folder.
-export type Authority = { mode: PermissionMode; confined: boolean };
-// More than the caller has: a higher mode, or out of the caller's sandbox.
-export const above = (t: Authority, caller: Authority): boolean => raises(t.mode, caller.mode) || (caller.confined && !t.confined);
+// What a thread's agent can do: its mode.
+export type Authority = { mode: PermissionMode };
+// The least there is, below even Ask and Plan, by this very object: a
+// thread that isn't here (on another runner of this Mac's), or one an older
+// release ran shut in the sandbox (ThreadRecord.confined), whose words are
+// never passed up on a guess (hibernation.ts).
+export const LEAST: Authority = Object.freeze({ mode: 'ask' as const });
+// More than the caller has: a higher mode, or anything at all over LEAST.
+export const above = (t: Authority, caller: Authority): boolean => (caller === LEAST && t !== LEAST) || raises(t.mode, caller.mode);
 // A new_thread schedule's mode for the access checks: its own, or what it
 // inherits (Schedule.defaultMode). One whose inherited mode isn't known here
 // (another runner's default) counts as the least for raising it and the most
@@ -145,7 +152,7 @@ export function scheduleModes(sc: Pick<Schedule, 'permissionMode' | 'defaultMode
   const known = sc.permissionMode ?? sc.defaultMode;
   return known ? { floor: known, ceiling: known } : { floor: 'ask', ceiling: 'full' };
 }
-const accessName = (t: Authority, caller: Authority): string => `${MODE_NAMES[t.mode]}${caller.confined && !t.confined ? ' outside the sandbox' : ''}`;
+const accessName = (t: Authority): string => MODE_NAMES[t.mode];
 // Asked about every time, even in a thread with full access: deleting is
 // the one thing here that's hard to take back.
 export const ALWAYS_ASK_TOOLS = new Set([`mcp__${SERVER_NAME}__delete_thread`]);
@@ -215,6 +222,9 @@ export function approvalTitle(name: string, input: Record<string, unknown>, find
 // How long end_turn waits for its own call to reach the thread's events
 // before judging the turn (below).
 export const LAND_WAIT_MS = 1000;
+// The most of one brief field's changed lines shown to the card reviewer
+// (briefChanges).
+const BRIEF_DIFF_MAX = 20_000;
 const LAND_POLL_MS = 50;
 
 // Looking a thread id up during a handover (find, below): tries a second
@@ -265,6 +275,16 @@ export function buildThreadbearTools(
     gateway?: () => string | undefined;
     gatewayHealth?: () => Promise<ConnectorService[] | undefined>;
     remote?: () => RemoteControl | undefined;
+    // The once-a-turn note asking for a card in plain words (needs.ts,
+    // plainCardNudge). Off only in tests about the rest of end_turn, which
+    // would otherwise each have to answer it first.
+    plainCardNote?: boolean;
+    // The once-a-turn note asking for a try at a step (needs.ts,
+    // tryFirstNudge), off likewise.
+    tryFirstNote?: boolean;
+    // The once-a-turn note to a Done card in a project still going
+    // (needs.ts, projectStepNudge), off likewise.
+    projectStepNote?: boolean;
   } = {},
 ) {
   const codex = opts.provider === 'codex' || opts.provider === 'pi';
@@ -307,6 +327,64 @@ export function buildThreadbearTools(
       before = page.firstSeq;
     }
     return out;
+  };
+
+  // The thread's events back to its last few finished turns, oldest
+  // first: for the cards they left (needs.ts, unansweredItems). Pages back
+  // until it has passed `turns` turn.completed events, at most 20 pages, so
+  // a long turn running now doesn't hide the cards before it.
+  const recentEvents = async (turns = 10): Promise<PersistedEvent[]> => {
+    const out: PersistedEvent[] = [];
+    let before: number | undefined;
+    let seen = 0;
+    // Only turns that left a card count, and not ones an edit cut out: a
+    // thread.rewound comes after the range it cuts, so walking back meets it first.
+    const cuts: { from: number; to: number }[] = [];
+    for (let pages = 0; pages < 20 && seen < turns; pages++) {
+      const page = await control.events(selfId, { beforeSeq: before, limit: 500 });
+      const evs = page.events as PersistedEvent[];
+      out.unshift(...evs);
+      for (const e of [...evs].reverse()) {
+        if (e.type === 'thread.rewound') cuts.push({ from: e.fromSeq, to: e.toSeq });
+        else if (e.type === 'turn.completed' && e.needs && !cuts.some((c) => e.seq >= c.from && e.seq <= c.to)) seen++;
+      }
+      if (!evs.length || page.firstSeq <= 1) break;
+      before = page.firstSeq;
+    }
+    return out;
+  };
+
+  // The once-a-turn note to a Done card (needs.ts, projectStepNudge): only
+  // in a thread Mike started (a helper's Done is about its own brief), in a
+  // project that isn't archived, and not when the card archives it, sleeps
+  // or waits on other threads or the app restarting, as those say it isn't
+  // over or he asked. Not a sub-agent's call either: it isn't in the
+  // thread's events, so the once-a-turn mark would never be seen and it
+  // would be refused every time (refuseUnread, likewise). A project it
+  // can't read in time is left out rather than holding the turn's end.
+  // The turn (its turn.started's seq) the note last went to. A Codex
+  // sub-agent's call runs through these handlers but never reaches the
+  // thread's events either, so the mark in them alone would let it be
+  // refused every time; this caps it at once a turn whoever asks (Codex
+  // and Gemini's second review, 20 Nov).
+  let projectNotedTurn: number | undefined;
+  const projectStepNote = async (input: { archive?: unknown; snooze?: unknown; waitFor?: unknown }, needs: string, next: string[] | undefined, events: PersistedEvent[]): Promise<string | undefined> => {
+    if (opts.projectStepNote === false || needs !== 'nothing' || !projects) return undefined;
+    if (input.archive === true || snoozeFromTool({ ...input, needs: 'nothing' }) || (Array.isArray(input.waitFor) && input.waitFor.length) || projectStepNudged(events)) return undefined;
+    if (appRestarts?.isWatching(selfId)) return undefined;
+    const turn = events.findLast((e) => e.type === 'turn.started')?.seq;
+    if (turn !== undefined && turn === projectNotedTurn) return undefined;
+    if (!codex && !(await replied()).landed) return undefined;
+    const me = await inTime((async () => control.get(selfId))(), ID_LIST_TIMEOUT_MS, "couldn't read the thread").catch(() => undefined);
+    if (!me || me.startedBy || !me.projects?.length) return undefined;
+    const live: { title: string; state: string }[] = [];
+    for (const p of me.projects) {
+      const got = await inTime((async () => projects.get(p.id))(), ID_LIST_TIMEOUT_MS, "couldn't read the project").catch(() => undefined);
+      if (got && !got.project.archived) live.push({ title: got.project.title, state: got.project.state });
+    }
+    if (!live.length) return undefined;
+    projectNotedTurn = turn;
+    return projectStepNudge(live, unansweredItems(await recentEvents(), next ?? []));
   };
 
   // Whether the turn has replied to Mike (needs.ts, turnReply). The SDK
@@ -387,6 +465,26 @@ export function buildThreadbearTools(
     }
   };
 
+  // An ask's thread:<id> links, each the whole id of a real thread: the phone
+  // and the web look a short one up only in the inbox (an archived thread's
+  // prefix found nothing), so a short or wrong one is refused here, saying
+  // the whole id. Looked up every time, not judged by length (Codex: a long
+  // made-up id would have passed).
+  const checkThreadLinks = async (asks: { links?: { url: string }[] }[]): Promise<void> => {
+    for (const link of asks.flatMap((a) => a.links ?? [])) {
+      const m = /^thread:([\w-]+)$/i.exec(link.url);
+      if (!m) continue;
+      let whole: string;
+      try {
+        whole = (await find(m[1])).id;
+      } catch (e) {
+        throw new Error(`Not ended: the ask link ${link.url} doesn't name one thread (${e instanceof Error ? e.message : String(e)}). Fix the link, or leave it out, and call end_turn again.`);
+      }
+      if (whole === m[1]) continue;
+      throw new Error(`Not ended: an ask link needs the whole thread id. Use thread:${whole} for ${link.url}, and call end_turn again.`);
+    }
+  };
+
   // This runner's threads only: the tools that change a thread's settings,
   // folder or account can't reach another runner's.
   const resolve = async (id: string | undefined): Promise<string> => {
@@ -464,15 +562,9 @@ export function buildThreadbearTools(
   // Auto classifier stands in for it. A thread in full mode can already run
   // anything as the user, so it isn't asked.
   //
-  // A thread whose CLI runs in a sandbox (sandbox.ts) counts as restricted
-  // too, even on Full access: inside it the agent can only touch its own
-  // folder, so a thread, message or schedule that would run outside it
-  // (anything not in a sandbox, another runner's thread, a schedule, a
-  // check) is more than it has, and asks (Daybreak, 7 Nov 2026).
   const restricted = async (): Promise<Authority | undefined> => {
     const m = (await control.get(selfId)).permissionMode ?? 'ask';
-    const confined = Boolean(await control.confinedOf?.(selfId));
-    return m === 'full' && !confined ? undefined : { mode: m, confined };
+    return m === 'full' ? undefined : { mode: m };
   };
   // A thread's saved mode, for a change to it. A thread this runner can't
   // read (gone, or on a runner it can't reach) counts as full.
@@ -487,15 +579,15 @@ export function buildThreadbearTools(
   // The access its agent has now, for anything that reaches it (a message,
   // a move, a project's brief): more than its mode while a turn that had
   // more is still running, as a Codex turn keeps the mode it started with.
-  const accessOf = async (id: string): Promise<{ mode: PermissionMode; confined: boolean; title: string }> => {
+  const accessOf = async (id: string): Promise<{ mode: PermissionMode; title: string }> => {
     const t = await modeOf(id);
     try {
-      return { mode: control.accessOf ? await control.accessOf(id) : 'full', confined: Boolean(await control.confinedOf?.(id)), title: t.title };
+      return { mode: control.accessOf ? await control.accessOf(id) : 'full', title: t.title };
     } catch {
-      return { mode: 'full', confined: false, title: t.title };
+      return { mode: 'full', title: t.title };
     }
   };
-  const confirm = async (tool: string, reasons: string[], input: Record<string, unknown>, signal?: AbortSignal): Promise<void> => {
+  const confirm = async (tool: string, reasons: string[], input: Record<string, unknown>, signal?: AbortSignal, review?: string): Promise<void> => {
     if (!reasons.length) return;
     const ask = control.requestAgentApproval?.bind(control);
     if (!ask) throw new Error(`${reasons.join('; ')}: that needs the user's OK, which this runner can't ask for here. Nothing changed; ask them to do it in the app.`);
@@ -504,21 +596,18 @@ export function buildThreadbearTools(
     // (tools.ts, cardInput; Daybreak, 7 Nov 2026).
     const card = cardInput(input, 'all');
     if (card.tooLong) throw new Error(`${reasons.join('; ')}: that needs the user's OK. ${tooLongForCard(card.tooLong)}`);
-    const a = await ask(selfId, { name: `mcp__${SERVER_NAME}__${tool}`, title: reasons.join('; '), input: card.input, ...(signal ? { signal } : {}) });
+    const a = await ask(selfId, { name: `mcp__${SERVER_NAME}__${tool}`, title: reasons.join('; '), input: card.input, ...(review ? { review } : {}), ...(signal ? { signal } : {}) });
     if (a.decision === 'allow' || a.decision === 'allowAlways') return;
+    if (a.noApp) throw new Error(a.message ?? 'No card could be put up for this, so nothing changed.');
     if (a.decision === 'expired') throw new Error(`No answer from the user${a.message ? ` (${a.message})` : ''}, so nothing changed.`);
-    throw new Error(`The user said no${a.message ? `: ${a.message}` : ''}. Nothing changed; ask them how to proceed.`);
+    throw new Error(`The user said no${a.message ? `: ${a.message.replace(/[.\s]+$/, '')}` : ''}. Nothing changed; ask them how to proceed.${a.reviewer ? ` ${a.reviewer}` : ''}`);
   };
   const threadName = (id: string, title: string): string => (id === selfId ? 'this thread' : `"${title}"`);
-  // From a sandboxed thread on Full access, the tools that have the Mac app
-  // open something (a file, a link, a panel whose patch runs commands) act
-  // outside the sandbox, so they ask, as they do at the CLI in Ask mode.
-  const confinedReason = async (what: string): Promise<string[]> => ((await restricted())?.confined ? [`${what}, outside the sandbox`] : []);
   // A message to a thread with more access than the caller.
   const sendReason = async (id: string, caller: Authority | undefined, verb = 'Send a message to'): Promise<string[]> => {
     if (!caller || id === selfId) return [];
     const t = await accessOf(id);
-    return above(t, caller) ? [`${verb} "${t.title}", which has ${accessName(t, caller)}`] : [];
+    return above(t, caller) ? [`${verb} "${t.title}", which has ${accessName(t)}`] : [];
   };
   // What a card for a schedule's check approves, from a thread that asks
   // first: a check runs by itself from then on, bound to what it runs (the
@@ -552,7 +641,7 @@ export function buildThreadbearTools(
   };
   // The card says the whole command (cardInput shows it in full below).
   const checkReason = (check: string | null | undefined, caller: Authority | undefined): string[] =>
-    caller && check?.trim() ? [`Run a shell command as you before each run${caller.confined ? ', outside the sandbox' : ''}: ${check.trim().split('\n')[0].slice(0, 120)}`] : [];
+    caller && check?.trim() ? [`Run a shell command as you before each run: ${check.trim().split('\n')[0].slice(0, 120)}`] : [];
 
   // Who put it away, and the user's verdict when they gave one from the
   // done card, so a sweep can tell a thread they confirmed from one an
@@ -560,7 +649,7 @@ export function buildThreadbearTools(
   const archivedHow = (t: ThreadSummary): string => {
     if (!t.archivedBy) return '';
     const who = t.archivedBy === 'mike' ? 'the user' : t.archivedBy === 'agent' ? 'an agent' : 'Threadbear';
-    const verdict = t.archiveVerdict === 'worked' ? ': it worked' : t.archiveVerdict === 'didntWork' ? ": it didn't work" : t.archiveVerdict === 'notNeeded' ? ': not needed' : '';
+    const verdict = t.archiveVerdict === 'worked' ? ': it worked' : t.archiveVerdict === 'didntWork' ? ": it didn't work" : t.archiveVerdict === 'notNeeded' ? ': not needed' : t.archiveVerdict === 'didntNeedToSee' ? ": they didn't need to see it" : t.archiveVerdict === 'gladISaw' ? ': glad to have seen it' : t.archiveVerdict === 'notSure' ? ': not sure they needed to see it' : '';
     return ` by ${who}${verdict}`;
   };
 
@@ -647,7 +736,7 @@ export function buildThreadbearTools(
   const reviewTools = [
     tool(
       'show_options',
-      'Shows the user design options (mockups, wireframes, screenshots, videos or HTML pages of variants) in a review window to choose between, instead of pinning them, listing them or reading every image into the transcript. Give an option\u2019s other screens or states as its shots, never as options of their own. The window steps through every shot in order, then shows the options side by side; the user can pick any number or none, and reply. Returns a review ID promptly; finish your turn and the answer arrives later as a message. A reference option (today\u2019s version, say) can\u2019t be picked.',
+      'Shows the user design options (mockups, wireframes, screenshots, videos or HTML pages of variants) in a review window to choose between, instead of pinning them, listing them or reading every image into the transcript. Only for options whose look or motion is the point: options that are words (names, plans, approaches, a shortlist) go in your reply, not on pages made for this. Give an option\u2019s other screens or states as its shots, never as options of their own. The window steps through every shot in order, then shows the options side by side; the user can pick any number or none, and reply. Returns a review ID promptly; finish your turn and the answer arrives later as a message. A reference option (today\u2019s version, say) can\u2019t be picked.',
       {
         title: z.string().min(1).max(200).describe('What the user is reviewing.'),
         note: z.string().max(4000).optional().describe('A short lead, markdown: **bold** what matters.'),
@@ -667,9 +756,8 @@ export function buildThreadbearTools(
       },
       handle(async (input, extra) => {
         if (!control.createReview) throw new Error('This runner does not support image reviews yet.');
-        await confirm('show_options', await confinedReason(`Open "${input.title}" for the user to review`), input as Record<string, unknown>, extra?.signal);
         const { review } = await control.createReview(selfId, input);
-        return `Review ${review.id}: ${review.title} (${review.options.length} options). The user can compare them and send their picks and a reply. You can finish this turn; their reply will arrive as a later message. To open it from an end_turn ask, link to review:${review.id}.`;
+        return `Review ${review.id}: ${review.title} (${review.options.length} options). The user can compare them and send their picks and a reply. You can finish this turn; their reply will arrive as a later message. To open it from an end_turn ask, link to review:${review.id}.${oversizeShotsNote(review)}`;
       }),
     ),
   ];
@@ -679,7 +767,7 @@ export function buildThreadbearTools(
     ? [
         tool(
           'add_button',
-          "Makes a button the user can press while reading your reply: it starts a new thread with your brief (start) or messages another thread (send), once, only when pressed. Put the [title](button:<id>) it returns on the line it belongs to. Only for a clear next job they'd otherwise type out.",
+          "Makes a button the user can press while reading your reply: it starts a new thread with your brief (start) or messages another thread (send), once, only when pressed, or opens a folder's patch panel beside this thread (panel). Put the [title](button:<id>) it returns on the line it belongs to. Only for a clear next job they'd otherwise type out.",
           {
             title: z.string().min(1).max(60).describe('What the button says, a few words starting with a verb: "Fill in the form".'),
             start: z.object({
@@ -697,12 +785,13 @@ export function buildThreadbearTools(
               threadId: z.string().min(1).describe('Thread id or a unique prefix, on this machine.'),
               text: z.string().min(1).max(20000),
             }).optional(),
+            panel: z.object({
+              folder: z.string().min(1),
+              panel: z.string().min(1).describe('Its web panel, by id or title.'),
+            }).optional(),
           },
-          handle(async ({ title, start, send }, extra) => {
+          handle(async ({ title, start, send, panel }, extra) => {
             if (!control.createButton) throw new Error("This runner can't make buttons.");
-            // What it starts or messages at Mike's press runs outside a
-            // sandboxed caller's sandbox, so it's asked about here, whole.
-            await confirm('add_button', await confinedReason(`Make the button "${title}"`), { title, ...(start ? { start } : {}), ...(send ? { send } : {}) }, extra?.signal);
             const input: Parameters<Runner['createButton']>[1] = { title };
             if (start) {
               input.start = {
@@ -722,8 +811,12 @@ export function buildThreadbearTools(
               if (hit.other) throw new Error(`"${hit.other.t.title}" runs on ${hit.other.runner}; a button here can only message this machine's threads. Use send_message.`);
               input.send = { threadId: hit.id, text: send.text };
             }
+            if (panel) {
+              if (!control.folderPanel) throw new Error("This runner can't open another folder's panel.");
+              input.panel = await control.folderPanel(await folder(panel.folder), panel.panel);
+            }
             const { button } = await control.createButton(selfId, input);
-            const what = button.start ? `starts a thread in ${button.start.cwd}` : `messages "${button.send!.threadTitle}"`;
+            const what = button.start ? `starts a thread in ${button.start.cwd}` : button.panel ? `opens ${button.panel.title} from ${button.panel.cwd} beside this thread` : `messages "${button.send!.threadTitle}"`;
             return `Made button:${button.id}, which ${what} when pressed. Put [${button.title}](button:${button.id}) in your reply where it belongs; a button the reply doesn't link isn't shown.`;
           }),
         ),
@@ -772,7 +865,7 @@ export function buildThreadbearTools(
     ? [
         tool(
           'ask_secret',
-          `Asks the user for a secret (a password, an API key, a token, a code) in a private card in Threadbear, on their Mac or their phone, and waits for it. You never see the value, and it stays out of the chat: you get a private file holding it, readable by your commands for 24 hours. Use this whenever a task needs a secret from them, including their Mac administrator password for sudo, instead of asking for it in your reply or stopping to hand the step over. Read the file inside a command and never print it, echo it or put it in a file of your own.`,
+          `Asks the user for a secret (a password, an API key, a token, a code) in a private card in Threadbear, on their Mac or their phone, and waits for it. You never see the value, and it stays out of the chat: you get a private file holding it, readable by your commands for 24 hours. Use this whenever a task needs a secret from them, including their Mac administrator password for sudo, instead of asking for it in your reply or stopping to hand the step over. Not for one you can get yourself, like a key on a page in a signed-in browser. Read the file inside a command and never print it, echo it or put it in a file of your own.`,
           {
             label: z.string().trim().min(1).max(80).describe('The card\'s title, what you need: "Mac administrator password", "Cloudflare API token".'),
             reason: z.string().trim().min(1).max(500).describe('One or two sentences: what it is for, and where to find it if that is not obvious.'),
@@ -812,7 +905,6 @@ export function buildThreadbearTools(
       },
       handle(async (input, extra) => {
         if (!control.pin) throw new Error("This runner doesn't keep highlights yet.");
-        await confirm('pin', await confinedReason(`Pin ${input.path ?? input.url ?? 'something'} for the user to open`), input, extra?.signal);
         const { id, scriptsOff, shown } = await control.pin(selfId, input);
         // Older runners (a handover) don't say whether it showed.
         const where = !input.show ? '' : shown === false ? ". It opens in the side pane when the user next looks at this thread in the Mac app; they aren't right now (it waits until then, or until their next message)" : ', and open in the side pane in front of the user now';
@@ -848,7 +940,6 @@ export function buildThreadbearTools(
       },
       handle(async (input, extra) => {
         if (!control.showPanel) throw new Error("This runner can't show panels yet.");
-        await confirm('show_panel', await confinedReason(`Open the panel ${input.panel}`), input, extra?.signal);
         const { request, shown } = await control.showPanel(selfId, input);
         return shown
           ? `${request.title} is open in front of the user now.`
@@ -891,12 +982,10 @@ export function buildThreadbearTools(
         const caller = await restricted();
         const mode = new_thread ? (permissionMode ?? caller?.mode) : undefined;
         const toThread = !new_thread ? await resolve(threadId ?? alias) : undefined;
-        // Where its threads would run, as the card says it. A schedule's runs
-        // are started by the runner, not in this thread's sandbox, so from a
-        // sandboxed thread they're always outside it.
+        // Where its threads would run, as the card says it.
         const where = new_thread && !runner ? await folder(f ?? '.') : f;
         const reasons = [
-          ...(caller && mode && above({ mode, confined: false }, caller) ? [`Schedule new threads with ${accessName({ mode, confined: false }, caller)}${where ? ` in ${where}` : ''}${runner ? ` on ${runner}` : ''}`] : []),
+          ...(caller && mode && above({ mode }, caller) ? [`Schedule new threads with ${accessName({ mode })}${where ? ` in ${where}` : ''}${runner ? ` on ${runner}` : ''}`] : []),
           ...(toThread ? await sendReason(toThread, caller, 'Schedule a message to') : []),
           ...checkReason(check, caller),
         ];
@@ -969,22 +1058,27 @@ export function buildThreadbearTools(
         let card: { checkCard?: CheckCard } = {};
         if (caller) {
           // What its runs reach: the thread it sends to, or new threads the
-          // runner starts (outside any sandbox this caller is in).
+          // runner starts.
           const modes = scheduleModes(current);
-          const was: Authority = current.threadId ? await accessOf(current.threadId) : { mode: modes.ceiling, confined: false };
+          const was: Authority = current.threadId ? await accessOf(current.threadId) : { mode: modes.ceiling };
           const raised = !current.threadId && permissionMode !== undefined && raises(permissionMode, modes.floor);
-          const will: Authority = raised ? { mode: permissionMode!, confined: false } : was;
-          // What it sends (its title goes into the message too), where, or
-          // that it runs again; not its login, model or zone, and not pausing it.
-          // From a sandboxed caller its login too: a login's config folder
-          // is mounted into the sandbox, so moving a schedule's runs onto one
-          // the sandbox can write to is reaching outside it (Codex review).
-          const changes = [text, title, when, cron, f, ...(caller.confined ? [acc, pl, model, effort] : [])].some((x) => x !== undefined) || (paused === false && current.paused);
+          const will: Authority = raised ? { mode: permissionMode! } : was;
+          // What it sends (its title goes into the message too), where, when,
+          // on which login or model, or that it runs again; not pausing it. A
+          // login another runner doesn't have stops it quietly, like a delete
+          // (OpenCode's review of the Daybreak finding 138 fix).
+          const changes = [text, title, when, cron, f, timezone, acc, pl, model, effort].some((x) => x !== undefined) || (paused === false && current.paused);
           const reasons = [
-            ...(raised ? [`Switch the schedule "${current.title}" to ${MODE_NAMES[permissionMode!]}`] : changes && above(will, caller) ? [`Change the schedule "${current.title}", whose runs have ${accessName(will, caller)}${newFolder ? `, to run in ${newFolder}` : ''}`] : []),
+            ...(raised ? [`Switch the schedule "${current.title}" to ${MODE_NAMES[permissionMode!]}`] : changes && above(will, caller) ? [`Change the schedule "${current.title}", whose runs have ${accessName(will)}${newFolder ? `, to run in ${newFolder}` : ''}`] : []),
             ...(changes && current.check && check === undefined ? [`Change the schedule "${current.title}", which runs a shell command as you first`] : []),
             // Longer to run is more that command can do (Codex review, 6 Nov).
             ...(checkTimeoutSecs !== undefined && current.check && check === undefined && !changes ? [`Change how long the schedule "${current.title}"'s shell command may run`] : []),
+            // On one above this thread or with a check, lowering it or taking
+            // its check off takes away what the user set up, and would let
+            // delete_schedule through without a card (verify-fix of Daybreak
+            // finding 138). Pausing it stays free.
+            ...((above(was, caller) || current.check) && !current.threadId && permissionMode !== undefined && !raised && permissionMode !== current.permissionMode ? [`Change the schedule "${current.title}", whose runs have ${accessName(was)}, to ${MODE_NAMES[permissionMode]}`] : []),
+            ...(current.check && check !== undefined && !check?.trim() ? [`Take the shell command off the schedule "${current.title}"`] : []),
             ...checkReason(check, caller),
             // A new folder takes the check along (below), approved there as
             // the card shows it: so the card says what it runs, and where.
@@ -1046,9 +1140,21 @@ export function buildThreadbearTools(
       'delete_schedule',
       'Deletes a schedule so it never sends again.',
       { scheduleId: z.string().describe('Schedule id or a unique prefix.') },
-      handle(async ({ scheduleId }) => {
+      handle(async ({ scheduleId }, extra) => {
         const s = mustSchedules();
         const sc = await s.find(scheduleId);
+        // From a thread not in full mode, deleting one whose runs have more
+        // access than this thread, or that runs a shell command Mike
+        // approved, asks first (Daybreak finding 138; rpc-gate.ts asks the same).
+        const caller = await restricted();
+        if (caller) {
+          const was: Authority = sc.threadId ? await accessOf(sc.threadId) : { mode: scheduleModes(sc).ceiling };
+          const reasons = [
+            ...(above(was, caller) ? [`Delete the schedule "${sc.title}", whose runs have ${accessName(was)}`] : []),
+            ...(sc.check ? [`Delete the schedule "${sc.title}", which runs a shell command as you first`] : []),
+          ];
+          await confirm('delete_schedule', reasons, { scheduleId: sc.id, title: sc.title }, extra?.signal);
+        }
         await s.delete(sc.id);
         return `Deleted the schedule "${sc.title}" (${sc.id.slice(0, 8)}).`;
       }),
@@ -1058,6 +1164,39 @@ export function buildThreadbearTools(
   const mustProjects = (): ProjectControl => {
     if (!projects) throw new Error("This runner doesn't have projects yet.");
     return projects;
+  };
+  // What an update_project changes in the brief, line by line, for the card
+  // reviewer: `notes` replaces them whole, so a two-line fix sent the reviewer
+  // the whole notes and read to it as a rewrite (Mike, 20 Nov 2026). Notes
+  // are compared as they'd be saved (appendNote added, trimmed), and every
+  // other field the call changes is named, so nothing reads as unchanged
+  // that isn't (Codex and Gemini review). A field with too many changed
+  // lines to show gets their counts and is to be judged as a rewrite.
+  const briefChanges = (p: Pick<Project, 'title' | 'goals' | 'state' | 'notes'>, fields: Record<string, unknown>): string | undefined => {
+    const norm = (t: string) => t.replace(/\r\n?/g, '\n').trim();
+    const next: Partial<Record<'title' | 'goals' | 'state' | 'notes', string>> = {};
+    for (const k of ['title', 'goals', 'state'] as const) if (typeof fields[k] === 'string') next[k] = fields[k];
+    const append = typeof fields.appendNote === 'string' ? norm(fields.appendNote) : '';
+    const edits = fields.editNotes !== undefined ? applyNoteEdits(p.notes ?? '', fields.editNotes) : undefined;
+    if (typeof fields.notes === 'string' || edits !== undefined || append) {
+      const base = typeof fields.notes === 'string' ? norm(fields.notes) : norm(edits ?? p.notes ?? '');
+      next.notes = append ? (base ? `${base}\n\n${append}` : append) : base;
+    }
+    const parts = (Object.keys(next) as (keyof typeof next)[]).map((k) => {
+      const before = norm(p[k] ?? '');
+      const after = norm(next[k]!);
+      if (after === before) return `${k}: unchanged`;
+      const hunks = diffLines(before, after);
+      const lines = hunks.flatMap((h) => [`@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`, ...h.lines]);
+      const head = `${k}: ${splitLines(before).length} lines before, ${splitLines(after).length} after.`;
+      const text = lines.join('\n');
+      if (text.length <= BRIEF_DIFF_MAX) return `${head} Changed lines (- before, + after):\n${text}`;
+      const count = (c: string) => lines.filter((l) => l.startsWith(c)).length;
+      return `${head} ${count('-')} lines removed and ${count('+')} added, too many to show here: judge this field from the input, as a rewrite.`;
+    });
+    const others = Object.keys(fields).filter((k) => !['project', 'title', 'goals', 'state', 'notes', 'editNotes', 'appendNote'].includes(k));
+    if (others.length) parts.push(`Also changes, not shown here (judge them from the input): ${others.join(', ')}`);
+    return parts.length ? parts.join('\n\n') : undefined;
   };
   const project = async (q: string) => {
     const p = await mustProjects().find(q);
@@ -1097,11 +1236,11 @@ export function buildThreadbearTools(
   // The thread most above `caller` among those told about any of these
   // projects (in its own list, or saying it's in it, so a thread still on a
   // draining runner counts), or undefined when none is.
-  const topTold = async (projectIds: string[], caller: Authority): Promise<{ mode: PermissionMode; confined: boolean; title: string } | undefined> => {
+  const topTold = async (projectIds: string[], caller: Authority): Promise<{ mode: PermissionMode; title: string } | undefined> => {
     const pc = mustProjects();
     const listed = (await Promise.all(projectIds.map(async (id) => (await pc.get(id)).threadIds))).flat();
     const threadIds = [...new Set([...listed, ...(await all()).filter((t) => t.projects?.some((m) => projectIds.includes(m.id))).map((t) => t.id)])];
-    let top: { mode: PermissionMode; confined: boolean; title: string } | undefined;
+    let top: { mode: PermissionMode; title: string } | undefined;
     for (const id of threadIds) {
       if (id === selfId) continue;
       const t = await accessOf(id);
@@ -1206,7 +1345,7 @@ export function buildThreadbearTools(
           const into = await project(parent!);
           const top = await topTold([into.id], caller);
           if (top) {
-            await confirm('create_project', [`Name a new part "${title}" in the brief of the project "${into.title}", which "${top.title}" (${accessName(top, caller)}) is told`], { title, parent: `${into.title} (${into.id})` }, extra?.signal);
+            await confirm('create_project', [`Name a new part "${title}" in the brief of the project "${into.title}", which "${top.title}" (${accessName(top)}) is told`], { title, parent: `${into.title} (${into.id})` }, extra?.signal);
           }
         }
         const p = await mustProjects().create({
@@ -1227,7 +1366,7 @@ export function buildThreadbearTools(
     ),
     tool(
       'update_project',
-      "Changes a project: title, goals, state, notes, links, folders, icon or Notion task board. Keep state current as work moves on (what's done, what's next, what's blocked). Notes are for what a later thread should know that the repo doesn't say: decisions and why, gotchas, what's still owed. They're not a log of what landed (git and the docs have that), so when something you note replaces an older note, rewrite the notes rather than adding to them. appendNote adds a paragraph without rewriting the notes. When the project gets a place the user will keep going back to (it goes live, gets an admin page, a dashboard, a store listing), add it with addLinks: links show at the top of every one of its threads' Highlights. The librarian finds icons by itself from the project's folders, so only set one when the user asks or the project gets a new app icon somewhere it wouldn't look.",
+      "Changes a project: title, goals, state, notes, links, folders, icon or Notion task board. Keep state current as work moves on (what's done, what's next, what's blocked). Notes are for what a later thread should know that the repo doesn't say: decisions and why, gotchas, what's still owed. They're not a log of what landed (git and the docs have that), so when something you note replaces an older note, fix that note with editNotes rather than adding another; notes replaces them all, for a real restructure. When the project gets a place the user will keep going back to (it goes live, gets an admin page, a dashboard, a store listing), add it with addLinks: links show at the top of every one of its threads' Highlights. The librarian finds icons by itself from the project's folders, so only set one when the user asks or the project gets a new app icon somewhere it wouldn't look.",
       {
         project: z.string().describe('Project id, id prefix or title.'),
         title: z.string().optional(),
@@ -1235,6 +1374,10 @@ export function buildThreadbearTools(
         goals: z.string().optional(),
         state: z.string().optional(),
         notes: z.string().optional().describe('Replaces all the notes.'),
+        editNotes: z
+          .array(z.object({ old: z.string(), new: z.string() }))
+          .optional()
+          .describe('Edits the notes in place, like Edit: each old must match once and becomes new (empty removes it). All or none.'),
         appendNote: z.string().optional().describe('Adds a paragraph to the end of the notes.'),
         links: linksArg.optional().describe('Replaces all the links. ' + LINKS_HELP),
         addLinks: linksArg.optional().describe('Adds links, or retitles ones it has (same url).'),
@@ -1253,9 +1396,12 @@ export function buildThreadbearTools(
           ),
         parent: z.string().optional().describe(PARENT_HELP + ' Empty undoes it.'),
       },
-      handle(async ({ project: q, title, mikeAsked, goals, state, notes, appendNote, links, addLinks, removeLinks, addFolders, removeFolders, icon, notion, parent }, extra) => {
+      handle(async ({ project: q, title, mikeAsked, goals, state, notes, editNotes, appendNote, links, addLinks, removeLinks, addFolders, removeFolders, icon, notion, parent }, extra) => {
         const pc = mustProjects();
         const p = await project(q);
+        if (editNotes !== undefined && notes !== undefined) throw new Error('Give notes or editNotes, not both: notes replaces them all.');
+        // Edits that don't match fail here, before anyone is asked.
+        if (editNotes !== undefined) applyNoteEdits(p.notes ?? '', editNotes, appendNote);
         // Raising access (above): the brief its threads are told (title,
         // goals, state, notes, folders) is a message to each of them. Its
         // threads are the project's own list and every thread that says it's
@@ -1270,14 +1416,16 @@ export function buildThreadbearTools(
         // So every one of those counts (Codex review), and the card shows
         // the goals a new parent brings.
         const newParent = parent?.trim() ? (await pc.get((await project(parent)).id)).project : undefined;
-        if (caller && ([title, goals, state, notes, appendNote, notion, links, parent].some((x) => x !== undefined) || addFolders?.length || addLinks?.length)) {
+        let judged = false;
+        if (caller && ([title, goals, state, notes, editNotes, appendNote, notion, links, parent].some((x) => x !== undefined) || addFolders?.length || addLinks?.length)) {
           const parts = (await pc.list({ archived: true })).filter((x) => x.parentId === p.id).map((x) => x.id);
           const told = [p.id, ...parts, ...(newParent ? [newParent.id] : []), ...(p.parentId ? [p.parentId] : [])];
           const top = await topTold(told, caller);
           if (top) {
             const parentShown = newParent ? { title: newParent.title, id: newParent.id, ...(newParent.goals ? { goals: newParent.goals } : {}) } : parent;
-            const fields = Object.fromEntries(Object.entries({ title, goals, state, notes, appendNote, addFolders: added, notion, links, addLinks, parent: parentShown }).filter(([, v]) => v !== undefined));
-            await confirm('update_project', [`Change the brief of the project "${p.title}", which "${top.title}" (${accessName(top, caller)}) is told`], { project: p.id, ...fields }, extra?.signal);
+            const fields = Object.fromEntries(Object.entries({ title, goals, state, notes, editNotes, appendNote, addFolders: added, notion, links, addLinks, parent: parentShown }).filter(([, v]) => v !== undefined));
+            await confirm('update_project', [`Change the brief of the project "${p.title}", which "${top.title}" (${accessName(top)}) is told`], { project: { title: p.title, id: p.id }, ...fields }, extra?.signal, briefChanges(p, fields));
+            judged = true;
             if (addFolders?.length) for (const [i, f] of addFolders.entries()) await sameFolder(f, added![i]!);
             // The title and goals shown are what it gets: a parent changed
             // while the card waited is refused.
@@ -1293,8 +1441,27 @@ export function buildThreadbearTools(
           const add = added ?? [];
           folders = [...p.folders.filter((f) => !drop.has(f)), ...add.filter((f) => !p.folders.includes(f))];
         }
-        let out = await pc.update(p.id, { title, goals, state, notes, links, folders, notion, ...(parent !== undefined ? { parent: newParent?.id ?? '' } : {}), by: mikeAsked ? 'mike' : 'agent' });
-        if (appendNote?.trim()) out = await pc.appendNote(p.id, appendNote);
+        // What was judged is a change from the brief as it was then: changed
+        // meanwhile, a whole new notes or folder list would undo what changed.
+        // Checked last, just before the write (Codex and Gemini review).
+        if (judged) {
+          const now = (await pc.get(p.id)).project;
+          if ((['title', 'goals', 'state', 'notes'] as const).some((k) => now[k] !== p[k]) || now.folders.join('\n') !== p.folders.join('\n')) {
+            throw new Error(`"${p.title}"'s brief changed while this waited for an OK, so nothing changed. Read it again (read_project) and redo the change on what it says now.`);
+          }
+        }
+        const fields = { title, goals, state, links, folders, notion, ...(parent !== undefined ? { parent: newParent?.id ?? '' } : {}), by: mikeAsked ? ('mike' as const) : ('agent' as const) };
+        // New notes and a paragraph on the end are saved as one, as they were
+        // judged: saved in two steps, the notes stood for a moment without it.
+        const add = appendNote?.trim();
+        const whole = notes !== undefined && add ? (notes.trim() ? `${notes.trimEnd()}\n\n${add}` : add) : notes;
+        // Edits are read, made and saved in one step where the notes live,
+        // with the rest of the call; judged, only on the notes judged.
+        let out =
+          editNotes !== undefined
+            ? await pc.editNotes(p.id, editNotes, { ...fields, appendNote, ...(judged ? { ifNotes: p.notes } : {}) })
+            : await pc.update(p.id, { ...fields, notes: whole });
+        if (add && notes === undefined && editNotes === undefined) out = await pc.appendNote(p.id, appendNote!);
         if (addLinks?.length || removeLinks?.length) {
           if (!pc.addLinks || !pc.removeLinks) throw new Error("This runner can't change project links yet.");
           if (removeLinks?.length) out = await pc.removeLinks(p.id, removeLinks);
@@ -1456,7 +1623,7 @@ export function buildThreadbearTools(
                 .array(
                   z.object({
                     title: z.string().min(1).describe('What the button does, short: "Open login page", "See the preview".'),
-                    url: z.string().min(1).describe('A web page (https://…), a file or folder on this Mac (an absolute or ~ path), or review:<id> to open one of this thread\'s show_options reviews.'),
+                    url: z.string().min(1).describe('A web page (https://…), a file or folder on this Mac (an absolute or ~ path), review:<id> to open one of this thread\'s show_options reviews, or thread:<id> for another thread, when the step is done there.'),
                   }),
                 )
                 .max(3)
@@ -1500,9 +1667,16 @@ export function buildThreadbearTools(
         const repeat = repeatEndTurn(events, input);
         if (repeat) return repeat;
         checkFindings(input, needs, events);
-        const missing = uncovered(await turnSignIns(events, opts.gateway?.(), opts.gatewayHealth), needs === 'you' ? asks : []);
+        const signIns = await turnSignIns(events, opts.gateway?.(), opts.gatewayHealth);
+        const missing = uncovered(signIns, needs === 'you' ? asks : []);
         if (missing.length && !nudgedThisTurn(events)) throw new Error(signInNudge(missing));
-        if (needs === 'you' && offersToTakeItBack(asks) && !triedFirstNudged(events)) throw new Error(tryFirstNudge());
+        // Sign-ins the turn needs and Restart to Update are the user's to do.
+        if (opts.tryFirstNote !== false && needs === 'you' && handsOverAStep(notSignIns(asks, signIns).filter((a) => !asksForAppRestart([a]))) && !triedFirstNudged(events)) throw new Error(tryFirstNudge());
+        if (needs === 'you') await checkThreadLinks(asks);
+        if (needs === 'you' && hasDeadEnd(asks) && !deadEndNudged(events)) throw new Error(deadEndNudge(asks));
+        if (opts.plainCardNote !== false && needs === 'you' && wantsPlainCard(asks) && !plainCardNudged(events)) throw new Error(plainCardNudge());
+        const projectNote = await projectStepNote(input, needs, parsed?.next, events);
+        if (projectNote) throw new Error(projectNote);
         let restart = '';
         if (needs === 'you' && appRestarts && asksForAppRestart(asks)) {
           if (!appRestarts.isWatching(selfId)) appRestarts.watch(selfId);
@@ -1513,7 +1687,8 @@ export function buildThreadbearTools(
         // said to write it first (endTurn below). Not if it wrote nothing
         // since its last step, or only a narration block, which is just a
         // paraphrase of what it wrote.
-        if (!codex && (control.endTurnNudged?.(selfId) || endTurnForm(input) === 'bullets')) {
+        // Not one sent back to fix its reply's links: that reply doesn't stand.
+        if (!codex && !control.replyRewrite?.(selfId) && (control.endTurnNudged?.(selfId) || endTurnForm(input) === 'bullets')) {
           const reply = await replied();
           if (reply.replied && !reply.narrationOnly) return oneReplyAlreadyWritten(needs === 'you', restart);
         }
@@ -1551,14 +1726,14 @@ export function buildThreadbearTools(
               // you"). The runner still takes one from older sessions.
               action: z.string().min(1).describe('The ask\'s first sentence: one concrete thing for the user to do, or the question, e.g. "Add your Claude login to the Claude pool in Settings › Pools." The card shows it with why as one paragraph; Highlights and notifications show it alone, so keep it to a sentence.'),
               reply: z.string().optional().describe('The exact words to send back when it is done, e.g. "done" or "key set". Leave it out when the reply is their own answer (a decision, a choice).'),
-              why: z.string().min(1).describe('The rest of the ask\'s paragraph, read straight after action: what this is about and what you want back, in a sentence or two, so it makes sense without your message: "Your Slack draft to Emily names the automation guy Hayden; he\'s Pete. Say if I should fix it and send it." Never just a place. When the ask is several questions or choices, end it with them as a short markdown list, one per line; the card draws the list.'),
+              why: z.string().min(1).describe('The rest of the ask\'s paragraph, read straight after action: what this is about and what you want back, in a sentence or two, so it makes sense without your message: "Your Slack draft to Emily names the automation guy Hayden; he\'s Pete. Say if I should fix it and send it." Never just a place. When the ask is several questions, end it with them as a short markdown list, one per line; the card draws the list. Don\'t list the options here: they are the buttons, and suggested marks your pick.'),
               options: z.array(z.string()).max(6).optional().describe('Likely answers to pick from, short: ["Merge", "Test locally first"]. Give them for every decision or yes/no question. They can always write their own instead.'),
               suggested: z.number().int().optional().describe('Index into options of the answer you would pick.'),
               links: z
                 .array(
                   z.object({
                     title: z.string().min(1).describe('What the button does, short: "Open login page", "See the preview".'),
-                    url: z.string().min(1).describe('A web page (https://…), a file or folder on this Mac (an absolute or ~ path), or review:<id> to open one of this thread\'s show_options reviews.'),
+                    url: z.string().min(1).describe('A web page (https://…), a file or folder on this Mac (an absolute or ~ path), review:<id> to open one of this thread\'s show_options reviews, or thread:<id> for another thread, when the step is done there.'),
                   }),
                 )
                 .max(3)
@@ -1627,9 +1802,15 @@ export function buildThreadbearTools(
         // than an error buried in a work group (connectors.ts).
         const events = await turnEvents();
         checkFindings(args, needs, events);
-        const missing = uncovered(await turnSignIns(events, opts.gateway?.(), opts.gatewayHealth), needs === 'you' ? asks : []);
+        const signIns = await turnSignIns(events, opts.gateway?.(), opts.gatewayHealth);
+        const missing = uncovered(signIns, needs === 'you' ? asks : []);
         if (missing.length && !nudgedThisTurn(events)) throw new Error(signInNudge(missing));
-        if (needs === 'you' && offersToTakeItBack(asks ?? []) && !triedFirstNudged(events)) throw new Error(tryFirstNudge());
+        if (opts.tryFirstNote !== false && needs === 'you' && handsOverAStep(notSignIns(asks ?? [], signIns).filter((a) => !asksForAppRestart([a]))) && !triedFirstNudged(events)) throw new Error(tryFirstNudge());
+        if (needs === 'you') await checkThreadLinks(asks ?? []);
+        if (needs === 'you' && hasDeadEnd(asks ?? []) && !deadEndNudged(events)) throw new Error(deadEndNudge(asks ?? []));
+        if (opts.plainCardNote !== false && needs === 'you' && wantsPlainCard(asks ?? []) && !plainCardNudged(events)) throw new Error(plainCardNudge());
+        const projectNote = await projectStepNote(args, needs, parsed?.next, events);
+        if (projectNote) throw new Error(projectNote);
         // Asking Mike to Restart to Update means wanting to know when he
         // has, to check the change in the running app: the same as
         // wait_for_app_restart, unless that was already asked for.
@@ -1692,7 +1873,11 @@ export function buildThreadbearTools(
     const openGone = (r: Result): Result => (!r.isError && r.content[0]?.text.startsWith(`${ENDED} is done`) ? ok(r.content.map((c) => c.text).join('\n') + OPEN_GONE) : r);
     const sayingOpenGone = (t: typeof today, args: unknown): typeof today =>
       droppedOpenLines(args) ? ({ ...t, handler: (async (a: unknown, extra: unknown) => openGone(await (t.handler as (a: unknown, extra: unknown) => Promise<Result>)(a, extra))) as never }) : t;
-    if (codex) return Object.assign(today, { formFor: (args: unknown) => sayingOpenGone(otherForm(args) ? other : today, args) });
+    const refusingStray = (t: typeof today, args: unknown): typeof today => {
+      const stray = strayAskFields(args);
+      return stray.length ? ({ ...t, handler: (async () => fail(endTurnMisfit(strayAskProblem(stray, oneReply), oneReply))) as never }) : t;
+    };
+    if (codex) return Object.assign(today, { formFor: (args: unknown) => refusingStray(sayingOpenGone(otherForm(args) ? other : today, args), args) });
     // Unlike Codex, which runs the other form's handler, Claude's goes by
     // how its CLI was started: it ends the turn at an accepted end_turn only
     // with bullets (adapter.ts, terminalMcpTools), so only today's handler
@@ -1708,6 +1893,8 @@ export function buildThreadbearTools(
     return Object.assign(today, {
       inputSchema: z.looseObject(published) as never,
       handler: (async (args: unknown, extra: unknown) => {
+        const stray = strayAskFields(args);
+        if (stray.length) return fail(endTurnMisfit(strayAskProblem(stray, oneReply), oneReply));
         const fits = z.object((otherForm(args) ? shapes.other : shapes.today) as z.ZodRawShape).safeParse(args);
         if (!fits.success) return fail(endTurnMisfit(z.prettifyError(fits.error), oneReply));
         const r = await run(fits.data, extra);
@@ -1723,10 +1910,13 @@ export function buildThreadbearTools(
           tool(
             'wait_for_app_restart',
             "Sends you a message in this thread when the user's Threadbear Mac app next restarts onto a new build: after you've landed an app change and asked them to Restart to Update (in the Threadbear menu), so you can check it in the running app. An end_turn ask that mentions Restart to Update does this by itself. `text` is what to send then; by default a line saying it restarted. One per thread: asking again replaces it.",
-            { text: z.string().max(4000).optional().describe('What to send when it restarts, e.g. what to check.') },
-            handle(async ({ text }) => {
-              const { running } = appRestarts.watch(selfId, text);
-              return `You'll get a message here when the app restarts onto a build other than the one running now${running ? ` (${running})` : ''}. End your turn when you've nothing else to do.`;
+            {
+              text: z.string().max(4000).optional().describe('What to send when it restarts, e.g. what to check.'),
+              commit: z.string().max(200).optional().describe("A commit the build must have. Default: main's HEAD now."),
+            },
+            handle(async ({ text, commit }) => {
+              const { running, waitingFor } = appRestarts.watch(selfId, text, commit);
+              return `You'll get a message here when the app restarts onto a build other than the one running now${running ? ` (${running})` : ''}${waitingFor ? ` that contains ${waitingFor}` : ''}. End your turn when you've nothing else to do: a turn that ends needing nothing hibernates until then.`;
             }),
           ),
         ]
@@ -1830,7 +2020,7 @@ export function buildThreadbearTools(
       handle(async () => {
         const h = control.hello();
         const rows = h.accounts.map((a) => {
-          const bits = [providerName(a.provider), a.note ?? '', usageLine(a.usage, now()), a.id === h.defaults.accountId ? 'default for new threads' : ''].filter(Boolean);
+          const bits = [providerName(a.provider), a.note ?? '', signInWords(a, now(), resetTime), a.planEnded ? '' : usageLine(a.usage, now()), a.id === h.defaults.accountId ? 'default for new threads' : ''].filter(Boolean);
           const head = `${a.id}  ${a.title}  [${bits.join('; ')}]`;
           const models = a.models?.length ? `\n    models: ${a.models.map((m) => (m.model === a.defaultModel || m.id === a.defaultModel ? `${m.id} (default)` : m.id)).join(', ')}` : '';
           return head + models;
@@ -1868,21 +2058,18 @@ export function buildThreadbearTools(
         const permissionMode = asked ?? caller?.mode;
         const elsewhere = Boolean(runner?.trim() && control.startOn);
         // Where it would run, as the card says it (the real folder here; a
-        // path on another machine as given), and whether in a sandbox: from
-        // a sandboxed thread one that isn't is more than it has, whatever
-        // the mode. One in a sandbox folder stays shut in it (confined).
+        // path on another machine as given).
         const head = await from();
-        const ask = async (there: boolean): Promise<{ cwd?: string; confined: boolean }> => {
+        const ask = async (there: boolean): Promise<{ cwd?: string }> => {
           const cwd = there ? f?.trim() : await folder(f ?? '.');
-          const confined = Boolean(caller?.confined && !there && cwd && control.sandboxed?.(cwd));
-          const target: Authority = { mode: permissionMode ?? 'full', confined };
+          const target: Authority = { mode: permissionMode ?? 'full' };
           if (caller && above(target, caller)) {
-            await confirm('create_thread', [`Start a thread with ${accessName(target, caller)}${cwd ? ` in ${cwd}` : ''}${there ? ` on ${runner!.trim()}` : ''}`], { from: head.trim(), text, ...(title?.trim() ? { title: title.trim() } : {}), folder: cwd, permissionMode: target.mode, ...(there ? { runner } : {}) }, extra?.signal);
+            await confirm('create_thread', [`Start a thread with ${accessName(target)}${cwd ? ` in ${cwd}` : ''}${there ? ` on ${runner!.trim()}` : ''}`], { from: head.trim(), text, ...(title?.trim() ? { title: title.trim() } : {}), folder: cwd, permissionMode: target.mode, ...(there ? { runner } : {}) }, extra?.signal);
             if (!there) await sameFolder(f ?? '.', cwd!);
           }
-          return { cwd, confined };
+          return { cwd };
         };
-        let { cwd, confined } = await ask(elsewhere);
+        let { cwd } = await ask(elsewhere);
         if (runner?.trim() && control.startOn) {
           const cleanWhy = why?.trim() ? cutSafely(why.replace(/\s+/g, ' ').trim(), MAX_BYLINE) : undefined;
           const there = await control.startOn(selfId, {
@@ -1897,15 +2084,12 @@ export function buildThreadbearTools(
           });
           if (there !== undefined) return there;
           // That runner is this one: asked again for here, as the card said there.
-          ({ cwd, confined } = await ask(false));
+          ({ cwd } = await ask(false));
         }
         const r = await control.create({
           text: head + text,
           title: title?.trim() || firstLineSafely(text, 200) || undefined,
           cwd: cwd!,
-          // From a sandboxed thread: shut in, or out with the user's yes on
-          // the card above (ask() asks whenever it wouldn't be shut in).
-          ...(confined ? { confined } : caller?.confined ? { unconfine: true } : {}),
           accountId: await account(acc),
           ...(p !== undefined && !acc ? { poolId: pool(p) } : {}),
           model,
@@ -1917,7 +2101,7 @@ export function buildThreadbearTools(
           ...(nested === false ? { detached: true as const } : {}),
         });
         const where = r.thread.poolId ? ` It's in the ${r.thread.poolId} pool, so it moves to another login if this one runs dry.` : '';
-        const inherited = caller && asked === undefined ? ` It's in ${MODE_NAMES[caller.mode]}, as this thread is${confined ? ', in the sandbox' : ''}.` : '';
+        const inherited = caller && asked === undefined ? ` It's in ${MODE_NAMES[caller.mode]}, as this thread is.` : '';
         return `Started thread ${r.thread.id} "${r.thread.title}" in ${r.thread.cwd} on ${r.thread.accountId}${r.thread.model ? ` (${r.thread.model})` : ''}.${where}${inherited}`;
       }),
     ),
@@ -2011,19 +2195,11 @@ export function buildThreadbearTools(
         if (archived === true) upd.archivedBy = 'agent';
         // Raising access (above): a mode above the thread's own asks, from a
         // thread not in full mode; lowering doesn't.
-        // A sandboxed thread's agent counts as restricted here too, and
-        // moving a thread outside its sandbox onto another login (its pool)
-        // is reaching outside (as update_schedule's login, above).
         const by = await restricted();
         // A title is the renaming agent's own words, and a thread's title
-        // reaches its agent and others' (list_threads, a new thread's
-        // same-work note), so renaming a thread with more access is a
+        // reaches its agent and others' (list_threads), so renaming a thread with more access is a
         // message to it (Codex's review of Daybreak finding 111, 13 Nov 2026).
         if (title !== undefined) await confirm('update_thread', await sendReason(id, by, 'Rename'), { threadId: id, title }, extra?.signal);
-        if (by?.confined && p !== undefined && id !== selfId) {
-          const t = await accessOf(id);
-          if (above(t, by)) await confirm('update_thread', [`Change the logins of "${t.title}", which has ${accessName(t, by)}`], { threadId: id, pool: p }, extra?.signal);
-        }
         if (permissionMode !== undefined && by) {
           const t = await modeOf(id);
           // The card shows a title set in the same call: allowed, it lands
@@ -2032,10 +2208,12 @@ export function buildThreadbearTools(
           // The mode it has already is left out, so this write landing after
           // someone else lowers it (a handover's round trip) can't raise it back.
           else if (permissionMode === t.mode) delete upd.permissionMode;
+          // Lowering another thread with more access than this one takes away
+          // what the user set up, and would let delete_schedule through on
+          // that thread's schedules (OpenCode's review of the Daybreak
+          // finding 138 fix).
+          else if (id !== selfId && above(await accessOf(id), by)) await confirm('update_thread', [`Switch ${threadName(id, t.title)} to ${MODE_NAMES[permissionMode]}`], { threadId: id, permissionMode, ...(title !== undefined ? { title } : {}) }, extra?.signal);
         }
-        // From Mike's level (Full outside any sandbox) a login change may
-        // take a sandboxed thread out of it, as move_thread's may.
-        if (p !== undefined && !by) upd.unconfine = true;
         return describe((await control.update(upd)).thread);
       }),
     ),
@@ -2079,28 +2257,18 @@ export function buildThreadbearTools(
         const caller = await restricted();
         const cwd = await folder(f);
         const accountId = await account(acc);
-        // Out of a sandbox: a folder that isn't in one, or a login that
-        // can't run in one (sandbox.ts).
-        // Only a full access caller outside any sandbox (Mike's own level)
-        // moves one out unasked; any other asks first.
-        const provider = accountId ? control.hello().accounts.find((a) => a.id === accountId)?.provider : undefined;
-        const shutIn = id === selfId ? Boolean(caller?.confined) : Boolean(await control.confinedOf?.(id));
-        const noSandbox = provider !== undefined && !providerInfo(provider).sandbox;
-        const leaves = shutIn && (!control.sandboxed?.(cwd) || noSandbox);
         if (caller) {
           const t = id === selfId ? undefined : await accessOf(id);
           const checks = schedules ? (await schedules.list(id)).filter((sc) => sc.threadId === id && sc.check?.trim()) : [];
           const name = threadName(id, t?.title ?? '');
           const reasons = [
-            ...(t && above(t, caller) ? [`Move "${t.title}", which has ${accessName(t, caller)}, to ${cwd}${then?.trim() ? ' and send it a message' : ''}`] : []),
-            ...(leaves ? [`Move ${name} out of the sandbox to ${cwd}${noSandbox ? ` on a ${providerName(provider)} login` : ''}: from its next turn it runs on this machine with ${MODE_NAMES[(await modeOf(id)).mode]}`] : []),
+            ...(t && above(t, caller) ? [`Move "${t.title}", which has ${accessName(t)}, to ${cwd}${then?.trim() ? ' and send it a message' : ''}`] : []),
             ...(checks.length ? [`Move ${name} to ${cwd}, where ${checks.length === 1 ? `the schedule "${checks[0].title}" runs its shell check` : `${checks.length} schedules run their shell checks`} as you`] : []),
           ];
           await confirm('move_thread', reasons, { threadId: id, folder: cwd, ...(acc ? { account: accountId } : {}), ...(then ? { then } : {}) }, extra?.signal);
           if (reasons.length) await sameFolder(f, cwd);
         }
-        // Allowed (or never shut in): it may leave the sandbox now.
-        const t = (await control.update({ threadId: id, cwd, accountId, byAgent: true, ...(leaves ? { unconfine: true } : {}) })).thread;
+        const t = (await control.update({ threadId: id, cwd, accountId, byAgent: true })).thread;
         const self = id === selfId;
         if (then?.trim()) {
           await control.send(id, `${MOVE_MESSAGE_PREFIX}${t.cwd}]\n\n${then.trim()}`);
@@ -2157,6 +2325,20 @@ function clip(text: string, max = 2000): string {
   return text.length > max ? `${text.slice(0, max)}… (${text.length - max} more characters)` : text;
 }
 
+// The app draws a picture at most this many pixels a side as it is (the
+// GPU's texture limit); a bigger one is shrunk to fit, so a full-page phone
+// shot 18,000 px tall loses detail (desktop/gpui/src/fit_picture.rs, 20 Nov).
+export const SHOT_MAX_SIDE = 16384;
+
+// A line for show_options' answer naming the shots over SHOT_MAX_SIDE.
+export function oversizeShotsNote(review: { options: { id: string; image: ImageRef; shots?: { image: ImageRef }[] }[] }): string {
+  const big = review.options.flatMap(option => (option.shots ?? [{ image: option.image }]).map((shot, i) => ({ option: option.id, i, image: shot.image })))
+    .filter(({ image }) => (image.width ?? 0) > SHOT_MAX_SIDE || (image.height ?? 0) > SHOT_MAX_SIDE);
+  if (!big.length) return '';
+  const named = big.map(({ option, i, image }) => `${option} shot ${i + 1} (${image.width} x ${image.height})`).join(', ');
+  return ` Over ${SHOT_MAX_SIDE} px a side, so shown shrunk with less detail: ${named}. For full detail, split each into shots no more than ${SHOT_MAX_SIDE} px a side and call show_options again.`;
+}
+
 // In the server's instructions, which every thread sees from its first
 // turn. Tool descriptions aren't enough: the CLI defers MCP tools, so an
 // agent sees only their names until it loads one, and an agent that made
@@ -2168,7 +2350,7 @@ function clip(text: string, max = 2000): string {
 // AGENTS.md, which those threads read, and other people's threads don't
 // get it (30 Oct).
 export const SHOWING_THE_USER =
-  'When you have design options, mockups or wireframes for the user to choose between, put them in front of them with show_options (a review window that steps through them one at a time, then has them pick one and leave notes), not as pins or a list in your reply; their answer comes back as a message. ' +
+  'When you have design options, mockups or wireframes for the user to choose between, put them in front of them with show_options (a review window that steps through them one at a time, then has them pick one and leave notes), not as pins or a list in your reply; their answer comes back as a message. It is for things seen (images, videos, page designs): options in words (names, plans, approaches) go in your reply. ' +
   "For a single file or link they should look at (a doc, a screenshot, a preview URL, a PR), use pin, with show: true to open it in Threadbear's side pane rather than running `open`. " +
   "To put one of Threadbear's own panels in front of them (this thread's Highlights, a patch panel such as the Convex dashboard, Usage), use show_panel.";
 

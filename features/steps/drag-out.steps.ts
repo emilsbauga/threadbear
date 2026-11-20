@@ -32,3 +32,8 @@ When('I drag the picture in the pane onto {}', async function (this: ThreadbearW
   this.lastAnswer = await this.app.do({ cmd: 'file-drag', pane: true, ...target(where) });
   assert.match(this.lastAnswer, /dropped/);
 });
+
+When('I drag the link {string} onto {}', async function (this: ThreadbearWorld, words: string, where: string) {
+  this.lastAnswer = await this.app.do({ cmd: 'file-drag', link: words, ...target(where) });
+  assert.match(this.lastAnswer, /dropped/);
+});

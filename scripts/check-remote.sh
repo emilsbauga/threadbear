@@ -314,7 +314,10 @@ PING=(ssh -o BatchMode=yes -o ConnectTimeout=20 -o ControlMaster=no -o ControlPa
 tree_of() {
   local kid
   echo "$1"
-  for kid in $(pgrep -P "$1" 2>/dev/null); do tree_of "$kid"; done
+  # Children by ps, not pgrep -P: Homebrew's proctools pgrep and pkill are
+  # reported to take -P with no pattern as every process on the machine, so a
+  # stop would signal them all (teodorboev's fork, 14 Nov 2026).
+  for kid in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do tree_of "$kid"; done
 }
 kill_tree() {
   local pids p left n=0
@@ -397,6 +400,7 @@ over_time() {
 
 ARGS=()
 SHOTS=""
+ONLY=""
 QUICK=0
 RUNNER_ONLY=0
 ALL=0
@@ -408,6 +412,8 @@ while [ $# -gt 0 ]; do
     --quick) QUICK=1; ARGS+=("$1") ;;
     --runner) QUICK=1; RUNNER_ONLY=1; ARGS+=("$1") ;;
     --all) ALL=1; ARGS+=("$1") ;;
+    # Its value goes with it, whatever it looks like (check.sh has checked it).
+    --only) ONLY="${2:-}"; ARGS+=("$1" "${2:-}"); shift ;;
     *) ARGS+=("$1") ;;
   esac
   shift
@@ -448,10 +454,29 @@ if [ "$QUICK" = 1 ] && [ "$ALL" = 0 ] && [ -z "$SHOTS" ] && [ -s "$changed" ] \
 # it from a clone on main, where nothing has, and with Tinker Desk away a
 # Linux host should still take it rather than this Mac (Codex, 9 Nov).
 if [ "$RUNNER_ONLY" = 1 ] && [ -z "$SHOTS" ]; then linux_ok=1; fi
+# --only names the steps that run, so what changed doesn't decide it: a
+# Linux host can take it when every step named is one it runs in --quick
+# (the Node, site and cargo ones; none of the Swift ones). tb land runs what
+# failed in a group's check on main by itself before it blames a landing,
+# on the host the group failed on, and on main nothing has changed: without
+# this a failure on the Linux box could never be looked into there (Codex's
+# review, 17 Nov). With --all too: tb land asks for it on main's run there,
+# and with --only it only forces the steps named (Codex's review, 17 Nov).
+LINUX_STEPS='^(runner typecheck|app tools parse|convex typecheck|web typecheck|web tests|site build|feature pairing|runner unit tests|desktop core tests|desktop app check|desktop app check \(as installed\)|[a-z ]+ packages)$'
+if [ -n "$ONLY" ] && [ "$QUICK" = 1 ] && [ -z "$SHOTS" ]; then
+  linux_ok=1
+  only_rest="$ONLY;"
+  while [ -n "$only_rest" ]; do
+    only_name="${only_rest%%;*}"
+    only_rest="${only_rest#*;}"
+    [[ "${only_name%%=*}" =~ $LINUX_STEPS ]] || linux_ok=0
+  done
+fi
 # Why it needs a Mac, for the message when only Linux hosts answered.
 MAC_WHY="it isn't --quick"
 if [ "$QUICK" = 1 ]; then
   if [ -n "$SHOTS" ]; then MAC_WHY="--shots"
+  elif [ -n "$ONLY" ]; then MAC_WHY="--only names a step that needs one"
   elif [ "$ALL" = 1 ]; then MAC_WHY="--all"
   elif [ ! -s "$changed" ]; then MAC_WHY="nothing changed from main, so it runs everything"
   else MAC_WHY="it changes ios/, app/, dock/ or check.sh"; fi
@@ -747,7 +772,8 @@ trap finish EXIT
 # ssh lived on, and the check with it.
 on_signal() {
   local kid
-  for kid in $(pgrep -P $$ 2>/dev/null); do kill_tree "$kid"; done
+  # ps, not pgrep -P, as in tree_of above.
+  for kid in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$$" '$2 == p { print $1 }'); do kill_tree "$kid"; done
   exit "$1"
 }
 trap 'on_signal 143' TERM
@@ -916,6 +942,11 @@ while :; do
   # stops as soon as it gets it.
   guarded="$(guarded_cmd "$guard_pid" /bin/bash -c "$inner")"
   lock="$remote_base/lock"
+  # The host's gate (scripts/perf-lock.pl) first, held throughout as the
+  # check has the host alone: builds that share the host hold the check lock
+  # shared, and macOS grants a shared lock even while this waits for it, so
+  # without the gate a stream of overlapping builds would keep a check out.
+  gate="$remote_base/gate"
   # A free host is taken without waiting (75 if another check got there
   # first); otherwise this waits for its turn.
   now=0
@@ -923,12 +954,12 @@ while :; do
   if [ "$HOST_OS" = Linux ]; then
     # A server that runs its own runner and threads: the check goes in under them.
     run="nice -n 10 $guarded"
-    if [ "$now" = 1 ]; then remote_cmd="flock -n -E 75 $lock $run"
-    else remote_cmd="flock -n $lock true 2>/dev/null || echo 'Waiting for another check on $HOST to finish...'; flock $lock $run"; fi
+    if [ "$now" = 1 ]; then remote_cmd="flock -n -E 75 $gate flock -n -E 75 $lock $run"
+    else remote_cmd="flock -n $gate flock -n $lock true 2>/dev/null || echo 'Waiting for another check on $HOST to finish...'; flock $gate flock $lock $run"; fi
   else
     run="$guarded"
-    if [ "$now" = 1 ]; then remote_cmd="/usr/bin/lockf -t 0 -k $lock $run"
-    else remote_cmd="/usr/bin/lockf -t 0 -k $lock true 2>/dev/null || echo 'Waiting for another check on $HOST to finish...'; /usr/bin/lockf -k $lock $run"; fi
+    if [ "$now" = 1 ]; then remote_cmd="/usr/bin/lockf -t 0 -k $gate /usr/bin/lockf -t 0 -k $lock $run"
+    else remote_cmd="/usr/bin/lockf -t 0 -k $gate /usr/bin/lockf -t 0 -k $lock true 2>/dev/null || echo 'Waiting for another check on $HOST to finish...'; /usr/bin/lockf -k $gate /usr/bin/lockf -k $lock $run"; fi
   fi
 
   # A failed step's log path is on the host: its logs come back here, and the

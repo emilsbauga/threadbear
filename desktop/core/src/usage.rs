@@ -88,8 +88,13 @@ impl Usage {
     }
 }
 
-/// A login's usage, if the runner sent any it can read.
+/// A login's usage, if the runner sent any it can read. None once its plan
+/// has ended: its last numbers and resets would only mislead (claude-main,
+/// 16 Nov: "Used up, back Wed 5 am" on a plan that had lapsed).
 pub fn usage(account: &Account) -> Option<Usage> {
+    if account.plan_ended {
+        return None;
+    }
     account.usage.as_ref().and_then(Usage::decode)
 }
 
@@ -864,8 +869,19 @@ pub fn icon_tooltip<Tz: TimeZone>(groups: &[Group], now: i64, zone: &Tz) -> Stri
     std::iter::once("Usage".to_owned()).chain(groups.iter().filter_map(|g| tooltip_line(g, now, zone))).collect::<Vec<_>>().join("\n")
 }
 
+/// The tooltip with any sign-ins that need Mike under the pools' lines.
+pub fn icon_tooltip_with_sign_ins<Tz: TimeZone>(groups: &[Group], accounts: &[Account], now: i64, zone: &Tz) -> String {
+    let mut tip = icon_tooltip(groups, now, zone);
+    for line in sign_in_lines(accounts, now, zone) {
+        tip.push('\n');
+        tip.push_str(&line);
+    }
+    tip
+}
+
 fn tooltip_line<Tz: TimeZone>(group: &Group, now: i64, zone: &Tz) -> Option<String> {
-    let known: Vec<Usage> = group.accounts().into_iter().filter_map(usage).filter(|u| room(u).is_some() || u.blocked).collect();
+    // A signed-out login's room is no use to anyone.
+    let known: Vec<Usage> = group.accounts().into_iter().filter(|a| !a.signed_out).filter_map(usage).filter(|u| room(u).is_some() || u.blocked).collect();
     if known.is_empty() {
         return None;
     }
@@ -1212,9 +1228,100 @@ pub struct LoginRow {
     pub tip: String,
     /// "Nothing known yet", or "Limit reached" in red.
     pub status: Option<LoginStatus>,
+    /// "Sign-in ends Tue 6 pm", in the last SIGN_IN_WARN_MS of a sign-in.
+    pub sign_in_ends: Option<String>,
+    /// A Claude login on this Mac that can be given a year-long token
+    /// (Year-long token… on its row), or be given a new one.
+    pub can_token: bool,
+    /// It runs on one: "Year-long token until 17 Nov 2027".
+    pub year_token: Option<String>,
     pub meters: Vec<Meter>,
     /// Old numbers' "Numbers from 6:02 am", then the extra lines.
     pub more: Vec<String>,
+    /// "claude", "codex", "grok": the logo on its card.
+    pub provider: String,
+    /// The ring at the right of its card: the week's room, else the tighter
+    /// window's. None with no reading.
+    pub ring: Option<f64>,
+    /// The one line under its name: "Used up, back 8 am" in red rather than
+    /// "Limit reached" over it (Mike, 17 Nov), else the week's verdict.
+    pub headline: Option<Verdict>,
+    /// The 5-hour window, as a chip at the card's foot.
+    pub five_hour: Option<Chip>,
+    /// No reading: why, in place of "Nothing known yet".
+    pub unknown: Option<Unknown>,
+}
+
+/// A small window's room as a chip: "5-hour 91%", coloured as its meter's
+/// words would be, with the meter's tip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chip {
+    pub text: String,
+    pub tone: Tone,
+    pub tip: String,
+}
+
+/// Why a login has no number, short, and the longer why for its tip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unknown {
+    pub text: String,
+    pub tip: String,
+}
+
+/// Why there's no reading, by provider. Claude and Codex report theirs on
+/// every turn, so one with none hasn't run a turn here. Grok's CLI shows its
+/// plan's limit only through its background service (`grok usage`), which
+/// Threadbear doesn't run; OpenCode's own models bill a balance.
+pub fn unknown_reason(provider: &str, provider_name: &str) -> Unknown {
+    let (text, tip) = match provider {
+        "claude" | "codex" | "" => ("No turn has run on it yet".to_owned(), "Its limit shows after its first turn here".to_owned()),
+        "grok" => (
+            "Grok reports its limit only from its background service".to_owned(),
+            "Threadbear reads each login's limit from what its turns report. Grok's turns don't carry it, and its CLI shows it only through Grok's background service".to_owned(),
+        ),
+        "opencode" => ("Pay as you go, no weekly limit".to_owned(), "OpenCode's own models spend a balance rather than a weekly limit, and its turns don't report either".to_owned()),
+        _ => (format!("{provider_name} doesn't report its limit"), "Threadbear reads each login's limit from what its turns report".to_owned()),
+    };
+    Unknown { text, tip }
+}
+
+/// The card's one line: signed out or ended first, then the most pressing
+/// main window's verdict (used up, runs out early), then a block with no
+/// reset to name, then the week's verdict (or the only window's).
+fn headline(status: Option<LoginStatus>, meters: &[Meter]) -> Option<Verdict> {
+    match status {
+        Some(LoginStatus::PlanEnded) => return Some(Verdict { text: LoginStatus::PlanEnded.words().to_owned(), tone: Tone::Fine }),
+        Some(LoginStatus::SignedOut) => return Some(Verdict { text: LoginStatus::SignedOut.words().to_owned(), tone: Tone::Out }),
+        Some(LoginStatus::NothingKnown) => return None,
+        _ => {}
+    }
+    let main: Vec<&Meter> = meters.iter().filter(|m| m.kind == "five_hour" || m.kind == "weekly").collect();
+    for tone in [Tone::Out, Tone::Short] {
+        if let Some(v) = main.iter().filter_map(|m| m.verdict.as_ref()).find(|v| v.tone == tone) {
+            return Some(v.clone());
+        }
+    }
+    if status == Some(LoginStatus::LimitReached) {
+        return Some(Verdict { text: LoginStatus::LimitReached.words().to_owned(), tone: Tone::Out });
+    }
+    main.iter().find(|m| m.kind == "weekly").or(main.first()).and_then(|m| m.verdict.clone())
+}
+
+fn ring(meters: &[Meter]) -> Option<f64> {
+    let main = || meters.iter().filter(|m| m.kind == "five_hour" || m.kind == "weekly");
+    main().find(|m| m.kind == "weekly").or_else(|| main().min_by(|a, b| a.remaining.total_cmp(&b.remaining))).map(|m| m.remaining)
+}
+
+fn five_hour_chip(meters: &[Meter]) -> Option<Chip> {
+    let m = meters.iter().find(|m| m.kind == "five_hour")?;
+    let tone = if m.remaining < 1. {
+        Tone::Out
+    } else if m.short || m.verdict.as_ref().is_some_and(|v| v.tone == Tone::Short) {
+        Tone::Short
+    } else {
+        Tone::Fine
+    };
+    Some(Chip { text: format!("{} {}", m.title, percent(m.remaining)), tone, tip: m.tip.clone() })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1222,6 +1329,10 @@ pub enum LoginStatus {
     NothingKnown,
     PiUnavailable,
     LimitReached,
+    /// No turn can run on it until someone signs it in again.
+    SignedOut,
+    /// Its paid plan lapsed: the row fades, with no meters, reset or Sign in….
+    PlanEnded,
 }
 
 impl LoginStatus {
@@ -1230,7 +1341,91 @@ impl LoginStatus {
             LoginStatus::NothingKnown => "Nothing known yet",
             LoginStatus::PiUnavailable => "Pi usage statistics are not available yet.",
             LoginStatus::LimitReached => "Limit reached",
+            LoginStatus::SignedOut => "Signed out",
+            LoginStatus::PlanEnded => "Plan ended",
         }
+    }
+
+    /// Red: nothing runs on it until something changes.
+    pub fn is_stop(self) -> bool {
+        matches!(self, LoginStatus::LimitReached | LoginStatus::SignedOut)
+    }
+}
+
+// ---- Sign-ins that end (docs/protocol.md, Pools, "Signed out") ----
+
+/// How long before a Claude sign-in ends its row and the Usage button say
+/// so: from Claude Code 2.1.325 a sign-in lasts 28 days and can't be
+/// renewed, and a scheduled job on it fails overnight once it's gone (the
+/// nightly retro, 14 and 15 Nov). Not a notification: Mike finds those
+/// annoying for something that can wait a day.
+pub const SIGN_IN_WARN_MS: i64 = 3 * DAY;
+/// How long `claude setup-token`'s token lasts: the runner's loginEndsAt for
+/// a token login is this after it was made (year-token.ts).
+pub const YEAR_MS: i64 = 365 * DAY;
+
+/// "Year-long token until 17 Nov 2027" for a login on one, None otherwise:
+/// its Usage row and, for another runner's, the Runners panel.
+pub fn year_token_words<Tz: TimeZone>(account: &Account, zone: &Tz) -> Option<String> {
+    account.year_token.as_ref().map(|t| match t.made_at.as_deref().and_then(parse_ms) {
+        Some(made) => match local(made + YEAR_MS, zone) {
+            Some(d) => format!("Year-long token until {} {} {}", d.day(), ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.month0() as usize], d.year()),
+            None => "Year-long token".to_owned(),
+        },
+        None => "Year-long token".to_owned(),
+    })
+}
+
+/// When a login's sign-in ends, while that's within SIGN_IN_WARN_MS and it
+/// isn't already signed out.
+pub fn sign_in_ends(account: &Account, now: i64) -> Option<i64> {
+    // A lapsed plan: signing in again wouldn't bring it back.
+    if account.signed_out || account.plan_ended {
+        return None;
+    }
+    let at = account.login_ends_at.as_deref().and_then(parse_ms)?;
+    (at - now < SIGN_IN_WARN_MS).then_some(at)
+}
+
+/// Whether any login is signed out or ending soon: the Usage button's dot.
+pub fn sign_in_needed(accounts: &[Account], now: i64) -> bool {
+    accounts.iter().any(|a| (a.signed_out && !a.plan_ended) || sign_in_ends(a, now).is_some())
+}
+
+/// "Sign-in ends Tue 6 pm", "Sign-in ends 3:40 pm" today.
+pub fn sign_in_ends_words<Tz: TimeZone>(at: i64, now: i64, zone: &Tz) -> String {
+    if at <= now {
+        return "Sign-in has ended".to_owned();
+    }
+    format!("Sign-in ends {}", reset_words(at, now, zone))
+}
+
+/// The Usage button's tooltip lines for them: "claude-1 (a@b.com) is signed
+/// out", "claude-3 (c@d.com): sign-in ends Tue 6 pm".
+pub fn sign_in_lines<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) -> Vec<String> {
+    accounts
+        .iter()
+        .filter_map(|a| {
+            let who = sign_in_label(a);
+            if a.plan_ended {
+                None
+            } else if a.signed_out {
+                Some(format!("{who} is signed out"))
+            } else {
+                sign_in_ends(a, now).map(|at| format!("{who}: sign-in ends {}", reset_words(at, now, zone)))
+            }
+        })
+        .collect()
+}
+
+/// "claude-1 (mike@example.com)": both, so Mike knows which login and which
+/// account to sign in as. Just the id when the name is the id.
+pub fn sign_in_label(account: &Account) -> String {
+    let name = account.name();
+    if name == account.id || name.is_empty() {
+        account.id.clone()
+    } else {
+        format!("{} ({name})", account.id)
     }
 }
 
@@ -1281,7 +1476,7 @@ pub fn cards_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
                     .iter()
                     .map(|section| CardSection {
                         title: mixed.then(|| name(&section.provider)),
-                        logins: section.accounts.iter().map(|a| login_row(a, own.get(&a.id).map(String::as_str), stats, show_model_weeks, now, zone)).collect(),
+                        logins: section.accounts.iter().map(|a| login_row(a, &name(&section.provider), own.get(&a.id).map(String::as_str), stats, show_model_weeks, now, zone)).collect(),
                     })
                     .collect(),
             }
@@ -1289,9 +1484,11 @@ pub fn cards_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
         .collect()
 }
 
-fn login_row<Tz: TimeZone>(account: &Account, notice: Option<&str>, stats: Option<&Stats>, show_model_weeks: bool, now: i64, zone: &Tz) -> LoginRow {
+fn login_row<Tz: TimeZone>(account: &Account, provider_name: &str, notice: Option<&str>, stats: Option<&Stats>, show_model_weeks: bool, now: i64, zone: &Tz) -> LoginRow {
     let usage = usage(account);
     let status = match &usage {
+        _ if account.plan_ended => Some(LoginStatus::PlanEnded),
+        _ if account.signed_out => Some(LoginStatus::SignedOut),
         None if account.provider_id() == "pi" => Some(LoginStatus::PiUnavailable),
         None => Some(LoginStatus::NothingKnown),
         Some(u) if u.blocked => Some(LoginStatus::LimitReached),
@@ -1314,12 +1511,20 @@ fn login_row<Tz: TimeZone>(account: &Account, notice: Option<&str>, stats: Optio
     let name = account.name();
     LoginRow {
         id: account.id.clone(),
-        tip: [Some(name.clone()), account.plan.clone()].into_iter().flatten().collect::<Vec<_>>().join(", "),
+        tip: [Some(name.clone()), account.plan.clone().filter(|_| !account.plan_ended)].into_iter().flatten().collect::<Vec<_>>().join(", "),
         name,
         note: account.note.clone().filter(|n| !n.is_empty()),
         today: spent_today(stats, &[account.id.as_str()], now, zone),
         dot: stats.is_some(),
         status,
+        sign_in_ends: sign_in_ends(account, now).map(|at| if account.year_token.is_some() { sign_in_ends_words(at, now, zone).replacen("Sign-in", "Token", 1) } else { sign_in_ends_words(at, now, zone) }),
+        can_token: account.provider_id() == "claude" && !account.plan_ended && (account.id == "claude-main" || !account.config_dir.trim().is_empty()),
+        year_token: year_token_words(account, zone),
+        provider: account.provider.clone(),
+        ring: ring(&meters),
+        headline: headline(status, &meters),
+        five_hour: five_hour_chip(&meters),
+        unknown: (status == Some(LoginStatus::NothingKnown)).then(|| unknown_reason(&account.provider, provider_name)),
         meters,
         more,
     }
@@ -1351,6 +1556,17 @@ pub fn model_week_titles(accounts: &[Account]) -> Vec<String> {
 pub fn model_weeks_switch(titles: &[String]) -> String {
     format!("Show {}", titles.join(", "))
 }
+
+/// Whether a login's card offers Find work for it (`accounts.findWork`):
+/// its week will go partly unused (the green line), and it can run a turn.
+/// Mike, 18 Nov: the action next to the number that prompts it.
+pub fn can_find_work(login: &LoginRow) -> bool {
+    login.headline.as_ref().is_some_and(|v| v.tone == Tone::Spare) && !matches!(login.status, Some(LoginStatus::SignedOut) | Some(LoginStatus::PlanEnded))
+}
+
+pub const FIND_WORK: &str = "Find work for it";
+pub const FINDING_WORK: &str = "Finding work…";
+pub const FIND_WORK_TIP: &str = "Start a thread on this login that suggests work to spend the rest of its week on, and asks before starting any";
 
 /// Its tooltip, for someone who never runs that model.
 pub const MODEL_WEEKS_TIP: &str = "A login's own limit on one model. Hide it if you don't use that model";
@@ -1390,7 +1606,7 @@ pub fn lines_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
             out.push(format!("{}{}", if pooled { "## " } else { "# " }, name(&section.provider)));
             for account in &section.accounts {
                 let mut line = account.name();
-                if let Some(plan) = &account.plan {
+                if let Some(plan) = account.plan.as_ref().filter(|_| !account.plan_ended) {
                     line.push_str(&format!(" ({plan})"));
                 }
                 if let Some(note) = &account.note {
@@ -1412,6 +1628,7 @@ pub fn lines_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
                             line.push_str(&format!(" [{notice}]"));
                         }
                     }
+                    None if account.plan_ended => line.push_str(": plan ended"),
                     None => line.push_str(": nothing known"),
                 }
                 out.push(line);
@@ -1962,6 +2179,94 @@ mod tests {
     }
 
     #[test]
+    fn a_token_login_says_until_when_and_its_warning_says_token() {
+        let now = parse_ms("2026-11-17T01:00:00Z").unwrap();
+        let account = |id: &str, made: Option<&str>, ends: Option<&str>| Account {
+            id: id.into(),
+            provider: "claude".into(),
+            title: format!("{id}@example.com"),
+            config_dir: format!("/tmp/{id}"),
+            year_token: made.map(|m| crate::logins::YearToken { made_at: Some(m.into()) }),
+            login_ends_at: ends.map(str::to_owned),
+            ..Account::default()
+        };
+        let plain = row_for(account("claude-1", None, None), now);
+        assert_eq!((plain.can_token, plain.year_token.as_deref()), (true, None));
+        let token = row_for(account("claude-4", Some("2026-11-17T00:00:00Z"), Some("2027-11-17T00:00:00Z")), now);
+        assert_eq!(token.year_token.as_deref(), Some("Year-long token until 17 Nov 2027"));
+        assert_eq!(token.sign_in_ends, None);
+        let late = row_for(account("claude-4", Some("2025-11-18T00:00:00Z"), Some("2026-11-18T00:00:00Z")), now);
+        assert!(late.sign_in_ends.as_deref().is_some_and(|w| w.starts_with("Token ends")), "{:?}", late.sign_in_ends);
+        let codex = row_for(Account { provider: "codex".into(), ..account("codex-1", None, None) }, now);
+        assert!(!codex.can_token);
+    }
+
+    fn row_for(account: Account, now: i64) -> LoginRow {
+        let accounts = [account];
+        cards(&[], &accounts, None, true, now, &zone()).remove(0).sections.remove(0).logins.remove(0)
+    }
+
+    #[test]
+    fn find_work_is_on_a_card_whose_week_will_go_unused() {
+        let now = at(13, 0);
+        let mut row = row_for(login("c1", "claude", Some(91.), 39., false, Some(at(15, 40))), now);
+        row.headline = Some(Verdict { text: "About 46% will go unused, resets Mon 11:07 am".into(), tone: Tone::Spare });
+        assert!(can_find_work(&row));
+        row.status = Some(LoginStatus::SignedOut);
+        assert!(!can_find_work(&row), "nothing can run on it");
+        row.status = None;
+        row.headline = Some(Verdict { text: "On track, lasts till Mon".into(), tone: Tone::Fine });
+        assert!(!can_find_work(&row));
+    }
+
+    #[test]
+    fn each_login_card_has_one_line_and_a_ring() {
+        let now = at(13, 0);
+        let back = at(15, 40);
+        // Room in both: the week's number in the ring, the 5-hour as a chip.
+        let fine = row_for(login("c1", "claude", Some(91.), 39., false, Some(back)), now);
+        assert_eq!(fine.provider, "claude");
+        assert_eq!(fine.ring, Some(39.));
+        assert_eq!(fine.five_hour.as_ref().map(|c| (c.text.as_str(), c.tone)), Some(("5-hour 91%", Tone::Fine)));
+        assert!(fine.unknown.is_none());
+        // At its limit on the 5-hour: one red line saying when it's back, not
+        // "Limit reached" over "Used up".
+        let out = row_for(login("c2", "claude", Some(0.), 50., true, Some(back)), now);
+        assert_eq!(out.headline, Some(Verdict { text: "Used up, back 3:40 pm".into(), tone: Tone::Out }));
+        assert_eq!(out.ring, Some(50.), "the ring stays the week's");
+        assert_eq!(out.five_hour.as_ref().map(|c| c.tone), Some(Tone::Out));
+        // Blocked with nothing saying when it's back.
+        let blocked = row_for(login("c3", "claude", Some(30.), 50., true, None), now);
+        assert_eq!(blocked.headline, Some(Verdict { text: "Limit reached".into(), tone: Tone::Out }));
+        // A week used up rings red at 0.
+        let mut week_out = login("c4", "codex", None, 0., true, None);
+        week_out.usage = Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0, "resetsAt": iso_time(back) }], "blocked": true }));
+        let week_out = row_for(week_out, now);
+        assert_eq!(week_out.ring, Some(0.));
+        assert_eq!(week_out.headline.as_ref().map(|v| v.text.as_str()), Some("Used up, back 3:40 pm"));
+        assert!(week_out.five_hour.is_none());
+    }
+
+    #[test]
+    fn a_login_with_no_reading_says_why() {
+        let now = at(13, 0);
+        let bare = |id: &str, provider: &str| Account { id: id.into(), provider: provider.into(), title: id.into(), ..Default::default() };
+        let grok = row_for(bare("grok-main", "grok"), now);
+        assert_eq!(grok.ring, None);
+        assert_eq!(grok.headline, None);
+        assert_eq!(grok.unknown.as_ref().map(|u| u.text.as_str()), Some("Grok reports its limit only from its background service"));
+        assert_eq!(row_for(bare("oc", "opencode"), now).unknown.map(|u| u.text), Some("Pay as you go, no weekly limit".into()));
+        assert_eq!(row_for(bare("c9", "claude"), now).unknown.map(|u| u.text), Some("No turn has run on it yet".into()));
+        assert_eq!(row_for(bare("x9", "codex"), now).unknown.map(|u| u.text), Some("No turn has run on it yet".into()));
+        // A login that's signed out or ended says that instead.
+        let mut gone = bare("c8", "claude");
+        gone.signed_out = true;
+        let gone = row_for(gone, now);
+        assert!(gone.unknown.is_none());
+        assert_eq!(gone.headline.map(|v| v.text), Some("Signed out".into()));
+    }
+
+    #[test]
     fn a_stale_login_says_since_when() {
         let mut l = logins();
         l.accounts[0].usage = Some(json!({ "stale": true, "readAt": iso_time(at(11, 55)), "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 40 }] }));
@@ -2075,5 +2380,72 @@ mod tests {
         assert!(lines.contains(&"new@example.com: nothing known".to_string()));
         assert!(lines.contains(&"alex+4@example.com, limit reached: 5-hour 0%, Weekly 31%".to_string()));
         assert_eq!(lines.last().map(String::as_str), Some("Usage from Token Stats at 11:15 am"));
+    }
+
+    // From Claude Code 2.1.325 a sign-in ends 28 days after it was made, and
+    // claude-1's ended unnoticed on 14 Nov: its row says so, with Sign in…,
+    // a few days ahead and once it's out, and the Usage button gets a dot.
+    #[test]
+    fn sign_ins_ending_or_ended_show_on_the_row_and_the_button() {
+        let now = at(10, 0);
+        let login = |id: &str, ends: Option<i64>, out: bool| Account {
+            id: id.into(),
+            provider: "claude".into(),
+            title: format!("{id}@example.com"),
+            email: Some(format!("{id}@example.com")),
+            signed_out: out,
+            login_ends_at: ends.map(iso_time),
+            usage: Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 71.0 }] })),
+            ..Default::default()
+        };
+        let fine = login("claude-4", Some(now + 20 * DAY), false);
+        let ending = login("claude-3", Some(at_on(31, 18, 0)), false);
+        let out = login("claude-1", None, true);
+        assert_eq!(sign_in_ends(&fine, now), None);
+        assert_eq!(sign_in_ends(&ending, now), Some(at_on(31, 18, 0)));
+        assert_eq!(sign_in_ends(&out, now), None, "already out says signed out instead");
+        assert!(!sign_in_needed(&[fine.clone()], now));
+        assert!(sign_in_needed(&[fine.clone(), ending.clone()], now));
+        assert!(sign_in_needed(&[out.clone()], now));
+        let pools = vec![Pool { id: "claude".into(), title: "Claude".into(), account_ids: vec!["claude-4".into(), "claude-3".into(), "claude-1".into()], ..Default::default() }];
+        let accounts = vec![fine, ending, out];
+        let cards = cards(&pools, &accounts, None, false, now, &zone());
+        let rows = &cards[0].sections[0].logins;
+        assert_eq!((rows[0].status, rows[0].sign_in_ends.as_deref()), (None, None));
+        assert_eq!((rows[1].status, rows[1].sign_in_ends.as_deref()), (None, Some("Sign-in ends Sat 6 pm")));
+        assert_eq!((rows[2].status, rows[2].sign_in_ends.as_deref()), (Some(LoginStatus::SignedOut), None));
+        assert_eq!(rows[2].meters.len(), 1, "its numbers stay");
+        let tip = icon_tooltip_with_sign_ins(&groups(&pools, &accounts), &accounts, now, &zone());
+        assert!(tip.ends_with("claude-3 (claude-3@example.com): sign-in ends Sat 6 pm\nclaude-1 (claude-1@example.com) is signed out"), "{tip}");
+        assert_eq!(sign_in_label(&Account { id: "claude-main".into(), ..Default::default() }), "claude-main");
+    }
+
+    /// claude-main, 16 Nov: its Max lapsed to the free plan, and its row
+    /// still said "Sign-in ends Wed", offered Sign in… and "Used up, back Wed".
+    #[test]
+    fn a_login_whose_plan_ended_says_so_and_nothing_else() {
+        let now = at(10, 0);
+        let ended = Account {
+            id: "claude-main".into(),
+            provider: "claude".into(),
+            email: Some("a@example.com".into()),
+            plan: Some("Max".into()),
+            plan_ended: true,
+            login_ends_at: Some(iso_time(now + DAY)),
+            usage: Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0.0, "resetsAt": iso_time(now + DAY) }], "blocked": true })),
+            ..Default::default()
+        };
+        assert_eq!(sign_in_ends(&ended, now), None);
+        assert!(!sign_in_needed(&[ended.clone()], now));
+        assert!(!sign_in_needed(&[Account { signed_out: true, ..ended.clone() }], now), "signing in wouldn't help");
+        assert!(sign_in_lines(&[ended.clone()], now, &zone()).is_empty());
+        let accounts = vec![ended];
+        let cards = cards(&[], &accounts, None, false, now, &zone());
+        let row = &cards[0].sections[0].logins[0];
+        assert_eq!((row.status, row.sign_in_ends.as_deref()), (Some(LoginStatus::PlanEnded), None));
+        assert!(row.meters.is_empty() && row.more.is_empty(), "no reset promised");
+        assert_eq!(row.tip, "a@example.com", "not still called Max");
+        assert_eq!(LoginStatus::PlanEnded.words(), "Plan ended");
+        assert!(!LoginStatus::PlanEnded.is_stop());
     }
 }

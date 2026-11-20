@@ -18,7 +18,7 @@ import { httpRouter } from 'convex/server';
 import { httpAction } from './_generated/server';
 import { internal } from './_generated/api';
 import { convexSite, deploymentVouches } from './verify';
-import { FCM_TOKEN, fcmGone } from './fcmMessage';
+import { FCM_TOKEN, androidSealedOk, fcmGone } from './fcmMessage';
 import { reasonKey } from './reasons';
 import { storedVersion } from './versions';
 
@@ -57,6 +57,8 @@ http.route({
     const site = convexSite(str(b.deployment, 200));
     const nonce = str(b.nonce, 100);
     if (!site || !nonce) return json({ error: 'update Threadbear: this relay only registers Convex cloud deployments that confirm the registration (docs/push-relay.md)' }, 403);
+    // Over a limit already: say so without calling anyone back.
+    if (!(await ctx.runQuery(internal.relay.mayRegister, { deployment: site }))) return json({ error: 'too many new installs today' }, 429);
     if (!(await deploymentVouches(site, nonce))) return json({ error: "the deployment didn't confirm this registration" }, 403);
     try {
       return json(await ctx.runMutation(internal.relay.registerVerified, { deployment: site, ...(version ? { version } : {}) }));
@@ -85,7 +87,11 @@ http.route({
     const admitted = await ctx.runMutation(internal.relay.admit, { installId: auth[1]!, installKey: auth[2]!, ...(version ? { version } : {}) });
     if (admitted === 'auth') return json({ error: 'unauthorized' }, 401);
     if (admitted === 'limited') return json({ error: 'rate limited' }, 429);
-    const encrypted = str(b.encrypted, 4000);
+    // An Android one that wouldn't fit Firebase's 4 KB (fcmMessage.ts
+    // androidSealedOk) goes without it, so the phone shows its stand-in, as
+    // anything over 4,000 characters always has: a long thread title can
+    // make a real one that big, so refusing the send would lose it.
+    const encrypted = android ? (androidSealedOk(b.encrypted) ? b.encrypted : undefined) : str(b.encrypted, 4000);
     // A throw (a malformed APNS_KEY_P8 makes signing throw) is counted
     // like any other failure, so relay:stats sees it.
     const r = await (android
@@ -102,7 +108,7 @@ http.route({
     // install), so the relay's own logs say why sends fail; relay:stats
     // tallies the same.
     if (!ok) console.warn(`[send] failed: ${reasonKey(r.status, r.reason)}`);
-    await ctx.runMutation(internal.relay.counted, { ok, status: r.status, ...(r.reason ? { reason: r.reason } : {}) });
+    await ctx.runMutation(internal.relay.counted, { ok, status: r.status, installId: auth[1]!, hour: admitted.hour, ...(r.reason ? { reason: r.reason } : {}) });
     const gone = android ? fcmGone(r.status, r.reason) : r.status === 410 || r.reason === 'BadDeviceToken' || r.reason === 'Unregistered';
     return json({ ok, status: r.status, ...(r.reason ? { reason: r.reason } : {}), ...(gone ? { gone: true } : {}) });
   }),

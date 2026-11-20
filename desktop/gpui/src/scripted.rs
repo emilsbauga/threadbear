@@ -56,9 +56,19 @@ pub(crate) fn unseen() -> bool {
     hide_windows() || (keep_behind() && std::env::var("THREADBEAR_SHOW_WINDOW").as_deref() != Ok("1"))
 }
 
-/// A scripted window anyone could see: its title says it's a test copy.
+/// Filming the app for a clip (dev-app.sh's --film, which desktop/scripts/film.sh
+/// runs on Tinker Desk's desktop): a normal window in front, drawing as the
+/// installed app's does, with no "test copy" label to cut out of the video.
+/// Every other safety stays: not the real data folder, its own pasteboard.
+/// Never set with THREADBEAR_KEEP_BEHIND, which dev-app.sh leaves out for it.
+pub(crate) fn filming() -> bool {
+    scripted() && std::env::var("THREADBEAR_FILMING").as_deref() == Ok("1")
+}
+
+/// A scripted window anyone could see: its title says it's a test copy,
+/// unless it's being filmed.
 pub(crate) fn labelled() -> bool {
-    scripted() && !unseen()
+    scripted() && !unseen() && !filming()
 }
 
 /// What the window's title ends with when `labelled`.

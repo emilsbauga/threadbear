@@ -5,12 +5,14 @@
 // 10 by another thread's start (6 Nov). Runs the real script's status
 // (which reaps) against a temp TMPDIR, with hand-made instance folders and
 // no app or build.
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpDir } from '../helpers/fakes.ts';
+// dev-app.sh runs the Mac app's debug build, and its reap reads a process's
+// start time with ps -o lstart, which Windows has no counterpart to here.
+import { macOnlyTest as test } from '../helpers/platform.ts';
 
 const DEV_APP = path.join(import.meta.dirname, '..', '..', '..', 'app', 'Tools', 'dev-app.sh');
 

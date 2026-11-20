@@ -1,0 +1,9 @@
+# The box image's build context is this folder (box/Dockerfile): only what
+# it copies goes, never node_modules, tests or the spike.
+*
+!package.json
+!package-lock.json
+!.npmrc
+!bin
+!src
+!box/entrypoint.sh

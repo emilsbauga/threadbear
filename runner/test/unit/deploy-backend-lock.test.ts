@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpDir } from '../helpers/fakes.ts';
+import { skipOnWindows } from '../helpers/platform.ts';
 
 const repo = path.resolve(import.meta.dirname, '../../..');
 const script = path.join(repo, 'runner/scripts/deploy-backend.mjs');
@@ -19,15 +20,15 @@ function treeOf(paths: string[]): string {
   return out.split('\n').filter(Boolean).map((l) => l.split(/\s+/)[2]).join('+');
 }
 
-test('a second backend deploy waits for the first, then has nothing left to do', async () => {
+test('a second backend deploy waits for the first, then has nothing left to do', skipOnWindows("deploy-backend.mjs keeps two deploys apart with lockf or flock, which Windows doesn't have; it deploys Mike's own Convex backend"), async () => {
   const home = tmpDir();
   fs.mkdirSync(path.join(home, 'secrets'), { recursive: true });
   // A made-up deployment: if the wait were wrong, nothing real is reached.
   fs.writeFileSync(path.join(home, 'secrets', 'convex-deploy.env'), 'CONVEX_DEPLOY_KEY=prod:no-such-deploy-000|x\n');
   fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ sync: { url: 'https://no-such-deploy-000.example.invalid' } }));
   const done = {
-    functions: { tree: treeOf(['convex', 'convex.json', 'package.json', 'package-lock.json']) },
-    site: { tree: treeOf(['web', 'package.json', 'package-lock.json']) },
+    functions: { tree: treeOf(['convex', 'convex.json', 'package.json', 'package-lock.json', 'vendor']) },
+    site: { tree: treeOf(['web', 'package.json', 'package-lock.json', 'vendor']) },
   };
   // The first deploy: holds the kernel lock the script takes, says so with
   // a ready file, and once told to (the second has said it's waiting)

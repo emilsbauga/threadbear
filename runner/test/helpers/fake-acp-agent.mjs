@@ -233,14 +233,38 @@ async function prompt(id, p) {
   if (GROK) return grokPrompt(id, p, s, word, rest);
   if (word === 'write') await runTool(p.sessionId, s.cwd, 'edit', { filePath: rest[0], content: rest.slice(1).join(' ') }, [{ path: rest[0] }], () => fs.writeFileSync(rest[0], rest.slice(1).join(' ')));
   else if (word === 'exec') await runTool(p.sessionId, s.cwd, 'execute', { command: rest.join(' ') }, [], () => log({ ran: rest.join(' ') }));
+  // OpenCode 2's question tool, as a form (when the client offered forms).
+  else if (word === 'form') {
+    if (!clientForms) log({ form: 'not offered' });
+    else
+      log({
+        formAnswer: await ask('elicitation/create', {
+          mode: 'form',
+          sessionId: p.sessionId,
+          toolCallId: 'q-call',
+          message: 'Questions',
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              q0: { type: 'string', title: 'Colour', description: 'Which colour?', oneOf: [{ const: 'Blue', title: 'Blue' }, { const: 'Green', title: 'Green' }] },
+              q0_custom: { type: 'string', title: 'Colour (other)', description: 'Type your own answer' },
+            },
+            required: [],
+          },
+        }),
+      });
+  }
   update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'all ' } });
   update(p.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'done' } });
   update(p.sessionId, { sessionUpdate: 'usage_update', used: 1000, size: 200000, cost: { amount: 0.25, currency: 'USD' } });
   send({ id, result: { stopReason: 'end_turn' } });
 }
 
+let clientForms = false;
 const handlers = {
-  initialize: () => ({
+  initialize: (p) => (
+    (clientForms = Boolean(p?.clientCapabilities?.elicitation?.form)),
+    {
     ...(env.FAKE_ACP_VERSION === 'none' ? {} : { protocolVersion: env.FAKE_ACP_VERSION ? Number(env.FAKE_ACP_VERSION) : 1 }),
     agentCapabilities: { loadSession: true, mcpCapabilities: { http: true }, promptCapabilities: { image: true }, sessionCapabilities: { resume: {}, close: {} } },
     ...(GROK

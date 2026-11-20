@@ -164,3 +164,16 @@ export function landRefusal(home: string, mainCheckout: string): string | undefi
   if (!checkout || repoOf(checkout) !== repoOf(mainCheckout)) return undefined;
   return "This machine follows GitHub's main (followOrigin in runner.json), so nothing lands here: it would only leave its main apart from GitHub's. Give the work to the main Mac to land instead: create_thread with runner: \"main\". If this machine can push a branch of its own (git push origin HEAD:<branch>, with a name the repo's rules let this machine push), name that branch in the brief; if not, put the whole diff in it.";
 }
+
+// Whether `tb land` pushes main to GitHub once it has landed in
+// `mainCheckout` (worktrees.ts, pushMain): runner.json's `pushAfterLanding`
+// lists the repos' main checkouts (`~` allowed). Off unless listed, so a
+// stranger's copy, whose origin may be Mike's repo or their fork, never
+// pushes by itself.
+export function pushAfterLanding(home: string, mainCheckout: string): boolean {
+  const list = readJsonSync<{ pushAfterLanding?: unknown }>(path.join(home, 'runner.json'))?.pushAfterLanding;
+  if (!Array.isArray(list)) return false;
+  const want = repoOf(mainCheckout);
+  const home_ = process.env.HOME ?? '';
+  return list.some((d) => typeof d === 'string' && d.trim() !== '' && repoOf(d.replace(/^~(?=\/|$)/, home_)) === want);
+}

@@ -1,24 +1,21 @@
-// A quiet inbox (experiment quietInbox; docs/protocol.md, "A quiet
-// inbox"): a finished thread with nothing for Mike keeps out of it.
+// A quiet inbox (docs/protocol.md, "A quiet inbox"): a finished thread
+// another thread started, with nothing for Mike, archives itself.
 //
 // Mike, 12 Nov 2026, of three threads other threads had started (a bun fix
 // split off a Let's Build It thread, two GPUI fixes from the port's
 // thread): "there's nothing for me to do... it should just auto archive."
-// And of a done card listing four threads its thread had started that
-// were still building: "If that thread is waiting on another thread, then
-// it shouldn't be in the inbox." Before this a thread only archived itself
-// when asked (end_turn's archive), and only waited on others when its
-// agent said so (waitFor).
+// Tried as an experiment for four days (about 70 helpers archived, none
+// brought back), then made standard on 16 Nov. It also hibernated a thread
+// whose only loose ends were threads it started; that was taken out then,
+// as it hid threads Mike wanted to read (a starred coordinator, the daily
+// brief) and its wakes rarely had anything to say.
 //
 // Each method's `this` is the Runner; runner.ts puts them on its prototype.
 import type { Runner, ThreadState } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import type { LooseEnd } from '../protocol.ts';
 import { sentByAgent } from '../protocol.ts';
-import { experimentOn } from '../experiments.ts';
-import { above } from '../threadbear-mcp.ts';
 
-export const QUIET_INBOX = 'quietInbox';
 export const HELPER_ARCHIVED_NOTE = 'Archived: another thread started this one, and it finished with nothing left for you.';
 
 export const quietInboxPart = {
@@ -26,8 +23,10 @@ export const quietInboxPart = {
   // review of it to come). `next`: whether it suggested follow-ups, which
   // are Mike's to tick or leave.
   async settleQuietly(this: Runner, st: ThreadState, next: boolean): Promise<void> {
-    if (!experimentOn(this.cfg.home, QUIET_INBOX)) return;
     const { rec, rt } = st;
+    // Cheap checks first, so a thread that can't be archived this way
+    // never runs git.
+    if (next || !this.helperNobodyTouched(st)) return;
     const seq = this.looseEndsCard(st);
     if (seq === undefined) return;
     let ends: LooseEnd[];
@@ -42,32 +41,18 @@ export const quietInboxPart = {
     // Git took a moment. Anything since (a message, a new turn, Mike or a
     // schedule putting it away, the runner stopping) decides instead.
     if (rt.deleted || this.stopping || rt.turn || rec.queue.length || this.looseEndsCard(st) !== seq || this.bucket(rec) !== 'inbox') return;
-    // The threads it started, as they stand now rather than when git began.
-    const open = [...ends.filter((e) => e.kind !== 'thread' && e.kind !== 'scheduled'), ...this.childEnds(st)];
-    const waits = open.filter((e) => e.kind === 'thread' && e.threadId).map((e) => ({ id: e.threadId! }));
-    // Only on threads with as much access as it has: the wake passes on what
-    // they said, which from one with less would need send_message's card
-    // (Daybreak, 12 Nov 2026). Otherwise it stays in the inbox, as before.
-    const me = this.authorityNow(rec.id);
-    if (waits.some((w) => above(me, this.authorityNow(w.id)))) {
-      this.log.info('quiet inbox: not waiting on threads it started with less access', { threadId: rec.id });
+    // Anything left open, or a check-in it booked (that brings it back by
+    // itself), keeps it in the inbox.
+    delete rt.quietOnceChildrenDone;
+    if (ends.some((e) => e.kind !== 'thread')) return;
+    // Threads it started still going (as they stand now, rather than when
+    // git began) keep it there until they're done: each one finishing
+    // looks again (recheckStarter), while this card is still its last.
+    if (this.childEnds(st).length) {
+      rt.quietOnceChildrenDone = seq;
       return;
     }
-    if (waits.length && waits.length === open.length) {
-      // All that's left is theirs to finish: it waits on them, as end_turn's
-      // waitFor would have, and wakes with what they said. No longer
-      // finished itself, for anything waiting on it in turn.
-      delete rec.finished;
-      this.waitOn(st, waits, undefined);
-      // So its wake says the runner put it away, not the agent (deliverWaits).
-      for (const w of rec.waitingOn ?? []) w.quiet = true;
-      this.markDirty(st);
-      this.log.info('quiet inbox: waiting on the threads it started', { threadId: rec.id, on: waits.map((w) => w.id) });
-      return;
-    }
-    // A check-in it booked brings it back by itself; it goes after that run.
-    if (open.length || ends.some((e) => e.kind === 'scheduled')) return;
-    if (!this.helperNobodyTouched(st) || next) return;
+    if (!this.helperNobodyTouched(st)) return;
     this.emit(st, { type: 'system.note', text: HELPER_ARCHIVED_NOTE });
     this.update({ threadId: rec.id, archived: true, archivedBy: 'threadbear' });
     this.log.info('quiet inbox: archived a finished helper thread', { threadId: rec.id, startedBy: rec.startedBy?.threadId });

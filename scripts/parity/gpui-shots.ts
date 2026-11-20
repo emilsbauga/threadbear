@@ -42,8 +42,9 @@ try {
     if (missing.length) {
       let row: unknown = null;
       try {
-        const list = JSON.parse(execFileSync(path.join(process.env.TB_RUNNER_HOME!, 'tb'), ['rpc', 'remoteThreads.list'], { encoding: 'utf8' }));
-        row = (list.threads ?? list.result?.threads ?? []).find((r: { threadId?: string }) => r.threadId === t.threadId) ?? null;
+        const raw = execFileSync(path.join(process.env.TB_RUNNER_HOME!, 'tb'), ['rpc', 'remoteThreads.list'], { encoding: 'utf8' });
+        const list = JSON.parse(raw);
+        row = (list.threads ?? list.result?.threads ?? []).find((r: { threadId?: string }) => r.threadId === t.threadId) ?? { notInList: raw.slice(0, 2000) };
       } catch (e) { row = String(e); }
       fs.writeFileSync(path.join(out, `mac-${i + 1}.debug.json`), JSON.stringify({ missing, row, dump: dump ? JSON.parse(dump) : null }, null, 2));
     }

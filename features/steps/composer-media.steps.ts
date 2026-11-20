@@ -12,16 +12,20 @@ import { recording } from '../tools/real-screen.ts';
 
 const sample = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../support/sample.png');
 
-When('I open Attach images from the composer', async function (this: ThreadbearWorld) {
-  await this.app.do({ cmd: 'click', tip: 'Attach images, change the folder or schedule the message' });
-  await this.app.do({ cmd: 'click', tip: 'Attach images…' });
+When('I open Attach images or Markdown from the composer', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'click', tip: 'Attach images or Markdown, change the folder or schedule the message' });
+  await this.app.do({ cmd: 'click', tip: 'Attach images or Markdown…' });
 });
 
-Then('choosing a document cannot add a file chip', function () {
+Then('choosing another kind of document is disabled', function () {
   return 'pending';
 });
 
 Then('choosing a picture can add a picture chip', function () {
+  return 'pending';
+});
+
+Then('choosing a Markdown file adds its path', function () {
   return 'pending';
 });
 

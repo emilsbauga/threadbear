@@ -49,6 +49,19 @@ Feature: The rails down the window's edges
     When the runner says it is updating Threadbear Runner by itself
     Then the activity bar's "Updates" button has the grey dot
 
+  # The frozen Swift app keeps its grey dot (AGENTS.md, "The GPUI port").
+  @rail.dots @swift-pending
+  Scenario: The Updates icon shows the next version coming and ready without a click
+    When the app has no update on its way
+    Then the Updates icon shows "nothing"
+    When the app's next version is building
+    Then the Updates icon shows "a turning ring"
+    When the app's next version is waiting for main to settle
+    Then the Updates icon shows "a turning ring"
+    When the app's next version, def5678, is ready
+    Then the Updates icon shows "green"
+    And the activity bar's "Updates" button has the grey dot
+
   @rail.right
   Scenario: The right rail has the thread's Highlights and Files
     When I open the thread "Morning brief"

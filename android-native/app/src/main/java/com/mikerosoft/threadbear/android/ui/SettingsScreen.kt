@@ -35,6 +35,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -56,6 +57,8 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mikerosoft.threadbear.android.LocalModel
 import com.mikerosoft.threadbear.android.LocalSnackbar
+import com.mikerosoft.threadbear.android.Push
+import com.mikerosoft.threadbear.android.PushSetup
 import com.mikerosoft.threadbear.kit.NotifyMode
 import com.mikerosoft.threadbear.kit.PhoneIdentity
 import com.mikerosoft.threadbear.kit.PhoneRunner
@@ -85,6 +88,10 @@ fun SettingsScreen(back: () -> Unit, runnerOrder: () -> Unit) {
         value = runCatching { model.backend.value?.me() }.getOrNull() ?: known
     }
     val chooseRunner = shell.canChooseRunner(runners)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Asked again each time the screen comes back: a push app installed meanwhile.
+    val resumed by androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    val pushSetup = remember(resumed) { Push.transport.setup(context) }
 
     Scaffold(
         snackbarHost = { SnackbarHost(LocalSnackbar.current) },
@@ -118,7 +125,7 @@ fun SettingsScreen(back: () -> Unit, runnerOrder: () -> Unit) {
                     }
                 }
             }
-            if (identity?.pushOff == true) {
+            if (identity?.pushOff == true && Push.transport.usesRelay) {
                 // A self-hosted backend: the push relay only reaches Convex cloud,
                 // so say why nothing comes rather than offer a picker that does
                 // nothing (docs/self-hosting.md).
@@ -130,6 +137,36 @@ fun SettingsScreen(back: () -> Unit, runnerOrder: () -> Unit) {
                             "Your Threadbear backend is self-hosted, so it can't send notifications. Open the app to see what needs you.",
                             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+            } else if (pushSetup == PushSetup.NO_DISTRIBUTOR) {
+                // The fdroid build with no UnifiedPush app: push is off until there is one.
+                Group("Notifications") {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.Top) {
+                        Icon(Line.BellOff, null, Modifier.size(18.dp).padding(top = 2.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "Notifications need a UnifiedPush app on this phone, such as ntfy.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().clickable { openLink(context, DISTRIBUTORS) }.heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Find one", style = MaterialTheme.typography.bodyLarge, color = LocalSignals.current.accent)
+                    }
+                }
+            } else if (pushSetup == PushSetup.CHOOSE_DISTRIBUTOR) {
+                Group("Notifications", footer = "This phone has more than one UnifiedPush app.") {
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            context.findActivity()?.let { Push.transport.choose(it) { model.registerPush() } }
+                        }.heightIn(min = 48.dp).padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Choose one for notifications", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                        Icon(Line.ChevronRight, null, Modifier.size(16.dp), tint = LocalSignals.current.faint)
                     }
                 }
             } else if (shell.canChooseNotifications(token)) {
@@ -151,7 +188,6 @@ fun SettingsScreen(back: () -> Unit, runnerOrder: () -> Unit) {
             }
             // The app's own version, and a newer release when there is one (Updates).
             val update by com.mikerosoft.threadbear.android.Updates.available.collectAsStateWithLifecycle()
-            val context = androidx.compose.ui.platform.LocalContext.current
             Group("App") {
                 Field("Version", com.mikerosoft.threadbear.android.Updates.installed?.let { com.mikerosoft.threadbear.android.Updates.label(it) } ?: "Development build")
                 update?.let { u ->
@@ -187,6 +223,21 @@ fun SettingsScreen(back: () -> Unit, runnerOrder: () -> Unit) {
 }
 
 private val day = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.UK)
+
+/** UnifiedPush's own list of push apps, for the fdroid build with none. */
+private const val DISTRIBUTORS = "https://unifiedpush.org/users/distributors/"
+
+private fun openLink(context: android.content.Context, url: String) {
+    runCatching {
+        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 /** A Form-like group: a heading, rows on a raised card, and a note under it. */
 @Composable

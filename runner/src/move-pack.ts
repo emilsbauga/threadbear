@@ -16,7 +16,7 @@ export const CHUNK_BYTES = 9 * 1024 * 1024;
 export const MAX_SEALED_BYTES = 100 * 1024 * 1024;
 // Unpacked, at most this: a gzip that grows past it is refused.
 export const MAX_UNPACKED_BYTES = 1024 * 1024 * 1024;
-const MAX_ENTRIES = 100_000;
+export const MAX_ENTRIES = 100_000;
 const MAX_PATH = 1024;
 
 export type PackEntry = { path: string; data: Buffer; mode?: number };
@@ -38,11 +38,19 @@ export function archive(entries: PackEntry[]): Buffer {
   return zlib.gzipSync(Buffer.concat([MAGIC, len, json, ...entries.map((e) => e.data)]));
 }
 
-export function unarchive(packed: Buffer): PackEntry[] {
+// How big an archive of these entries is before it's gzipped: what
+// unarchive's maxUnpacked is held to.
+export function unpackedSize(entries: PackEntry[]): number {
+  const header = Buffer.byteLength(JSON.stringify(entries.map((e) => ({ path: e.path, size: e.data.length, ...(e.mode !== undefined ? { mode: e.mode & 0o777 } : {}) }))));
+  return MAGIC.length + 4 + header + entries.reduce((n, e) => n + e.data.length, 0);
+}
+
+// `maxUnpacked`: a box's save is held to less than a move (box-save.ts).
+export function unarchive(packed: Buffer, opts: { maxUnpacked?: number } = {}): PackEntry[] {
   const fail = (why: string) => new Error(`The moved thread's bundle is damaged (${why}).`);
   let raw: Buffer;
   try {
-    raw = zlib.gunzipSync(packed, { maxOutputLength: MAX_UNPACKED_BYTES });
+    raw = zlib.gunzipSync(packed, { maxOutputLength: opts.maxUnpacked ?? MAX_UNPACKED_BYTES });
   } catch {
     throw fail('not a gzip, or too big');
   }
@@ -91,6 +99,38 @@ export function readTree(dir: string, prefix: string, skip: string[] = []): Pack
       const r = rel ? `${rel}/${d.name}` : d.name;
       if (d.isDirectory()) walk(a, r, false);
       else if (d.isFile()) out.push({ path: `${prefix}/${r}`, data: fs.readFileSync(a), mode: fs.statSync(a).mode });
+    }
+  };
+  walk(dir, '', true);
+  return out;
+}
+
+/**
+ * What readTree(dir, prefix, skip) would read, without reading it: how
+ * many files, their bytes, and the header bytes their entries take (an
+ * entry's JSON is its path and about 40 more). From lstat alone, so a
+ * caller can refuse a tree too big before it allocates any of it.
+ */
+export function treeStats(dir: string, prefix: string, skip: string[] = []): { files: number; bytes: number; header: number } {
+  const out = { files: 0, bytes: 0, header: 0 };
+  const walk = (abs: string, rel: string, top: boolean) => {
+    let names: fs.Dirent[];
+    try {
+      names = fs.readdirSync(abs, { withFileTypes: true });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw e;
+    }
+    for (const d of names) {
+      if (top && skip.includes(d.name)) continue;
+      const a = path.join(abs, d.name);
+      const r = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) walk(a, r, false);
+      else if (d.isFile()) {
+        out.files++;
+        out.bytes += fs.lstatSync(a).size;
+        out.header += Buffer.byteLength(`${prefix}/${r}`) + 40;
+      }
     }
   };
   walk(dir, '', true);

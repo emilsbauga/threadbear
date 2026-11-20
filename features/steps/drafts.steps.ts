@@ -142,3 +142,46 @@ Then('the clipboard holds just {string}', async function (this: ThreadbearWorld,
   }
   assert.equal(last, words);
 });
+
+// Changing a draft in its box (draft_boxes.rs, `draft` with `edit`): Edit,
+// the words in its text box, Done.
+When('I change the draft to {string}', async function (this: ThreadbearWorld, words: string) {
+  const row = await this.until('a draft box', (d) => (firstDraft(d) ? streamed(d) : undefined));
+  const out = await this.app.do({ cmd: 'draft', row: row.id, index: 0, edit: words });
+  assert.equal(okValue(out), 'edited', out);
+});
+
+When("I press the draft's Undo", async function (this: ThreadbearWorld) {
+  const row = await this.until('a draft box', (d) => (firstDraft(d) ? streamed(d) : undefined));
+  const out = await this.app.do({ cmd: 'draft', row: row.id, index: 0, undo: true });
+  assert.equal(okValue(out), 'undone', out);
+});
+
+Then('the reply shows an edited {string} box reading {string}', async function (this: ThreadbearWorld, label: string, line: string) {
+  await this.until(`an edited "${label}" box reading ${line}`, (d) => {
+    const draft = firstDraft(d);
+    return draft?.label === label && draft.edited === true && draft.editing === false && JSON.stringify(draft.lines) === JSON.stringify([line]);
+  });
+});
+
+/** The newest message of mine in the transcript. */
+const lastMine = (d: Dump) => [...d.transcript.rows].reverse().find((r) => r.kind === 'user');
+
+Then('my message says {string} then my Slack draft {string}', async function (this: ThreadbearWorld, words: string, draft: string) {
+  const want = `${words}\n\nI edited your draft. Use my version below exactly as it is, not yours:\n\n\`\`\`slack\n${draft}\n\`\`\``;
+  // The dump gives a message's text on one line, so compare it word for word.
+  const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
+  let seen = '';
+  try {
+    await this.until('my message with the changed draft', (d) => {
+      seen = lastMine(d)?.text ?? '';
+      return flat(seen) === flat(want);
+    });
+  } catch (error) {
+    assert.fail(`${(error as Error).message.split('\n')[0]}; my last message was ${JSON.stringify(seen)}`);
+  }
+});
+
+Then('the transcript shows my message {string} and nothing after it', async function (this: ThreadbearWorld, words: string) {
+  await this.until(`my message "${words}" alone`, (d) => lastMine(d)?.text === words);
+});

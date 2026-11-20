@@ -43,6 +43,44 @@ impl DraftKind {
             _ => None,
         }
     }
+
+    /// The fence's word, for writing a draft back out as a block of its kind.
+    pub fn fence_word(&self) -> &'static str {
+        match self {
+            DraftKind::Slack => "slack",
+            DraftKind::Email => "email",
+            DraftKind::Draft => "draft",
+        }
+    }
+}
+
+/// What goes on the end of Mike's next message when he's changed a draft in
+/// its box (draft_boxes.rs, Mike 18 Nov: "if I click Post and close, use what's
+/// in the box"): each changed draft as a block of its own kind, after a line
+/// that tells the agent to send his words rather than its own. Empty when
+/// nothing's changed. The fence is longer than any run of backticks in the
+/// draft, so a draft with code in it still comes through whole.
+pub fn edited_message(edits: &[(DraftKind, String)]) -> String {
+    if edits.is_empty() {
+        return String::new();
+    }
+    let intro = if edits.len() == 1 {
+        "I edited your draft. Use my version below exactly as it is, not yours:"
+    } else {
+        "I edited your drafts. Use my versions below exactly as they are, not yours:"
+    };
+    let mut out = intro.to_owned();
+    for (kind, text) in edits {
+        let mut longest = 0;
+        let mut run = 0;
+        for c in text.chars() {
+            run = if c == '`' { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        let fence = "`".repeat((longest + 1).max(3));
+        out.push_str(&format!("\n\n{fence}{}\n{}\n{fence}", kind.fence_word(), text.trim_end_matches('\n')));
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -695,6 +733,24 @@ fn closing(chars: &[char], start: usize, marker: char) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_edited_draft_goes_back_as_a_block_of_its_kind() {
+        use super::{edited_message, DraftKind};
+        assert_eq!(edited_message(&[]), "");
+        assert_eq!(
+            edited_message(&[(DraftKind::Slack, "Hey *Wayne*\n".to_owned())]),
+            "I edited your draft. Use my version below exactly as it is, not yours:\n\n```slack\nHey *Wayne*\n```"
+        );
+        // Code in the draft gets a longer fence round it.
+        let two = edited_message(&[(DraftKind::Draft, "run `x`".to_owned()), (DraftKind::Email, "a\n```\nb\n```".to_owned())]);
+        assert!(two.starts_with("I edited your drafts."), "{two}");
+        assert!(two.contains("```draft\nrun `x`\n```"), "{two}");
+        assert!(two.ends_with("````email\na\n```\nb\n```\n````"), "{two}");
+        // And it reads back as the same draft.
+        let back = super::DraftBlock::from(Some("email"), "a\n```\nb\n```").unwrap();
+        assert_eq!(back.source, "a\n```\nb\n```");
+    }
+
     // The Mac's DraftBlockTests and the website's draft.test.ts check the
     // same cases.
     use super::*;

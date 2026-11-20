@@ -14,7 +14,8 @@ import { loadConfig, paths, readRunnerJson } from '../../src/config.ts';
 import { downgradeFetch, redirectTrap } from '../helpers/redirect-trap.ts';
 import { scrubText } from '../../src/redaction.ts';
 import { Scrubber } from '../../src/scrub.ts';
-import { SCRUB_API_VERSION, isConvexCloud } from '../../src/sync.ts';
+import { SCRUB_API_VERSION, isConvexCloud, MESSAGE_PICTURES_API_VERSION, LOGIN_STATE_API_VERSION } from '../../src/sync.ts';
+import { makePng } from '../helpers/png.ts';
 import { ConvexUseTally } from '../../src/convex-use.ts';
 
 
@@ -196,12 +197,12 @@ test('view follows hibernate and den; cost is to the cent; working comes from ba
   assert.equal(forBackend(draft, 48, now).backlog, undefined);
   assert.equal(forBackend(draft, 49, now).backlog, undefined, 'upstream API 49 is wakeNote, not Backlog');
   assert.equal(forBackend(draft, 60, now).backlog, undefined);
-  for (const version of [61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71]) assert.equal(forBackend(draft, version, now).backlog, undefined, 'upstream API numbers overlap the old fork');
-  assert.deepEqual(forBackend(draft, 72, now).backlog, draft.backlog);
+  for (const version of [61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 81, 82, 95]) assert.equal(forBackend(draft, version, now).backlog, undefined, 'upstream API numbers overlap the old fork');
+  assert.deepEqual(forBackend(draft, BACKEND_API_VERSION, now).backlog, draft.backlog);
   const deferred = toThreadDoc({ ...base, backlogged: true }, 'r', now);
   assert.equal(deferred.backlogged, true);
   assert.equal(forBackend(deferred, 66, now).backlogged, undefined);
-  assert.equal(forBackend(deferred, 72, now).backlogged, true);
+  assert.equal(forBackend(deferred, BACKEND_API_VERSION, now).backlogged, true);
   const starredAt = '2026-10-27T09:20:00.000Z';
   const asleep = toThreadDoc({ ...base, starredAt, snoozedUntil: '2026-10-27T18:00:00.000Z' }, 'r', now);
   assert.equal(asleep.view, 'inbox');
@@ -301,6 +302,50 @@ test('a failed write is kept and retried with backoff; status says so', async ()
   assert.equal(docs()[0]!.threadId, t.id);
   assert.equal(sync.status().state, 'ok');
   assert.equal(sync.status().pending, 0);
+});
+
+test("a failed flush puts back a batch of messages too big to spread as arguments, and they all go on the retry", async () => {
+  // THREADBEAR-28: a whole history's worth waiting when Convex timed out.
+  // Putting it back spread it into unshift's arguments, which overflowed the
+  // stack inside the catch, so nothing was put back and no retry was set.
+  let failing = true;
+  const { sync, calls } = setup({ fail: () => (failing ? new Error('HTTP 503') : undefined) });
+  const n = 300_000;
+  const queued = (sync as unknown as { messages: { threadId: string; seq: number }[] }).messages;
+  for (let i = 1; i <= n; i++) queued.push({ threadId: 't1', seq: i, role: 'assistant', text: 'x', at: '2026-11-18T00:00:00.000Z' } as never);
+  sync.start();
+  await sync.flushNow();
+  const s = sync.status();
+  assert.equal(s.state, 'error');
+  assert.equal(s.lastError, 'HTTP 503');
+  assert.equal(s.pending, n);
+  assert.ok(s.retryAt);
+  failing = false;
+  await sync.flushNow();
+  const sent = calls.filter((c) => c.fn === 'sync:appendMessages').flatMap((c) => c.args.messages as { seq: number }[]);
+  assert.equal(sent.length, n);
+  assert.equal(new Set(sent.map((m) => m.seq)).size, n);
+  assert.equal(sync.status().state, 'ok');
+  await sync.stop();
+});
+
+test('appendAll and prependAll take more items than fit in a call', async () => {
+  const { appendAll, prependAll } = await import('../../src/sync.ts');
+  const big = Array.from({ length: 500_000 }, (_, i) => i + 2);
+  const a = [0, 1];
+  appendAll(a, big);
+  assert.equal(a.length, 500_002);
+  assert.deepEqual(a.slice(0, 4), [0, 1, 2, 3]);
+  assert.equal(a.at(-1), 500_001);
+  const b = [-1, 0];
+  prependAll(b, Array.from({ length: 500_000 }, (_, i) => i - 500_002));
+  assert.equal(b.length, 500_002);
+  assert.deepEqual(b.slice(0, 2), [-500_002, -500_001]);
+  assert.deepEqual(b.slice(-3), [-3, -1, 0]);
+  const c = [1, 2];
+  prependAll(c, []);
+  appendAll(c, []);
+  assert.deepEqual(c, [1, 2]);
 });
 
 test('a change while the retry waits replaces the one waiting', async () => {
@@ -692,8 +737,8 @@ test('the uploader never follows a redirect with the bytes, nor posts them in th
 
 // ------------------------------------------------------------ step 2 and 3
 
-import { BUTTONS_API_VERSION, LOGIN_NOTES_API_VERSION, MESSAGE_CHARS, PLAN_API_VERSION, PLAN_CHARS, toMessageDoc, toolLine, inputSummary, WokeRows, WOKE_BY_API_VERSION, type Command, type MessageDoc } from '../../src/sync.ts';
-import { REMOTE_ALLOW_REFUSED, remoteCardShowsAll } from '../../src/tools.ts';
+import { BUTTONS_API_VERSION, COMMAND_ATTEMPT_API_VERSION, LOGIN_NOTES_API_VERSION, MESSAGE_CHARS, PLAN_API_VERSION, PLAN_CHARS, toMessageDoc, toolLine, inputSummary, WokeRows, WOKE_BY_API_VERSION, type Command, type MessageDoc } from '../../src/sync.ts';
+import { REMOTE_ALLOW_REFUSED, remoteAllowRefused, remoteCardShowsAll } from '../../src/tools.ts';
 
 type Fake = { h: ReturnType<typeof makeHarness>; sync: ConvexSync; calls: Call[]; push: (value: unknown) => void; applied: string[]; landed: Call[] };
 
@@ -758,6 +803,10 @@ function setupFull(opts: { heads?: { threadId: string; lastSeq: number }[]; take
       buttons: (id) => h.runner.listButtons(id).buttons,
     },
     commands: {
+      yearToken: async (accountId, p) => {
+        applied.push(`yearToken ${accountId} ${JSON.stringify(p)}`);
+        return { state: 'waiting', url: 'https://claude.com/cai/oauth/authorize?state=x' };
+      },
       threadCommands: (id) => {
         applied.push(`commands ${id}`);
         return h.runner.threadCommands(id);
@@ -930,6 +979,23 @@ test('a tool call becomes one line: the description, the file, the search, else 
   assert.deepEqual(doc, { threadId: 't1', seq: 7, role: 'tool', text: 'Ran ls', toolKind: 'command', at: '2026-10-28T00:00:00.000Z' });
 });
 
+test("answers: a message that answered asks says them on its row, scrubbed as its words are", () => {
+  const at = '2026-11-18T00:00:00.000Z';
+  const scrub = (t: string) => t.replace('sk-secret', '[key]');
+  const answers = [{ action: 'Paste sk-secret?', answer: 'Refuse it' }];
+  const doc = toMessageDoc('t1', { type: 'user.message', seq: 4, ts: at, text: 'Paste sk-secret?\nRefuse it', images: [], answers } as never, scrub)!;
+  assert.deepEqual(doc.answers, [{ action: 'Paste [key]?', answer: 'Refuse it' }]);
+  assert.equal(doc.text, 'Paste [key]?\nRefuse it');
+  assert.equal(toMessageDoc('t1', { type: 'user.message', seq: 5, ts: at, text: 'hi', images: [] } as never)!.answers, undefined);
+  // A secret only the whole text's scrub finds: the halves would keep it, so they don't go.
+  const whole = (t: string) => t.replace(/password:\nhunter2/, 'password:\n[redacted]');
+  const leak = toMessageDoc('t1', { type: 'user.message', seq: 6, ts: at, text: 'password:\nhunter2', images: [], answers: [{ action: 'password:', answer: 'hunter2' }] } as never, whole)!;
+  assert.equal(leak.text, 'password:\n[redacted]');
+  assert.equal(leak.answers, undefined);
+  // The pictures line after them is fine.
+  assert.ok(toMessageDoc('t1', { type: 'user.message', seq: 7, ts: at, text: 'Ok?\nYes', images: [{ path: '/p.png', mediaType: 'image/png' }], answers: [{ action: 'Ok?', answer: 'Yes' }] } as never)!.answers);
+});
+
 test('plans: a Plan first plan goes to the phone whole, as a plan row', () => {
   const at = '2026-11-10T00:00:00.000Z';
   const plan = (text: string) => toMessageDoc('t1', { type: 'plan.proposed', seq: 9, ts: at, itemId: 'p', text, turnId: 'abcdef1234' } as never, (t) => t.replace('sk-secret', '[key]'));
@@ -972,7 +1038,7 @@ test('approvals: the row carries what the thread waits on until it is answered',
   await tick();
   let last = docs().filter((d) => d.threadId === t.id).at(-1)!;
   // Its line shows only the first of two: Deny only there (Daybreak, 7 Nov 2026).
-  assert.deepEqual(last.pendingApproval, { approvalId: 'ap1', kind: 'approval', name: 'Bash', title: `Run a command. ${REMOTE_ALLOW_REFUSED}`, options: ['deny'], inputSummary: 'rm -rf build' });
+  assert.deepEqual(last.pendingApproval, { approvalId: 'ap1', kind: 'approval', name: 'Bash', title: `Run a command. ${remoteAllowRefused('TestMac')}`, options: ['deny'], inputSummary: 'rm -rf build' });
   // Answered (the fake session plays the CLI's part: the resolved event).
   s.out({ kind: 'event', event: { type: 'approval.resolved', approvalId: 'ap1', decision: 'allow' } as never });
   h.clock.advance(SYNC_COALESCE_MS);
@@ -2464,7 +2530,7 @@ test('a row carries who started it, once the backend takes it', async () => {
 });
 
 // Reply pictures: for any thread, shared or not, once the backend takes them.
-function setupReplyImages(opts: { backend?: number; uploadFails?: () => Error | undefined; pastedPictures?: boolean } = {}) {
+function setupReplyImages(opts: { backend?: number; uploadFails?: () => Error | undefined; pastedPictures?: boolean; home?: string } = {}) {
   const h = makeHarness();
   const dir = tmpDir();
   const png = path.join(dir, 'guide.png');
@@ -2487,6 +2553,7 @@ function setupReplyImages(opts: { backend?: number; uploadFails?: () => Error | 
       startedAt: '2026-11-01T00:00:00.000Z',
       clock: h.clock,
       log: nullLogger,
+      ...(opts.home ? { home: opts.home } : {}),
       post: async (kind, fn, args) => {
         calls.push({ kind, fn, args });
         if (fn === 'sync:heartbeat') return { apiVersion: opts.backend ?? REPLY_IMAGES_API_VERSION };
@@ -2540,6 +2607,29 @@ test('reply pictures: from a thread that is not shared, with their size, new one
   await sync.stop();
 });
 
+test('live pages: a page in a reply goes up as plain bytes, only with the experiment on and a backend that takes it', async () => {
+  const run = async (backend: number, on: boolean) => {
+    const home = tmpDir();
+    fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: { livePages: on } }));
+    const { fresh, uploads, added, thread, settle } = setupReplyImages({ backend, home });
+    const page = path.join(tmpDir(), 'garden.html');
+    fs.writeFileSync(page, '<!doctype html><canvas></canvas><script>spin()</script>');
+    thread(`Turn it: ![Garden](${page})`);
+    await tick();
+    const sync = fresh();
+    sync.start();
+    await settle(sync);
+    await sync.stop();
+    return { uploads, added: added().map((a) => [a.src, a.mediaType]), page };
+  };
+  const on = await run(LIVE_PAGES_API_VERSION, true);
+  // Stored as bytes, so its URL never runs it on the backend's origin; the row says what it is.
+  assert.deepEqual(on.uploads, ['application/octet-stream']);
+  assert.deepEqual(on.added, [[on.page, 'text/html']]);
+  assert.deepEqual((await run(LIVE_PAGES_API_VERSION, false)).uploads, []);
+  assert.deepEqual((await run(LIVE_PAGES_API_VERSION - 1, true)).uploads, []);
+});
+
 test('pasted pictures: go up as they are sent, each named for its marker, never looked back for', async () => {
   const { h, fresh, uploads, added, png, settle } = setupReplyImages();
   const before = h.runner.create({ text: 'old', images: [{ path: png, mediaType: 'image/png' }], cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
@@ -2553,7 +2643,7 @@ test('pasted pictures: go up as they are sent, each named for its marker, never 
   await settle(sync);
   // The runner copies a message's pictures into the thread's own media folder.
   assert.deepEqual(added().map((a) => [a.threadId, a.src, a.width]), [[before.id, 'picture:1', 400], [before.id, 'picture:2', 400]]);
-  assert.ok(added().every((a) => String(a.path).includes('/media/')));
+  assert.ok(added().every((a) => String(a.path).includes(`${path.sep}media${path.sep}`)));
   assert.equal(added()[0]!.seq, added()[1]!.seq);
   await sync.stop();
 });
@@ -2698,7 +2788,7 @@ test("projects: notes go up only when they change, and a backend before API 50 a
 
 // docs/protocol.md, "Secrets".
 import { seal } from '../../src/secrets.ts';
-import { NOTES_APART_API_VERSION, SECRETS_API_VERSION } from '../../src/sync.ts';
+import { NOTES_APART_API_VERSION, SECRETS_API_VERSION, LIVE_PAGES_API_VERSION } from '../../src/sync.ts';
 
 test('secrets: the card goes up with the runner key, and the phone sealed answer is opened here', async () => {
   const f = setupFull({ apiVersion: SECRETS_API_VERSION });
@@ -3722,7 +3812,7 @@ test('approvals: a card whose line a value found since would change loses Allow 
   await tick();
   const card = docs().filter((d) => d.threadId === t.id && d.pendingApproval).at(-1)!.pendingApproval as { approvalId: string; options: string[]; title: string };
   assert.deepEqual(card.options, ['deny']);
-  assert.equal(card.title, `Run. ${REMOTE_ALLOW_REFUSED}`);
+  assert.equal(card.title, `Run. ${remoteAllowRefused('TestMac')}`);
   const respond = async (id: string, decision: string) => {
     push([{ commandId: id, kind: 'respond', threadId: t.id, args: { approvalId: card.approvalId, decision }, createdAt: Date.now() }]);
     await tick(10);
@@ -4099,6 +4189,109 @@ test("commands: a thread's command whose take failed still goes before the threa
   await sync.stop();
 });
 
+// A take that committed but whose answer was lost on the way back: the retry
+// with the next heartbeat got false (it's no longer pending), and the command
+// was dropped, left taken with nobody running it (the state machines survey,
+// 17 Nov 2026). From API 85 the retry carries the same attempt, which the
+// backend answers true, so it runs, once.
+test('commands: a take whose answer was lost is asked again with the same attempt, and runs once', async () => {
+  const takenBy = new Map<string, unknown>();
+  let lose = true;
+  const asks: Record<string, unknown>[] = [];
+  const { h, sync, push, applied, calls } = setupFull({
+    apiVersion: BACKEND_API_VERSION,
+    answer: (fn, args) => {
+      if (fn !== 'sync:takeCommand') return undefined;
+      asks.push(args);
+      const id = String(args.commandId);
+      // As convex/sync.ts takeCommand does it.
+      const had = takenBy.get(id);
+      const got = had === undefined ? (takenBy.set(id, args.attempt), true) : args.attempt !== undefined && had === args.attempt;
+      if (lose) {
+        lose = false;
+        throw new Error('fetch failed');
+      }
+      return got;
+    },
+  });
+  sync.start();
+  await sync.flushNow();
+  const t = h.runner.create({ text: 'hello', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  await tick();
+  push([{ commandId: 'c1', kind: 'send', threadId: t.id, args: { text: 'one' }, createdAt: 1 }]);
+  await tick(10);
+  assert.deepEqual(applied.filter((a) => a.startsWith(`send ${t.id}`)), []);
+  // The pending list no longer has it: only the heartbeat brings it round.
+  push([]);
+  h.clock.advance(HEARTBEAT_MS);
+  await tick(20);
+  assert.equal(asks.length, 2);
+  assert.equal(typeof asks[0]!.attempt, 'string');
+  assert.equal(asks[1]!.attempt, asks[0]!.attempt, 'the same attempt both times');
+  assert.deepEqual(applied.filter((a) => a.startsWith(`send ${t.id}`)).map((a) => a.split(' ')[2]), ['one']);
+  assert.ok(calls.some((c) => c.fn === 'sync:finishCommand' && c.args.commandId === 'c1' && c.args.ok === true));
+  h.clock.advance(HEARTBEAT_MS);
+  await tick(20);
+  assert.equal(asks.length, 2, 'asked no more once it had its answer');
+  await sync.stop();
+});
+
+// Codex's review: a command that arrived before the first heartbeat said
+// which backend this is went without an attempt, so a lost answer still
+// dropped it. It waits for the heartbeat now.
+test("commands: nothing is taken before a heartbeat has said which backend it is, then it's taken with an attempt", async () => {
+  let answer: (() => void) | undefined;
+  const { h, sync, push, calls, applied } = setupFull({
+    apiVersion: BACKEND_API_VERSION,
+    hold: (fn) => (fn === 'sync:heartbeat' && !answer ? new Promise<void>((r) => (answer = r)) : undefined),
+  });
+  sync.start();
+  const t = h.runner.create({ text: 'hello', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  await tick();
+  push([{ commandId: 'early', kind: 'send', threadId: t.id, args: { text: 'one' }, createdAt: 1 }]);
+  await tick(10);
+  assert.equal(calls.filter((c) => c.fn === 'sync:takeCommand').length, 0);
+  answer!();
+  await tick(20);
+  const takes = calls.filter((c) => c.fn === 'sync:takeCommand');
+  assert.equal(takes.length, 1);
+  assert.equal(typeof takes[0]!.args.attempt, 'string');
+  assert.deepEqual(applied.filter((a) => a.startsWith(`send ${t.id}`)).map((a) => a.split(' ')[2]), ['one']);
+  await sync.stop();
+});
+
+// Codex's review: with a cached backend version, a claim before the first
+// heartbeat went without its id, and a lost answer then stuck it.
+test("a request's claim waits for a heartbeat this start has heard, then carries its id", async () => {
+  let answer: (() => void) | undefined;
+  const { sync, calls } = setupFull({
+    apiVersion: BACKEND_API_VERSION,
+    hold: (fn) => (fn === 'sync:heartbeat' && !answer ? new Promise<void>((r) => (answer = r)) : undefined),
+  });
+  sync.start();
+  const claim = { requestId: 'req-00001', docId: 'd1', state: 'claimed' as const, claim: 'claim-id-0001' };
+  await assert.rejects(sync.decideRequest(claim), /hasn't answered this runner/);
+  assert.equal(calls.filter((c) => c.fn === 'relay:decideRequest').length, 0);
+  answer!();
+  await tick(20);
+  await sync.decideRequest(claim);
+  assert.equal(calls.find((c) => c.fn === 'relay:decideRequest')!.args.claim, 'claim-id-0001');
+  await sync.stop();
+});
+
+test('commands: an older backend is asked to take without an attempt', async () => {
+  const { h, sync, push, calls } = setupFull({ apiVersion: COMMAND_ATTEMPT_API_VERSION - 1 });
+  sync.start();
+  await sync.flushNow();
+  const t = h.runner.create({ text: 'hello', cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+  await tick();
+  push([{ commandId: 'c1', kind: 'send', threadId: t.id, args: { text: 'one' }, createdAt: 1 }]);
+  await tick(10);
+  const take = calls.find((c) => c.fn === 'sync:takeCommand')!;
+  assert.equal('attempt' in take.args, false);
+  await sync.stop();
+});
+
 // Daybreak 122: one entry without events (a draining runner's answer in a
 // shape not known here) threw, and every card after it was lost.
 test("handover: an entry with no events doesn't stop the cards after it", async () => {
@@ -4117,4 +4310,140 @@ test("handover: an entry with no events doesn't stop the cards after it", async 
   assert.equal(pending.get('drain-bad'), undefined);
   f.sync.release();
   await f.sync.stop();
+});
+
+// Another Mac's relay shows a message's pictures (API 87). It went by the
+// words alone, which a literal "[Picture 2]" fooled into a picture that
+// never was, and an 8,000-character cut hid the only marker of (Codex's
+// review, 18 Nov): the row now says how many pictures the message came with.
+test('a message row says how many pictures it came with, and goes with it from API 87', async () => {
+  const sent = (text: string, n: number) => toMessageDoc('t', { type: 'user.message', seq: 4, ts: 'x', threadId: 't', text, images: Array.from({ length: n }, (_, i) => ({ path: `/m/${i}.png`, mediaType: 'image/png' })) } as never)!;
+  assert.equal(sent('hi', 0).pictures, undefined);
+  assert.deepEqual([sent('like [Picture 2]', 2).pictures, sent('like [Picture 2]', 2).text], [2, 'like [Picture 2]\n\n[1 picture]']);
+  assert.equal(sent('[Picture 1] and the literal token [Picture 2]', 1).pictures, 1);
+  // The only marker past the cut: the count still says there's one.
+  const long = sent(`${'x'.repeat(8001)} [Picture 1]`, 1);
+  assert.equal(long.pictures, 1);
+  assert.doesNotMatch(long.text, /\[Picture 1\]/);
+  for (const [backend, says] of [[MESSAGE_PICTURES_API_VERSION, true], [MESSAGE_PICTURES_API_VERSION - 1, false]] as const) {
+    const f = setupFull({ apiVersion: backend });
+    const rows = () => f.calls.filter((c) => c.fn === 'sync:appendMessages').flatMap((c) => c.args.messages as MessageDoc[]);
+    f.sync.start();
+    await f.sync.flushNow();
+    const file = path.join(tmpDir('tb-pic-'), 'a.png');
+    fs.writeFileSync(file, makePng(4, 4));
+    const t = f.h.runner.create({ text: 'go', cwd: f.h.cfg.defaults.cwd, accountId: 'claude-3', images: [{ path: file, mediaType: 'image/png' }] }).thread;
+    f.h.clock.advance(SYNC_COALESCE_MS);
+    await tick();
+    const first = rows().find((m) => m.threadId === t.id && m.role === 'user')!;
+    assert.equal(first.pictures, says ? 1 : undefined, `backend ${backend}`);
+    await f.sync.stop();
+  }
+});
+
+// Year-long token… from the Mac's Runners panel (year-token-maker.ts): only
+// a command the main Mac queued (from: "mac") reaches the maker; the phone's
+// can't, and the answer goes back as the call's result.
+test("accounts.yearToken calls: the main Mac's reach the maker, nobody else's", async () => {
+  const { sync, push, applied, calls } = setupFull();
+  sync.start();
+  await sync.flushNow();
+  push([{ commandId: 'y1', kind: 'call', args: { method: 'accounts.yearToken', params: { accountId: 'claude-3', code: 'abcdefgh#ijklmnop', extra: 'dropped' }, from: 'mac' }, createdAt: 1 }]);
+  await tick(10);
+  push([{ commandId: 'y2', kind: 'call', args: { method: 'accounts.yearToken', params: { accountId: 'claude-3' } }, createdAt: 2 }]);
+  await tick(10);
+  assert.deepEqual(applied.filter((a) => a.startsWith('yearToken')), ['yearToken claude-3 {"code":"abcdefgh#ijklmnop"}']);
+  const y1 = calls.find((c) => c.fn === 'sync:finishCommand' && c.args.commandId === 'y1')!;
+  assert.equal(y1.args.ok, true);
+  assert.equal(JSON.parse(String(y1.args.result)).state, 'waiting');
+  const y2 = calls.find((c) => c.fn === 'sync:finishCommand' && c.args.commandId === 'y2')!;
+  assert.equal(y2.args.ok, false);
+  assert.match(String(y2.args.note), /Only the main Mac/);
+  await sync.stop();
+});
+
+test("an accounts row carries a login's sign-in and token date from backend API 90, never the token", () => {
+  const a = { id: 'claude-1', provider: 'claude', title: 't', configDir: '/x', loginEndsAt: '2027-11-18T00:00:00.000Z', signedOut: true, yearToken: { madeAt: '2026-11-18T00:00:00.000Z' } } as never;
+  assert.deepEqual(pickLogin(toAccountDoc(a, LOGIN_STATE_API_VERSION)), { loginEndsAt: '2027-11-18T00:00:00.000Z', signedOut: true, yearToken: { madeAt: '2026-11-18T00:00:00.000Z' } });
+  assert.deepEqual(pickLogin(toAccountDoc(a, LOGIN_STATE_API_VERSION - 1)), {});
+});
+function pickLogin(d: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const k of ['loginEndsAt', 'signedOut', 'yearToken']) if (d[k] !== undefined) out[k] = d[k];
+  return out;
+}
+
+// Codex's review of the moved-thread fix (19 Nov): a thread that moved away
+// while another's picture was going up took its own pictures out of the
+// queue, and the upload's finish then dropped the next thread's picture.
+test("sharing: a thread moving away while a picture goes up leaves the others' pictures queued", async () => {
+  const h = makeHarness();
+  const calls: Call[] = [];
+  const uploads: string[] = [];
+  const moved = new Set<string>();
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((r) => (release = r));
+  let first = true;
+  const sync = new ConvexSync({
+    config: { enabled: true, url: 'https://x.convex.cloud', runnerId: 'r1' },
+    key: 'k',
+    runner: h.runner,
+    home: h.cfg.home,
+    version: '0.1.0+test',
+    startedAt: '2026-10-29T00:00:00.000Z',
+    clock: h.clock,
+    log: nullLogger,
+    movedAway: (id) => moved.has(id),
+    post: async (kind, fn, args) => {
+      calls.push({ kind, fn, args });
+      if (fn === 'sync:heartbeat') return { apiVersion: SHARE_API_VERSION };
+      if (fn === 'sync:shareImages') return [];
+      if (fn === 'sync:iconUploadUrl') return 'https://upload.example/u';
+      return null;
+    },
+    upload: async (_url, bytes) => {
+      if (first) {
+        first = false;
+        await held;
+      }
+      uploads.push(Buffer.from(bytes).toString('hex'));
+      return `st_${uploads.length}`;
+    },
+  });
+  const threads = ['A', 'B'].map((name, i) => {
+    const t = h.runner.create({ text: `draw ${name}`, cwd: h.cfg.defaults.cwd, accountId: 'claude-3' }).thread;
+    const pic = path.join(paths.media(h.cfg.home, t.id), `${name}.png`);
+    fs.mkdirSync(path.dirname(pic), { recursive: true });
+    fs.writeFileSync(pic, pngBytes(10 + i, 10));
+    const s = session(h, t.id);
+    s.init();
+    s.text('m1', `![${name}](${pic})`);
+    s.result('completed');
+    return { t, pic };
+  });
+  await tick();
+  sync.start();
+  await tick(20);
+  await sync.flushNow();
+  for (const { t } of threads) h.runner.share(t.id, { access: 'link' });
+  h.clock.advance(SYNC_COALESCE_MS);
+  await tick(20);
+  const flushing = sync.flushNow();
+  await tick(20);
+  // The first picture is on its way; its thread moves away meanwhile.
+  const [a, b] = threads;
+  const goingUp = calls.some((c) => c.fn === 'sync:iconUploadUrl');
+  assert.ok(goingUp, 'a picture is on its way up');
+  moved.add(a!.t.id);
+  h.runner.delete(a!.t.id);
+  await tick();
+  release!();
+  await flushing;
+  await tick(20);
+  await sync.flushNow();
+  await tick(20);
+  await sync.flushNow();
+  const added = calls.filter((c) => c.fn === 'sync:addShareImage').map((c) => c.args.threadId);
+  assert.ok(added.includes(b!.t.id), "B's picture still went up");
+  await sync.stop();
 });

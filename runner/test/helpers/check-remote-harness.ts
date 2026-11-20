@@ -16,6 +16,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpDir } from './fakes.ts';
+import { testSkippedOnWindows } from './platform.ts';
+
+// scripts/check-remote.sh copies a checkout to another machine with ssh and
+// rsync and names hosts with `hostname -s`: the check hosts are Macs and Linux.
+export const test = testSkippedOnWindows("check-remote.sh runs checks on another machine over ssh and rsync, and Windows' hostname has no -s");
 
 export const SCRIPT = path.join(import.meta.dirname, '..', '..', '..', 'scripts', 'check-remote.sh');
 
@@ -214,12 +219,12 @@ export function setup(hosts: Record<string, Host>, opts: { home?: string } = {})
     tmpdir,
     // peek: a command run in the copy as its check starts, its output kept.
     // env: more for the script's environment (PRINT_LOG, RSYNC_PEEK).
-    run(hostList: string, staySecs: number, peek = '', env: Record<string, string> = {}) {
+    run(hostList: string, staySecs: number, peek = '', env: Record<string, string> = {}, flags: string[] = []) {
       const base: NodeJS.ProcessEnv = { ...process.env };
       delete base.XDG_CACHE_HOME;
       delete base.THREADBEAR_CHECK_PREFER;
       delete base.THREADBEAR_CHECK_GROUP;
-      const r = spawnSync('bash', [path.join(repo, 'scripts', 'check-remote.sh'), hostList, '--quick'], {
+      const r = spawnSync('bash', [path.join(repo, 'scripts', 'check-remote.sh'), hostList, '--quick', ...flags], {
         encoding: 'utf8',
         env: { ...base, HOME: home, TMPDIR: tmpdir, PATH: `${bin}:${process.env.PATH}`, FAKE: fake, PEEK: peek, THREADBEAR_CHECK_STAY_SECS: String(staySecs), ...env },
       });

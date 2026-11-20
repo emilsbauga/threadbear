@@ -4,11 +4,13 @@
 // by `npm run experiment-docs`; experiment-docs.test.ts fails when the
 // file is out of date.
 //
-// Every entry is one line, and .gitattributes merges the file by union:
-// two threads that each add an experiment both keep their line when they
-// land, where a hand-kept list made them collide (7 Nov). The check
-// compares the lines in any order, so a union merge that lands them out of
-// order still passes; the next `npm run experiment-docs` sorts them.
+// Every entry is one line, and .gitattributes merges the file line by line
+// (scripts/merge-lines.mjs): two threads that each add an experiment both
+// keep their line when they land, where a hand-kept list made them collide
+// (7 Nov), and one taking an experiment out doesn't get it back from the
+// other (union did that, 17 Nov). The check compares the lines in any
+// order, so a merge that lands them out of order still passes; the next
+// `npm run experiment-docs` sorts them.
 import type { Experiment } from './experiments.ts';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -36,7 +38,7 @@ export function experimentDocs(experiments: readonly Experiment[]): string {
     '',
     '<!-- Made by `npm run experiment-docs` in runner/ from runner/src/experiments/*.md:',
     'edit those, not this. Each entry is one line, so two threads adding one at once',
-    'both keep theirs (.gitattributes merges this file by union). -->',
+    'both keep theirs (.gitattributes merges this file line by line). -->',
     '',
     'New features that are still being tried out start off, with a switch under',
     '`experiments` in `runner.json` (the user guide, "Experiments", says how to turn one',

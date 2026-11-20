@@ -26,10 +26,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Threadbear">
 
-        <meta-data
-            android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="barcode_ui" />
-
         <!-- Where the system camera writes a photo for a composer (Composer.kt's PhotoMenu). -->
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -53,13 +49,7 @@
             <!-- No threadbear://pair links: any app can claim the scheme, so the
                  Mac's pairing code is read by the app's own scanner (Daybreak 127). -->
         </activity>
-        <!-- Notifications through the push relay (Push.kt). -->
-        <service
-            android:name=".ThreadbearMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
+        <!-- The push transport and the scanner are each flavour's own
+             (src/github, src/fdroid manifests). -->
     </application>
 </manifest>

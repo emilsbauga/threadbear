@@ -113,6 +113,8 @@ export class FakeAdapter implements AgentAdapter {
   // Set by a test of editing a message; `rewound` keeps what it was asked.
   rewind?: (req: RewindRequest) => Promise<RewindResult>;
   rewound: RewindRequest[] = [];
+  // Set by a test of the limit box's Use a reset (Codex).
+  useReset?: (account: Account) => Promise<import('../../src/adapters/types.ts').UseResetResult>;
   binaries: string[] = [];
   constructor(provider: Provider = 'claude', flags: { movesFolders?: boolean; settingsApplyNextTurn?: boolean; wakesAfterTasks?: boolean; archives?: boolean } = {}) {
     this.provider = provider;
@@ -146,13 +148,38 @@ export class FakeAdapter implements AgentAdapter {
 }
 
 const made: string[] = [];
+// One something still holds on Windows (a process a test left to be
+// killed, still in it) stays in the temp folder: failing the whole file at
+// exit for it fails tests that passed (patch-isolation, 19 Nov).
 process.on('exit', () => {
-  for (const d of made) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of made) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true });
+    } catch {
+      // left for the system's temp cleanup
+    }
+  }
 });
 
-// A temp folder that's removed when the test process exits.
+// Whether dir is inside a folder tmpDir() made in this process: what the
+// worktree tests' commit() checks before it runs git there (worktrees-harness.ts).
+export function isMadeTmp(dir: string): boolean {
+  const real = fs.realpathSync(dir);
+  return made.some((d) => {
+    const rel = path.relative(fs.realpathSync(d), real);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  });
+}
+
+// A temp folder that's removed when the test process exits. On Windows it is
+// given by its real name: GitHub's runners spell TEMP in 8.3 short form
+// (C:\Users\RUNNER~1) while git and the product compare by the long one, so
+// a test building an expectation from the short form would differ from what
+// it checks for no reason of its own. Elsewhere the path is left as it is
+// (/var/folders is a link on macOS, and tests rely on that).
 export function tmpDir(prefix = 'tb-test-'): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const created = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const d = process.platform === 'win32' ? fs.realpathSync.native(created) : created;
   made.push(d);
   return d;
 }
@@ -186,6 +213,7 @@ export function testConfig(home: string, extra: Partial<Config> = {}): Config {
     // On for real runners (config.ts); off here so a test's code change
     // doesn't start a review it isn't about. lab-review.test.ts turns it on.
     labReview: false,
+    labPanelLines: 150,
     keepAwake: true,
     models: { pool: 'claude', privateFolders: [] },
     // Never the real Convex project from a test (sync.test.ts passes a fake).

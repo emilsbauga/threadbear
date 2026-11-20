@@ -36,7 +36,8 @@ function fakeIo(runs: Run[]) {
   return { io, said, calls };
 }
 
-const c = { npm: '/opt/node/bin/npm', node: '/opt/node/bin/node' };
+// A Mac's: on Windows unitTests runs test-windows.mjs instead (below).
+const c = { npm: '/opt/node/bin/npm', node: '/opt/node/bin/node', platform: 'darwin' as const };
 
 test('step: a process that never started says why, in the error and its log', () => {
   const { io } = fakeIo([{ status: null, error: Object.assign(new Error('spawn /opt/node/bin/npm EAGAIN'), { code: 'EAGAIN' }) }]);
@@ -72,6 +73,18 @@ test('unitTests: a break that fails both whole runs still stops the build', () =
   const { io, calls } = fakeIo([{ status: 1, output: 'Error: Cannot find module\n' }, { status: 1, output: 'Error: Cannot find module\n' }]);
   assert.throws(() => steps.unitTests(c, {}, io), /Unit tests, again failed \(npm exited with 1\)/);
   assert.equal(calls.length, 2);
+});
+
+test("unitTests on Windows: test-windows.mjs's update gate, the files that cover what only Windows runs", () => {
+  const { io, calls } = fakeIo([{ status: 0 }]);
+  steps.unitTests({ ...c, platform: 'win32' }, {}, io);
+  assert.deepEqual(calls.map((x) => [x.cmd, ...x.args]), [[c.node, 'scripts/test-windows.mjs', '--gate']]);
+});
+
+test('step: a script (npm-cli.js on Windows) runs on this Node', () => {
+  const { io, calls } = fakeIo([{ status: 0 }]);
+  steps.step('npm', 'C:\\node\\node_modules\\npm\\bin\\npm-cli.js', ['ci'], {}, io);
+  assert.deepEqual([calls[0].cmd, ...calls[0].args], [process.execPath, 'C:\\node\\node_modules\\npm\\bin\\npm-cli.js', 'ci']);
 });
 
 test('unitTests: failed files are rerun alone, not the whole suite', () => {
@@ -288,4 +301,16 @@ test('stepRetryingNetwork: any other failure fails at once, with no wait', () =>
 test('networkDropped: connection drops and DNS misses, not a failing step', () => {
   for (const s of ['fetch failed', 'Error: connect ECONNREFUSED 127.0.0.1:3210', 'read ECONNRESET', 'getaddrinfo ENOTFOUND api.convex.dev', 'getaddrinfo EAI_AGAIN x', 'connect ETIMEDOUT 1.2.3.4:443', 'socket hang up', "code: 'UND_ERR_SOCKET'"]) assert.ok(steps.networkDropped(s), s);
   for (const s of ['Type error: x is not assignable', 'npm ERR! code E404', '']) assert.ok(!steps.networkDropped(s), s);
+});
+
+// npm ci cut off partway (the runner restarting under it) leaves
+// node_modules with packages but not finished: no .bin, so the typecheck
+// failed with "tsc: command not found" on every deploy after (a fork, 11 Nov).
+test('packagesInstalled: only a finished npm install counts', () => {
+  const dir = tmpDir('tb-deploy-pkgs-');
+  assert.equal(steps.packagesInstalled(dir), false, 'no node_modules');
+  fs.mkdirSync(path.join(dir, 'node_modules', 'typescript'), { recursive: true });
+  assert.equal(steps.packagesInstalled(dir), false, 'packages but npm never finished');
+  fs.writeFileSync(path.join(dir, 'node_modules', '.package-lock.json'), '{}\n');
+  assert.equal(steps.packagesInstalled(dir), true);
 });

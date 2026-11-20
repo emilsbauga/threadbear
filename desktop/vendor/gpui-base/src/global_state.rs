@@ -7,7 +7,7 @@ use std::{
 #[cfg(target_family = "wasm")]
 use web_time::Instant;
 
-use gpui::{App, Bounds, Entity, Global, OwnedMenu, Pixels, Point};
+use gpui::{App, Bounds, Entity, Global, OwnedMenu, Pixels, Point, SharedString};
 
 use crate::text::TextViewState;
 
@@ -23,6 +23,9 @@ pub struct GlobalState {
     app_menus: Vec<OwnedMenu>,
     deferred_popovers: Vec<Weak<()>>,
     suppress_text_selection: bool,
+    /// The link the current left press went down on, if any (Threadbear's:
+    /// the app drags a file link out, `pressed_link`).
+    pressed_link: Option<SharedString>,
     /// The text views being prepainted or painted, innermost last. Kept
     /// apart from what views read of this global: pushing and popping as
     /// they draw is not a change of it.
@@ -42,6 +45,7 @@ impl GlobalState {
             app_menus: Vec::new(),
             deferred_popovers: Vec::new(),
             suppress_text_selection: false,
+            pressed_link: None,
             text_view_state_stack: RefCell::new(Vec::new()),
             table_cell_stack: RefCell::new(Vec::new()),
             last_touch: None,
@@ -83,7 +87,26 @@ impl GlobalState {
     /// Clears the current mouse-down text-selection suppression.
     #[doc(hidden)]
     pub fn reset_text_selection_suppression(cx: &mut App) {
-        Self::global_mut(cx).suppress_text_selection = false;
+        let state = Self::global_mut(cx);
+        state.suppress_text_selection = false;
+        state.pressed_link = None;
+    }
+
+    /// Notes that the left press being handled went down on a link to
+    /// `url`. Threadbear's: a text view's link is a run of text, with no
+    /// element of its own to hang a drag on, so the app asks here, from its
+    /// own handler further out, whether the press it sees is on one.
+    pub fn note_pressed_link(url: SharedString, cx: &mut App) {
+        Self::init(cx);
+        Self::global_mut(cx).pressed_link = Some(url);
+    }
+
+    /// The link the left press being handled went down on, once: only
+    /// handlers that run after the text's own (further out, in the bubble
+    /// phase) see it. Cleared as every left press starts.
+    pub fn take_pressed_link(cx: &mut App) -> Option<SharedString> {
+        Self::init(cx);
+        Self::global_mut(cx).pressed_link.take()
     }
 
     /// Returns whether the current mouse down suppresses text selection.

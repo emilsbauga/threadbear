@@ -3,7 +3,7 @@ import AppKit
 let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
 let point = CGPoint(x: 150, y: 142)
 let dockPID: Int32 = 10, sourcePID: Int32 = 20, otherPID: Int32 = 30
-let notificationPID: Int32 = 40
+let notificationPID: Int32 = 40, betterDisplayPID: Int32 = 50
 func window(_ pid: Int32, _ owner: String, _ name: String = "", layer: Int = 0, frame: CGRect = screen, alpha: Double = 1) -> [String: Any] {
     [kCGWindowOwnerPID as String: pid, kCGWindowOwnerName as String: owner,
      kCGWindowName as String: name, kCGWindowLayer as String: layer,
@@ -16,7 +16,7 @@ let other = window(otherPID, "Other")
 
 func expect(_ label: String, _ windows: [[String: Any]], _ expected: Int32?, ax: Int32? = sourcePID, query: Bool = false, displays: [CGRect] = [screen], identity: Int32? = dockPID, at: CGPoint = point) {
     var queried = false
-    let result = windowAt(windows, point: at, displays: displays, dockPID: identity, notificationPIDs: [notificationPID]) {
+    let result = windowAt(windows, point: at, displays: displays, dockPID: identity, notificationPIDs: [notificationPID], betterDisplayPIDs: [betterDisplayPID]) {
         queried = true
         return ax
     }
@@ -50,5 +50,16 @@ expect("existing Notification Center sentinel", [window(notificationPID, "Notifi
 expect("notification banners stay blocking", [window(notificationPID, "Notification Centre", "Banner", layer: 21), dock, source], notificationPID)
 expect("another app cannot bypass by Notification Center title", [window(otherPID, "Other", "Notification Center", layer: 21), source], otherPID)
 expect("another app cannot bypass by owner name and title", [window(otherPID, "Notification Centre", "Notification Center", layer: 21), source], otherPID)
+let dimmer = window(betterDisplayPID, "BetterDisplay", "BetterDisplay Overlay for Display 15", layer: 2147483629)
+expect("proved pass-through BetterDisplay overlay", [dimmer, source], sourcePID, query: true)
+expect("BetterDisplay overlay over the Dock's, proved", [dimmer, dock, source], sourcePID, query: true)
+expect("BetterDisplay over the Dock's with AX disagreeing fails closed", [dimmer, dock, source], betterDisplayPID, ax: otherPID, query: true)
+expect("a real window between the overlays stays blocking", [dimmer, other, dock, source], betterDisplayPID, query: true)
+expect("BetterDisplay overlay with AX unavailable fails closed", [dimmer, source], betterDisplayPID, ax: nil, query: true)
+expect("BetterDisplay overlay AX disagreement fails closed", [dimmer, source], betterDisplayPID, ax: otherPID, query: true)
+expect("another app cannot pass as BetterDisplay's overlay", [window(otherPID, "BetterDisplay", "BetterDisplay Overlay for Display 15", layer: 2147483629), source], otherPID)
+expect("BetterDisplay's other windows stay blocking", [window(betterDisplayPID, "BetterDisplay", "Settings"), source], betterDisplayPID)
+expect("partial BetterDisplay overlay stays blocking", [window(betterDisplayPID, "BetterDisplay", "BetterDisplay Overlay for Display 15", layer: 2147483629, frame: CGRect(x: 0, y: 0, width: 400, height: 400)), source], betterDisplayPID)
+expect("BetterDisplay overlay reveal edge stays blocked", [dimmer, source], betterDisplayPID, at: CGPoint(x: 500, y: 1079))
 expect("empty screen", [], nil)
 print("screen guard checks passed")

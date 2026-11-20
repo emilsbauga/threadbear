@@ -3,7 +3,7 @@
 // secret word, then the message that did it is edited. The files go back
 // (the CLI's own checkpoints) and the agent no longer knows the word. A
 // second edit, of the thread's first message, starts a fresh session.
-// Temp runner, temp folder, the claude-main login (TB_E2E_ACCOUNT), the cheapest model.
+// Temp runner, temp folder, the first Claude login that works (TB_E2E_ACCOUNT, src/test-login.ts), the cheapest model.
 // Run with `node --test test/e2e/edit.e2e.test.ts`.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,9 +12,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { RunnerClient } from '../../src/client.ts';
+import { testLogin } from '../../src/test-login.ts';
 import { checkSequence, isTransient } from '../helpers/protocol-check.ts';
 
-const ACCOUNT = process.env.TB_E2E_ACCOUNT ?? 'claude-main';
+const ACCOUNT = testLogin();
 const MODEL = process.env.TB_E2E_MODEL ?? 'claude-haiku-5-5';
 const RUNNER_DIR = path.join(import.meta.dirname, '..', '..');
 

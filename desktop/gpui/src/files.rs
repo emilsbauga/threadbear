@@ -19,10 +19,10 @@ use crate::file_edit::{FileEdit, SaveFile};
 use crate::file_find::{FindBar, FindNext, FindPrevious};
 use crate::file_watch::FolderWatch;
 use crate::files_store::FilePrefs;
-use crate::highlights::{palette, Palette, PanePreview, SidePane, Target, FILES};
+use crate::highlights::{palette, with_scroll_bar, Palette, PanePreview, SidePane, Target, FILES};
 use crate::{call, icons, style};
 use gpui_kit::base::{TestSupportExt as _, TextViewState, TextViewStyle};
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, GutterDecoration, GutterDecorationCollection, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Selectable, Sizable as _};
 use gpui_kit::prelude::*;
@@ -84,11 +84,22 @@ pub(crate) struct OpenFile {
     /// Its folder heard it change while another thread was showing, so the
     /// read was put off: coming back reads it again (`load_file`).
     pub changed_away: bool,
+    /// Its read found no runner (a click during a restart, which is most
+    /// days' updates): it's read again when the app's connected again,
+    /// rather than saying "Not connected" until it's opened again. A link
+    /// on an ask's card opened onto a blank pane like this (17 Nov).
+    pub waiting_for_runner: bool,
+    /// The opening whose lines (`a.ts:12-18`) have been tinted, so they're
+    /// tinted once, not on every draw.
+    lines_shown: Option<u64>,
+    /// The tint and gutter mark on those lines, kept to be cleared when the
+    /// file's opened again at other lines (or none), or typed in.
+    line_marks: Option<(RangeDecorationCollection, GutterDecorationCollection)>,
 }
 
 impl OpenFile {
     fn new(path: String, opened: u64, body: FileBody) -> Self {
-        OpenFile { path, opened, body, truncated: false, size: 0, find: None, edit: None, page_scroll: ScrollHandle::new(), _page_watch: None, _file_watch: None, _reread: None, changed_away: false }
+        OpenFile { path, opened, body, truncated: false, size: 0, find: None, edit: None, page_scroll: ScrollHandle::new(), _page_watch: None, _file_watch: None, _reread: None, changed_away: false, waiting_for_runner: false, lines_shown: None, line_marks: None }
     }
 
     /// The raw text's editor, while it's showing.
@@ -121,11 +132,14 @@ pub(crate) struct FilesState {
     /// The window the pane draws in, for putting a file's text in its editor
     /// after a save or a check that came later.
     pub(crate) window: Option<AnyWindowHandle>,
+    /// Each thread's latest read, so an older one finishing later (a big
+    /// picture still being shrunk) doesn't replace it.
+    reads: HashMap<String, u64>,
 }
 
 impl Default for FilesState {
     fn default() -> Self {
-        FilesState { open: HashMap::new(), known_folders: HashSet::new(), reading_style: None, prefs: crate::files_store::load(), last_query: String::new(), focus: None, window: None }
+        FilesState { open: HashMap::new(), known_folders: HashSet::new(), reading_style: None, prefs: crate::files_store::load(), last_query: String::new(), focus: None, window: None, reads: HashMap::new() }
     }
 }
 
@@ -140,11 +154,16 @@ pub(crate) enum FileBody {
     /// A spinner would only flash for a normal file; a beat later there's a note.
     Loading,
     Failed { message: String },
+    /// Asked for while the runner was away; read again once it's back
+    /// (`OpenFile::waiting_for_runner`, SidePane::connected).
+    Waiting,
     Markdown { doc: Entity<TextViewState>, text: Arc<str> },
     /// Code or plain text: a read-only editor, coloured for code. The editor
     /// is made at the next frame, as it needs a window.
     Text { editor: Option<Entity<EditorState>>, text: Arc<str>, language: Option<&'static str> },
-    Picture { image: Arc<Image>, size: Option<(u32, u32)> },
+    /// `image` is the file as it is (Copy Image copies it); `drawn` the same
+    /// one, or shrunk when it's bigger than the GPU draws (fit_picture.rs).
+    Picture { image: Arc<Image>, drawn: Arc<Image>, size: Option<(u32, u32)> },
     /// Something only its own app can show.
     Opaque { note: String },
     /// A video or a PDF on this Mac, in the system's own view over the pane
@@ -168,6 +187,9 @@ pub(crate) struct LocalPage {
     pub scan: Option<(bool, String)>,
     /// Mike chose Run them for these bytes (`ScriptConsent`).
     pub allowed: bool,
+    /// A live page opened big from its card: the card's running page shows
+    /// here (live_pages::pane_view), not the file's own preview.
+    pub live: bool,
 }
 
 impl LocalPage {
@@ -364,7 +386,7 @@ impl SidePane {
                 }
                 // Sealed in the pane, if the open gate's rule for pages lets it
                 // (this Mac's own, a real page after its symlinks).
-                Viewer::Web => self.show_local_page(thread, path, preview.opened, cx),
+                Viewer::Web => self.show_local_page(thread, path, preview.opened, preview.live, cx),
                 _ if media_kind(path).is_some() => self.show_media_file(thread, path, preview.opened, cx),
                 _ => self.load_file(thread, path.clone(), preview.opened, cx),
             },
@@ -374,13 +396,14 @@ impl SidePane {
                 cx.notify();
             }
             Target::Folder(_) => self.load_folder_for_preview(thread, cx),
+            Target::Pr(url) => self.begin_pr(url, cx),
         }
     }
 
     /// A local web page: checked by the gate, then scanned off the main
     /// thread for scripts and its digest, which decide the bar over it and
     /// whether Run them was already chosen for these bytes.
-    fn show_local_page(&mut self, thread: &ThreadSummary, path: &str, opened: u64, cx: &mut Context<Self>) {
+    fn show_local_page(&mut self, thread: &ThreadSummary, path: &str, opened: u64, live: bool, cx: &mut Context<Self>) {
         if self.files.open.get(&thread.id).is_some_and(|f| f.path == path && f.opened == opened) {
             return;
         }
@@ -392,7 +415,16 @@ impl SidePane {
                 return;
             }
         };
-        let page = LocalPage { real: real.to_string_lossy().into_owned(), scan: None, allowed: false };
+        let real_text = real.to_string_lossy().into_owned();
+        if live {
+            // Nothing to scan: the card's Run already checked it and holds
+            // the digest it runs for.
+            let page = LocalPage { real: real_text, scan: Some((false, String::new())), allowed: false, live: true };
+            self.files.open.insert(thread.id.clone(), OpenFile::new(path.to_owned(), opened, FileBody::Page(page)));
+            cx.notify();
+            return;
+        }
+        let page = LocalPage { real: real_text, scan: None, allowed: false, live: false };
         self.files.open.insert(thread.id.clone(), OpenFile::new(path.to_owned(), opened, FileBody::Page(page)));
         cx.notify();
         let (thread_id, path) = (thread.id.clone(), path.to_owned());
@@ -473,10 +505,13 @@ impl SidePane {
         // opening it again from a row does (`opened` moved), and so does
         // coming back to a thread whose file changed while it was away.
         if let Some(open) = self.files.open.get_mut(&thread.id).filter(|f| f.path == path && f.opened == opened) {
-            if !open.changed_away {
+            // One still waiting for the runner is read again too: Back and
+            // the same file again leaves its entry (Codex's review, 17 Nov).
+            if !open.changed_away && !open.waiting_for_runner {
                 return;
             }
             open.changed_away = false;
+            open.waiting_for_runner = false;
         }
         self.read_file(thread, path, opened, cx);
     }
@@ -510,24 +545,43 @@ impl SidePane {
         }
         let client = self.client.clone();
         let thread_id = thread.id.clone();
+        let read_number = {
+            let n = self.files.reads.entry(thread_id.clone()).or_default();
+            *n += 1;
+            *n
+        };
         let mut params = json!({ "path": path, "maxBytes": MAX_BYTES });
         if let Some(runner) = &thread.runner_id {
             params["runnerId"] = json!(runner);
         }
         cx.spawn(async move |this, cx| {
             let res = call(client, "files.read", params).await;
+            let read = res.as_ref().ok().map(FileRead::decode);
+            // A picture too big for the GPU, shrunk off this thread to draw
+            // (Some(None): too big to shrink).
+            let big = match (&read, image_format(&path)) {
+                (Some(Some(read)), Some(format)) if crate::fit_picture::size_of(&read.data).is_some_and(crate::fit_picture::too_big) => Some((format, read.data.clone())),
+                _ => None,
+            };
+            let fitted = match big {
+                Some((format, data)) => Some(
+                    cx.background_executor().spawn(async move { crate::fit_picture::fit_bytes(format, data).map(|(format, data)| Arc::new(Image::from_bytes(format, data))) }).await,
+                ),
+                None => None,
+            };
             this.update(cx, |this, cx| {
-                // A newer file opened while this one was on its way.
+                // A newer file opened while this one was on its way, or the
+                // same one read again since.
                 let current = this.previews.get(&thread_id).and_then(|p| p.file_path().map(str::to_owned));
-                if current.as_deref() != Some(path.as_str()) {
+                if current.as_deref() != Some(path.as_str()) || this.files.reads.get(&thread_id) != Some(&read_number) {
                     return;
                 }
-                match res {
-                    Ok(v) => match FileRead::decode(&v) {
-                        Some(read) => this.show_read(&thread_id, &path, opened, read, here, cx),
+                match (res, read) {
+                    (Ok(_), Some(read)) => match read {
+                        Some(read) => this.show_read(&thread_id, &path, opened, read, here, fitted, cx),
                         None => this.fail_file(&thread_id, &path, opened, "Couldn't read that answer from the runner.".into(), cx),
                     },
-                    Err(e) if e.message.starts_with("Not a file") => {
+                    (Err(e), _) if e.message.starts_with("Not a file") => {
                         // A folder: into the browser, as a click on one is.
                         this.files.known_folders.insert(path.clone());
                         this.files.open.remove(&thread_id);
@@ -539,7 +593,42 @@ impl SidePane {
                         }
                         cx.notify();
                     }
-                    Err(e) => this.fail_file(&thread_id, &path, opened, e.message, cx),
+                    // No runner (not a slow one: a timeout while connected
+                    // has no reconnect to wait for, so it fails as it is).
+                    (Err(e), _) if matches!(e.code, threadbear_client::runner::NOT_CONNECTED | threadbear_client::runner::CLOSED) => this.wait_for_runner(&thread_id, &path, opened, cx),
+                    (Err(e), _) => this.fail_file(&thread_id, &path, opened, e.message, cx),
+                    (Ok(_), None) => {}
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// No runner to read it: what was showing stays (a file read again),
+    /// or the pane says it's waiting, and SidePane::connected reads it.
+    fn wait_for_runner(&mut self, thread_id: &str, path: &str, opened: u64, cx: &mut Context<Self>) {
+        let open = self.files.open.entry(thread_id.to_owned()).or_insert_with(|| OpenFile::new(path.to_owned(), opened, FileBody::Waiting));
+        if matches!(open.body, FileBody::Loading | FileBody::Failed { .. }) {
+            open.body = FileBody::Waiting;
+        }
+        open.waiting_for_runner = true;
+        cx.notify();
+        // The answer can land after the reconnect it should wait for: the
+        // client says Connected a moment before its session's set, so the
+        // sweep can run first (Codex's review, 17 Nov). Look again in half
+        // a second, when a runner that's back has its session; one still
+        // away is read by SidePane::connected.
+        let (thread_id, client) = (thread_id.to_owned(), self.client.clone());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+            if client.connected_session().is_none() {
+                return;
+            }
+            this.update(cx, |this, cx| {
+                if let Some(open) = this.files.open.get_mut(&thread_id).filter(|f| f.waiting_for_runner) {
+                    open.waiting_for_runner = false;
+                    this.reread_file(&thread_id, cx);
                 }
             })
             .ok();
@@ -552,13 +641,16 @@ impl SidePane {
         cx.notify();
     }
 
-    fn show_read(&mut self, thread_id: &str, path: &str, opened: u64, read: FileRead, here: bool, cx: &mut Context<Self>) {
+    fn show_read(&mut self, thread_id: &str, path: &str, opened: u64, read: FileRead, here: bool, fitted: Option<Option<Arc<Image>>>, cx: &mut Context<Self>) {
         let viewer = core::viewer_for_path(path);
         let is_picture = viewer == Viewer::Picture && (core::looks_like_picture(path) || image_format(path).is_some());
         let body = if is_picture {
             match image_format(path) {
+                // Drawn as it is, one too big to shrink would be a blank box.
+                Some(_) if matches!(fitted, Some(None)) => FileBody::Opaque { note: crate::fit_picture::TOO_BIG.into() },
                 Some(format) => {
-                    FileBody::Picture { size: picture_size(&read.data), image: Arc::new(Image::from_bytes(format, read.data)) }
+                    let image = Arc::new(Image::from_bytes(format, read.data));
+                    FileBody::Picture { size: picture_size(image.bytes()), drawn: fitted.flatten().unwrap_or_else(|| image.clone()), image }
                 }
                 None => FileBody::Opaque { note: "This kind of picture opens in its own app.".into() },
             }
@@ -614,6 +706,8 @@ impl SidePane {
                 open.edit = previous.edit;
             }
             open._file_watch = previous._file_watch;
+            open.lines_shown = previous.lines_shown;
+            open.line_marks = previous.line_marks;
         }
         // Text on this machine is watched, so an agent's rewrite shows up by
         // itself; another Mac's is that Mac's to say.
@@ -836,13 +930,61 @@ impl SidePane {
     pub(crate) fn render_preview(&mut self, thread: &ThreadSummary, preview: &PanePreview, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         match &preview.target {
-            Target::File(path) => self.render_file(thread, path, preview.editing, window, cx),
+            Target::File(path) => self.render_file(thread, path, preview.editing, preview.lines.map(|l| (l, preview.opened)), window, cx),
             Target::Page(url) => pane_note(&format!("{url} opened in your browser."), p).into_any_element(),
             Target::Folder(path) => self.render_folder(thread, path, preview, window, cx),
+            Target::Pr(url) => self.render_pr(thread, url, window, cx),
         }
     }
 
-    fn render_file(&mut self, thread: &ThreadSummary, path: &str, editing: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The lines a link named (`a.ts:12-18`), in whichever editor is showing
+    /// the file (its own text up to type in, or the one to read): tinted,
+    /// marked in the gutter, and scrolled to once laid out (the editor
+    /// scrolls only to what it has drawn). Opened again with other lines, or
+    /// none, the old tint goes; typing takes it off (`clear_line_marks`).
+    /// `lines` come with the opening they were asked for.
+    fn show_lines(&mut self, thread_id: &str, path: &str, lines: Option<((usize, usize), u64)>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(open) = self.files.open.get_mut(thread_id).filter(|f| f.path == path) else { return };
+        let editor = match (&open.edit, &open.body) {
+            (Some(edit), _) => edit.editor.clone(),
+            (None, FileBody::Text { editor: Some(editor), .. }) => editor.clone(),
+            _ => return,
+        };
+        let opened = open.opened;
+        let wanted = lines.filter(|(_, o)| *o == opened).map(|(l, _)| l);
+        if open.lines_shown == Some(opened) || (wanted.is_none() && open.line_marks.is_none()) {
+            return;
+        }
+        open.lines_shown = Some(opened);
+        // Marks made on the other editor (read, then put up to type in) go
+        // with it; these are this one's.
+        if let Some((fill, mark)) = open.line_marks.take() {
+            fill.set(vec![], cx);
+            mark.set(vec![], cx);
+        }
+        let Some((first, last)) = wanted else { return };
+        let text = editor.read(cx).value().to_string();
+        let range = threadbear_core::file_refs::line_bytes(&text, first, last);
+        // Through the last line's newline, so its tint is the whole line
+        // wide as the others' are.
+        let range = range.start..(range.end + 1).min(text.len());
+        let accent = style::accent(cx);
+        let fill = RangeDecoration::new(range.clone()).with_style(RangeDecorationStyle::Fill).with_color(accent.opacity(0.18));
+        let mark = GutterDecoration::new(range.clone()).with_color(accent);
+        open.line_marks = Some(editor.update(cx, |state, cx| (state.create_range_decorations_collection(vec![fill], cx), state.create_gutter_decorations_collection(vec![mark], cx))));
+        window.on_next_frame(move |_, cx| editor.update(cx, |state, cx| state.set_selected_range(range.start..range.start, cx)));
+    }
+
+    /// Typing in the file takes the tint off the lines a link named: they're
+    /// being changed, so it would only mislead.
+    pub(crate) fn clear_line_marks(&mut self, thread_id: &str, cx: &mut App) {
+        if let Some((fill, mark)) = self.files.open.get_mut(thread_id).and_then(|o| o.line_marks.take()) {
+            fill.set(vec![], cx);
+            mark.set(vec![], cx);
+        }
+    }
+
+    fn render_file(&mut self, thread: &ThreadSummary, path: &str, editing: bool, lines: Option<((usize, usize), u64)>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         // A file's text that's waiting for its editor gets one now.
         if let Some(open) = self.files.open.get_mut(&thread.id).filter(|f| f.path == path) {
@@ -850,10 +992,10 @@ impl SidePane {
                 if editor.is_none() {
                     let (value, language) = (text.to_string(), *language);
                     let made = cx.new(|cx| {
-                        // Reading, as the Swift app's text view is until its
-                        // pencil: no line numbers, folds or guides, and ⌘F
-                        // left to the pane's own find bar.
-                        let state = EditorState::new(window, cx).soft_wrap(true).line_number(false).folding(false).indent_guides(false).searchable(false);
+                        // Reading: line numbers, so a line an agent names can
+                        // be found, but no folds or guides, and ⌘F left to
+                        // the pane's own find bar.
+                        let state = EditorState::new(window, cx).soft_wrap(true).line_number(true).folding(false).indent_guides(false).searchable(false);
                         match language {
                             Some(language) => state.language(language),
                             None => state,
@@ -867,6 +1009,7 @@ impl SidePane {
         if editing {
             self.ensure_edit(thread, window, cx);
         }
+        self.show_lines(&thread.id, path, lines, window, cx);
         self.files.window = Some(window.window_handle());
         let focus = self.files.focus.get_or_insert_with(|| cx.focus_handle()).clone();
         let Some(open) = self.files.open.get(&thread.id).filter(|f| f.path == path) else {
@@ -883,6 +1026,7 @@ impl SidePane {
             // says which file it's getting.
             FileBody::Loading => div().size_full().flex().items_center().justify_center().child(Spinner::new().with_size(px(14.)).color(p.secondary)).into_any_element(),
             FileBody::Failed { message } => pane_note(&failed_words(message), p).into_any_element(),
+            FileBody::Waiting => pane_note(threadbear_core::text_file::words::WAITING, p).into_any_element(),
             FileBody::Opaque { note } => pane_note(note, p).into_any_element(),
             FileBody::Page(page) => {
                 let page = page.clone();
@@ -893,7 +1037,11 @@ impl SidePane {
                     div().size_full().flex().items_center().justify_center().child(Spinner::new().with_size(px(14.)).color(p.secondary)).into_any_element()
                 } else {
                     let main = self.app.upgrade().is_some_and(|app| app.read(cx).main_window == window.window_handle());
-                    crate::web_panels::local_page(&page.real, page.scripts_for(), open.opened, main, window, cx)
+                    if page.live {
+                        crate::live_pages::pane_view(&page.real, main, window, cx)
+                    } else {
+                        crate::web_panels::local_page(&page.real, page.scripts_for(), open.opened, main, window, cx)
+                    }
                 };
                 v_flex().id("hl-page").size_full().children(bar).child(div().flex_1().min_h_0().child(body)).into_any_element()
             }
@@ -919,8 +1067,8 @@ impl SidePane {
                     Err(why) => pane_note(&why, p).into_any_element(),
                 }
             }
-            FileBody::Picture { image, .. } => {
-                let source = ImageSource::Image(image.clone());
+            FileBody::Picture { drawn, .. } => {
+                let source = ImageSource::Image(drawn.clone());
                 let (path2, entity) = (path.to_owned(), cx.entity().downgrade());
                 // Dragged, it's the file itself, from this Mac's own threads
                 // only (file_drag.rs, `FilePreviewView`'s drag).
@@ -939,7 +1087,10 @@ impl SidePane {
                             .update(cx, |this, cx| this.open_picture_menu(path3, position, window, cx))
                             .ok();
                     })
-                    .child(img(source).size_full().object_fit(ObjectFit::Contain))
+                    // An id, which GPUI only plays a GIF's frames with (its
+                    // frame and timing are kept under it). Mike, 19 Nov: "GIFs
+                    // don't play in Threadbear".
+                    .child(img(source).id(SharedString::from(format!("hl-picture-{path}"))).size_full().object_fit(ObjectFit::Contain))
                     // Found by scripts, for a drag from it.
                     .test_support()
                     .into_any_element()
@@ -958,11 +1109,9 @@ impl SidePane {
                 let reveal = scroll.clone();
                 // A page, with margins and lines no longer than the Swift
                 // app's pageWidth however wide the panel is.
-                div()
+                let page = div()
                     .id("hl-markdown")
-                    .size_full()
                     .overflow_y_scroll()
-                    .track_scroll(&scroll)
                     .child(
                         div()
                             .max_w(px(720.))
@@ -982,8 +1131,8 @@ impl SidePane {
                                 }
                                 reveal.set_offset(offset);
                             })),
-                    )
-                    .into_any_element()
+                    );
+                with_scroll_bar(page, &scroll, "hl-markdown-bar").size_full().into_any_element()
             }
             FileBody::Text { editor: Some(editor), .. } => div()
                 .size_full()
@@ -1058,6 +1207,7 @@ impl SidePane {
             Target::File(path) => format!("file {path}{}", if preview.editing { " (editing)" } else { "" }),
             Target::Folder(path) => format!("folder {path}"),
             Target::Page(url) => format!("page {url}"),
+            Target::Pr(url) => format!("pr {url}"),
         }
     }
 
@@ -1068,6 +1218,11 @@ impl SidePane {
                 pane.insert("previewKind".into(), json!("page"));
                 pane.insert("previewText".into(), json!(url));
             }
+            Target::Pr(url) => {
+                pane.insert("previewKind".into(), json!("pr"));
+                pane.insert("previewText".into(), json!(url));
+                pane.insert("pr".into(), self.prs.describe(url));
+            }
             Target::Folder(path) => {
                 pane.insert("previewKind".into(), json!("folder"));
                 pane.insert("previewText".into(), json!(path));
@@ -1075,6 +1230,9 @@ impl SidePane {
             Target::File(path) => {
                 let Some(thread) = self.thread(cx) else { return };
                 let Some(open) = self.files.open.get(&thread.id).filter(|f| &f.path == path) else { return };
+                if let Some(lines) = tinted_lines(open, cx) {
+                    pane.insert("previewLines".into(), json!(lines));
+                }
                 if let Some(find) = self.find_line(&thread.id, cx) {
                     pane.insert("previewFind".into(), json!(find));
                 }
@@ -1103,6 +1261,10 @@ impl SidePane {
                     FileBody::Failed { message } => {
                         pane.insert("previewKind".into(), json!("note"));
                         pane.insert("previewText".into(), json!(failed_words(message)));
+                    }
+                    FileBody::Waiting => {
+                        pane.insert("previewKind".into(), json!("note"));
+                        pane.insert("previewText".into(), json!(threadbear_core::text_file::words::WAITING));
                     }
                     FileBody::Opaque { note } => {
                         pane.insert("previewKind".into(), json!("note"));
@@ -1303,4 +1465,19 @@ pub(crate) fn preview_command(side: &Entity<SidePane>, thread: &ThreadSummary, c
 /// The Files panel has no preview stored: its section shows the thread's folder.
 pub(crate) fn files_section_preview(thread: &ThreadSummary) -> PanePreview {
     PanePreview::new(Target::Folder(thread.cwd.clone()), "Files".into(), FILES.to_owned())
+}
+
+/// The lines tinted for a link (`a.ts:12-18`), as they stand now: "12-18",
+/// for `dump`'s `previewLines`.
+#[cfg(feature = "automation")]
+fn tinted_lines(open: &OpenFile, cx: &App) -> Option<String> {
+    let (fill, _) = open.line_marks.as_ref()?;
+    let range = fill.get_ranges(cx).into_iter().next()?;
+    let editor = open.edit.as_ref().map(|e| e.editor.clone()).or_else(|| match &open.body {
+        FileBody::Text { editor, .. } => editor.clone(),
+        _ => None,
+    })?;
+    let text = editor.read(cx).value().to_string();
+    let line_of = |at: usize| text.as_bytes().get(..at).map_or(0, |b| b.iter().filter(|&&c| c == b'\n').count()) + 1;
+    Some(format!("{}-{}", line_of(range.start), line_of(range.end.saturating_sub(1).max(range.start))))
 }

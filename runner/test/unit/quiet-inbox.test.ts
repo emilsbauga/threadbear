@@ -1,5 +1,5 @@
-// Threads with nothing for Alex keep out of his inbox (experiment
-// quietInbox, runner/quiet-inbox.ts; docs/protocol.md, "A quiet inbox").
+// Helper threads with nothing for Alex keep out of his inbox
+// (runner/quiet-inbox.ts; docs/protocol.md, "A quiet inbox").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { makeHarness, tmpDir } from '../helpers/fakes.ts';
 import { PATIENCE_MS } from '../helpers/patience.ts';
+import { SHELL } from '../helpers/platform.ts';
 
 const END_TURN = 'mcp__threadbear__end_turn';
 
@@ -21,7 +22,7 @@ async function until(check: () => boolean, what: string): Promise<void> {
 // Long enough for a check that was going to act to have acted.
 const settle = () => new Promise((r) => setTimeout(r, 150));
 
-function setup(experiments: Record<string, boolean> = { quietInbox: true }) {
+function setup(experiments: Record<string, boolean> = {}) {
   const home = tmpDir();
   fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments }));
   return makeHarness(home);
@@ -42,7 +43,7 @@ function finish(h: H, id: string, input: Record<string, unknown> = { needs: 'not
 // agent wrote itself, end_turn's `open`, which is gone.)
 function leaveUncommitted(h: H, id: string) {
   const repo = h.runner.get(id).cwd;
-  execFileSync('/bin/sh', ['-c', 'git init -q -b main && echo one > notes.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && echo two > notes.md'], { cwd: repo });
+  execFileSync(SHELL[0], [SHELL[1], 'git init -q -b main && echo one > notes.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm init && echo two > notes.md'], { cwd: repo });
   const s = h.adapter.sessions.filter((x) => x.opts.threadId === id).at(-1)!;
   s.init();
   s.out({ kind: 'event', event: { type: 'tool.call', itemId: `w${Math.random()}`, name: 'Edit', kind: 'edit', title: 'Edit notes.md', input: { file_path: path.join(repo, 'notes.md') } } });
@@ -53,7 +54,7 @@ const helper = (h: H, parent: string, text = 'Fix the panel reload') =>
   h.runner.create({ text, accountId: 'claude-main', startedBy: { kind: 'thread', label: 'Agent', threadId: parent } }).thread.id;
 const notes = (h: H, id: string) => h.events(id).filter((e) => e.type === 'system.note').map((e) => String(e.text));
 
-test('quietInbox: a thread another thread started archives itself when it finishes with nothing left', async () => {
+test('a thread another thread started archives itself when it finishes with nothing left', async () => {
   const h = setup();
   const parent = mine(h);
   const child = helper(h, parent);
@@ -70,10 +71,7 @@ test('quietInbox: a thread another thread started archives itself when it finish
   assert.equal(h.runner.get(parent).archivedAt, undefined);
 });
 
-test('quietInbox: off by default, and only for threads another thread started', async () => {
-  const off = setup({});
-  const a = helper(off, mine(off));
-  finish(off, a);
+test('only for threads another thread started', async () => {
   const h = setup();
   // Alex's own, a tool's and a schedule's stay: they're often what he wants to read.
   const own = mine(h);
@@ -85,12 +83,11 @@ test('quietInbox: off by default, and only for threads another thread started', 
   finish(h, b);
   await until(() => Boolean(h.runner.get(b).archivedAt), 'the control');
   await settle();
-  assert.equal(off.runner.get(a).archivedAt, undefined, 'off: stays');
   assert.equal(h.runner.get(own).archivedAt, undefined, "Alex's own stays");
   assert.equal(h.runner.get(tool).archivedAt, undefined, "a tool's stays");
 });
 
-test('quietInbox: a helper that asks, suggests a follow-up, leaves something open or failed stays in the inbox', async () => {
+test('a helper that asks, suggests a follow-up, leaves something open or failed stays in the inbox', async () => {
   const h = setup();
   const parent = mine(h);
   const asks = helper(h, parent);
@@ -126,7 +123,7 @@ test('quietInbox: a helper that asks, suggests a follow-up, leaves something ope
   await until(() => Boolean(h.runner.get(booked).archivedAt), 'archived after its check-in');
 });
 
-test("quietInbox: a helper Alex has written in, starred or brought back out is his, and stays", async () => {
+test("a helper Alex has written in, starred or brought back out is his, and stays", async () => {
   const h = setup();
   const parent = mine(h);
   const wrote = helper(h, parent);
@@ -157,7 +154,7 @@ test("quietInbox: a helper Alex has written in, starred or brought back out is h
   assert.equal(h.runner.get(back).archivedAt, undefined, 'he brought it back out');
 });
 
-test('quietInbox: a message that arrives while the check runs keeps the helper out', async () => {
+test('a message that arrives while the check runs keeps the helper out', async () => {
   const h = setup();
   const parent = mine(h);
   const child = helper(h, parent);
@@ -168,78 +165,61 @@ test('quietInbox: a message that arrives while the check runs keeps the helper o
   assert.equal(h.runner.get(child).archivedAt, undefined);
 });
 
-test('quietInbox: a finished thread whose only loose ends are threads it started hibernates until they finish, then wakes with their replies', async () => {
+test('a finished thread with threads it started still going stays in the inbox, and never hibernates by itself', async () => {
   const h = setup();
   const parent = mine(h);
   const a = helper(h, parent, 'Text selection');
-  const b = helper(h, parent, 'Open Anything');
   finish(h, parent);
-  await until(() => Boolean(h.runner.get(parent).waitingOn?.length), 'the wait');
-  let t = h.runner.get(parent);
-  assert.deepEqual(t.waitingOn!.map((w) => w.threadId).sort(), [a, b].sort());
-  assert.ok(t.snoozedUntil, 'hibernating, so out of the inbox');
-  assert.equal(t.archivedAt, undefined);
-  assert.ok(notes(h, parent).some((n) => /^Hibernating until /.test(n)), 'says why it went');
-  const sessions = () => h.adapter.sessions.filter((x) => x.opts.threadId === parent).length;
-  const before = sessions();
-  // One finishing isn't all of them.
+  // The control: a helper of its own that does go.
   finish(h, a);
-  await until(() => Boolean(h.runner.get(a).archivedAt), 'the first helper archived');
-  assert.ok(h.runner.get(parent).snoozedUntil, 'still waiting on the other');
-  finish(h, b);
-  await until(() => !h.runner.get(parent).snoozedUntil, 'the wake');
-  const woke = h.events(parent).filter((e) => e.type === 'user.message').at(-1)!;
-  assert.match(String(woke.text), /^Threadbear hibernated this thread after your last turn/, "says the runner put it away, not the agent");
-  assert.match(String(woke.text), /They have finished now/);
-  assert.match(String(woke.text), /Text selection/);
-  assert.ok(sessions() > before || h.runner.get(parent).status !== 'idle', 'a turn runs with what they said');
-  // Its reply then comes to the inbox as any done thread of Alex's does.
-  finish(h, parent);
+  await until(() => Boolean(h.runner.get(a).archivedAt), 'the helper archived');
   await settle();
-  t = h.runner.get(parent);
+  const t = h.runner.get(parent);
+  assert.equal(t.waitingOn, undefined, 'no wait made');
   assert.equal(t.snoozedUntil, undefined);
   assert.equal(t.archivedAt, undefined);
+  assert.ok(!h.events(parent).some((e) => e.type === 'user.message' && /^Threadbear hibernated/.test(String(e.text))), 'no wake turn');
 });
 
-test("quietInbox: with something else left open as well, or with it off, a thread with helpers still going stays in the inbox", async () => {
-  const h = setup();
-  const mixed = h.runner.create({ text: 'Plan the port', accountId: 'claude-main', cwd: fs.realpathSync(tmpDir('tb-quiet-mixed-')) }).thread.id;
-  helper(h, mixed);
-  leaveUncommitted(h, mixed);
-  finish(h, mixed);
-  const asks = mine(h);
-  helper(h, asks);
-  finish(h, asks, { needs: 'you', asks: [{ question: 'Which first?' }] });
-  const off = setup({ looseEnds: true });
-  const plain = mine(off);
-  helper(off, plain);
-  finish(off, plain);
-  const control = mine(h);
-  helper(h, control);
-  finish(h, control);
-  await until(() => Boolean(h.runner.get(control).waitingOn?.length), 'the control');
-  await settle();
-  assert.equal(h.runner.get(mixed).snoozedUntil, undefined, 'a file it changed is uncommitted too');
-  assert.equal(h.runner.get(asks).snoozedUntil, undefined, 'it asked Alex something');
-  assert.equal(off.runner.get(plain).snoozedUntil, undefined, 'off: stays');
-});
-
-test('quietInbox: a helper with helpers of its own waits on them, then archives itself', async () => {
+test('a helper with helpers of its own still going archives itself once they are done', async () => {
   const h = setup();
   const top = mine(h);
   const mid = helper(h, top, 'GPUI polish');
-  const leaf = helper(h, mid, 'Fix the hover fade');
+  const a = helper(h, mid, 'Fix the hover fade');
+  const b = helper(h, mid, 'Fix the hover delay');
+  const sessions = () => h.adapter.sessions.filter((x) => x.opts.threadId === mid).length;
   finish(h, mid);
-  await until(() => Boolean(h.runner.get(mid).waitingOn?.length), 'the wait');
-  assert.equal(h.runner.get(mid).archivedAt, undefined, 'not archived with a helper still going');
-  finish(h, leaf);
-  await until(() => !h.runner.get(mid).snoozedUntil, 'the wake');
-  finish(h, mid);
+  const before = sessions();
+  await settle();
+  assert.equal(h.runner.get(mid).archivedAt, undefined, 'not with its helpers still going');
+  assert.equal(h.runner.get(mid).snoozedUntil, undefined, 'and not hibernating');
+  finish(h, a);
+  await until(() => Boolean(h.runner.get(a).archivedAt), 'the first helper archived');
+  await settle();
+  assert.equal(h.runner.get(mid).archivedAt, undefined, 'one still going');
+  finish(h, b);
   await until(() => Boolean(h.runner.get(mid).archivedAt), 'archived once they were all done');
+  assert.equal(sessions(), before, 'with no turn of its own');
 });
 
-test('quietInbox: works beside the done card\'s own check, which still fills the card', async () => {
-  const h = setup({ quietInbox: true, looseEnds: true });
+test('a helper written to after it finished, while its helpers worked, is decided by that turn instead', async () => {
+  const h = setup();
+  const top = mine(h);
+  const mid = helper(h, top, 'GPUI polish');
+  const a = helper(h, mid, 'Fix the hover fade');
+  finish(h, mid);
+  await settle();
+  // From its starter, so it's still nobody's but the agents'.
+  h.runner.send(mid, '[Sent by the agent in the thread "Plan the port" (abcd1234)]\n\nOne more thing', [], {});
+  finish(h, mid, { needs: 'you', asks: [{ question: 'Which one?' }] });
+  finish(h, a);
+  await until(() => Boolean(h.runner.get(a).archivedAt), 'the helper archived');
+  await settle();
+  assert.equal(h.runner.get(mid).archivedAt, undefined, 'its last turn asked Alex something');
+});
+
+test('works beside the done card\'s own check, which still fills the card', async () => {
+  const h = setup();
   const own = mine(h);
   finish(h, own);
   await until(() => Boolean(h.runner.get(own).looseEnds), 'the card check');

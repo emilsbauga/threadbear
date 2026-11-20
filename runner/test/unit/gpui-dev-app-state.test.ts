@@ -88,7 +88,7 @@ test('on a TMPDIR anyone can write to, the folder has the uid in its name and is
   fs.mkdirSync(elsewhere, { mode: 0o700 });
   fs.symlinkSync(elsewhere, dir);
   assert.throws(() => stateRoot(shared), /isn't a folder of this account's own/);
-  fs.rmSync(dir);
+  fs.unlinkSync(dir);
   // Nor a file.
   fs.writeFileSync(dir, '');
   assert.throws(() => stateRoot(shared), /isn't a folder of this account's own/);

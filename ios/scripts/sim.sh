@@ -32,7 +32,7 @@ prune_gone() {
     name=$(print -r -- "$device" | grep -oE "slot-[0-9]+")
     print -r -- "$kept" | grep -qxF "$name" && continue
     sim=$(print -r -- "$device" | grep -oE "[0-9A-F-]{36}")
-    xcrun simctl delete "$sim" && rm -rf "/tmp/threadbear-dd-$sim"
+    xcrun simctl delete "$sim" && rm -rf "$HOME/Library/Caches/Threadbear/ios-builds/dd-$sim" "/tmp/threadbear-dd-$sim"
   done
 }
 

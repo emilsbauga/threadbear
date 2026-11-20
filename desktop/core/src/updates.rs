@@ -63,8 +63,7 @@ pub struct Reinstall {
     pub state: String,
     pub reason: Option<String>,
     pub log_file: Option<String>,
-    /// It does it by itself (the selfReinstall experiment), not because
-    /// Reinstall now was pressed.
+    /// It does it by itself, not because Update it was pressed.
     pub auto: bool,
 }
 
@@ -164,6 +163,9 @@ pub struct Upstream {
 pub struct Release {
     /// "release/2026-10-30".
     pub tag: String,
+    /// When it was tagged (ISO), for its day where the reader is
+    /// (`release_day`). Absent from older runners.
+    pub date: Option<String>,
     /// The commit the verified tag names: what Bring Them In merges, rather
     /// than a ref name a later fetch could move.
     pub commit: Option<String>,
@@ -171,12 +173,50 @@ pub struct Release {
     pub subjects: Vec<String>,
     /// Each verified release main doesn't have yet, newest first.
     pub notes: Vec<Notes>,
+    /// Why each commit Mike marked `Important:` matters, once each.
+    pub important: Vec<String>,
+    /// The What's new page's cards for those releases (protocol "Mike's
+    /// releases", `changelog`), when the runner could read them.
+    pub changelog: Option<Changelog>,
+}
+
+/// The What's new page's cards for the releases main doesn't have.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Changelog {
+    /// The whole page, for See all.
+    pub page: String,
+    pub releases: Vec<ChangelogRelease>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChangelogRelease {
+    pub tag: String,
+    /// That release on the page, for its cards.
+    pub link: String,
+    pub cards: Vec<Card>,
+    pub added: i64,
+    pub changed: i64,
+    pub fixed: i64,
+}
+
+/// One of a release's main changes, as the page shows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Card {
+    /// added, changed or fixed.
+    pub kind: String,
+    pub title: String,
+    pub text: String,
+    /// The picture, or a clip's still, on the site.
+    pub picture: String,
+    pub clip: bool,
 }
 
 /// One verified release's notes, or its commit subjects as a fallback.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Notes {
     pub tag: String,
+    /// When that release was tagged (ISO), as on `Release`.
+    pub date: Option<String>,
     pub lines: Vec<String>,
 }
 
@@ -258,6 +298,7 @@ impl Release {
         }
         Some(Release {
             tag: v["tag"].as_str().unwrap_or("?").to_owned(),
+            date: text(v, "date"),
             commit: text(v, "commit"),
             changes: v["changes"].as_i64().or_else(|| v["changes"].as_f64().filter(|n| n.fract() == 0.).map(|n| n as i64)).unwrap_or(0),
             subjects: strings(&v["subjects"]),
@@ -265,10 +306,55 @@ impl Release {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|n| Some(Notes { tag: n["tag"].as_str()?.to_owned(), lines: n["lines"].as_array().map(|_| strings(&n["lines"]))? }))
+                .filter_map(|n| Some(Notes { tag: n["tag"].as_str()?.to_owned(), date: text(n, "date"), lines: n["lines"].as_array().map(|_| strings(&n["lines"]))? }))
                 .filter(|n| !n.lines.is_empty())
                 .collect(),
+            important: {
+                let mut whys: Vec<String> = Vec::new();
+                for why in v["important"].as_array().into_iter().flatten().filter_map(|i| i["why"].as_str()) {
+                    if !whys.iter().any(|w| w == why) {
+                        whys.push(why.to_owned());
+                    }
+                }
+                whys
+            },
+            changelog: Changelog::decode(&v["changelog"]),
         })
+    }
+}
+
+impl Changelog {
+    fn decode(v: &Value) -> Option<Changelog> {
+        let page = v["page"].as_str().filter(|p| p.starts_with("https://"))?.to_owned();
+        let count = |r: &Value, k: &str| r[k].as_i64().unwrap_or(0).max(0);
+        let releases: Vec<ChangelogRelease> = v["releases"]
+            .as_array()?
+            .iter()
+            .filter_map(|r| {
+                Some(ChangelogRelease {
+                    tag: r["tag"].as_str()?.to_owned(),
+                    link: r["link"].as_str().filter(|l| l.starts_with("https://")).unwrap_or(&page).to_owned(),
+                    cards: r["highlights"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|h| {
+                            Some(Card {
+                                kind: h["kind"].as_str()?.to_owned(),
+                                title: h["title"].as_str()?.to_owned(),
+                                text: h["text"].as_str().unwrap_or_default().to_owned(),
+                                picture: h["picture"].as_str().filter(|p| p.starts_with("https://"))?.to_owned(),
+                                clip: h["clip"].as_bool().unwrap_or(false),
+                            })
+                        })
+                        .collect(),
+                    added: count(r, "added"),
+                    changed: count(r, "changed"),
+                    fixed: count(r, "fixed"),
+                })
+            })
+            .collect();
+        (!releases.is_empty()).then_some(Changelog { page, releases })
     }
 }
 
@@ -390,6 +476,42 @@ pub fn needs_you(app: &AppSide, runner: Option<&RunnerUpdates>) -> bool {
     app.not_following.is_some() || runner.is_some_and(launcher_needs_you) || from_mike(runner) || not_following(runner)
 }
 
+/// What the icon itself shows of the next version, so a glance says it
+/// without opening the panel. Mike opened and shut Updates every 40 minutes
+/// or so on 18 Nov to see whether a build had finished; he picked a ring
+/// round the icon while one builds and the icon filled green once it's
+/// ready (review d3ac73e3, 19 Nov).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextVersion {
+    /// Nothing on its way: the plain icon.
+    None,
+    /// The app's next version is building, or about to (waiting for main to
+    /// settle or for a Mac to build on), or the runner is building a
+    /// release: the ring turns.
+    Coming,
+    /// The app's next version is built and switches in when he's idle (or
+    /// now, from the panel): the icon fills green.
+    Ready,
+}
+
+pub fn next_version(app: &AppSide, runner: Option<&RunnerUpdates>) -> NextVersion {
+    if app.staged.is_some() {
+        NextVersion::Ready
+    } else if app.building || app.settling || app.waiting || runner.is_some_and(|r| r.state == "building") {
+        NextVersion::Coming
+    } else {
+        NextVersion::None
+    }
+}
+
+/// The grey dot: what `shown` and the CLIs count, less what the icon
+/// already shows as its ring or its green (`next_version`).
+pub fn quiet_dot(app: &AppSide, runner: Option<&RunnerUpdates>, clis: &[CliStatus]) -> bool {
+    let app = AppSide { staged: None, building: false, settling: false, waiting: false, ..app.clone() };
+    let runner = runner.map(|r| RunnerUpdates { state: if r.state == "building" { "idle".to_owned() } else { r.state.clone() }, ..r.clone() });
+    shown(&app, runner.as_ref()) || clis.iter().any(cli_pending)
+}
+
 /// A machine that isn't following GitHub's main: nothing fixes that by
 /// itself, and bruce sat three days behind unnoticed (9 Nov).
 fn not_following(runner: Option<&RunnerUpdates>) -> bool {
@@ -432,9 +554,9 @@ pub fn upstream_line(u: Option<&Upstream>) -> Option<String> {
     match u.state.as_str() {
         "available" => {
             let r = u.release.as_ref()?;
-            Some(format!("Mike's release {} has {}.", release_date(&r.tag), changes_words(r.changes, "")))
+            Some(format!("Mike's release of {} has {}.", release_day(&r.tag, r.date.as_deref()), changes_words(r.changes, "")))
         }
-        "idle" => Some(u.release.as_ref().map_or_else(|| "Mike hasn't made a release yet.".to_owned(), |r| format!("You're up to date with Mike's release {}.", release_date(&r.tag)))),
+        "idle" => Some(u.release.as_ref().map_or_else(|| "Mike hasn't made a release yet.".to_owned(), |r| format!("You're up to date with Mike's release of {}.", release_day(&r.tag, r.date.as_deref())))),
         "checking" => Some("Checking for Mike's releases.".to_owned()),
         "failed" => Some(format!("Couldn't check for Mike's releases{}", u.reason.as_ref().map_or_else(|| ".".to_owned(), |r| format!(": {r}")))),
         _ => None,
@@ -444,6 +566,80 @@ pub fn upstream_line(u: Option<&Upstream>) -> Option<String> {
 /// What the From Mike section lists under a release: the plain-words notes
 /// Mike's runner wrote, a heading per release when there's more than one, or
 /// (from older tags) the first commit subjects.
+/// How many of the page's cards the From Mike section shows; See all has the rest.
+pub const DIGEST_CARDS: usize = 4;
+
+/// What the From Mike section shows when the What's new page has the
+/// releases main doesn't (Mike picked it on 17 Nov 2026 over the notes as
+/// text): their cards, newest first, with each one's link; how many
+/// changes there are of each kind, the cards' and the plain lines'; the
+/// Important whys; and the notes of any release the page has no entry for
+/// yet, dated, as `release_lines` gives them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Digest {
+    pub cards: Vec<(Card, String)>,
+    pub more: usize,
+    pub added: i64,
+    pub changed: i64,
+    pub fixed: i64,
+    pub important: Vec<String>,
+    pub page: String,
+    pub notes: Vec<(Option<String>, Vec<String>)>,
+}
+
+/// None when there's no page to show from: the section lists the notes.
+pub fn release_digest(r: &Release) -> Option<Digest> {
+    let c = r.changelog.as_ref()?;
+    let mut d = Digest { important: r.important.clone(), page: c.page.clone(), ..Default::default() };
+    let mut cards = Vec::new();
+    for rel in &c.releases {
+        for card in &rel.cards {
+            match card.kind.as_str() {
+                "added" => d.added += 1,
+                "changed" => d.changed += 1,
+                _ => d.fixed += 1,
+            }
+            cards.push((card.clone(), rel.link.clone()));
+        }
+        d.added += rel.added;
+        d.changed += rel.changed;
+        d.fixed += rel.fixed;
+    }
+    d.more = cards.len().saturating_sub(DIGEST_CARDS);
+    cards.truncate(DIGEST_CARDS);
+    d.cards = cards;
+    d.notes = r
+        .notes
+        .iter()
+        .filter(|n| !c.releases.iter().any(|rel| rel.tag == n.tag))
+        .map(|n| (Some(release_day(&n.tag, n.date.as_deref())), n.lines.clone()))
+        .collect();
+    Some(d)
+}
+
+/// "5 added, 23 changed, 14 fixed", leaving out a kind there's none of.
+pub fn digest_counts(d: &Digest) -> String {
+    [(d.added, "added"), (d.changed, "changed"), (d.fixed, "fixed")].iter().filter(|(n, _)| *n > 0).map(|(n, k)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")
+}
+
+/// The Important line's tip: each why on its own line, starting with a
+/// capital (the tag says "Important: the phone pairing...").
+pub fn important_tip(whys: &[String]) -> String {
+    whys.iter()
+        .map(|w| {
+            let mut c = w.chars();
+            let first = c.next().map(|f| f.to_uppercase().collect::<String>()).unwrap_or_default();
+            format!("• {first}{}", c.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// "3 important fixes", for a line whose tip lists them.
+pub fn important_line(n: usize) -> Option<String> {
+    (n > 0).then(|| if n == 1 { "1 important fix".to_owned() } else { format!("{n} important fixes") })
+}
+
 pub fn release_lines(r: &Release) -> Vec<(Option<String>, Vec<String>)> {
     let first_subjects = || r.subjects.iter().take(5).cloned().collect::<Vec<_>>();
     if r.notes.is_empty() {
@@ -455,10 +651,7 @@ pub fn release_lines(r: &Release) -> Vec<(Option<String>, Vec<String>)> {
     let mut groups: Vec<(Option<String>, Vec<String>)> = r
         .notes
         .iter()
-        .map(|note| {
-            let date = release_date(&note.tag);
-            (Some(date.strip_prefix("of ").map_or(date.clone(), str::to_owned)), note.lines.clone())
-        })
+        .map(|note| (Some(release_day(&note.tag, note.date.as_deref())), note.lines.clone()))
         .collect();
     // An older runner may supply notes only for older tags. Keep those
     // dated, and show the subjects so the newest changes remain visible.
@@ -470,12 +663,26 @@ pub fn release_lines(r: &Release) -> Vec<(Option<String>, Vec<String>)> {
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/// "release/2026-10-30" as "of 30 Oct".
-pub fn release_date(tag: &str) -> String {
-    let date = tag.strip_prefix("release/").unwrap_or(tag);
-    let parts: Vec<i64> = date.split('-').filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect();
+/// A release's day where the reader is, "30 Oct": from when it was tagged.
+/// The tag's name is the day on Mike's runner, in Perth, so a release he
+/// made on his morning was "tomorrow" all afternoon in California (Wayne,
+/// 14 Nov 2026). The name is only the fallback, for an older runner that
+/// sends no date.
+pub fn release_day(tag: &str, date: Option<&str>) -> String {
+    release_day_in(tag, date, &chrono::Local)
+}
+
+fn release_day_in<Tz: TimeZone>(tag: &str, date: Option<&str>, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if let Some(at) = date.and_then(|d| DateTime::parse_from_rfc3339(d).ok()) {
+        return at.with_timezone(tz).format("%-d %b").to_string();
+    }
+    let name = tag.strip_prefix("release/").unwrap_or(tag);
+    let parts: Vec<i64> = name.split('-').filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect();
     match parts.as_slice() {
-        [_, month @ 1..=12, day] => format!("of {day} {}", MONTHS[(*month - 1) as usize]),
+        [_, month @ 1..=12, day] => format!("{day} {}", MONTHS[(*month - 1) as usize]),
         _ => tag.to_owned(),
     }
 }
@@ -525,7 +732,7 @@ pub fn discuss_prompt(r: &Release) -> String {
 
 /// The thread's title: "Bring in Mike's release of 6 Nov", or "Discuss ...".
 pub fn bring_in_title(r: &Release, discuss: bool) -> String {
-    format!("{} Mike's release {}", if discuss { "Discuss" } else { "Bring in" }, release_date(&r.tag))
+    format!("{} Mike's release of {}", if discuss { "Discuss" } else { "Bring in" }, release_day(&r.tag, r.date.as_deref()))
 }
 
 /// The icon's tooltip line about the app and the runner. A failure is said,
@@ -704,6 +911,10 @@ pub struct Hold {
     pub version: String,
     pub reason: String,
     pub missing: Vec<String>,
+    /// The thread the runner started to look into a protocol hold.
+    pub thread_id: Option<String>,
+    /// That thread is still open: the row says it's being looked into.
+    pub investigating: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -731,7 +942,7 @@ impl CliStatus {
             previous_version: text(v, "previousVersion"),
             can_update_now: v["canUpdateNow"].as_bool().unwrap_or(false),
             checked_ms: v["checkedAt"].as_str().and_then(parse_ms),
-            hold: v["hold"].is_object().then(|| Hold { version: v["hold"]["version"].as_str().unwrap_or("").to_owned(), reason: v["hold"]["reason"].as_str().unwrap_or("").to_owned(), missing: strings(&v["hold"]["missing"]) }),
+            hold: v["hold"].is_object().then(|| Hold { version: v["hold"]["version"].as_str().unwrap_or("").to_owned(), reason: v["hold"]["reason"].as_str().unwrap_or("").to_owned(), missing: strings(&v["hold"]["missing"]), thread_id: v["hold"]["threadId"].as_str().map(str::to_owned), investigating: v["hold"]["investigating"].as_bool().unwrap_or(false) }),
             update: v["update"].is_object().then(|| {
                 let u = &v["update"];
                 CliUpdate {
@@ -769,12 +980,29 @@ pub fn status_line(cli: &CliStatus) -> String {
         "behind" => format!("{installed}{}", cli.latest_version.as_ref().map_or_else(|| ", an update is available".to_owned(), |v| format!(", {v} available"))),
         "held" => {
             let version = cli.hold.as_ref().map(|h| h.version.clone()).or_else(|| cli.latest_version.clone()).unwrap_or_else(|| "The new version".to_owned());
+            if is_investigated(cli) {
+                return format!("{name} {version} is held back, investigating why");
+            }
             let reason = cli.hold.as_ref().map_or("", |h| h.reason.as_str());
             format!("{name} {version} is held back{}", if reason.is_empty() { String::new() } else { format!(" because {reason}") })
         }
         "missing" => format!("{name} isn't installed"),
         _ => installed,
     }
+}
+
+/// A held version a thread is looking into right now (the runner started it,
+/// so Mike isn't left to guess whether "Update anyway" is safe).
+pub fn is_investigated(cli: &CliStatus) -> bool {
+    cli.status == "held" && cli.hold.as_ref().is_some_and(|h| h.investigating && h.thread_id.is_some())
+}
+
+/// The thread on a held version, open or done, for a link to it.
+pub fn hold_thread(cli: &CliStatus) -> Option<&str> {
+    if cli.status != "held" {
+        return None;
+    }
+    cli.hold.as_ref().and_then(|h| h.thread_id.as_deref())
 }
 
 /// Who keeps it up to date, when that isn't the usual: a path set by hand is
@@ -788,7 +1016,9 @@ pub fn update_title(cli: &CliStatus) -> Option<&'static str> {
     if is_updating(cli) {
         return None;
     }
-    if cli.can_update_now {
+    // An agent with no version feed offers Update any time, except while
+    // the runner says its last Update found nothing newer (`current`).
+    if cli.can_update_now && cli.status != "current" {
         return Some("Update");
     }
     match cli.status.as_str() {
@@ -959,10 +1189,30 @@ mod tests {
         assert_eq!(banner_text(&codex).as_deref(), Some("Installing Codex 0.165.0"));
         codex.update = Some(CliUpdate { state: "failed".into(), target_version: Some("0.165.0".into()), message: Some("0.165.0 is held back".into()), ..Default::default() });
         assert_eq!(banner_text(&codex).as_deref(), Some("Couldn't update Codex to 0.165.0: 0.165.0 is held back"));
+        // A hold the runner started a thread on says so while it's open.
+        let looked = decode_clis(&json!([{ "provider": "codex", "path": "/x/codex", "managedBy": "threadbear", "installedVersion": "0.170.0", "latestVersion": "0.171.0", "status": "held", "policy": "auto", "inUse": [],
+            "hold": { "version": "0.171.0", "reason": "the app-server protocol changed", "missing": ["server request currentTime/read"], "threadId": "t1", "investigating": true } }]));
+        assert_eq!(status_line(&looked[0]), "Codex 0.171.0 is held back, investigating why");
+        assert_eq!(hold_thread(&looked[0]), Some("t1"));
+        let mut done = looked[0].clone();
+        done.hold.as_mut().unwrap().investigating = false;
+        assert_eq!(status_line(&done), "Codex 0.171.0 is held back because the app-server protocol changed");
+        assert_eq!(hold_thread(&done), Some("t1"), "still links what it found");
+        assert_eq!(hold_thread(&clis[1]), None);
         let current = CliStatus { status: "current".into(), ..clis[0].clone() };
         assert_eq!(status_line(&current), "Claude Code 2.1.311, up to date");
         assert!(!cli_pending(&current));
         assert_eq!(managed_line(&CliStatus { managed_by: "none".into(), ..current }), Some("Set by hand in runner.json, so Threadbear leaves it alone"));
+    }
+
+    #[test]
+    fn an_agent_with_no_feed_hides_update_while_its_last_one_found_nothing() {
+        let agent = CliStatus { provider: "opencode".into(), name: Some("OpenCode".into()), installed_version: Some("1.19.5".into()), status: "unknown".into(), policy: "off".into(), can_update_now: true, ..Default::default() };
+        assert_eq!(status_line(&agent), "OpenCode 1.19.5");
+        assert_eq!(update_title(&agent), Some("Update"));
+        let checked = CliStatus { status: "current".into(), latest_version: Some("1.19.5".into()), update: Some(CliUpdate { state: "unchanged".into(), target_version: Some("1.19.5".into()), ..Default::default() }), ..agent };
+        assert_eq!(status_line(&checked), "OpenCode 1.19.5, up to date");
+        assert_eq!(update_title(&checked), None);
     }
 
     #[test]
@@ -985,6 +1235,36 @@ mod tests {
         let week = zone.timestamp_millis_opt(parse_ms("2026-11-14T01:20:00.000Z").unwrap()).unwrap();
         assert_eq!(checked_line(&clis, &week).as_deref(), Some("Checked Wed 9 am"));
         assert_eq!(checked_line(&[], &Local::now()), None);
+    }
+
+    #[test]
+    fn the_icon_shows_the_next_version_without_a_click() {
+        let app = |f: fn(&mut AppSide)| {
+            let mut a = AppSide { running: Some("abc1234".into()), ..Default::default() };
+            f(&mut a);
+            a
+        };
+        let nothing = app(|_| {});
+        assert_eq!(next_version(&nothing, None), NextVersion::None);
+        assert!(!quiet_dot(&nothing, None, &[]));
+        for coming in [app(|a| a.building = true), app(|a| a.settling = true), app(|a| a.waiting = true)] {
+            assert_eq!(next_version(&coming, None), NextVersion::Coming);
+            assert!(!quiet_dot(&coming, None, &[]), "the ring says it, so no grey dot too");
+        }
+        let runner = RunnerUpdates { state: "building".into(), ..Default::default() };
+        assert_eq!(next_version(&nothing, Some(&runner)), NextVersion::Coming);
+        assert!(!quiet_dot(&nothing, Some(&runner), &[]));
+        let ready = app(|a| {
+            a.staged = Some("def5678".into());
+            a.building = true;
+        });
+        assert_eq!(next_version(&ready, None), NextVersion::Ready, "ready wins over a newer one building");
+        assert!(!quiet_dot(&ready, None, &[]));
+        // What the ring and the green don't cover keeps its grey dot.
+        assert!(quiet_dot(&app(|a| a.failed = true), None, &[]));
+        assert!(quiet_dot(&ready, None, &mock_clis()));
+        let old = RunnerUpdates { state: "idle".into(), old_runners: vec![OldRunner::default()], ..Default::default() };
+        assert!(quiet_dot(&nothing, Some(&old), &[]));
     }
 
     #[test]
@@ -1103,7 +1383,7 @@ mod tests {
         let unsigned = Release { commit: Some("main".into()), ..release.clone() };
         assert!(bring_in_prompt(&unsigned).contains("Threadbear. Follow"), "a commit that isn't one is left out");
         // Notes for older tags only: dated, and the subjects after.
-        let older = Release { notes: vec![Notes { tag: "release/2026-11-08".into(), lines: vec!["x".into()] }], ..release.clone() };
+        let older = Release { notes: vec![Notes { tag: "release/2026-11-08".into(), date: None, lines: vec!["x".into()] }], ..release.clone() };
         assert_eq!(release_lines(&older), [(Some("8 Nov".to_string()), vec!["x".to_string()]), (Some("Every change".to_string()), vec!["a".to_string(), "b".to_string(), "c".to_string()])]);
         let idle = Upstream { state: "idle".into(), release: Some(release.clone()), ..Default::default() };
         assert_eq!(upstream_line(Some(&idle)).as_deref(), Some("You're up to date with Mike's release of 10 Nov."));
@@ -1111,6 +1391,78 @@ mod tests {
         assert_eq!(upstream_line(Some(&mine)).as_deref(), Some("Your last release for everyone else is release/2026-11-11."));
         let failed = Upstream { state: "failed".into(), reason: Some("no network".into()), ..Default::default() };
         assert_eq!(upstream_line(Some(&failed)).as_deref(), Some("Couldn't check for Mike's releases: no network"));
-        assert_eq!(release_date("release/2026-13-01"), "release/2026-13-01");
+        assert_eq!(release_day("release/2026-13-01", None), "release/2026-13-01");
     }
+
+    #[test]
+    fn a_release_is_dated_where_the_reader_is() {
+        // release/2026-11-15 was tagged at 8:26 am on 14 Nov in California
+        // (00:26 on the 15th in Perth): Wayne saw "15 Nov" on the 14th.
+        let tag = "release/2026-11-15";
+        let at = Some("2026-11-14T16:26:37.000Z");
+        let california = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        let perth = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(release_day_in(tag, at, &california), "14 Nov");
+        assert_eq!(release_day_in(tag, at, &perth), "15 Nov");
+        assert_eq!(release_day_in(tag, None, &california), "15 Nov", "an older runner sends no date: the tag's own");
+        assert_eq!(release_day_in(tag, Some("soon"), &california), "15 Nov", "a date that doesn't parse is the same");
+        let r = RunnerUpdates::decode(&json!({ "state": "idle", "upstream": { "state": "available",
+            "release": { "tag": tag, "date": at, "changes": 1, "subjects": ["a"], "notes": [{ "tag": tag, "date": at, "lines": ["x"] }] } } })).unwrap();
+        let release = r.upstream.unwrap().release.unwrap();
+        assert_eq!(release.date.as_deref(), at);
+        assert_eq!(release.notes[0].date.as_deref(), at);
+    }
+
+    #[test]
+    fn the_from_mike_section_shows_the_pages_cards_counts_and_notes_it_has_no_entry_for() {
+        let up = |changelog: Value| {
+            RunnerUpdates::decode(&json!({ "state": "idle", "upstream": { "state": "available", "release": {
+                "tag": "release/2026-11-16", "changes": 41, "subjects": ["a"],
+                "important": [{ "commit": "1", "why": "Pairing tokens" }, { "commit": "2", "why": "Pairing tokens" }, { "commit": "3", "why": "Open gate" }],
+                "notes": [
+                    { "tag": "release/2026-11-16", "lines": ["Reviewers"] },
+                    { "tag": "release/2026-11-15", "lines": ["Fifteen"] },
+                    { "tag": "release/2026-11-14", "lines": ["Open Anything"] }
+                ],
+                "changelog": changelog
+            } } }))
+            .unwrap()
+            .upstream
+            .unwrap()
+            .release
+            .unwrap()
+        };
+        let card = |kind: &str, title: &str| json!({ "kind": kind, "title": title, "text": "x", "picture": format!("https://threadbear.mikecann.app/media/changelog/x/{title}.webp") });
+        let r = up(json!({ "page": "https://threadbear.mikecann.app/changelog", "releases": [
+            { "tag": "release/2026-11-16", "link": "https://threadbear.mikecann.app/changelog#2026-11-16", "highlights": [card("changed", "reviewers")], "added": 1, "changed": 3, "fixed": 6 },
+            { "tag": "release/2026-11-14", "link": "https://threadbear.mikecann.app/changelog#2026-11-14", "highlights": [
+                card("added", "app"), { "kind": "added", "title": "anything", "text": "x", "picture": "https://threadbear.mikecann.app/a.webp", "clip": true }, card("added", "reinstall"), card("changed", "spelling"),
+                // Not a web picture: left out.
+                { "kind": "added", "title": "local", "text": "x", "picture": "file:///etc/passwd" }
+            ], "added": 4, "changed": 16, "fixed": 7 }
+        ] }));
+        assert_eq!(r.important, ["Pairing tokens", "Open gate"]);
+        let d = release_digest(&r).unwrap();
+        let titles: Vec<_> = d.cards.iter().map(|(c, link)| (c.title.as_str(), link.rsplit('#').next().unwrap())).collect();
+        assert_eq!(titles, [("reviewers", "2026-11-16"), ("app", "2026-11-14"), ("anything", "2026-11-14"), ("reinstall", "2026-11-14")]);
+        assert!(d.cards[2].0.clip);
+        assert_eq!(d.more, 1);
+        assert_eq!(digest_counts(&d), "8 added, 21 changed, 13 fixed");
+        assert_eq!(important_line(d.important.len()).as_deref(), Some("2 important fixes"));
+        assert_eq!(important_line(1).as_deref(), Some("1 important fix"));
+        assert_eq!(important_line(0), None);
+        assert_eq!(important_tip(&["the pairing token".to_owned(), "Open gate".to_owned()]), "• The pairing token\n• Open gate");
+        assert_eq!(d.page, "https://threadbear.mikecann.app/changelog");
+        // 15 Nov isn't on the page yet, so its notes stand in, dated.
+        assert_eq!(d.notes, [(Some("15 Nov".to_owned()), vec!["Fifteen".to_owned()])]);
+        // No page, or one with none of these releases: the notes as before.
+        assert_eq!(release_digest(&up(Value::Null)), None);
+        assert_eq!(release_digest(&up(json!({ "page": "https://threadbear.mikecann.app/changelog", "releases": [] }))), None);
+        assert_eq!(release_digest(&up(json!({ "page": "http://evil.example/changelog", "releases": [{ "tag": "release/2026-11-16" }] }))), None);
+        // A release on the page with no cards still counts its lines.
+        let plain = release_digest(&up(json!({ "page": "https://threadbear.mikecann.app/changelog", "releases": [{ "tag": "release/2026-11-15", "added": 0, "changed": 4, "fixed": 1 }] }))).unwrap();
+        assert!(plain.cards.is_empty());
+        assert_eq!(digest_counts(&plain), "4 changed, 1 fixed");
+    }
+
 }

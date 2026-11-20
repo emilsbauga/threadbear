@@ -12,8 +12,22 @@
 // the owner key, and nothing changes for it.
 
 // keyId: the runnerKeys row, so what a key starts (an upload URL) dies with it.
-export type Caller = { owner: true } | { owner: false; runnerId: string; keyId?: string };
+// A box key (docs/virtual-runners.md, decision 4) is a third kind: one box's
+// on a virtual runner, for one runnerId *and* one thread. It isn't a
+// runnerKeys row and doesn't count toward MAX_RUNNER_KEYS; the boxes row
+// keeps its hash, and a new box for the thread replaces it (boxes.ts
+// exchange), so the last box's key is refused from that moment.
+export type BoxScope = { id: string; threadId: string; keyHash: string };
+export type Caller = { owner: true; box?: undefined } | { owner: false; runnerId: string; keyId?: string; box?: undefined } | { owner: false; runnerId: string; box: BoxScope; keyId?: undefined };
 export type RunnerKeyRow = { _id?: string; runnerId: string; revokedAt?: number };
+// The boxes row whose boxKeyHash matched. Its state says whether the key is
+// still good: a box being destroyed, gone or failed has none (the machine
+// clears the hash too, boxMachine.ts).
+export type BoxKeyRow = { _id: string; runnerId: string; threadId: string; boxKeyHash?: string; boxState: { kind: string } };
+export const BOX_KEY_DEAD: readonly string[] = ['destroying', 'gone', 'expired', 'failed'];
+// What a box key looks like (boxes.ts newBoxKey): only keys with this start
+// are looked up among boxes, so a runner key never is.
+export const BOX_KEY_PREFIX = 'tbb_';
 
 // Compared without stopping at the first difference, so the time a wrong
 // key takes says nothing about how much of it was right.
@@ -32,11 +46,24 @@ export function isOwnerKey(key: string, ownerKeys: (string | undefined)[]): bool
 
 // `row` is the runnerKeys row whose hash matches the key, if any. Null: not
 // a key this deployment knows (or a revoked one).
-export function callerFrom(key: string, ownerKeys: string | undefined | (string | undefined)[], row: RunnerKeyRow | null | undefined): Caller | null {
+// `box` is the boxes row whose boxKeyHash matches the key, if any.
+export function callerFrom(key: string, ownerKeys: string | undefined | (string | undefined)[], row: RunnerKeyRow | null | undefined, box?: BoxKeyRow | null): Caller | null {
   if (!key) return null;
   if (isOwnerKey(key, Array.isArray(ownerKeys) ? ownerKeys : [ownerKeys])) return { owner: true };
   if (row && !row.revokedAt) return { owner: false, runnerId: row.runnerId, ...(row._id ? { keyId: row._id } : {}) };
+  if (box && box.boxKeyHash && key.startsWith(BOX_KEY_PREFIX) && !BOX_KEY_DEAD.includes(box.boxState.kind)) {
+    return { owner: false, runnerId: box.runnerId, box: { id: box._id, threadId: box.threadId, keyHash: box.boxKeyHash } };
+  }
   return null;
+}
+
+/**
+ * A box key reaches its one thread only. `threadId` is the thread the row
+ * belongs to; a check that doesn't say (a schedule, a Pocket card) is
+ * refused to a box. Any other caller passes.
+ */
+export function ownThreadOnly(c: Caller, threadId: string | undefined): boolean {
+  return c.owner || !c.box || (threadId !== undefined && threadId === c.box.threadId);
 }
 
 // A runner id as runner.json's sync.runnerId has it (ensureRunnerId makes 12
@@ -60,9 +87,9 @@ export function actsAs(c: Caller, runnerId: string): boolean {
  * put one on another runner (a schedule there is that Mac running what it
  * says, with the permissions it says).
  */
-export function mayWrite(c: Caller, incomingRunnerId: string, existingRunnerId: string | undefined): boolean {
+export function mayWrite(c: Caller, incomingRunnerId: string, existingRunnerId: string | undefined, threadId?: string): boolean {
   if (c.owner) return true;
-  return incomingRunnerId === c.runnerId && (existingRunnerId === undefined || existingRunnerId === c.runnerId);
+  return incomingRunnerId === c.runnerId && (existingRunnerId === undefined || existingRunnerId === c.runnerId) && ownThreadOnly(c, threadId);
 }
 
 /**
@@ -72,8 +99,8 @@ export function mayWrite(c: Caller, incomingRunnerId: string, existingRunnerId: 
  * nobody has yet would show once the owner made that thread, and what's
  * left under a gone one may be anyone's.
  */
-export function mayTouch(c: Caller, existingRunnerId: string | undefined): boolean {
-  return c.owner || (existingRunnerId !== undefined && existingRunnerId === c.runnerId);
+export function mayTouch(c: Caller, existingRunnerId: string | undefined, threadId?: string): boolean {
+  return c.owner || (existingRunnerId !== undefined && existingRunnerId === c.runnerId && ownThreadOnly(c, threadId));
 }
 
 /**
@@ -98,9 +125,9 @@ export function isThreadId(id: unknown): id is string {
  * own runner, so it can't pick up a pruned thread's messages or put rows
  * where another runner's thread is listed.
  */
-export function mayClaim(c: Caller, id: { claimedBy: string[]; leftovers: boolean }): boolean {
+export function mayClaim(c: Caller, id: { claimedBy: string[]; leftovers: boolean; threadId?: string }): boolean {
   if (c.owner) return true;
-  return !id.leftovers && id.claimedBy.every((r) => r === c.runnerId);
+  return !id.leftovers && id.claimedBy.every((r) => r === c.runnerId) && ownThreadOnly(c, id.threadId);
 }
 
 /**
@@ -120,13 +147,16 @@ export function mayUseStorage(c: Caller, uploader: string | undefined): boolean 
  * owner's Mac would take, phone.ts mainRunner) waits for the owner key, as
  * its text is whatever Mike said.
  */
-export function mayTake(c: Caller, cmd: { runnerId: string }): boolean {
+export function mayTake(c: Caller, cmd: { runnerId: string; threadId?: string }): boolean {
   if (c.owner) return true;
   // Said outright, not left to "no key is for any" (one made before that check would be).
-  return cmd.runnerId !== 'any' && cmd.runnerId === c.runnerId;
+  if (cmd.runnerId === 'any' || cmd.runnerId !== c.runnerId) return false;
+  // A box: its own thread's commands, or its runner's own (only the owner
+  // and the phone queue those), never one naming another thread.
+  return !c.box || cmd.threadId === undefined || cmd.threadId === c.box.threadId;
 }
 
-export function mayFinish(c: Caller, cmd: { runnerId: string }): boolean {
+export function mayFinish(c: Caller, cmd: { runnerId: string; threadId?: string }): boolean {
   return mayTake(c, cmd);
 }
 
@@ -137,7 +167,8 @@ export function mayFinish(c: Caller, cmd: { runnerId: string }): boolean {
  * was filed with the owner key, or before runner keys.
  */
 export function ownsCard(c: Caller, card: { runnerId?: string }): boolean {
-  return c.owner || card.runnerId === c.runnerId;
+  // A box files no cards (BOX_CALLS), so it owns none.
+  return c.owner || (!c.box && card.runnerId === c.runnerId);
 }
 
 // Every runner-facing function (sync.ts and relay.ts) and who may call it. A unit test
@@ -214,6 +245,15 @@ export const ACCESS: Record<string, Access> = {
   pools: 'shared',
   savePools: 'owner',
   adoptPools: 'owner',
+  // Shared memory (API 84, memorySync.ts): every runner reads the main
+  // Mac's files, but only the main key writes them, as they brief every
+  // agent everywhere. A runner key's own saves are offers, read by the
+  // main key alone.
+  putMemory: 'owner',
+  memorySince: 'shared',
+  offerMemory: 'own',
+  memoryOffers: 'owner',
+  takeMemoryOffers: 'owner',
   savePocketCard: 'own',
   removePocketCard: 'own',
   pocketCards: 'own',
@@ -251,6 +291,8 @@ export const ACCESS: Record<string, Access> = {
   // Full sync (API 52): a runner writes its own threads' tool output, and only
   // the main Mac's runner reads another runner's.
   remoteBody: 'owner',
+  // The pictures pasted into another runner's messages, with their URLs (API 87).
+  picturesAtSeqs: 'owner',
   // Asking another runner (relay.ts): a runner key files and reads back its
   // own requests; only the main Mac's runner reads any and answers them.
   fileRequest: 'own',
@@ -275,6 +317,22 @@ export const ACCESS: Record<string, Access> = {
   moveFailed: 'own',
   // The main Mac's own uploads for a move that ended first (moves.ts).
   moveDropChunks: 'owner',
+  // boxes.ts (docs/virtual-runners.md): the main Mac makes and lists the
+  // virtual runners, starts a thread on one, sets a login's cloud token,
+  // mints a box's boot token and archives a box; a box says it has saved
+  // its thread. boxes:exchange takes a boot token, not a key.
+  runnerServices: 'owner',
+  setRunnerService: 'owner',
+  startThread: 'owner',
+  wakePastHours: 'owner',
+  setCloudToken: 'owner',
+  cloudTokens: 'owner',
+  // A box's own login's token (API 94): refused by a turn, and fetched again once set.
+  tokenRefused: 'own',
+  boxCloudToken: 'own',
+  mintBootToken: 'owner',
+  archiveBox: 'owner',
+  boxSaved: 'own',
 };
 
 // A runner name as lists show it, for a runner key's heartbeat: folded to
@@ -351,6 +409,48 @@ const WIDE_ISO_TIME = /^[+-]\d{6}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|
 export function isReadableTime(value: unknown): value is string {
   return isIsoTime(value) || (typeof value === 'string' && WIDE_ISO_TIME.test(value) && Number.isFinite(Date.parse(value)));
 }
+// A link a thread row carries (an ask's links, its patches' url actions) is
+// a web page or nothing: http or https with a host, short enough to show
+// whole. A runner sends only those (runner/src/sync.ts), so anything else
+// came from a runner that isn't honest or isn't this release, and it's
+// dropped here rather than handed to a phone or a browser to dispatch to
+// another app (Daybreak finding 139, 16 Nov 2026). The website and phones
+// check again as they draw it.
+export const MAX_LINK_CHARS = 2048;
+export function isWebLink(url: unknown): boolean {
+  if (typeof url !== 'string' || url.length > MAX_LINK_CHARS || !/^https?:\/\//i.test(url)) return false;
+  try {
+    const u = new URL(url);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname;
+  } catch {
+    return false;
+  }
+}
+
+export function isThreadLink(url: unknown): boolean {
+  return typeof url === 'string' && /^thread:[\w-]{1,64}$/i.test(url);
+}
+
+/** A thread row with every link that isn't a web page (or, on an ask, another thread) taken out. */
+export function webLinksOnly<T extends Record<string, any>>(t: T): T {
+  const out: Record<string, any> = { ...t };
+  if (Array.isArray(out.links)) {
+    out.links = out.links.filter((l: any) => isWebLink(l?.url));
+    if (!out.links.length) delete out.links;
+  }
+  if (Array.isArray(out.asks)) {
+    out.asks = out.asks.map((a: any) => {
+      if (!Array.isArray(a?.links)) return a;
+      // An ask may also link another thread (thread:<id>), which the phone
+      // and the web open in place, not as an address.
+      const links = a.links.filter((l: any) => isWebLink(l?.url) || isThreadLink(l?.url));
+      const { links: _links, ...rest } = a;
+      return links.length ? { ...rest, links } : rest;
+    });
+  }
+  return out as T;
+}
+
 export function holdThreadTimes(t: Record<string, any>, ok: (value: unknown) => boolean = isIsoTime): void {
   if (!ok(t.lastActivityAt)) {
     const ms = t.lastActivityMs;
@@ -469,9 +569,68 @@ export function impossibleUsage(u: UsageDoc, now: number): boolean {
   return !fitted || fitted.windows.length !== u.windows.length || fitted.windows.some((w, i) => w.resetsAt !== u.windows[i]!.resetsAt);
 }
 
-/** The gate at the top of every function. One not in ACCESS is owner-only. */
+/**
+ * What a box key may call (docs/virtual-runners.md, decision 4): what its
+ * runner needs to run its one thread, and nothing more. Each is also 'own'
+ * or 'shared' in ACCESS, and each checks the thread as the function's own
+ * rule says (ownThreadOnly). Not here, so refused: everything owner-only,
+ * schedules, Pocket, projects, logins and their readings (the service sets
+ * a box's login), pools, shared memory (Mike's own notes, and a box runs
+ * code nobody has read), presence, prune and machine figures. A new thread
+ * from a box goes through fileRequest, which asks Mike with a card.
+ */
+export const BOX_CALLS: ReadonlySet<string> = new Set([
+  'heartbeat',
+  'bye',
+  'upsertThreads',
+  'removeThreads',
+  'threadsOf',
+  'sharedThreads',
+  'appendMessages',
+  'messageHeads',
+  'appendBodies',
+  'replyImages',
+  'addReplyImage',
+  'shareImages',
+  'addShareImage',
+  'dropShareImages',
+  'addHeldPicture',
+  'iconUploadUrl',
+  'setThreadIndex',
+  'pendingCommands',
+  'takeCommand',
+  'finishCommand',
+  'fileRequest',
+  'runnerRequest',
+  'closeRequest',
+  'moves',
+  'moveInfo',
+  'moveReady',
+  'moveFrozen',
+  'moveChunkUrl',
+  'movePacked',
+  'moveChunks',
+  'moveClaim',
+  'moveDone',
+  'moveFailed',
+  'boxSaved',
+  'tokenRefused',
+  'boxCloudToken',
+]);
+
+/**
+ * The box calls that only read (queries): every other box call can make
+ * work, so the box's attempt joins those that may hold work newer than its
+ * save (lib.ts keyUsed). runner-access.test.ts checks this against the
+ * functions themselves.
+ */
+export const BOX_READS: ReadonlySet<string> = new Set(['threadsOf', 'sharedThreads', 'messageHeads', 'replyImages', 'shareImages', 'pendingCommands', 'runnerRequest', 'moves', 'moveChunks']);
+
+/** The gate at the top of every function. One not in ACCESS is owner-only; a box key has BOX_CALLS alone. */
 export function mayCall(c: Caller, fn: string): boolean {
-  return c.owner || ACCESS[fn] === 'own' || ACCESS[fn] === 'shared';
+  if (c.owner) return true;
+  if (c.box && !BOX_CALLS.has(fn)) return false;
+  return ACCESS[fn] === 'own' || ACCESS[fn] === 'shared';
 }
 
 // What a runner key gets back from something that isn't its own. The kind

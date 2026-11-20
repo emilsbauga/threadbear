@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { placePictures, unplacedPictures } from '../../src/pictures.ts';
+import { picturesSaid, placePictures, unplacedPictures, withoutCountLine } from '../../src/pictures.ts';
 import type { ImageRef } from '../../src/protocol.ts';
 
 const red: ImageRef = { path: '/media/red.png', mediaType: 'image/png' };
@@ -72,4 +72,57 @@ test('the pictures no marker places are counted, for the mirror\'s line', () => 
   assert.equal(unplacedPictures('see [Picture 2]', 3), 2);
   assert.equal(unplacedPictures('no markers', 1), 1);
   assert.equal(unplacedPictures('[Picture 1] [Picture 1]', 1), 0);
+});
+
+// Another Mac's runner has only a mirrored message's words (relay.ts): how
+// many pictures they say it came with, and the words without the line the
+// owning runner adds for the ones no marker places (sync.ts toMessageDoc).
+test("a mirrored message's words say how many pictures it came with", () => {
+  assert.deepEqual(picturesSaid('Fix it'), { count: 0, words: 'Fix it' });
+  assert.deepEqual(picturesSaid('[1 picture]'), { count: 1, words: '' });
+  assert.deepEqual(picturesSaid('Look\n\n[3 pictures]'), { count: 3, words: 'Look' });
+  assert.deepEqual(picturesSaid('this [Picture 1] like [Picture 2]'), { count: 2, words: 'this [Picture 1] like [Picture 2]' });
+  // One placed by its marker, one not.
+  assert.deepEqual(picturesSaid('like [Picture 2] please\n\n[1 picture]'), { count: 2, words: 'like [Picture 2] please' });
+  // A marker naming no picture is only words, as placePictures has it.
+  assert.deepEqual(picturesSaid('see [Picture 5]'), { count: 0, words: 'see [Picture 5]' });
+  assert.deepEqual(picturesSaid('[Picture 1] and [Picture 3]'), { count: 1, words: '[Picture 1] and [Picture 3]' });
+  // The line counts only at the very end, in a paragraph of its own.
+  assert.deepEqual(picturesSaid('[2 pictures] came'), { count: 0, words: '[2 pictures] came' });
+  assert.deepEqual(picturesSaid('I sent [2 pictures]'), { count: 0, words: 'I sent [2 pictures]' });
+});
+
+test('what the words say agrees with what the sending runner counted', () => {
+  for (const [text, images] of [['a [Picture 1] b', 1], ['a', 2], ['[Picture 2] x', 3], ['', 1], ['[Picture 3] [Picture 1]', 3], ['[Picture 1] [Picture 1]', 1]] as const) {
+    const unplaced = unplacedPictures(text, images);
+    const note = unplaced === 1 ? '[1 picture]' : unplaced ? `[${unplaced} pictures]` : '';
+    const mirrored = note ? (text ? `${text}\n\n${note}` : note) : text;
+    assert.deepEqual(picturesSaid(mirrored), { count: images, words: text }, mirrored);
+  }
+});
+
+// A row that says how many pictures it came with (API 87): the line comes
+// off only when it's the one the owning runner added for that count, never
+// a paragraph Mike typed that happens to look like one.
+test('the counting line comes off a message whose count is known, and only that line', () => {
+  assert.equal(withoutCountLine('Look\n\n[2 pictures]', 2), 'Look');
+  assert.equal(withoutCountLine('[1 picture]', 1), '');
+  assert.equal(withoutCountLine('like [Picture 2] please\n\n[1 picture]', 2), 'like [Picture 2] please');
+  // Every picture placed: no line was added, so a typed one stays.
+  assert.equal(withoutCountLine('[Picture 1] see\n\n[300 pictures]', 1), '[Picture 1] see\n\n[300 pictures]');
+  // A literal marker past the count is words, and changes nothing.
+  assert.equal(withoutCountLine('[Picture 1] and the literal token [Picture 2]', 1), '[Picture 1] and the literal token [Picture 2]');
+  assert.equal(withoutCountLine('Fix it', 0), 'Fix it');
+});
+
+// The owning runner writes "[1 picture]" or "[N pictures]" for N of 2 or
+// more, never "[0 pictures]" or "[1 pictures]": a paragraph like those was
+// typed, and stays (Codex's second review, 18 Nov).
+test('a count line the runner never writes is words', () => {
+  for (const text of ['[Picture 1]\n\n[0 pictures]', '[Picture 1]\n\n[1 pictures]', '[Picture 1]\n\n[02 pictures]']) {
+    assert.equal(withoutCountLine(text, 1), text);
+    assert.deepEqual(picturesSaid(text), { count: 1, words: text });
+  }
+  assert.deepEqual(picturesSaid('[0 pictures]'), { count: 0, words: '[0 pictures]' });
+  assert.deepEqual(picturesSaid('a\n\n[10 pictures]'), { count: 10, words: 'a' });
 });

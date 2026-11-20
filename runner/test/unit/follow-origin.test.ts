@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from '../helpers/fakes.ts';
+import { NO_LINKS_ON_WINDOWS } from '../helpers/platform.ts';
 import { cleanGitError, followOrigin, ORIGIN_MAIN, oldestMissingAt, followOriginOn, landRefusal } from '../../src/follow-origin.ts';
 import { syncClone } from '../../src/update.ts';
 
@@ -49,6 +50,10 @@ function rig() {
   const checkout = path.join(tmpDir('tb-origin-co-'), 'threadbear');
   const r = spawnSync('git', ['clone', '-q', upstream, checkout], { encoding: 'utf8', env });
   assert.equal(r.status, 0, r.stderr);
+  // The code under test runs git with the machine's own config. On Windows that
+  // is usually core.autocrlf=true, which would make the working tree CRLF and
+  // the file reads below differ.
+  git(checkout, 'config', 'core.autocrlf', 'false');
   return { upstream, checkout, first };
 }
 
@@ -208,7 +213,7 @@ test('followOriginOn reads runner.json each time, and only true counts', () => {
   assert.equal(followOriginOn(home), false);
 });
 
-test('tb land refuses only on a followOrigin machine, and only for the repo it follows', () => {
+test('tb land refuses only on a followOrigin machine, and only for the repo it follows', NO_LINKS_ON_WINDOWS, () => {
   const home = tmpDir('tb-origin-land-');
   const checkout = tmpDir('tb-origin-land-co-');
   git(checkout, 'init', '-q', '-b', 'main');

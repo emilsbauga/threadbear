@@ -115,11 +115,14 @@ follow-up is an ordinary reply there; ↗ opens it.
 - It only listens when asked (the intent or the inbox's waveform button), and
   nothing shows until a server and token are set, so App Store users without
   an archive never see it.
-- The server and token: a QR code of `threadbear://quickask?url=<server>&token=<aa_…>`,
-  or typed into Settings. The token is an archive phone token issued on
-  Bruce (agent-archive's `scripts/phone-token.mjs`, `--bruce`). Get it onto
-  the phone as a QR code, never through the Mac clipboard: Quick Ask's
-  OpenRouter key leaked that way.
+- The server and token: Settings › Ask › Scan the code, of the setup code
+  agent-archive's `npm run phone-token -- issue --bruce --qr` shows
+  (`TBASK1_…`, a one-use code good for ten minutes, never the token), which
+  the phone trades for its token at `/api/quick/claim` (`QuickAskSetup`,
+  docs/ask-server.md); or typed into Settings. Never through the Mac
+  clipboard: Quick Ask's OpenRouter key leaked that way. A
+  `threadbear://quickask` link is refused from anywhere: any app can claim
+  the scheme, so it could catch the token as the link opened.
 - Debug builds take `-QuickAskServer <url> -QuickAskToken <token>
   -QuickAskDebugQuestion "…"` (and `-quickAsk.speakAnswers NO`) to ask from
   the simulator with no mic. The simulator reaches the server through the

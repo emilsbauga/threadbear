@@ -2,7 +2,7 @@
 // sidebar (sidebar.tsx) beside a thread with each finished turn folded to
 // "Worked for 4m 12s" and its reply, and the agent's card of asks joined to
 // the composer. A shared thread (/s/<slug>) is share.tsx.
-import { Component, Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Component, Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useMutation, useQuery } from 'convex/react';
 import { useLiveQuery } from './live';
 import { InboxProvider, useInbox } from './inbox';
@@ -11,16 +11,19 @@ import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
 import { go, threadPath, useRoute } from './route';
-import { useToken } from './token';
+import { useSignInNote, useSigningIn, useToken } from './token';
 import { lastWorkedOn, recapDue, recapParts } from './view-logic';
 import { MessageText, Pictures, picturesByRow, ToolRun, Worked, type PageMessage } from './messages';
 import { ReplyButton } from './reply-button';
+import { OutLink } from './link-confirm';
 import { CommandState } from './command-state';
 import { previewOf, ShareControl, SharePage } from './share';
 import { busy, Lists, ResizeHandle, type Row, useSidebarWidth } from './sidebar';
 import { Pop } from './menu';
 import { pastedOf } from './picture-chips';
 import { Rail } from './rail';
+// Loaded only when it's opened: the viewer's diagrams are most of its size.
+const MachinesPage = lazy(() => import('./machines'));
 import { NewThread, ProjectPage, ProjectsList, RunnerPage, RunnersList, ScheduledList, SchedulePage, UsageList, UsagePage } from './pages';
 import { duration, fold, isNote, splitTurns, type Item } from './turns';
 import { folderName, sender } from './format';
@@ -37,6 +40,15 @@ export function App() {
   // A shared thread is for anyone, signed in or not.
   if (route.page === 'share') return <SharePage key={route.slug} slug={route.slug} token={token} />;
   if (!token) return <SignIn />;
+  // The backend's state machines: a page of its own, the viewer filling it.
+  if (route.page === 'machines')
+    return (
+      <Catch key={token}>
+        <Suspense fallback={<main className="signin"><p>Loading the machines…</p></main>}>
+          <MachinesPage token={token} />
+        </Suspense>
+      </Catch>
+    );
   // Keyed on the token so a fresh sign-in clears an earlier auth error.
   return (
     <Catch key={token}>
@@ -50,10 +62,22 @@ export function App() {
 // ------------------------------------------------------------ sign-in
 
 function SignIn({ expired }: { expired?: boolean }) {
+  const signingIn = useSigningIn();
+  const note = useSignInNote();
+  if (signingIn) {
+    return (
+      <main className="signin">
+        <img src="/icon.png" alt="" width={72} height={72} />
+        <h1>Threadbear</h1>
+        <p>Signing in…</p>
+      </main>
+    );
+  }
   return (
     <main className="signin">
       <img src="/icon.png" alt="" width={72} height={72} />
       <h1>Threadbear</h1>
+      {note ? <p>{note}</p> : null}
       <p>{expired ? 'This browser’s sign-in has expired or been revoked.' : 'This browser isn’t signed in yet.'}</p>
       <p>On the Mac, open Threadbear, then Settings › Phone &amp; browser › Open signed in.</p>
       <p className="muted small">
@@ -112,7 +136,7 @@ function Shell({ token, route }: { token: string; route: ReturnType<typeof useRo
         {route.page === 'scheduled' ? (
           <ScheduledList token={token} selected={id} />
         ) : route.page === 'projects' ? (
-          <ProjectsList token={token} selected={id} />
+          <ProjectsList token={token} selected={route.page === 'projects' && id && route.runnerId ? { runnerId: route.runnerId, id } : undefined} />
         ) : route.page === 'runners' ? (
           <RunnersList token={token} selected={id} />
         ) : route.page === 'usage' ? (
@@ -130,7 +154,7 @@ function Shell({ token, route }: { token: string; route: ReturnType<typeof useRo
         ) : route.page === 'scheduled' && id ? (
           <SchedulePage key={id} token={token} id={id} />
         ) : route.page === 'projects' && id ? (
-          <ProjectPage key={id} token={token} id={id} />
+          <ProjectPage key={`${route.runnerId ?? ''}/${id}`} token={token} runnerId={route.runnerId} id={id} />
         ) : route.page === 'runners' && id ? (
           <RunnerPage key={id} token={token} id={id} />
         ) : route.page === 'usage' && id ? (
@@ -199,7 +223,9 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
   const messages = useMemo(() => rows.filter((m) => !isNote(m)), [rows]);
   if (!shown || !t) return <div className="pad muted">Loading…</div>;
 
-  const pictures = shown.images ?? [];
+  // A live page (API 95) runs only in the Mac and iPhone apps' sealed views:
+  // here it's its title, never an <img> or a link to its file.
+  const pictures = (shown.images ?? []).filter((p) => (p as { mediaType?: string }).mediaType !== 'text/html');
   const inText = new Map(pictures.filter((p) => p.src).map((p) => [p.src!, p.url]));
   const after = picturesByRow(messages, pictures);
   const linkTo = (id: string) => threadPath(inbox?.find((r) => r.threadId.startsWith(id))?.threadId ?? id);
@@ -309,8 +335,8 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
 
       <div className="dock">
         {pending ? <CommandState token={token} commandId={pending} onDone={() => setPending(null)} /> : null}
-        <RecapBox thread={t} />
-        <Dock token={token} thread={t} lastSeq={lastSeq} onSent={setPending} onArchive={() => void act({ archive: true })} />
+        <RecapBox key={t.threadId} thread={t} />
+        <Dock token={token} thread={t} lastSeq={lastSeq} onSent={setPending} onArchive={() => void act({ archive: true })} linkTo={linkTo} />
       </div>
     </article>
   );
@@ -351,8 +377,12 @@ function MoreMenu({ items }: { items: ({ label: string; icon: ReactNode; run: ()
 function RecapBox({ thread: t }: { thread: Row }) {
   const key = `recap-away:${t.threadId}`;
   const [dismissed, setDismissed] = useState(() => localStorage.getItem(key));
-  useEffect(() => setDismissed(localStorage.getItem(key)), [key]);
-  if (!recapDue(t, dismissed, Date.now()) || !t.recap) return null;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  if (!recapDue(t, dismissed, now) || !t.recap) return null;
   const { purpose, points } = recapParts(t.recap);
   return (
     <section className="recap">
@@ -370,7 +400,7 @@ function RecapBox({ thread: t }: { thread: Row }) {
       </button>
       {purpose ? <p>{purpose}</p> : null}
       <ul>{points.map((p, i) => <li key={i}>{p}</li>)}</ul>
-      <p className="recap-when">{lastWorkedOn(t.lastActivityAt, Date.now())}</p>
+      <p className="recap-when">{lastWorkedOn(t.lastActivityAt, now)}</p>
     </section>
   );
 }
@@ -382,7 +412,7 @@ function bookedWhen(at: string): string {
   return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
-function Dock({ token, thread: t, lastSeq, onSent, onArchive }: { token: string; thread: Row; lastSeq?: number; onSent: (id: Id<'commands'>) => void; onArchive: () => void }) {
+function Dock({ token, thread: t, lastSeq, onSent, onArchive, linkTo }: { token: string; thread: Row; lastSeq?: number; onSent: (id: Id<'commands'>) => void; onArchive: () => void; linkTo: (id: string) => string }) {
   const send = useMutation(api.phone.send);
   const interrupt = useMutation(api.phone.interrupt);
   const [text, setText] = useState(t.backlog?.text ?? '');
@@ -442,11 +472,27 @@ function Dock({ token, thread: t, lastSeq, onSent, onArchive }: { token: string;
           </div>
           {a.links?.length ? (
             <div className="ask-links">
-              {a.links.map((l) => (
-                <a key={l.url} className="btn primary" href={l.url} target="_blank" rel="noreferrer">
-                  {l.title} ↗
-                </a>
-              ))}
+              {a.links.map((l) =>
+                // An ask whose step is in another thread links it as
+                // thread:<id>: opened here, as the Mac and the phone do.
+                /^thread:/i.test(l.url) ? (
+                  <a
+                    key={l.url}
+                    className="btn primary"
+                    href={linkTo(l.url.slice(7))}
+                    onClick={(ev) => {
+                      ev.preventDefault();
+                      go(linkTo(l.url.slice(7)));
+                    }}
+                  >
+                    {l.title}
+                  </a>
+                ) : (
+                  <OutLink key={l.url} className="btn primary" href={l.url}>
+                    {l.title} ↗
+                  </OutLink>
+                ),
+              )}
             </div>
           ) : null}
           {choices(a).length ? (

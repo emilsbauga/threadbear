@@ -23,6 +23,22 @@ Feature: Editing a message
     Then the composer isn't editing
     And the transcript has my message "Only the calendar, please"
 
+  # Cancelling an edit puts back the box's words and its undo history, so ⌘Z
+  # still brings back a draft cleared before the pencil was pressed (Codex's
+  # review of the ⌘Z fix, 18 Nov).
+  @transcript.edit @composer.editing @swift-pending
+  Scenario: After cancelling an edit, ⌘Z still goes back through what was typed before
+    When I open the thread "Morning brief"
+    And I type "A draft I want back" in the composer
+    And I select everything in the composer and delete it
+    Then the composer is empty
+    When I edit my first message
+    And I press Escape
+    Then the composer isn't editing
+    When I put the cursor in the composer
+    And I press ⌘Z
+    Then the composer says "A draft I want back"
+
   # Daybreak finding 86 (11 Nov): with one approval waiting, Return in an
   # empty box allows it, and the GPUI app did that mid-edit too.
   @transcript.edit @composer.editing @transcript.approval

@@ -6,6 +6,8 @@ import { EventLog, ThreadStore, type ThreadRecord } from '../../src/store.ts';
 import { ensureHome, readToken, paths } from '../../src/config.ts';
 import type { PersistedEvent } from '../../src/protocol.ts';
 import { tmpDir } from '../helpers/fakes.ts';
+// NTFS has no modes: a file in the user's profile is already private to them (chmodSafe in src/platform.ts).
+import { IS_WINDOWS } from '../helpers/platform.ts';
 
 function ev(seq: number, text = `m${seq}`): PersistedEvent {
   return { seq, ts: '2026-10-26T00:00:00.000Z', threadId: 't1', type: 'system.note', text };
@@ -150,8 +152,8 @@ test('data dir layout and a 0600 token', () => {
   ensureHome(home);
   for (const d of ['threads', 'inbox', 'run', 'secrets']) assert.ok(fs.statSync(path.join(home, d)).isDirectory());
   const mode = fs.statSync(paths.token(home)).mode & 0o777;
-  assert.equal(mode, 0o600);
-  assert.equal(fs.statSync(paths.secrets(home)).mode & 0o777, 0o700);
+  if (!IS_WINDOWS) assert.equal(mode, 0o600);
+  if (!IS_WINDOWS) assert.equal(fs.statSync(paths.secrets(home)).mode & 0o777, 0o700);
   const token = readToken(home);
   assert.ok(token.length >= 40);
   ensureHome(home);

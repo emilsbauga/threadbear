@@ -2,7 +2,7 @@
 // shape on both apps), for the highlights, previews, patches and folder steps.
 import type { Dump } from './driver.ts';
 
-export type PaneRow = { title: string; lead?: string | null; trailing?: string | null; note?: string | null; detail?: string | null; symbol?: string | null; ticked?: boolean | null };
+export type PaneRow = { title: string; lead?: string | null; trailing?: string | null; note?: string | null; detail?: string | null; symbol?: string | null; ticked?: boolean | null; tone?: string | null; /** A list row's drawn symbol: its own icon, else its tone's shape. */ mark?: string | null; /** Its tone's shape beside the title, for a row with its own icon. */ toneMark?: string | null; /** A list row's switch (`toggle`); `pending` while a press is on its way. */ switch?: { id: string; on: boolean; symbol: string; pending: boolean } | null };
 export type PaneSection = { key: string; title: string; count: number; folded: boolean; rows: PaneRow[] };
 export type Pane = {
   section: string;
@@ -21,6 +21,8 @@ export type Pane = {
   previewNote?: string | null;
   /** What the bar offers: "preview" or "markdown" (a Markdown file's menu), "reading" or "editing" (the pencil and Done). */
   previewMode?: string | null;
+  /** The lines tinted for a link that named them (`a.ts:2-3`): "2-3". */
+  previewLines?: string | null;
   folder?: string | null;
 };
 
@@ -29,6 +31,9 @@ type WithPane = Dump & { panels?: { preview?: string | null; highlights?: string
 export const pane = (d: Dump): Pane | undefined => (d as WithPane).panels?.pane ?? undefined;
 // With / between its parts whatever the system: on Windows a path has backslashes.
 export const previewLine = (d: Dump): string | undefined => (d as WithPane).panels?.preview?.replaceAll('\\', '/') ?? undefined;
+// The preview line without " (editing)": code and plain text open with their
+// own text up to type in, which is still that file showing.
+export const previewShown = (d: Dump): string | undefined => previewLine(d)?.replace(/ \(editing\)$/, '');
 export const paneItems = (d: Dump) => (d as WithPane).panels?.items ?? [];
 export const highlightsFetching = (d: Dump): boolean => (d as WithPane).panels?.fetchingHighlights ?? false;
 export const sections = (d: Dump): PaneSection[] => pane(d)?.sections ?? [];

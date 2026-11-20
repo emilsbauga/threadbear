@@ -111,7 +111,7 @@ For v1, set `CLAUDE_CODE_USE_POWERSHELL_TOOL=0` in `cliEnv`.
 | Deploy branching | `scripts/deploy.mjs:72` treats everything non-Linux as macOS. Affects `plutil` (line 265), `launchctl`, restart command (line 917), `root:scripts/setup.mjs:213`. | Make it three-way. Restart through the existing `runner.restart` RPC. | M |
 | Self-update | `src/update.ts` is mostly git and Node. `syncClone` and `fs.watch` are portable; `launchAgentBehind` is already gated. | Depends on `npm`, `tar`, `current` and checks. `check.sh --runner` needs Git Bash and Node. | S |
 | Handover | `launch.mjs:250` IPC, drain server on its own port | Portable. Needs the stop message, and `runner.pid` must use helper creation times. | S after helper |
-| Sandbox mode | `src/sandbox.ts` is **Docker, not seatbelt**. `sandbox-exec` appears only at `src/frozen-cli.ts:230`. Permission modes are per-tool SDK gates and Codex's own policy (`src/adapters/codex/adapter.ts:282-90`). | **No replacement yet.** `-v C:\x:C:\x`, uid -1 and a Windows exe can't work in a Linux container, and Docker Desktop itself needs WSL2 or Hyper-V. Reject `sandbox` config on win32 and keep the existing `CONFINED_NO_SANDBOX` refusal. Later candidates (unresearched): Windows Sandbox, AppContainer. Codex's non-full modes depend on its Windows sandbox being set up, so test that on a real machine. | S to refuse, L to replace |
+| Sandbox mode | Taken out on 16 Nov 2026 (it was Docker, `src/sandbox.ts`). Nothing to port. Permission modes are per-tool SDK gates and Codex's own policy. | None. | - |
 | Patch trust | `src/shell-allowlist.ts:1875` refuses non-darwin and non-linux. Line 1887 walks by `/`. `src/script-trust.ts:248` reads exec bits. | Fails closed, so patches run only by hand. Port owner checks to NTFS ACLs and accept `C:\` and `.exe` forms. Needs a second-lab review. | L |
 | Codex approval parsing | `src/adapters/codex/approvals.ts:111,152-56`, `src/adapters/codex/normalize.ts:868-90` | Fails safe (asks more often, shows the wrapper). Add PowerShell unwrapping once the format is confirmed. | S-M |
 | Tests | 99 of 222 test files mention POSIX tools or paths. `test/deploy` uses fake launchctl. | Needs a Windows check host and platform skips. | L |
@@ -170,7 +170,7 @@ The wire format is safe: paths are opaque strings, so no breaking change is need
 ## Suggested order
 
 1. **Foundations:** `platformPaths`, one spawn wrapper, path helpers, and `.gitattributes`. Mostly safe to land now on Mac and Linux.
-2. **Decision and docs:** require Git for Windows, set the PowerShell tool off, refuse the sandbox.
+2. **Decision and docs:** require Git for Windows, set the PowerShell tool off.
 3. **Helper exe:** Job Objects, process table, TCP table, launcher.
 4. **Lifecycle:** swap `proc.ts` onto the helper, add the IPC stop, the runner lock and named-pipe locks.
 5. **First real thread:** run from source on a Windows box with Claude, then Codex, including `read-only` policy.

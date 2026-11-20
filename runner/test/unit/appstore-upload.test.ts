@@ -4,11 +4,13 @@
 // script runs here with a fake xcodebuild that records what it was asked to do.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { after, test } from 'node:test';
+import { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
+// The upload script is the Mac's (xcodebuild, uids, file modes): skipped on Windows.
+import { macOnlyTest as test } from '../helpers/platform.ts';
 // @ts-expect-error plain .mjs without types
 import { aclAllows, checkPrivateDir, checkPrivateTree } from '../../../ios/scripts/private-dir.mjs';
 
@@ -22,7 +24,7 @@ const fresh = () => {
   mkdirSync(d, { mode: 0o700 });
   return d;
 };
-const uid = process.getuid!();
+const uid = process.getuid?.() ?? 0;
 
 test('makes a missing folder for this account only', () => {
   const dir = join(fresh(), 'a/b');
@@ -98,14 +100,14 @@ test('refuses an archive with a link out of it, or through anywhere else', () =>
   checkPrivateTree(archive);
   symlinkSync(join(root, 'elsewhere'), join(archive, 'Products', 'Threadbear.app'));
   assert.throws(() => checkPrivateTree(archive), /links out/);
-  rmSync(join(archive, 'Products', 'Threadbear.app'));
+  unlinkSync(join(archive, 'Products', 'Threadbear.app'));
   // Back inside in the end, but by way of a folder outside that someone could change later.
   symlinkSync('../../elsewhere/../Threadbear.xcarchive/Products/A', join(archive, 'Products', 'B'));
   assert.throws(() => checkPrivateTree(archive), /links out/);
-  rmSync(join(archive, 'Products', 'B'));
+  unlinkSync(join(archive, 'Products', 'B'));
   symlinkSync(join(archive, 'Products', 'A'), join(archive, 'Products', 'B'));
   assert.throws(() => checkPrivateTree(archive), /links out/);
-  rmSync(join(archive, 'Products', 'B'));
+  unlinkSync(join(archive, 'Products', 'B'));
   checkPrivateTree(archive);
   // Nor is the archive itself a link.
   const real = join(root, 'real.xcarchive');

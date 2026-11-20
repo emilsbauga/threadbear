@@ -14,11 +14,20 @@
 # It costs nothing, and must stay that way (Mike, 9 Nov): GitHub's standard
 # hosted runners (ubuntu-24.04, macos-26) are free for a public repo, while
 # larger ones (anything -large, -xlarge or with more cores) are billed. So:
-# standard runners only, no schedule or cron, a newer push cancels the run
-# before it, and it only runs when something it checks changed (the paths
+# standard runners only, no schedule or cron, a newer push replaces a run
+# still waiting, and it only runs when something it checks changed (the paths
 # below: the runner, Convex, the website, the relay and scripts/ that the
 # runner's tests cover, check.sh that runs them, the root packages, and
 # this file).
+#
+# tb land holds a landing that changes what this checks while its last run
+# on main failed (runner/src/land-gate.ts, docs/thread-worktrees.md "Red on
+# GitHub"), and main's runs aren't cancelled by newer pushes, so each one
+# finishes and says something (only a pull request's are). From 16 to 19
+# Nov this workflow was red on Windows while landings went on top, and
+# with every workflow having to pass on one commit for the daily release,
+# none went out (runner/src/upstream.ts).
+# tb land: hold while red
 name: Runner, Convex and website tests
 
 on:
@@ -53,10 +62,17 @@ permissions:
 
 concurrency:
   group: runner-tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Only in Mike's repo (or when started by hand): in a fork, a push of its
+# main ran every job here on Linux, Mac, Windows and Android, though its
+# owner only builds and checks for their own system (./check.sh does that
+# before tb land), and most of those runs went red for reasons that were
+# never theirs (Wayne, 19 Nov 2026; 9 forks had Actions on). PRs to Mike's
+# repo still run, as they run in his repo.
 jobs:
   test:
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
     name: ${{ matrix.os }}, Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -139,3 +155,56 @@ jobs:
           name: check-logs-${{ matrix.os }}-node-${{ matrix.node }}
           path: ${{ runner.temp }}/check-logs
           if-no-files-found: ignore
+
+  # The runner on Windows itself, without WSL (docs/gpui-port/runner-windows-plan.md).
+  # check.sh is bash and Mac-shaped, so this runs the typecheck and
+  # scripts/test-windows.mjs: every unit test file except those in
+  # runner/test/windows-known-failing.txt must pass, and those are run as a
+  # report. Take a file off the list once it passes; the list only shrinks.
+  windows:
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
+    name: windows-latest, Node 24
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: runner/package-lock.json
+
+      # The repo root's too: the backend tests load convex/server from there
+      # (test/helpers/convex-memory.ts), and 28 files failed without it.
+      - name: Packages
+        run: |
+          npm ci --no-audit --no-fund --prefix ..
+          npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests that should pass
+        env:
+          THREADBEAR_CLI_UPDATES: 'off'
+          THREADBEAR_SYNC: 'off'
+          THREADBEAR_JOB_PRIORITY: normal
+        run: node scripts/test-windows.mjs
+
+      # Many of these wait on something Windows never gives, so each test
+      # gets 20 s and the whole report 20 minutes, and it never fails the run.
+      - name: Known-failing files (a report, never fails the run)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          THREADBEAR_CLI_UPDATES: 'off'
+          THREADBEAR_SYNC: 'off'
+          THREADBEAR_JOB_PRIORITY: normal
+          THREADBEAR_TEST_TIMEOUT_MS: '20000'
+          THREADBEAR_TEST_CONCURRENCY: '4'
+        run: node scripts/test-windows.mjs --known

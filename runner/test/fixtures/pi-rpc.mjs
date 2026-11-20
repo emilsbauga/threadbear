@@ -63,7 +63,12 @@ async function command(c) {
     out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'partial:' + c.message } });
     if (c.message.startsWith('settled-before-ack')) {
       finish(c.message);
-      await new Promise(r => setTimeout(r, 25));
+      // The test releases the acknowledgment after observing the final event.
+      await new Promise(resolve => {
+        const released = () => fs.existsSync(path.join(config, 'release-ack'));
+        const watcher = fs.watch(config, () => { if (released()) { watcher.close(); resolve(); } });
+        if (released()) { watcher.close(); resolve(); }
+      });
       fs.writeFileSync(path.join(config, 'ack-marker'), 'ready');
       return response(c, { disposition: 'started' });
     }
@@ -77,7 +82,8 @@ async function command(c) {
     if (c.message === 'retry') {
       out({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'temporary failure' } });
       out({ type: 'agent_end', willRetry: true });
-      await new Promise(r => setTimeout(r, 50));
+      // Retry starts on the next event-loop turn, without a wall-clock race.
+      await new Promise(resolve => setImmediate(resolve));
       out({ type: 'agent_start' });
       out({ type: 'message_start', message: { role: 'assistant', content: [] } });
     }

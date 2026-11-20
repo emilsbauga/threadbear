@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import type { Dump } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 
-type Login = { name: string; provider?: string | null; status?: string | null; meters: { title: string; left: string; verdict?: string | null }[]; more: string[] };
+type Login = { name: string; provider?: string | null; status?: string | null; logo?: string; line?: string | null; ring?: number | null; why?: string | null; signInEnds?: string | null; yearToken?: string | null; tokenButton?: boolean; findWork?: boolean; findingWork?: boolean; meters: { title: string; left: string; verdict?: string | null }[]; more: string[] };
 type Usage = {
   shown: boolean;
-  icon: { percent: number; login?: string | null; tip: string };
+  icon: { percent: number; login?: string | null; tip: string; dot?: boolean };
   tiles: { title: string; value: string; detail?: string | null }[];
   chart?: { title: string; range: string; key: string[]; empty?: string | null } | null;
   cards: { title: string; today?: string | null; logins: Login[] }[];
@@ -76,18 +76,43 @@ Then('in the {string} card, {string} says {string}', async function (this: Threa
   await this.until(`${name} in ${card} saying ${status}`, (d) => login(d, card, name)?.status === status);
 });
 
+Then('in the {string} card, {string} has the {string} logo and a ring at {int}%', async function (this: ThreadbearWorld, card: string, name: string, logo: string, ring: number) {
+  await this.until(`${name} in ${card} with the ${logo} logo and ${ring}%`, (d) => login(d, card, name)?.logo === logo && login(d, card, name)?.ring === ring);
+});
+
+Then('in the {string} card, {string} has the {string} logo and no ring', async function (this: ThreadbearWorld, card: string, name: string, logo: string) {
+  await this.until(`${name} in ${card} with the ${logo} logo and no ring`, (d) => login(d, card, name)?.logo === logo && login(d, card, name)?.ring == null);
+});
+
+Then("in the {string} card, {string}'s line starts {string}", async function (this: ThreadbearWorld, card: string, name: string, start: string) {
+  await this.until(`${name}'s line in ${card} starting "${start}"`, (d) => Boolean(login(d, card, name)?.line?.startsWith(start)));
+});
+
+Then('in the {string} card, {string} says why: {string}', async function (this: ThreadbearWorld, card: string, name: string, why: string) {
+  await this.until(`${name} in ${card} saying ${why}`, (d) => login(d, card, name)?.why === why);
+});
+
+/** A Grok login with no usage, as the runner lists one it can't read a limit for. */
+When('a Grok login with no reading is added', async function (this: ThreadbearWorld) {
+  const { accounts } = answer(await this.app.do({ cmd: 'mock', method: 'accounts', params: {} })) as { accounts: object[] };
+  await this.app.do({ cmd: 'mock', method: 'accounts', params: { accounts: [...accounts, { id: 'grok-main', provider: 'grok', title: 'Grok', configDir: '~/.grok', models: [] }] } });
+});
+
 Then("the {string} card names each login's provider: {string}", async function (this: ThreadbearWorld, card: string, logins: string) {
   const got = await this.until(`the ${card} card`, (d) => usage(d)?.cards.find((c) => c.title === card)?.logins);
   assert.deepEqual(got.map((l) => `${l.provider}: ${l.name}`), list(logins));
 });
 
-Then("the Usage panel's {string} switch is {word}", async function (this: ThreadbearWorld, words: string, state: string) {
-  await this.until(`"${words}" ${state}`, (d) => usage(d)?.settings?.switch === words && usage(d)?.settings?.on === (state === 'on'));
+Then('in the {string} card, {string} offers Find work for it', async function (this: ThreadbearWorld, card: string, name: string) {
+  await this.until(`Find work for it on ${name}`, (d) => login(d, card, name)?.findWork === true);
 });
 
-When('I turn off {string} in the Usage panel', async function (this: ThreadbearWorld, words: string) {
-  await this.until(`a "${words}" switch`, (d) => usage(d)?.settings?.switch === words);
-  await this.app.do({ cmd: 'usage', showModelWeeks: false });
+Then("in the {string} card, {string} doesn't offer Find work for it", async function (this: ThreadbearWorld, card: string, name: string) {
+  await this.until(`no Find work for it on ${name}`, (d) => login(d, card, name)?.findWork === false);
+});
+
+When('I press Find work for it on {string}', async function (this: ThreadbearWorld, account: string) {
+  await this.app.do({ cmd: 'usage', findWork: account });
 });
 
 Then('the honey pot is {int}% full, for {string}', async function (this: ThreadbearWorld, percent: number, account: string) {
@@ -114,4 +139,62 @@ When('{string} is down to {int}% of its week', async function (this: ThreadbearW
 
 When("{string}'s week resets", async function (this: ThreadbearWorld, account: string) {
   await setWeek(this, account, 100);
+});
+
+/** Marks a login on the mock as the runner's sign-in check would (docs/protocol.md, Pools, "Signed out"). */
+async function setSignIn(world: ThreadbearWorld, account: string, change: { signedOut?: boolean; loginEndsAt?: string; planEnded?: boolean; yearToken?: { madeAt: string } }) {
+  const { accounts } = answer(await world.app.do({ cmd: 'mock', method: 'accounts', params: {} })) as { accounts: { id: string; signedOut?: boolean; loginEndsAt?: string }[] };
+  const a = accounts.find((x) => x.id === account);
+  assert.ok(a, `no ${account} on the mock`);
+  Object.assign(a, change);
+  await world.app.do({ cmd: 'mock', method: 'accounts', params: { accounts } });
+}
+
+When('{string} is signed out', async function (this: ThreadbearWorld, account: string) {
+  await setSignIn(this, account, { signedOut: true });
+});
+
+When('{string} is signed in again', async function (this: ThreadbearWorld, account: string) {
+  await setSignIn(this, account, { signedOut: false });
+});
+
+When("{string}'s plan has ended", async function (this: ThreadbearWorld, account: string) {
+  await setSignIn(this, account, { planEnded: true });
+});
+
+When("{string}'s sign-in ends in {int} hours", async function (this: ThreadbearWorld, account: string, hours: number) {
+  await setSignIn(this, account, { loginEndsAt: new Date(Date.now() + hours * 3_600_000).toISOString() });
+});
+
+Then('in the {string} card, {string} warns its sign-in ends', async function (this: ThreadbearWorld, card: string, name: string) {
+  await this.until(`${name} in ${card} saying its sign-in ends`, (d) => /^Sign-in ends /.test(login(d, card, name)?.signInEnds ?? ''));
+});
+
+When('{string} runs on a year-long token made today', async function (this: ThreadbearWorld, account: string) {
+  const made = new Date();
+  await setSignIn(this, account, { yearToken: { madeAt: made.toISOString() }, loginEndsAt: new Date(made.getTime() + 365 * 86_400_000).toISOString() });
+});
+
+Then('in the {string} card, {string} offers a year-long token', async function (this: ThreadbearWorld, card: string, name: string) {
+  await this.until(`${name} in ${card} offering a year-long token`, (d) => login(d, card, name)?.tokenButton === true && !login(d, card, name)?.yearToken);
+});
+
+Then('in the {string} card, {string} says it has a year-long token', async function (this: ThreadbearWorld, card: string, name: string) {
+  await this.until(`${name} in ${card} saying it has a year-long token`, (d) => /^Year-long token until /.test(login(d, card, name)?.yearToken ?? '') && login(d, card, name)?.tokenButton === false);
+});
+
+Then('the honey pot has a dot', async function (this: ThreadbearWorld) {
+  await this.until('a dot on the honey pot', (d) => usage(d)?.icon.dot === true);
+});
+
+Then('the honey pot has no dot', async function (this: ThreadbearWorld) {
+  await this.until('no dot on the honey pot', (d) => usage(d)?.icon.dot === false);
+});
+
+Then("a line of the honey pot's tooltip starts {string}", async function (this: ThreadbearWorld, start: string) {
+  await this.until(`a line starting "${start}" in the honey pot's tooltip`, (d) => !!usage(d)?.icon.tip.split('\n').some((l) => l.startsWith(start)));
+});
+
+Then('there is one thread called {string}', async function (this: ThreadbearWorld, title: string) {
+  await this.until(`one "${title}" in the sidebar`, (d) => d.sidebar.sections.flatMap((s) => s.threads).filter((t) => t.title === title).length === 1);
 });

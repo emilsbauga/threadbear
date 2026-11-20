@@ -16,7 +16,7 @@
   <meta property="og:image:type" content="image/jpeg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="The Threadbear teddy icon and name with the line: The agent app you can patch yourself. Beside it, the Threadbear Mac app showing an inbox of threads and one asking to run a command.">
+  <meta property="og:image:alt" content="The Threadbear teddy icon and name with the line: Get to your next decision fast. Beside it, the Threadbear Mac app showing an inbox of threads and one asking to run a command.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{title}}">
   <meta name="twitter:description" content="{{description}}">
@@ -61,6 +61,8 @@
   <!-- The code on GitHub, top right, like Walkies', Poddle's and Quick Ask's corner. Shown while
        GITHUB_PUBLIC (site.mjs) is on. -->
   {{githubCorner}}
+  <!-- Convex's mark in the opposite corner: the backend is Convex (Mike, 17 Nov). -->
+  {{convexCorner}}
   <!-- Skip link for keyboard users (landing page skill, B10). -->
   <a class="skip" href="#content">Skip to content</a>
   <!-- A compact bar floating off the top edge, sized to its content, translucent over a blur
@@ -73,6 +75,8 @@
         <a href="/#get">Install</a>
         <a href="/#faq">FAQ</a>
         <a href="/docs"{{docsCurrent}}>Docs</a>
+        <!-- The dot means a release has come out since you last opened What's new (site.js). -->
+        <a class="whats-new" href="/changelog" data-release="{{latestRelease}}"{{changelogCurrent}}>What's new<span class="new-dot" aria-hidden="true"></span></a>
       </div>
       <a class="btn btn-sm nav-cta" href="/#get">Get Threadbear</a>
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="menu" aria-label="Open the menu"><span></span><span></span></button>

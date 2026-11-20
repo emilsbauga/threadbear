@@ -6,12 +6,21 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test, type TestContext } from 'node:test';
+import { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { testSkippedOnWindows } from '../helpers/platform.ts';
+
+// These run Mike's build-host scripts for a Linux or Mac box with a stand-in
+// df and du on PATH, so there is nothing on Windows to run them against.
+const test = testSkippedOnWindows("desktop/scripts/remote.sh and trim-remote-cache.sh are for a Linux or Mac build host, and the tests fake df and du with bash scripts on PATH");
 
 const SCRIPTS = path.join(import.meta.dirname, '..', '..', '..', 'desktop', 'scripts');
 const TRIM = path.join(SCRIPTS, 'trim-remote-cache.sh');
 const HOUR = 3_600_000;
+// How long a script may take before it counts as stuck. Only a hang reaches
+// it, so it's generous: a deploy's rerun on a busy Mac took 34 s over a run
+// that takes 3 (12 Nov), and a 30 s limit called that a hang.
+const STUCK = 240_000;
 
 // A df that answers from how many target folders are left, so deleting one
 // really does free room. Each is worth 6 GiB.
@@ -49,7 +58,7 @@ echo "fake 0 0 $f 0% /"
   fs.writeFileSync(path.join(bin, 'du'), '#!/bin/bash\nif [ -f "$2/debug/out" ]; then echo "6000000 $2"; else echo "100 $2"; fi\n', { mode: 0o755 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(root, 'home') };
   const left = () => fs.readdirSync(base).filter((n) => /^target(-|$)/.test(n)).sort();
-  const trim = (own = 'aaa') => spawnSync('/bin/bash', [TRIM, own], { cwd: base, env, encoding: 'utf8', timeout: 20_000 });
+  const trim = (own = 'aaa') => spawnSync('/bin/bash', [TRIM, own], { cwd: base, env, encoding: 'utf8', timeout: STUCK });
   return { root, bin, base, env, left, trim };
 }
 
@@ -107,7 +116,11 @@ test('a disk still nearly full refuses the run and says why', (t) => {
 });
 
 test('a first build wants more room than one with a target to build on', (t) => {
+  // Warm is the shared folder ordinary builds go to; a checkout's own only
+  // holds the programs they hand back.
   const warm = host(t, 5, { 'target-aaa': 0, 'target-ddd': 0.1 });
+  assert.equal(warm.trim().status, 3, 'its own handed-back programs counted as warm');
+  sharedSlot(warm, 1, true);
   assert.equal(warm.trim().status, 0);
   const cold = host(t, 5, { 'target-aaa': -1, 'target-ddd': 0.1 });
   const r = cold.trim();
@@ -140,7 +153,7 @@ test('remote.sh stops before copying anything when the host refuses, and marks i
   const log = path.join(h.root, 'rsync-ran');
   fs.writeFileSync(path.join(h.bin, 'ssh'), FAKE_SSH, { mode: 0o755 });
   fs.writeFileSync(path.join(h.bin, 'rsync'), `#!/bin/bash\ntouch ${JSON.stringify(log)}\n`, { mode: 0o755 });
-  const r = spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), 'somehost', '--', 'true'], { env: h.env, encoding: 'utf8', timeout: 20_000 });
+  const r = spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), 'somehost', '--', 'true'], { env: h.env, encoding: 'utf8', timeout: STUCK });
   assert.equal(r.status, 3, r.stderr);
   assert.equal(fs.existsSync(log), false, 'nothing copied to a full disk');
   assert.equal(fs.readdirSync(h.base).filter((n) => n.startsWith('target-')).length, 1, 'its target folder exists, so the age limit sees it used');
@@ -166,8 +179,26 @@ touch -t 202601010000 "$dest"
 # The host was too full for the first mkdir, and the trim then made room.
 rm -rf "$HOME"/.cache/threadbear-check/gpui/target-*
 `, { mode: 0o755 });
-  const r = spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), 'somehost', '--', 'true'], { env: h.env, encoding: 'utf8', timeout: 30_000 });
+  // The marker loop sleeps 60 s a turn, and an ssh that waited on it would
+  // come back once that ended: too close to a slow run on a busy Mac to tell
+  // apart by the clock. So its sleep here outlasts the limit, and waiting on
+  // it is a timeout however slow the rest is.
+  const sleeping = path.join(h.root, 'sleeping');
+  fs.writeFileSync(path.join(h.bin, 'sleep'), `#!/bin/bash
+[ "$1" = 60 ] || exec /bin/sleep "$@"
+echo $$ >>${JSON.stringify(sleeping)}
+exec /bin/sleep 600
+`, { mode: 0o755 });
+  const r = spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), 'somehost', '--', 'true'], { env: h.env, encoding: 'utf8', timeout: STUCK });
+  // Its sleep would otherwise sit there for ten minutes. The loop is on its
+  // own by now, so its sleep may be a moment behind the run's end.
+  for (let i = 0; i < 100 && !fs.existsSync(sleeping); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  const slept = fs.existsSync(sleeping) ? fs.readFileSync(sleeping, 'utf8').split('\n').filter(Boolean) : [];
+  for (const pid of slept) {
+    try { process.kill(Number(pid)); } catch { /* already gone */ }
+  }
   assert.equal(r.error, undefined, 'it returned rather than waiting for the marker loop');
+  assert.ok(slept.length > 0, 'the marker loop ran, with the sleep this test gave it');
   assert.equal(r.status, 0, r.stderr);
   const names = fs.readdirSync(h.base);
   const target = names.find((n) => n.startsWith('target-'))!;
@@ -258,7 +289,7 @@ test("a trim waits for another one on the same host, so a run can't start betwee
   // the pipe waits for the holder either way.
   const holder = path.join(h.root, 'hold.pl');
   fs.writeFileSync(holder, 'use Fcntl ":flock"; open(my $f, "<", ".") or die; flock($f, LOCK_EX) or die; $| = 1; print "held\\n"; sleep 3;');
-  const r = spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; SECONDS=0; bash ${JSON.stringify(TRIM)} aaa; echo "took $SECONDS"; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: 20_000 });
+  const r = spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; SECONDS=0; bash ${JSON.stringify(TRIM)} aaa; echo "took $SECONDS"; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: STUCK });
   assert.equal(r.status, 0, r.stderr);
   assert.ok(Number(/took (\d+)/.exec(r.stdout)![1]) >= 2, r.stdout);
 });
@@ -287,12 +318,18 @@ done
 `, { mode: 0o755 });
   // A host each: the fake ssh runs here, so a run's in-use marker keeps the
   // last run's turn lock open, which the real ssh would have dropped.
-  const run = (where: string, ...cmd: string[]) => spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), where, '--', ...cmd], { env: h.env, encoding: 'utf8', timeout: 30_000 });
+  const run = (where: string, ...cmd: string[]) => spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), where, '--', ...cmd], { env: h.env, encoding: 'utf8', timeout: STUCK });
 
   // Remote builds keep line numbers, not the full debug info that filled it.
-  const fine = run('host1', 'bash', '-c', 'echo "debug=$CARGO_PROFILE_DEV_DEBUG"');
+  const fine = run('host1', 'bash', '-c', 'echo "debug=$CARGO_PROFILE_DEV_DEBUG"; [ -d "$THREADBEAR_WEB_RUNTIME_PARENT" ] && echo "runtimes=$THREADBEAR_WEB_RUNTIME_PARENT"');
   assert.equal(fine.status, 0, fine.stderr);
   assert.match(fine.stdout, /debug=line-tables-only/);
+  // Web runtimes go on the home disk, off the build volume (Tinker Desk's
+  // external SSD, whose prompts held --desk runs, 19 Nov), and go after.
+  const runtimes = /runtimes=(.+)/.exec(fine.stdout)?.[1];
+  assert.ok(runtimes, fine.stdout);
+  assert.ok(!runtimes.includes('/gpui/'), runtimes);
+  assert.ok(!fs.existsSync(runtimes), 'the run left its web runtimes behind');
 
   const filled = run('host2', 'touch', full);
   assert.equal(filled.status, 1);
@@ -374,7 +411,7 @@ test('a shared target a build holds stays, however low the disk', (t) => {
   // A build holding the slot's lock, as shared-cargo's flock does.
   const holder = path.join(h.root, 'hold.pl');
   fs.writeFileSync(holder, `use Fcntl ":flock"; open(my $f, ">>", "shared-1.lock") or die; flock($f, LOCK_EX) or die; $| = 1; print "held\\n"; sleep 4;`);
-  const r = spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; bash ${JSON.stringify(TRIM)} aaa; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: 20_000 });
+  const r = spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; bash ${JSON.stringify(TRIM)} aaa; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: STUCK });
   assert.match(r.stderr, /won't start/);
   assert.equal(fs.existsSync(path.join(slot, 'debug', 'out')), true);
 });
@@ -382,6 +419,22 @@ test('a shared target a build holds stays, however low the disk', (t) => {
 test("a checkout with no build of its own isn't cold when a shared target is warm", (t) => {
   const h = host(t, 5, { 'target-aaa': -1 });
   assert.equal(h.trim().status, 3);
+  // The one folder a host with one slot builds in (shared-cargo/cargo).
+  sharedSlot(h, 1, true);
+  const r = h.trim();
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('on a host running builds side by side, one warm shared folder beside a cold one is still a cold build', (t) => {
+  // Build A in warm shared-1 leaves this build shared-2, from nothing.
+  const h = host(t, 6, { 'target-aaa': -1 });
+  fs.writeFileSync(path.join(h.base, '..', 'builds-at-once'), '2\n');
+  sharedSlot(h, 1, true);
+  assert.equal(h.trim().status, 3, 'started cold with 6 GiB');
+  // Its own folder's handed-back programs build nothing.
+  fs.mkdirSync(path.join(h.base, 'target-aaa', 'debug'), { recursive: true });
+  fs.writeFileSync(path.join(h.base, 'target-aaa', 'debug', 'out'), 'x');
+  assert.equal(h.trim().status, 3, 'its own programs counted as a warm build');
   sharedSlot(h, 2, true);
   const r = h.trim();
   assert.equal(r.status, 0, r.stderr);
@@ -406,9 +459,16 @@ mkdir -p "$dest/desktop/scripts"
 cp -R "$source/desktop/scripts/shared-cargo" "$dest/desktop/scripts/"
 `, { mode: 0o755 });
   // The first run makes this checkout's folders; then its target gets an old-style build in it.
+  // remote.sh puts node's folder first on PATH. Where node sits beside a
+  // real cargo (Homebrew's /opt/homebrew/bin), that cargo came before the
+  // fake one below, so node goes in a folder of its own (teodorboev's fork).
+  const nodeDir = path.join(h.root, 'node-bin');
+  fs.mkdirSync(nodeDir);
+  fs.symlinkSync(process.execPath, path.join(nodeDir, 'node'));
+  const env = { ...h.env, THREADBEAR_NODE: path.join(nodeDir, 'node') };
   // A host each: the fake ssh runs here, so a run's in-use marker keeps the
   // last run's turn lock open.
-  const run = (where: string, ...cmd: string[]) => spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), where, '--', ...cmd], { env: h.env, encoding: 'utf8', timeout: 30_000 });
+  const run = (where: string, ...cmd: string[]) => spawnSync('/bin/bash', [path.join(SCRIPTS, 'remote.sh'), where, '--', ...cmd], { env, encoding: 'utf8', timeout: STUCK });
   assert.equal(run('host1', 'true').status, 0);
   const target = path.join(h.base, fs.readdirSync(h.base).find((n) => n.startsWith('target-'))!);
   fs.mkdirSync(path.join(target, 'debug', '.fingerprint'), { recursive: true });
@@ -462,7 +522,7 @@ test("check-remote.sh's trim gives nothing back while a build or measurement hol
   fs.writeFileSync(lock, '');
   const holder = path.join(h.root, 'hold.pl');
   fs.writeFileSync(holder, `use Fcntl ":flock"; open(my $f, ">>", ${JSON.stringify(lock)}) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\\n"; sleep 4;`);
-  const r = spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; bash ${JSON.stringify(TRIM)} -; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: 20_000 });
+  const r = spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; bash ${JSON.stringify(TRIM)} -; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: STUCK });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, /no build folders are given back now/);
   assert.deepEqual(h.left(), ['target-aaa', 'target-bbb', 'target-ccc', 'target-ddd']);

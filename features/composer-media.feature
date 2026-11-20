@@ -6,13 +6,14 @@ Feature: Pictures from other Mac apps
     Given the app is connected to a runner with the demo threads
     And I open the thread "Morning brief"
 
-  # Native file panels are outside the scripted app. On Mac, nonimages
+  # Native file panels are outside the scripted app. On Mac, other files
   # are disabled by the panel; other platforms reject them before attaching.
   @composer.plus @manual
-  Scenario: Attach images accepts pictures only
-    When I open Attach images from the composer
-    Then choosing a document cannot add a file chip
+  Scenario: Attach images or Markdown accepts pictures and Markdown only
+    When I open Attach images or Markdown from the composer
+    Then choosing another kind of document is disabled
     And choosing a picture can add a picture chip
+    And choosing a Markdown file adds its path
 
   # The native pasteboard driver is Mac GPUI's. Swift is frozen; Windows
   # and Linux use their own clipboard formats and the existing file specs.
@@ -106,6 +107,19 @@ Feature: Pictures from other Mac apps
     When I open the thread "Ship the beta to TestFlight"
     And I write "Like this one " as my own answer to ask 1
     And I paste a HEIC picture into the focused answer box
+    Then ask 1 on the card is answered with 1 picture
+
+  # Its cut used to be the box's own, the words with a bare marker for the
+  # picture, so pasting it back brought no picture (18 Nov).
+  @composer.picturechips @card.somethingelse @swift-pending @windows-pending @linux-pending
+  Scenario: A picture cut from a card's Something else box comes back when pasted
+    When I open the thread "Ship the beta to TestFlight"
+    And I write "Like this one " as my own answer to ask 1
+    And I paste a HEIC picture into the focused answer box
+    Then ask 1 on the card is answered with 1 picture
+    When I press "a" with "cmd"
+    And I press "x" with "cmd"
+    And I press "v" with "cmd"
     Then ask 1 on the card is answered with 1 picture
 
   @composer.picturechips @swift-pending @windows-pending @linux-pending

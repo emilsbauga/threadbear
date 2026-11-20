@@ -6,7 +6,9 @@ import { archived, archiveShown, build, clampWidth, hibernating, isFiltering, ma
 
 const NOW = Date.parse('2026-11-05T10:00:00Z');
 let n = 0;
-const row = (over: Partial<ThreadRow> = {}): ThreadRow => ({ threadId: `t${++n}`, title: 'A thread', preview: '', cwd: '/Users/me/dev/acme', status: 'idle', needsYou: false, unread: false, lastActivityMs: NOW - 1000 * n, ...over });
+const row = (over: Partial<ThreadRow> = {}): ThreadRow => ({ threadId: `t${++n}`, runnerId: 'mac', title: 'A thread', preview: '', cwd: '/Users/me/dev/acme', status: 'idle', needsYou: false, unread: false, lastActivityMs: NOW - 1000 * n, ...over });
+const LANTERN = 'project\nmac\np';
+const ACME = 'folder\nacme';
 const ids = (rows: ThreadRow[]) => rows.map((r) => r.threadId);
 const none = new Map<string, number>();
 
@@ -72,8 +74,9 @@ test('the inbox sorts by what needs Mike, newest or oldest', () => {
   const fresh = row({ lastActivityMs: NOW - 1000 });
   const all = [old, failedRead, unread, asked, fresh];
   assert.deepEqual(ids(build(all, NOW, none, 'needsYou').inbox), ids([asked, unread, failedRead, fresh, old]));
-  assert.deepEqual(ids(build(all, NOW, none, 'newest').inbox), ids([fresh, asked, unread, failedRead, old]));
-  assert.deepEqual(ids(build(all, NOW, none, 'oldest').inbox), ids([old, failedRead, unread, asked, fresh]));
+  // A card waiting on Mike goes first in every order: it runs out (19 Nov).
+  assert.deepEqual(ids(build(all, NOW, none, 'newest').inbox), ids([asked, fresh, unread, failedRead, old]));
+  assert.deepEqual(ids(build(all, NOW, none, 'oldest').inbox), ids([asked, old, failedRead, unread, fresh]));
 });
 
 test('urgency: a failure that wants Mike outranks a plain one', () => {
@@ -133,10 +136,10 @@ test('filters pick out what needs Mike, unread, shared, and a place', () => {
   assert.deepEqual(of({ show: 'needsYou' }), ids([asked, question]));
   assert.deepEqual(of({ show: 'unread' }), ids([unread]));
   assert.deepEqual(of({ show: 'shared' }), ids([shared]));
-  assert.deepEqual(of({ show: 'all', place: 'Lantern' }), ids([inProject]));
-  assert.deepEqual(of({ show: 'unread', place: 'acme' }), ids([unread]));
+  assert.deepEqual(of({ show: 'all', place: LANTERN }), ids([inProject]));
+  assert.deepEqual(of({ show: 'unread', place: ACME }), ids([unread]));
   assert.ok(!isFiltering(NO_FILTER));
-  assert.ok(isFiltering({ show: 'all', place: 'Lantern' }));
+  assert.ok(isFiltering({ show: 'all', place: LANTERN }));
 });
 
 test('a thread put away never needs Mike or counts as unread', () => {
@@ -148,7 +151,7 @@ test('a thread put away never needs Mike or counts as unread', () => {
     assert.ok(!passes(asleep, { show }, NOW), show);
     assert.ok(passes(woken, { show }, NOW), show);
   }
-  assert.ok(passes(gone, { show: 'all', place: 'acme' }, NOW), 'a project filter still reaches them');
+  assert.ok(passes(gone, { show: 'all', place: ACME }, NOW), 'a project filter still reaches them');
 });
 
 test('the open thread stays under a status filter, but not a search or another place', () => {
@@ -156,16 +159,26 @@ test('the open thread stays under a status filter, but not a search or another p
   assert.ok(!shows(read, '', { show: 'unread' }));
   assert.ok(shows(read, '', { show: 'unread' }, read.threadId));
   assert.ok(!shows(read, 'something else', { show: 'unread' }, read.threadId));
-  assert.ok(!shows(read, '', { show: 'all', place: 'acme' }, read.threadId));
+  assert.ok(!shows(read, '', { show: 'all', place: ACME }, read.threadId));
 });
 
 test('place choices count each thread once, most threads first', () => {
   const dupe = row({ projects: [{ id: 'p', title: 'Lantern' }] });
   const choices = placeChoices([dupe, dupe, row({ projects: [{ id: 'p', title: 'Lantern' }] }), row({ cwd: '/x/acme' })]);
   assert.deepEqual(choices, [
-    { place: 'Lantern', count: 2 },
-    { place: 'acme', count: 1 },
+    { place: LANTERN, label: 'Lantern', count: 2 },
+    { place: ACME, label: 'acme', count: 1 },
   ]);
+});
+
+// Daybreak 141: another runner's thread naming one of this runner's projects
+// (its title, or its id) is another place, not in that project's filter.
+test("another runner's thread with the same project title or id is a place of its own", () => {
+  const mine = row({ projects: [{ id: 'p', title: 'Lantern' }] });
+  const theirs = row({ runnerId: 'mini', projects: [{ id: 'p', title: 'Lantern' }] });
+  const titled = row({ runnerId: 'mini', projects: [{ id: 'q', title: 'Lantern' }] });
+  assert.deepEqual(ids([mine, theirs, titled].filter((r) => passes(r, { show: 'all', place: LANTERN }))), ids([mine]));
+  assert.equal(placeChoices([mine, theirs, titled]).length, 3);
 });
 
 test('the archive shows a few, more on asking, every match while narrowing, and the open thread', () => {

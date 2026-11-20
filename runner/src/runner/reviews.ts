@@ -4,11 +4,13 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import { reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
+import { keepPictureMarkers, reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
+import type { ImageRef } from '../protocol.ts';
 import type { DesignReview, ReviewDraft } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import type { QueuedSend } from '../store.ts';
-import { copyImageInto } from '../media.ts';
+import { copyImageInto, extForMediaType, imageRefFor, readImageInfo } from '../media.ts';
+import { paths } from '../config.ts';
 import { copyReviewMedia } from '../review-media.ts';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -51,8 +53,17 @@ export const reviewsPart = {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))) };
   },
 
+  // reviewId may be the start of one (8 characters or more), as an agent's
+  // review: link often gives, matched among answered and cancelled reviews
+  // too, so an old link still opens; only one it names alone.
   getReview(this: Runner, threadId: string, reviewId: string): { review: DesignReview } {
-    return {review: structuredClone(this.mustReview(this.mustGet(threadId), reviewId))};
+    const st = this.mustGet(threadId);
+    const all = st.rec.reviews ?? [];
+    if (!all.some(r => r.id === reviewId) && reviewId.length >= 8) {
+      const starts = all.filter(r => r.id.startsWith(reviewId));
+      if (starts.length === 1) return {review: structuredClone(starts[0]!)};
+    }
+    return {review: structuredClone(this.mustReview(st, reviewId))};
   },
 
   saveReview(this: Runner, threadId: string, reviewId: string, revision: number, raw: ReviewDraft): { review: DesignReview } {
@@ -60,7 +71,7 @@ export const reviewsPart = {
     this.checkAccepting();
     const review = this.mustReview(st, reviewId);
     this.checkReviewRevision(review, revision);
-    const draft = reviewDraft(review, raw);
+    const draft = this.keepReplyImages(st, review, reviewDraft(review, withSavedImages(review, raw)));
     const next = {...review, draft, revision: review.revision + 1, updatedAt: this.isoNow()};
     this.persistReview(st, next);
     return {review: structuredClone(next)};
@@ -69,7 +80,9 @@ export const reviewsPart = {
   respondReview(this: Runner, threadId: string, reviewId: string, revision: number, raw: ReviewDraft): { review: DesignReview; turnId?: string } {
     const st = this.mustGet(threadId);
     const review = this.mustReview(st, reviewId);
-    const draft = reviewDraft(review, raw, true);
+    // Its pictures kept by their contents, so a retry that names the same
+    // ones from inbox/ is the same answer.
+    const draft = this.keepReplyImages(st, review, reviewDraft(review, withSavedImages(review, raw), true));
     // A dropped WebSocket response must not send Mike's answer twice.
     if (review.status === 'answered' && sameDraft(review.response, draft)) {
       this.kickQueue(st);
@@ -79,7 +92,7 @@ export const reviewsPart = {
     this.checkReviewRevision(review, revision);
     const turnId = crypto.randomUUID();
     const next: DesignReview = {...review, draft, response: draft, status: 'answered', revision: review.revision + 1, updatedAt: this.isoNow(), replyTurnId: turnId};
-    const message: QueuedSend = {turnId, text: reviewReply(review, draft), images: [], reviewId, reviewResponse: draft};
+    const message: QueuedSend = {turnId, text: reviewReply(review, draft), images: draft.images ?? [], reviewId, reviewResponse: draft};
     // The answer and outbox live in one atomic thread.json write. Publish
     // the card only after it succeeds, then start the queued reply.
     this.persistReview(st, next, [...st.rec.queue, message], true);
@@ -113,6 +126,82 @@ export const reviewsPart = {
     }
   },
 
+  // A reply's pictures, copied in beside the review's own (reviews/<id>/reply)
+  // so a draft outlives inbox/'s week and the queued answer has them after a
+  // restart. Only what media.import put in inbox/, or ones already kept here:
+  // a draft's path is never a way to read some other file. Named by their
+  // contents, so saving the same picture twice keeps one copy.
+  keepReplyImages(this: Runner, st: ThreadState, review: DesignReview, draft: ReviewDraft): ReviewDraft {
+    if (!draft.images?.length) return draft;
+    const dir = path.join(this.store.mediaDir(st.rec.id), 'reviews', review.id, 'reply');
+    const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+    const under = (file: string, folder: string) => file.startsWith(folder + path.sep);
+    // Made first, so its real path is the one its copies will have (/var
+    // and /private/var are one folder on a Mac).
+    fs.mkdirSync(dir, {recursive: true});
+    const inbox = real(paths.inbox(this.cfg.home));
+    const kept = real(dir);
+    const images = draft.images.map((img): ImageRef => {
+      const name = path.basename(img.path);
+      let file: string;
+      try {
+        if (fs.lstatSync(img.path).isSymbolicLink()) throw new Error('link');
+        file = fs.realpathSync(img.path);
+      } catch {
+        throw new RpcError(ErrorCode.badParams, `Picture not found: ${name}`);
+      }
+      if (under(file, kept)) return imageRefFor(file, img.mediaType);
+      if (!under(file, inbox)) throw new RpcError(ErrorCode.badParams, `A reply's pictures come through media.import: ${name}`);
+      const info = readImageInfo(file);
+      if (!info) throw new RpcError(ErrorCode.badParams, `Not a picture that can be sent: ${name}`);
+      const bytes = fs.readFileSync(file);
+      const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 24);
+      const target = path.join(dir, `${hash}.${extForMediaType(info.mediaType)}`);
+      if (!fs.existsSync(target)) {
+        // Whole or not at all: a half-written copy would keep its name.
+        const temp = `${target}.${crypto.randomUUID()}.tmp`;
+        fs.writeFileSync(temp, bytes);
+        fs.renameSync(temp, target);
+      }
+      return imageRefFor(target, info.mediaType);
+    });
+    return {...draft, images};
+  },
+
+  // Whether a reply picture is one keepReplyImages made for this review:
+  // directly in its reply folder, not a link. The review's id must be one
+  // folder name, or a moved log's "../.." could point it at another
+  // thread's (Codex's review, 17 Nov).
+  ownReplyImage(this: Runner, st: ThreadState, reviewId: string, img: ImageRef): boolean {
+    if (typeof reviewId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(reviewId) || !img || typeof img !== 'object' || typeof img.path !== 'string') return false;
+    const reviewsDir = path.join(this.store.mediaDir(st.rec.id), 'reviews');
+    try {
+      const kept = fs.realpathSync(path.join(reviewsDir, reviewId, 'reply'));
+      if (path.dirname(path.dirname(kept)) !== fs.realpathSync(reviewsDir)) return false;
+      return !fs.lstatSync(img.path).isSymbolicLink() && path.dirname(fs.realpathSync(img.path)) === kept;
+    } catch {
+      return false;
+    }
+  },
+
+  // The review with only its own reply pictures (ownReplyImage).
+  ownReplyImages(this: Runner, st: ThreadState, review: DesignReview): DesignReview {
+    const fit = (draft: ReviewDraft | undefined): ReviewDraft | undefined => {
+      if (!draft?.images) return draft;
+      const all: unknown[] = Array.isArray(draft.images) ? draft.images : [];
+      const keep = all.map(img => this.ownReplyImage(st, review.id, img as ImageRef));
+      if (Array.isArray(draft.images) && keep.every(Boolean)) return draft;
+      const images = all.filter((_, i) => keep[i]) as ImageRef[];
+      const {images: _, ...rest} = draft;
+      // The words' markers follow (keepPictureMarkers).
+      const reply = typeof rest.reply === 'string' ? {reply: keepPictureMarkers(rest.reply, keep)} : {};
+      return images.length ? {...rest, ...reply, images} : {...rest, ...reply};
+    };
+    const draft = fit(review.draft)!;
+    const response = fit(review.response);
+    return draft === review.draft && response === review.response ? review : {...review, draft, ...(response ? {response} : {})};
+  },
+
   mustReview(this: Runner, st: ThreadState, id: string): DesignReview {
     const review = st.rec.reviews?.find(r => r.id === id);
     if (!review) throw new RpcError(ErrorCode.badParams, `Review not found: ${id}`);
@@ -136,6 +225,7 @@ export const reviewsPart = {
       delete next.untilRelease;
       delete next.wakeWhen;
       delete next.waitingOn;
+      delete next.hibernatedForApp;
       delete next.archivedAt;
     }
     this.store.save(next);
@@ -145,6 +235,7 @@ export const reviewsPart = {
       delete st.rec.untilRelease;
       delete st.rec.wakeWhen;
       delete st.rec.waitingOn;
+      delete st.rec.hibernatedForApp;
       delete st.rec.archivedAt;
     }
     // An answer queued is new work: its last finish no longer counts for
@@ -161,22 +252,47 @@ export const reviewsPart = {
   recoverReviews(this: Runner, st: ThreadState): void {
     // Reviews save their record before their event. Threads without reviews
     // need no extra log scan (the common case, including long transcripts).
-    if (!st.rec.reviews?.length && !st.rec.queue.some(q => q.reviewId)) return;
+    if (!st.rec.reviews?.length && !st.rec.queue.some(q => q?.reviewId)) return;
+    // An answer already queued keeps only its review's own pictures. First,
+    // before reading the log: a moved thread's log is the other runner's
+    // word, and anything below that throws would leave this undone, with
+    // the queue sent next (Codex's review, 17 Nov). Nothing in it can throw.
+    // The words' markers follow what's kept (keepPictureMarkers).
+    st.rec.queue = st.rec.queue.map(q => {
+      if (!q?.reviewId) return q;
+      const own = (list: unknown): [ImageRef[], boolean[]] => {
+        const all: unknown[] = Array.isArray(list) ? list : [];
+        const keep = all.map(img => this.ownReplyImage(st, q.reviewId!, img as ImageRef));
+        return [all.filter((_, i) => keep[i]) as ImageRef[], keep];
+      };
+      const [images, keep] = own(q.images);
+      const text = keepPictureMarkers(q.text, keep);
+      let reviewResponse = q.reviewResponse;
+      if (reviewResponse && typeof reviewResponse === 'object' && 'images' in reviewResponse) {
+        const [kept, keptMask] = own(reviewResponse.images);
+        reviewResponse = {...reviewResponse, images: kept, ...(typeof reviewResponse.reply === 'string' ? {reply: keepPictureMarkers(reviewResponse.reply, keptMask)} : {})};
+      }
+      return {...q, text, images, ...(reviewResponse ? {reviewResponse} : {})};
+    });
     const log = this.store.log(st.rec.id);
     const latest = new Map<string, DesignReview>();
     const sent = new Set(st.rec.reviewDeliveries ?? []);
     for (const event of log.read(1, log.lastSeq)) {
-      if (event.type === 'review.updated') latest.set(event.review.id, event.review);
+      if (event.type === 'review.updated' && event.review && typeof event.review === 'object' && typeof event.review.id === 'string') latest.set(event.review.id, event.review);
     }
     const reviews = new Map((st.rec.reviews ?? []).map(r => [r.id, r]));
     for (const [id, review] of latest) if (!reviews.has(id) || reviews.get(id)!.revision < review.revision) reviews.set(id, review);
+    // A reply's pictures are only ever this thread's own copies: a moved
+    // thread's log is the other runner's word, and could name any file here
+    // (Codex's review, 17 Nov).
+    for (const [id, review] of reviews) reviews.set(id, this.ownReplyImages(st, review));
     if (reviews.size) st.rec.reviews = [...reviews.values()];
     // The delivery marker is written after session.send, not merely after
     // user.message. A failed turn.started append leaves the answer unsent.
     st.rec.queue = st.rec.queue.filter(q => !q.reviewId || !sent.has(q.reviewId));
     for (const [id, review] of reviews) {
       if (review.status === 'answered' && review.replyTurnId && review.response && !sent.has(id) && !st.rec.queue.some(q => q.reviewId === id)) {
-        st.rec.queue.push({turnId: review.replyTurnId, text: reviewReply(review, review.response), images: [], reviewId: id, reviewResponse: review.response});
+        st.rec.queue.push({turnId: review.replyTurnId, text: reviewReply(review, review.response), images: review.response.images ?? [], reviewId: id, reviewResponse: review.response});
       }
       if (latest.get(id)?.revision !== review.revision) this.emit(st, {type: 'review.updated', review});
     }
@@ -185,3 +301,11 @@ export const reviewsPart = {
 };
 
 export type ReviewsPart = RunnerPart<typeof reviewsPart>;
+
+// A client from before reply pictures (the frozen Swift app) sends a draft
+// without `images`: the pictures already saved stay, rather than going with
+// their [Picture N] still in the words. `images: []` takes them away.
+function withSavedImages(review: DesignReview, raw: ReviewDraft): ReviewDraft {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || 'images' in raw || !review.draft.images?.length) return raw;
+  return {...raw, images: review.draft.images};
+}

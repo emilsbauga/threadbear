@@ -3,7 +3,7 @@
 // order RowContent lists them. The work lines are in work.rs, diffs in diff.rs,
 // cards in cards.rs and pictures in images.rs.
 mod cards;
-mod diff;
+pub(crate) mod diff;
 mod export;
 mod images;
 mod lab_review;
@@ -215,7 +215,7 @@ impl ThreadPane {
             RowContent::Background(status) => self.background_row(status, cx),
             RowContent::Gap(gap) => self.gap_row(&row, gap, cx),
             RowContent::Changes(changes) => self.changes_card(ix, &row, changes, cx),
-            RowContent::LabReview(review) => self.lab_review_row(&row, review, cx),
+            RowContent::LabReview(review) => self.lab_review_row(ix, &row, review, cx),
         };
         // A step a work link went to: an accent rail and tint for a moment
         // (`TranscriptController.light`). The right-click menu goes over
@@ -262,7 +262,7 @@ impl ThreadPane {
         let faint = style::faint_text(cx);
         let pending = message.pending;
         let faded = pending.is_some();
-        let mut col = v_flex().items_end().pt(px(USER_TOP)).pb(px(USER_BOTTOM));
+        let mut col = v_flex().items_end().pt(px(user_top())).pb(px(user_bottom()));
         if !message.images.is_empty() {
             col = col.child(self.user_images(&message.images, ix, message.text.is_empty() && message.origin.as_deref() == Some("phone"), cx));
         }
@@ -290,8 +290,9 @@ impl ThreadPane {
             let max_text = gpui_kit::px((column * BUBBLE_SHARE).floor()) - px(BUBBLE_PAD_H * 2.);
             // Pictures, cards and threads among the words are chips, the
             // lines laid out round them (chips.rs); the rest is one text.
-            let chips = if answered { None } else { self.chip_lines(ix, message, max_text, window, cx) };
+            let chips = if answered { None } else { self.chip_lines(ix, &row.id, message, max_text, window, cx) };
             let fit = (!answered && chips.is_none()).then(|| widest_line(&text, max_text, window));
+            let words = fit.is_some().then(|| self.bubble_words(("user-text", ix), text, &row.id, cx));
             let bubble = div()
                 .max_w(relative(BUBBLE_SHARE))
                 .when_some(fit, |d, (ink, _)| d.w(ink + px(BUBBLE_PAD_H * 2.)))
@@ -306,7 +307,7 @@ impl ThreadPane {
                 .when(faded, |d| d.opacity(0.5))
                 // A point over, as the layout rounds widths and a line that
                 // fits exactly would wrap.
-                .when_some(fit, |d, (ink, span)| d.child(div().w(span + px(1.)).mr(ink - span - px(1.)).child(SelectableText::new(("user-text", ix), text))))
+                .when_some(fit.zip(words), |d, ((ink, span), words)| d.child(div().w(span + px(1.)).mr(ink - span - px(1.)).child(words)))
                 .when_some(chips.map(|c| c.1), |d, lines| d.child(lines))
                 .when_some(answered_words, |d, words| d.child(answers_body(ix, &words, cx)));
             // The pencil, left of the bubble and level with its last line, on
@@ -353,6 +354,24 @@ impl ThreadPane {
         row_wrap(row, col)
     }
 
+    /// Mike's words as selectable text, any web address in them a link in
+    /// the reply's link colour that a click follows as a reply's link does
+    /// (`follow_link`: the open gate, the browser Default, ⌘ for the
+    /// browser). Its colour alone marks it, so the bubble's width is
+    /// measured the same.
+    pub(crate) fn bubble_words(&self, id: impl Into<ElementId>, text: String, row_id: &str, cx: &mut Context<Self>) -> SelectableText {
+        let links = threadbear_core::chips::web_links(&text);
+        let words = SelectableText::new(id, text);
+        if links.is_empty() {
+            return words;
+        }
+        let (weak, row_id) = (cx.weak_entity(), row_id.to_owned());
+        words.links(links, style::link_text(cx), move |url, event, window, cx| {
+            let command = event.modifiers.secondary(cx);
+            let _ = weak.update(cx, |this, cx| this.follow_link(&url, &row_id, command, window, cx));
+        })
+    }
+
     /// A message just sent lifting off the composer into the thread: Return
     /// is the most-used thing in the app, so it's well under 200 ms and holds
     /// nothing up (`SendLift`; the mockup Mike picked, 13 Nov). Only one on
@@ -384,7 +403,7 @@ impl ThreadPane {
                 None => ("Sent by a schedule".to_owned(), message.text.clone()),
             }
         } else {
-            ("Sent by the runner after it restarted".to_owned(), message.text.clone())
+            (message.runner_header(), message.text.clone())
         };
         if message.is_from_schedule() {
             // Clock glyph in the text's place (`symbol("clock", ...)`).
@@ -411,6 +430,7 @@ impl ThreadPane {
         // this Mac, and only picture files are drawn (`markdown::pictures`).
         let body = markdown::pictures(header.body.trim(), self.summary.runner_id.is_none()).into_owned();
         let body = self.with_thread_chips(body, cx);
+        let body = self.with_link_marks(body, cx);
         let doc = (!body.is_empty()).then(|| self.markdown_state(&format!("agent-{ix}"), &body, cx));
         let text_style = self.reading_style(cx);
         // Its links' own menus and cards, as a reply's (reply_links.rs).
@@ -428,7 +448,7 @@ impl ThreadPane {
             // is on the Mac: TextKit leaves a last paragraph's off.
             .child(div().when(text.is_some(), |d| d.mb(px(8.))).child(title))
             .when_some(text, |d, text| d.child(div().text_size(px(size::BODY)).line_height(px(size::BODY_LINE)).child(text)));
-        h_flex().w_full().px(px(SIDE_INSET)).justify_center().child(div().w_full().max_w(px(MAX_CONTENT_WIDTH)).pt(px(USER_TOP)).pb(px(USER_BOTTOM)).child(card)).into_any_element()
+        h_flex().w_full().px(px(SIDE_INSET)).justify_center().child(div().w_full().max_w(px(MAX_CONTENT_WIDTH)).pt(px(user_top())).pb(px(user_bottom())).child(card)).into_any_element()
     }
 
     /// A row's markdown, its links going to `link_clicked` (and from there
@@ -436,7 +456,7 @@ impl ThreadPane {
     /// text view would send them.
     pub(crate) fn linked_text(&self, doc: &Entity<gpui_kit::base::TextViewState>, row_id: &str, cx: &mut Context<Self>) -> TextView {
         let weak = cx.weak_entity();
-        let drafts = crate::draft_boxes::DraftBoxes { origin: self.origin(), cwd: self.summary.cwd.clone(), row: row_id.to_owned() };
+        let drafts = crate::draft_boxes::DraftBoxes { origin: self.origin(), thread: self.summary.id.clone(), cwd: self.summary.cwd.clone(), row: row_id.to_owned() };
         let chips = crate::chips::ThreadChipPills { row: row_id.to_owned() };
         let row_id = row_id.to_owned();
         let local = self.summary.runner_id.is_none();
@@ -463,17 +483,31 @@ impl ThreadPane {
             .plugin(drafts)
             // A thread's id as its chip (`with_thread_chips`).
             .plugin(chips)
+            // The live mark before a link to another thread (`with_link_marks`).
+            .plugin(crate::thread_link_marks::Marks)
+            // A PR's state before a link to it (pr_view.rs).
+            .plugin(crate::pr_view::PrMarks)
             // A closed ```mermaid or ```html fence as what it shows (rich_boxes.rs).
             .plugin(crate::rich_boxes::RichBoxes)
+            // A live page's card (live_pages.rs).
+            .plugin(crate::live_pages::Cards)
     }
 
     /// The reading column's text: markdown, selectable, links going where they
     /// go. `row.rs`'s `TextItem::text` is the whole reply so far; `prepare`
     /// escapes work links and `set_text` appends what's new.
     fn assistant_row(&mut self, ix: usize, row: &Row, item: &TextItem, cx: &mut Context<Self>) -> AnyElement {
-        let source = markdown::prepare(&markdown::pictures(&item.text, self.summary.runner_id.is_none()), &self.summary.id);
-        // Thread ids as chips (chips.rs).
+        let local = self.summary.runner_id.is_none();
+        // A link to a file that isn't here as its words (`dead_file_links`).
+        // After `prepare`, which links paths in backticks: a dead one of those
+        // goes back to plain code too.
+        // A page shown in the reply as a live page's card (live_pages.rs), first.
+        let text = if local && crate::live_pages::on(cx) { markdown::live_pages(&item.text) } else { std::borrow::Cow::Borrowed(item.text.as_str()) };
+        let source = markdown::dead_file_links(&markdown::prepare(&markdown::pictures(&text, local), &self.summary.id), local).into_owned();
+        // Thread ids as chips (chips.rs), and a live mark before each link
+        // to another thread (thread_link_marks.rs).
         let source = self.with_thread_chips(source, cx);
+        let source = self.with_link_marks(source, cx);
         let doc = self.markdown_state(&item.item_id, &source, cx);
         let text_style = self.reading_style(cx);
         let text = self.linked_text(&doc, &row.id, cx).selectable(true).style(text_style).shared_code_block_highlighter(plain_code_blocks());
@@ -588,9 +622,10 @@ impl ThreadPane {
                     .h(px(metrics::PAGED_HEADING))
                     .justify_between()
                     .child(h_flex().items_center().gap(px(2.5)).child(crate::icons::tall_checkmark().with_size(px(16.)).text_color(style::tick_green(cx))).child(title("Done")))
-                    .child(card_button(("past-done-archive", ix), "Archive", ButtonLook::Plain, "Archive this thread", cx).on_click(move |_, window, cx| {
+                    .child(card_button(("past-done-archive", ix), "Archive", ButtonLook::Plain, "Archive this thread", cx).on_click(move |ev, window, cx| {
                         if let Some(app) = app.upgrade() {
-                            app.update(cx, |app, cx| app.toggle_archive(window, cx));
+                            let at = ev.position();
+                            app.update(cx, |app, cx| app.archive_from_card(at, window, cx));
                         }
                     })),
             );

@@ -53,6 +53,9 @@ async function accessToken(a: Account, nowMs = Date.now()): Promise<{ token: str
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }),
     // Bounded like the send: one key's sign-in hanging mustn't hold up the other's.
     signal: AbortSignal.timeout(10_000),
+    // Google's fixed hosts never redirect these; a redirect would carry the
+    // signed assertion (and below, the access token) somewhere else.
+    redirect: 'error',
   }).catch(() => null);
   if (!res) return { status: 0, reason: 'timeout' };
   const body = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number };
@@ -69,6 +72,7 @@ async function sendWith(acct: Account, a: { deviceToken: string; threadId: strin
     headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(fcmMessage(a)),
     signal: AbortSignal.timeout(10_000),
+    redirect: 'error',
   }).catch((e: Error) => (e.name === 'TimeoutError' ? 'timeout' : 'send threw'));
   if (typeof res === 'string') return { status: 0, reason: res };
   if (res.ok) return { status: 200 };

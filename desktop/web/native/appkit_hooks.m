@@ -23,6 +23,7 @@
 //   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 //   DEALINGS IN THE SOFTWARE.
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #include <stdbool.h>
 
@@ -128,6 +129,67 @@ void tb_cef_start_message_loop(void) {
   CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
+// Chromium sizes the layer it shows a page's picture in by Core Animation's
+// autoresizing alone (display_ca_layer_tree.mm: the flipped layer is width and
+// height sizable, and on the Mac nothing ever sets its bounds). Autoresizing
+// only adds each change of its parent's size to what it has, so an error
+// stays, and GPUI's slots come in half points: every move or resize of a
+// panel's page could leave a little behind. After a morning of panels moving
+// it was 12 points or more, and as the layer hangs from the bottom of a
+// clipping one, the page was drawn that much too high while Chromium read
+// clicks where the view really is: each press landed above the pointer, the
+// top of a button did nothing, and a drag selected from the line above (Mike,
+// 16 Nov). So each time the view is placed, every such layer is put back to
+// its parent's exact size.
+static void tb_pin_flipped_layers(CALayer *layer, int depth) {
+  for (CALayer *sub in layer.sublayers) {
+    CAAutoresizingMask sizable = kCALayerWidthSizable | kCALayerHeightSizable;
+    if (sub.geometryFlipped && (sub.autoresizingMask & sizable) == sizable && !CGRectEqualToRect(sub.frame, layer.bounds)) {
+      sub.frame = layer.bounds;
+    }
+    if (depth < 6) {
+      tb_pin_flipped_layers(sub, depth + 1);
+    }
+  }
+}
+
+static void tb_pin_page_layers(NSView *view) {
+  if (!view.layer) {
+    return;
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  tb_pin_flipped_layers(view.layer, 0);
+  [CATransaction commit];
+}
+
+static CALayer *tb_find_picture(CALayer *layer, int depth) {
+  for (CALayer *sub in layer.sublayers) {
+    if (sub.geometryFlipped) {
+      return sub;
+    }
+    CALayer *found = depth < 6 ? tb_find_picture(sub, depth + 1) : nil;
+    if (found) {
+      return found;
+    }
+  }
+  return nil;
+}
+
+// The size of the layer Chromium shows the page's picture in, for the dump:
+// the scripted app's check that it stays the size of the view (false when
+// there's none yet).
+bool tb_view_picture_size(void *nativeView, double *width, double *height) {
+  NSView *view = (__bridge NSView *)nativeView;
+  CALayer *picture = view.layer ? tb_find_picture(view.layer, 0) : nil;
+  if (!picture) {
+    return false;
+  }
+  *width = picture.bounds.size.width;
+  *height = picture.bounds.size.height;
+  return true;
+}
+
 // A page's native view placed in a GPUI layout slot. GPUI's coordinates are
 // the window's, from the top left, in points; the parent view may not be
 // flipped, so the y is turned over.
@@ -144,6 +206,19 @@ void tb_view_set_frame(void *nativeView, double x, double y, double width, doubl
     nativeY = NSHeight(parent.bounds) - y - height;
   }
   view.frame = NSMakeRect(x, nativeY, MAX(0.0, width), MAX(0.0, height));
+  // Its layers take the new size now, so the pin sees it; and once more on
+  // the next turn of the loop, in case AppKit moves them again after this.
+  [view layoutSubtreeIfNeeded];
+  [view.layer layoutIfNeeded];
+  tb_pin_page_layers(view);
+  // Weak: a page closed meanwhile goes now, not after this.
+  __weak NSView *weakView = view;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSView *later = weakView;
+    if (later) {
+      tb_pin_page_layers(later);
+    }
+  });
 }
 
 void tb_view_set_hidden(void *nativeView, bool hidden) {
@@ -300,7 +375,8 @@ void tb_view_send_keys(void *nativeView, const char *text) {
   for (NSUInteger i = 0; i < all.length; i++) {
     NSString *one = [all substringWithRange:NSMakeRange(i, 1)];
     unichar c = [one.lowercaseString characterAtIndex:0];
-    unsigned short code = (c >= 'a' && c <= 'z') ? codes[c - 'a'] : 49;
+    // Delete (U+007F) as the Backspace key, so a script can take words out.
+    unsigned short code = (c >= 'a' && c <= 'z') ? codes[c - 'a'] : c == 0x7f ? 51 : 49;
     for (int down = 1; down >= 0; down--) {
       NSEvent *event = [NSEvent keyEventWithType:(down ? NSEventTypeKeyDown : NSEventTypeKeyUp)
                                         location:NSZeroPoint
@@ -315,6 +391,75 @@ void tb_view_send_keys(void *nativeView, const char *text) {
       [window sendEvent:event];
     }
   }
+}
+
+// A scripted app's stand-in for a person's click at (x, y) in the window
+// GPUI's view `nativeView` fills, in GPUI's coordinates (from the top left):
+// a mouse down and up handed to the window, which hit-tests and delivers them
+// as AppKit does a person's, so a page's view under the point gets them the
+// way it gets a real click (first-mouse rules and all). DevTools' clicks skip
+// all of that, which is why they never met the missed clicks in a panel.
+// Returns what AppKit hit there and each view in that branch, with its frame
+// in the window (from the bottom left), for the scripted app to report:
+// malloc'd, freed by the caller with free().
+static void tb_describe_layer(CALayer *l, NSMutableString *out, int depth, int level) {
+  [out appendFormat:@"%*slayer %@ frame(%.1f,%.1f %.1fx%.1f) flipped %d%s\n", depth * 2, "", NSStringFromClass([l class]), l.frame.origin.x, l.frame.origin.y, l.frame.size.width, l.frame.size.height, l.geometryFlipped, l.masksToBounds ? " masks" : ""];
+  if (level < 5) {
+    for (CALayer *sub in l.sublayers) {
+      tb_describe_layer(sub, out, depth + 1, level + 1);
+    }
+  }
+}
+
+static void tb_describe(NSView *v, NSMutableString *out, int depth) {
+  NSRect r = [v convertRect:v.bounds toView:nil];
+  [out appendFormat:@"%*s%@ %s window(%.1f,%.1f %.1fx%.1f) frame(%.1f,%.1f %.1fx%.1f)%s\n", depth * 2, "", NSStringFromClass([v class]), v.isFlipped ? "flipped" : "", r.origin.x, r.origin.y, r.size.width, r.size.height, v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height, v.hidden ? " hidden" : ""];
+  if (@available(macOS 11.0, *)) {
+    NSEdgeInsets inset = v.safeAreaInsets;
+    if (inset.top || inset.bottom || inset.left || inset.right) {
+      [out appendFormat:@"%*s  safe area insets top %.1f bottom %.1f\n", depth * 2, "", inset.top, inset.bottom];
+    }
+  }
+  if (v.layer) {
+    tb_describe_layer(v.layer, out, depth + 1, 0);
+  }
+  if (depth < 6) {
+    for (NSView *sub in v.subviews) {
+      tb_describe(sub, out, depth + 1);
+    }
+  }
+}
+
+char *tb_view_send_click(void *nativeView, double x, double y) {
+  NSView *view = (__bridge NSView *)nativeView;
+  NSWindow *window = view.window;
+  if (!window) {
+    return strdup("no window");
+  }
+  NSPoint inView = NSMakePoint(x, view.isFlipped ? y : NSHeight(view.bounds) - y);
+  NSPoint inWindow = [view convertPoint:inView toView:nil];
+  NSView *frame = window.contentView.superview ?: window.contentView;
+  NSView *hit = [window.contentView hitTest:[frame convertPoint:inWindow fromView:nil]];
+  // Counted as a person's click, as the input monitor counts one: events
+  // handed straight to the window never pass it (LeaveGate, panel_rules.rs).
+  tb_note_input(hit);
+  for (int down = 1; down >= 0; down--) {
+    NSEvent *event = [NSEvent mouseEventWithType:(down ? NSEventTypeLeftMouseDown : NSEventTypeLeftMouseUp)
+                                        location:inWindow
+                                   modifierFlags:0
+                                       timestamp:[[NSProcessInfo processInfo] systemUptime]
+                                    windowNumber:window.windowNumber
+                                         context:nil
+                                     eventNumber:0
+                                      clickCount:1
+                                        pressure:(down ? 1.0 : 0.0)];
+    [window sendEvent:event];
+  }
+  NSMutableString *out = [NSMutableString stringWithFormat:@"at window (%.1f, %.1f), key %d, hit %@\n", inWindow.x, inWindow.y, window.isKeyWindow, NSStringFromClass([hit class])];
+  for (NSView *sub in view.subviews) {
+    tb_describe(sub, out, 0);
+  }
+  return strdup(out.UTF8String);
 }
 
 @interface TBMenuTarget : NSObject

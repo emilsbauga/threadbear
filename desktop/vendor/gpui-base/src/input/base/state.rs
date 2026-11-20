@@ -434,6 +434,10 @@ impl PrepaintCaretGeometry {
     }
 }
 
+/// A box's undo history, held apart from it by
+/// [`InputBaseState::take_history`].
+pub struct InputHistory(UndoManager);
+
 /// The shared text-editing engine behind [`crate::input::InputState`],
 /// [`crate::input::TextareaState`] and [`crate::input::EditorState`].
 ///
@@ -3146,7 +3150,19 @@ impl<M: InputModeKind> InputBaseState<M> {
         // Clamp the deferred target into the same safe range that
         // `update_scroll_offset` enforces on persist, so paint never shows an
         // over-scrolled frame before the post-paint clamp pulls it back.
-        let safe_y_min = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.));
+        //
+        // `scroll_size` is from the last paint, so right after an edit (a
+        // paste reveals its end at once) it's still the old text's height.
+        // A long paste into a short box clamped the target back to the top
+        // and the deferred offset then overrode the layout's caret-follow,
+        // leaving the end of the paste out of sight (Threadbear, 17 Nov).
+        // The rows as they are now are never shorter than the content, and
+        // layout clamps the deferred offset again with the fresh sizes.
+        let content_height = self
+            .scroll_size
+            .height
+            .max(line_height * self.display_map.wrap_row_count());
+        let safe_y_min = (-content_height + self.input_bounds.size.height).min(px(0.));
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
         self.deferred_scroll_offset = Some(scroll_offset);
@@ -3390,6 +3406,32 @@ impl<M: InputModeKind> InputBaseState<M> {
                 .record_selections(vec![selection_before], vec![selection_after]);
         }
         recorded
+    }
+
+    /// Whether Undo would take back an edit in this box. Threadbear asks
+    /// before letting ⌘Z bring back an archived thread instead, so a draft
+    /// cleared by mistake always comes back first (shell.rs,
+    /// `undo_key_is_archive`).
+    pub fn can_undo(&self) -> bool {
+        self.undo_manager.can_undo()
+    }
+
+    /// Takes the box's undo history out, leaving it none, for
+    /// `restore_history` to put back once the box holds again exactly the
+    /// text and tokens it had (its `content()`). Threadbear's message box
+    /// does this while one of the earlier messages is being edited in it, so
+    /// cancelling the edit still lets ⌘Z go back through what was typed
+    /// before (composer.rs, `start_editing`).
+    pub fn take_history(&mut self) -> InputHistory {
+        self.undo_manager.finish();
+        InputHistory(std::mem::replace(&mut self.undo_manager, UndoManager::new()))
+    }
+
+    /// Puts back a history from `take_history`, in place of whatever this box
+    /// has now. Only sound when the text and tokens are as they were when it
+    /// was taken: undo replays its changes by offset.
+    pub fn restore_history(&mut self, history: InputHistory) {
+        self.undo_manager = history.0;
     }
 
     pub(super) fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
@@ -6396,6 +6438,21 @@ mod tests {
         }
     }
 
+    /// Holds an input at its own height, as a message box sits in a page,
+    /// so an auto-grow box sizes to its rows instead of filling the window.
+    struct GrowRoot<M: InputModeKind>(Entity<InputBaseState<M>>);
+
+    impl<M: InputModeKind> Render for GrowRoot<M> {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(div().w(px(400.)).child(self.0.clone()))
+        }
+    }
+
     struct InputView<M: InputModeKind> {
         input: Entity<InputBaseState<M>>,
         window_handle: gpui::WindowHandle<TestRoot<M>>,
@@ -7393,6 +7450,65 @@ mod tests {
                 );
             });
         });
+    }
+
+    /// A long dictated paragraph pasted into an empty auto-grow box (as
+    /// Threadbear's message box, 2 to 10 rows) soft-wraps well past its
+    /// tallest; the caret at the paste's end must be in view afterwards, not
+    /// left below the box with the start of the text showing (Mike, 17 Nov).
+    #[gpui::test]
+    fn test_paste_long_wrapped_text_reveals_caret(cx: &mut TestAppContext) {
+        for text in [
+            "word ".repeat(1500),
+            format!("{}\n\n{}\n\n{}", "one ".repeat(600), "two ".repeat(600), "three ".repeat(600)),
+        ] {
+            let mut input = None;
+            let window = cx.open_window(size(px(500.), px(600.)), |window, cx| {
+                cx.set_global(Theme::default());
+                super::super::init(cx);
+                let state = cx.new(|cx| crate::input::TextareaState::new(window, cx).auto_grow(2, 10));
+                input = Some(state.clone());
+                GrowRoot(state)
+            });
+            let mut cx = VisualTestContext::from_window(window.into(), cx);
+            let input = input.unwrap();
+            cx.update(|window, cx| input.update(cx, |state, cx| state.focus(window, cx)));
+            cx.run_until_parked();
+
+            // A real paste: it asks to reveal the caret right away, before
+            // the box has been laid out with the new text.
+            cx.update(|window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                input.update(cx, |state, cx| state.paste(&Paste, window, cx));
+            });
+            cx.run_until_parked();
+
+            cx.update(|_, cx| {
+                input.read_with(cx, |state, _| {
+                    assert_eq!(state.text.to_string(), text);
+                    assert_eq!(state.cursor(), state.text.len());
+                    // Taller than the box, which stays within its ten rows.
+                    let rows = state.input_bounds.size.height / state.last_layout.as_ref().unwrap().line_height;
+                    assert!(rows > 9.5 && rows <= 10.5, "the box should be ten rows, not {rows}");
+                    assert!(
+                        state.scroll_size.height > state.input_bounds.size.height * 2.,
+                        "the text should be well past the box's height: content {:?}, box {:?}, rows {}",
+                        state.scroll_size.height,
+                        state.input_bounds.size.height,
+                        state.display_map.wrap_row_count(),
+                    );
+                    let (caret, _) = state.cursor_layout().expect("caret painted");
+                    let viewport = state.input_bounds();
+                    let scroll_y = state.scroll_handle.offset().y;
+                    let top = caret.origin.y - viewport.origin.y + scroll_y;
+                    assert!(
+                        top >= px(0.) && top + caret.size.height <= viewport.size.height,
+                        "caret top {top:?} outside viewport height {:?} (scroll {scroll_y:?})",
+                        viewport.size.height,
+                    );
+                });
+            });
+        }
     }
 
     /// Regression test: changing the auto-grow limits keeps the rows fitted to
@@ -8804,6 +8920,70 @@ mod tests {
                 // Redo reapplies the replacement.
                 state.redo(&Redo, window, cx);
                 assert_eq!(state.value(), "second");
+            });
+        });
+    }
+
+    /// Threadbear's ⌘Z asks `can_undo` before bringing back an archived
+    /// thread: a box emptied by an edit still has that edit to undo, while
+    /// one emptied by `set_value` (a sent message) has none.
+    #[gpui::test]
+    fn test_can_undo_after_clearing_by_hand(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                assert!(!state.can_undo(), "a new box has nothing to undo");
+                state.replace_all("a draft", window, cx);
+                state.replace_all("", window, cx);
+                assert_eq!(state.value(), "");
+                assert!(state.can_undo(), "the clearing edit can be undone");
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "a draft");
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "");
+                assert!(!state.can_undo(), "everything is undone");
+
+                state.redo(&Redo, window, cx);
+                assert!(state.can_undo());
+                state.set_value("", window, cx);
+                assert!(!state.can_undo(), "set_value clears the history");
+            });
+        });
+    }
+
+    /// Threadbear's message box takes its history out while an earlier
+    /// message is edited in it, and puts it back with the words on cancel:
+    /// ⌘Z then still goes back through what was typed before the edit.
+    #[gpui::test]
+    fn test_history_taken_and_restored(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.replace_all("a draft", window, cx);
+                state.replace_all("", window, cx);
+                let content = state.content();
+                let history = state.take_history();
+                assert!(!state.can_undo(), "the history went with take_history");
+
+                // The edit: its own words and typing, then cancelled.
+                state.set_value("the earlier message", window, cx);
+                state.replace_all("the earlier message, changed", window, cx);
+                state.set_value(content, window, cx);
+                state.restore_history(history);
+
+                assert_eq!(state.value(), "");
+                assert!(state.can_undo());
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "a draft", "the draft cleared before the edit comes back");
+                state.redo(&Redo, window, cx);
+                assert_eq!(state.value(), "");
             });
         });
     }

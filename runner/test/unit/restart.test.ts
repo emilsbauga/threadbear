@@ -12,6 +12,7 @@ import { nullLogger } from '../../src/log.ts';
 import { RpcError } from '../../src/protocol.ts';
 import { checkSequence } from '../helpers/protocol-check.ts';
 import { tmpDir } from '../helpers/fakes.ts';
+import { IS_WINDOWS, NO_LINKS_ON_WINDOWS, SHELL, sleepCommand } from '../helpers/platform.ts';
 
 const MIN = 60_000;
 
@@ -127,8 +128,10 @@ test('an idle restart waits for a running turn.end hook, and goes once it has en
   const root = tmpDir();
   const project = path.join(root, 'app');
   fs.mkdirSync(path.join(project, '.threadbear/patches'), { recursive: true });
-  fs.writeFileSync(path.join(project, '.threadbear/patches/h.ts'), `export default { hooks: [{ title: "Slow", on: "turn.end", run: "sleep 0.3", tell: "never" }] };`);
-  const h = makeHarness(undefined, {}, { panelsRoot: root, actionShell: ['/bin/sh', '-c'], actionTimeoutMs: 5000 });
+  // (On Windows the hook is slower to start and the runner's loop can stall a
+  // while: a 0.3 s hook had ended by the time the test looked, on GitHub's runner.)
+  fs.writeFileSync(path.join(project, '.threadbear/patches/h.ts'), `export default { hooks: [{ title: "Slow", on: "turn.end", run: ${JSON.stringify(sleepCommand(IS_WINDOWS ? 2 : 0.3))}, tell: "never" }] };`);
+  const h = makeHarness(undefined, {}, { panelsRoot: root, actionShell: SHELL, actionTimeoutMs: 5000 });
   const { r, state } = withRestarter(h);
   const { thread } = create(h, { cwd: project });
   await tick();
@@ -472,8 +475,6 @@ test('the restart notices are the sentences the Mac app reads', () => {
   assert.equal(pendingMessage(3, 1), 'The runner will restart when 2 threads finish and you answer 1.');
   assert.equal(pendingMessage(1, 1), 'The runner will restart when you answer 1 thread.');
   assert.equal(pendingMessage(2, 2), 'The runner will restart when you answer 2 threads.');
-  const src = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'src', 'restart.ts'), 'utf8');
-  assert.match(src, /'The pending runner restart was cancelled\.'/);
 });
 
 test('background shells and subagents hold an idle restart until they finish', async () => {
@@ -669,7 +670,7 @@ test('a pending restart can be cancelled until it begins', async () => {
   assert.throws(() => r.request({ cancel: true }), (e: RpcError) => e.code === -32020);
 });
 
-test("cancelling a deploy's restart points current back at the running release", () => {
+test("cancelling a deploy's restart points current back at the running release", NO_LINKS_ON_WINDOWS, () => {
   const h = makeHarness();
   // A data dir with releases A (running) and B (a deploy made current).
   const dir = path.join(h.home, 'runner');
@@ -988,9 +989,12 @@ test('every CLI gets THREADBEAR_THREAD_ID, THREADBEAR_HOME and THREADBEAR_RUNNER
   // The Node it runs on, for the repo's scripts (scripts/find-node.sh).
   assert.equal(env.THREADBEAR_NODE, process.execPath);
   // This runner's bin/ first, so a bare `tb` in the thread is its tb.
-  assert.equal(env.PATH.split(':')[0], path.resolve(import.meta.dirname, '..', '..', 'bin'));
-  assert.ok(fs.existsSync(path.join(env.PATH.split(':')[0], 'tb')));
-  assert.equal(env.PATH.split(':').slice(1).join(':'), process.env.PATH);
+  assert.equal(env.PATH.split(path.delimiter)[0], path.resolve(import.meta.dirname, '..', '..', 'bin'));
+  assert.ok(fs.existsSync(path.join(env.PATH.split(path.delimiter)[0], 'tb')));
+  // On Windows the runner's Node comes next, for Git Bash's tb (threadEnv).
+  const rest = env.PATH.split(path.delimiter).slice(1);
+  if (process.platform === 'win32') assert.equal(rest.shift(), path.dirname(process.execPath));
+  assert.equal(rest.join(path.delimiter), process.env.PATH);
 
   // The Claude adapter puts them in the CLI's environment, over anything
   // inherited (a runner started from inside a thread has its own).

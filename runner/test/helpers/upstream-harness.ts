@@ -10,6 +10,7 @@ import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
 import { Upstream, signersPath } from '../../src/upstream.ts';
 import { PATIENCE_MS } from './patience.ts';
+import { IS_WINDOWS, shPath } from './platform.ts';
 
 // Commits and tags in the throwaway repos need a name, and must not pick
 // up a signing setup from whoever runs the tests.
@@ -57,6 +58,11 @@ export function world() {
   git(root, 'init', '-q', '--bare', '-b', 'main', mikeBare);
   git(root, 'clone', '-q', mikeBare, mike);
   git(mike, 'checkout', '-q', '-b', 'main');
+  // The keys Mike's repo announces, as scripts/release-signers does: what
+  // his runner checks its own release tags against before pushing them.
+  fs.mkdirSync(path.join(mike, 'scripts'));
+  fs.copyFileSync(mikeKey.signers, path.join(mike, 'scripts', 'release-signers'));
+  git(mike, 'add', 'scripts/release-signers');
   commit(mike, 'a.txt', 'First');
   signedTag(mike, 'release/2026-10-01', mikeKey.priv);
   git(mike, 'push', '-q', 'origin', 'main', '--tags');
@@ -151,6 +157,28 @@ export function objectsIn(repo: string): Set<string> {
 export function hangingUpstream(w: ReturnType<typeof world>, when: 'list' | 'fetch') {
   const script = path.join(w.root, 'hang.sh');
   const count = path.join(w.root, 'calls');
+  if (IS_WINDOWS) {
+    // The same in Node: a Git Bash script's background pids are MSYS's own, not
+    // the Windows pids process.kill and taskkill go by.
+    const js = path.join(w.root, 'hang.cjs');
+    fs.writeFileSync(js, `const fs = require('node:fs');
+const { spawn, spawnSync } = require('node:child_process');
+const count = ${JSON.stringify(count)};
+const pids = ${JSON.stringify(path.join(w.root, 'pids'))};
+const n = (fs.existsSync(count) ? Number(fs.readFileSync(count, 'utf8')) : 0) + 1;
+fs.writeFileSync(count, n + '\\n');
+if (${when === 'list' ? 1 : 2} <= n) {
+  const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  fs.appendFileSync(pids, c.pid + '\\n' + process.pid + '\\n');
+  setInterval(() => {}, 1000);
+} else {
+  process.exit(spawnSync('git', ['upload-pack', ...process.argv.slice(2)], { stdio: 'inherit' }).status ?? 1);
+}
+`);
+    git(w.theirs, 'config', 'remote.upstream.uploadpack', `"${shPath(process.execPath)}" "${shPath(js)}"`);
+    git(w.theirs, 'config', 'protocol.version', '2');
+    return () => fs.readFileSync(path.join(w.root, 'pids'), 'utf8').trim().split('\n').map(Number);
+  }
   fs.writeFileSync(script, `#!/bin/bash
 n=$(( $(cat "${count}" 2>/dev/null || echo 0) + 1 )); echo $n >"${count}"
 if [ ${when === 'list' ? 1 : 2} -le $n ]; then sleep 600 & echo $! >>"${w.root}/pids"; echo $$ >>"${w.root}/pids"; wait; fi
@@ -163,6 +191,23 @@ exec git-upload-pack "$@"
   git(w.theirs, 'config', 'protocol.version', '2');
   return () => fs.readFileSync(path.join(w.root, 'pids'), 'utf8').trim().split('\n').map(Number);
 }
+
+// A git alias that starts a long sleep of its own, writes the sleep's pid to
+// `pidFile` and waits. On Windows the sleep is a Node process (the pid of a
+// Git Bash background job is an MSYS one, which nothing else can look up).
+export function hangAlias(dir: string, pidFile: string): string {
+  if (!IS_WINDOWS) return `alias.hang=!sleep 600 & echo $! >${pidFile}; wait`;
+  const js = path.join(dir, 'hang-alias.cjs');
+  fs.writeFileSync(js, `const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+fs.writeFileSync(process.argv[2], String(c.pid));
+setInterval(() => {}, 1000);
+`);
+  return `alias.hang=!"${shPath(process.execPath)}" "${shPath(js)}" "${shPath(pidFile)}"`;
+}
+
+export const startedPid = (pidFile: string): number => Number(fs.readFileSync(pidFile, 'utf8'));
 
 export function alive(pid: number): boolean {
   try {

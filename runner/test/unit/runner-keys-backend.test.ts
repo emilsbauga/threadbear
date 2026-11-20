@@ -14,6 +14,13 @@ const { sha256 } = load('lib') as { sha256: (s: string) => Promise<string> };
 const sync = load('sync');
 const relay = load('relay');
 const phone = load('phone');
+const tokens = load('tokens');
+// A browser's token as one is made since API 81: a one-use code, traded. Its row.
+const browserToken = async (s: { ctx: unknown; rows: (t: string) => any[] }, name: string) => {
+  const { code } = await call(s.ctx, sync.issuePairingCode, { key: OWNER, kind: 'browser', name });
+  await call(s.ctx, tokens.claim, { code });
+  return { id: s.rows('tokens').find((t) => t.name === name)!._id as string };
+};
 
 async function setup() {
   process.env.RUNNER_KEY = OWNER;
@@ -421,6 +428,15 @@ test('a key over a runner id that has a live key needs replace', async () => {
   await call(s.ctx, sync.addRunnerKey, { key: OWNER, runnerId: MINI, name: 'mac-mini', ownerRunnerId: LAPTOP, replace: true });
 });
 
+test('four runner keys can be live at once, and a fifth is refused until one is revoked', async () => {
+  const s = await setup();
+  // setup() already has the mac-mini's: three more make four (bruce, the Hetzner box, the Pixel, the Dell).
+  for (const id of ['keyed0000002', 'keyed0000003', 'keyed0000004']) await call(s.ctx, sync.addRunnerKey, { key: OWNER, runnerId: id, name: id, ownerRunnerId: LAPTOP });
+  assert.equal(await outcome(call(s.ctx, sync.addRunnerKey, { key: OWNER, runnerId: 'keyed0000005', name: 'fifth', ownerRunnerId: LAPTOP })), 'tooMany');
+  await call(s.ctx, sync.revokeRunnerKey, { key: OWNER, runnerId: 'keyed0000002' });
+  await call(s.ctx, sync.addRunnerKey, { key: OWNER, runnerId: 'keyed0000005', name: 'fifth', ownerRunnerId: LAPTOP });
+});
+
 test("names are compared as they'd look, and the name a runner key ends up with is never another's", async () => {
   const s = await setup();
   await hb(s, OWNER, LAPTOP, 'Laptop');
@@ -467,7 +483,7 @@ test("refusals don't tell a key whether another runner's thread, schedule or car
 
 test('tokens say which key issued them, and the audit lists what a key could have planted', async () => {
   const s = await setup();
-  const made = await call(s.ctx, sync.issueToken, { key: OWNER, kind: 'browser', name: "Alex's iPhone" });
+  const made = await browserToken(s, "Alex's iPhone");
   const row = s.rows('tokens').find((t) => t._id === made.id)!;
   assert.equal(row.issuedBy, 'owner');
   assert.match(row.ownerKeyPrint, /^[0-9a-f]{8}$/);
@@ -811,7 +827,7 @@ test('den threads and pushes have per-key budgets, and old thread tombstones go'
 test('the audit pages through live credentials directly, section by section, with exact rows and versions', async () => {
   const s = await setup();
   for (let i = 0; i < 400; i++) await s.ctx.db.insert('tokens', { hash: `h${i}`, name: `junk${i}`, createdAt: 1, expiresAt: Date.now() + 1e9, revokedAt: 1 });
-  const live = await call(s.ctx, sync.issueToken, { key: OWNER, kind: 'browser', name: 'live one' });
+  const live = await browserToken(s, 'live one');
   const page = await call(s.ctx, sync.audit, { key: OWNER, section: 'tokens' });
   assert.deepEqual(page.rows.map((r: { id: string }) => r.id), [live.id]);
   assert.ok(typeof page.rows[0].version === 'string');
@@ -1265,4 +1281,38 @@ test('a lab review already stored with numbers that would stop a phone reaches i
   }
   // What's stored is left alone; only what the phone gets is held.
   assert.equal(s.rows('threads').find((t) => t.threadId === UUID(11))!.review.rounds, 1e20);
+});
+
+// Codex's review of the schedule claim fix (18 Nov 2026): a run recorded
+// while the schedule was edited elsewhere keeps its old nextRunAt (the
+// runner tells it again with the new updatedAt), so its holder's claim stays
+// until then. Cleared, another process of the runner (a handover) could
+// claim the slot that just ran and send it again.
+test('scheduleRan keeps the holder’s claim while the run it recorded leaves the slot due', async () => {
+  const s = await setup();
+  const at = '2026-11-18T09:00:00.000Z';
+  await call(s.ctx, sync.saveSchedule, { key: MINI_KEY, schedule: sched(UUID(9), MINI, { threadId: 'T', nextRunAt: at }) });
+  const claim = (holder: string) => call(s.ctx, sync.claimSchedule, { key: MINI_KEY, runnerId: MINI, scheduleId: UUID(9), holder, kind: 'due', expect: at });
+  const ran = (expectUpdatedAt: string) => call(s.ctx, sync.scheduleRan, { key: MINI_KEY, scheduleId: UUID(9), holder: 'old', lastRun: { at: 'a', outcome: 'sent' }, sent: true, expectUpdatedAt, nextRunAt: '2026-11-19T09:00:00.000Z' });
+  assert.equal(await claim('old'), true);
+  // Edited meanwhile: the run counts, the slot stays, and so does the claim.
+  await ran('an older edit');
+  const row = () => s.rows('schedules').find((r) => r.id === UUID(9))!;
+  assert.deepEqual([row().runs, row().nextRunAt, row().claim?.holder], [1, at, 'old']);
+  assert.equal(await claim('new'), false, 'the other process can’t take it');
+  // Told again with the edit's updatedAt: the slot moves on and the claim goes.
+  await ran('u');
+  assert.deepEqual([row().runs, row().nextRunAt, row().claim], [1, '2026-11-19T09:00:00.000Z', undefined]);
+});
+
+// A sidebar row's mode (API 88) reaches the main Mac's watch as written, and
+// a runner key's is cut to a mode's length (18 Nov 2026: another Mac's
+// composer showed Full access for every other runner's thread).
+test("a sidebar row's mode is kept, and a runner key's is cut short", async () => {
+  const s = await setup();
+  const row = (threadId: string, permissionMode: string) => ({ threadId, title: 'x', cwd: '/', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: '', createdAt: 'c', lastActivityAt: 'l', permissionMode });
+  await call(s.ctx, sync.setThreadIndex, { key: MINI_KEY, runnerId: MINI, rows: [row('A', 'auto'), row('B', 'x'.repeat(5000))], removed: [] });
+  const got = await call(s.ctx, sync.threadIndexSince, { key: OWNER, runners: [{ runnerId: MINI }] });
+  const modes = Object.fromEntries((got as { threadId: string; permissionMode?: string }[]).map((r) => [r.threadId, r.permissionMode]));
+  assert.deepEqual(modes, { A: 'auto', B: 'x'.repeat(16) });
 });

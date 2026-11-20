@@ -4,7 +4,7 @@
 use super::ReviewWindow;
 use crate::style::{self, px};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::Textarea;
+use gpui_kit::component::input::{Paste, Textarea};
 use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
@@ -161,7 +161,8 @@ impl ReviewWindow {
         }
         let none = self.session.draft().none;
         let editable = self.session.editable();
-        let can_send = self.session.can_submit();
+        // Not while a picture in the reply is still on its way in.
+        let can_send = self.session.can_submit() && !self.reply_loading(cx);
         let submitting = self.session.submitting();
         let active = window.is_window_active();
         let focused = self.reply.read(cx).focus_handle(cx).is_focused(window);
@@ -171,6 +172,8 @@ impl ReviewWindow {
         // click anywhere in it puts the cursor in it. The edge is drawn inside
         // its 6 of padding, as the Swift box's strokeBorder is.
         let reply = self.reply.clone();
+        let (me, token_owner, paste_owner, click_owner) = (cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade());
+        let token_state = self.reply.clone();
         let reply_box = div()
             .id("review-reply")
             .w_full()
@@ -186,7 +189,42 @@ impl ReviewWindow {
                 window.focus(&handle, cx);
                 crate::web_panels::keyboard_to_app(window);
             })
-            .child(crate::composer::bare_textarea(Textarea::new(&self.reply)).w_full().text_size(px(style::size::WORK)).line_height(px(style::natural_line(style::size::WORK))));
+            // A picture dropped on it goes in as a chip, as one pasted does.
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                let paths = crate::composer_media::read(true).unwrap_or_else(|| paths.paths().to_vec());
+                if let Some(me) = me.upgrade() {
+                    me.update(cx, |this, cx| this.take_reply_paths(paths, window, cx));
+                }
+            })
+            // HEIC and file promises, which GPUI's own clipboard leaves out,
+            // from the Mac's pasteboard first, as the thread's box does.
+            .capture_action(cx.listener(|this, _: &Paste, window, cx| {
+                if this.session.editable() && this.reply.read(cx).focus_handle(cx).is_focused(window) {
+                    if let Some(paths) = crate::composer_media::read(false) {
+                        this.take_reply_paths(paths, window, cx);
+                        cx.stop_propagation();
+                    }
+                }
+            }))
+            .child(
+                crate::composer::bare_textarea(Textarea::new(&self.reply))
+                    .token(move |ctx, _, cx| match token_owner.upgrade() {
+                        Some(this) => this.read(cx).reply_pictures.render(ctx, token_state.read(cx), cx),
+                        None => div().into_any_element(),
+                    })
+                    .on_paste(move |item, window, cx| paste_owner.upgrade().is_some_and(|this| this.update(cx, |this, cx| this.take_reply_clipboard(Some(item), window, cx))))
+                    // A plain click on a picture's chip opens it full size
+                    // (a drag from it or a Shift-click selects, as in the
+                    // thread's box).
+                    .on_token_click(move |event, window, cx| {
+                        if let Some(this) = click_owner.upgrade() {
+                            this.update(cx, |this, cx| this.open_reply_picture(event.token().id(), window, cx));
+                        }
+                    })
+                    .w_full()
+                    .text_size(px(style::size::WORK))
+                    .line_height(px(style::natural_line(style::size::WORK))),
+            );
         // None: tinted while it's chosen, as the Swift button's tint is.
         let none_tip = if none { "Take back none of them" } else { "None of them will do" };
         let none_fill = if none && active { accent.opacity(0.25) } else { style::primary_opacity(cx, 0.08) };
@@ -248,6 +286,13 @@ impl ReviewWindow {
             // As tall as it needs up to the reply box's most, then it scrolls,
             // so a long one leaves room for the options and keeps Done on screen.
             column = column.child(div().id("review-sent-reply").w_full().max_h(px(220.)).overflow_y_scroll().child(reply));
+        }
+        // The pictures that went with it, as small as the rail's own.
+        if !sent.images.is_empty() {
+            let edge = style::hairline(cx);
+            column = column.child(h_flex().flex_wrap().gap(px(6.)).children(sent.images.iter().map(|image| {
+                img(crate::rows::markdown::file_picture(&image.path)).size(px(48.)).rounded(px(6.)).border_1().border_color(edge).object_fit(ObjectFit::Cover)
+            })));
         }
         column
             .child(

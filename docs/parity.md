@@ -24,6 +24,9 @@ and web" is the iPhone app and the website, which read every thread through Conv
 | A message's reply buttons | `buttons.list` | Yes | Yes |
 | The slash command list | `threads.commands` | Yes | Yes |
 | Hibernate until something happens | `threads.hibernateWhen` | Yes | No: The phone hibernates until a time only. |
+| Design reviews | `reviews.list` | No: Reviews open in the Mac app from that Mac. | Yes |
+| Reading a design review | `reviews.get` | No: Reviews open in the Mac app from that Mac. | Yes |
+| Answering a design review | `reviews.respond` | No: Reviews open in the Mac app from that Mac. | Yes |
 | Saving a Backlog prompt | `threads.saveDraft` | No: Draft files are saved on their own Mac. | No: The phone starts a saved prompt but does not edit it. |
 | What fills its context | `threads.contextUsage` | No: Asked of the CLI on that Mac; the ring's popover there shows the totals only. | No: Not on the phone. |
 | Ticking an ask on the card | `threads.tickAsk` | No: Ticks stay on that Mac. | No: The phone sends picks with its answer instead. |
@@ -36,15 +39,13 @@ and web" is the iPhone app and the website, which read every thread through Conv
 | A panel being shown | `threads.panelShown` | No: Patches run on that Mac. | No: No panels on the phone. |
 | Opening a panel | `threads.showPanel` | No: Patches run on that Mac. | No: No panels on the phone. |
 | Drawing a panel | `panels.render` | No: Patches run on that Mac. | No: No panels on the phone. |
+| A list panel row's switch | `panels.toggle` | No: Patches run on that Mac. | No: No panels on the phone. |
 | The Convex panel's key | `panels.convexKey` | No: Patches run on that Mac. | No: No panels on the phone. |
 | The Convex panel's deployments | `panels.convexDeployments` | No: Patches run on that Mac. | No: No panels on the phone. |
 | The Convex panel's login | `panels.convexLogin` | No: Patches run on that Mac. | No: No panels on the phone. |
 | An action chip | `actions.run` | No: Patches run on that Mac. | No: No action chips on the phone. |
 | Trusting a folder's patches | `patches.trust` | No: Trust is given on that Mac. | No: Not on the phone. |
 | Approving a plan | `plans.approve` | No: Not sent through Convex from the Mac yet. | No: Not on the phone yet. |
-| Design reviews | `reviews.list` | No: Reviews open in the Mac app from that Mac. | No: Not on the phone. |
 | Starting a design review | `reviews.create` | No: Reviews open in the Mac app from that Mac. | No: Not on the phone. |
-| Reading a design review | `reviews.get` | No: Reviews open in the Mac app from that Mac. | No: Not on the phone. |
 | Saving a design review | `reviews.save` | No: Reviews open in the Mac app from that Mac. | No: Not on the phone. |
-| Answering a design review | `reviews.respond` | No: Reviews open in the Mac app from that Mac. | No: Not on the phone. |
 | Cancelling a design review | `reviews.cancel` | No: Reviews open in the Mac app from that Mac. | No: Not on the phone. |

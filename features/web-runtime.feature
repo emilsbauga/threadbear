@@ -19,6 +19,20 @@ Feature: The web runtime
     Then the web runtime says it's installed
     And the web runtime draws a page with no window
 
+  # A handover's new copy draws its panels while the old copy still has
+  # Chromium running on the same profile. Chromium refuses a profile in use,
+  # and a refused start can't be tried again in that process, so every web
+  # panel said "didn't start" until a restart (16 Nov). A start waits for
+  # whoever has the profile to let go.
+  @foundation.webruntime @swift-pending @web-runtime
+  Scenario: Chromium waits for another copy of the app to let go of its profile
+    Given I install the web runtime
+    And another process has the web runtime's profile
+    When something needs the web runtime
+    Then the web runtime waits for that process
+    When that process quits
+    Then the web runtime draws a page with no window
+
   @foundation.webruntime @swift-pending @web-prompt
   Scenario: A download that isn't the pinned build is never unpacked
     When I install the web runtime from a file that isn't the pinned build

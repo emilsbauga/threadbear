@@ -5,6 +5,7 @@ import { MAYBE_RUNS_AS_CODE, RUNS_AS_CODE, type CodeWrite } from './code-writes.
 import { LIMITS } from './protocol.ts';
 import { applyReplace, diffLines } from './diff.ts';
 import { firstLineSafely, safeEnd } from './safe-cut.ts';
+import { realPathSync } from './platform.ts';
 
 const KINDS: Record<string, ToolKind> = {
   Bash: 'command',
@@ -81,7 +82,7 @@ function realCwd(cwd: string): string {
   let r = realpaths.get(cwd);
   if (r === undefined) {
     try {
-      r = fs.realpathSync(cwd);
+      r = realPathSync(cwd);
     } catch {
       r = cwd;
     }
@@ -262,6 +263,12 @@ export function cardInput(input: Record<string, unknown>, decisive: readonly str
 export const REMOTE_COMMAND_CHARS = 160;
 // What such a card says there, and what an allow from there is told.
 export const REMOTE_ALLOW_REFUSED = "It can't be shown in full here, so it can only be allowed in the Mac app connected straight to its runner.";
+// The same, naming the runner, for a card's title (sync.ts). A runner puts
+// such a card up only while it has an app of its own (app-seen.ts), so the
+// app it names is one there is.
+export function remoteAllowRefused(runnerName?: string): string {
+  return runnerName ? `It can't be shown in full here, so only the Threadbear app on ${runnerName} can allow it.` : REMOTE_ALLOW_REFUSED;
+}
 // `cwd` is the thread's folder: a command that runs anywhere else, or asks
 // for the network, has more to it than its line (Codex review, 7 Nov 2026).
 // An edit of a file that runs as code shows all it writes on the Mac, and

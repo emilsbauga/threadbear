@@ -26,3 +26,14 @@ test('the real-screen guard requires AX proof for a pass-through Dock window', {
     fs.rmSync(folder, { recursive: true, force: true });
   }
 });
+
+test('the real-screen guards post only when this login has the screen, unlocked', async () => {
+  const { sessionProblem, assertOwnScreen } = await import('../../../features/tools/real-screen.ts');
+  const me = { user: 'mikeysee', onConsole: true, locked: false };
+  assert.equal(sessionProblem([me], 'mikeysee'), '');
+  // 19 Nov: ademark's locked session had the screen after a fast switch.
+  assert.match(sessionProblem([{ user: 'ademark', onConsole: true, locked: true }, { ...me, onConsole: false }], 'mikeysee'), /ademark's login has the screen \(locked\), not mikeysee's/);
+  assert.match(sessionProblem([{ ...me, locked: true }], 'mikeysee'), /screen is locked/);
+  assert.match(sessionProblem([{ ...me, onConsole: false }], 'mikeysee'), /login window/);
+  assert.throws(() => assertOwnScreen(() => [{ user: 'someone-else', onConsole: true, locked: false }]), /No events were posted/);
+});

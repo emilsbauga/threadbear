@@ -15,7 +15,7 @@ import type { Account, Pool } from '../../src/protocol.ts';
 import { RpcError } from '../../src/protocol.ts';
 import { CallerGate } from '../../src/rpc-gate.ts';
 import type { UsageReading } from '../../src/usage.ts';
-import { CARRY_ON_BACK, CARRY_ON_MOVED, type UsageSink } from '../../src/runner.ts';
+import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_SIGNED_OUT, type SignInSink, type UsageSink } from '../../src/runner.ts';
 
 const MIN = 60_000;
 const START = Date.parse('2026-10-26T12:00:00.000Z');
@@ -31,20 +31,34 @@ function room(pct: number, resetsIn?: number, blocked = false): Account['usage']
   };
 }
 
-function poolHarness(o: { accounts?: Account[]; pools?: Pool[]; copy?: boolean } = {}) {
+function poolHarness(o: { accounts?: Account[]; pools?: Pool[]; copy?: boolean; experiments?: Record<string, boolean> } = {}) {
   const fake = new FakeAccounts(o.accounts ?? withCodex());
   const records: [string, UsageReading][] = [];
   const usage: UsageSink = { record: (id, r) => void records.push([id, r]) };
+  // The registry's SignInState, as far as the runner sees it: a refusal
+  // marks the login signed out in the list, a turn that worked clears it.
+  const signInLog: string[] = [];
+  const signIn: SignInSink = {
+    noteRefused: (id) => {
+      signInLog.push(`refused ${id}`);
+      fake.base = fake.base.map((a) => (a.id === id ? { ...a, signedOut: true } : a));
+    },
+    noteWorked: (id) => void signInLog.push(`worked ${id}`),
+    onChange: () => () => {},
+  };
   const copies: string[][] = [];
-  const h = makeHarness(undefined, o.pools ? { pools: o.pools } : {}, {
+  const home = tmpDir();
+  if (o.experiments) fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: o.experiments }));
+  const h = makeHarness(home, o.pools ? { pools: o.pools } : {}, {
     accounts: fake,
     usage,
+    signIn,
     copyTranscript: (fc, tc, f, t, sid) => (copies.push([fc, tc, f, t, sid]), o.copy ?? true),
   });
   const setUsage = (id: string, usage: Account['usage']) => {
     fake.base = fake.base.map((a) => (a.id === id ? { ...a, usage } : a));
   };
-  return { ...h, fake, records, copies, setUsage };
+  return { ...h, fake, records, copies, setUsage, signInLog };
 }
 
 const notes = (h: { events(id: string): any[] }, id: string): string[] => h.events(id).filter((e) => e.type === 'system.note').map((e) => e.text);
@@ -295,6 +309,155 @@ test('a turn that hits the limit marks the login, moves and carries on; the carr
   assert.equal(h.runner.get(thread.id).waitingForRoom, undefined);
   assert.equal(h.adapter.last.sent.at(-1)?.text, CARRY_ON_BACK);
   assert.equal(h.adapter.last.opts.account.id, 'claude-3');
+});
+
+test('a turn refused as signed out marks the login, moves the pool thread and carries on; a pinned thread stays put (14 Nov)', async () => {
+  const h = poolHarness();
+  h.setUsage('claude-main', room(80, 300));
+  h.setUsage('claude-3', room(40, 120));
+  const { thread } = h.runner.create({ text: 'Nightly retro' });
+  assert.equal(thread.accountId, 'claude-main');
+  const s = h.adapter.last;
+  s.init();
+  s.result('failed', undefined, 'Failed to authenticate: this login reached its time limit and cannot be renewed.', { errorKind: 'auth' });
+  await tick();
+  assert.deepEqual(h.signInLog, ['refused claude-main']);
+  assert.equal(h.records.length, 0, 'not a usage limit');
+  const s2 = h.adapter.last;
+  assert.notEqual(s2, s);
+  assert.equal(s2.opts.account.id, 'claude-3');
+  assert.equal(s2.sent[0].text, CARRY_ON_SIGNED_OUT);
+  assert.equal(notes(h, thread.id)[0], 'Moved to three@example.com: main@example.com is signed out.');
+  s2.init();
+  s2.result();
+  await tick();
+  assert.deepEqual(h.signInLog, ['refused claude-main', 'worked claude-3']);
+  // A new thread never starts on the signed-out login, room or not.
+  h.setUsage('claude-main', room(100, 300));
+  assert.equal(h.runner.create({ text: 'y' }).thread.accountId, 'claude-3');
+  // Pinned to it: no move, the banner's sign-in is the way on.
+  const pinned = h.runner.create({ text: 'z', accountId: 'claude-main' }).thread;
+  const p = h.adapter.last;
+  p.init();
+  p.result('failed', undefined, 'Not logged in', { errorKind: 'auth' });
+  await tick();
+  assert.equal(h.adapter.last, p);
+  assert.equal(h.runner.get(pinned.id).accountId, 'claude-main');
+  assert.equal(h.runner.get(pinned.id).status, 'error');
+});
+
+test('a refused Codex login leaves its pool thread where it is: only Claude refusals are remembered, so a move could bounce for ever', async () => {
+  const two: Account = { id: 'codex-2', provider: 'codex', title: 'codex-two@example.com', configDir: '/tmp/codex-two' };
+  const pools: Pool[] = [{ id: 'codex', title: 'Codex', accountIds: ['codex-main', 'codex-2'] }];
+  const h = poolHarness({ accounts: [...withCodex(), two], pools });
+  h.setUsage('codex-main', room(80, 300));
+  h.setUsage('codex-2', room(60, 300));
+  const { thread } = h.runner.create({ text: 'x', poolId: 'codex' });
+  const was = h.runner.get(thread.id).accountId;
+  const s = h.codex.last;
+  s.init();
+  s.result('failed', undefined, 'Not logged in', { errorKind: 'auth' });
+  await tick();
+  assert.equal(h.codex.last, s, 'no carry-on');
+  assert.equal(h.runner.get(thread.id).accountId, was);
+  assert.equal(h.runner.get(thread.id).status, 'error');
+  assert.deepEqual(notes(h, thread.id), []);
+});
+
+test('a scheduled run moved off a signed-out login keeps its way back to the archive', async () => {
+  const h = poolHarness();
+  h.setUsage('claude-main', room(80, 300));
+  h.setUsage('claude-3', room(40, 120));
+  const { thread } = h.runner.create({ text: 'Check for a reply' });
+  let s = h.adapter.last;
+  s.init();
+  s.result();
+  await tick();
+  h.runner.update({ threadId: thread.id, archived: true });
+  h.runner.send(thread.id, 'Check for a reply', [], { origin: 'schedule', scheduleId: 'sch_1' });
+  assert.equal(h.runner.get(thread.id).archivedAt, undefined, 'out for the run');
+  s = h.adapter.last;
+  s.init();
+  s.result('failed', undefined, 'Not logged in', { errorKind: 'auth' });
+  await tick();
+  const s2 = h.adapter.last;
+  assert.notEqual(s2, s);
+  assert.equal(s2.opts.account.id, 'claude-3');
+  s2.init();
+  s2.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s2.text('m1', 'Nothing new.');
+  s2.result();
+  await tick();
+  assert.ok(h.runner.get(thread.id).archivedAt, 'the carried-on run found nothing, so back it goes');
+});
+
+test("a nested thread moved off a signed-out login doesn't hand its starter the held reports early", async () => {
+  const h = poolHarness({ experiments: { nestedThreads: true } });
+  h.setUsage('claude-main', room(80, 300));
+  h.setUsage('claude-3', room(40, 120));
+  const parent = h.runner.create({ text: 'Port the app', accountId: 'claude-3' }).thread.id;
+  h.adapter.last.init();
+  h.adapter.last.result();
+  await tick();
+  const started = { kind: 'thread' as const, label: 'Agent', threadId: parent };
+  const a = h.runner.create({ text: 'Build the pane', startedBy: started }).thread.id;
+  const sa = h.adapter.last;
+  sa.init();
+  const b = h.runner.create({ text: 'Wire sign-in', accountId: 'claude-3', startedBy: started }).thread.id;
+  h.adapter.last.init();
+  const before = userMessages(h, parent).length;
+  assert.equal(h.runner.send(parent, `[Sent by the agent in the thread "${h.runner.get(b).title}" (${b.slice(0, 8)})]\n\nHalfway there.`).held, true);
+  assert.equal(h.runner.get(a).accountId, 'claude-main');
+  sa.result('failed', undefined, 'Not logged in', { errorKind: 'auth' });
+  await tick();
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(h.adapter.last.opts.account.id, 'claude-3', 'a carried on on the other login');
+  assert.equal(userMessages(h, parent).length, before, 'still held: a is still working');
+});
+
+test('a schedule pinned to a signed-out login runs on a pool holding it, and says so (16 Nov)', () => {
+  const two: Account = { id: 'claude-2', provider: 'claude', title: 'work@example.com', configDir: '/tmp/two' };
+  const pools: Pool[] = [
+    { id: 'claude', title: 'Claude', accountIds: ['claude-main', 'claude-3'] },
+    { id: 'work', title: 'Work', accountIds: ['claude-2'] },
+  ];
+  const h = poolHarness({ accounts: [...withCodex(), two], pools });
+  h.setUsage('claude-main', room(80));
+  h.setUsage('claude-3', room(60));
+  h.fake.base = h.fake.base.map((a) => (a.id === 'claude-main' || a.id === 'claude-2' ? { ...a, signedOut: true } : a));
+  const { thread } = h.runner.create({ text: 'Nightly retro', accountId: 'claude-main', model: 'opus', origin: 'schedule', scheduleId: 's1' });
+  assert.equal(thread.accountId, 'claude-3');
+  assert.equal(thread.poolId, 'claude');
+  assert.equal(h.adapter.last.opts.account.id, 'claude-3');
+  const note = h.events(thread.id).find((e) => e.type === 'system.note' && e.login);
+  assert.equal(note?.text, 'Moved to three@example.com: main@example.com is signed out.');
+  // Alone in its pool (Convex work only): nowhere else to go, so it stays
+  // pinned and its banner offers the sign-in.
+  const alone = h.runner.create({ text: 'Daily brief', accountId: 'claude-2', origin: 'schedule', scheduleId: 's2' }).thread;
+  assert.equal(alone.accountId, 'claude-2');
+  assert.equal(alone.poolId, undefined);
+  // Mike pinning a thread himself is his call: no stand-in.
+  const mine = h.runner.create({ text: 'x', accountId: 'claude-main' }).thread;
+  assert.equal(mine.accountId, 'claude-main');
+  // Signed in: the schedule's own login, as pinned.
+  h.fake.base = h.fake.base.map((a) => (a.id === 'claude-main' ? { ...a, signedOut: undefined } : a));
+  assert.equal(h.runner.create({ text: 'y', accountId: 'claude-main', origin: 'schedule', scheduleId: 's1' }).thread.accountId, 'claude-main');
+});
+
+test('before a turn: a pool thread on a signed-out login moves first', async () => {
+  const h = poolHarness();
+  h.setUsage('claude-main', room(80));
+  h.setUsage('claude-3', room(90));
+  const { thread } = h.runner.create({ text: 'x' });
+  assert.equal(thread.accountId, 'claude-3');
+  const s = h.adapter.last;
+  s.init();
+  s.result();
+  h.fake.base = h.fake.base.map((a) => (a.id === 'claude-3' ? { ...a, signedOut: true } : a));
+  h.runner.send(thread.id, 'next');
+  await tick();
+  assert.equal(h.adapter.last.opts.account.id, 'claude-main');
+  assert.equal(notes(h, thread.id)[0], 'Moved to main@example.com: three@example.com is signed out.');
 });
 
 test('a carry-on that runs dry too moves on again while another login in the pool has room', async () => {

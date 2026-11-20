@@ -5,8 +5,7 @@ Feature: Open Anything
 
   # GPUI-only: the Swift app is frozen and hasn't got the box (Mike picked
   # this design, "A, the palette", in thread 5d33618f), so every scenario
-  # here is @swift-pending. It's the openAnything experiment, which the
-  # mock's hello has on unless a scenario is @open-anything-off.
+  # here is @swift-pending.
 
   Background:
     Given the app is connected to a runner with the demo threads
@@ -95,16 +94,3 @@ Feature: Open Anything
     When I open Settings on "keyboard"
     Then Settings lists "Open Anything: ⌘K" under Keyboard
     And Settings lists "Open Anything (second key): ⌘P" under Keyboard
-
-  # The experiment off (Settings > General > Experiments): no keys, no menu
-  # item and no lines in Settings.
-  @nav.openanything @swift-pending @open-anything-off
-  Scenario: With its experiment off, ⌘K and ⌘P do nothing and it's in no menu
-    When I press "k" with "cmd"
-    Then the Open Anything box stays down
-    When I press "p" with "cmd"
-    Then the Open Anything box stays down
-    And the "Go" menu hasn't "Open Anything…"
-    When I open Settings on "keyboard"
-    Then Settings lists "Archive: ⌘E" under Keyboard
-    And Settings doesn't list "Open Anything: ⌘K" under Keyboard

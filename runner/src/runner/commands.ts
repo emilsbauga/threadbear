@@ -57,8 +57,8 @@ export const commandsPart = {
     const name = msg.text.trim().split(/\s/)[0];
     if (plan.kind === 'cli' && rec.handoff) {
       plan = { kind: 'note', text: `This thread has just moved to ${this.modelLabel(rec)}, and the agent catches up on the conversation with your next message. Send one first, then ${name} again.` };
-    } else if (plan.kind === 'cli' && !rt.session && this.leavesRemovedWorktree(rec)) {
-      plan = { kind: 'note', text: `This thread's worktree has gone, so it carries on in the main checkout and the agent hears about the move with your next message. Send one first, then ${name} again.` };
+    } else if (plan.kind === 'cli' && !rt.session && (this.leavesRemovedWorktree(rec) || typeof rec.agentNotice === 'string')) {
+      plan = { kind: 'note', text: `This thread's worktree has gone, so it carries on in a fresh one and the agent hears about the move with your next message. Send one first, then ${name} again.` };
     }
     if (plan.kind === 'cli') return false;
     // Settings changed here apply to the next turn, which is the one
@@ -137,7 +137,10 @@ export const commandsPart = {
   // then the CLI's for the thread's folder, skills included.
   async threadCommands(this: Runner, threadId: string): Promise<{ commands: SlashCommand[] }> {
     const { rec, rt } = this.mustGet(threadId);
-    return this.listCommands(rec.accountId, rec.cwd, rec.permissionMode, rt.session?.commands ? () => rt.session!.commands!() : undefined);
+    // This CLI, as it is now: listCommands waits on a look first, and a
+    // CLI started meanwhile may be in another folder (Codex's review).
+    const session = rt.session;
+    return this.listCommands(rec.accountId, rec.cwd, rec.permissionMode, session?.commands ? async () => (rt.session === session ? session.commands!() : undefined) : undefined);
   },
 
   // The same for a new thread's box, before there's a thread
@@ -153,13 +156,18 @@ export const commandsPart = {
     return this.listCommands(accountId, cwd, params.permissionMode ?? 'auto');
   },
 
-  async listCommands(this: Runner, accountId: string, cwd: string, permissionMode: PermissionMode, live?: () => Promise<SlashCommand[]>): Promise<{ commands: SlashCommand[] }> {
+  async listCommands(this: Runner, accountId: string, cwd: string, permissionMode: PermissionMode, live?: () => Promise<SlashCommand[] | undefined>): Promise<{ commands: SlashCommand[] }> {
     const account = this.accounts.get(accountId);
     const provider = account?.provider ?? 'claude';
     let cli: SlashCommand[] = [];
     // Claude's list in a folder whose settings Mike hasn't trusted is made
     // without them (claude-trust.ts), so it's cached apart.
-    const claude = provider === 'claude' ? this.patchTrust.checkClaude(cwd, claudeOptions({ permissionMode })) : undefined;
+    // The look on the trust worker (trust-off-thread.ts): outside git it's a
+    // walk of the folder. A fresh one, never shared with an earlier look, as
+    // what it decides goes to a CLI started for the list.
+    const opts = claudeOptions({ permissionMode });
+    const look = provider === 'claude' && this.offThread && this.patchTrust.lookClaude ? await this.patchTrust.lookClaude(cwd, opts, 'urgent') : undefined;
+    const claude = provider === 'claude' ? this.patchTrust.checkClaude(cwd, opts, look) : undefined;
     const skipped = claude && !claude.trusted ? claude.hash : undefined;
     const untrusted = skipped ? claudeSettingsWithoutCommands(cwd) : undefined;
     const key = `${accountId}\0${cwd}\0${skipped ?? 'trusted'}`;

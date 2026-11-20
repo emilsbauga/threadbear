@@ -1,0 +1,7 @@
+This is the phone side of Threadbear, the app that runs Claude Code and Codex threads on your own computer. You pair it with the desktop app by scanning the code it shows you, and from then on you can read your threads, answer their questions, approve what they ask for and start new ones while you're away from your desk.
+
+It talks to your own Convex deployment, the one your desktop app already uses, and never to your computer directly, so it works while the computer's asleep.
+
+Notifications need a UnifiedPush app on your phone, such as ntfy. Without one everything else still works, and you just won't be told when a thread needs you.
+
+Threadbear is free and open source: https://github.com/mikecann/threadbear

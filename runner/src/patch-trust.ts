@@ -55,10 +55,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 import { atomicWriteFileSync } from './fsutil.ts';
-import { claudeCommands, type ClaudeOptions } from './claude-trust.ts';
+import { claudeCommands, type ClaudeCommands, type ClaudeOptions } from './claude-trust.ts';
+import type { Lane, TrustOffThread } from './trust-off-thread.ts';
 import { isBinary, looksRunnable, MAX_READ_BYTES, reachOf, reachOfCommand, Reads, type FollowOptions, type ScriptReach } from './script-trust.ts';
 import { bareImport } from './tracked-packages.ts';
 import { allowCommand } from './shell-allowlist.ts';
+import { clicksOnly, IS_WINDOWS, realPath, realPathSync, slashes } from './platform.ts';
 
 export type TrustVerdict =
   // `files`: the local files its hash covered, real paths. Absent when the
@@ -180,7 +182,16 @@ export interface PatchTrustStore extends PatchGate {
   // The thread folder's Claude Code settings (claude-trust.ts), with
   // what lets tools run unasked counted too for a thread that asks first
   // (`grants`).
-  checkClaude(cwd: string, opts?: ClaudeOptions): ClaudeVerdict;
+  // `look`, from lookClaude: what the folder's settings run, looked at off
+  // the main thread, used in place of looking again when it's of this
+  // folder and kind of thread.
+  checkClaude(cwd: string, opts?: ClaudeOptions, look?: ClaudeLook): ClaudeVerdict;
+  // The slow part of checkClaude, on a worker thread (trust-off-thread.ts).
+  // Absent: checkClaude looks for itself.
+  lookClaude?(cwd: string, opts?: ClaudeOptions, lane?: Lane): Promise<ClaudeLook>;
+  // Several kinds of thread (grants or not) in one look, the folder read
+  // once after the other with nothing between, as startSession's checks were.
+  lookClaudeKinds?(cwd: string, grants: boolean[], lane?: Lane): Promise<ClaudeLook[]>;
   trustClaude(cwd: string, hash: string): boolean;
   // An agent's verified Edit or Write to `file` in a Full access thread in
   // `cwd`, which wrote bytes hashing to `sha256` from a file hashing to
@@ -195,7 +206,7 @@ export interface PatchTrustStore extends PatchGate {
   // a card's approval, from a thread that asks first, which throws unless
   // that's what's there now and it can all be followed.
   approveCheck(command: string, cwd: string, card?: CheckCard): void;
-  checkApproved(command: string, cwd: string): { approved: boolean; hash: string };
+  checkApproved(command: string, cwd: string): { approved: boolean; hash: string; why?: string };
   save(): void;
 }
 
@@ -217,6 +228,12 @@ export const TRUST_ALL: PatchTrustStore = {
   checkApproved: () => ({ approved: true, hash: '' }),
   save: () => {},
 };
+
+// What a folder's Claude Code settings run, as claudeCommands found it,
+// for checkClaude to judge against what's trusted at the time.
+// `skipped`: not looked at, as the folder was trusted whatever it held then;
+// checkClaude looks for itself if that has changed.
+export type ClaudeLook = { cwd: string; grants: boolean; found: ClaudeCommands | undefined; skipped?: true };
 
 const UNVOUCHED_VERSION = 2;
 
@@ -240,9 +257,13 @@ export class PatchTrust implements PatchTrustStore {
 
   // `file` undefined keeps it in memory (tests). `always` are folders whose
   // patches are trusted whatever they hold.
-  constructor(opts: { file?: string; always?: string[]; claudeHome?: string } = {}) {
+  private offThread: TrustOffThread | undefined;
+  // offThread: where lookClaude looks (the runner's trust worker); without
+  // one, on the calling thread.
+  constructor(opts: { file?: string; always?: string[]; claudeHome?: string; offThread?: TrustOffThread } = {}) {
     this.file = opts.file;
     this.claudeHome = opts.claudeHome;
+    this.offThread = opts.offThread;
     this.always = (opts.always ?? []).map((d) => realpath(path.resolve(d)));
     this.existed = this.load() !== 'missing';
   }
@@ -435,16 +456,31 @@ export class PatchTrust implements PatchTrustStore {
     return { trusted: false, reason: before ? 'changed' : 'new', hash, ...(helpers.length ? { helpers } : {}) };
   }
 
-  checkClaude(cwd: string, opts: ClaudeOptions = {}): ClaudeVerdict {
+  async lookClaude(cwd: string, opts: ClaudeOptions = {}, lane: Lane = 'background'): Promise<ClaudeLook> {
+    return (await this.lookClaudeKinds(cwd, [opts.grants === true], lane))[0];
+  }
+
+  async lookClaudeKinds(cwd: string, grants: boolean[], lane: Lane = 'background'): Promise<ClaudeLook[]> {
+    this.load();
+    // Trusted whatever it holds: nothing to look at.
+    if (this.alwaysFor(folderKeyOfDir(cwd), cwd)) return grants.map((g) => ({ cwd, grants: g, found: undefined, skipped: true }));
+    const found = this.offThread ? await this.offThread.claudeCommands(cwd, this.claudeHome ?? os.homedir(), grants, lane) : grants.map((g) => claudeCommands(cwd, this.claudeHome, { grants: g }));
+    return grants.map((g, i) => ({ cwd, grants: g, found: found[i] }));
+  }
+
+  checkClaude(cwd: string, opts: ClaudeOptions = {}, look?: ClaudeLook): ClaudeVerdict {
     this.load();
     const key = folderKeyOfDir(cwd);
     if (this.alwaysFor(key, cwd)) return { trusted: true };
-    const found = claudeCommands(cwd, this.claudeHome, opts);
+    const found = look && !look.skipped && look.cwd === cwd && look.grants === (opts.grants === true) ? look.found : claudeCommands(cwd, this.claudeHome, opts);
     if (!found) return { trusted: true };
     const known = (this.folders.get(key) ?? []).filter((h) => h.startsWith(CLAUDE_PREFIX));
     const base = { hash: found.hash, files: found.files, named: found.named, read: found.read, ...(found.grants ? { grants: found.grants } : {}) };
     // Before the stored hashes: a yes can't vouch for code the hash didn't see.
     if (found.incomplete) return { trusted: false, reason: 'unchecked', problem: found.incomplete, ...base };
+    // Windows, for now (platform.ts, clicksOnly): they'd run by themselves,
+    // so they stay off whatever was trusted.
+    if (clicksOnly()) return { trusted: false, reason: 'unchecked', problem: "on Windows, a folder's Claude Code hooks and settings that run commands stay off for now.", ...base };
     if (known.includes(CLAUDE_PREFIX + found.hash)) {
       // Kept apart by kind: bytes trusted for what they run (Full) haven't
       // been trusted for the permission rules in them, so an edit can't
@@ -504,6 +540,7 @@ export class PatchTrust implements PatchTrustStore {
   }
 
   approveCheck(command: string, cwd: string, card?: CheckCard): void {
+    if (this.checksHeld(cwd)) throw new Error(WINDOWS_CHECK);
     if (card) {
       const now = checkDigest(command, cwd);
       if (now.problem) throw new Error(`A schedule's check runs by itself, so what it runs must be something Threadbear can hash, and it can't follow this: ${now.problem} Nothing changed. Put it in a shell script or JavaScript it can follow.`);
@@ -515,10 +552,22 @@ export class PatchTrust implements PatchTrustStore {
 
   // A stored approval only ever comes from approveCheck, on this runner, so
   // a row the backend (or another runner) wrote finds nothing here.
-  checkApproved(command: string, cwd: string): { approved: boolean; hash: string } {
+  checkApproved(command: string, cwd: string): { approved: boolean; hash: string; why?: string } {
     this.load();
     const { hash } = this.digestOf(command, cwd);
+    if (this.checksHeld(cwd)) return { approved: false, hash, why: WINDOWS_CHECK };
     return { approved: (this.folders.get(folderKeyOfDir(cwd)) ?? []).includes(CHECK_PREFIX + hash), hash };
+  }
+
+  // Windows, for now (platform.ts, clicksOnly): a check runs by itself, so
+  // one in a repo's folder doesn't run at all, whatever was approved. One
+  // in Threadbear's own checkout, or in a folder no repo holds (home, say),
+  // nothing pulled can change under it, and still runs.
+  private checksHeld(cwd: string): boolean {
+    if (!clicksOnly()) return false;
+    if (this.alwaysFor(folderKeyOfDir(cwd), cwd)) return false;
+    const real = realpath(path.resolve(cwd));
+    return fs.existsSync(path.join(repoTop(real), '.git'));
   }
 
   // Threadbear's own checkout runs whatever it holds, so there only the
@@ -657,8 +706,9 @@ export class PatchTrust implements PatchTrustStore {
   }
 
   // The patch's hash with its helpers'. Cached until anything it was made
-  // from changes: a file's inode, size, mtime, ctime or mode (ctime can't
-  // be set back, so a write that restores the mtime still shows), a
+  // from changes: a file's inode, size, mtime, ctime or mode (on macOS and
+  // Linux ctime can't be set back, so a write that restores the mtime still
+  // shows; on NTFS it can, so Windows reads the bytes again as well), a
   // symlink on the way to one retargeted, or a missing one turning up (a
   // stat and a realpath each; patches are read every 15 seconds).
   private hashOf(file: string): HashEntry {
@@ -852,6 +902,22 @@ export function patchHash(file: string): PatchHash {
         deps.push({ path: f });
       }
       for (const m of reach.missing) if (unnamed.size < 2000) unnamed.add(m);
+      // A Windows network or device path could be a file of the repo's
+      // under another name, and can't be hashed: the patch can't be trusted
+      // (an action's command that can't be followed is let go, but this one
+      // may hide the very file that runs).
+      if (reach.refused) incomplete ??= `patch trust won't follow ${reach.refused}: it could be a file in the repo under another name, so trusting the patch couldn't cover it.`;
+    }
+  }
+  // Windows: what a command run in the folder by a bare name could turn
+  // out to be (script-trust.ts, besideRun), for the commands a patch works
+  // out in code too, which aren't followed here: hashed, and the list of
+  // them watched, so a program dropped there asks again.
+  if (IS_WINDOWS && isInside(realpath(folder), top)) {
+    for (const f of reachOfCommand(':', 'the folder', opts).files) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      deps.push({ path: f });
     }
   }
   const missing = [...unnamed];
@@ -1183,6 +1249,12 @@ export function automaticCommand(command: string, folder: string, files: string[
       problem: `\`${command}\` runs by itself, but patch trust can't follow everything ${script} runs, so trusting the patch couldn't cover it: ${why} Run other scripts by a plain path ("./scripts/x.sh") and package scripts by a plain name ("npm run build").`,
     };
   }
+  // Hashed isn't followed: on Windows a script beside another is hashed
+  // as something Windows could run by name, without what it runs being
+  // read (Codex's sixth review). So what this one runs is followed now,
+  // and must all be covered too.
+  const deep = actionCommandProblem(command, folder, files, blocked);
+  if (deep) return { problem: `\`${command}\` runs by itself, but it ${deep}` };
   const quote = (w: string) => `'${w.replace(/'/g, `'\\''`)}'`;
   // From the folder holding .threadbear/, which is where the follow
   // started: a hook in a thread in a subfolder ran from there, so the
@@ -1383,6 +1455,8 @@ function repoTop(dir: string): string {
   }
 }
 
+const WINDOWS_CHECK = "On Windows, for now, a schedule's check doesn't run in a repo's folder, as it would run by itself: following what it runs there still has gaps. Give the schedule a folder outside any repo, or no check.";
+
 const PICTURES = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.icns', '.pdf', '.heic'];
 
 function isFile(p: string): boolean {
@@ -1449,12 +1523,10 @@ export function folderKeyOfDir(dir: string): string {
   return main ? path.join(realpath(main), path.relative(top, folder)) : folder;
 }
 
+// The real form of a path, as it is when it isn't there (platform.ts): the
+// one every path here is compared by.
 function realpath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
+  return realPath(p);
 }
 
 // The nearest folder from `dir` up with a `.git`, when that `.git` is a
@@ -1493,14 +1565,14 @@ export function worktreeOf(dir: string): { top: string; main: string } | undefin
 // symlinked .git as the worktree it points at (Gautam's scan, 6 Nov).
 export function mainCheckoutOf(top: string): string | undefined {
   try {
-    const realTop = fs.realpathSync(top);
+    const realTop = realPathSync(top);
     const dotGit = path.join(realTop, '.git');
     if (!fs.lstatSync(dotGit).isFile()) return undefined;
     const named = gitdirLine(readHead(dotGit));
     if (!named) return undefined;
     const gitdir = path.resolve(realTop, named);
     const back = path.resolve(gitdir, readHead(path.join(gitdir, 'gitdir')).trim());
-    if (path.basename(back) !== '.git' || fs.realpathSync(path.dirname(back)) !== realTop) return undefined;
+    if (path.basename(back) !== '.git' || realPathSync(path.dirname(back)) !== realTop) return undefined;
     const common = path.resolve(gitdir, readHead(path.join(gitdir, 'commondir')).trim());
     const name = path.relative(path.join(common, 'worktrees'), gitdir);
     if (path.basename(common) !== '.git' || !name || name.startsWith('..') || name.includes(path.sep)) return undefined;

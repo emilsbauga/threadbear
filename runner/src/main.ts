@@ -4,27 +4,36 @@ import { threadbearMcpServer } from './adapters/claude/threadbear.ts';
 // Runner entry point: `node src/main.ts`. launchd runs this (see
 // scripts/install-runner.sh); tests run it with THREADBEAR_HOME and
 // THREADBEAR_PORT pointing at temp places.
+// First, so every process the runner starts on Windows has no console window.
+import './win32-hide.ts';
+import { onYearToken } from './year-token.ts';
+import { YearTokenMaker } from './year-token-maker.ts';
 import { realCopy } from './real-copy.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { readShareImage } from './share-images.ts';
 import { CallerGate } from './rpc-gate.ts';
-import { threadOfPort } from './peer.ts';
+import { threadOfSocket } from './peer.ts';
 import { threadKey as makeThreadKey } from './rpc-auth.ts';
-import { loadConfig, ensureHome, readToken, paths, recordListening, defaultHome, DEFAULT_CWD, RUNNER_VERSION, RunnerJsonError, readRunnerJson, writeRunnerJson } from './config.ts';
+import { makePrivate } from './win-acl.ts';
+import { loadConfig, ensureHome, readToken, paths, recordListening, defaultHome, DEFAULT_CWD, RUNNER_VERSION, RunnerJsonError, readRunnerJson, peekRunnerJson, writeRunnerJson } from './config.ts';
 import { startHousekeeping } from './housekeeping.ts';
-import { RELEASE, markConfigStop, markGoodLater, onSupervisorGone, ownCheckout, readRelease, readState, requestHandover, supervised, takeRollbackNotice, tellLaunchListening } from './release.ts';
+import { startBorrowSweep } from './runner/worktrees.ts';
+import { win32Helper } from './win32-helper.ts';
+import { RELEASE, markConfigStop, markGoodLater, onStopRequest, onSupervisorGone, ownCheckout, readRelease, readState, requestHandover, supervised, takeRollbackNotice, tellLaunchListening } from './release.ts';
 import { PatchTrust } from './patch-trust.ts';
 import type { RunnerUpdates } from './runner.ts';
-import { scheduledSendMethods, sendScheduled, Peers, PrimaryLink, ThreadRouter, drainChildrenName, peersElsewhere, phoneCommands, primaryElsewhere, primaryRemote, projectRouter, removeDrainInfo, scheduleRouter, writeDrainInfo, type CrossRunnerHooks, type Elsewhere } from './handover.ts';
+import { dropScheduled, scheduledSendMethods, sendScheduled, Peers, PrimaryLink, ThreadRouter, drainChildrenName, peersElsewhere, phoneCommands, primaryElsewhere, primaryRemote, projectRouter, removeDrainInfo, scheduleRouter, writeDrainInfo, type CrossRunnerHooks, type Elsewhere } from './handover.ts';
 import { RunnerUpdater, releaseTreeAt } from './update.ts';
 import { RELEASE_NOTES_SYSTEM, SETTLE_MS, Upstream } from './upstream.ts';
 import { BringIn } from './bring-in.ts';
 import { SwiftChanges } from './swift-changes.ts';
-import { UpdateFixer } from './fix-update.ts';
+import { commitBefore, commitOnMain, RemoteUpdateFixer, reportedOnDisk, UpdateFixer, type UpdateFailure } from './fix-update.ts';
 import { followOriginOn } from './follow-origin.ts';
-import { bringInSetting } from './settings.ts';
+import { bringInSetting, spareWeekOn } from './settings.ts';
+import { SpareWeek } from './spare-week.ts';
+import { MAIL_WATCH, MailWatch } from './mail-watch.ts';
 import { Restarter, restartMethods } from './restart.ts';
 import { AppRestarts } from './app-restarts.ts';
 import { Scheduler, scheduleMethods } from './schedules.ts';
@@ -32,6 +41,7 @@ import { StuckJobs } from './stuck-jobs.ts';
 import { FrozenClis } from './frozen-cli.ts';
 import { KeepAwake } from './keep-awake.ts';
 import { experimentOn } from './experiments.ts';
+import { MemorySync } from './memory-sync.ts';
 import { Reinstaller } from './reinstall.ts';
 import { MacScreen } from './mac-screen.ts';
 import { Projects, drainProjectMethods, projectMethods } from './projects.ts';
@@ -39,21 +49,16 @@ import { Librarian, librarianMethods } from './librarian.ts';
 import { ConnectorsMonitor, connectorsMethods } from './connectors.ts';
 import { TaskBoards, gatewayCaller, helperHeaders } from './notion-tasks.ts';
 import { createLogger } from './log.ts';
-import { hidIdleMs, isAtMac } from './presence.ts';
+import { hidIdleMs, isAtMac, screenLocked } from './presence.ts';
 import { ThreadStore } from './store.ts';
 import { AccountRegistry } from './accounts.ts';
-import { ClaudeAdapter } from './adapters/claude/adapter.ts';
-import { ProcessRegistry } from './proc.ts';
+import { ClaudeAdapter, cliEnv } from './adapters/claude/adapter.ts';
+import { SignInState } from './sign-in-state.ts';
+import { ProcessRegistry, killGroup } from './proc.ts';
 import { Runner } from './runner.ts';
 import { startOwnThread } from './own-threads.ts';
-import { askBrief, ConvexUseTally, FullSyncOffer, fullSyncAnswerer, fullSyncQuestion, fullSyncReason } from './convex-use.ts';
-// How long after starting the runner looks for a reason to ask about full sync,
-// and how long after a pairing or a new machine it asks (convex-use.ts).
-const ASK_FULL_SYNC_AFTER_MS = 5 * 60_000;
-const ASK_FULL_SYNC_EVENT_MS = 30_000;
-// And how often it looks again while it hasn't asked: a token issued by hand
-// (npx convex run tokens:issue) fires nothing here.
-const ASK_FULL_SYNC_LOOK_MS = 60 * 60_000;
+import { heldBackBrief, heldBackTitle } from './updates/held-thread.ts';
+import { ConvexUseTally } from './convex-use.ts';
 import { CodexAdapter } from './adapters/codex/adapter.ts';
 import { AcpAdapter } from './adapters/acp/adapter.ts';
 import { ACP_AGENTS, ACP_PROVIDERS, type AcpProvider } from './adapters/acp/agents.ts';
@@ -69,21 +74,31 @@ import { UsageHistory } from './usage-history.ts';
 import { TokenTally } from './token-tally.ts';
 import { usageStatsMethods } from './usage-stats.ts';
 import { Relay } from './relay.ts';
+import { VirtualRunners } from './virtual-runners.ts';
 import { RpcServer } from './rpc.ts';
+import { AppSeen } from './app-seen.ts';
 import { realClock } from './clock.ts';
 import { acquireLock } from './lock.ts';
 import { isDirectory, removeTempFiles } from './fsutil.ts';
 import { Models } from './models/index.ts';
 import { SettingsService, modelMethods, settingsMethods } from './settings.ts';
+import { SelfProfiler, profileMethods, watchStalls } from './self-profile.ts';
+import { TrustOffThread } from './trust-off-thread.ts';
 import { InstructionsStore, instructionsMethods } from './instructions.ts';
-import { ConvexSync, defaultRunnerName, ensureRunnerId, readSyncKey } from './sync.ts';
+import { ConvexSync, convexPoster, convexUploader, defaultRunnerName, ensureRunnerId, keyRejected, readSyncKey } from './sync.ts';
+import { BOX_NO_SCHEDULES, BoxFolderBroken, bootBox, readBoxSecrets, enterBoxEnv, markSetUp, prepareBoxFolder, readBoxBoot, repoFolderName, setBaseline, setSaveHold, type ActionPost, type BoxSecrets } from './box-mode.ts';
+import { BoxProcesses } from './box-procs.ts';
+import { asSave, closeSpawns, installSpawnGate, openSpawns } from './spawn-gate.ts';
+import { isolatePatchCode } from './patches.ts';
+import { SaveHold, saveThread } from './box-save.ts';
+import { BoxTokenWatch } from './box-token.ts';
+import { ClockJumpWatch } from './clock-jump.ts';
 import { pushFailingText } from './push-failing.ts';
 import { Scrubber } from './scrub.ts';
 import { useScrubForCuts } from './safe-cut.ts';
 import { redactSecrets } from './redaction.ts';
 import { SecretCheck } from './secret-check.ts';
 import { SharedPools } from './shared-pools.ts';
-import { sandboxFor } from './sandbox.ts';
 import { readPools } from './pools.ts';
 import { machineSampler } from './runner-stats.ts';
 import { machineIcon } from './machine.ts';
@@ -92,7 +107,7 @@ import { devicesMethods } from './devices.ts';
 import { flushSentry, reportException, reportLoggedError, reportLoggedWarning, startSentry } from './sentry.ts';
 import { ALWAYS_ASK_TOOLS, NEVER_ASK_TOOLS, RICH_BLOCKS_LINE, SERVER_NAME, buildThreadbearTools, serverInstructions, type RemoteControl } from './threadbear-mcp.ts';
 import { CrossRunner } from './cross-runner.ts';
-import { FAILED_SHOWN_MS, Moves, moveInfoFrom, previewInfo, stillRunner, type ThreadMoving } from './moves.ts';
+import { FAILED_SHOWN_MS, MovePreviews, Moves, moveInfoFrom, previewInfo, stillRunner, type ThreadMoving } from './moves.ts';
 import type { RemoteThreads } from './thread-index.ts';
 import { EFFORT_LEVELS, ErrorCode, RpcError, isPermissionMode, type EffortLevel, type PermissionMode } from './protocol.ts';
 
@@ -100,7 +115,15 @@ import { EFFORT_LEVELS, ErrorCode, RpcError, isPermissionMode, type EffortLevel,
 // it may stop one that hasn't started listening in time.
 export const REPORTS_LISTENING = true;
 
+// What a process start says while a box's save holds it (spawn-gate.ts).
+const SAVE_HOLDS_SPAWNS = "this box's save holds it, so nothing starts until the backend says it may run again.";
+
 async function main(): Promise<void> {
+  // Windows: nothing the runner starts (a CLI, a patch's command, a hook,
+  // npm's cmd.exe) runs a program from the folder it's in by name, as cmd.exe
+  // otherwise does before PATH (a node.exe beside a package.json would run
+  // for `node x.js`, unseen by patch trust: Codex's reviews, 18 Nov 2026).
+  if (process.platform === 'win32') process.env.NoDefaultCurrentDirectoryInExePath = '1';
   // How long each part of a start takes, said once listening ('started in'),
   // so a slow restart shows where the time went.
   const bootSince = performance.now();
@@ -109,6 +132,17 @@ async function main(): Promise<void> {
   const bootSteps: Record<string, number> = {};
   const bootImports = Math.round(bootSince);
   const bootStep = (name: string) => (bootSteps[name] = Math.round(performance.now() - bootSince));
+  // Box mode (box-mode.ts): a runner in a virtual runner's machine, for one
+  // thread. Its boot token is read and taken out of the environment before
+  // anything else, so nothing the runner starts inherits it.
+  const boxBoot = readBoxBoot(process.env);
+  if (boxBoot) {
+    enterBoxEnv(process.env);
+    // The one gate on starting processes, closed while a save holds the box (spawn-gate.ts).
+    installSpawnGate();
+    // And no repo's patch code in this process: each is read in a child of its own (patches.ts).
+    isolatePatchCode();
+  }
   const cfg = loadConfig();
   // A dev runner on a copy of the real data dir (real-copy.ts): whatever
   // came with the copy, it never syncs as Mike's runner (nor relays or
@@ -117,11 +151,25 @@ async function main(): Promise<void> {
   // groups a copied run/ names, which are the live runner's.
   const copyOfReal = realCopy(cfg.home);
   if (copyOfReal) cfg.sync.enabled = false;
+  // On Windows, the secrets folder is made private before the token is
+  // written into it (win-acl.ts); chmod does that on a Mac. If Windows
+  // refused (someone else's folder, a list this user can't change), the
+  // runner doesn't start: its keys would go where others can read them
+  // (Codex's third review). If PowerShell couldn't run at all, it starts
+  // with a warning, as %LOCALAPPDATA% is this user's alone as Windows makes
+  // it, and a runner that can't start can't say why in the app.
+  const secretsAclProblem = await makePrivate(paths.secrets(cfg.home));
+  if (secretsAclProblem?.startsWith('the helper said:')) {
+    throw new Error(`The secrets folder (${paths.secrets(cfg.home)}) couldn't be made yours alone, so the runner won't keep its keys there: ${secretsAclProblem}`);
+  }
   ensureHome(cfg.home);
   const log = createLogger(cfg.logFile, { echo: process.env.THREADBEAR_LOG_STDERR === '1', debug: process.env.THREADBEAR_DEBUG === '1', onError: reportLoggedError, onWarn: reportLoggedWarning });
   // Only the installed runner reports to Sentry (sentry.ts says why).
   const reporting = await startSentry(cfg.home);
   log.info('runner starting', { version: RUNNER_VERSION, home: cfg.home, port: cfg.port, pid: process.pid, sentry: reporting });
+  if (secretsAclProblem) log.warn('could not make the secrets folder private', { why: secretsAclProblem });
+  // A main thread held up for a second or more says so in tb logs (self-profile.ts).
+  watchStalls({ log });
 
   // The SDK warns when canUseTool is set in bypass mode; it's deliberate
   // (AskUserQuestion still goes through it), so keep it out of the log.
@@ -138,6 +186,67 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   process.on('exit', () => lock.release());
+
+  // Box mode's first step, before anything else talks to the backend: the
+  // boot exchange, then the thread's folder (a clone, or its last save).
+  // A box that has run (not this start's own exchange), or that finds data
+  // where its folder goes, never exits for a folder it can't use: on Fly an
+  // exited entrypoint stops the machine and its disk is reset. It comes up
+  // degraded (`broken`): heartbeating on its key, running nothing, saying
+  // why on the thread, so the billing guard pauses it with its disk and a
+  // person can see to it. Only a fresh box with nothing to lose exits.
+  type Box = { secrets: BoxSecrets; threadKey: Buffer; checkout: string; cwd: string; restored: boolean; again?: true; broken?: string; fresh: boolean };
+  const startBox = async (boot: NonNullable<typeof boxBoot>): Promise<Box> => {
+    const workRoot = process.env.THREADBEAR_BOX_WORK || path.join(os.homedir(), 'work');
+    let secrets: BoxSecrets | undefined;
+    let fresh = true;
+    try {
+      const post = convexPoster(boot.syncUrl) as unknown as ActionPost;
+      ({ secrets, fresh } = await bootBox({ boot, home: cfg.home, claudeDir: cfg.claudeMainDir, post, log }));
+      const folder = await prepareBoxFolder({ secrets, fresh, home: cfg.home, claudeDir: cfg.claudeMainDir, workRoot, log });
+      return { secrets, threadKey: Buffer.from(secrets.threadKey, 'base64'), ...folder, fresh };
+    } catch (e) {
+      const why = String((e as Error)?.message ?? e);
+      if (secrets && (e instanceof BoxFolderBroken || !fresh)) {
+        log.error('box: its folder is unusable; staying up, degraded, running nothing', { error: why });
+        const checkout = secrets.prepared?.checkout ?? path.join(workRoot, repoFolderName(secrets.repo.origin));
+        const cwd = secrets.prepared?.cwd && isDirectory(secrets.prepared.cwd) ? secrets.prepared.cwd : os.homedir();
+        return { secrets, threadKey: Buffer.from(secrets.threadKey, 'base64'), checkout, cwd, restored: false, broken: why.replace(/^\w/, (c) => c.toLowerCase()), fresh };
+      }
+      log.error('box: could not start', { error: why });
+      process.stderr.write(`The box's runner couldn't start: ${why}\n`);
+      process.exit(1);
+    }
+  };
+  const box = boxBoot ? await startBox(boxBoot) : undefined;
+  // The provider's processes, spared when a stopping save kills everything
+  // else in the box (box-procs.ts): taken once, by the first start after a
+  // fresh exchange, before anything of the thread runs, and kept in
+  // box.json for every start after (an agent's process that outlived a
+  // restart is never in it). Linux's /proc only: a box without it can't
+  // stop its processes, so it can't save.
+  const boxProcs =
+    box && fs.existsSync('/proc/self/stat')
+      ? (() => {
+          let baseline = box.secrets.baseline;
+          if (!baseline && box.fresh) {
+            baseline = new BoxProcesses().capture();
+            setBaseline(cfg.home, baseline);
+            box.secrets.baseline = baseline;
+          }
+          return new BoxProcesses({ baseline: baseline ?? [] });
+        })()
+      : undefined;
+  if (box) {
+    // Decision 1: its sync on the box key, the one login given, no
+    // following main or keep-awake (the rest is boxEnv and the checks below).
+    cfg.sync = { ...cfg.sync, enabled: true, runnerId: box.secrets.runnerId };
+    if (box.secrets.login) cfg.claudeMainEmail = box.secrets.login;
+    cfg.followMain = false;
+    cfg.keepAwake = false;
+    cfg.defaults = { ...cfg.defaults, cwd: box.cwd, accountId: 'claude-main' };
+    log.info('box mode', { runnerId: box.secrets.runnerId, threadId: box.secrets.threadId, machineId: box.secrets.machineId, cwd: box.cwd, restored: box.restored });
+  }
 
   if (!fs.existsSync(cfg.claudePath)) log.warn('claude CLI not found', { path: cfg.claudePath });
   // A sync or gateway URL that would send keys in the clear (secure-url.ts):
@@ -170,6 +279,13 @@ async function main(): Promise<void> {
   // Opt-in Pi-only installations need neither official CLI. Preserve the
   // existing bootstrap behavior when Pi has not been configured.
   const usesCli = (provider: 'claude' | 'codex') => !cfg.piProfiles?.length || accounts.list().some(a => a.provider === provider);
+  // Which Claude logins are signed out or ending soon, from the CLI's own
+  // `auth status` (sign-in-state.ts); the registry puts it on every account.
+  const signIn = new SignInState({ claudePath: cfg.claudePath, accounts: () => accounts.list(), env: (a) => cliEnv(a), clock: realClock, log });
+  accounts.signIn = signIn;
+  signIn.start();
+  // Year-long token… asked from another Mac (docs/protocol.md, accounts.yearToken).
+  const tokenMaker = new YearTokenMaker({ claudePath: cfg.claudePath, env: (a) => cliEnv(a), log });
   const tally = new TokenTally({ dataDir: cfg.home, clock: realClock, log, accounts: () => accounts.list() });
   if (cfg.tokenTally !== false) tally.start();
   // Every session gets tools for driving Threadbear itself, bound to its
@@ -177,8 +293,17 @@ async function main(): Promise<void> {
   let runner!: Runner;
   let scheduler!: Scheduler;
   // Threads waiting to hear the Mac app has restarted onto a new build
-  // (app-restarts.ts); made once the runner is.
-  let appRestarts!: AppRestarts;
+  // (app-restarts.ts). Made before the runner, which asks it while its
+  // start() saves threads (THREADBEAR-2D), so it reaches the runner and
+  // peers lazily; it only uses them once an app says hello.
+  const appRestarts = new AppRestarts({
+    runner: { get: (id) => runner.get(id), has: (id) => runner.has(id), note: (id, text) => runner.note(id, text), send: (...a) => runner.send(...a) },
+    home: cfg.home,
+    clock: realClock,
+    log,
+    away: (threadId) => peers.owns(threadId),
+    appRepo: ownCheckout(),
+  });
   // Asked for per thread, as sync is made after the runner. No tool while sync is off: the Pocket lives in the backend.
   const pocketControl = () => (sync.status().state === 'off' ? undefined : sync);
   let restarter!: Restarter;
@@ -213,6 +338,20 @@ async function main(): Promise<void> {
       releaseIdle: (p, v) => runner.releaseIdle(p, v),
       versionsInUse: (p) => runner.versionsInUse(p),
       codexBinariesInUse: () => runner.codexBinariesInUse(),
+      // Only where a fix can land: a checkout of its own that doesn't follow
+      // GitHub's main. Elsewhere the fix reaches it from main as usual.
+      heldBack: (h) => {
+        const checkout = readRelease()?.checkout;
+        if (!checkout || !cfg.followMain || followOriginOn(cfg.home)) return undefined;
+        return startOwnThread(runner, { text: heldBackBrief(h, cfg.home), title: heldBackTitle(h), why: 'a Codex update held back by the protocol check' }, checkout);
+      },
+      threadState: (threadId) => {
+        try {
+          return runner.get(threadId).archivedAt ? 'archived' : 'open';
+        } catch {
+          return undefined;
+        }
+      },
     },
     codex: { resolve: (start) => resolveCodexBinary(start), checkSurface, testedVersion },
     notice: (level, message) => runner.notice(level, message),
@@ -276,7 +415,6 @@ async function main(): Promise<void> {
     log,
     mcpServersFor: (threadId) => ({ [SERVER_NAME]: threadbearMcpServer(router(), threadId, scheduleControl(), projectControl(), appRestarts, () => cfg.bulletReplies, pocketControl, () => cfg.oneReply, () => cfg.connectorsUrl, gatewayHealth, remoteControl) }),
     oneReply: () => cfg.oneReply,
-    sandboxFor: (cwd) => sandboxFor(cfg.sandbox, cwd),
     alwaysAsk: ALWAYS_ASK_TOOLS,
     neverAsk: NEVER_ASK_TOOLS,
   });
@@ -330,17 +468,21 @@ async function main(): Promise<void> {
   // only come through that mirror.
   let atMac: boolean | undefined;
   const instructions = new InstructionsStore({ home: cfg.home, token, publish: (n) => runner.publish(n) });
+  // Not in box mode: its spawn gate (spawn-gate.ts) holds processes on the
+  // main thread only, and the look runs git.
+  const trustWorker = box ? undefined : new TrustOffThread();
   runner = new Runner({
+    // A box's one thread, and whether its restored worktree's setup must run
+    // before any turn (runner/moves.ts setUpRestored).
+    // A restored worktree's setup runs before any turn, on every start until it has (box.json's setUp).
+    // A save under way or unresolved when it stopped holds it too, before anything loads (box-save.ts SaveHold).
+    ...(box
+      ? {
+          boxThread: box.secrets.threadId,
+          boxHolds: [...(box.broken ? ['broken' as const] : box.restored && !box.secrets.setUp ? ['setup' as const] : []), ...(box.secrets.saveHold ? ['save' as const] : [])],
+        }
+      : {}),
     threadKey: (id) => makeThreadKey(token, id),
-    // Mike's pick on the full sync question's card sets it, once: the asking
-    // thread's agent can't (Daybreak 121, convex-use.ts fullSyncAnswer).
-    answered: fullSyncAnswerer({
-      asked: () => {
-        const s = readRunnerJson(cfg.home).sync;
-        return { thread: s?.fullAskedThread, question: s?.fullAskedQuestion };
-      },
-      set: (on) => void settings.update({ fullSync: on }),
-    }),
     standingInstructions: () => instructions.given(),
     projects,
     atMac: () => atMac,
@@ -354,18 +496,32 @@ async function main(): Promise<void> {
       record: (accountId, reading) => (draining ? runner.publish({ method: 'drain.usage', params: { accountId, reading } }) : usage.record(accountId, reading)),
       onChange: (fn) => usage.onChange(fn),
     },
+    signIn,
+    tokenMaker,
     clock: realClock,
     log,
     models,
-    patchTrust: new PatchTrust({ file: path.join(cfg.home, 'patch-trust.json'), always: [ownCheckout()] }),
+    // A box's clone is its own checkout too: its repo's worktree setup runs as a new thread's would.
+    // The slow looks at folders on worker threads, not the main one (trust-off-thread.ts).
+    patchTrust: new PatchTrust({ file: path.join(cfg.home, 'patch-trust.json'), always: [ownCheckout(), ...(box && !box.broken ? [box.checkout] : [])], offThread: trustWorker }),
+    offThread: trustWorker,
     // Keeps any text end_turn's own sign-up or wait_for_app_restart gave.
     appRestartAsked: (threadId) => {
       if (!appRestarts.isWatching(threadId)) appRestarts.watch(threadId);
     },
+    awaitingAppRestart: (threadId) => appRestarts.isWatching(threadId),
   });
   // Until it is listening (below): see Runner.holdWaits.
   runner.holdWaits = true;
-  const settings = new SettingsService({ config: cfg, publish: (n) => runner.publish(n), poolIds: () => runner.listPools().pools.map((p) => p.id) });
+  const settings = new SettingsService({
+    config: cfg,
+    publish: (n) => {
+      runner.publish(n);
+      // An experiment switched (virtualRunners' Runs on entries): the sidebar's watch catches up.
+      if (n.method === 'settings.updated') sync.refreshIndex();
+    },
+    poolIds: () => runner.listPools().pools.map((p) => p.id),
+  });
   // Runners still finishing turns after a handover: connected before the
   // threads load, so the ones they have are left to them. Nothing after the
   // await below yields until runner.start(), so no thread can arrive first.
@@ -390,7 +546,7 @@ async function main(): Promise<void> {
         // new work, so a finish they replace doesn't count.
         runner.reconcileWaits();
         // Told now if the app restarted while it was over there.
-        if (t) appRestarts?.adopted(threadId);
+        if (t) appRestarts.adopted(threadId);
         return t;
       },
       // A thread here may be waiting on one deleted over there.
@@ -414,9 +570,6 @@ async function main(): Promise<void> {
   bootStep('threads');
   // Answers to ask_secret go after a day (docs/protocol.md, "Secrets").
   runner.secrets.startSweeping((e) => log.warn('secret sweep failed', { error: String(e) }));
-  // After the threads are loaded, so a schedule that came due while the
-  // runner was stopped finds its thread.
-  appRestarts = new AppRestarts({ runner, home: cfg.home, clock: realClock, log, away: (threadId) => peers.owns(threadId) });
   // Its runner id and name are the mirror's (sync.ts), since that's how other
   // runners and the backend know this one (step 6, docs/step6-plan.md).
   const syncRunnerId = cfg.sync.runnerId ?? ensureRunnerId(cfg.home);
@@ -434,10 +587,15 @@ async function main(): Promise<void> {
     elsewhere: (id) => peers.owns(id) || peers.isArriving(id),
     folderElsewhere: (id) => peers.find(id)?.cwd,
     sendElsewhere: (id, text, scheduleId, run, since, preserve) => sendScheduled(runner, peers, id, text, scheduleId, run, since, preserve),
+    dropElsewhere: (id, scheduleId) => dropScheduled(runner, peers, id, scheduleId),
     self: { id: syncRunnerId, name: cfg.sync.name ?? defaultRunnerName(), icon: runnerIcon, version: RUNNER_VERSION, release: RELEASE.release, startedAt },
     syncOn: Boolean(cfg.sync.enabled && cfg.sync.url && readSyncKey(cfg.home)),
+    // A box keeps none (decision 13): every way to make, change or run one is refused.
+    ...(box ? { refuse: BOX_NO_SCHEDULES } : {}),
   });
-  if (!copyOfReal) scheduler.start();
+  runner.scheduleDeleted = (id) => scheduler.wasDeleted(id);
+  // A box has no schedules (decision 13): they stay on the Mac and send to it.
+  if (!copyOfReal && !box) scheduler.start();
   // The done card's loose ends list the check-ins booked for a thread.
   runner.schedulesFor = (id) => scheduler.list(id);
   runner.scheduleChecks = () => scheduler.localChecks();
@@ -445,7 +603,7 @@ async function main(): Promise<void> {
   // membership); the librarian needs both.
   projects.start(runner);
   const librarian = new Librarian({ host: runner, projects, models, clock: realClock, log, home: cfg.home, pocket: pocketControl });
-  if (!copyOfReal) librarian.start();
+  if (!copyOfReal && !box) librarian.start();
   // Background jobs that look stuck get their thread a message.
   const stuckJobs = new StuckJobs({ host: runner, clock: realClock, log, home: cfg.home });
   stuckJobs.start();
@@ -489,6 +647,8 @@ async function main(): Promise<void> {
   // effort: off without a URL and key, and never in the way of a turn.
   // The RPC server is made further down; presence asks it once it's there.
   let rpcServer: RpcServer | undefined;
+  // Whether this runner has an app of its own lately (app-seen.ts).
+  const appSeen = new AppSeen(cfg.home, () => Date.now());
   // Pools shared with the other runners through the backend, once it has
   // them (docs/protocol.md, "Pools"); the last list seen is kept on disk.
   const sharedPools = new SharedPools({
@@ -506,11 +666,92 @@ async function main(): Promise<void> {
     runner.sharedPools = sharedPools;
   }
   const scrubber = new Scrubber({ secretsDir: paths.secrets(cfg.home), log });
+  // A login's year-long token, whole and without its fixed prefix.
+  onYearToken((t) => {
+    scrubber.known.add(t);
+    scrubber.known.add(t.replace(/^sk-ant-oat01-/, ''));
+  });
   // Text cut short anywhere in the runner is cut where none of these values
   // (nor anything the rules know) is split in two (safe-cut.ts). Not counted
   // in the scrubber's status: nothing is taken out here.
   useScrubForCuts((text) => redactSecrets(scrubber.known.mask(text)).text);
   runner.secrets.onWritten = (value) => scrubber.known.add(value);
+  if (box) {
+    scrubber.known.add(box.secrets.boxKey);
+    scrubber.known.add(box.secrets.threadKey);
+  }
+  // A box whose key the backend turns down has been superseded by a newer
+  // box for its thread: it stops its CLI and exits, so the provider's
+  // machine stops (docs/protocol.md, "Box mode"). `stop` is made further
+  // down; one that comes before it waits for it.
+  let stopRef: ((signal: string) => void) | undefined;
+  let supersededWanted = false;
+  const boxSuperseded = () => {
+    if (supersededWanted) return;
+    supersededWanted = true;
+    log.warn("box: the backend turned this box's key down, so a newer box has the thread; stopping");
+    stopRef?.('superseded');
+  };
+  // The backend's `save` (box-save.ts): its own calls, on the box key. Once
+  // one starts, the thread runs nothing until the backend says it may (SaveHold).
+  const boxPost = box ? convexPoster(boxBoot!.syncUrl) : undefined;
+  const saveHold = box
+    ? new SaveHold({
+        hold: () => {
+          runner.holdTurns(box.secrets.threadId, 'save');
+          closeSpawns(SAVE_HOLDS_SPAWNS);
+        },
+        release: () => {
+          openSpawns();
+          runner.releaseTurns(box.secrets.threadId, 'save');
+        },
+        ...(box.secrets.saveHold ? { initial: box.secrets.saveHold } : {}),
+        persist: (state) => setSaveHold(cfg.home, state),
+      })
+    : undefined;
+  // A turn refused with the box's cloud token (box-token.ts): the backend is
+  // told, and the thread carries on once a newer token is set.
+  const tokenWatch =
+    box && boxPost && saveHold
+      ? new BoxTokenWatch({
+          home: cfg.home,
+          claudeDir: cfg.claudeMainDir,
+          key: box.secrets.boxKey,
+          post: boxPost as unknown as ActionPost,
+          log,
+          setTimeout: (fn, ms) => realClock.setTimeout(fn, ms),
+          held: () => saveHold.held,
+          waiting: () => runner.threads.get(box.secrets.threadId)?.rec.waitingForToken,
+          markReported: () => runner.tokenRefusalReported(box.secrets.threadId),
+          replaced: () => runner.tokenReplaced(box.secrets.threadId),
+          superseded: (e) => {
+            if (!keyRejected(e)) return false;
+            boxSuperseded();
+            return true;
+          },
+        })
+      : undefined;
+  if (tokenWatch) {
+    runner.onBoxTokenRefused = () => tokenWatch.refused();
+    runner.boxTokenSetAt = () => readBoxSecrets(cfg.home)?.tokenSetAt;
+  }
+  // The rest of the box stopped, categorically, before a save copies anything.
+  const stopOthers = async () => {
+    if (!boxProcs) throw new Error("This box can't see its processes (no /proc), so it can't stop them to save.");
+    const n = await boxProcs.stopOthers();
+    if (n) log.info("box: stopped the box's other processes for its save", { killed: n });
+  };
+  const saveBox = async (threadId: string) => {
+    if (!box || !boxPost || !saveHold || threadId !== box.secrets.threadId) throw new Error("That isn't this box's thread.");
+    // A degraded box saves nothing: what it has may be all there is of the work.
+    if (box.broken) throw new Error(`This box can't save its thread: ${box.broken}`);
+    try {
+      return await saveThread({ home: cfg.home, claudeDir: cfg.claudeMainDir, threadId, threadKey: box.threadKey, boxKey: box.secrets.boxKey, quiesce: (id) => runner.quiesceForSave(id, { stopOthers }), hold: saveHold, asSave, beforeSaved: () => sync.flushAll(), post: boxPost, upload: convexUploader() });
+    } catch (e) {
+      if (keyRejected(e)) boxSuperseded();
+      throw e;
+    }
+  };
   // Set once the relay is made, further down; sync's list goes through it.
   let relayRef: Relay | undefined;
   // Other runners' threads that are moving, as this (the main Mac's) runner
@@ -547,34 +788,60 @@ async function main(): Promise<void> {
     if (scheduler.list(id).some((sc) => sc.threadId === id && !sc.finishedAt && sc.check)) leftBehind.push("its schedules' shell checks");
     return { ...info, leftBehind };
   };
-  // Made further down, once there's a runner to start its thread on; the
-  // backend's remote-runner updates reach it through this (convex-use.ts).
-  let fullSyncOfferRef: FullSyncOffer | undefined;
+  // Shared memory (memory-sync.ts, the sharedMemory experiment): the main
+  // Mac's global CLAUDE.md and memory folders, on every runner.
+  const memorySync = new MemorySync({
+    home: os.homedir(),
+    dataDir: cfg.home,
+    on: () => experimentOn(cfg.home, 'sharedMemory'),
+    claudeDirs: () => runner.safeAccounts().filter((a) => a.provider === 'claude').map((a) => a.configDir),
+    codexDirs: () => runner.safeAccounts().filter((a) => a.provider === 'codex').map((a) => a.configDir),
+    scrub: (text) => redactSecrets(scrubber.known.mask(text)).text,
+    log,
+  });
+  // Made once the fixers are (below); the first heartbeats can come before.
+  // Off with followMain, like the rest of following main.
+  let reportedFailure: () => UpdateFailure | undefined = () => (cfg.followMain ? reportedOnDisk(cfg.home) : undefined);
+  let remoteFixer: RemoteUpdateFixer | undefined;
   const sync = new ConvexSync({
     config: { ...cfg.sync, runnerId: syncRunnerId, icon: runnerIcon },
     use: new ConvexUseTally({ home: cfg.home }),
     key: syncKey,
     statePath: `${cfg.home}/sync-state.json`,
     cachePath: `${cfg.home}/sync-sent.json`,
-    presence: async () => (atMac = isAtMac(rpcServer?.appConnected() ?? false, await hidIdleMs())),
+    // A box has no one at it, and its key may call only what running its
+    // thread needs (BOX_CALLS): no presence, logins, projects, schedules,
+    // pools, shared memory or machine figures.
+    ...(box ? {} : { presence: async () => (atMac = isAtMac(rpcServer?.appConnected() ?? false, await hidIdleMs())) }),
     appConnected: () => rpcServer?.appConnected() ?? false,
+    // Virtual runners in Runs on (thread-index.ts services); never in a box.
+    virtualRunners: () => !box && experimentOn(cfg.home, 'virtualRunners'),
     followProblem: () => (updaterReady ? updater.status().followProblem : undefined),
+    updateFailed: () => reportedFailure(),
     // A thread past a move's switch is the other runner's: never written
     // from here again (runner/moves.ts).
     runner: {
       onNotification: (fn) =>
         runner.onNotification((n) => {
-          const id = (n.params as { threadId?: unknown } | undefined)?.threadId;
-          if (typeof id === 'string' && movesRef?.gone(id)) return;
+          // A thread.updated names its thread inside `thread`, the rest by threadId.
+          const p = n.params as { threadId?: unknown; thread?: { id?: unknown } } | undefined;
+          const id = p?.threadId ?? p?.thread?.id;
+          // Its delete still goes through: sync forgets the thread as
+          // sent then, rather than removing the other runner's row.
+          if (typeof id === 'string' && movesRef?.gone(id) && n.method !== 'thread.deleted') return;
           fn(n);
         }),
       list: (include) => runner.list(include).filter((t) => !movesRef?.gone(t.id)),
       get: (id) => runner.get(id),
       events: (id, o) => runner.events(id, o),
       cuts: (id) => runner.cuts(id),
-      listProjects: () => projects.list({ archived: true }),
-      listSchedules: () => scheduler.list(),
-      listAccounts: () => runner.hello().accounts,
+      ...(box
+        ? {}
+        : {
+            listProjects: () => projects.list({ archived: true }),
+            listSchedules: () => scheduler.list(),
+            listAccounts: () => runner.hello().accounts,
+          }),
       buttons: (id) => runner.listButtons(id).buttons,
     },
     // The phone's commands, through the same methods the app's RPCs use,
@@ -592,13 +859,36 @@ async function main(): Promise<void> {
       movePreview: async (p) => {
         return runner.previewMove({ ...p, self: syncRunnerId });
       },
+      // The Mac's Runners panel's Year-long token… (year-token-maker.ts); a
+      // box's login is its cloud token, so not there.
+      ...(box ? {} : { yearToken: (accountId: string, p: { code?: string; check?: boolean; cancel?: boolean }) => runner.yearToken(accountId, p) }),
+      // A box's one thread, under its own id, in its clone, on its one login.
+      ...(box
+        ? {
+            create: (p: Parameters<typeof runner.create>[0]) => {
+              if (box.broken) throw new Error(`This box can't start its thread: ${box.broken}`);
+              return runner.create({ ...p, id: box.secrets.threadId, cwd: box.cwd, accountId: 'claude-main' });
+            },
+            save: saveBox,
+          }
+        : {}),
     },
-    intake: (item, files) => runner.createIntakeDraft(item, files),
-    sample: machineSampler(cfg.home),
+    ...(box ? {} : { intake: (item: import('./intake-record.ts').IntakeRecord, files?: import('./protocol.ts').AttachmentRef[]) => runner.createIntakeDraft(item, files) }),
     secretBox: runner.secrets,
-    schedules: scheduler,
-    pools: sharedPools,
-    sharedUsage: usage,
+    ...(box
+      ? {
+          box: {
+            ...(box.secrets.machineId ? { machineId: box.secrets.machineId } : {}),
+            superseded: boxSuperseded,
+            // The backend's word that a box stopped by its save may run again.
+            taken: (kind: string) => saveHold?.taken(kind),
+            heard: (state: string, sentAt: number) => saveHold?.heard(state, sentAt),
+            // Held by its save: its heartbeats and the save's finish make no work.
+            held: () => saveHold?.held ?? false,
+            saving: () => saveHold?.saving ?? false,
+          },
+        }
+      : { sample: machineSampler(cfg.home), schedules: scheduler, pools: sharedPools, memory: memorySync, sharedUsage: usage }),
     // The sidebar's list carries what the relay has changed that the
     // backend's rows don't show yet (relay.ts overlay); made below.
     publish: (n) => {
@@ -606,8 +896,6 @@ async function main(): Promise<void> {
       // Another runner's followProblem comes in with these rows.
       if (n.method === 'remoteThreads.updated') {
         publishUpdates();
-        // Another machine has turned up on this backend: full sync would help.
-        if ((n.params as { runners?: { online?: boolean }[] } | undefined)?.runners?.some((r) => r.online)) fullSyncOfferRef?.trigger('machine');
       }
     },
     home: cfg.home,
@@ -619,6 +907,7 @@ async function main(): Promise<void> {
     scrubber,
     elsewhere: (id) => peers.owns(id) || peers.isArriving(id),
     elsewhereIds: () => [...peers.summaries(['inbox', 'snoozed', 'archived']).map((t) => t.id), ...peers.arrivingIds()],
+    movedAway: (id) => movesRef?.gone(id) ?? false,
     version: RUNNER_VERSION,
     release: RELEASE.release,
     startedAt,
@@ -632,6 +921,16 @@ async function main(): Promise<void> {
   // sit needing Mike with nothing to answer (13 Nov, Peers.openCards).
   const handedOver = peers.status().length > 0;
   sync.start({ hold: handedOver });
+  // A Mac waking from sleep, or a box resumed: a new websocket at once,
+  // rather than a minute on a dead one (clock-jump.ts).
+  const clockJumps = new ClockJumpWatch({
+    onJump: (gapMs) => {
+      log.info('the clock jumped: reconnecting', { gapMs });
+      sync.reconnectNow('clock jumped');
+      // Not a box's save hold: only the backend lets that go (box-save.ts SaveHold).
+    },
+  });
+  clockJumps.start();
   if (handedOver) {
     try {
       sync.seedCards(await peers.openCards());
@@ -690,11 +989,49 @@ async function main(): Promise<void> {
     // On the install's default mode (own-threads.ts).
     start: (r) => startOwnThread(runner, r, updateRelease?.checkout),
     open: openThread,
-    send: (threadId, text) => runner.send(threadId, text, [], { queue: true }).turnId,
+    // From the runner, not Mike: his message would clear a thread's review
+    // findings and decline its open cards (runner.ts fromMike).
+    send: (threadId, text) => runner.send(threadId, text, [], { queue: true, origin: 'runner' }).turnId,
     unqueue: (threadId, turnId) => runner.unqueue(threadId, turnId),
     followsOrigin: () => followOriginOn(cfg.home),
     checkout: updateRelease?.checkout,
+    canReport: () => sync.reportsUpdates(),
+    remoteAt: (commit) => remoteFixer?.openAt(commit),
   });
+  reportedFailure = () => {
+    if (!cfg.followMain) return undefined;
+    updateFixer.overdue();
+    return updateFixer.reported();
+  };
+  // On the main Mac: another runner's failed update gets its fix thread
+  // here, as one it asked for would need a yes (fix-update.ts).
+  const updateCheckout = updateRelease?.checkout;
+  // followMain off turns this off with the rest (docs/on-your-mac.md).
+  if (updateCheckout && cfg.followMain) {
+    remoteFixer = new RemoteUpdateFixer({
+      home: cfg.home,
+      log,
+      start: (r) => startOwnThread(runner, r, updateCheckout),
+      open: openThread,
+      // Another machine's words: never as Mike's (see updateFixer's send).
+      send: (threadId, text) => runner.send(threadId, text, [], { queue: true, origin: 'runner' }).turnId,
+      unqueue: (threadId, turnId) => runner.unqueue(threadId, turnId),
+      onMain: (commit) => commitOnMain(updateCheckout, commit),
+      before: (a, b) => commitBefore(updateCheckout, a, b),
+      ownAt: (commit) => updateFixer.openAt(commit),
+    });
+    // Its own timer, not the app's list of other runners: that's watched
+    // only while an app is connected.
+    const fixer = remoteFixer;
+    const lookAtFailures = async () => {
+      // A runner handing over to its next release leaves it to that one.
+      if (draining) return;
+      const seen = await sync.readFailedRunners();
+      if (seen && !draining) fixer.consider(seen.failed, seen.through);
+    };
+    setTimeout(() => void lookAtFailures(), 30_000).unref();
+    setInterval(() => void lookAtFailures(), 2 * 60_000).unref();
+  }
   // Follows main once this release has been marked good (below).
   const updater = new RunnerUpdater({
     home: cfg.home,
@@ -716,7 +1053,7 @@ async function main(): Promise<void> {
     },
   });
   // The LaunchAgent updating itself when it's behind main (reinstall.ts):
-  // the Updates panel's Update it, or by itself with selfReinstall on.
+  // by itself, or again from the Updates panel's Update it after a failure.
   const reinstaller = new Reinstaller({
     home: cfg.home,
     checkout: updateRelease?.checkout,
@@ -726,7 +1063,6 @@ async function main(): Promise<void> {
       const u = updater.status();
       return u.launcherChanged && u.launcherReason && u.launcherKey ? { reason: u.launcherReason, key: u.launcherKey } : undefined;
     },
-    auto: () => experimentOn(cfg.home, 'selfReinstall'),
     recheck: () => updater.recheckLauncher(),
     onChange: () => publishUpdates(),
   });
@@ -748,65 +1084,53 @@ async function main(): Promise<void> {
     // The app's Bring Them In and Let's Discuss titles (UpdatesPanel).
     openByHand: () => runner.list(['inbox', 'snoozed']).find((t) => /^(Bring in|Discuss) Mike's release /.test(t.title))?.id,
   });
-  // Full sync starts off, and the main runner asks once whether to turn it on,
-  // when it would help: a phone or browser paired, or another machine here
-  // (convex-use.ts FullSyncOffer). An install with sync.full set either way is
-  // never asked. Noted in runner.json once the thread is open, so it's once.
-  // The question the asking thread was given, noted with its id: Mike's
-  // pick counts only on a card that asks exactly that (fullSyncAnswer).
-  let fullSyncQuestionAsked: string | undefined;
-  const fullSyncOffer = new FullSyncOffer({
-    read: () => {
-      const j = readRunnerJson(cfg.home);
-      return { syncOn: Boolean(cfg.sync.enabled && cfg.sync.url && syncKey), key: syncKey, full: j.sync?.full, asked: j.sync?.fullAsked };
-    },
-    start: (reason) => {
-      // The checkout's tb, as this release's folder is pruned after a few more.
-      const tbPath = thisRelease?.checkout ? path.join(thisRelease.checkout, 'runner', 'bin', 'tb') : path.join(import.meta.dirname, '..', 'bin', 'tb');
-      const tb = `'${tbPath.replace(/'/g, `'\\''`)}'`;
-      const machine = process.platform === 'darwin' ? 'Mac' : 'machine';
-      fullSyncQuestionAsked = fullSyncQuestion(reason, machine);
-      return startOwnThread(runner, askBrief(tb, reason, machine), thisRelease?.checkout);
-    },
-    note: (threadId, clear) => {
-      const json = readRunnerJson(cfg.home);
-      const { fullAsked: _a, fullAskedThread: _t, fullAskedQuestion: _q, ...rest } = json.sync ?? {};
-      json.sync = clear ? rest : { ...rest, fullAsked: new Date().toISOString(), ...(threadId ? { fullAskedThread: threadId, ...(fullSyncQuestionAsked ? { fullAskedQuestion: fullSyncQuestionAsked } : {}) } : {}) };
-      writeRunnerJson(cfg.home, json);
-    },
-    later: (fn, ms) => void setTimeout(fn, ms).unref?.(),
-    delayMs: ASK_FULL_SYNC_EVENT_MS,
-    allowed: () => !stopping && !draining,
-    log: (msg, meta) => log.info(msg, meta),
+  // A thread suggesting work when a login's week is about to go unused, and
+  // the Usage panel's Find work for it (spare-week.ts). Only the main Mac's
+  // runner looks by itself, so two runners don't both start one.
+  const spareWeek = new SpareWeek({
+    home: cfg.home,
+    clock: realClock,
+    log,
+    on: () => spareWeekOn(cfg.home),
+    looks: () => !sync.secondRunner(),
+    accounts: () => runner.safeAccounts(),
+    pools: () => runner.pools(),
+    history: (since) => usageHistory.rows(since),
+    start: (r) => runner.create({ text: r.text, title: r.title, cwd: r.cwd, accountId: r.accountId, startedBy: { kind: 'runner', label: 'Threadbear', why: r.why } }).thread.id,
+    open: openThread,
+    send: (threadId, text) => void runner.send(threadId, text, [], { queue: true }),
   });
-  fullSyncOfferRef = fullSyncOffer;
-  // A phone, browser or other machine that's already there: a few minutes in,
-  // so a release that's about to roll back doesn't ask, then hourly while it
-  // hasn't, for a token issued by hand or a lookup that failed. Two small
-  // reads (tokens, and the runners list without their threads), and only a
-  // runner heard from in the last few minutes counts: one whose key was revoked
-  // can't heartbeat, but lingers in the list.
-  const lookForFullSyncReason = async () => {
-    if (!fullSyncOffer.open || stopping || draining) return;
-    try {
-      const devices = await sync.listTokens();
-      const now = Date.now();
-      const others = (await sync.scheduleBackend().runners()).filter((r) => r.id !== syncRunnerId && r.lastSeenAt !== undefined && now - r.lastSeenAt < 3 * 60_000);
-      fullSyncOffer.trigger(fullSyncReason({ devices, otherRunners: others.length }));
-    } catch {
-      // Offline or refused: the next look tries again.
-    }
-  };
-  setTimeout(() => {
-    void lookForFullSyncReason();
-    const look = setInterval(() => {
-      // Once it's asked, or been answered, there's nothing left to look for. An
-      // offer waiting to open isn't that: it may fail and need the next look.
-      if (!fullSyncOffer.eligible) clearInterval(look);
-      else void lookForFullSyncReason();
-    }, ASK_FULL_SYNC_LOOK_MS);
-    look.unref?.();
-  }, ASK_FULL_SYNC_AFTER_MS).unref?.();
+  runner.spareWeek = spareWeek;
+  if (!box) spareWeek.start();
+  // The email watcher (experiment mailWatch, mail-watch.ts): new emails wake
+  // the threads waiting on them, go to the threads they're about, or wait
+  // on a pile that comes as one thread at set times. Only the main Mac's
+  // runner looks, and never a copy of the real data dir's.
+  const mailWatch = new MailWatch({
+    home: cfg.home,
+    clock: realClock,
+    log,
+    host: {
+      mailThreads: () => runner.mailThreads(),
+      wakeForMail: (id, text) => runner.wakeForMail(id, text),
+      holdMail: (id, text, line) => runner.holdMail(id, text, line),
+      send: (threadId, text, why) => {
+        if (!openThread(threadId)) return false;
+        runner.send(threadId, text, [], { origin: 'runner', queue: true, wakeReason: why });
+        return true;
+      },
+      // A thread acting on an email runs on Auto, so Claude Code checks what it
+      // does, as the email's words came from outside.
+      start: (r) => runner.create({ text: r.text, title: r.title, cwd: r.cwd, ...(r.careful ? { permissionMode: 'auto' as const } : {}), startedBy: { kind: 'runner', label: 'Email', why: r.why } }).thread.id,
+      open: openThread,
+    },
+    on: () => experimentOn(cfg.home, MAIL_WATCH),
+    looks: () => !sync.secondRunner(),
+    settings: () => peekRunnerJson(cfg.home).mailWatch,
+    generate: (p) => models.generate(p),
+    isPrivate: (cwd) => models.isPrivateFolder(cwd),
+  });
+  if (!box && !copyOfReal) mailWatch.start();
   const upstream = new Upstream({
     home: cfg.home,
     checkout: thisRelease?.checkout,
@@ -821,8 +1145,9 @@ async function main(): Promise<void> {
       if (readState(cfg.home)?.lastGood !== thisRelease.id) return false;
       return releaseTreeAt(thisRelease.checkout, thisRelease.prefix ?? 'runner/', 'refs/heads/main') === thisRelease.tree;
     },
-    // A release signed with a Touch ID key waits for Mike at the Mac.
-    atMac: async () => isAtMac(true, await hidIdleMs()),
+    // A release signed with a Touch ID key waits for Mike at the Mac, and
+    // with it unlocked: over the lock screen the key signs nothing.
+    atMac: async () => isAtMac(true, await hidIdleMs()) && !(await screenLocked()),
     onChange: () => publishUpdates(),
     onChecked: (status) => {
       void bringIn.consider(status);
@@ -887,7 +1212,13 @@ async function main(): Promise<void> {
   updaterReady = true;
 
   runner.attachClis(updates);
-  const methods = { ...restartMethods(restarter), ...scheduleMethods(scheduler), ...projectMethods(projects), ...drainProjectMethods(projects), ...librarianMethods(librarian), ...connectorsMethods(connectors), ...settingsMethods(settings), ...instructionsMethods(instructions), ...modelMethods(models), ...devicesMethods(sync, (kind) => fullSyncOffer.trigger(kind)), ...usageStatsMethods({ tally, history: usageHistory, clock: realClock }) };
+  // The thread on a held Codex version: archiving or deleting it changes
+  // what its Updates row says. (Here, as the runner is made after updates.)
+  runner.onNotification((n) => {
+    if (n.method === 'thread.updated') updates.threadChanged(n.params.thread.id);
+    else if (n.method === 'thread.deleted') updates.threadChanged(n.params.threadId);
+  });
+  const methods = { ...restartMethods(restarter), ...scheduleMethods(scheduler), ...projectMethods(projects), ...drainProjectMethods(projects), ...librarianMethods(librarian), ...connectorsMethods(connectors), ...settingsMethods(settings), ...instructionsMethods(instructions), ...modelMethods(models), ...devicesMethods(sync), ...usageStatsMethods({ tally, history: usageHistory, clock: realClock }) };
   // runner.status carries the CLI statuses too (protocol, "runner.status").
   const restartStatus = methods['runner.status'];
   methods['runner.status'] = (p) => {
@@ -895,6 +1226,8 @@ async function main(): Promise<void> {
     const behind = sync.behindRunners();
     return { ...(restartStatus(p) as Record<string, unknown>), ...(behind.length ? { behindRunners: behind } : {}), webRuntimeProblem: webRuntimeUpdates.problem(), clis: updates.list(), sync: sync.status(), secretCheck: secretCheck.status(), relay: relay.status(), upstream: upstream.status(), ...(draining.length ? { draining } : {}), ...(macScreen ? { macScreen: macScreen.status() } : {}) };
   };
+  // tb profile (docs/protocol.md, "runner.profile"): where this runner's CPU goes.
+  Object.assign(methods, profileMethods(new SelfProfiler({ dir: path.join(cfg.home, 'profiles'), log })));
   // tb updates (docs/protocol.md, "Mike's releases").
   methods['upstream.status'] = () => ({ upstream: upstream.status() });
   // The Updates panel's Update it (docs/protocol.md, "Runner updates").
@@ -963,6 +1296,27 @@ async function main(): Promise<void> {
     clock: realClock,
     log,
   }));
+  // Virtual runners from the Mac (virtual-runners.ts): a thread started on
+  // one, and a login's cloud token for its boxes, on the main Mac's key.
+  const virtualRunners = new VirtualRunners({
+    on: () => sync.virtualRunnersReady(),
+    call: (kind, fn, args) => sync.ownerCall(kind, fn, args),
+    accounts: () => runner.safeAccounts(),
+    poolLogin: (poolId) => {
+      const pool = runner.poolById(poolId);
+      const logins = runner.safeAccounts().filter((a) => a.provider === 'claude' && pool?.accountIds.includes(a.id));
+      const id = logins.length ? runner.pickAccount(logins, undefined) : undefined;
+      return logins.find((a) => a.id === id);
+    },
+    claudePath: () => cfg.claudePath,
+    made: (row) => relay.noteMade({ ...row, provider: 'claude', status: 'starting', needsYou: false, unread: false, lastActivityAt: row.createdAt }),
+    log,
+    now: () => Date.now(),
+  });
+  methods['cloudTokens.make'] = (p) => virtualRunners.make(String(p.login ?? ''));
+  methods['cloudTokens.set'] = (p) => virtualRunners.set(String(p.login ?? ''), String(p.token ?? ''));
+  methods['cloudTokens.useMac'] = (p) => virtualRunners.useMac(String(p.login ?? ''));
+  methods['cloudTokens.list'] = () => virtualRunners.list();
   // Starting threads on other runners, and a runner key's requests for
   // that (docs/protocol.md, "Asking another runner").
   // A request's mode as the card showed it: none is the default (full
@@ -1019,10 +1373,21 @@ async function main(): Promise<void> {
   runner.runnerNames = (id) => runnerNames.get(id);
   // The main Mac takes moved threads in at most Ask (runner/moves.ts).
   runner.movedInAtMostAsk = () => Boolean(sync.ownerKey());
+  // A card only this runner's own app can allow is put up only while it
+  // has one (app-seen.ts).
+  runner.appCanAllow = () => (rpcServer?.appConnected() ?? false) || appSeen.recently();
+  runner.ownName = cfg.sync.name ?? defaultRunnerName();
+  // Previews shown (the Move sheet, tb move, move_thread), by the one-use
+  // id threads.move takes (moves.ts MovePreviews; docs/protocol.md,
+  // "Preview binding").
+  const previews = new MovePreviews();
   const moves = (movesRef = new Moves({
     self: () => syncRunnerId,
     backend: () => sync.movesBackend(),
     log,
+    // The main Mac's runner starts every move (moveOn), so one coming here
+    // must carry a binding it handed out itself.
+    vouches: (expect, moveId) => !sync.ownerKey() || previews.vouches(expect, moveId),
     // A move coming here of a thread still on its old runner: its row in
     // the sidebar shows it, as S's own row shows a move going.
     seen: (row) => {
@@ -1080,13 +1445,83 @@ async function main(): Promise<void> {
   const moveOn = () => {
     if (!sync.ownerKey()) throw new RpcError(ErrorCode.badParams, "Only the main Mac's runner can move a thread.");
   };
+  // The thread described by the runner that has it, then planned by the
+  // one it would go to, each here or through a relay `call`; with a
+  // previewId when nothing stops it.
+  const previewMove = async (threadId: string, to: string, cwd: string | undefined, accountId: string | undefined): Promise<Record<string, unknown>> => {
+    const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
+    const here = runner.threads.has(threadId);
+    if (here && to === syncRunnerId) throw new RpcError(ErrorCode.badParams, 'The thread is on that runner already.');
+    let info: unknown;
+    try {
+      if (here) info = await describeMovePreview(threadId);
+      else if (relay.owns(threadId)) info = await relay.describeForMove(threadId);
+      else throw new Error('No such thread.');
+    } catch (e) {
+      const older = /can't be asked of this runner/.test(said(e));
+      return { accounts: [], leftBehind: [], problems: [older ? "The thread's runner runs a Threadbear from before moves. It updates itself within a few minutes of a new release." : said(e)] };
+    }
+    // The target only knows its own end of what won't come.
+    const lines = (v: unknown) => (Array.isArray(v) ? v.filter((l): l is string => typeof l === 'string') : []);
+    // As the target will have it: scrubbed, as the old runner's description
+    // reaches the move's row through its own scrubber (sync.ts post) and the
+    // preview reaches another runner through this one's, so a binding made
+    // from it matches the one the target works out (security review,
+    // 17 Nov 2026).
+    const described = moveInfoFrom(info);
+    const scrubbed = described && previewInfo(described, (v) => scrubber.doc(v));
+    const parsed = scrubbed && moveInfoFrom(scrubbed);
+    const withThisEnd = (answer: unknown): Record<string, unknown> => {
+      const a = (answer && typeof answer === 'object' ? answer : {}) as Record<string, unknown>;
+      const thisEnd = (info as { leftBehind?: unknown } | undefined)?.leftBehind;
+      const out: Record<string, unknown> = { ...a, leftBehind: [...lines(a.leftBehind), ...lines(thisEnd)], ...(Array.isArray(thisEnd) ? { sourceChecked: true } : {}) };
+      // A target from before moves were checked against their preview would
+      // do whatever the move's row says: none to it until it updates.
+      const problems = lines(a.problems);
+      if (!problems.length && a.checksPreview !== true) out.problems = [`${runnerNames.get(to) ?? 'That runner'} runs a Threadbear from before moves were checked against what Move to showed. It updates itself within a few minutes of a new release.`];
+      return previews.remember({ threadId, to, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}) }, parsed, out);
+    };
+    try {
+      if (!parsed || !scrubbed) throw new Error("The thread's runner didn't say enough about it.");
+      if (to === syncRunnerId) return withThisEnd(await runner.previewMove({ info: parsed, self: syncRunnerId, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}) }));
+      // Through the relay: only what the target needs, scrubbed (moves.ts previewInfo).
+      return withThisEnd(await relay.previewMove(to, { info: scrubbed, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}) }));
+    } catch (e) {
+      // A runner from before moves turns the call down by name.
+      const older = /can't be asked of this runner/.test(said(e));
+      return { accounts: [], leftBehind: [], problems: [older ? `${runnerNames.get(to) ?? 'That runner'} runs a Threadbear from before moves. It updates itself within a few minutes of a new release.` : said(e)] };
+    }
+  };
   methods['threads.move'] = async (p) => {
     moveOn();
     const threadId = String(p.threadId ?? '');
     const to = String(p.runnerId ?? '');
     if (!threadId || !to) throw new RpcError(ErrorCode.badParams, 'threadId and runnerId are needed');
+    const cwd = typeof p.cwd === 'string' && p.cwd ? p.cwd : undefined;
+    const accountId = typeof p.accountId === 'string' && p.accountId ? p.accountId : undefined;
+    let expect: string;
+    const picks = { threadId, to, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}) };
+    if (typeof p.previewId === 'string' && p.previewId) {
+      // Once only, for the same thread, runner and picks it was asked with.
+      try {
+        expect = previews.take(p.previewId, picks);
+      } catch (e) {
+        throw new RpcError(ErrorCode.badParams, e instanceof Error ? e.message : String(e));
+      }
+    } else {
+      // No preview named (the Swift app, an older tb, move_thread): one
+      // now, bound the same way. A clone is shown first, so one that would
+      // clone goes through the Move sheet.
+      const look = await previewMove(threadId, to, cwd, accountId);
+      const problems = Array.isArray(look.problems) ? (look.problems as string[]) : [];
+      if (problems.length) throw new RpcError(ErrorCode.badParams, problems.join(' '));
+      if (typeof look.clone === 'string') throw new RpcError(ErrorCode.badParams, `It would clone ${String(look.cloneFrom ?? 'its repo')} to ${look.clone} first: move it from the app's Move to, which shows that, or pick a folder.`);
+      if (typeof look.previewId !== 'string') throw new RpcError(ErrorCode.badParams, "Couldn't see where the thread would go, so it stays where it is.");
+      expect = previews.take(look.previewId, picks);
+    }
     try {
-      const moveId = await sync.startMove({ threadId, to, ...(typeof p.cwd === 'string' && p.cwd ? { cwd: p.cwd } : {}), ...(typeof p.accountId === 'string' && p.accountId ? { accountId: p.accountId } : {}) });
+      const moveId = await sync.startMove({ threadId, to, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}), expect });
+      previews.startedAs(expect, moveId);
       startedMoves.set(threadId, moveId);
       // Another runner's thread: its row says so at once, before either
       // runner has taken a step (cleared once it's listed elsewhere).
@@ -1102,63 +1537,35 @@ async function main(): Promise<void> {
     }
   };
   // The Move sheet's guess (docs/protocol.md, "Moving a thread to another
-  // runner"): the thread described by the runner that has it, then planned
-  // by the one it would go to, each here or through a relay `call`.
+  // runner").
   methods['threads.movePreview'] = async (p) => {
     moveOn();
     const threadId = String(p.threadId ?? '');
     const to = String(p.runnerId ?? '');
     if (!threadId || !to) throw new RpcError(ErrorCode.badParams, 'threadId and runnerId are needed');
-    const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
-    const here = runner.threads.has(threadId);
-    if (here && to === syncRunnerId) throw new RpcError(ErrorCode.badParams, 'The thread is on that runner already.');
-    let info: unknown;
-    try {
-      if (here) info = await describeMovePreview(threadId);
-      else if (relay.owns(threadId)) info = await relay.describeForMove(threadId);
-      else throw new Error('No such thread.');
-    } catch (e) {
-      const older = /can't be asked of this runner/.test(said(e));
-      return { accounts: [], leftBehind: [], problems: [older ? "The thread's runner runs a Threadbear from before moves. It updates itself within a few minutes of a new release." : said(e)] };
-    }
     const cwd = typeof p.cwd === 'string' && p.cwd ? p.cwd : undefined;
     const accountId = typeof p.accountId === 'string' && p.accountId ? p.accountId : undefined;
-    // The target only knows its own end of what won't come.
-    const lines = (v: unknown) => (Array.isArray(v) ? v.filter((l): l is string => typeof l === 'string') : []);
-    const withThisEnd = (answer: unknown) => {
-      const a = answer as { leftBehind?: unknown };
-      const thisEnd = (info as { leftBehind?: unknown } | undefined)?.leftBehind;
-      // A runner from before this says nothing, which isn't "nothing's left".
-      return { ...a, leftBehind: [...lines(a.leftBehind), ...lines(thisEnd)], ...(Array.isArray(thisEnd) ? { sourceChecked: true } : {}) };
-    };
-    try {
-      if (to === syncRunnerId) {
-        const parsed = moveInfoFrom(info);
-        if (!parsed) throw new Error("The thread's runner didn't say enough about it.");
-        return withThisEnd(await runner.previewMove({ info: parsed, self: syncRunnerId, ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}) }));
-      }
-      // Through the relay: only what the target needs, scrubbed (moves.ts previewInfo).
-      const parsed = moveInfoFrom(info);
-      if (!parsed) throw new Error("The thread's runner didn't say enough about it.");
-      return withThisEnd(await relay.previewMove(to, { info: previewInfo(parsed, (v) => scrubber.doc(v)), ...(cwd ? { cwd } : {}), ...(accountId ? { accountId } : {}) }));
-    } catch (e) {
-      // A runner from before moves turns the call down by name.
-      const older = /can't be asked of this runner/.test(said(e));
-      return { accounts: [], leftBehind: [], problems: [older ? `${runnerNames.get(to) ?? 'That runner'} runs a Threadbear from before moves. It updates itself within a few minutes of a new release.` : said(e)] };
-    }
+    return previewMove(threadId, to, cwd, accountId);
   };
   methods['threads.moveCancel'] = async (p) => {
     moveOn();
     // One this runner is in, or one it started between two others.
     const threadId = String(p.threadId ?? '');
-    const moveId = moves.movingOf(threadId)?.moveId ?? startedMoves.get(threadId);
+    // The app names the move it means when it cancelled one before its
+    // threads.move answered: by the time the answer comes another may have
+    // started, and this runner's view of which is under way can lag the
+    // backend's, so that move itself is cancelled, by its id, and the backend
+    // refuses if it's already over (Codex's reviews, 18 Nov).
+    const named = typeof p.moveId === 'string' && p.moveId ? p.moveId : undefined;
+    const moveId = named ?? moves.movingOf(threadId)?.moveId ?? startedMoves.get(threadId);
     if (!moveId) throw new RpcError(ErrorCode.badParams, "That thread isn't moving.");
     try {
       await sync.cancelMove(moveId);
     } catch (e) {
       throw new RpcError(ErrorCode.badParams, e instanceof Error ? e.message : String(e));
     }
-    if (remoteMoving.delete(threadId)) republishRemote();
+    // Only this move's row: a named one may be over, with another showing.
+    if (remoteMoving.get(threadId)?.moving.moveId === moveId && remoteMoving.delete(threadId)) republishRemote();
     return {};
   };
   methods['requests.get'] = (p) => cross.get(String(p.threadId ?? ''), String(p.approvalId ?? ''));
@@ -1178,10 +1585,12 @@ async function main(): Promise<void> {
     methods,
     remote: peers,
     relay,
+    virtualStart: (p) => virtualRunners.start(p),
     gate: new CallerGate({ runner, remote: peers, schedules: scheduler }),
-    callerOfPort: (port) => threadOfPort(port, { registry, known: (id) => runner.has(id) || peers.owns(id), log }),
+    callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id) || peers.owns(id), log }),
     updates: () => (draining ? undefined : runnerUpdates()),
     appHello: (build, app) => appRestarts.appHello(build, app),
+    appSeen: () => appSeen.mark(),
     desktopHello: () => void swiftChanges.desktopHello().catch((e) => log.warn('swift changes: first look failed', { error: String(e) })),
     helloNotices: () => {
       // Like a missing claude: said to every client, until it's there.
@@ -1234,8 +1643,13 @@ async function main(): Promise<void> {
     ],
     log,
   });
+  // Borrowed worktrees nobody gave back (borrows.ts), on this Mac's real
+  // data dir only: a dev runner's threads aren't the ones that borrowed.
+  const stopBorrowSweep = cfg.home === defaultHome() && !box ? startBorrowSweep(runner, log) : () => {};
   const cancelMarkGood = markGoodLater(cfg.home, RELEASE.release, log, process.env, () => {
     restarter.proven();
+    // A box never updates itself or anything else: a new release is a new image.
+    if (box) return;
     updater.start();
     reinstaller.consider();
     upstream.start();
@@ -1264,17 +1678,33 @@ async function main(): Promise<void> {
   step('held reports', () => runner.settleAllHeld());
   // Reviews a runner that went away owed (runner/lab-review.ts).
   step('owed reviews', () => runner.startOwedReviews());
+  // A box restored from a save: its worktree's setup again (box-save.ts).
+  if (box && !box.broken && box.restored && !box.secrets.setUp) {
+    void runner
+      .setUpRestored(box.secrets.threadId)
+      .then(() => markSetUp(cfg.home))
+      .catch((e) => log.warn("box: couldn't set up the restored worktree", { error: String(e) }));
+  }
+  // A save that was holding the box when it stopped holds it again: no
+  // process starts (the turns and patches were held as the thread loaded).
+  if (box?.secrets.saveHold) closeSpawns(SAVE_HOLDS_SPAWNS);
+  // A thread still waiting for a newer cloud token when the runner stopped watches for it again.
+  tokenWatch?.start();
+  // A degraded box says why on its thread (if it has one here) and runs nothing.
+  if (box?.broken) runner.holdBroken(box.secrets.threadId, box.broken);
 
   let stopping = false;
   const stop = async (signal: string) => {
     if (stopping) return;
     stopping = true;
     cancelMarkGood();
+    clockJumps.stop();
     updater.stop();
     reinstaller.stop();
     upstream.stop();
     swiftChanges.stop();
     stopHousekeeping();
+    stopBorrowSweep();
     log.info('runner stopping', { signal });
     // Whatever stopped it, a pending restart has now happened. A draining
     // runner's restart was the handover, which the new runner has taken.
@@ -1290,6 +1720,7 @@ async function main(): Promise<void> {
     // a restart of its own has no deadline.
     const checksDone = scheduler.settled(/^SIG|supervisor/.test(signal) ? 15_000 : undefined);
     librarian.stop();
+    memorySync.stop();
     stuckJobs.stop();
     frozenClis.stop();
     macScreen?.stop();
@@ -1297,6 +1728,9 @@ async function main(): Promise<void> {
     connectors.stop();
     projects.stop();
     usage.stop();
+    spareWeek.stop();
+    mailWatch.stop();
+    signIn.stop();
     tally.stop();
     webRuntimeUpdates.stop();
     updates.stop();
@@ -1304,15 +1738,19 @@ async function main(): Promise<void> {
     // A restart's new release writes everything again under the same
     // runnerId; only a stop for good tells the phone this runner is gone.
     secretCheck.stop();
-    await sync.stop({ bye: signal !== 'restart' && !draining });
+    // A superseded box's key is refused: there's no one to say bye to.
+    await sync.stop({ bye: signal !== 'restart' && signal !== 'superseded' && !draining });
     try {
       await runner.shutdown();
+      // A look still under way (a hung folder) would hold the exit for its time limit.
+      trustWorker?.close();
       await server.close().catch(() => {});
       await drainServer?.close().catch(() => {});
       await registry.killAll(3000);
       if (draining) {
-        registry.removeFile();
-        removeDrainInfo(cfg.home, process.pid);
+        // Kept when its unended jobs couldn't be handed on, so the next
+        // start sweeps this runner's list as a draining runner's.
+        if (registry.removeFile()) removeDrainInfo(cfg.home, process.pid);
       }
       await checksDone;
     } finally {
@@ -1339,6 +1777,7 @@ async function main(): Promise<void> {
       upstream.stop();
       swiftChanges.stop();
       stopHousekeeping();
+      stopBorrowSweep();
       scheduler.stop();
       librarian.stop();
       // stuckJobs goes on: background work can hold a thread here for hours,
@@ -1356,6 +1795,8 @@ async function main(): Promise<void> {
       tally.stopWriting();
       // The new release mirrors from here on.
       secretCheck.stop();
+      // The new release syncs memory from here on, not both.
+      memorySync.stop();
       void sync.stop();
       // The older runners it was connected to are the new primary's now:
       // it connects to every one of them, and each thread they hand over
@@ -1386,7 +1827,7 @@ async function main(): Promise<void> {
         // Its port is on disk too (drain-<pid>.json), so a thread's shell can
         // reach this one as well as the primary.
         gate: new CallerGate({ runner, schedules: scheduler }),
-        callerOfPort: (port) => threadOfPort(port, { registry, known: (id) => runner.has(id), log }),
+        callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id), log }),
         methods: {
           ...scheduledSendMethods(runner),
           'drain.hello': () => {
@@ -1439,9 +1880,15 @@ async function main(): Promise<void> {
     // A moment for the last drain.handedOver to reach the primary.
     setTimeout(() => void stop('drained'), 500);
   };
+  stopRef = (signal) => void stop(signal);
+  if (supersededWanted) void stop('superseded');
   // The supervisor is gone: nothing would restart this runner, and its
   // children would be orphans.
   onSupervisorGone(() => void stop('supervisor gone'));
+  onStopRequest(() => void stop('asked to stop'));
+  // Windows: the helper peer identity asks (win32-helper.ts) starts now,
+  // so the first connection's lookup doesn't wait on PowerShell starting.
+  if (process.platform === 'win32') void win32Helper().ask('ping').catch(() => {});
   process.on('SIGTERM', () => void stop('SIGTERM'));
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGHUP', () => void stop('SIGHUP'));
@@ -1456,13 +1903,7 @@ async function main(): Promise<void> {
   // Last resort if the process exits some other way: kill the CLI groups
   // synchronously so they never outlive the runner.
   process.on('exit', () => {
-    for (const pid of registry.pids()) {
-      try {
-        process.kill(-pid, 'SIGKILL');
-      } catch {
-        // gone
-      }
-    }
+    for (const pid of registry.pids()) killGroup(pid, 'SIGKILL');
   });
 }
 

@@ -26,19 +26,14 @@
 // lab's login in it, the review runs on a fresh session of the same
 // provider, and the note says it isn't independent.
 //
-// A thread shut in a sandbox (ThreadRecord.confined) is reviewed in the
-// sandbox too, on a login that can run there (Claude; Codex can't), or
-// not at all, with a note saying why. Its review would otherwise run its
-// tests on the host with the same access (Daybreak, 10 Nov 2026).
-//
 // Part of the Runner (runner.ts); each method's `this` is the Runner.
 import path from 'node:path';
 import type { Runner, ThreadState } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import type { Account, Hunk, LabReviewLedger, PermissionMode, Provider, ReviewFinding, ReviewOutcome, ReviewSeverity } from '../protocol.ts';
+import type { Account, Hunk, LabReviewLedger, PanelReviewer, PermissionMode, Provider, ReviewFinding, ReviewOutcome, ReviewSeverity } from '../protocol.ts';
 import type { LabLedger, ReviewVerdict, ThreadRecord } from '../store.ts';
 import { loginOk, pickInPool, poolAccounts, poolForFolder } from '../pools.ts';
-import { providerInfo, providerName } from '../providers.ts';
+import { providerName } from '../providers.ts';
 import { cutSafely, safeEnd } from '../safe-cut.ts';
 import { DEFAULT_LAB_REVIEWERS, type LabReviewer } from '../lab-reviewers.ts';
 
@@ -66,15 +61,28 @@ const TEXT_FILE = /\.(md|mdx|markdown|txt|rst)$/i;
 const LOOK_BACK = 4000;
 
 export type TurnChange = { files: { path: string; added: number; removed: number }[]; codeLines: number; diff: string; clipped: boolean };
-// boxed: the other lab was passed over because it can't run in the sandbox.
 // reviewer: the entry of Mike's list it came from, for its model and effort.
-export type ReviewLogin = { account: Account; independent: boolean; reviewer: LabReviewer; boxed?: boolean };
+export type ReviewLogin = { account: Account; independent: boolean; reviewer: LabReviewer };
+
+// A change worth the whole panel's time whatever its size: one to how people
+// sign in, what they pay, or what's kept secret, where a bug costs most.
+// Backslashes too, for a Windows runner's paths.
+const RISKY_PATH = /(^|[/\\_.-])(auth|oauth|login|passwords?|secrets?|crypto|encrypt\w*|payments?|billing|stripe|permissions?|security)([/\\_.-]|$)/i;
+
+// Whether a change goes to the review panel (Mike, 19 Nov 2026: "panel for
+// big changes"): `minLines` of code or more, or code in a risky path. Small
+// ones keep the one reviewer, so the panel's cost goes where it pays.
+export function panelChange(change: TurnChange, minLines: number): boolean {
+  if (change.codeLines >= minLines) return true;
+  return change.files.some((f) => !TEXT_FILE.test(f.path) && RISKY_PATH.test(f.path));
+}
 
 export const labReviewPart = {
   // Called once a turn has finished with nothing needed and nothing left
-  // running. Starts the review and returns its thread id (the caller then
-  // waits on it), or undefined when there's none to do.
-  startLabReview(this: Runner, st: ThreadState, turnId: string, reply: string | undefined, upTo?: number): string | undefined {
+  // running. Starts the review and returns its threads' ids (the caller then
+  // waits on them: one, or a panel's several), or undefined when there's
+  // none to do.
+  startLabReview(this: Runner, st: ThreadState, turnId: string, reply: string | undefined, upTo?: number): string[] | undefined {
     const { rec } = st;
     if (rec.reviewOf || rec.archivedAt) return undefined;
     if (!this.cfg.labReview) return undefined;
@@ -98,70 +106,90 @@ export const labReviewPart = {
       this.log.info('lab review owed to the next runner', { threadId: rec.id });
       return undefined;
     }
-    // Shut in a sandbox, or would be if it started now: the review is too.
-    const confined = Boolean(rec.confined) || (providerInfo(rec.provider).sandbox && this.sandboxed(rec.cwd));
-    const login = this.reviewLogin(rec, { confined });
-    if (!login) {
-      const text = confined
-        ? 'Not reviewed: this thread runs in a sandbox, and there is no other login on this runner that can review it there.'
-        : 'Not reviewed: there is no other login on this runner to review the change with.';
-      this.emit(st, { type: 'system.note', text });
+    // One an older release ran shut in the sandbox isn't reviewed: its
+    // review would run its tests on this machine (Grok's review of the
+    // sandbox's removal, 16 Nov 2026).
+    if (rec.confined) return undefined;
+    const logins = this.reviewLogins(rec, panelChange(change, this.cfg.labPanelLines));
+    if (!logins.length) {
+      this.emit(st, { type: 'system.note', text: 'Not reviewed: there is no other login on this runner to review the change with.' });
       // Said once, until the next message from Mike.
       rec.labReviews = LAB_REVIEW_ROUNDS;
       this.markDirty(st);
       return undefined;
     }
     const round = (rec.labReviews ?? 0) + 1;
-    let threadId: string;
-    try {
-      const { thread } = this.create({
-        text: reviewBrief({ rec, ask: lastAsk(this, st), reply, change, independent: login.independent, round, earlier: rec.labReview?.findings }),
-        cwd: rec.cwd,
-        accountId: login.account.id,
-        // The reviewer's own, else the provider's default model at high.
-        // create checks both against the login (checkSettings), and drops
-        // an effort its provider has none of.
-        model: login.reviewer.model ?? this.defaultModelFor(login.account.provider),
-        effort: login.reviewer.effort ?? 'high',
-        // Never more access than the reviewed thread has: its brief carries
-        // that thread's diff and reply, which in an Ask or Auto thread may
-        // come from text Mike doesn't trust, and the reviewer runs commands
-        // (its tests) in the same checkout. A Full thread's review stays
-        // Full, as before; an Ask or Auto one asks or checks the same way.
-        // Anything else (a record from before modes) gets Ask.
-        permissionMode: reviewMode(rec.permissionMode),
-        // And never outside a sandbox the reviewed thread is shut in: the
-        // same mode on the host is far more than it has. Said both ways,
-        // so makeThread neither guesses nor lets it out.
-        ...(confined ? { confined: true } : {}),
-        title: cutSafely(`Review: ${rec.title}`, 120),
-        // The same checkout, as it is now, not a worktree of its own.
-        worktree: false,
-        startedBy: { kind: 'thread', label: 'Review', threadId: rec.id, threadTitle: rec.title, why: 'checks a change before it is called done' },
-      });
-      threadId = thread.id;
-    } catch (e) {
-      this.log.warn('lab review failed to start', { threadId: rec.id, error: e instanceof Error ? e.message : String(e) });
-      this.emit(st, { type: 'system.note', text: `Not reviewed: the review thread couldn't start (${e instanceof Error ? e.message : String(e)}).` });
+    const panel = logins.length > 1;
+    const started: { threadId: string; who: string; independent: boolean }[] = [];
+    for (const login of logins) {
+      let threadId: string;
+      let model: string | undefined;
+      try {
+        const { thread } = this.create({
+          text: reviewBrief({ rec, ask: lastAsk(this, st), reply, change, independent: login.independent, round, earlier: rec.labReview?.findings, panel, lean: paidPerToken(login) }),
+          cwd: rec.cwd,
+          accountId: login.account.id,
+          // The reviewer's own, else the provider's default model at high.
+          // create checks both against the login (checkSettings), and drops
+          // an effort its provider has none of.
+          model: login.reviewer.model ?? this.defaultModelFor(login.account.provider),
+          effort: login.reviewer.effort ?? 'high',
+          // Never more access than the reviewed thread has: its brief carries
+          // that thread's diff and reply, which in an Ask or Auto thread may
+          // come from text Mike doesn't trust, and the reviewer runs commands
+          // (its tests) in the same checkout. A Full thread's review stays
+          // Full, as before; an Ask or Auto one asks or checks the same way.
+          // Anything else (a record from before modes) gets Ask.
+          permissionMode: reviewMode(rec.permissionMode),
+          title: cutSafely(`Review: ${rec.title}`, 120),
+          // The same checkout, as it is now, not a worktree of its own.
+          worktree: false,
+          startedBy: { kind: 'thread', label: 'Review', threadId: rec.id, threadTitle: rec.title, why: 'checks a change before it is called done' },
+        });
+        threadId = thread.id;
+        model = thread.model;
+      } catch (e) {
+        // One of a panel that won't start leaves the rest to it.
+        this.log.warn('lab review failed to start', { threadId: rec.id, account: login.account.id, error: e instanceof Error ? e.message : String(e) });
+        if (!panel) this.emit(st, { type: 'system.note', text: `Not reviewed: the review thread couldn't start (${e instanceof Error ? e.message : String(e)}).` });
+        continue;
+      }
+      const reviewer = this.threads.get(threadId);
+      if (reviewer) {
+        reviewer.rec.reviewOf = rec.id;
+        this.markDirty(reviewer);
+      }
+      // The model it really runs on: create falls back to the default for
+      // one the login doesn't list (yet), and the name shouldn't claim it.
+      started.push({ threadId, who: reviewerName(login, model), independent: login.independent });
+    }
+    if (!started.length) {
+      if (panel) this.emit(st, { type: 'system.note', text: 'Not reviewed: none of the review panel could start.' });
       return undefined;
     }
-    const reviewer = this.threads.get(threadId);
-    if (reviewer) {
-      reviewer.rec.reviewOf = rec.id;
-      this.markDirty(reviewer);
-    }
     rec.labReviews = round;
-    const who = `${providerName(login.account.provider)} (${login.account.title})`;
-    rec.labReview = startRound(rec.labReview, { reviewer: who, independent: login.independent, rounds: round, threadId });
+    const who = started.map((x) => x.who).join(', ');
+    // A panel with another lab in it is another lab's look, for whatever
+    // shows one line (the web's heading says "a fresh session" otherwise).
+    const independent = started.some((x) => x.independent);
+    rec.labReview = startRound(rec.labReview, {
+      reviewer: who,
+      independent,
+      rounds: round,
+      threadId: started[0].threadId,
+      ...(started.length > 1 ? { panel: started.map((x) => ({ reviewer: x.who, threadId: x.threadId, independent: x.independent })) } : {}),
+    });
     this.markDirty(st);
-    const text = login.independent
-      ? `Another lab is reviewing this change before it's done: ${who}, in thread ${threadId.slice(0, 8)}.`
-      : login.boxed
-        ? `A fresh ${who} session is reviewing this change before it's done, in thread ${threadId.slice(0, 8)}, in the sandbox. It isn't another lab: this thread runs in a sandbox, and the other lab's logins can't.`
-        : `A fresh ${who} session is reviewing this change before it's done, in thread ${threadId.slice(0, 8)}. It isn't another lab: none of this folder's logins are.`;
+    const ids = started.map((x) => x.threadId);
+    const threads = ids.map((x) => x.slice(0, 8)).join(', ');
+    const text = started.length > 1
+      ? `A review panel is checking this change before it's done: ${who}, at once, in threads ${threads}.${started.every((x) => x.independent) ? '' : ' Not all of it is another lab.'}`
+      : independent
+        ? `Another lab is reviewing this change before it's done: ${who}, in thread ${threads}.`
+        : `A fresh ${who} session is reviewing this change before it's done, in thread ${threads}. It isn't another lab: none of this folder's logins are.`;
     this.emit(st, { type: 'system.note', text });
-    this.log.info('lab review started', { threadId: rec.id, reviewer: threadId, account: login.account.id, round });
-    return threadId;
+    this.log.info('lab review started', { threadId: rec.id, reviewers: ids, accounts: logins.map((l) => l.account.id), round });
+    return ids;
   },
 
   // What this thread's end_turn owes the review (findingsProblem): a
@@ -172,12 +200,29 @@ export const labReviewPart = {
     if (!rec) return undefined;
     // Only while the thread it reviews still waits on it: not a review from
     // before the ledger, nor one reopened later to explain itself.
-    if (rec.reviewOf) {
-      const waiting = this.threads.get(rec.reviewOf)?.rec.waitingOn?.some((w) => w.threadId === rec.id && w.review && !w.done);
-      return waiting ? { verdict: true } : undefined;
-    }
+    if (rec.reviewOf) return this.awaitedReview(rec) ? { verdict: true } : undefined;
     const open = openFindings(rec.labReview);
     return open.length ? { open } : undefined;
+  },
+
+  // A review thread the thread it reviews is still waiting on.
+  awaitedReview(this: Runner, rec: ThreadRecord): boolean {
+    if (!rec.reviewOf) return false;
+    return Boolean(this.threads.get(rec.reviewOf)?.rec.waitingOn?.some((w) => w.threadId === rec.id && w.review && !w.done));
+  },
+
+  // A review that failed: the thread it reviews wakes with that and
+  // whatever it had said, not a pass it gave in an earlier turn, and the
+  // review is put away (deliverReview). On a runner handing over too: the
+  // finish is kept in the record, and the runner that adopts either thread
+  // reconciles the wait. Not one stopping, whose next start resumes the
+  // turn it cut short.
+  releaseFailedReview(this: Runner, st: ThreadState, error: string | undefined, lastText: string | undefined): void {
+    const { rec, rt } = st;
+    if (rt.turn || rt.deleted || rec.archivedAt || this.stopping || !this.awaitedReview(rec)) return;
+    delete rec.reviewVerdict;
+    const stopped = `The review stopped with an error before it gave a verdict: ${error?.trim() || 'no reason given'}.`;
+    this.markFinished(st, [stopped, lastText?.trim()].filter(Boolean).join('\n\n'));
   },
 
   // Reviews the last runner owed (startLabReview), once they're here: for
@@ -274,49 +319,109 @@ export const labReviewPart = {
   // The login a review of this thread runs on: the first reviewer in Mike's
   // order (Settings > General > Code review, lab-reviewers.ts) that's another lab and has
   // a login with room the folder allows, else a fresh session of the
-  // thread's own provider. For a thread in a sandbox, only a provider that
-  // runs in one. The reviewer's model and effort come with it.
-  reviewLogin(this: Runner, rec: ThreadRecord, o: { confined?: boolean } = {}): ReviewLogin | undefined {
-    const accounts = this.usableAccounts();
-    const pools = this.pools();
-    // Kept for its folder, or for the folder it came from: a thread's
-    // worktree sits beside the repo (<repo>-threads/slot-n), outside the
-    // kept folder, but it's still that pool's work (Grok's review, 15 Nov
-    // 2026: a Convex thread in a worktree was reviewed off the Convex pool).
-    const ownPool = rec.poolId ? pools.find((p) => p.id === rec.poolId && p.folders?.length) : undefined;
-    const kept = poolForFolder(pools, rec.cwd) ?? ownPool;
-    // Logins kept for certain folders never review anything else.
-    const keptIds = new Set(pools.filter((p) => p.folders?.length).flatMap((p) => p.accountIds));
-    const others = kept ? [kept] : pools.filter((p) => !p.folders?.length);
-    const now = this.clock.now();
-    const pick = (provider: Provider): Account | undefined => {
-      for (const pool of others) {
-        const id = pickInPool(pool, accounts, { provider, now });
-        const a = id ? accounts.find((x) => x.id === id) : undefined;
-        if (a) return a;
-      }
-      // Not in any pool (a login added since the pools were set, or an
-      // ACP agent's, which pools don't hold). A folder kept for a pool
-      // never goes outside it.
-      if (kept) return undefined;
-      return accounts.find((a) => a.provider === provider && !keptIds.has(a.id) && !pools.some((p) => poolAccounts(p, accounts).includes(a)) && loginOk(a));
-    };
-    const fits = (provider: Provider) => !o.confined || providerInfo(provider).sandbox;
+  // thread's own provider. The reviewer's model and effort come with it.
+  reviewLogin(this: Runner, rec: ThreadRecord): ReviewLogin | undefined {
+    const pick = reviewPicker(this, rec);
     const order = this.cfg.labReviewers ?? DEFAULT_LAB_REVIEWERS;
     const labs = order.filter((r) => r.provider !== rec.provider);
     for (const r of labs) {
-      if (!fits(r.provider)) continue;
       const account = pick(r.provider);
       if (account) return { account, independent: true, reviewer: r };
     }
     // Its own provider, as listed if it is (for its model and effort).
     const own = order.find((r) => r.provider === rec.provider) ?? { provider: rec.provider };
-    const same = fits(rec.provider) ? pick(rec.provider) : undefined;
+    const same = pick(rec.provider);
     if (!same) return undefined;
-    const boxed = labs.some((r) => !fits(r.provider) && pick(r.provider));
-    return { account: same, independent: false, reviewer: own, ...(boxed ? { boxed: true } : {}) };
+    return { account: same, independent: false, reviewer: own };
+  },
+
+  // Who reviews this change: for a big or risky one (`panel`), every
+  // reviewer on the panel (runner.json `labPanel`) with a login with room, at once,
+  // the thread's own provider too (on another model, it's still a second
+  // look); else the one reviewer reviewLogin picks. Also that one when
+  // fewer than two of the panel can, or when the panel would all be the
+  // thread's own lab while another lab could review: a Codex thread with
+  // only Codex models ticked keeps its review by another lab.
+  reviewLogins(this: Runner, rec: ThreadRecord, panel: boolean): ReviewLogin[] {
+    const one = this.reviewLogin(rec);
+    if (panel) {
+      const pick = reviewPicker(this, rec);
+      const out: ReviewLogin[] = [];
+      for (const r of this.cfg.labPanel ?? []) {
+        const account = pick(r.provider);
+        if (account) out.push({ account, independent: r.provider !== rec.provider, reviewer: r });
+      }
+      if (out.length > 1 && (out.some((x) => x.independent) || !one?.independent)) return out;
+    }
+    return one ? [one] : [];
   },
 };
+
+// The login with room a review of `rec` can run on, for a provider: in the
+// pool its folder is kept for, if it is, else in the open pools or outside
+// any.
+function reviewPicker(runner: Runner, rec: ThreadRecord): (provider: Provider) => Account | undefined {
+  const accounts = runner.usableAccounts();
+  const pools = runner.pools();
+  // Kept for its folder, or for the folder it came from: a thread's
+  // worktree sits beside the repo (<repo>-threads/slot-n), outside the
+  // kept folder, but it's still that pool's work (Grok's review, 15 Nov
+  // 2026: a Convex thread in a worktree was reviewed off the Convex pool).
+  const ownPool = rec.poolId ? pools.find((p) => p.id === rec.poolId && p.folders?.length) : undefined;
+  const kept = poolForFolder(pools, rec.cwd) ?? ownPool;
+  // Logins kept for certain folders never review anything else.
+  const keptIds = new Set(pools.filter((p) => p.folders?.length).flatMap((p) => p.accountIds));
+  const others = kept ? [kept] : pools.filter((p) => !p.folders?.length);
+  const now = runner.clock.now();
+  return (provider) => {
+    for (const pool of others) {
+      const id = pickInPool(pool, accounts, { provider, now });
+      const a = id ? accounts.find((x) => x.id === id) : undefined;
+      if (a) return a;
+    }
+    // Not in any pool (a login added since the pools were set, or an
+    // ACP agent's, which pools don't hold). A folder kept for a pool
+    // never goes outside it.
+    if (kept) return undefined;
+    return accounts.find((a) => a.provider === provider && !keptIds.has(a.id) && !pools.some((p) => poolAccounts(p, accounts).includes(a)) && loginOk(a));
+  };
+}
+
+// A reviewer billed for every token it reads (OpenCode: Mike's Zen balance,
+// or the Gemini API key Convex pays for) rather than a subscription's week.
+// An agent sends all it has read again on every step, so a review that
+// roams the repo costs several times one that works from the diff: on 19
+// Nov 2026 Gemini reviews that roamed used half the key's US$90 monthly cap
+// in two hours, and the same review with this budget cost a third as much
+// and found the same main bugs (the delegate skill's gemini_seat).
+export function paidPerToken(login: ReviewLogin): boolean {
+  return login.account.provider === 'opencode';
+}
+
+export const READING_BUDGET = [
+  'Reading budget: every file you read stays in your context and is billed again on every later step, so work mostly from the change above.',
+  '- Read a file outside it only to confirm or rule out a specific suspicion, and only the lines you need, never whole large files.',
+  "- Aim for about 8 reads or searches in all, then give your verdict. Don't re-read what you've seen, and don't run the test suite.",
+].join('\n');
+
+// How a reviewer is named on the card and in notes: "Codex (codex-main)",
+// with the model when it names one, so two of one provider tell apart. A
+// model OpenCode reaches for another lab goes by that lab, as that's whose
+// eyes they are: "Gemini (opencode-main, google/gemini-4-carbon)".
+function reviewerName(login: ReviewLogin, running?: string): string {
+  // Only a model Mike named, as it ran: the provider's default goes unsaid.
+  const model = login.reviewer.model && running ? running : undefined;
+  const lab = login.account.provider === 'opencode' && model ? labOfModel(model) : undefined;
+  return `${lab ?? providerName(login.account.provider)} (${login.account.title}${model ? `, ${model}` : ''})`;
+}
+
+export function labOfModel(model: string): string | undefined {
+  if (/gemini/i.test(model)) return 'Gemini';
+  if (/claude/i.test(model)) return 'Claude';
+  if (/gpt|codex/i.test(model)) return 'GPT';
+  if (/grok/i.test(model)) return 'Grok';
+  return undefined;
+}
 
 export type LabReviewPart = RunnerPart<typeof labReviewPart>;
 
@@ -370,12 +475,12 @@ export function fence(text: string, info = ''): string {
 // diff) can carry text from a repo, an issue or a web page that thread
 // read, so it goes in fences the text can't close, marked as data to
 // review and never as instructions (Gautam's scan, 6 Nov 2026, F13).
-export function reviewBrief(p: { rec: ThreadRecord; ask: string; reply?: string; change: TurnChange; independent: boolean; round: number; earlier?: ReviewFinding[] }): string {
+export function reviewBrief(p: { rec: ThreadRecord; ask: string; reply?: string; change: TurnChange; independent: boolean; round: number; earlier?: ReviewFinding[]; panel?: boolean; lean?: boolean }): string {
   const { rec, change } = p;
   const files = change.files.map((f) => `- ${oneLine(f.path)} (+${f.added} −${f.removed})`).join('\n');
   const earlier = p.round > 1 && p.earlier?.length ? earlierFindings(p.earlier) : '';
   return [
-    `You're reviewing a change an agent (${providerName(rec.provider)}) just made in this folder, in thread ${rec.id.slice(0, 8)} ${oneLine(rec.title)}. ${p.independent ? 'You are from another lab, so you see what it may have missed.' : 'You are a fresh session that has not seen its work.'}${p.round > 1 ? ` This is review round ${p.round}: the change below is what it did about an earlier round's findings.` : ''}`,
+    `You're reviewing a change an agent (${providerName(rec.provider)}) just made in this folder, in thread ${rec.id.slice(0, 8)} ${oneLine(rec.title)}. ${p.independent ? 'You are from another lab, so you see what it may have missed.' : 'You are a fresh session that has not seen its work.'}${p.round > 1 ? ` This is review round ${p.round}: the change below is what it did about an earlier round's findings.` : ''}${p.panel ? ' Other reviewers are looking at the same change at once, each on their own, so report everything that holds up rather than only what you think they might miss.' : ''}`,
     '',
     "Don't edit, create or delete files, and don't commit or push. Read the code, run read-only commands, and run its tests if that helps.",
     '',
@@ -395,12 +500,14 @@ export function reviewBrief(p: { rec: ThreadRecord; ask: string; reply?: string;
     'Try to break it: wrong behaviour, edge cases, old data and first-run paths, races, security holes, and tests that pass without testing what they claim. Check each finding against the code before you report it. Reply with what holds up, most serious first: the file and line, what goes wrong, and a concrete case that shows it. Leave out style and naming. If nothing holds up, say so in one line. Your reply goes back to that thread as it is.',
     '',
     'Give your verdict in end_turn too, in its `findings`: one entry per finding that holds up, most serious first, as `{ "severity": "high" | "medium" | "low", "where": "file:line", "claim": "what goes wrong, one sentence", "case": "the concrete case that shows it" }`, or `findings: []` when nothing holds up. The agent has to answer each one before it can finish.',
+    p.lean ? `\n${READING_BUDGET}` : '',
   ].filter((l, i, all) => l !== '' || all[i - 1] !== '').join('\n');
 }
 
 // The ledger for a new round: the findings so far carry over.
-export function startRound(ledger: LabLedger | undefined, r: { reviewer: string; independent: boolean; rounds: number; threadId: string }): LabLedger {
-  // unchecked and unstructured were about the round before.
+export function startRound(ledger: LabLedger | undefined, r: { reviewer: string; independent: boolean; rounds: number; threadId: string; panel?: PanelReviewer[] }): LabLedger {
+  // unchecked and unstructured were about the round before, and so was a
+  // panel when this round has one reviewer.
   return {
     findings: ledger?.findings ?? [],
     ...(ledger?.delivered !== undefined ? { delivered: ledger.delivered } : {}),
@@ -500,15 +607,35 @@ export function findingsProblem(review: { verdict?: boolean; open?: ReviewFindin
 // A finished review round into the ledger: its findings, numbered on from
 // the earlier rounds'. Undefined verdict: the reviewer gave none.
 export function addVerdict(ledger: LabLedger, verdict: ReviewVerdict | undefined): ReviewFinding[] {
+  return addVerdicts(ledger, [{ verdict }]);
+}
+
+// A round several reviewed at once (a panel): every verdict's findings in
+// one list, each saying who found it. It passes only when every one that
+// reviewed gave a verdict and none found anything; one with no verdict
+// leaves its reply as all there is, as for a single reviewer.
+// At most MAX_FINDINGS in all, the most serious kept: end_turn takes no
+// more answers than that in one call, and a finding with none would stay
+// open for good (Codex's and Gemini's review of the panel, 19 Nov 2026).
+// `leftOut` gets the ones past the limit, for the wake message to list.
+export function addVerdicts(ledger: LabLedger, verdicts: { by?: string; verdict: ReviewVerdict | undefined }[], leftOut?: Omit<ReviewFinding, 'id' | 'round'>[]): ReviewFinding[] {
   ledger.delivered = ledger.rounds;
-  if (!verdict) {
-    ledger.unstructured = true;
-    return [];
-  }
   let id = ledger.findings.reduce((n, f) => Math.max(n, f.id), 0);
-  const added = verdict.findings.map((f) => ({ id: ++id, round: ledger.rounds, ...f }));
+  const all: Omit<ReviewFinding, 'id' | 'round'>[] = [];
+  for (const { by, verdict } of verdicts) {
+    if (!verdict) {
+      ledger.unstructured = true;
+      continue;
+    }
+    for (const f of verdict.findings) all.push({ ...f, ...(by ? { by } : {}) });
+  }
+  // Stable, so each reviewer's own order holds within a severity.
+  const sorted = all.length > MAX_FINDINGS ? [...all].sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)) : all;
+  const kept = sorted.slice(0, MAX_FINDINGS);
+  leftOut?.push(...sorted.slice(MAX_FINDINGS));
+  const added: ReviewFinding[] = kept.map((f) => ({ id: ++id, round: ledger.rounds, ...f }));
   ledger.findings = [...ledger.findings, ...added];
-  ledger.passed = added.length === 0;
+  ledger.passed = verdicts.length > 0 && !ledger.unstructured && added.length === 0;
   return added;
 }
 
@@ -537,7 +664,38 @@ export function ledgerCard(ledger: LabLedger): LabReviewLedger {
 // One line per finding, for the agent's wake message and the next round's
 // brief.
 export function findingLine(f: ReviewFinding): string {
-  return `#${f.id} [${f.severity}]${f.where ? ` ${f.where}:` : ''} ${f.claim}${f.case ? ` Case: ${f.case}` : ''}`;
+  return `#${f.id} [${f.severity}]${f.by ? ` (${f.by})` : ''}${f.where ? ` ${f.where}:` : ''} ${f.claim}${f.case ? ` Case: ${f.case}` : ''}`;
+}
+
+// What the reviewed agent is told to do with numbered findings.
+export function answerEach(firstId: number): string {
+  return 'Check each finding against the code: fix what holds up and run the tests again. When you call end_turn, answer every one in its `findings`, by number: `[{ "id": ' + firstId + ', "outcome": "fixed" }]`, one per finding, each "fixed", "disputed" with a note saying why it doesn\'t hold up, or "left" with a note saying what the user has to decide (that goes with needs "you" and an ask). Fixes get another review. In your reply, say briefly what it found and what you did about each.';
+}
+
+// One reviewer of a panel's round as it came back, for panelWake.
+export type PanelPart = { by: string; threadId: string; reviewed: boolean; reply?: string; edited: string[] };
+
+// The message a thread wakes with when its review panel has all come back:
+// the findings numbered together (addVerdicts), then each reviewer's reply,
+// cut down so three of them stay readable.
+export function panelWake(parts: PanelPart[], added: ReviewFinding[], ledger: LabLedger | undefined, leftOut: Omit<ReviewFinding, 'id' | 'round'>[] = []): string {
+  const round = ledger && ledger.rounds > 1 ? ` (review round ${ledger.rounds})` : '';
+  const done = parts.filter((x) => x.reviewed);
+  const gone = parts.filter((x) => !x.reviewed);
+  if (!done.length) return `The review panel's threads (${parts.map((x) => x.threadId.slice(0, 8)).join(', ')}) were put away before any finished, so the change wasn't reviewed. Say so in a line in your reply and finish as you were.`;
+  const names = done.map((x) => `${x.by} (thread ${x.threadId.slice(0, 8)})`).join(', ');
+  const each = Math.max(2000, Math.floor(LAB_REVIEW_REPLY_CHARS / done.length));
+  const replies = done.map((x) => `${x.by}'s reply:\n\n${clip(x.reply?.trim() || '(It gave no reply. read_thread has what it did.)', each)}`).join('\n\n');
+  const edits = done.filter((x) => x.edited.length).map((x) => `\n\n${x.by} was asked not to edit files but changed ${x.edited.join(', ')}. Look at those changes before going on, and keep or undo them.`).join('');
+  const missing = gone.length ? `\n\n${gone.map((x) => x.by).join(', ')} didn't finish: ${gone.length === 1 ? 'its thread was' : 'their threads were'} put away first.` : '';
+  const head = `A review panel checked the change you just made${round}, each on their own: ${names}.`;
+  // Past the limit: listed without a number, so they're seen but need no answer.
+  const cut = leftOut.length
+    ? `\n\nThere were more than ${MAX_FINDINGS}, so these less serious ones have no number and need no answer in end_turn, but check them too:\n${leftOut.map((f) => `- [${f.severity}]${f.by ? ` (${f.by})` : ''}${f.where ? ` ${f.where}:` : ''} ${f.claim}`).join('\n')}`
+    : '';
+  if (added.length) return `${head} Their findings, numbered together (one may repeat another's: answer it the same way):\n\n${added.map(findingLine).join('\n')}${cut}\n\n${replies}${edits}${missing}\n\n${answerEach(added[0].id)}`;
+  if (ledger && !ledger.unstructured) return `${head} None of them found anything that holds up.${edits}${missing}\n\n${replies}\n\nSay so in a line in your reply and finish as you were.`;
+  return `${head}\n\n${replies}${edits}${missing}\n\nCheck each finding against the code: fix what holds up and run the tests again. In your reply, say briefly what they found, what you fixed, and anything you left and why. If none found anything, say so in a line and finish as you were.`;
 }
 
 function earlierFindings(findings: ReviewFinding[]): string {

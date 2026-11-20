@@ -80,19 +80,38 @@ fi
 . "$ROOT/scripts/remote-guard-lib.sh"
 alive_stdin 7
 pidfile="$REMOTE/run-$stamp-$$.pid"
-"${SSH[@]}" "$HOST" "find $REMOTE -maxdepth 1 -name 'run-*.pid*' -mtime +7 -exec rm -f {} + 2>/dev/null; true" >/dev/null 2>&1
+# The last run's pictures and log go first: on 19 Nov a run that never
+# started brought back the night before's, and they were reported as new.
+"${SSH[@]}" "$HOST" "find $REMOTE -maxdepth 1 -name 'run-*.pid*' -mtime +7 -exec rm -f {} + 2>/dev/null; rm -rf $REMOTE/out $REMOTE/run.log; true" >/dev/null 2>&1
 inner="echo \$\$ >$pidfile; [ ! -e $pidfile.gone ] || exit 129; cd ~/$REMOTE/src && bash scripts/parity/run.sh ~/$REMOTE/out > ~/$REMOTE/run.log 2>&1; echo exit \$? >> ~/$REMOTE/run.log"
 # In the background with a wait, so a TERM, HUP or INT to this script stops
 # the ssh, and with it the run, at once (Codex's review).
-"${SSH[@]}" "$HOST" "perl $REMOTE/src/scripts/perf-lock.pl --desk $pidfile bash -c $(single_quoted "$inner")" <&7 >/dev/null 2>&1 &
+# What perf-lock says (why a run couldn't start, such as Desk Runner missing
+# a permission) goes in the run's log.
+"${SSH[@]}" "$HOST" "perl $REMOTE/src/scripts/perf-lock.pl --desk $pidfile bash -c $(single_quoted "$inner")" <&7 >> "$dest/run.log" 2>&1 &
 ssh_pid=$!
-trap 'kill $ssh_pid 2>/dev/null; exit 143' TERM
-trap 'kill $ssh_pid 2>/dev/null; exit 129' HUP
-trap 'kill $ssh_pid 2>/dev/null; exit 130' INT
+# A time limit, so a run that hangs gives up the host's build lock. On 18 Nov
+# one sat from 02:10 to 07:10 (behind a macOS prompt nobody was there to
+# answer), and every build and check for that Mac queued behind it. A warm
+# run takes about 3 minutes, a cold GPUI build under load about 40. Stopping
+# the ssh is the usual way out: the host's hangup guard stops the run and
+# frees the locks. THREADBEAR_PARITY_LIMIT is in seconds.
+limit=${THREADBEAR_PARITY_LIMIT:-7200}
+( sleep "$limit" & sleeper=$!
+  trap 'kill $sleeper 2>/dev/null; exit 0' TERM
+  wait $sleeper && kill -0 $ssh_pid 2>/dev/null && touch "$dest/.timed-out" && kill $ssh_pid 2>/dev/null ) &
+watchdog=$!
+trap 'kill $ssh_pid $watchdog 2>/dev/null; exit 143' TERM
+trap 'kill $ssh_pid $watchdog 2>/dev/null; exit 129' HUP
+trap 'kill $ssh_pid $watchdog 2>/dev/null; exit 130' INT
 wait $ssh_pid
+kill $watchdog 2>/dev/null
+wait $watchdog 2>/dev/null
 trap - TERM HUP INT
 rsync -a -e "${SSH[*]}" "$HOST:$REMOTE/out/" "$dest/" >/dev/null 2>&1
-"${SSH[@]}" "$HOST" "grep -v '^dev-app: screencapture' ~/$REMOTE/run.log" >> "$dest/run.log" 2>&1
+"${SSH[@]}" "$HOST" "[ ! -f ~/$REMOTE/run.log ] || grep -v '^dev-app: screencapture' ~/$REMOTE/run.log" >> "$dest/run.log" 2>&1
+# Last, so --check's tail of the log ends with it.
+[ -f "$dest/.timed-out" ] && echo "stopped after $((limit / 60)) minutes, nightly.sh's time limit (THREADBEAR_PARITY_LIMIT), so it gave up $HOST's build lock" >> "$dest/run.log"
 [ -f "$dest/results.json" ] || touch "$dest/.failed"
 # The last 7 runs.
 ls -d "$KEEP"/20* 2>/dev/null | sort -r | tail -n +8 | while read -r old; do rm -rf "$old"; done

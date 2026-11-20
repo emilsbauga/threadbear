@@ -32,6 +32,7 @@ use threadbear_core::reducer::DesignReview;
 use threadbear_core::review::{self as rules, DraftCache, ReviewMode, ReviewSession, SharedDraftCache, ZoomStep};
 
 mod rail;
+mod reply_pictures;
 mod stage;
 
 /// The title bar's height: the Swift window's, a native one with its buttons
@@ -284,6 +285,18 @@ pub(crate) struct ReviewWindow {
     /// The draft last put in the box. A render can run before the box's
     /// Change event, so compare drafts before replacing text being edited.
     reply_synced: String,
+    /// The pictures in the reply box (reply_pictures.rs).
+    reply_pictures: reply_pictures::ReplyPictures,
+    /// A picture that couldn't be read, to take out of the box at the next draw.
+    pending_chip_removal: Vec<SharedString>,
+    /// A picture came in: the draft takes the box at the next draw.
+    reply_changed: bool,
+    /// How many pictures the draft had when the box and it last agreed, as
+    /// `reply_synced` is its words: a change to it is from elsewhere.
+    pictures_synced: usize,
+    /// The picture viewer over this window: a click on a picture's chip in
+    /// the reply opens it full size (viewer.rs), as one in the thread's box does.
+    viewer: crate::viewer::ViewerState,
     /// Holds the keys when the reply box hasn't got them: the arrows step,
     /// Space flicks to today's version, Return and Esc go in and out.
     focus: FocusHandle,
@@ -308,15 +321,17 @@ impl ReviewWindow {
     fn new(parts: Parts, review: DesignReview, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session = ReviewSession::new(&parts.thread_id, review, parts.cache);
         let typed = session.draft().reply.clone().unwrap_or_default();
-        let reply = cx.new(|cx| TextareaState::new(window, cx).placeholder("Add a reply").auto_grow(1, 13).default_value(typed.clone()));
-        let mut subs = vec![cx.subscribe_in(&reply, window, |this, state, ev: &InputEvent, _, cx| match ev {
-            InputEvent::Change => {
-                let text = state.read(cx).value().to_string();
-                this.reply_synced = text.clone();
-                if this.session.set_reply(&text) {
-                    this.edited(cx);
-                }
-            }
+        // Its pictures as chips where their markers are.
+        let mut reply_pictures = reply_pictures::ReplyPictures::default();
+        let content = reply_pictures.content_for(&typed, &session.draft().images);
+        let session_pictures = session.draft().images.len();
+        let reply = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx).placeholder("Add a reply").auto_grow(1, 13);
+            state.set_value(content, window, cx);
+            state
+        });
+        let mut subs = vec![cx.subscribe_in(&reply, window, |this, _, ev: &InputEvent, window, cx| match ev {
+            InputEvent::Change => this.reply_to_draft(window, cx),
             InputEvent::Focus | InputEvent::Blur => cx.notify(),
             _ => {}
         })];
@@ -366,6 +381,11 @@ impl ReviewWindow {
             cwd: parts.cwd,
             reply,
             reply_synced: typed,
+            reply_pictures,
+            pending_chip_removal: Vec::new(),
+            reply_changed: false,
+            pictures_synced: session_pictures,
+            viewer: crate::viewer::ViewerState::new(cx),
             focus,
             save_timer: None,
             call_task: None,
@@ -422,13 +442,26 @@ impl ReviewWindow {
     /// The box shows the draft's reply when something other than typing
     /// changed it: the runner's copy from another window, or an answer.
     fn sync_reply_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let wanted = self.session.shown_draft().reply.clone().unwrap_or_default();
-        // A changed runner draft or answer still wins over an unreported local edit.
-        if self.reply_synced != wanted {
-            if self.reply.read(cx).value().as_ref() != wanted.as_str() {
-                self.reply.update(cx, |s, cx| s.set_value(wanted.clone(), window, cx));
+        let shown = self.session.shown_draft();
+        let wanted = shown.reply.clone().unwrap_or_default();
+        let images = shown.images.clone();
+        // A changed runner draft or answer still wins over an unreported local
+        // edit; a picture added or taken away elsewhere with the same words (a
+        // reply of pictures alone) does too.
+        // Against what was last agreed, not the box now, which a chip being
+        // typed over (IME composing) has already lost (Codex's review).
+        let pictures_changed = self.pictures_synced != images.len();
+        if self.reply_synced != wanted || pictures_changed {
+            let same = self.reply_pictures.draft_of(self.reply.read(cx)).is_some_and(|(reply, now)| reply == wanted && now == images);
+            if !same {
+                let content = self.reply_pictures.content_for(&wanted, &images);
+                self.reply.update(cx, |s, cx| s.set_value(content, window, cx));
             }
             self.reply_synced = wanted;
+            self.pictures_synced = images.len();
+        } else {
+            // A save's answer names the runner's own copies of the same pictures.
+            self.reply_pictures.adopt(self.reply.read(cx), &images);
         }
         let editable = self.session.editable();
         self.reply.update(cx, |s, cx| s.set_disabled(!editable, cx));
@@ -516,7 +549,8 @@ impl ReviewWindow {
     /// sent the window gets out of the way (Mike, 28 Oct). A failed send stays
     /// open with its error and the draft kept.
     pub(crate) fn submit(&mut self, cx: &mut Context<Self>) {
-        if !self.session.begin_submit() {
+        // A picture still on its way in would be left out.
+        if self.reply_loading(cx) || !self.session.begin_submit() {
             return;
         }
         self.save_timer = None;
@@ -788,18 +822,19 @@ impl ReviewWindow {
         if !self.session.editable() || self.reply_focused(window, cx) {
             return;
         }
-        let Some(words) = cx.read_from_clipboard().and_then(|c| c.text()).filter(|w| !w.is_empty()) else { return };
+        let clipboard = cx.read_from_clipboard();
         let handle = self.reply.read(cx).focus_handle(cx);
+        // A picture goes in as its chip, as it would pasted in the box.
+        if self.take_reply_clipboard(clipboard.as_ref(), window, cx) {
+            return;
+        }
+        let Some(words) = clipboard.and_then(|c| c.text()).filter(|w| !w.is_empty()) else { return };
         window.focus(&handle, cx);
         crate::web_panels::keyboard_to_app(window);
         // Replace its selection, or insert at its cursor, as its own Paste does.
         self.reply.update(cx, |s, cx| s.replace(words, window, cx));
         // Save and Send must see the paste before the box's Change arrives.
-        let text = self.reply.read(cx).value().to_string();
-        self.reply_synced = text.clone();
-        if self.session.set_reply(&text) {
-            self.edited(cx);
-        }
+        self.reply_to_draft(window, cx);
     }
 
     fn reply_focused(&self, window: &Window, cx: &App) -> bool {
@@ -980,11 +1015,26 @@ pub(crate) fn plain_button(id: &'static str, title: &str, tip: &'static str, bus
     .child(title.to_owned())
 }
 
+impl crate::viewer::HostsViewer for ReviewWindow {
+    fn viewer_state(&mut self) -> &mut crate::viewer::ViewerState {
+        &mut self.viewer
+    }
+    fn viewer_client(&self) -> Arc<Client> {
+        self.client.clone()
+    }
+}
+
 impl Render for ReviewWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // First, as it counts the frame the stage's clips are drawn in
         // (media_view.rs); they hide while the title bar's menu is up.
-        let clips = crate::media_view::sweeper(window, crate::media_view::Cover { everything: self.more_open, menus: Vec::new() });
+        // A clip on the stage is a view of its own over the window, so it
+        // hides under the picture viewer as it does under the menu.
+        let viewing = self.viewer.is_open();
+        let clips = crate::media_view::sweeper(window, crate::media_view::Cover { everything: self.more_open || viewing, menus: Vec::new() });
+        if std::mem::take(&mut self.reply_changed) {
+            self.reply_to_draft(window, cx);
+        }
         self.sync_reply_box(window, cx);
         // A page's view goes once its shot isn't the one on show.
         let page_shown = self.session.mode == ReviewMode::Single && self.session.shown_shot().is_some_and(|s| s.page().is_some());
@@ -1060,6 +1110,7 @@ impl Render for ReviewWindow {
             .when_some(error, |s, e| s.child(self.render_error_bar(e, cx)))
             .child(body)
             .child(clips)
+            .children(crate::viewer::overlay(self, window, cx))
     }
 }
 
@@ -1290,6 +1341,27 @@ pub(crate) async fn automation(app: &WeakEntity<Threadbear>, main: AnyWindowHand
         })
     })
     .map_err(|e| e.to_string())?;
+    // A real click (pointer events through hit testing) on picture chip N in
+    // the reply, as `composer-peek` with `press` does in the thread's box.
+    if let Some(number) = cmd["pressPicture"].as_u64() {
+        let clicked = cx.update_window(handle, |_, window, cx| -> Result<(), String> {
+            use gpui_kit::test::TestEventExt as _;
+            window.render_frame(cx);
+            let reply = view.read(cx).reply.clone();
+            let range = reply.read(cx).tokens().get((number as usize).saturating_sub(1)).map(|span| span.range()).ok_or_else(|| format!("no picture chip {number} in the reply"))?;
+            let at = reply.read(cx).range_to_bounds(&range).ok_or("the chip isn't on screen")?.center();
+            window.pointer_move(at, None, cx);
+            window.render_frame(cx);
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+            window.render_frame(cx);
+            Ok(())
+        });
+        clicked.map_err(|e| e.to_string())??;
+    }
+    if cmd["closeViewer"].as_bool() == Some(true) {
+        view.update(cx, |v, cx| crate::viewer::close(v, cx));
+    }
     let busy = |view: &Entity<ReviewWindow>, cx: &mut AsyncApp| view.read_with(cx, |v, _| v.session.saving() || v.session.submitting());
     if cmd["save"].as_bool() == Some(true) {
         view.update(cx, |v, cx| v.save_now(cx));
@@ -1309,14 +1381,14 @@ pub(crate) async fn automation(app: &WeakEntity<Threadbear>, main: AnyWindowHand
     // A frame, so a screenshot straight after shows what this did.
     cx.update_window(handle, |_, window, cx| window.render_frame(cx)).ok();
     cx.background_executor().timer(Duration::from_millis(250)).await;
-    let state = view.read_with(cx, |v, _| v.state());
+    let state = view.read_with(cx, |v, cx| v.state(cx));
     Ok(json!(format!("ok {state}")))
 }
 
 #[cfg(feature = "automation")]
 impl ReviewWindow {
     /// What the Swift command answers, and a little more for the specs.
-    fn state(&self) -> Value {
+    fn state(&self, cx: &App) -> Value {
         let s = &self.session;
         let draft = s.draft();
         json!({
@@ -1330,6 +1402,12 @@ impl ReviewWindow {
             "pickedIds": draft.picked_ids,
             "notes": draft.notes,
             "reply": draft.reply.clone().unwrap_or_default(),
+            // The reply's pictures: in the draft, and chips in the box.
+            "images": draft.images.len(),
+            "chips": self.reply.read(cx).tokens().len(),
+            // The picture viewer over the window: "" when it's closed, else
+            // "<n> of <total> <file>", with " (loading)" until it's drawn.
+            "viewer": self.viewer.describe(),
             "none": draft.none,
             "shot": s.shot(),
             "peeking": s.peeking,
@@ -1360,5 +1438,5 @@ impl ReviewWindow {
 #[cfg(feature = "automation")]
 pub(crate) fn dump(cx: &App) -> Value {
     let Some(reviews) = cx.try_global::<Reviews>() else { return json!([]) };
-    json!(reviews.windows.values().map(|(_, view)| view.read(cx).state()).collect::<Vec<_>>())
+    json!(reviews.windows.values().map(|(_, view)| view.read(cx).state(cx)).collect::<Vec<_>>())
 }

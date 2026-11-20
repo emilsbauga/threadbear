@@ -315,9 +315,9 @@ fn thread_detail<Tz: TimeZone>(t: &ThreadSummary, now_ms: i64, now: &DateTime<Tz
     let when = if when == "now" { "just now".to_owned() } else { when };
     if t.is_archived() {
         format!("archived · {when}")
-    } else if t.snoozed(now_ms) {
+    } else if t.snoozed(now_ms) && !t.waiting_on_work() {
         "hibernating".into()
-    } else if t.busy() {
+    } else if t.busy() || t.waiting_on_work() {
         "running".into()
     } else {
         format!("{} · {when}", t.place())

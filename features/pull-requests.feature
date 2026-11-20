@@ -1,0 +1,67 @@
+Feature: Pull requests open beside the thread
+  As someone deciding on other people's pull requests
+  I want a PR link to open beside the thread with its checks, diff and buttons
+  So I can decide and act without going out to the browser
+
+  # Experiment inlinePrs (docs/protocol.md, "Pull requests"): the GPUI app
+  # only. The Swift app is frozen and opens PR links in the browser.
+
+  Background:
+    Given the app is connected to a runner with the demo threads
+    And I open the thread "Make uploads resume after a crash"
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: A PR link opens as a tab with what decides it
+    When I follow the PR link "https://github.com/acme/app/pull/72/files" in the thread
+    Then the pane shows the PR "Fewer approvals when a fork brings in a release"
+    And the PR's status reads "Open"
+    And the PR's checks read "1 of 2 passed" with "Windows failed"
+    And the PR's activity includes "Thanks, looking now."
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: The diff tab lists the changed files
+    When I follow the PR link "https://github.com/acme/app/pull/72" in the thread
+    And I press "Diff" in the PR tab
+    Then the PR tab is on "Diff"
+    And the PR lists the file "runner/src/swift-changes.ts"
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: Closing it shows at once, then the PR reads closed
+    When I follow the PR link "https://github.com/acme/app/pull/72" in the thread
+    And I press the PR's button "Closes the PR on GitHub"
+    Then the PR's button "close" is busy
+    And the PR's status reads "Closed"
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: A PR link in a reply shows whether it's open, and keeps up
+    When a reply linking the PR "https://github.com/acme/app/pull/72" streams in
+    Then the mark before the PR "https://github.com/acme/app/pull/72" says "Open"
+    When I follow the PR link "https://github.com/acme/app/pull/72" in the thread
+    And I press the PR's button "Closes the PR on GitHub"
+    Then the mark before the PR "https://github.com/acme/app/pull/72" says "Closed"
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: Resting the pointer on a PR link starts reading it before the click
+    When a reply linking the PR "https://github.com/acme/app/pull/72" streams in, its turn still going
+    Then the PR "https://github.com/acme/app/pull/72" isn't read yet
+    When I rest the pointer on the reply's link "#72"
+    Then the PR "https://github.com/acme/app/pull/72" is being read
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: The PRs a turn's reply links to are read as it ends
+    When a reply linking the PR "https://github.com/acme/app/pull/72" streams in
+    Then the PR "https://github.com/acme/app/pull/72" is being read
+
+  @pane.prs @inline-prs @swift-pending
+  Scenario: The PRs a thread's last messages link to are read as it shows
+    When a reply linking the PR "https://github.com/acme/app/pull/72" streams in, its turn still going
+    And I open the thread "Draft the release notes for 0.4"
+    And I open the thread "Make uploads resume after a crash"
+    Then the PR "https://github.com/acme/app/pull/72" is being read
+
+  @pane.prs @inline-prs @slow-pr-files @swift-pending
+  Scenario: A PR shows before its changes are read
+    When I follow the PR link "https://github.com/acme/app/pull/72" in the thread
+    Then the PR's status reads "Open"
+    And the PR's changes are still being read
+    And the PR lists the file "runner/src/swift-changes.ts"

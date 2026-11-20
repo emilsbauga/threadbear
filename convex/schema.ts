@@ -5,6 +5,14 @@
 // are what an agent showed Mike on purpose or he pasted (replyImages), or a shared thread's.
 import { defineSchema, defineTable } from 'convex/server';
 import { v } from 'convex/values';
+import { machineTimers } from '@convex-dev/state-machines';
+import { commandStateV } from './commandStates';
+import { moveStateV } from './moveStates';
+import { requestStateV } from './requestStates';
+import { clearStateV } from './clearStates';
+import { boxStateV } from './boxStates';
+import { requiredUnlessStepping } from './stepping';
+import { tokenStateV } from './cloudTokenStates';
 
 // A thread's sharing, as the runner mirrors it (ThreadShare in
 // docs/protocol.md): "link" is readable by anyone with /s/<slug>; "off"
@@ -209,12 +217,23 @@ export const threadFields = {
 // phone and the Mac app agree: "inbox", "hibernating" (snoozed) or "den"
 // (archived). A starred thread that's snoozed stays in "inbox", as Starred
 // is at the top of the phone's inbox.
+// A following runner's failed update to main, in its heartbeat (API 91).
+export const updateFailedValidator = v.object({
+  kind: v.union(v.literal('build'), v.literal('backend')),
+  commit: v.string(),
+  subject: v.string(),
+  error: v.string(),
+  logFile: v.string(),
+});
+
 export const views = ['inbox', 'hibernating', 'den'] as const;
 
 // A move's states, in order (docs/protocol.md, "Moving a thread to another runner").
 export const moveStates = ['asking', 'ready', 'packing', 'unpacking', 'claimed', 'done', 'failed', 'cancelled'] as const;
 
-export default defineSchema({
+// Named as well as the default, so the state machines (machines.ts) can be
+// defined against it.
+export const appSchema = defineSchema({
   // One row per runner (the Mac, Tinker Desk later), written every minute.
   // A phone treats one not seen for 3 minutes as offline.
   runners: defineTable({
@@ -242,6 +261,10 @@ export default defineSchema({
     // runner/src/follow-origin.ts): why, in a sentence or two, for the main
     // Mac's Updates panel and the canary.
     followProblem: v.optional(v.string()),
+    // Set while this following runner's update to main has failed (API 91,
+    // runner/src/fix-update.ts): the main Mac's runner starts the fix thread
+    // there, rather than this runner asking it to on a card.
+    updateFailed: v.optional(updateFailedValidator),
     // Its active schedules have been copied to scheduleWakes (API 45), once.
     wakesSeeded: v.optional(v.boolean()),
     // How a Mac app reaches this runner to open one of its threads (API 12):
@@ -250,6 +273,10 @@ export default defineSchema({
     // Its last heartbeat came with the owner key (docs/protocol.md, "Runner
     // keys"), so it's the main Mac: a phone's new thread goes there first.
     byOwner: v.optional(v.boolean()),
+    // A thread's box on a virtual runner (docs/virtual-runners.md), not a
+    // machine: hidden from the Runs-on menu and Settings' machine list. Set
+    // when the box is made; a heartbeat keeps it.
+    box: v.optional(v.object({ serviceId: v.id('runnerServices') })),
   }).index('by_runnerId', ['runnerId']),
 
   // External intake is opt-in and cannot start work. Client identity survives
@@ -296,10 +323,184 @@ export default defineSchema({
     deliveredAt: v.optional(v.number()),
     leaseToken: v.optional(v.string()),
     leaseUntil: v.optional(v.number()),
+  // eslint-disable-next-line @convex-dev/no-duplicate-indexes -- Delivery stays FIFO across text and file messages; the longer index sorts by attachment kind first.
   }).index('by_client_message', ['clientId', 'messageId']).index('by_client_delivery', ['clientId', 'deliveryState']).index('by_client_delivery_kind', ['clientId', 'deliveryState', 'hasAttachments']),
 
-  // Runner keys: own runner only, where RUNNER_KEY can do everything. Only
-  // the hash is kept; sync:addRunnerKey returns the plain key once.
+  // Virtual runners (docs/virtual-runners.md, decision 2): one row each, a
+  // service that starts a box per thread on a provider as needed.
+  runnerServices: defineTable({
+    name: v.string(),
+    // Which adapter (convex/boxProviders/<provider>.ts, boxService.ts PROVIDERS): 'fly'.
+    provider: v.string(),
+    box: v.object({ cpus: v.number(), memoryMb: v.number() }),
+    // The OCI image every box starts from (the runner in box mode).
+    image: v.string(),
+    region: v.optional(v.string()),
+    // Defaults in BOX_LIMITS (boxes.ts): 5 boxes awake at once, sleep after
+    // 10 idle minutes, 8 awake hours a box a day, saves of archived threads
+    // kept 14 days.
+    limits: v.object({ maxBoxes: v.number(), idleSleepMinutes: v.number(), maxAwakeHoursPerDay: v.number(), deleteAfterDays: v.number() }),
+    createdAt: v.number(),
+  }),
+
+  // One per thread on a virtual runner, for the thread's life (decision 3):
+  // every box that ever runs the thread uses its runnerId, and each new box
+  // gets a fresh box key that replaces the last one's (boxes.ts exchange).
+  // Its lifecycle is its state machine (boxMachine.ts).
+  boxes: defineTable({
+    serviceId: v.id('runnerServices'),
+    threadId: v.string(),
+    runnerId: v.string(),
+    provider: v.string(),
+    // The provider's id for the box running now, once it has made one.
+    providerBoxId: v.optional(v.string()),
+    boxState: boxStateV,
+    boxStateTimers: machineTimers,
+    // The SHA-256 of the one boot token that may start a box now (single
+    // use, BOOT_MS), and of the box key in use. Never the plain values.
+    bootTokenHash: v.optional(v.string()),
+    bootExpiresAt: v.optional(v.number()),
+    boxKeyHash: v.optional(v.string()),
+    // The last exchange (boxes.ts exchange): its boot token's hash and when
+    // that token would have expired, so the same box asking again (its
+    // answer lost) gets the same answer, never another box.
+    exchanged: v.optional(v.object({ bootHash: v.string(), until: v.number() })),
+    // Each boot token is for one attempt at a box, numbered from 1
+    // (`boxAttempt`, the newest minted): the token's, the key's (the box
+    // that traded it) and the provider box's. A loss reported for an
+    // attempt ends what was that attempt's or older (boxMachine.ts lostBox).
+    boxAttempt: v.optional(v.number()),
+    bootAttempt: v.optional(v.number()),
+    keyAttempt: v.optional(v.number()),
+    providerAttempt: v.optional(v.number()),
+    // Its runner's last heartbeat (sync:heartbeat), which renews the lease.
+    lastHeartbeatAt: v.optional(v.number()),
+    // Awake time on `day` (UTC, YYYY-MM-DD), added as it leaves awake.
+    awakeToday: v.optional(v.object({ day: v.string(), ms: v.number() })),
+    // The thread saved out of the box (decision 7), sealed with its thread
+    // key by the box: the last one only.
+    // `attempt`: the box that made it (boxMachine.ts saveOf).
+    save: v.optional(v.object({ storageId: v.id('_storage'), at: v.number(), bytes: v.number(), attempt: v.optional(v.number()) })),
+    // The per-thread key a box seals its saves with, itself sealed under
+    // BOX_SEAL_KEY (boxes.ts seal). Handed only to this thread's boxes.
+    sealedThreadKey: v.string(),
+    // Fixed by the owner when the thread starts, never from what a box writes
+    // (decision 11): the address without credentials.
+    repo: v.object({ origin: v.string(), subfolder: v.string(), baseBranch: v.string() }),
+    // Which Claude login the box runs on: its cloudTokens row's `login`.
+    login: v.string(),
+    // The size the newest attempt's box was made at (boxService.ts
+    // claimAttempt), which says whether it can pause: the virtual runner's
+    // size may change after.
+    size: v.optional(v.object({ attempt: v.number(), cpus: v.number(), memoryMb: v.number() })),
+    // A message wants it awake, but its virtual runner has maxBoxes up: it
+    // wakes, oldest first, when one sleeps or goes (boxes.ts wakeWaiting).
+    wantsWakeAt: v.optional(v.number()),
+    // The service's action calling the provider for this box now, so two
+    // never overlap (a sleep's suspend and a wake's start); another waits.
+    op: v.optional(v.object({ id: v.string(), name: v.string(), until: v.number() })),
+    // Mike woke it past its day's hours on this day (UTC, boxes.ts wakePastHours).
+    hoursWaivedOn: v.optional(v.string()),
+    // A message wants it awake but it's been up its day's hours: it waits
+    // for the day after this one (UTC), apart from those waiting for room.
+    waitsForHours: v.optional(v.string()),
+    // A pause of attempt `attempt`'s box that failed `n` times in a row: the
+    // billing guard tries again after `next` (boxService.ts suspendFailed).
+    // `providerBoxId`: the machine, as two can share an attempt (a duplicate).
+    suspendFails: v.optional(v.object({ attempt: v.number(), providerBoxId: v.optional(v.string()), n: v.number(), next: v.number() })),
+    // Asleep or shelved with work newer than its save, and unable to pause:
+    // kept running (never deleted with that work in it) since then, and asked
+    // to save again on a backoff (`saveAsks`) until it does (boxService.ts).
+    keptRunningSince: v.optional(v.number()),
+    saveAsks: v.optional(v.object({ n: v.number(), next: v.number() })),
+    // No heartbeat since then, but the provider hasn't said the box is gone
+    // (boxService.ts checkBox): kept, its key working, until it says so.
+    unreachableSince: v.optional(v.number()),
+    // The provider's id for the machine that traded the key holder's boot
+    // token (boxes.ts exchange, `machineId`): the key holder's machine,
+    // whatever else is tagged with its attempt. Unknown for a box that
+    // didn't say, which keeps every machine of its attempt protected.
+    keyMachineId: v.optional(v.string()),
+    // While the key holder's machine isn't made sure of (unknown, with more
+    // than one machine of its attempt, or known only by the others being
+    // gone; boxService.ts identify): the machines a wake has tried in turn
+    // (`pickedFor`: the wake, by its `since`, that made the last pick), the one
+    // resumed with no other of its attempt running (a key heartbeat after
+    // that says it's the holder, sync.ts heartbeat), and `surfaced` once a
+    // wake or its resumed box ended with it still unresolved (shown on the
+    // thread, RemoteRunner.box.unsure).
+    unsure: v.optional(v.object({ since: v.number(), tried: v.array(v.string()), pickedFor: v.optional(v.number()), resumed: v.optional(v.object({ machine: v.string(), at: v.number() })), surfaced: v.optional(v.boolean()) })),
+    // Attempts whose boxes may hold work newer than the newest save each
+    // made (invariant W, boxMachine.ts holdsWork).
+    workAttempts: v.optional(v.array(v.number())),
+    // When the billing guard last saw each attempt's machine (boxService.ts
+    // observe), so each is charged from its own last observation; and
+    // (seenRunningAt) when it last saw a machine of it running while its row
+    // isn't in a running state: it counts toward maxBoxes then (invariant M).
+    observedAt: v.optional(v.array(v.object({ providerBoxId: v.string(), at: v.number() }))),
+    seenRunningAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index('by_threadId', ['threadId'])
+    .index('by_runnerId', ['runnerId'])
+    .index('by_boot_hash', ['bootTokenHash'])
+    .index('by_box_key', ['boxKeyHash'])
+    .index('by_box_state', ['boxState.kind'])
+    .index('by_service_state', ['serviceId', 'boxState.kind'])
+    // Boxes waiting on a login's cloud token (needsToken), released when one is set.
+    .index('by_login_state', ['login', 'boxState.kind'])
+    .index('by_service_wants', ['serviceId', 'wantsWakeAt'])
+    .index('by_service_hours', ['serviceId', 'waitsForHours'])
+    .index('by_kept', ['keptRunningSince'])
+    .index('by_service_seen', ['serviceId', 'seenRunningAt'])
+    .index('by_save', ['save.storageId']),
+
+  // A Claude login's year-long token for boxes (decision 10), made with
+  // `claude setup-token` and sealed under BOX_SEAL_KEY: a data export or
+  // backup doesn't carry it in the clear. Only boxes:exchange unseals it,
+  // for a box of a thread on that login.
+  // A provider machine whose delete failed (boxService.ts deleteFailed): it's
+  // tried again after `next`, so one that keeps failing doesn't hold up the
+  // rest. Gone once a delete works or the machine is.
+  boxDeleteBackoff: defineTable({
+    serviceId: v.id('runnerServices'),
+    providerBoxId: v.string(),
+    n: v.number(),
+    next: v.number(),
+  })
+    .index('by_box', ['providerBoxId'])
+    .index('by_service', ['serviceId']),
+
+  // A reaper step queued for a provider machine (boxService.ts reapOne), so
+  // the next pass doesn't queue a second for it. Gone when it ends, or
+  // taken as stale after REAP_PENDING_MS.
+  // `job`: which queued step it is (unique, made by the pass that queued it), so an older step ending doesn't clear a newer one's mark.
+  // Machines a delete fence has decided to delete (boxService.ts reapStep,
+  // deleteFence), one row each, `at` when it was decided, until the
+  // provider's delete succeeds or a listing taken after `at` has it no
+  // more: none may take the key (boxes.ts claimBoot), nor be named the key
+  // holder's by a heartbeat (sync.ts heardFrom).
+  boxCondemned: defineTable({ boxId: v.id('boxes'), providerBoxId: v.string(), attempt: v.number(), at: v.number() })
+    .index('by_box_attempt', ['boxId', 'attempt'])
+    .index('by_machine', ['providerBoxId']),
+  reapQueued: defineTable({ providerBoxId: v.string(), at: v.number(), job: v.optional(v.string()) }).index('by_box', ['providerBoxId']),
+
+  cloudTokens: defineTable({
+    login: v.string(),
+    sealed: v.string(),
+    // When the token was made (it lasts a year), and when it was set here.
+    madeAt: v.number(),
+    setAt: v.number(),
+    // Its lifecycle (cloudTokenMachine.ts): valid, or dead once a box's
+    // turn on it was refused. Since API 94.
+    tokenState: requiredUnlessStepping('tokenState', tokenStateV),
+  }).index('by_login', ['login']),
+
+  // Runner keys (docs/protocol.md, "Runner keys"): each authenticates as its
+  // runnerId alone, where the owner key (RUNNER_KEY) can do everything. Only
+  // the SHA-256 of a key is kept; the plain key goes back once, to the owner
+  // that made it (sync:addRunnerKey). Making another for the same runner
+  // revokes the one before.
   runnerKeys: defineTable({
     runnerId: v.string(),
     keyHash: v.string(),
@@ -360,6 +561,8 @@ export default defineSchema({
     asked: v.optional(v.string()),
     recap: v.optional(v.string()), // the recap box, since API 70
     keywords: v.optional(v.string()), // the librarian's search words, since API 74
+    // Its access mode, so another Mac's composer shows it. Since API 88.
+    permissionMode: v.optional(v.string()),
     // Since API 29: when the backend last wrote the row, so a watching
     // runner reads only rows changed since its last answer
     // (sync:threadIndexSince), and `deleted` marks a thread that's gone,
@@ -401,6 +604,10 @@ export default defineSchema({
     runnerId: v.string(),
     // The runnerKeys row that asked: a ticket dies with its key.
     keyId: v.optional(v.id('runnerKeys')),
+    // Or the box whose key asked, and that key's hash: a ticket dies when the
+    // box's key is replaced or revoked (sync.ts ticketKeyLive).
+    boxId: v.optional(v.id('boxes')),
+    boxKeyHash: v.optional(v.string()),
     issuedAt: v.number(),
     usedAt: v.optional(v.number()),
     // What was uploaded with it: the hour's allowance counts these, which
@@ -507,9 +714,18 @@ export default defineSchema({
   threadClears: defineTable({
     threadId: v.string(),
     runnerId: v.string(),
+    // Rows from before clearState: the backfill reads them. Nothing writes them now.
     moving: v.optional(v.boolean()),
     done: v.optional(v.boolean()),
-  }).index('by_threadId', ['threadId']),
+    // Its state machine (clearMachine.ts). Required, once the backfill has
+    // given every row one (migrations.ts); optional only in the deploy
+    // that runs it (stepping.ts).
+    clearState: requiredUnlessStepping('clearState', clearStateV),
+    clearStateTimers: requiredUnlessStepping('clearState', machineTimers),
+  })
+    .index('by_threadId', ['threadId'])
+    // The Machines page, and the sweep that arms backfilled rows' timers.
+    .index('by_clear_state', ['clearState.kind']),
 
   commandFiles: defineTable({
     storageId: v.id('_storage'),
@@ -574,6 +790,10 @@ export default defineSchema({
     turn: v.optional(v.string()), // the start of its turn's id (since API 26)
     wokeBy: v.optional(v.array(v.object({ kind: v.string(), description: v.string() }))), // what finished and woke this turn, on its first row (since API 33)
     buttons: v.optional(v.array(messageButton)), // the reply buttons its text links, as they are now (since API 59)
+    pictures: v.optional(v.number()), // how many pictures a user's message came with (since API 87), for another Mac's relay
+    // The open card's asks a user's message answered, each its question and
+    // the pick (since API 89), so the phone draws them as answers, as the Mac does.
+    answers: v.optional(v.array(v.object({ action: v.string(), answer: v.string() }))),
     at: v.string(),
     pagedAt: v.optional(v.number()),
     // The runner key's runner that wrote it, so past its message budget its
@@ -596,24 +816,46 @@ export default defineSchema({
     runnerId: v.string(), // or "any"
     threadId: v.optional(v.string()),
     // interrupt and call (API 44) come only from the main Mac's runner (relay.ts queueCommand).
-    kind: v.union(v.literal('send'), v.literal('respond'), v.literal('update'), v.literal('create'), v.literal('page'), v.literal('share'), v.literal('quickAsk'), v.literal('interrupt'), v.literal('call'), v.literal('schedule'), v.literal('picture'), v.literal('press'), v.literal('slashCommands')),
+    // save only from the backend, for a thread's box before it sleeps (boxService.ts askToSave).
+    kind: v.union(v.literal('send'), v.literal('respond'), v.literal('update'), v.literal('create'), v.literal('page'), v.literal('share'), v.literal('quickAsk'), v.literal('interrupt'), v.literal('call'), v.literal('schedule'), v.literal('picture'), v.literal('press'), v.literal('slashCommands'), v.literal('designReviews'), v.literal('respondReview'), v.literal('save')),
     args: v.any(),
     state: v.union(v.literal('pending'), v.literal('taken'), v.literal('done'), v.literal('failed')),
+    // The same, as its state machine has it (commandMachine.ts), which writes
+    // `state` from it on every move. Required, once the backfill has given
+    // every row one (migrations.ts, convex/migrations.json); optional only in
+    // the deploy that runs it (stepping.ts).
+    commandState: requiredUnlessStepping('commandState', commandStateV),
+    commandStateTimers: requiredUnlessStepping('commandState', machineTimers),
     note: v.optional(v.string()),
     createdAt: v.number(),
     takenAt: v.optional(v.number()),
     doneAt: v.optional(v.number()),
+    // The runner's own id for its take (API 85, sync:takeCommand): the same
+    // attempt asking again gets true, so a take whose answer was lost on the
+    // way back is run, not dropped. Any other ask still gets false.
+    attempt: v.optional(v.string()),
+    // When a taken command's lease ran out with no finish (sync:lapseCommands):
+    // it shows as failed, and its runner's late finish still says how it went.
+    lapsedAt: v.optional(v.number()),
     resultThreadId: v.optional(v.string()), // for create, once it lands
-    result: v.optional(v.string()), // a call's answer as JSON text (API 44), from an allow-listed method (relay.ts CALLS); a slashCommands list (API 62)
+    result: v.optional(v.string()), // a call's answer as JSON text (API 44), from an allow-listed method (relay.ts CALLS); a slashCommands list (API 62); a design review for the phone (API 86)
+    // What it wakes of a sleeping box (boxHooks.ts wakeLevelOf): 1 an asleep
+    // one, 2 an archived one too. None for a box's own save.
+    wakeLevel: v.optional(v.number()),
   })
     .index('by_runner_state', ['runnerId', 'state'])
+    .index('by_runner_wake', ['runnerId', 'state', 'wakeLevel'])
     .index('by_state', ['state'])
     // phone:waiting (API 57): a thread's messages its runner hasn't taken yet.
     .index('by_thread_state', ['threadId', 'state'])
     // pruneOld: finished ones by when they finished.
     .index('by_state_done', ['state', 'doneAt'])
     // pruneOld: ones no runner took in COMMAND_KEEP_MS, by when they were made.
-    .index('by_state_created', ['state', 'createdAt']),
+    .index('by_state_created', ['state', 'createdAt'])
+    // lapseCommands: taken ones whose lease has run out, by when they were taken.
+    .index('by_state_taken', ['state', 'takenAt'])
+    // The Machines page's counts and lists of commands in a state (viewer.ts).
+    .index('by_command_state', ['commandState.kind']),
 
   // A thread moving from one runner to another (docs/protocol.md, "Moving a
   // thread to another runner", API 64). Only the owner key starts one; each
@@ -625,8 +867,16 @@ export default defineSchema({
     from: v.string(),
     to: v.string(),
     state: v.union(...moveStates.map((x) => v.literal(x))),
+    // The same, as its state machine has it (moveMachine.ts), which writes
+    // `state` from it on every move. Required, once the backfill has given
+    // every row one (migrations.ts, convex/migrations.json); optional only in
+    // the deploy that runs it (stepping.ts).
+    moveState: requiredUnlessStepping('moveState', moveStateV),
+    moveStateTimers: requiredUnlessStepping('moveState', machineTimers),
     cwd: v.optional(v.string()), // what Mike picked; absent, T chooses
     accountId: v.optional(v.string()),
+    // What the Move sheet's preview showed, as a digest T checks (moveBinding).
+    expect: v.optional(v.string()),
     info: v.optional(v.any()), // S's description of the thread (moveInfo), JSON at most 16 KB
     plan: v.optional(v.any()), // T's answer (moveReady), JSON at most 16 KB
     key: v.optional(v.string()), // T's sealing key, raw X25519 base64
@@ -637,18 +887,19 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
     frozenAt: v.optional(v.number()),
-    // When the last of its rows went to T (moves.ts rehomeRows): a claimed
-    // move ends only after, so a next move of the thread can't start while
-    // a page of this one is still to run (Daybreak, 15 Nov 2026).
+    // Rows from before moveState: the backfill reads them (moveStates.ts
+    // moveStateFrom), and its states `handedOver` and `claimed.doneAsked`
+    // hold them since. Nothing writes them now.
     rehomedAt: v.optional(v.number()),
-    // T said it's done (moveDone) before that: rehomeRows ends it then.
     doneAsked: v.optional(v.boolean()),
   })
     .index('by_moveId', ['moveId'])
     .index('by_thread', ['threadId', 'createdAt'])
     .index('by_from', ['from', 'updatedAt'])
     .index('by_to', ['to', 'updatedAt'])
-    .index('by_state', ['state', 'updatedAt']),
+    .index('by_state', ['state', 'updatedAt'])
+    // The Machines page's counts and lists of moves in a state (viewer.ts).
+    .index('by_move_state', ['moveState.kind']),
 
   // A runner on a runner key asking for a new thread on another runner
   // (docs/protocol.md, "Asking another runner"). It can't queue work there
@@ -672,13 +923,24 @@ export default defineSchema({
     // a second); closed: the asking runner gave up on it (its card expired,
     // or was declined there), so it no longer counts against its cap.
     state: v.union(v.literal('pending'), v.literal('claimed'), v.literal('allowed'), v.literal('denied'), v.literal('closed')),
+    // The same, as its state machine has it (requestMachine.ts), which writes
+    // `state`, `claim`, `result` and `decidedAt` on every move. Required, once
+    // the backfill has given every row one (migrations.ts,
+    // convex/migrations.json); optional only in the deploy that runs it
+    // (stepping.ts). It has no timers.
+    requestState: requiredUnlessStepping('requestState', requestStateV),
     // Once allowed: where it was started.
     result: v.optional(v.object({ runnerId: v.string(), runnerName: v.string(), threadId: v.string() })),
     decidedAt: v.optional(v.number()),
+    // The main Mac's runner's id for its claim (API 85): the same claim
+    // asking again gets it, so a claim whose answer was lost can still start.
+    claim: v.optional(v.string()),
   })
     .index('by_requestId', ['requestId'])
     .index('by_runnerId', ['runnerId'])
-    .index('by_runner_state', ['runnerId', 'state']),
+    .index('by_runner_state', ['runnerId', 'state'])
+    // The Machines page's counts and lists of requests in a state (viewer.ts).
+    .index('by_request_state', ['requestState.kind']),
 
   // Full sync (API 52, docs/full-convex.md step 4; sync.full in runner.json).
   // One row per tool call, under the seq of its one-line `messages` row, with
@@ -786,7 +1048,9 @@ export default defineSchema({
   })
     .index('by_runnerId', ['runnerId'])
     // sync:upsertProjects (API 30) finds the one project it changes.
-    .index('by_runner_id', ['runnerId', 'id']),
+    .index('by_runner_id', ['runnerId', 'id'])
+    // Whether another runner has a project with an id (sync.ts heldElsewhere).
+    .index('by_project_id', ['id']),
 
   // A project's notes, apart from its row (API 50, projectNotes.ts). Notes
   // are most of a project's bytes (16 KB of the Threadbear project's 17.7),
@@ -809,7 +1073,8 @@ export default defineSchema({
   // phone:project. Only written when one of these fields changes.
   // Marks that a one-off copy of old rows has been done for the whole
   // deployment, so readers know the new table is complete.
-  backendMarks: defineTable({ name: v.string() }).index('by_name', ['name']),
+  // A one-off job's marks; `at`: when it last got on, and `cursor`: how far, for a run that may need starting again (sync.ts, shareRekey).
+  backendMarks: defineTable({ name: v.string(), at: v.optional(v.number()), cursor: v.optional(v.string()) }).index('by_name', ['name']),
 
   projectHeads: defineTable({
     runnerId: v.string(),
@@ -824,7 +1089,9 @@ export default defineSchema({
     icon: v.optional(v.object({ symbol: v.optional(v.string()), picture: v.optional(v.string()), by: v.string() })),
   })
     .index('by_runnerId', ['runnerId'])
-    .index('by_runner_id', ['runnerId', 'id']),
+    .index('by_runner_id', ['runnerId', 'id'])
+    // Which runner an id is when two have it (phone.ts projectOwners).
+    .index('by_project_id', ['id']),
 
   // How many of a runner's threads are in each of the phone's tucked-away
   // views (API 30), kept by the writes that move a thread between views, so
@@ -857,7 +1124,11 @@ export default defineSchema({
     lastActivityMs: v.optional(v.number()),
   })
     // Newest joined first, by _creationTime, which every index ends with.
-    .index('by_project', ['projectId'])
+    // A project is (runnerId, projectId), as `projects` is keyed: ids are
+    // only each runner's own, and a link a runner key writes always carries
+    // its own runnerId, so one runner's threads can't turn up in another
+    // runner's project by taking its id (Daybreak finding 141, 16 Nov 2026).
+    .index('by_runner_project', ['runnerId', 'projectId'])
     .index('by_threadId', ['threadId']),
 
   // A thread row gone in the last day, so a client following phone:threadsSince
@@ -1029,6 +1300,10 @@ export default defineSchema({
     // API 20: what the phone's new thread pickers offer.
     models: v.optional(v.array(v.object({ id: v.string(), title: v.string(), effortLevels: v.optional(v.array(v.string())), defaultEffort: v.optional(v.string()) }))),
     defaultEffort: v.optional(v.string()),
+    // API 91: a Claude login's sign-in, for the Mac's Runners panel.
+    loginEndsAt: v.optional(v.string()),
+    signedOut: v.optional(v.boolean()),
+    yearToken: v.optional(v.object({ madeAt: v.optional(v.string()) })),
     usage: v.optional(
       v.object({
         windows: v.array(v.object({ kind: v.string(), title: v.string(), remainingPercent: v.number(), resetsAt: v.optional(v.string()), detail: v.optional(v.string()) })),
@@ -1061,8 +1336,13 @@ export default defineSchema({
     // (API 4): base64 of 32 bytes, made on the phone and sent only here.
     pushKey: v.optional(v.string()),
     // "android" (API 66): apnsToken is the phone's Firebase token, and a push
-    // goes through the relay to Firebase. Absent: an Apple token.
-    platform: v.optional(v.literal('android')),
+    // goes through the relay to Firebase. "webpush" (API 93, the F-Droid
+    // build): apnsToken is its UnifiedPush endpoint, an https address this
+    // deployment posts to itself (push.ts, webPushEndpoint.ts), with the keys
+    // in webPush. Absent: an Apple token.
+    platform: v.optional(v.union(v.literal('android'), v.literal('webpush'))),
+    // For "webpush": the subscription's p256dh and auth, base64url (RFC 8291).
+    webPush: v.optional(v.object({ p256dh: v.string(), auth: v.string() })),
   })
     .index('by_apnsToken', ['apnsToken'])
     // A token's phones: at most MAX_DEVICES_PER_TOKEN (phone:registerDevice),
@@ -1107,10 +1387,21 @@ export default defineSchema({
     height: v.optional(v.number()),
   })
     .index('by_thread_seq', ['threadId', 'seq'])
+    .index('by_thread_src', ['threadId', 'src'])
     .index('by_storageId', ['storageId']),
 
   // This backend's registration with the push relay (docs/push-relay.md),
   // made the first time a push goes that way. One row.
+  // This deployment's VAPID key pair (RFC 8292) for the F-Droid build's
+  // UnifiedPush notifications (API 93): one row, made the first time a
+  // phone asks for it (phone:webPushKey) or a web push goes out. The
+  // private part (d) never leaves the deployment; the phone gets x and y.
+  webPushVapid: defineTable({
+    x: v.string(),
+    y: v.string(),
+    d: v.string(),
+    createdAt: v.number(),
+  }),
   relayInstall: defineTable({
     installId: v.string(),
     installKey: v.string(),
@@ -1137,4 +1428,40 @@ export default defineSchema({
     nonce: v.string(),
     createdAt: v.number(),
   }).index('by_nonce', ['nonce']),
+
+  // Shared memory (API 84, memorySync.ts): the main Mac's global CLAUDE.md
+  // and memory files, which the other runners copy down. Only the owner key
+  // writes them. A deleted file stays as a row with `gone`, so a runner that
+  // was away hears it went. `seq` goes up by one for each change.
+  memoryFiles: defineTable({
+    path: v.string(),
+    hash: v.string(),
+    text: v.string(),
+    gone: v.optional(v.boolean()),
+    seq: v.number(),
+    updatedMs: v.number(),
+  })
+    .index('by_path', ['path'])
+    .index('by_seq', ['seq']),
+
+  // What a runner key's agents saved to memory there (API 84), waiting for
+  // the main Mac to take it: one row per version, so two logins' edits of
+  // one file are both kept. Only the owner reads these, as data.
+  memoryOffers: defineTable({
+    runnerId: v.string(),
+    path: v.string(),
+    hash: v.string(),
+    text: v.string(),
+    at: v.number(),
+  })
+    .index('by_runner_path_hash', ['runnerId', 'path', 'hash'])
+    .index('by_at', ['at']),
+
+  // How many offers each runner has waiting, so the cap is checked without
+  // reading every waiting offer's text.
+  memoryOfferCounts: defineTable({
+    runnerId: v.string(),
+    count: v.number(),
+  }).index('by_runnerId', ['runnerId']),
 });
+export default appSchema;

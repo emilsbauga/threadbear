@@ -30,6 +30,11 @@ export const SAMPLE_THREADS: SampleThread[] = [
         action: 'Should I make the other form tests wait the same way?',
         why: 'Three more tests click before their forms load. It would be the same one-line change in each.',
         options: ['Yes', 'Not now'],
+        // What each answer does, as end_turn's asks always carry, so the
+        // sample card draws its answers as rows with the Recommended star
+        // like a real one; bare options drew an older look of buttons (Mike
+        // spotted it on the Dell, 17 Nov).
+        optionNotes: ['I change the three tests and run each 50 times', 'I leave them as they are'],
         suggested: 0,
       },
     ],

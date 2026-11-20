@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { atomicWriteFileSync, readJsonSync } from '../fsutil.ts';
+import { runOnNode } from '../platform.ts';
 import { VERSION_RE, compareVersions, type Exec } from './exec.ts';
 
 export const CODEX_PACKAGE = '@openai/codex';
@@ -29,7 +30,9 @@ export type CodexResolver = (start: string) => { command: string; native: boolea
 // relies on that a generated schema lacks, and what's new in it.
 export type SurfaceCheck = (generatedDir: string) => { missing: string[]; added: string[] };
 
-export type CodexHold = { version: string; reason: string; missing?: string[] };
+// threadId: the thread started to look into a protocol hold (manager.ts
+// heldBack), so the Updates panel links it rather than leaving Mike to.
+export type CodexHold = { version: string; reason: string; missing?: string[]; added?: string[]; threadId?: string };
 export type CodexState = {
   current?: string;
   previous?: string;
@@ -46,6 +49,7 @@ export type CodexCopiesOptions = {
   dir: string; // <home>/tools/codex
   exec: Exec;
   npmPath: string; // the npm next to the runner's Node
+  platform?: NodeJS.Platform; // tests
   resolve: CodexResolver;
   checkSurface: SurfaceCheck;
   tmpDir?: string;
@@ -62,8 +66,19 @@ export class CodexCopies {
     this.dir = o.dir;
   }
 
-  get currentLink(): string {
+  // The `current` link, or on Windows (where a symlink needs admin or
+  // Developer Mode) a text file naming the version, as runner releases
+  // have it there (launch.mjs, readCurrentLink).
+  private get pointer(): string {
     return path.join(this.dir, 'current');
+  }
+
+  // What to start Codex from: the link, or on Windows the folder the
+  // file names (the pointer itself until there is one).
+  get currentLink(): string {
+    if ((this.o.platform ?? process.platform) !== 'win32') return this.pointer;
+    const v = this.currentVersion();
+    return v ? path.join(this.dir, v) : this.pointer;
   }
 
   state(): CodexState {
@@ -78,12 +93,13 @@ export class CodexCopies {
 
   // The version `current` points at, from the link itself.
   currentVersion(): string | undefined {
+    let v: string;
     try {
-      const v = path.basename(fs.readlinkSync(this.currentLink));
-      return VERSION_RE.test(v) && fs.existsSync(path.join(this.dir, v)) ? v : undefined;
+      v = (this.o.platform ?? process.platform) === 'win32' ? fs.readFileSync(this.pointer, 'utf8').trim() : path.basename(fs.readlinkSync(this.pointer));
     } catch {
       return undefined;
     }
+    return VERSION_RE.test(v) && fs.existsSync(path.join(this.dir, v)) ? v : undefined;
   }
 
   has(version: string): boolean {
@@ -153,12 +169,18 @@ export class CodexCopies {
     fs.rmSync(partial, { recursive: true, force: true });
     let output = '';
     try {
-      const env = { ...(this.o.env ?? process.env) };
+      const env: NodeJS.ProcessEnv = { ...(this.o.env ?? process.env) };
+      // Windows usually spells it Path, and a copy of the environment is
+      // case-sensitive: read whichever it is and put it back as PATH alone.
+      const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH');
+      const inherited = pathKey ? env[pathKey] : undefined;
+      for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH') delete env[k];
       // Public npm, whatever ~/.npmrc says: a company registry's expired token
       // gave E401 here, and nothing in tools/codex pins it like runner/.npmrc.
       // The runner's own Node first, so npm and the package's scripts run on it.
-      env.PATH = `${path.dirname(this.o.npmPath)}${path.delimiter}${env.PATH ?? ''}`;
-      const npm = await this.o.exec(this.o.npmPath, ['install', '--prefix', partial, '--no-save', '--no-fund', '--no-audit', '--registry', 'https://registry.npmjs.org/', `${CODEX_PACKAGE}@${version}`], {
+      // (On Windows npmPath is npm-cli.js, deep in Node's folder.)
+      env.PATH = `${/\.[cm]?js$/i.test(this.o.npmPath) ? path.dirname(process.execPath) : path.dirname(this.o.npmPath)}${path.delimiter}${inherited ?? ''}`;
+      const npm = await this.o.exec(...runOnNode(this.o.npmPath, ['install', '--prefix', partial, '--no-save', '--no-fund', '--no-audit', '--registry', 'https://registry.npmjs.org/', `${CODEX_PACKAGE}@${version}`]), {
         cwd: this.dir,
         env,
         timeoutMs: INSTALL_TIMEOUT_MS,
@@ -229,8 +251,9 @@ export class CodexCopies {
     if (!this.has(version)) throw new Error(`Codex ${version} isn't installed`);
     const before = this.currentVersion();
     const tmp = path.join(this.dir, `.current-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
-    fs.symlinkSync(version, tmp);
-    fs.renameSync(tmp, this.currentLink);
+    if ((this.o.platform ?? process.platform) === 'win32') fs.writeFileSync(tmp, version + '\n');
+    else fs.symlinkSync(version, tmp);
+    fs.renameSync(tmp, this.pointer);
     const s = this.state();
     if (before && before !== version) s.previous = before;
     if (s.previous === version) s.previous = before !== version ? before : undefined;
@@ -239,6 +262,32 @@ export class CodexCopies {
     s.installs.push({ version, at: new Date(this.now()).toISOString(), result: 'activated' });
     this.saveState(s);
     return { previous: before !== version ? before : undefined };
+  }
+
+  // A held version's kept copy through the gate again, as the runner's
+  // lists may have changed since (a fix landed that takes something off
+  // them). undefined when it can't be checked.
+  async regate(version: string): Promise<{ missing: string[]; added: string[] } | undefined> {
+    if (!this.has(version)) return undefined;
+    const v = await this.verify(path.join(this.dir, version), version);
+    if (!v.binary) return undefined;
+    return (await this.gate(v.binary)).result;
+  }
+
+  // Updates the hold in place (its missing list, its thread), if it's
+  // still that version's.
+  updateHold(version: string, patch: Partial<CodexHold>): void {
+    const s = this.state();
+    if (s.hold?.version !== version) return;
+    s.hold = { ...s.hold, ...patch };
+    this.saveState(s);
+  }
+
+  clearHold(version: string): void {
+    const s = this.state();
+    if (s.hold?.version !== version) return;
+    delete s.hold;
+    this.saveState(s);
   }
 
   setHold(hold: CodexHold): void {
@@ -272,8 +321,12 @@ export class CodexCopies {
     for (const v of versions) {
       if (keepSet.has(v)) continue;
       const folder = path.join(this.dir, v);
-      const forms = [folder, realpath(folder)];
-      const used = inUse.some((b) => forms.some((f) => b === f || b.startsWith(f + path.sep))) || forms.some((f) => processArgs.includes(f + path.sep) || processArgs.split('\n').some((l) => l.trim() === f));
+      // Windows paths are compared without case (a command line can say
+      // c:\users where the folder is C:\Users).
+      const fold = (p: string) => ((this.o.platform ?? process.platform) === 'win32' ? p.toLowerCase() : p);
+      const forms = [folder, realpath(folder)].map(fold);
+      const args = fold(processArgs);
+      const used = inUse.some((b) => forms.some((f) => fold(b) === f || fold(b).startsWith(f + path.sep))) || forms.some((f) => args.includes(f + path.sep) || args.split(/\r?\n/).some((l) => l.trim() === f));
       if (used) continue;
       fs.rmSync(folder, { recursive: true, force: true });
       removed.push(v);

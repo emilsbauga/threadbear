@@ -32,8 +32,9 @@ pub(crate) struct FarRows {
     /// it comes back, somewhere else, it's built where it now is).
     drawn: RefCell<HashSet<String>>,
     /// The zoom the heights were measured at: a new zoom makes every row
-    /// another height, so they're all measured again (Codex's review).
-    zoom: Cell<u32>,
+    /// another height, so they're all measured again (Codex's review). The
+    /// look too: Compact spacing and another font change them as well.
+    zoom: Cell<u64>,
 }
 
 impl FarRows {
@@ -44,7 +45,7 @@ impl FarRows {
         *self.scroll.borrow_mut() = Some(scroll.clone());
         let drawn = std::mem::take(&mut *self.drawn.borrow_mut());
         self.placed.borrow_mut().retain(|k, _| drawn.contains(k));
-        let zoom = crate::style::zoom_percent();
+        let zoom = crate::style::layout_key();
         if self.zoom.replace(zoom) != zoom {
             self.placed.borrow_mut().clear();
         }

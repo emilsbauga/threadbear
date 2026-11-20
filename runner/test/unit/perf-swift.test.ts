@@ -5,13 +5,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { PATIENCE_MS } from '../helpers/patience.ts';
 import { test, type TestContext } from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// By the clock, with the suite's patience, not 500 polls (about 20 s): at a
+// load of 100 the worker wasn't ready in time (a fork, 15 Nov).
 async function until(check: () => boolean, message: string) {
-  for (let i = 0; i < 500; i++) { if (check()) return; await pause(40); }
-  assert.fail(message);
+  const end = Date.now() + PATIENCE_MS;
+  while (Date.now() < end) { if (check()) return; await pause(40); }
+  if (!check()) assert.fail(message);
 }
 function alive(pid: number) {
   const ps = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' });
@@ -67,7 +71,7 @@ set -eu
 echo $$ >>"$HOME/all-launcher.pids"
 id=''
 for ((i=1;i<=$#;i++)); do if [ "\u0024{!i}" = --id ]; then j=$((i+1)); id="\u0024{!j}"; fi; done
-tmp_root="\u0024{TMPDIR:-/tmp}"
+tmp_root="\u0024{TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo "/tmp/threadbear-$(id -u)")}"
 mkdir -p "$tmp_root/threadbear-dev-app"
 state_root="$(cd "$tmp_root/threadbear-dev-app" && pwd -P)"
 dir="$state_root/$id"
@@ -127,7 +131,8 @@ exit 1
       for (const name of ['app', 'mock', 'launcher']) {
         try { for (const pid of fs.readFileSync(path.join(home, `all-${name}.pids`), 'utf8').trim().split('\n')) killOwned(Number(pid)); } catch {}
       }
-      // A TMPDIR-fallback fixture uses /tmp, just as the frozen launcher does.
+      // A TMPDIR-fallback fixture uses this account's own temp folder, as the
+      // frozen launcher does.
       if (tmpFallback && fs.existsSync(path.join(home, 'instance-dir'))) {
         const instance = fs.readFileSync(path.join(home, 'instance-dir'), 'utf8');
         const worker = fs.readFileSync(path.join(home, 'worker.pid'), 'utf8');
@@ -235,6 +240,12 @@ test('Swift TMPDIR fallback matches the launcher even when TMP points elsewhere'
   const first = h.run({ NORMAL_STOP: '1', TMPDIR: '', TMP: h.home, TEMP: h.home });
   assert.equal(await first.done, 0, first.output);
   assert.ok(!fs.existsSync(h.file('ordinary-open')), 'TMP fallback bypassed the app gate');
+  // This account's own temp folder, never the shared /tmp: a second account
+  // on Tinker Desk couldn't make its instance in the first's (19 Nov).
+  // (Linux has no such folder, so there it's /tmp/threadbear-<uid>.)
+  const mac = spawnSync('getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf8' });
+  const own = fs.realpathSync(mac.status === 0 ? mac.stdout.trim() : `/tmp/threadbear-${process.getuid!()}`);
+  assert.ok(fs.readFileSync(h.file('instance-dir'), 'utf8').startsWith(own + path.sep), 'the fallback left this account\'s temp folder');
   const next = h.run({}, h.verify);
   assert.equal(await next.done, 0, next.output);
 });

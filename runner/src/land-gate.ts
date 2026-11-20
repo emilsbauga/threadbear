@@ -19,9 +19,16 @@
 // paths). Its own runs are asked of GitHub with gh. When gh isn't there, or
 // can't say, the landing goes ahead, saying so: being offline shouldn't stop
 // work. `tb land --despite-red` lands anyway, for the landing that's the fix.
+//
+// A workflow whose jobs only run in one repo (`github.repository ==
+// 'owner/name'` in its `if:`, as Mike's all do since 19 Nov 2026) holds only
+// in a checkout whose origin is that repo. In a fork, gh reads the
+// `upstream` remote's runs before origin's, so Mike's red Windows build held
+// a fork's landing that only had to work on its owner's Mac.
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { repoKey } from './upstream.ts';
 
 export const HOLD_MARK = /^\s*#\s*tb land:\s*hold while red\s*$/m;
 
@@ -29,6 +36,7 @@ export type HeldWorkflow = {
   file: string; // its file name, as gh's --workflow takes it
   name: string; // its `name:`, or the file name
   paths?: string[]; // its push paths; undefined when every push runs it
+  onlyIn?: string; // the one repo its jobs run in (owner/name), if it names one
 };
 
 // The workflows in `root` that hold landings while red.
@@ -50,7 +58,8 @@ export function holdingWorkflows(root: string): HeldWorkflow[] {
     }
     if (!HOLD_MARK.test(text)) continue;
     const name = /^name:\s*(.+?)\s*$/m.exec(text)?.[1]?.replace(/^(['"])(.*)\1$/, '$2') ?? file;
-    out.push({ file, name, paths: pushPaths(text) });
+    const onlyIn = /github\.repository\s*==\s*'([\w.-]+\/[\w.-]+)'/.exec(text)?.[1];
+    out.push({ file, name, paths: pushPaths(text), ...(onlyIn ? { onlyIn } : {}) });
   }
   return out;
 }
@@ -202,6 +211,16 @@ export async function lastVerdict(root: string, file: string, run: Gh = gh): Pro
   return { state: 'red', run: finished, failedJobs, ...(newer ? { newer } : {}) };
 }
 
+// origin's github.com/owner/name, or undefined with no origin.
+function originRepo(root: string): string | undefined {
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return url.trim() ? repoKey(url) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const firstLine = (s: string): string => s.trim().split('\n')[0] ?? '';
 
 // Every landing asks GitHub before its check and again before main moves,
@@ -261,7 +280,12 @@ export async function keptVerdict(root: string, file: string, run: Gh, cache: Ga
 // Why `files` can't land on main now, or undefined when they can. `note`
 // gets a line for a workflow GitHub couldn't be asked about.
 export async function landHold(root: string, files: string[], note: (line: string) => void, run: Gh = gh, cache?: GateCache): Promise<string | undefined> {
+  let origin: string | undefined | null = null;
   for (const w of holdingWorkflows(root)) {
+    if (w.onlyIn) {
+      if (origin === null) origin = originRepo(root);
+      if (origin?.toLowerCase() !== `github.com/${w.onlyIn}`.toLowerCase()) continue;
+    }
     const hits = filesThatRunIt(w.paths, files);
     if (!hits.length) continue;
     const kept = await keptVerdict(root, w.file, run, cache);

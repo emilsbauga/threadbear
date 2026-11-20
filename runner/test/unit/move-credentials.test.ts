@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { load } from '../helpers/convex-memory.ts';
 import { FakeAccounts, makeHarness, tmpDir } from '../helpers/fakes.ts';
-import { packGit, withoutCredentials } from '../../src/move-git.ts';
+import { cloneableUrl, packGit, repoKey, withoutCredentials } from '../../src/move-git.ts';
 import { moveInfoFrom, previewInfo } from '../../src/moves.ts';
 import { Scrubber } from '../../src/scrub.ts';
 
@@ -28,6 +28,36 @@ const CASES: [string, string][] = [
   ['git@github.com:mikecann/threadbear.git', 'git@github.com:mikecann/threadbear.git'],
   ['https://github.com/mikecann/threadbear', 'https://github.com/mikecann/threadbear'],
   ['/Users/alex/origin.git', '/Users/alex/origin.git'],
+  // Daybreak 143 (16 Nov 2026): a token as the ssh user, in the URL and
+  // scp forms, and under any scheme. Only ssh's own `git` stays.
+  [`ssh://${TOKEN}@github.com/owner/private.git`, 'ssh://github.com/owner/private.git'],
+  [`${TOKEN}@github.com:owner/private.git`, 'github.com:owner/private.git'],
+  [`git:${TOKEN}@github.com:owner/private.git`, ''],
+  [`a@${TOKEN}@github.com:owner/private.git`, 'github.com:owner/private.git'],
+  [`git+ssh://${TOKEN}@github.com/o/r.git`, 'git+ssh://github.com/o/r.git'],
+  [`ssh+git://git@github.com/o/r.git`, 'ssh+git://git@github.com/o/r.git'],
+  [`git://${TOKEN}@example.com/r.git`, 'git://example.com/r.git'],
+  [`custom-scheme://user:${TOKEN}@host/r`, 'custom-scheme://host/r'],
+  [`ftp://${TOKEN}@host/r`, 'ftp://host/r'],
+  ['ssh://%67it@github.com/o/r.git', 'ssh://github.com/o/r.git'],
+  [`ssh://git%3A${TOKEN}@github.com/o/r.git`, 'ssh://github.com/o/r.git'],
+  [`https://tok%40en${TOKEN}@github.com/o/r`, 'https://github.com/o/r'],
+  [`ssh://a:b@${TOKEN}@github.com/o/r`, 'ssh://github.com/o/r'],
+  ['GIT@github.com:o/r.git', 'github.com:o/r.git'],
+  ['github.com:o/r.git', 'github.com:o/r.git'],
+  ['/Users/a@b/repo.git', '/Users/a@b/repo.git'],
+  // Security review, 17 Nov 2026: an `@` in the path's first folder.
+  ['UNCLASSIFIEDSSHLOGIN@example.com:team@work/repo.git', 'example.com:team@work/repo.git'],
+  ['UNCLASSIFIEDSSHLOGIN@example.com:@scope/repo.git', 'example.com:@scope/repo.git'],
+  ['git@example.com:team@work/repo.git', 'git@example.com:team@work/repo.git'],
+  // One that can't be told from a login (`user:token@host:path`, or an `@`
+  // then a `:` in the path) is left out altogether, never guessed at.
+  [`u:${TOKEN}@[::1]:o/r.git`, ''],
+  ['git@git.example.com:team@backup.example.com:repo.git', ''],
+  ['alice@gitbox:team@backup.example.com:repo.git', ''],
+  ['first.last:UNCLASSIFIED_SECRET@git.example.com:o/r.git', ''],
+  ['git:UNCLASSIFIED_SECRET@gitbox:o/r.git', ''],
+  ['', ''],
 ];
 
 test('an address loses anything that could be a password or token, on the runner and in the backend', () => {
@@ -35,6 +65,44 @@ test('an address loses anything that could be a password or token, on the runner
   for (const [url, want] of CASES) {
     assert.equal(withoutCredentials(url), want, url);
     assert.equal(backend(url), want, `backend: ${url}`);
+    // Scrubbing twice changes nothing (the backend scrubs what the runner did).
+    assert.equal(withoutCredentials(want), want, `again: ${want}`);
+    assert.ok(!withoutCredentials(url).includes(TOKEN) && !withoutCredentials(url).includes('SECRET'), url);
+  }
+});
+
+// Security review, 17 Nov 2026: an honest ssh user is taken off too, and
+// the address is still one a clone can use (ssh's config gives the user).
+test('an scp address without its user can still be cloned, and the same repo found', () => {
+  for (const a of ['alice@git.example.com:team/project.git', 'git@github.com:o/r.git']) {
+    const clean = withoutCredentials(a);
+    assert.ok(cloneableUrl(clean), clean);
+    assert.equal(repoKey(clean), repoKey(a));
+  }
+  for (const a of ['UNCLASSIFIEDSSHLOGIN@example.com:team@work/repo.git', 'alice@gitbox:team/repo.git']) assert.equal(repoKey(withoutCredentials(a)), repoKey(a), a);
+  for (const u of ['file:///etc', 'host:-oProxyCommand=x', 'C::x']) assert.equal(cloneableUrl(u), false, u);
+});
+
+test('the same repo is still the same repo once its user has gone', () => {
+  for (const a of ['git@github.com:mikecann/threadbear.git', 'github.com:mikecann/threadbear.git', 'https://github.com/mikecann/threadbear', 'ssh://github.com/mikecann/threadbear.git', 'ssh://git@github.com/mikecann/threadbear.git']) {
+    assert.equal(repoKey(a), 'github.com/mikecann/threadbear', a);
+  }
+});
+
+test("the backend stores a moved thread's ssh origin without its token", async () => {
+  process.env.RUNNER_KEY = 'owner-key';
+  const { memoryBackend, call } = await import('../helpers/convex-memory.ts');
+  const moves = load('moves');
+  const b = memoryBackend();
+  await b.ctx.db.insert('threads', { threadId: 't1', runnerId: 'runner000001' } as never);
+  await b.ctx.db.insert('runners', { runnerId: 'runner000002', name: 'T', version: '1', lastSeenAt: Date.now(), startedAt: new Date().toISOString(), draining: false, threadCount: 0 });
+  const { moveId } = (await call(b.ctx, moves.startMove, { key: 'owner-key', threadId: 't1', to: 'runner000002' })) as { moveId: string };
+  for (const origin of [`${TOKEN}@github.com:owner/private.git`, `ssh://${TOKEN}@github.com/owner/private.git`]) {
+    const row = b.rows('threadMoves').find((r: any) => r.moveId === moveId)!;
+    await b.ctx.db.patch(row._id, { info: undefined });
+    await call(b.ctx, moves.moveInfo, { key: 'owner-key', moveId, info: { title: 't', cwd: '/c', home: '/h', provider: 'claude', accountId: 'a', permissionMode: 'ask', worktree: false, schedules: 0, origin } });
+    const stored = b.rows('threadMoves').find((r: any) => r.moveId === moveId)!.info;
+    assert.ok(!JSON.stringify(stored).includes(TOKEN), JSON.stringify(stored));
   }
 });
 
@@ -111,4 +179,32 @@ test("the backend strips a credential from a preview's description an older main
   const more = commandArgs('call', { method: 'moves.preview', params: { info: { title: 'my password is hunter2', sessionId: 's1', cwd: '/c', home: '/h', provider: 'claude', accountId: 'a', permissionMode: 'full' } } }) as { params: { info: Record<string, unknown> } };
   assert.equal(more.params.info.title, '');
   assert.equal(more.params.info.sessionId, undefined);
+});
+
+// Security review, 17 Nov 2026: the Move sheet's `moves.describe` answer is
+// stored in the command's row until the main Mac reads it, and an older
+// runner's scrubber left a token-shaped ssh user in its origin. The backend
+// stores that answer's origin as moves:moveInfo would.
+test("the backend stores an older runner's description for the Move sheet without its origin's token", async () => {
+  const { memoryBackend, call } = await import('../helpers/convex-memory.ts');
+  const { sha256 } = load('lib') as { sha256: (s: string) => Promise<string> };
+  const sync = load('sync');
+  const relay = load('relay');
+  process.env.RUNNER_KEY = 'owner-key';
+  delete process.env.RUNNER_KEY_NEXT;
+  const MINI = 'cb921b2447ea';
+  const b = memoryBackend();
+  await b.ctx.db.insert('runnerKeys', { runnerId: MINI, keyHash: await sha256('tbr_mac-mini'), name: 'mac-mini', createdAt: 1 });
+  await b.ctx.db.insert('runners', { runnerId: MINI, name: 'mac-mini', version: 'v', startedAt: 'x', draining: false, threadCount: 1, lastSeenAt: Date.now() });
+  const { THREAD_BASICS } = await import('../helpers/convex-memory.ts');
+  await call(b.ctx, sync.upsertThreads, { key: 'tbr_mac-mini', threads: [{ ...THREAD_BASICS, threadId: 'B', runnerId: MINI, title: 'T', view: 'inbox', needsYou: false }] });
+  const unclassified = 'UNCLASSIFIEDSSHLOGIN';
+  for (const origin of [`ssh://${unclassified}@example.com/owner/repo.git`, `${unclassified}@example.com:owner/repo.git`]) {
+    const id = await call(b.ctx, relay.queueCommand, { key: 'owner-key', runnerId: MINI, threadId: 'B', kind: 'call', args: { method: 'moves.describe', params: {} } });
+    await call(b.ctx, sync.takeCommand, { key: 'tbr_mac-mini', commandId: id });
+    await call(b.ctx, sync.finishCommand, { key: 'tbr_mac-mini', commandId: id, ok: true, result: JSON.stringify({ title: 't', cwd: '/c', home: '/h', provider: 'claude', accountId: 'a', permissionMode: 'ask', worktree: false, schedules: 0, origin }) });
+    const stored = b.rows('commands').find((c: any) => c._id === id)!.result as string;
+    assert.ok(!stored.includes(unclassified), stored);
+    assert.equal(repoKey(JSON.parse(stored).origin), 'example.com/owner/repo');
+  }
 });

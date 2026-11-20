@@ -1,0 +1,32 @@
+<!doctype html><meta charset=utf-8><style>
+body{font:14px/1.45 -apple-system,system-ui,sans-serif;background:#16171a;color:#e6e6e6;margin:0;padding:28px 34px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:#9aa;margin:0 0 20px}
+.diag{display:flex;gap:14px;align-items:stretch;margin:0 0 22px;flex-wrap:wrap}
+.col{display:flex;flex-direction:column;gap:8px;min-width:150px}
+.box{border:1px solid #3a3d45;border-radius:8px;padding:8px 10px;background:#1f2126}
+.box b{display:block}.box small{color:#9aa}
+.hot{border-color:#d9a441;background:#2a2418}.gone{opacity:.45;text-decoration:line-through}
+.arrow{align-self:center;color:#777;font-size:20px}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-top:1px solid #30333a;padding:7px 8px;vertical-align:top;text-align:left}
+th{color:#9aa;font-weight:500;width:150px}.good{color:#8fd18f}.bad{color:#e48c7a}
+</style>
+<h1>C. Every runner is its own archive, asked through the relay</h1>
+<p class=sub>No central copy. Each runner indexes what happened on its machine, on disk. A search from anywhere fans out to the runners and merges the answers.</p>
+<div class=diag>
+ <div class=col><div class=box><b>Phone / website / another Mac</b><small>asks a question</small></div></div>
+ <div class=arrow>→</div>
+ <div class=col><div class=box><b>Convex relay</b><small>passes the query, carries back ~20 hits. Small, free plan fits</small></div></div>
+ <div class=arrow>→</div>
+ <div class=col><div class="box hot"><b>M5 runner</b><small>local SQLite + FTS5 + vectors</small></div><div class="box hot"><b>Bruce runner</b><small>its own + the old 27 GB, read-only</small></div><div class="box hot"><b>Tinker Desk runner</b><small>its own</small></div></div>
+</div>
+<table>
+<tr><th>Daemons</th><td class=good>One: the runner.</td></tr>
+<tr><th>Backends</th><td>Convex carries questions and answers only; the history never leaves the machine it happened on.</td></tr>
+<tr><th>Search</th><td>One codebase, many small indexes; results merged. Ranking across machines gets fiddly.</td></tr>
+<tr><th>MCP tools</th><td>Same five. Local answers in ms; other machines' through the relay (a second or two).</td></tr>
+<tr><th>Web reader</th><td>Threadbear's website and the GPUI app read threads through the relay, like they do now.</td></tr>
+<tr><th>Quick Ask</th><td class=bad>Goes through Convex to whichever runners are awake: slower, and the laptop asleep means its history is missing.</td></tr>
+<tr><th>Migrating 27 GB</th><td>Bruce's runner adopts the existing store as-is and answers for it. New history stays on each Mac.</td></tr>
+<tr><th>A stranger</th><td class=good>On by default for free: private, local, keyword search; phone search with no Tailscale.</td></tr>
+<tr><th>Risk</th><td class=bad>A Mac that's off or gone takes its history with it. No backup by design.</td></tr>
+</table>

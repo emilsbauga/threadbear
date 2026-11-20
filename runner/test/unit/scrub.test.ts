@@ -233,6 +233,7 @@ test('commands whose output is withheld', () => {
     'openssl genrsa 2048',
     'tb phone-token',
     'npx convex run tokens:issue \'{"name":"x"}\'',
+    'npx convex run tokens:issueCode \'{"name":"x","kind":"browser"}\'',
     'npx convex deployment token create x',
     'git credential fill',
     'cat .env',

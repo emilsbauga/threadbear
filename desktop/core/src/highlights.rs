@@ -456,12 +456,21 @@ pub fn looks_like_text(sample: &[u8]) -> bool {
     (1..=3.min(sample.len())).any(|cut| std::str::from_utf8(&sample[..sample.len() - cut]).is_ok())
 }
 
-/// The kinds of file Mike reviews rather than edits: a transcript link to one
-/// of these opens in the pane, not in its app (⌘-click still does that).
-const REVIEW_EXTENSIONS: &[&str] = &["md", "html", "htm", "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "mov", "csv", "txt"];
+/// The kinds of file a transcript link opens in the pane, not in its app
+/// (⌘-click still does that): documents, pictures and films, plain text,
+/// data and logs (their app is often a big IDE: Xcode claims `.json`), and
+/// below, every kind of code the pane colours, as code an agent links to is
+/// there to be looked over, and the pane opens it ready to type in.
+const REVIEW_EXTENSIONS: &[&str] = &[
+    "md", "html", "htm", "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "mov", "txt", "text",
+    // data and logs
+    "json", "jsonc", "jsonl", "ndjson", "yaml", "yml", "toml", "csv", "tsv", "log",
+];
 
 pub fn previews_in_pane(path: &str) -> bool {
-    REVIEW_EXTENSIONS.contains(&extension(path).as_str())
+    let ext = extension(path);
+    // A plist can be binary, which the text view can't draw.
+    REVIEW_EXTENSIONS.contains(&ext.as_str()) || (code_language(path).is_some() && ext != "plist")
 }
 
 /// A picture the viewer may show: an image by its extension. Anything
@@ -506,6 +515,32 @@ pub fn file_symbol(path: &str) -> &'static str {
     }
 }
 
+/// Whether a Files row keeps what's in a file to itself and shows its symbol
+/// instead of a preview. The previews are always on screen, in recordings and
+/// shared screens too, so anything that may hold a key stays a symbol: a
+/// dotfile (`.env`, `.npmrc`), anything in a hidden folder straight under the
+/// home folder (`~/.convex/config.json`, `~/.ssh`), and names that say
+/// secret, token or key. A hidden folder inside a project (`.work`) is fine.
+pub fn preview_private(path: &str, home: &str) -> bool {
+    use crate::reducer::text::forward_slashes;
+    let (path, home) = (forward_slashes(path), forward_slashes(home));
+    let name = last_component(&path).to_lowercase();
+    if name.starts_with('.') {
+        return true;
+    }
+    let home = home.trim_end_matches('/');
+    if !home.is_empty() {
+        if let Some(rest) = path.strip_prefix(home).and_then(|r| r.strip_prefix('/')) {
+            if rest.split('/').next().is_some_and(|top| top.starts_with('.') && rest.contains('/')) {
+                return true;
+            }
+        }
+    }
+    const WORDS: &[&str] = &["secret", "credential", "password", "passwd", "token", "private", "id_rsa", "id_ed25519", "apikey", "api_key", "api-key"];
+    const EXTENSIONS: &[&str] = &["pem", "key", "p12", "pfx", "keychain", "env", "jks", "kdbx"];
+    WORDS.iter().any(|w| name.contains(w)) || EXTENSIONS.contains(&extension(&name).as_str())
+}
+
 /// A highlight's: a file's by its extension, the rest by kind.
 pub fn highlight_symbol(item: &Highlight) -> &'static str {
     match item.kind {
@@ -539,10 +574,7 @@ pub mod text {
                 return rest.to_owned();
             }
         }
-        if !home.is_empty() && (parent == home || parent.starts_with(&format!("{home}/"))) {
-            return format!("~{}", &parent[home.len()..]);
-        }
-        parent.to_owned()
+        crate::new_thread::abbreviate_home(parent, home)
     }
 
     fn parent_path(path: &str) -> &str {
@@ -768,6 +800,9 @@ pub fn started_rows<'a>(parent: &ThreadSummary, threads: impl Iterator<Item = &'
 pub fn started_state(t: &ThreadSummary, now_ms: i64) -> StartedState {
     if t.is_archived() {
         StartedState::Archived
+    } else if t.snoozed(now_ms) && t.waiting_on_work() {
+        // Still at its job, as the sidebar has it under Running.
+        StartedState::Working
     } else if t.snoozed(now_ms) {
         StartedState::Hibernating
     } else if t.status == "waiting" || t.review_waiting() || t.waiting_on_mike() {
@@ -803,6 +838,11 @@ pub fn thread_status<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Str
     }
     if t.snoozed_until_restart == Some(true) {
         return "Hibernating until the runner restarts".into();
+    }
+    if t.snoozed(now_ms) && t.waiting_on_work() {
+        if let Some((words, _)) = sidebar::work_wait_row(t, now) {
+            return words;
+        }
     }
     if let (true, Some(until)) = (t.snoozed(now_ms), t.snoozed_until_ms()) {
         if let Some((words, _)) = sidebar::wake_row(t, now) {
@@ -1172,28 +1212,94 @@ pub struct PanelItem {
     pub path: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub icon: Option<String>,
-    /// "attention", "failed" or "done"; anything else is plain.
+    /// "attention", "failed", "warning", "working" or "done"; anything else
+    /// is plain.
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub tone: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub section: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub trailing: Option<String>,
+    /// A switch at the end of the title's line; a press sends `panels.toggle`.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub toggle: Option<PanelToggle>,
+}
+
+/// A list row's switch (`PanelItem.toggle`, docs/protocol.md "Row toggles").
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct PanelToggle {
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub id: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub on: bool,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub icon: Option<String>,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub title: Option<String>,
+}
+
+impl PanelToggle {
+    /// Its icon, "power" when the patch gave none.
+    pub fn symbol(&self) -> &str {
+        self.icon.as_deref().filter(|i| !i.is_empty()).unwrap_or("power")
+    }
+
+    /// Its tooltip: the patch's words and what a press does, or that one is
+    /// on its way while `pending`.
+    pub fn tip(&self, pending: bool) -> String {
+        let what = self.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("Switch");
+        if pending {
+            return format!("{what}: switching {}…", if self.on { "on" } else { "off" });
+        }
+        format!("{what}: {}", if self.on { "on. Click to turn off." } else { "off. Click to turn on." })
+    }
 }
 
 impl PanelItem {
+    /// Its switch, when it has one with an id to send back.
+    pub fn switch(&self) -> Option<&PanelToggle> {
+        self.toggle.as_ref().filter(|t| !t.id.is_empty())
+    }
+
+    /// Every row's switch whose id is `id` set to `on`: what a press shows
+    /// at once, before the runner answers, and what a failure puts back.
+    pub fn set_switch(items: &mut [PanelItem], id: &str, on: bool) {
+        for t in items.iter_mut().filter_map(|i| i.toggle.as_mut()).filter(|t| t.id == id) {
+            t.on = on;
+        }
+    }
+
     pub fn tone_kind(&self) -> Option<&str> {
-        self.tone.as_deref().filter(|t| matches!(*t, "attention" | "failed" | "done"))
+        self.tone.as_deref().filter(|t| matches!(*t, "attention" | "failed" | "warning" | "working" | "done"))
     }
 
     /// The row's own icon, else one for its tone, else none (`ListPanel.icon`).
+    /// Each tone has a shape of its own, not just a colour, so a red-green
+    /// colour-blind eye can tell them apart (issue #67, Mike picked "safe for
+    /// everyone, no setting" on 17 Nov): a circle needs you, a diamond
+    /// failed, a triangle warns, a dashed circle (drawn turning) is working
+    /// and a tick is done.
     pub fn symbol(&self) -> Option<&str> {
-        if let Some(icon) = self.icon.as_deref().filter(|i| !i.is_empty()) {
+        if let Some(icon) = self.own_icon() {
             return Some(icon);
         }
+        self.tone_symbol()
+    }
+
+    /// The row's own icon, if it has one.
+    pub fn own_icon(&self) -> Option<&str> {
+        self.icon.as_deref().filter(|i| !i.is_empty())
+    }
+
+    /// The shape for its tone alone. A row with its own icon shows it at the
+    /// end of the title's line, so its tone isn't left to the icon's colour.
+    pub fn tone_symbol(&self) -> Option<&str> {
         match self.tone_kind() {
-            Some("attention") => Some("exclamationmark.circle"),
-            Some("failed") => Some("xmark.circle"),
+            Some("attention") => Some("exclamationmark.circle.fill"),
+            Some("failed") => Some("xmark.diamond.fill"),
+            Some("warning") => Some("exclamationmark.triangle.fill"),
+            Some("working") => Some("circle.dashed"),
             Some("done") => Some("checkmark"),
             _ => None,
         }
@@ -1321,6 +1427,28 @@ pub mod patches {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn previews_keep_keys_and_home_dotfolders_to_themselves() {
+        use super::preview_private as private;
+        let home = "/Users/m";
+        // What a video thread's Files show, previews and all.
+        assert!(!private("/Users/m/dev/v1.50.0/notes.md", home));
+        assert!(!private("/Users/m/dev/v1.50.0/.work/BROLL-PLAN.md", home));
+        assert!(!private("/Users/m/dev/v1.50.0/exports/cut.mp4", home));
+        // What could hold a key stays a symbol.
+        assert!(private("/Users/m/.convex/config.json", home));
+        assert!(private("/Users/m/.ssh/known_hosts", home));
+        assert!(private("/Users/m/dev/app/.env", home));
+        assert!(private("/Users/m/dev/app/.env.local", home));
+        assert!(private("/Users/m/dev/app/github-token.txt", home));
+        assert!(private("/Users/m/dev/app/AuthKey_ABC.p8.pem", home));
+        assert!(private("/Users/m/dev/app/client_secret.json", home));
+        // A hidden file straight in the home folder too, and Windows paths alike.
+        assert!(private("/Users/m/.npmrc", home));
+        assert!(private("C:\\Users\\m\\.aws\\config", "C:\\Users\\m"));
+        assert!(!private("C:\\Users\\m\\dev\\notes.md", "C:\\Users\\m"));
+    }
+
     #[test]
     fn chips_sit_on_a_shelf_for_each_place_they_came_from_grouped_by_patch() {
         let patch = |id: &str, extra: serde_json::Value| {
@@ -1470,7 +1598,32 @@ mod tests {
         for path in ["/tmp/a.md", "/tmp/b.HTML", "/tmp/c.pdf", "/tmp/d.png", "/tmp/e.mov", "/tmp/f.csv", "/tmp/g.svg"] {
             assert!(previews_in_pane(path), "{path}");
         }
-        for path in ["/tmp/a.swift", "/tmp/b.ts", "/tmp/folder", "/tmp/c.zip"] {
+        // Data and logs, drawn by the pane's text view rather than left to
+        // whichever IDE claims them (Xcode takes `.json`).
+        for path in ["/tmp/put-1.json", "/tmp/a.JSONC", "/tmp/b.jsonl", "/tmp/c.ndjson", "/tmp/d.yaml", "/tmp/e.yml", "/tmp/f.toml", "/tmp/g.tsv", "/tmp/h.log", "/tmp/i.text"] {
+            assert!(previews_in_pane(path), "{path}");
+            assert_eq!(viewer_for_path(path), Viewer::Text, "{path}");
+        }
+        // And code, every kind the pane colours.
+        for (path, language) in [
+            ("/tmp/a.ts", "typescript"),
+            ("/tmp/b.TSX", "typescript"),
+            ("/tmp/c.mts", "typescript"),
+            ("/tmp/export.py", "python"),
+            ("/tmp/main.rs", "rust"),
+            ("/tmp/run.sh", "bash"),
+            ("/tmp/a.swift", "swift"),
+            ("/tmp/b.js", "javascript"),
+            ("/tmp/q.sql", "sql"),
+            ("/tmp/Makefile", "makefile"),
+            ("/tmp/Dockerfile", "dockerfile"),
+        ] {
+            assert!(previews_in_pane(path), "{path}");
+            assert_eq!(viewer_for_path(path), Viewer::Text, "{path}");
+            assert_eq!(code_language(path), Some(language), "{path}");
+        }
+        // Not a plist, which can be binary; not folders, archives or bundles.
+        for path in ["/tmp/Info.plist", "/tmp/folder", "/tmp/c.zip", "/tmp/d.xcodeproj", "/tmp/e.command"] {
             assert!(!previews_in_pane(path), "{path}");
         }
     }
@@ -1553,6 +1706,29 @@ mod tests {
     }
 
     #[test]
+    fn a_list_rows_switch_reads_and_flips() {
+        let v = json!({ "items": [
+            { "title": "#1", "toggle": { "id": "o/r#1", "on": true, "icon": "wand.and.stars", "title": "Auto-fix #1" } },
+            { "title": "#2", "toggle": { "id": "o/r#2", "on": false } },
+            { "title": "bad", "toggle": { "id": "", "on": "yes" } },
+            { "title": "odd", "toggle": "on" },
+        ] });
+        let mut items = PanelRender::decode(&v).items.expect("items");
+        assert_eq!(items.len(), 4, "a broken switch doesn't lose its row");
+        let first = items[0].switch().expect("a switch");
+        assert_eq!((first.symbol(), first.on), ("wand.and.stars", true));
+        assert_eq!(first.tip(false), "Auto-fix #1: on. Click to turn off.");
+        assert_eq!(first.tip(true), "Auto-fix #1: switching on…");
+        assert!(items[2].switch().is_none());
+        assert!(items[3].switch().is_none());
+        PanelItem::set_switch(&mut items, "o/r#2", true);
+        let second = items[1].switch().expect("a switch");
+        assert_eq!((second.symbol(), second.on), ("power", true));
+        assert_eq!(second.tip(false), "Switch: on. Click to turn off.");
+        assert!(items[0].switch().expect("a switch").on, "only the row whose id it is");
+    }
+
+    #[test]
     fn panel_render_decodes_items_skipping_broken_ones() {
         let render = PanelRender::decode(&json!({"items": [
             {"title": "main", "detail": "/w/site abc1234 [main]", "icon": "arrow.triangle.branch"},
@@ -1560,16 +1736,25 @@ mod tests {
             {"title": "Build", "tone": "failed", "path": "/w/site/build.log"},
             {"title": "Deploy", "tone": "done"},
             {"title": "Odd", "tone": "sparkly"},
-            {"detail": "no title"}
+            {"detail": "no title"},
+            {"title": "Bundle", "tone": "warning"},
+            {"title": "Typecheck", "tone": "working"}
         ], "note": null}));
         let items = render.items.expect("items");
-        assert_eq!(items.len(), 6, "a row with no title has one that's empty");
+        assert_eq!(items.len(), 8, "a row with no title has one that's empty");
         assert_eq!(items[0].symbol(), Some("arrow.triangle.branch"));
-        assert_eq!(items[1].symbol(), Some("exclamationmark.circle"));
-        assert_eq!(items[2].symbol(), Some("xmark.circle"));
+        assert_eq!(items[0].tone_symbol(), None);
+        // One shape per tone, so they don't rest on colour alone (issue #67).
+        assert_eq!(items[1].symbol(), Some("exclamationmark.circle.fill"));
+        assert_eq!(items[2].symbol(), Some("xmark.diamond.fill"));
         assert_eq!(items[3].symbol(), Some("checkmark"));
         assert_eq!(items[4].symbol(), None, "a tone this app doesn't know is plain");
         assert_eq!(items[4].tone_kind(), None);
+        assert_eq!(items[6].symbol(), Some("exclamationmark.triangle.fill"));
+        assert_eq!(items[7].symbol(), Some("circle.dashed"));
+        assert_eq!(items[7].tone_kind(), Some("working"));
+        let own = PanelItem { icon: Some("globe".into()), ..items[2].clone() };
+        assert_eq!((own.symbol(), own.tone_symbol()), (Some("globe"), Some("xmark.diamond.fill")), "its own icon, and its tone's shape beside");
         assert!(render.note.is_none());
     }
 

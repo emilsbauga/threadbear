@@ -20,7 +20,14 @@ pub(crate) const KEEP: usize = 24;
 pub(crate) struct PaneCache {
     /// Least recently shown first. A thread's own pane, never a sub-agent's.
     panes: Vec<Entity<ThreadPane>>,
+    /// Threads pushed out for room lately, newest last, so the log can say
+    /// whether a switch that had to read was one of those or a thread not
+    /// opened since the app started (`ThreadPane::log_read`).
+    evicted: std::collections::VecDeque<String>,
 }
+
+/// How many evicted threads `PaneCache::evicted` remembers.
+const EVICTED_REMEMBERED: usize = 200;
 
 impl PaneCache {
     /// The thread's kept pane, taken out to be shown.
@@ -46,6 +53,12 @@ impl PaneCache {
         while self.panes.len() > KEEP - 1 {
             let oldest = self.panes.remove(0);
             oldest.read(cx).unsubscribe();
+            let id = oldest.read(cx).summary.id.clone();
+            self.evicted.retain(|e| *e != id);
+            if self.evicted.len() == EVICTED_REMEMBERED {
+                self.evicted.pop_front();
+            }
+            self.evicted.push_back(id);
         }
     }
 
@@ -70,6 +83,16 @@ impl PaneCache {
 
     pub(crate) fn get(&self, id: &str, cx: &App) -> Option<Entity<ThreadPane>> {
         self.panes.iter().find(|p| p.read(cx).summary.id == id).cloned()
+    }
+
+    /// How many threads are kept, the open one not counted.
+    pub(crate) fn len(&self) -> usize {
+        self.panes.len()
+    }
+
+    /// Whether the thread was pushed out for room since the app started.
+    pub(crate) fn was_evicted(&self, id: &str) -> bool {
+        self.evicted.iter().any(|e| e == id)
     }
 
     /// The kept threads, least recently shown first, for the automation's dump.

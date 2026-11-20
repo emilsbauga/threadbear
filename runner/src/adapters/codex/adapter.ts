@@ -5,13 +5,14 @@
 // tools.ts) and hands every notification to the normaliser (section B,
 // normalize.ts), which turns it into events.
 import os from 'node:os';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Account, EffortLevel, ModelChoice, PermissionMode } from '../../protocol.ts';
 import { isEffortLevel } from '../../protocol.ts';
 import type { Logger } from '../../log.ts';
 import type { ProcessRegistry } from '../../proc.ts';
-import type { AdapterOutput, AgentAdapter, AgentSession, RewindRequest, RewindResult, SessionSink, StartSessionOptions, TurnResult, UserInput } from '../types.ts';
+import type { AdapterOutput, AgentAdapter, AgentSession, RewindRequest, RewindResult, SessionSink, StartSessionOptions, TurnResult, UseResetResult, UserInput } from '../types.ts';
 import { RewindRefusedError, SessionNotFoundError } from '../types.ts';
 import { fileContext, type NormalizerContext } from '../context.ts';
 import {
@@ -28,11 +29,12 @@ import {
 import { runsAsCodeByName } from '../../code-writes.ts';
 import { CodexApprovals } from './approvals.ts';
 import { CodexTools, dynamicToolSpecs, toolGuidance, type ToolDefinition } from './tools.ts';
-import { CodexNormalizer, limitsFromAccount } from './normalize.ts';
+import { CodexNormalizer, limitsFromAccount, limitsFromRateLimits } from './normalize.ts';
 import { placePictures } from '../../pictures.ts';
 import { parseCommand, type SlashCommand } from '../../slash-commands.ts';
 import type {
   CodexNormalizerLike,
+  ConsumeAccountRateLimitResetCreditResponse,
   GetAccountRateLimitsResponse,
   GetAccountResponse,
   ModelListResponse,
@@ -70,6 +72,9 @@ export const DEFAULT_CODEX_TIMINGS: CodexTimings = {
 };
 
 export type NormalizerFactory = (ctx: NormalizerContext, o: { threadId: string }) => CodexNormalizerLike;
+
+// How long readLimits waits for Codex's answer before giving up.
+export const READ_LIMITS_TIMEOUT_MS = 30_000;
 
 export type CodexAdapterDeps = {
   // What the next process starts (E's codexBinary(): Threadbear's own copy,
@@ -110,8 +115,6 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   start(opts: StartSessionOptions, sink: SessionSink): AgentSession {
-    // Codex never runs in the sandbox (sandbox.ts), so a thread shut in one can't run here.
-    if (opts.confined) throw new Error("This thread runs in a sandbox, and Codex can't, so it wasn't started. Move it to a Claude login.");
     const s = new CodexSession(opts, sink, this.deps, {
       track: (p, live) => this.track(p, live),
       child: (parent, child) => {
@@ -194,6 +197,49 @@ export class CodexAdapter implements AgentAdapter {
           skills: (r.data ?? []).flatMap(d => (d.skills ?? []).filter(s => s.enabled && s.name && s.path).map(s => ({ name: s.name, ...(s.interface?.displayName ? { title: s.interface.displayName } : {}), description: s.description, path: s.path, scope: s.scope }))),
           errors: (r.data ?? []).flatMap(d => (d.errors ?? []).map(e => e.message)),
         };
+      },
+      (p, live) => this.track(p, live),
+    );
+  }
+
+  // Spends one of the login's usage-limit resets, Codex's next to expire
+  // (no creditId), then reads its limits so the block lifts at once and the
+  // count goes down. Only ever on Mike's click (accounts.useReset): Codex's
+  // own setting for its assistant says resets are never used by themselves.
+  // One idempotency key per click, so Codex's retry of the same call can't
+  // spend a second one.
+  async useReset(account: Account): Promise<UseResetResult> {
+    return withShortLivedProcess(
+      this.shortLived(account, `reset:${account.id}`),
+      async (p) => {
+        const r = await p.request<ConsumeAccountRateLimitResetCreditResponse>('account/rateLimitResetCredit/consume', { idempotencyKey: crypto.randomUUID() });
+        const outcome = r?.outcome;
+        if (outcome !== 'reset' && outcome !== 'nothingToReset' && outcome !== 'noCredit' && outcome !== 'alreadyRedeemed') throw new Error(`Codex answered the reset with ${JSON.stringify(outcome)}`);
+        const read = await p.request<GetAccountRateLimitsResponse>('account/rateLimits/read', null).catch(() => null);
+        const limits = limitsFromRateLimits(read as never);
+        return limits ? { outcome, limits } : { outcome };
+      },
+      (p, live) => this.track(p, live),
+    );
+  }
+
+  // Reads the login's limits in a short-lived app-server, without a turn
+  // (limit-recheck.ts): free, and how a reset done in Codex itself is seen.
+  async readLimits(account: Account): Promise<Extract<AdapterOutput, { kind: 'limits' }> | null> {
+    return withShortLivedProcess(
+      this.shortLived(account, `limits:${account.id}`),
+      async (p) => {
+        // A Codex that never answers would hold its process (and the
+        // recheck's pass) for good; the throw closes it (finally above).
+        let timer: NodeJS.Timeout | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('account/rateLimits/read took too long')), READ_LIMITS_TIMEOUT_MS);
+        });
+        try {
+          return limitsFromRateLimits((await Promise.race([p.request<GetAccountRateLimitsResponse>('account/rateLimits/read', null), deadline])) as never);
+        } finally {
+          clearTimeout(timer);
+        }
       },
       (p, live) => this.track(p, live),
     );

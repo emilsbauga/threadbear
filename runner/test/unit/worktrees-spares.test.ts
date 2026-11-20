@@ -38,10 +38,14 @@ test('with keep, an archived landed worktree is kept as a spare, and the next th
   assert.ok(fs.existsSync(path.join(slot, '.setup-ran')), 'setup ran again');
   assert.equal(sh(slot, 'git status --porcelain'), '');
 
-  // The first thread, brought back, never carries on in what's now b's folder.
+  // The first thread, brought back, never carries on in what's now b's
+  // folder: it gets another of its own.
   h.runner.send(a.id, 'More please');
-  await until(() => h.adapter.last.opts.cwd === path.join(main, 'runner'), "a's new CLI in the main checkout");
-  assert.ok(notes(h, a.id).includes(`This thread's worktree was handed on to other threads when it was archived, so it carries on in the main checkout, ${path.join(main, 'runner')}.`));
+  await until(() => h.adapter.sessions.filter((s) => s.opts.threadId === a.id).length === 2, "a's new CLI");
+  const again = h.runner.get(a.id).worktree!;
+  assert.ok(again && again.path !== slot, 'not b\'s folder');
+  assert.equal(h.adapter.last.opts.cwd, path.join(again.path, 'runner'));
+  assert.ok(notes(h, a.id).includes(`This thread's worktree was handed on to other threads when it was archived, so it carries on in a fresh one at ${again.path}, on the branch ${again.branch}, made from main. tb land puts it on main.`));
   assert.match(h.adapter.last.sent.at(-1)!.text, new RegExp(`Your worktree at ${slot} was handed on to other threads after its work landed on main`));
 });
 
@@ -162,7 +166,7 @@ test("at start, an archived thread whose worktree and branch went unrecorded is 
   assert.equal(notes(h, lost.id).filter((n) => n.includes('worktree')).length, 1, 'quietly: only the note from when it was made');
 });
 
-test('a message sent while the archive cleanup runs waits for it, then starts in the main checkout', async () => {
+test('a message sent while the archive cleanup runs waits for it, then starts in a fresh worktree', async () => {
   const { main } = makeRepo();
   const h = harness();
   const { id, w } = await threadWithWorktree(h, main);
@@ -177,8 +181,10 @@ test('a message sent while the archive cleanup runs waits for it, then starts in
   } finally {
     restore();
   }
-  assert.equal(h.adapter.last.opts.cwd, path.join(main, 'runner'), 'not the folder being removed');
-  assert.ok(!fs.existsSync(w.path));
+  const fresh = h.runner.get(id).worktree!;
+  assert.ok(fresh, 'a fresh one, with its Land chip');
+  assert.equal(h.adapter.last.opts.cwd, path.join(fresh.path, 'runner'), 'not the folder being removed');
+  assert.notEqual(fs.realpathSync(fresh.path), fs.realpathSync(main));
 });
 
 test('a thread deleted while a handover waits for its cleanup stays deleted', async () => {
@@ -443,7 +449,7 @@ test('clearBuildCaches leaves a cache folder reached through a link, and a folde
   assert.ok(fs.lstatSync(path.join(t.path, 'app/.build')).isSymbolicLink(), 'the link stays too');
 
   // The folder switched to another branch: someone else's now.
-  fs.rmSync(path.join(t.path, 'app/.build'));
+  fs.unlinkSync(path.join(t.path, 'app/.build'));
   write(t.path, { 'app/.build/theirs.o': 'in use\n' });
   sh(t.path, 'git checkout -q -b someone-else');
   assert.deepEqual(await clearBuildCaches(rec), []);

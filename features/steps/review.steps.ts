@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { okValue, sleep } from '../support/driver.ts';
 import { SHOTS_REVIEW, shotsReview } from '../support/review-demo.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** The demo thread's review (app/Tools/mock-runner/fixtures/demo-design-review). */
 const DEMO_REVIEW = 'review_account_picker';
@@ -23,6 +25,11 @@ type ReviewState = {
   pickedIds: string[];
   none: boolean;
   reply: string;
+  /** The reply's pictures in the draft, and chips in its box. */
+  images: number;
+  chips: number;
+  /** The picture viewer over the window: "" while it's closed. */
+  viewer: string;
   sendLabel: string;
   editable: boolean;
   actual: boolean;
@@ -134,6 +141,36 @@ When('I write {string} in the review', async function (this: ThreadbearWorld, wo
 When('I paste {string} in the review with ⌘V', async function (this: ThreadbearWorld, words: string) {
   await this.app.do({ cmd: 'clipboard', set: words });
   await this.app.do({ cmd: 'menu-key', key: 'v', modifiers: ['cmd'], review: reviewId(this) });
+});
+
+// A screenshot copied to the clipboard: its PNG bytes, then ⌘V.
+When('I paste a picture in the review with ⌘V', async function (this: ThreadbearWorld) {
+  const sample = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../support/sample.png');
+  await this.app.do({ cmd: 'clipboard', image: sample });
+  await this.app.do({ cmd: 'menu-key', key: 'v', modifiers: ['cmd'], review: reviewId(this) });
+});
+
+Then('the review\'s reply holds {int} picture(s), and says {string}', async function (this: ThreadbearWorld, count: number, words: string) {
+  // The draft has it once the runner has copied the picture in.
+  await untilReview(this, `${count} picture(s) in "${words}"`, (s) => s.chips === count && s.images === count && s.reply.trim() === words);
+});
+
+When('I click picture {int} in the review\'s reply', async function (this: ThreadbearWorld, number: number) {
+  await review(this, { open: false, pressPicture: number });
+});
+
+Then('the review shows picture {int} of {int} full size', async function (this: ThreadbearWorld, number: number, total: number) {
+  // Drawn, not still loading: the runner read it back.
+  await untilReview(this, `picture ${number} of ${total} in the viewer`, (s) => s.viewer.startsWith(`${number} of ${total} `) && !s.viewer.endsWith('(loading)'));
+});
+
+When('I close the picture in the review', async function (this: ThreadbearWorld) {
+  await review(this, { open: false, closeViewer: true });
+  await untilReview(this, 'the viewer closed', (s) => s.viewer === '');
+});
+
+Then('the review window shows it sent {string} with {int} picture(s)', async function (this: ThreadbearWorld, words: string, count: number) {
+  await untilReview(this, `"${words}" sent with ${count} picture(s)`, (s) => s.status === 'answered' && s.reply === words && s.images === count);
 });
 
 When('I press Send in the review', async function (this: ThreadbearWorld) {

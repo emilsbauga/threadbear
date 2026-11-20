@@ -116,10 +116,16 @@ function expand(p: string, home: string): string {
   return p;
 }
 
-// A login a turn can start on: not blocked, and at or above the minimum
-// room, or its usage isn't known.
+// A login no turn can start on whatever its room: at its limit, signed
+// out (a turn on it would only fail: sign-in-state.ts), or its plan ended.
+export function loginOut(account: Account): boolean {
+  return !!account.usage?.blocked || !!account.signedOut || !!account.planEnded;
+}
+
+// A login a turn can start on: not blocked or signed out, and at or above
+// the minimum room, or its usage isn't known.
 export function loginOk(account: Account): boolean {
-  if (account.usage?.blocked) return false;
+  if (loginOut(account)) return false;
   const room = accountRoom(account);
   return room === undefined || room >= MIN_ROOM_PERCENT;
 }
@@ -154,13 +160,13 @@ export function pickInPool(pool: Pool, accounts: Account[], o: { provider: Provi
   const members = poolAccounts(pool, accounts).filter((a) => a.provider === o.provider && !o.exclude?.includes(a.id));
   const current = members.find((a) => a.id === o.current);
   if (current && loginOk(current)) return current.id;
-  const preferred = members.find((a) => a.id === o.prefer && !a.usage?.blocked);
+  const preferred = members.find((a) => a.id === o.prefer && !loginOut(a));
   if (preferred && accountRoom(preferred) === undefined) return preferred.id;
   const now = o.now ?? Date.now();
   let best: { id: string; room: number; reset: number } | undefined;
   for (const a of members) {
     const room = accountRoom(a);
-    if (a.usage?.blocked || room === undefined || room < MIN_ROOM_PERCENT) continue;
+    if (loginOut(a) || room === undefined || room < MIN_ROOM_PERCENT) continue;
     const reset = weeklyReset(a, now);
     const better = !best
       || reset < best.reset
@@ -168,7 +174,7 @@ export function pickInPool(pool: Pool, accounts: Account[], o: { provider: Provi
     if (better) best = { id: a.id, room, reset };
   }
   if (best) return best.id;
-  return members.find((a) => !a.usage?.blocked && accountRoom(a) === undefined)?.id;
+  return members.find((a) => !loginOut(a) && accountRoom(a) === undefined)?.id;
 }
 
 // When a login's weekly window resets, to the minute so two read a few
@@ -194,6 +200,26 @@ export function nextLogin(pool: Pool, accounts: Account[], thread: { accountId: 
     if (id) return { accountId: id, provider };
   }
   return roomWait(pool, accounts, now);
+}
+
+// Where a scheduled run pinned to a signed-out or plan-ended Claude login
+// runs instead:
+// a pool holding that login with another Claude login that can run it, the
+// folder's pool first. Only Claude logins are tracked as signed out, and
+// only another Claude login keeps the schedule's model. A login alone in
+// its pool (claude-2, Convex work only) has nowhere to go, which keeps
+// work off logins Mike kept apart. The Nightly retro, pinned to claude-1,
+// failed two nights after its sign-in ended (14 Nov).
+export function standInFor(pools: Pool[], accounts: Account[], pinnedId: string, cwd: string, home?: string): { poolId: string; accountId: string } | undefined {
+  const pinned = accounts.find((a) => a.id === pinnedId);
+  if (pinned?.provider !== 'claude' || !(pinned.signedOut || pinned.planEnded)) return undefined;
+  const holding = pools.filter((p) => p.accountIds.includes(pinnedId));
+  const own = poolForFolder(holding, cwd, home);
+  for (const pool of own ? [own, ...holding.filter((p) => p !== own)] : holding) {
+    const accountId = pickInPool(pool, accounts, { provider: 'claude', exclude: [pinnedId] });
+    if (accountId) return { poolId: pool.id, accountId };
+  }
+  return undefined;
 }
 
 // When to look again with nothing in the pool to run on: the earliest time
@@ -226,6 +252,9 @@ function limitWindow(a: Account): UsageWindow | undefined {
 // back have all reset. Blocked with no window at its limit: the tightest
 // window's reset. undefined when no reset time is known.
 export function backAt(a: Account, now: number): number | undefined {
+  // Only signing in again (or paying again) brings it back, and nothing
+  // says when.
+  if (a.signedOut || a.planEnded) return undefined;
   const main = mainWindows(a);
   let holding = main.filter((w) => w.remainingPercent < MIN_ROOM_PERCENT);
   if (!holding.length && a.usage?.blocked) holding = [limitWindow(a)].filter((w): w is UsageWindow => !!w);
@@ -245,6 +274,8 @@ export function blockedUntil(a: Account, now: number): number {
 // limit, back at 6:10 pm", or "is down to 6% of its weekly limit, which
 // resets Thu 1 pm".
 export function limitWhy(a: Account, now: number, hit = false): string {
+  // Its last reading's reset would promise room that isn't coming.
+  if (a.planEnded) return "has no paid plan any more";
   const w = limitWindow(a);
   const name = w ? (w.kind === 'five_hour' ? '5-hour' : 'weekly') : 'usage';
   const at = w?.resetsAt && Date.parse(w.resetsAt) > now ? resetTime(w.resetsAt, now) : undefined;
@@ -255,6 +286,8 @@ export function limitWhy(a: Account, now: number, hit = false): string {
 // One login's room in a word, for list_accounts and tb pools: "61%",
 // "out until 5 am", "room unknown".
 export function roomWord(a: Account, now: number): string {
+  if (a.planEnded) return 'plan ended';
+  if (a.signedOut) return 'signed out';
   if (!loginOk(a)) {
     const at = backAt(a, now);
     const room = accountRoom(a);

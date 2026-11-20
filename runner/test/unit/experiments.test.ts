@@ -46,7 +46,7 @@ test('experiments: every experimentOn in the runner names an experiment that has
     }
   };
   walk(src);
-  assert.ok(used.size >= 3, 'found the calls');
+  assert.ok(used.size >= 1, 'found the calls');
   for (const id of used) assert.ok(ids.has(id), `experimentOn(..., '${id}') has no src/experiments/${id}.md`);
 });
 

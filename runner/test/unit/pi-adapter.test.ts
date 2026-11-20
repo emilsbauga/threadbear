@@ -31,6 +31,9 @@ function setup(t: { after(fn: () => Promise<void>): void }, extra: { mode?: stri
 test('Pi streams stable blocks, waits for acknowledgment and settles before completing', async t => {
   const h = setup(t);
   h.session.send({ id: 'm1', text: 'settled-before-ack\u2028literal', images: [] });
+  await until(() => h.outputs.some(o => o.kind === 'event' && o.event.type === 'assistant.text'));
+  assert.equal(h.results().length, 0, 'a final event cannot complete the prompt before acknowledgment');
+  fs.writeFileSync(path.join(h.profile.configDir, 'release-ack'), 'ready');
   await until(() => h.results().length === 1);
   assert.deepEqual(h.results()[0].answered, ['m1']);
   assert.equal(h.results()[0].outcome, 'completed');

@@ -262,6 +262,68 @@ run or a screenshot from the running app. A slice with no runtime check doesn't
 count. (Ghostex's port log is where this shape comes from; its slices 214 to 268
 built parsers and gates with no launch of the app, which is the trap.)
 
+### 2026-11-20 Another lab's review folds like the line of work (`card.review`, GPUI-only)
+
+- Mike, 20 Nov: a review panel's eight answered findings ran a screen tall
+  between the wake-up note and the reply that already said what was fixed;
+  he wanted them "collapsed down, almost like the working section". The
+  review row is now a work line (the checklist icon, the heading as it was,
+  the chevron after it, the hover fill) that opens on click, from the row's
+  menu (Expand/Collapse) or `expand`/`collapse`, to every finding and an
+  "Open the review's thread" line under them.
+- Folded, it still shows any finding that's open (left for Mike or not
+  answered), as those may need him (core's `ReviewFinding::is_open`,
+  `LabReview::folds` and `shown_findings`). A review with nothing to fold
+  (no findings, or every one open) has no chevron and its line opens the
+  review's thread, as before. The dump has `expanded` on a review that folds.
+- The Swift app is frozen: its row stays as it was, and the scenario is
+  already `@swift-pending`.
+- Files: `desktop/core/src/reducer/event.rs`,
+  `desktop/core/tests/needs_you_tests.rs`, `desktop/gpui/src/rows/{lab_review,work,export}.rs`,
+  `desktop/gpui/src/{rows,thread}.rs`, `features/composer-cards.feature` and
+  its steps, `docs/guide.md`.
+- Verification: `cargo test -p threadbear-core --test needs_you_tests` on
+  the cloud box, 17 of 17 with the new `a_review_row_folds_its_answered_findings_away`;
+  the `@card.review` scenario there with the GPUI app, passed (folded, then
+  opened). Shots from a debug app on the mock: a panel's eight fixed findings
+  folded to one line and opened, and a review with two open findings folded
+  to those two; a click on the line opened and closed it.
+
+### 2026-11-20 Code and data links open in the pane, at the lines they name, ready to type in (`rich.filerefs`, `file.editor`, GPUI-only)
+
+- From David Clark's fork (DavidClarkTucson/threadbear), written fresh here.
+  A click on a reply's link to data, logs or code (JSON, YAML, TOML, CSV,
+  `.log`, and every kind the pane colours but `.plist`, which can be binary)
+  opens it in the pane rather than in whichever app claims it (Xcode took
+  `.json`); ⌘-click still opens its app. Default's Automatic now says "Panel
+  for Docs, Code and Pictures, App for the Rest".
+- A path with lines after it, `a.ts:12`, `a.ts:12:4` or `a.ts:121-125`, in
+  a link or in a reply's code, opens the file with those lines tinted in the
+  accent colour, marked in the gutter and scrolled to. A span was not read
+  as a path at all before. Lines from a reply are anyone's: backwards is the
+  first line, 0 or a number too big to count names none (the file still
+  opens), and a line past the end is the end, one pass over the text at most
+  (core's `file_refs::line_range` and `line_bytes`, with tests).
+- Code and plain text open with their own text up, ready to type in (core's
+  `MarkdownView::opens_raw`), from a link, Highlights, the Files panel or
+  anywhere else; Done puts them away to read, as before. Nothing is written
+  until something's typed (`EditSession::save_now`). The first keystroke
+  takes a link's tint off. The read view has line numbers now too.
+- The Swift app is frozen and does none of this, so the new scenarios and
+  the changed `file.editor` one are `@swift-pending`.
+- Files: `desktop/core/src/{file_refs,highlights,reply_links,text_file}.rs`,
+  `desktop/gpui/src/{files,file_edit,highlights,reply_links}.rs`,
+  `desktop/gpui/src/rows/markdown.rs` (core's `strip_line`, so a span reads
+  as a path), `features/{reply-links,file-editing}.feature` and their steps,
+  `features/support/pane.ts` (`previewLines` in the dump), `docs/guide.md`.
+- Verification: core's tests on Tinker Desk (906 passed), and the GPUI
+  app's path tests there. The GPUI app's `rich.filerefs`, `rich.filemenu`,
+  `rich.cmdclick`, `file.editor`, `file.conflict`, `file.textview`,
+  `file.find` and `file.markdown` scenarios on Tinker Desk's desktop: 19
+  passed, among them the four new ones (a `.json` and a `.ts` link in the
+  pane, lines 2-3 tinted from a link and from a name in code, the tint gone
+  on typing).
+
 ### 2026-11-13 Restarting onto the next version hands over, and threads keep their place (`system.handover`, `system.selfupdate`)
 
 - The GPUI app's restart onto a staged build was the window going and coming
@@ -778,9 +840,8 @@ and `@panel.image`; `cargo test` for `pinned_panels` (core) and
   typed, else the first whose name starts with it (a Settings section by its
   own name), else the first: "usage" picks Usage over a thread that only
   mentions the word (13 Nov). ⌘P opens it too (`openAnythingAlso`, no
-  menu item of its own), and it's the `openAnything` experiment (13 Nov):
-  off, both keys, the Go menu item and their lines in Settings > Keyboard
-  go (`@open-anything-off`; the mock's hello has it on otherwise).
+  menu item of its own). It was the `openAnything` experiment from 13 Nov
+  and became standard on 17 Nov, so the keys and menu item are always there.
 - Files: `desktop/core/src/open_anything.rs`, `desktop/gpui/src/open_anything.rs`,
   `features/open-anything.feature`.
 - Verification: `cargo test -p threadbear-core --lib -- open_anything shortcuts keyboard`, 32 of 32; the `@nav.openanything`, `@settings.keyboard` and `@nav.shortcuts` specs against the GPUI app on the cloud box, 17 of 17; shots of the box empty and typed on Tinker Desk beside the mockups.
@@ -3490,9 +3551,12 @@ Fixes from Codex's review of the slice before:
   orange dot where it runs out), a model's own week (Weekly Fable), what to
   do about each window, and the lines under it (old numbers, credits, Token
   Stats' notices, the shared part said once at the foot).
-- The Settings card main has had since 368d99d8: Show Weekly Fable, on by
-  default and remembered as `usage.showModelWeeks`, there only while a login
-  has a model's own week.
+- Show Weekly Fable, on by default and remembered as `usage.showModelWeeks`,
+  there only while a login has a model's own week: a card at the panel's foot
+  from 368d99d8, moved to Settings › General › Usage on 18 Nov with the spare
+  week switch (GPUI only; the frozen Swift app keeps its card).
+- Find work for it on a login whose week will go partly unused
+  (`accounts.findWork`), GPUI only.
 - The numbers and words are `desktop/core/src/usage.rs` (UsageStatsMath,
   LimitPace, RollingWeek, UsageGroups, HoneyLevel, the parts of
   AccountUsageText the panel reads, LoginColours), with the Swift tests
@@ -5037,9 +5101,11 @@ Fixes from Codex's review of the slice before:
 - Wait-line tips include the local start and end times and all finished
   jobs. Sending and queued messages have Swift's tips, and review answers
   begin with the review icon.
-- Attach images filters supported image types in the Mac's native sheet.
-  On Windows and Linux the kit cannot filter the dialog; nonimage selections
-  are rejected before they can become attachments.
+- Attach images or Markdown filters to supported image types and Markdown
+  (`.md`, `.markdown`) in the Mac's native sheet. Pictures become chips; a
+  Markdown file goes in as its path, as a dropped file does. On Windows and
+  Linux the kit cannot filter the dialog; other selections are rejected
+  before they can become attachments.
 - Pick a time has a month calendar and a separate time field. A past time
   leaves the dialog open with its warning inside it.
 - A selected sidebar row dims from 8% to 6% when its window is behind.

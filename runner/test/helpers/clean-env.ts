@@ -26,3 +26,8 @@ process.on('exit', () => {
 // that checks a priority sets its own. check.sh says the same; this covers
 // a deploy's npm test too (Codex's review, 11 Nov).
 process.env.THREADBEAR_JOB_PRIORITY = 'normal';
+
+// Windows' clicks-only rule off (platform.ts, clicksOnly): most patch and
+// Claude trust tests check what the follow lets run by itself, which is
+// what runs once the rule goes. clicks-only.test.ts turns it on.
+process.env.THREADBEAR_CLICKS_ONLY = '0';

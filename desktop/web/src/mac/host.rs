@@ -14,6 +14,7 @@ use cef::{args::Args, *};
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 unsafe extern "C" {
@@ -30,10 +31,14 @@ unsafe extern "C" {
     pub(crate) fn tb_view_input_count(view: *mut c_void) -> u64;
     pub(crate) fn tb_view_note_input(view: *mut c_void);
     pub(crate) fn tb_view_has_keyboard(view: *mut c_void) -> bool;
+    // The layer Chromium shows a page's picture in, which should be the view's size (panel.rs).
+    pub(crate) fn tb_view_picture_size(view: *mut c_void, width: *mut f64, height: *mut f64) -> bool;
     // Who has a window's keyboard, and giving it back to GPUI's view.
     fn tb_view_keyboard_holder(view: *mut c_void) -> i32;
     fn tb_view_take_keyboard(view: *mut c_void) -> bool;
     fn tb_view_send_keys(view: *mut c_void, text: *const c_char);
+    fn tb_view_send_click(view: *mut c_void, x: f64, y: f64) -> *mut c_char;
+    fn free(ptr: *mut c_void);
     fn tb_popup_menu(view: *mut c_void, x: f64, y: f64, titles: *const *const c_char, symbols: *const *const c_char, tips: *const *const c_char, checked: *const bool, count: i32) -> i32;
     fn tb_main_bundle_identifier() -> *const c_char;
 }
@@ -96,6 +101,25 @@ pub fn send_keys(view: *mut c_void, text: &str) {
     }
 }
 
+/// A scripted app's click at (`x`, `y`) in the window GPUI's view `view`
+/// fills (GPUI's coordinates), through AppKit as a person's click goes, so a
+/// page's view under it gets it the way it gets a real one.
+/// Says what AppKit hit there and where each page view is in the window.
+pub fn send_click(view: *mut c_void, x: f32, y: f32) -> String {
+    if view.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let said = tb_view_send_click(view, f64::from(x), f64::from(y));
+        if said.is_null() {
+            return String::new();
+        }
+        let text = CStr::from_ptr(said).to_string_lossy().into_owned();
+        free(said.cast());
+        text
+    }
+}
+
 /// Where Chromium has got to in this process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -115,6 +139,53 @@ pub(crate) fn set_status(status: Status) {
 
 pub fn status() -> Status {
     STATUS.lock().map(|s| s.clone()).unwrap_or(Status::Failed("the web runtime's state was lost".into()))
+}
+
+/// cef::initialize has been called in this process. After that a failed
+/// start is final: CEF says to exit without calling anything else of its,
+/// and Chromium's own start can't run twice in a process.
+static INITIALIZE_CALLED: AtomicBool = AtomicBool::new(false);
+
+/// Chromium's own start has run in this process (`retry`).
+pub fn initialize_called() -> bool {
+    INITIALIZE_CALLED.load(Ordering::Acquire)
+}
+
+/// After a failed start, lets the next `start` try again, if Chromium's own
+/// start never ran (the framework didn't load, the profile couldn't be
+/// made). False when only a new process can try again.
+pub fn retry() -> bool {
+    if INITIALIZE_CALLED.load(Ordering::Acquire) {
+        return false;
+    }
+    if matches!(status(), Status::Failed(_)) {
+        set_status(Status::NotStarted);
+    }
+    true
+}
+
+/// Puts a line of ours in Chromium's log, which says nothing when it gives
+/// up early (an empty web-runtime.log on 16 Nov, when a handover's two
+/// copies wanted the same profile).
+fn log_line(log_file: &std::path::Path, line: &str) {
+    use std::io::Write as _;
+    eprintln!("threadbear-web: {line}");
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Ok(mut f) = threadbear_core::private_file::append(log_file) {
+        let _ = writeln!(f, "[{secs} threadbear] {line}");
+    }
+}
+
+/// Why cef::initialize said no, from CEF's exit code and the profile's lock.
+fn initialize_failure(profile: &std::path::Path) -> String {
+    let code = get_exit_code();
+    let holder = threadbear_core::web_runtime::profile_lock_pid(profile);
+    let in_use = code == sys::cef_resultcode_t::CEF_RESULT_CODE_PROFILE_IN_USE as i32 || code == sys::cef_resultcode_t::CEF_RESULT_CODE_NORMAL_EXIT_PROCESS_NOTIFIED as i32;
+    match (in_use, holder) {
+        (true, Some(pid)) if pid != std::process::id() => format!("its profile was in use by another process (pid {pid}, another copy of Threadbear?), exit code {code}"),
+        (true, _) => format!("its profile was in use, exit code {code}"),
+        _ => format!("Chromium refused to start, exit code {code}"),
+    }
 }
 
 /// What Chromium needs to find: the bundle the runtime is laid out in, the
@@ -155,7 +226,8 @@ pub fn start(launch: Launch) -> Result<(), String> {
     let binary = launch.framework.join("Chromium Embedded Framework");
     let path = CString::new(binary.to_string_lossy().into_owned()).map_err(|_| "the runtime's path has a NUL in it".to_owned())?;
     if unsafe { super::loader_support::cef_load_library(path.as_ptr()) } != 1 {
-        let why = "the web runtime couldn't be loaded (its log is web-runtime.log in the data folder)".to_owned();
+        let why = format!("the web runtime couldn't be loaded from {}: {}", binary.display(), super::loader_support::last_load_error().unwrap_or_else(|| "no reason given".into()));
+        log_line(&launch.log_file, &why);
         set_status(Status::Failed(why.clone()));
         return Err(why);
     }
@@ -174,7 +246,13 @@ pub fn start(launch: Launch) -> Result<(), String> {
         set_status(Status::Failed(why.clone()));
         return Err(why);
     }
-    std::fs::create_dir_all(&launch.profile).map_err(|e| format!("couldn't make the web runtime's profile: {e}"))?;
+    if let Err(e) = std::fs::create_dir_all(&launch.profile) {
+        let why = format!("couldn't make the web runtime's profile: {e}");
+        log_line(&launch.log_file, &why);
+        set_status(Status::Failed(why.clone()));
+        return Err(why);
+    }
+    let (profile, log_file) = (launch.profile.clone(), launch.log_file.clone());
     let settings = Settings {
         // Chromium's own sandbox is off. On a Mac it lets a helper read only
         // inside the app bundle macOS started (the browser's real main
@@ -212,8 +290,11 @@ pub fn start(launch: Launch) -> Result<(), String> {
     PENDING.with(|p| {
         *p.borrow_mut() = Some(Box::new(move || {
             let mut app = app;
+            INITIALIZE_CALLED.store(true, Ordering::Release);
             if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
-                set_status(Status::Failed("Chromium didn't start (web-runtime.log in the data folder says why)".into()));
+                let why = initialize_failure(&profile);
+                log_line(&log_file, &format!("Chromium didn't start: {why}"));
+                set_status(Status::Failed(why));
                 return;
             }
             run_message_loop();

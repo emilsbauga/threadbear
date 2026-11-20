@@ -29,6 +29,27 @@ Feature: The open card in the composer
     When I send my picks
     Then the transcript shows my message "2. Check who gets the beta"
 
+  @card.somethingelse @swift-pending @windows-pending @linux-pending
+  Scenario: A click gets back into a Something else box after the message box had the cursor
+    When I open the thread "Ship the beta to TestFlight"
+    And I pick answer 0 of ask 1 on the card
+    And I type "Also" in the composer
+    And I click into the Something else box of ask 1
+    And I type "Accepted it already" where the cursor is
+    Then ask 1 on the card is answered "something else: \"Accepted it already\""
+
+  @card.somethingelse @swift-pending @windows-pending @linux-pending
+  Scenario: Through AppKit, a click gets back into a Something else box after the message box had the keyboard
+    When I open the thread "Ship the beta to TestFlight"
+    And I pick answer 0 of ask 1 on the card
+    And I type "maybe" on the keyboard
+    And I press Backspace 5 times on the keyboard
+    And I type "" in the composer
+    And I type "Also" on the keyboard
+    And I click into the Something else box of ask 1 through AppKit
+    And I type "accepted" on the keyboard
+    Then ask 1 on the card is answered "something else: \"accepted\""
+
   @card.returnflow
   Scenario: Return with picks and an ask still open goes no further
     When I open the thread "Ship the beta to TestFlight"
@@ -74,6 +95,25 @@ Feature: The open card in the composer
   # The runner's loose-ends check (protocol "Loose ends") comes on the
   # thread's summary: the GPUI app dropped it, so its done card never said
   # "Still open" when the Swift app's did (12 Nov).
+  # Experiment inboxGuess (docs/protocol.md, "Inbox guess"): the GPUI app
+  # only. The Swift app is frozen and archives straight off.
+  @card.done @planned.exp.inboxguess @inbox-guess @swift-pending
+  Scenario: Archive on the done card asks whether I needed to see the thread
+    When I open the thread "Tidy the imports in the uploader"
+    And I press "archive" on the card
+    Then the Archive menu offers "Didn't need this | Glad I saw this | Not sure"
+    And the "Inbox" section lists "Tidy the imports in the uploader"
+    When I pick "Didn't need this" from the Archive menu
+    Then the "Archived" section lists "Tidy the imports in the uploader"
+    And the runner was told I archived "Tidy the imports in the uploader" as "didntNeedToSee"
+
+  @card.done @planned.exp.inboxguess @swift-pending
+  Scenario: Without the experiment, Archive on the done card archives straight off
+    When I open the thread "Tidy the imports in the uploader"
+    And I press "archive" on the card
+    Then the "Archived" section lists "Tidy the imports in the uploader"
+    And the runner was told I archived "Tidy the imports in the uploader" as ""
+
   @card.done @planned.exp.looseends
   Scenario: A done card lists what the runner found still open
     Given the runner found "4 commits it made in convex-native-v7 aren't pushed" still open on "Tidy the imports in the uploader"
@@ -109,6 +149,10 @@ Feature: The open card in the composer
     And the transcript's review line says "Reviewed by Codex: 1 open"
     And the transcript's review line says "#1 fixed: Drops the session on refresh."
     And the card doesn't show "Reviewed by"
+    # Folded as the line of work is, showing only what's still open (20 Nov).
+    And the transcript's review line is folded
+    When I open the transcript's review line
+    Then the transcript's review line is open
 
   @card.collapse
   Scenario: Folded, the card's picks show as chips over the box, and one can be taken back

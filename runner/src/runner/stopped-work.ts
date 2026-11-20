@@ -52,7 +52,7 @@ export const stoppedWorkPart = {
         return;
       }
       rec.stoppedWorkWakes = wakes + 1;
-      this.sendTo(st, stoppedWorkMessage(stopped.what, wakes + 1 >= STOPPED_WORK_WAKES), [], { origin: 'runner', queue: true });
+      this.sendTo(st, stoppedWorkMessage(stopped.what, wakes + 1 >= STOPPED_WORK_WAKES), [], { origin: 'runner', queue: true, wakeReason: 'Its background work was stopped' });
       this.log.info('told a thread its background work was stopped', { threadId: rec.id, what: stopped.what });
     } catch (e) {
       this.log.error('could not tell a thread its background work was stopped', { threadId: rec.id, error: String(e) });
@@ -92,7 +92,7 @@ export const stoppedWorkPart = {
         continue;
       }
       try {
-        rec.restartCarryOn = this.sendTo(st, CARRY_ON_RESTART, [], { origin: 'runner', queue: true });
+        rec.restartCarryOn = this.sendTo(st, CARRY_ON_RESTART, [], { origin: 'runner', queue: true, wakeReason: 'The runner came back' });
         carried++;
         this.log.info('carried on a thread the runner stopped mid-turn', { threadId: rec.id });
       } catch (e) {

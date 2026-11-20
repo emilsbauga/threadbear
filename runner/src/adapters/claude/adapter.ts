@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
+import { readYearToken } from '../../year-token.ts';
 import { denySecrets } from '../../secrets-guard.ts';
-import { CONFINED_NO_SANDBOX, sandboxSpawner, type SandboxConfig } from '../../sandbox.ts';
+import { denyWaitLoop } from '../../wait-loops.ts';
 import os from 'node:os';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { HookInput, McpServerConfig, ModelInfo, Options, PermissionResult, Query, SDKControlGetContextUsageResponse, SDKUserMessage, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
@@ -22,7 +23,8 @@ import { codeWriteNote, codeWriteReason, runsAsCodeByName, type CodeWrite } from
 import path from 'node:path';
 import { RUNNER_VERSION } from '../../config.ts';
 import { stripModelSuffix } from '../../accounts.ts';
-import { END_TURN_FULL_NAME, END_TURN_NUDGE, endTurnMessageStands, endTurnWantsReply, needsFromTool, ONE_REPLY_END_TURN_NUDGE, ONE_REPLY_WRITE_NUDGE, owedReplyAfterCompact, replyAsks, replyAsksNudge, WakeRead } from '../../needs.ts';
+import { END_TURN_FULL_NAME, END_TURN_NUDGE, endTurnMessageStands, endTurnWantsReply, needsFromTool, ONE_REPLY_END_TURN_NUDGE, ONE_REPLY_WRITE_NUDGE, missingLinksNudge, owedReplyAfterCompact, replyAsks, replyAsksNudge, WakeRead } from '../../needs.ts';
+import { missingFileLinks } from '../../highlights.ts';
 
 // Variables a parent Claude Code session sets for its own children. If the
 // runner was started from inside one (tests, a terminal in T3), they would
@@ -43,12 +45,27 @@ const INHERITED_SESSION_VARS = [
   'AI_AGENT',
 ];
 
-export function cliEnv(account: Account, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+export function cliEnv(account: Account, base: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...base };
   for (const k of INHERITED_SESSION_VARS) delete env[k];
   if (account.id === 'claude-main') delete env.CLAUDE_CONFIG_DIR;
   else env.CLAUDE_CONFIG_DIR = account.configDir;
+  // A login's own year-long token (year-token.ts), or none: never one from
+  // the runner's environment, which would run this login as another.
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (account.provider === 'claude') {
+    const token = readYearToken(account.configDir);
+    if (token) env.CLAUDE_CODE_OAUTH_TOKEN = token.token;
+  }
   env.CLAUDE_AGENT_SDK_CLIENT_APP = `threadbear-runner/${RUNNER_VERSION}`;
+  // On Windows, Claude Code gives the model a PowerShell tool beside Bash.
+  // The runner's guards (the secrets guard, approvals, what a limited
+  // thread may run) read Bash commands by that name, so a PowerShell call
+  // would pass them unread. Off until they read PowerShell too (the 9 Nov
+  // audit, docs/gpui-port/runner-windows.md).
+  if (platform === 'win32') env.CLAUDE_CODE_USE_POWERSHELL_TOOL = '0';
+  // And no program run from the folder by name, as cmd.exe would (main.ts).
+  if (platform === 'win32') env.NoDefaultCurrentDirectoryInExePath = '1';
   return env;
 }
 
@@ -128,10 +145,6 @@ export type ClaudeAdapterDeps = {
   neverAsk?: Set<string>;
   // One reply (needs.ts), read when a session starts, as its end_turn is.
   oneReply?: () => boolean;
-  // The container a thread in this folder runs its CLI in, if any
-  // (sandbox.ts). Only a thread's own session; the model and command
-  // probes run as before.
-  sandboxFor?: (cwd: string) => SandboxConfig | undefined;
 };
 
 export class ClaudeAdapter implements AgentAdapter {
@@ -143,9 +156,6 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   start(opts: StartSessionOptions, sink: SessionSink): AgentSession {
-    // A thread shut in a sandbox never starts outside one, even if its
-    // folder has stopped being in one since (a link put in its place).
-    if (opts.confined && !this.deps.sandboxFor?.(opts.cwd)) throw new Error(CONFINED_NO_SANDBOX(opts.cwd));
     const s = new ClaudeSession(opts, sink, this.deps);
     s.start();
     return s;
@@ -422,6 +432,9 @@ class ClaudeSession implements AgentSession {
   private endTurnInputs = new Map<string, unknown>();
   private doneCard = false;
   private replyAfterEnd = '';
+  // Every block of that reply, by item: a dead file link can be in any
+  // (onStop; needs.ts, missingLinksNudge).
+  private replyBlocks = new Map<string, string>();
   // Whether the agent has read a background task's notification that came
   // into the turn: from then its end_turn is behind it, so the Stop hook
   // asks for another (needs.ts, WakeRead).
@@ -496,8 +509,10 @@ class ClaudeSession implements AgentSession {
           // let it through: only tools that can queue, so the rest don't
           // make a round trip per call.
           // ...and keeps the runner's token from a thread that isn't on Full
-          // access (secrets-guard.ts).
-          { matcher: [QUEUE_HOOK_MATCHER, ...SECRETS_ONLY_TOOLS].join('|'), hooks: [async (input) => this.onSecretsCall(input) ?? this.onQueuedCall(input) ?? this.onEditCall(input)] },
+          // access (secrets-guard.ts), and refuses a background wait loop,
+          // which would keep the thread from hibernating (wait-loops.ts).
+          // After onQueuedCall, which notes every call it sees.
+          { matcher: [QUEUE_HOOK_MATCHER, ...SECRETS_ONLY_TOOLS].join('|'), hooks: [async (input) => this.onSecretsCall(input) ?? this.onQueuedCall(input) ?? this.onWaitLoop(input) ?? this.onEditCall(input)] },
           // A hook's ask comes before allow rules, so it's how a folder's
           // untrusted ones stop applying once the thread leaves Full
           // (askBeforeEveryTool). Only on a session that may need it.
@@ -506,10 +521,7 @@ class ClaudeSession implements AgentSession {
         SessionStart: [{ hooks: [async (input) => this.onCompact(input)] }],
       },
       abortController: this.abort,
-      spawnClaudeCodeProcess: ((spawn, sb) => (sb ? sandboxSpawner(spawn, sb, opts.threadId) : opts.confined ? () => { throw new Error(CONFINED_NO_SANDBOX(opts.cwd)); } : spawn))(
-        groupSpawner(deps.registry, deps.log, (line) => this.stderr(line), opts.threadId),
-        deps.sandboxFor?.(opts.cwd),
-      ),
+      spawnClaudeCodeProcess: groupSpawner(deps.registry, deps.log, (line) => this.stderr(line), opts.threadId),
     };
     const servers = deps.mcpServersFor?.(opts.threadId);
     if (servers && Object.keys(servers).length) options.mcpServers = servers;
@@ -539,6 +551,7 @@ class ClaudeSession implements AgentSession {
     const ended = this.endTurnTaken;
     const wrote = this.wroteAfterEnd || this.messageStands;
     const asks = this.doneCard && this.wroteAfterEnd ? replyAsks(this.replyAfterEnd) : undefined;
+    const missing = !stop.stop_hook_active && this.oneReply && this.wroteAfterEnd ? missingFileLinks([...this.replyBlocks.values()].join('\n\n'), { cwd: this.opts.cwd, home: os.homedir(), exists: (p) => fs.existsSync(p) }) : [];
     this.forgetEndTurn();
     // A turn that ended in plain text leaves the runner reading the card
     // from the prose (needs.ts, needsFromText), which drops what end_turn
@@ -552,6 +565,15 @@ class ClaudeSession implements AgentSession {
     // One reply: end_turn without words after it leaves no reply, so the
     // agent is asked for it, once (the hook's own guard, stop_hook_active).
     if (ended && this.oneReply && !wrote) return { decision: 'block', reason: ONE_REPLY_WRITE_NUDGE };
+    // ...and one whose reply links a file that isn't there is sent back,
+    // once, to find it and end again: the next end_turn asks for a whole new
+    // reply (rewrite), which the apps show in this one's place as after any
+    // later card. Before the asking check, as only one nudge is sent: this
+    // one's new end_turn can carry the question's card too.
+    if (ended && missing.length) {
+      this.sink.output({ kind: 'endTurnNudge', reopen: true, rewrite: true });
+      return { decision: 'block', reason: missingLinksNudge(missing, Boolean(asks)) };
+    }
     // ...and one whose reply closes by asking for an answer, over a card that
     // said nothing was needed, is asked for the card, once. The runner is told
     // first, so the end_turn it brings isn't refused as a repeat.
@@ -586,6 +608,7 @@ class ClaudeSession implements AgentSession {
     this.endTurnCall = undefined;
     this.doneCard = false;
     this.replyAfterEnd = '';
+    this.replyBlocks.clear();
   }
 
   private onEndTurn(input: HookInput): Record<string, never> {
@@ -621,6 +644,15 @@ class ClaudeSession implements AgentSession {
     const home = this.opts.env?.THREADBEAR_HOME;
     if (!home || typeof call.tool_name !== 'string' || !call.tool_input || typeof call.tool_input !== 'object') return undefined;
     const why = denySecrets(call.tool_name, call.tool_input as Record<string, unknown>, home, typeof call.cwd === 'string' ? call.cwd : undefined);
+    return why ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } } : undefined;
+  }
+
+  // A background shell that only waits (wait-loops.ts), in every mode: Full
+  // is where it's most often started, and the reason says how to wait instead.
+  private onWaitLoop(input: HookInput): { hookSpecificOutput: { hookEventName: 'PreToolUse'; permissionDecision: 'deny'; permissionDecisionReason: string } } | undefined {
+    const call = input as { tool_name?: string; tool_input?: unknown };
+    if (typeof call.tool_name !== 'string' || !call.tool_input || typeof call.tool_input !== 'object') return undefined;
+    const why = denyWaitLoop(call.tool_name, call.tool_input as Record<string, unknown>);
     return why ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: why } } : undefined;
   }
 
@@ -794,6 +826,7 @@ class ClaudeSession implements AgentSession {
               if (endTurnWantsReply(ev)) {
                 this.doneCard = (needsFromTool(this.endTurnInputs.get(ev.itemId))?.needs ?? 'nothing') === 'nothing';
                 this.replyAfterEnd = '';
+                this.replyBlocks.clear();
               } else if (this.messageStands) this.doneCard = false;
               // Only an accepted call's own card: a refused repeat's result
               // isn't ok, and its questions never showed.
@@ -803,6 +836,7 @@ class ClaudeSession implements AgentSession {
               if (this.pastEndTurn) {
                 this.wroteAfterEnd = true;
                 this.replyAfterEnd = ev.text;
+                this.replyBlocks.set(ev.itemId, ev.text);
               }
               this.owedReply = undefined;
             }
@@ -999,7 +1033,7 @@ class ClaudeSession implements AgentSession {
       default:
         return {
           behavior: 'deny',
-          message: ans.message || 'The user denied this. Ask them how to proceed.',
+          message: [ans.message || 'The user denied this. Ask them how to proceed.', ans.reviewer].filter(Boolean).join(' '),
           toolUseID: o.toolUseID,
           decisionClassification: 'user_reject',
         };

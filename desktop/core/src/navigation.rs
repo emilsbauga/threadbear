@@ -71,6 +71,28 @@ impl<Place: PartialEq + Clone> NavigationHistory<Place> {
         }
     }
 
+    /// The entry just before the current one goes, if it's `page`: the
+    /// new-thread page once the thread started from it is open (and recorded
+    /// after it). Back from the thread then goes to wherever was before the
+    /// page, not to an empty box that's done with. The GPUI app records a
+    /// place as soon as it's shown, so it can't use `replace_current` the way
+    /// the Swift app did (that put its step off till the main queue's turn).
+    pub fn drop_previous_if(&mut self, page: &Place) -> bool {
+        let Ok(at) = usize::try_from(self.index) else { return false };
+        if at == 0 || at >= self.entries.len() || &self.entries[at - 1] != page {
+            return false;
+        }
+        self.entries.remove(at - 1);
+        self.index -= 1;
+        // Never the same place twice in a row, as `record` keeps it.
+        let at = self.index as usize;
+        if at > 0 && self.entries[at - 1] == self.entries[at] {
+            self.entries.remove(at);
+            self.index -= 1;
+        }
+        true
+    }
+
     /// Puts `place` where the current entry is and keeps what's ahead: Back or
     /// Forward came to an entry that couldn't be shown quite as it was (a page
     /// whose thread behind it has gone), and what's showing is it now.
@@ -201,6 +223,37 @@ mod tests {
         let mut empty = NavigationHistory::<String>::default();
         empty.replace_current(s("a"));
         assert_eq!(empty.entries, vec![s("a")]);
+    }
+
+    #[test]
+    fn a_started_thread_takes_the_new_thread_pages_place() {
+        // Thread a, ⌘N, then the message that starts thread t.
+        let mut h = NavigationHistory::<String>::default();
+        for p in ["a", "new", "t"] {
+            h.record(s(p));
+        }
+        assert!(h.drop_previous_if(&s("new")));
+        assert_eq!(h.entries, vec![s("a"), s("t")]);
+        assert_eq!(h.current(), Some(&s("t")));
+        assert_eq!(h.back(|_| true), Some(s("a")), "back skips the used-up new-thread page");
+        assert_eq!(h.forward(|_| true), Some(s("t")));
+        // Anything else before it stays.
+        assert!(!h.drop_previous_if(&s("new")));
+        assert_eq!(h.entries, vec![s("a"), s("t")]);
+        // ⌘N as the very first place: the thread is the only entry.
+        let mut first = NavigationHistory::<String>::default();
+        first.record(s("new"));
+        first.record(s("t"));
+        assert!(first.drop_previous_if(&s("new")));
+        assert_eq!(first.entries, vec![s("t")]);
+        assert!(!first.can_go_back());
+        // Never the same place twice in a row afterwards.
+        let mut twice = NavigationHistory::<String>::default();
+        for p in ["t", "new", "t"] {
+            twice.record(s(p));
+        }
+        assert!(twice.drop_previous_if(&s("new")));
+        assert_eq!(twice.entries, vec![s("t")]);
     }
 
     #[test]

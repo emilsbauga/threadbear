@@ -116,6 +116,8 @@ test('a supported image attachment reaches native provider image input only afte
   fs.writeFileSync(file.path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
   h.runner.createIntakeDraft(incoming, [file]); assert.equal(h.adapter.sessions.length, 0);
   h.runner.send(id, item.message.text); await Promise.resolve();
-  assert.equal(h.adapter.sessions[0].sent[0].images[0].path, file.path);
+  const native = h.adapter.sessions[0].sent[0].images[0].path;
+  assert.equal(path.dirname(native), path.join(h.home, 'threads', id, 'media'));
+  assert.deepEqual(fs.readFileSync(native), fs.readFileSync(file.path));
   assert.ok(h.adapter.sessions[0].sent[0].text.includes(file.path));
 });

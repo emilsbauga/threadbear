@@ -180,3 +180,40 @@ export function summary(md) {
   const sentence = text.match(/^.+?[.?!](?=\s+[A-Z"]|$)/)?.[0] ?? text;
   return sentence.length > 160 ? `${sentence.slice(0, 159).trimEnd()}…` : sentence;
 }
+
+/** Inline Markdown as the words a reader sees: `code`, **bold** and [label](url) lose their marks. */
+const plainInline = (s) => s.replace(/`([^`]+)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1");
+
+/**
+ * The docs search's index (src/docs-search.js), built with the pages so there's no server and no
+ * search service: the guide cut at every heading, each piece { path, page, heading, anchor, text }
+ * with its text as plain words. `heading` and `anchor` are empty for the part of a page above its
+ * first ### heading. The anchor is the id markdown() gives that heading, so a result opens there.
+ */
+export function searchEntries(guide) {
+  const pieces = [{ path: "/docs", page: guide.title, body: guide.intro }, ...guide.sections.map((s) => ({ path: `/docs/${s.slug}`, page: s.title, body: s.body }))];
+  const out = [];
+  for (const { path, page, body } of pieces) {
+    let current = { path, page, heading: "", anchor: "", lines: [] };
+    const flush = () => {
+      // Inline marks are undone once the lines are joined, as **bold** can run over a line break.
+      const text = plainInline(current.lines.join(" ")).replace(/\s+/g, " ").trim();
+      if (text || current.heading) out.push({ path, page, heading: current.heading, anchor: current.anchor, text });
+    };
+    let fenced = false;
+    // Pictures keep their caption, which the page shows; videos and other comments show nothing.
+    const lines = body.replace(/^<!--\s*picture:\s*\S+\s+alt:\s*(.+?)\s*-->$/gm, "$1").replace(/<!--[\s\S]*?-->/g, "").split("\n");
+    for (const line of lines) {
+      if (line.startsWith("```")) { fenced = !fenced; continue; }
+      const heading = !fenced && line.match(/^#{3,6} (.+)$/);
+      if (heading) {
+        flush();
+        current = { path, page, heading: plainInline(heading[1].trim()), anchor: slugify(heading[1]), lines: [] };
+        continue;
+      }
+      current.lines.push(line.replace(/^\s*(-|\d+\.) /, ""));
+    }
+    flush();
+  }
+  return out;
+}

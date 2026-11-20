@@ -67,6 +67,7 @@ object Line {
 
     val Key = icon("key", "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z", circle(16.5f, 7.5f, 0.5f))
     val Lock = icon("lock", "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z", "M7 11V7a5 5 0 0 1 10 0v4")
+    val ArrowUpRight = icon("arrowUpRight", "M7 17 17 7", "M7 7h10v10")
     val External = icon("external", "M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6")
     val Play = icon("play", "M6 3l14 9-14 9z")
     val CheckCircle = icon("checkCircle", circle(12f, 12f, 10f), "m9 12 2 2 4-4")

@@ -1,20 +1,30 @@
 #!/bin/bash
-# Installs the GPUI app beside the Swift one and opens it. The Swift app's
-# "Start using the new app" starts a thread that runs this (NewApp.swift's
-# brief): first with --no-open, fixing whatever stops it, then without once
-# the person says Switch now. The Swift app stays and keeps working.
+# Installs the GPUI app and opens it. `./threadbear setup` runs it for a new
+# install (scripts/setup.mjs, step 8: the Mac app is this one now, never the
+# Swift app). The Swift app's "Start using the new app" starts a thread that
+# runs it too (NewApp.swift's brief): first with --no-open, fixing whatever
+# stops it, then without once the person says Switch now. There the Swift
+# app stays and keeps working.
 #
 #   desktop/scripts/switch-from-swift.sh <checkout> [--no-open]
 #
 # --no-open stops after installing it, leaving links and the app alone (for
 # trying this on a test Mac without taking over its links or its screen).
 #
-# 1. Rust, if there's no cargo: rustup's own installer, minimal profile,
-#    without touching the shell's startup files (docs/on-your-mac.md).
+# 1. Rust, if there's no rustup: rustup's own installer, minimal profile,
+#    without touching the shell's startup files (docs/on-your-mac.md). Even
+#    beside Homebrew's rust, as the build uses rustup's newest stable, the
+#    Rust GitHub builds and tests with (stage-update.sh): an older one fails
+#    partway through it.
 # 2. The app, built from what's committed on the checkout's main, by
 #    stage-update.sh: the same build the installed app's updates use, so its
 #    clone and target folder are already warm for the first update. Built on
 #    an update build host if runner.json names one, else here.
+#    An app already installed from an older main gets main's build staged
+#    beside it instead (where its own updates go, swapped in when it next
+#    starts), so setup run again after a pull leaves it current rather than
+#    the app building it in the background minutes later (Tinker Desk's
+#    second account, 19 Nov 2026).
 # 3. Moved into ~/Applications/Threadbear GPUI.app, and threadbear:// links
 #    pointed at it (thread-links.sh).
 # 4. Opened. It brings over the Swift app's settings, drafts and files by
@@ -92,7 +102,7 @@ room_for_it() {
   if [[ -n "$elsewhere" ]]; then
     need_kb=$gib
   else
-    command -v cargo >/dev/null || need_kb=$gib
+    command -v rustup >/dev/null || need_kb=$gib
     local cached=0 build=$((4 * gib))
     [[ -d "$cache" ]] && cached="$(du -sk "$cache" 2>/dev/null | awk '{ print $1 }')" || true
     [[ "$cached" =~ ^[0-9]+$ ]] || cached=0
@@ -132,17 +142,56 @@ installed() {
   done
 }
 
-if ! installed; then
+# main's desktop/ tree when the installed app was built from another one
+# (its build.json's appTree, as app_update.rs compares them), else nothing:
+# up to date, or a bundle with no build.json to tell by.
+behind_main() {
+  local built main
+  built="$(/usr/bin/python3 -I -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("appTree") or "")
+except Exception: print("")' "$TARGET/Contents/Resources/build.json" 2>/dev/null)" || built=""
+  main="$(git -C "$CHECKOUT" rev-parse -q --verify 'refs/heads/main:desktop' 2>/dev/null)" || main=""
+  [[ -n "$built" && -n "$main" && "$built" != "$main" ]] && echo "$main"
+  return 0
+}
+
+if installed; then
+  if [[ -n "$(behind_main)" ]]; then
+    elsewhere="$(builds_elsewhere)"
+    echo "STEP Building main's version of the app, which it swaps in when it next starts"
+    # Not fatal: the app is installed, and its own updates try again. Room
+    # for it is checked as for a first build (Codex's review), in a subshell
+    # so its exit only skips the build.
+    code=0
+    if ( room_for_it ); then
+      from_main stage-update.sh
+      "$work/stage-update.sh" "$CHECKOUT" --next "$HOME/Applications/.Threadbear GPUI.app.next" || code=$?
+    else
+      code=6
+    fi
+    case "$code" in
+      0) echo "Staged main's build beside $TARGET" ;;
+      3) echo "The app is already building main's version itself." ;;
+      *) echo "Main's version of the app didn't build (exit $code); the app tries again by itself." >&2 ;;
+    esac
+  fi
+else
   elsewhere="$(builds_elsewhere)"
   room_for_it
   # Rust only for a build here: another Mac builds it, or none does (exit 5).
-  if [[ -z "$elsewhere" ]] && ! command -v cargo >/dev/null; then
+  if [[ -z "$elsewhere" ]] && ! command -v rustup >/dev/null; then
     echo "STEP Installing Rust"
     # rustup.rs's own script, over https only, as its site says to run it.
-    # --no-modify-path: the build finds it in ~/.cargo/bin by itself.
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$work/rustup-init.sh"
+    # --no-modify-path: the build finds it in ~/.cargo/bin by itself, and a
+    # terminal's cargo stays whatever it was. THREADBEAR_SWITCH_RUSTUP_INIT
+    # stands in for the download in the tests (switch-from-swift.test.ts).
+    if [[ -n "${THREADBEAR_SWITCH_RUSTUP_INIT:-}" ]]; then
+      cp "$THREADBEAR_SWITCH_RUSTUP_INIT" "$work/rustup-init.sh"
+    else
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$work/rustup-init.sh"
+    fi
     sh "$work/rustup-init.sh" -y --profile minimal --no-modify-path
-    command -v cargo >/dev/null || { echo "Rust installed, but cargo isn't in ~/.cargo/bin." >&2; exit 1; }
+    command -v rustup >/dev/null || { echo "Rust installed, but rustup isn't in ~/.cargo/bin." >&2; exit 1; }
   fi
 
   echo "STEP Building the new app (a first build takes 20 to 40 minutes, its later updates far less)"

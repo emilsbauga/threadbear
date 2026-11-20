@@ -167,3 +167,8 @@ When('the window is {int} points wide', async function (this: ThreadbearWorld, w
 Then('the chips under the box fit inside it', async function (this: ThreadbearWorld) {
   await this.until('the chips inside the box', (d) => (d.composer as { chipsFit?: boolean }).chipsFit === true);
 });
+
+// The thumbnail's × over the box, clicked through the window.
+When('I remove picture {int} with its ×', async function (this: ThreadbearWorld, picture: number) {
+  assert.equal(await this.app.do({ cmd: 'composer-peek', strip: picture - 1, remove: true }), 'ok removed');
+});

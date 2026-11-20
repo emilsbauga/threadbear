@@ -1,0 +1,217 @@
+{
+  "release": "2026-11-19",
+  "highlights": [
+    {
+      "kind": "added",
+      "title": "Set up in a few small cards",
+      "text": "A new install starts with a few small cards: the logins it found on your Mac, where threads start, pairing your phone and a few things worth turning on. Help > Set Up Threadbear brings them back.",
+      "media": {
+        "type": "clip",
+        "src": "setup-cards.mp4",
+        "poster": "setup-cards.webp",
+        "width": 960,
+        "height": 1006,
+        "alt": "A bear above a card saying \"Hi, I'm Threadbear\" with Let's go. Pressing Return steps through Your agents (Claude Code and Codex signed in, and Add another Claude login), Where threads start (a folder and GitHub signed in), Check in from anywhere (an iPhone paired) and A few things worth turning on, with switches for review by another lab and keeping the Mac awake."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Make it look your way",
+      "text": "Settings > General > Appearance picks light, dark or the Mac's look, an accent colour, Roomy or Compact spacing, the text size and the font. Each one changes the app as you click it.",
+      "credit": "Wayne Sutton (the bear colours)",
+      "media": {
+        "type": "clip",
+        "src": "appearance.mp4",
+        "poster": "appearance.webp",
+        "width": 1320,
+        "height": 510,
+        "alt": "The Appearance section of Settings. Clicking accent colours turns the selected look, the switches and the highlights orange, then pink, then green; Compact spacing pulls the rows closer together and Larger makes all the text bigger."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "A card for each login in Usage",
+      "text": "Each login in the Usage panel is a card with its logo, a ring for how much of its week is left and one line on how it stands. Year-long token… on a Claude login makes a sign-in that lasts a year, not 28 days, and a login whose week will go unused offers Find work for it.",
+      "media": {
+        "type": "image",
+        "src": "usage-card.webp",
+        "width": 640,
+        "height": 420,
+        "alt": "A card in the Usage panel under a pool called Weekends: the Claude logo, alex+4@example.com, \"Used up, back 12:35 pm\" in red, a ring at 31%, a Year-long token… button and a chart of the week."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Confetti for an empty Inbox",
+      "text": "Archive the last thread in your Inbox and a little confetti pops. The app moves a bit more elsewhere too: a reply's new words fade in, a picked answer's button fills, and a pasted picture drops into the message box.",
+      "media": {
+        "type": "clip",
+        "src": "inbox-zero.mp4",
+        "poster": "inbox-zero.webp",
+        "width": 1068,
+        "height": 948,
+        "alt": "Pressing Archive on the done card of the only thread left in the Inbox. The sidebar says \"Nothing in the inbox.\" and confetti bursts from that line."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "See how a linked thread is going",
+      "text": "When a reply links another of your threads, a small mark before the link shows how it's getting on: a turning ring while it works, orange when it needs you, red if it failed, a tick once it's done.",
+      "media": {
+        "type": "clip",
+        "src": "thread-marks.mp4",
+        "poster": "thread-marks.webp",
+        "width": 810,
+        "height": 1006,
+        "alt": "A reply streams in listing three threads, each link with a small mark before it: a turning blue ring for one still working, an orange dot for one waiting on you and a red dot for one that failed."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Edit a draft before you send it",
+      "text": "A draft an agent wrote for you (a Slack message, an email) has Edit beside Copy. Change it in place, and your version goes with your next message to that thread so the agent uses it. Undo puts the agent's back.",
+      "media": {
+        "type": "clip",
+        "src": "edit-draft.mp4",
+        "poster": "edit-draft.webp",
+        "width": 810,
+        "height": 750,
+        "alt": "A Slack draft in a reply. Edit turns it into a text box, \"Could you give it a look today?\" is typed on the end, and Done shows the box marked edited, with Undo, Edit and Copy."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "⌘Z brings back what you archived",
+      "text": "Archived a thread by mistake? ⌘Z brings it back, even after the note at the top has gone, newest first. The note also has an × to close it.",
+      "credit": "Wayne Sutton",
+      "media": {
+        "type": "clip",
+        "src": "undo-archive.mp4",
+        "poster": "undo-archive.webp",
+        "width": 1104,
+        "height": 948,
+        "alt": "Archiving a thread opens the next one, with a note at the top: Archived, Tidy the imports in the uploader, Undo. Pressing ⌘Z puts the thread back in the Inbox and opens it again."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Move a thread from its message box",
+      "text": "With more than one machine, the message box shows which one a thread is on. Click it to move the thread to another, or to cancel a move that's going.",
+      "media": {
+        "type": "clip",
+        "src": "machine-chip.mp4",
+        "poster": "machine-chip.webp",
+        "width": 810,
+        "height": 480,
+        "alt": "Clicking \"laptop\" in a thread's message box opens a menu with laptop ticked and Move to mac-mini. Choosing it greys the box out with \"Moving to mac-mini...\" and a spinner on the chip."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "See when an update is building",
+      "text": "The Updates icon has a turning ring while the next version of the app or runner is building, and goes green once it's ready to restart into.",
+      "media": {
+        "type": "clip",
+        "src": "updates-ring.mp4",
+        "poster": "updates-ring.webp",
+        "width": 570,
+        "height": 750,
+        "alt": "A small ring turns around the Updates icon at the bottom of the side bar. Opening Updates shows the runner being built from main."
+      }
+    }
+  ],
+  "added": [
+    "Big or risky changes (150 lines or more, or code that touches sign-ins, secrets or payments) can go to several reviewers at once: tick Panel beside them in Settings > General > Code review",
+    "Use a reset in the limit box spends one of the free resets Codex gives out, when a Codex login is out of room",
+    "+ > Attach images or Markdown takes .md files too",
+    "A file other than a picture pasted or dropped into the message box shows as a chip with its name, and opens when you click it",
+    "Each section of Settings has a bear button that starts a thread about it",
+    "Files in Highlights show a small preview of the file",
+    "After a long wait, a thread shows how long it was and why it woke, like the app restarting",
+    "A card can link to another thread, and the Mac, the phone and the website open it",
+    "A file link in a reply can be dragged out to Finder or another app again",
+    {
+      "text": "Read and answer design reviews on the iPhone",
+      "credit": "Wayne Sutton"
+    },
+    "Rename a thread on the iPhone from its ... menu, or by pressing and holding its row",
+    "OpenCode 2's questions show as question cards",
+    "Pull requests open in a tab beside the thread, with checks, the diff, comments and Merge, and PR links in replies show whether they're open, draft, merged or closed (an experiment)",
+    "Archive's menu asks whether you needed to see the thread, to learn which ones you don't, and archives nothing by itself (an experiment)",
+    "Your main Mac's CLAUDE.md and memory reach the threads on your other machines (an experiment)",
+    "A long Claude thread woken after its cache has run out tidies itself up first, which costs less (an experiment)"
+  ],
+  "changed": [
+    "A thread waiting on a card (a secret, a question, a permission) stays at the top of the Inbox whichever way you sort it, as the card can run out",
+    "Open Anything (⌘K or ⌘P), loose ends on the done card and helper threads archiving themselves are on for everyone",
+    "The app's text is in Allo unless you pick another font",
+    {
+      "text": "Status colours can be told apart without red and green, as each one has its own shape too",
+      "credit": "Futora-BIOS"
+    },
+    "A thread in the Inbox with a job still running shows a small grey arc beside its time",
+    "A Claude login whose paid plan has ended says Plan ended, and new threads skip it; a signed-out one is named, skipped too, and you hear before a sign-in runs out",
+    "A done thread waiting for the app to restart sleeps until it does, rather than sitting in your Inbox",
+    "Threads waiting on something sleep and check back later, rather than keep a job running in the background",
+    "When a card's reason listed the choices again, they now show as notes under the buttons",
+    "Moving a thread keeps saying so while it works out where to go, and a failed move says why",
+    "An out-of-date transcript says Catching up, rather than showing a working line that's still counting",
+    "Signing in on the website and setting up Quick Ask use a code that works once, not a link that stays good",
+    {
+      "text": "Fewer approvals when a copy of Threadbear brings in a release and moves to the new app",
+      "credit": "Ian Macartney"
+    },
+    {
+      "text": "More of the runner works on Windows: no console windows popping up, processes stopped properly, and patches trusted by Windows' own paths",
+      "credit": "Platima"
+    }
+  ],
+  "fixed": [
+    {
+      "text": "Clicking a folder link no longer crashes the app",
+      "credit": "Crispaul Obana"
+    },
+    {
+      "text": "Scrolling up from the bottom of a thread no longer jumps the wrong way",
+      "credit": "Ian Macartney"
+    },
+    {
+      "text": "Pictures pasted into a thread on another Mac show on this one too, and open in the picture viewer",
+      "credit": "jwsandeman"
+    },
+    {
+      "text": "Picture thumbnails in the message box wrap onto a new line",
+      "credit": "Wayne Sutton"
+    },
+    {
+      "text": "Autocorrect leaves Threadbear alone, and a correction you take back stays taken back",
+      "credit": "Wayne Sutton"
+    },
+    "A thread leaves the Inbox as soon as you send it a message, not once the runner gets to it",
+    "A big video in the side pane no longer fills memory until the app quits",
+    "An Explain follow-up no longer crashes the app, and every list in the side pane shows a scroll bar while it scrolls",
+    "Escape closes the sidebar's and Highlights' menus and the Share popover",
+    "Back after starting a thread goes to where you were before ⌘N",
+    "The slash palette stays inside the window",
+    "A thread's error line can be closed, and goes when you send or it reloads",
+    "Clicking a link straight after closing a tab works the first time",
+    "Undoing a picture's × in the message box brings the picture back, and cutting a picture from a Something else box keeps it",
+    "Dictating into the review window's reply box no longer jumps to the start",
+    "One bad setting no longer resets all of the new app's settings, and picking System after another font works again",
+    "Changing a protected schedule's login, model or thread, or deleting one, asks you first",
+    "A scheduled run can't be sent twice when the runner hands over to a new version",
+    "A schedule pinned to a signed-out login uses another in its pool, or waits",
+    {
+      "text": "After a failed look for a new release of Mike's, the runner tries again in 15 minutes, not 6 hours",
+      "credit": "David Clark"
+    },
+    {
+      "text": "A shared page whose title has a $ in it shows it as written",
+      "credit": "Ville Lahdenvuo-Malta"
+    },
+    {
+      "text": "Updates names Mike's releases by the day where you are, not in Perth",
+      "credit": "Wayne Sutton"
+    }
+  ]
+}

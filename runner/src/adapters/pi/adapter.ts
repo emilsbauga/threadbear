@@ -91,7 +91,6 @@ class PiSession implements AgentSession {
   private sink: SessionSink;
   private deps: PiAdapterDeps;
   constructor(opts: PiStartOptions, sink: SessionSink, deps: PiAdapterDeps) {
-    if (opts.confined) throw new Error('Sandboxed threads are not available for Pi.');
     if (opts.permissionMode === 'plan') throw new Error('Plan first is not available for Pi threads.');
     this.opts = opts; this.sink = sink; this.deps = deps;
     const profile = 'engine' in opts.account ? opts.account : deps.profileFor?.(opts.account.id);

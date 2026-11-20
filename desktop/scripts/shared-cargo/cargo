@@ -5,10 +5,11 @@
 # One target per checkout filled the 75 GB cloud box on 13 Nov: six of them,
 # 1.3 to 8.4 GB each, 34 GB, all used within the hour, so remote.sh refused
 # every run for want of room. A cargo target can be shared as long as builds
-# take turns, so a host keeps a few slots (THREADBEAR_REMOTE_SLOTS in the
-# host's environment), each with a lock, a copy of the source and a target.
-# One by default: remote.sh already runs one build or measurement at a time on
-# a host (scripts/perf-lock.pl), so a second slot would only be another 8 GB.
+# take turns, so a host keeps a few slots, each with a lock, a copy of the
+# source and a target: as many as the host runs builds at once
+# (~/.cache/threadbear-check/builds-at-once there, scripts/perf-lock.pl; or
+# THREADBEAR_REMOTE_SLOTS in the host's environment). One when neither says:
+# a second slot is only worth its 8 GB where builds run side by side.
 #
 #
 #   <base>/shared-<n>.lock    held (flock) for the whole cargo command
@@ -87,7 +88,9 @@ case "$here/" in
 esac
 out="${CARGO_TARGET_DIR:-$copy/desktop/target}"
 key="${THREADBEAR_SHARED_CARGO_KEY:-$(basename "$copy")}"
-slots="${THREADBEAR_REMOTE_SLOTS:-1}"
+# As many as the host runs builds at once (scripts/perf-lock.pl's lanes), so
+# each of those has a folder of its own to build in.
+slots="${THREADBEAR_REMOTE_SLOTS:-$(head -1 "${base%/*}/builds-at-once" 2>/dev/null | tr -d ' ')}"
 case "$slots" in ""|*[!0123456789]*|0) slots=1 ;; esac
 
 # Takes the lock on fd 8, without waiting (try) or waiting (wait).

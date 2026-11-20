@@ -110,7 +110,7 @@ impl ThreadPane {
                         .tip(crate::viewer::TILE_TIP)
                         // The in-app viewer, not the file's default app: only a
                         // real picture opens, and nothing is ever run (viewer.rs).
-                        .on_click(move |_, window, cx| crate::viewer::open_from_tile(&tile_images, i, window, cx))
+                        .on_click(move |_, window, cx| crate::viewer::open_from_tile(&tile_images, i, None, window, cx))
                         // Dragged, it goes out as the file itself (file_drag.rs).
                         .file_drag(Some(path.clone()))
                         .child(img(super::markdown::file_picture(&path)).w(px(frame.w)).h(px(frame.h)).rounded(px(8.)).object_fit(ObjectFit::Cover))
@@ -122,7 +122,15 @@ impl ThreadPane {
             let picture = crate::remote_pictures::picture(&runner, &path, &self.client_handle(), cx.entity().downgrade().into(), cx);
             let words = crate::remote_pictures::words(&picture, &runner_name);
             let tile = match picture {
-                crate::remote_pictures::Picture::Ready(bytes) => tile.child(img(bytes).w(px(frame.w)).h(px(frame.h)).rounded(px(8.)).object_fit(ObjectFit::Cover)),
+                // In the viewer on a click, as this Mac's are, from the bytes
+                // that Mac sent (Mike, 18 Nov). No drag: it isn't a file here.
+                crate::remote_pictures::Picture::Ready(bytes) => {
+                    let runner = runner.clone();
+                    tile.cursor_pointer()
+                        .tip(crate::viewer::TILE_TIP)
+                        .on_click(move |_, window, cx| crate::viewer::open_from_tile(&tile_images, i, Some(&runner), window, cx))
+                        .child(img(bytes).w(px(frame.w)).h(px(frame.h)).rounded(px(8.)).object_fit(ObjectFit::Cover))
+                }
                 // Why it couldn't be got, on hover; a click asks again.
                 crate::remote_pictures::Picture::Failed(why) => {
                     let me = cx.entity().downgrade();

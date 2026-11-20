@@ -1,0 +1,88 @@
+# Unit test files that fail on Windows today (17 Nov 2026: 79 of 262 files;
+# 3,245 of 3,893 tests passed). scripts/test-windows.mjs runs every other
+# file as a hard check and these as a report. Take a file off the list once
+# it passes there; the list only shrinks, except for a new test of something
+# that only runs on a Mac or Linux (tb land's, added 18 Nov: its test
+# harness makes repos through /bin/sh),
+# and box mode's (box-mode, box-save, added 19 Nov: a box is a Linux machine,
+# and their tests make its repos through /bin/sh).
+account-isolation.test.ts
+acp-adapter.test.ts
+acp-grok.test.ts
+agent-write-trust.test.ts
+background.test.ts
+box-mode.test.ts
+box-save.test.ts
+check-mock-swift-tests.test.ts
+check-only.test.ts
+check-remote-line.test.ts
+check-remote-room-failures.test.ts
+claude-path.test.ts
+claude-trust.test.ts
+codex-approvals.test.ts
+contracts.test.ts
+desktop-ci-paths.test.ts
+gpui-dev-app.test.ts
+gpui-driver-evidence.test.ts
+hangup-guard.test.ts
+highlights.test.ts
+home-patch-edits.test.ts
+instructions.test.ts
+land-alone.test.ts
+land-culprit.test.ts
+land-gate.test.ts
+land-push.test.ts
+land-queue.test.ts
+land-times.test.ts
+launch-staged-app.test.ts
+limit-step.test.ts
+link-tb.test.ts
+loose-ends.test.ts
+main.test.ts
+move-git-planted.test.ts
+move-git.test.ts
+move-preview.test.ts
+move-runner.test.ts
+move-schedules.test.ts
+parity.test.ts
+patch-hash-binding.test.ts
+patch-trust-later.test.ts
+patch-trust.test.ts
+patches.test.ts
+perf-build.test.ts
+perf-lock.test.ts
+perf-swift.test.ts
+projects.test.ts
+reinstall.test.ts
+release.test.ts
+remote-perf-lock.test.ts
+remote-ssh-drop.test.ts
+remote-turn.test.ts
+rpc.test.ts
+runner-keys.test.ts
+runner.test.ts
+safe-cut.test.ts
+safe-git.test.ts
+schedule-check-writes.test.ts
+script-trust.test.ts
+self-hosted-plan.test.ts
+share-images.test.ts
+shared-cargo.test.ts
+shell-allowlist.test.ts
+site-build-check.test.ts
+slash-commands.test.ts
+stage-update-hosts.test.ts
+stuck-jobs.test.ts
+swift-freeze.test.ts
+sync-main.test.ts
+tb-dev.test.ts
+thread-keys.test.ts
+unvouched-upgrade.test.ts
+update.test.ts
+updates.test.ts
+upstream-refs.test.ts
+web-runtime-update.test.ts
+worktrees-cleanup.test.ts
+worktrees-landing.test.ts
+worktrees-new.test.ts
+worktrees-spares.test.ts

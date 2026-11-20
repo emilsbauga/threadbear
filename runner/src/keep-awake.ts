@@ -11,10 +11,15 @@
 // idle sleep: the display still sleeps and the screen still locks, and
 // closing the lid still sleeps a Mac on battery. -w ties it to the
 // runner's pid, so it ends with the runner however that goes. On battery
-// it lets go below LOW_BATTERY percent. macOS only; elsewhere it's a no-op.
+// it lets go below LOW_BATTERY percent.
+// On Windows the runner's helper holds SetThreadExecutionState instead
+// (win32-helper.ps1, awake), the same idle-sleep-only hold, which ends with
+// the helper. A helper started again (one too slow to answer is) holds
+// nothing, so each sweep asks again while it's held. Linux: a no-op.
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
+import { win32Helper } from './win32-helper.ts';
 
 export const SWEEP_MS = 30_000;
 // How long it stays awake after the last thread stops working.
@@ -31,14 +36,18 @@ export type KeepAwakeDeps = {
   clock: Clock;
   log: Logger;
   // Starts caffeinate and returns a handle to stop it; replaced in tests.
-  hold?: () => { stop(): void } | undefined;
+  hold?: () => Hold | undefined;
   power?: () => Promise<Power | undefined>;
 };
+
+// `renew`: said again each sweep it's held, for a hold that can be lost
+// without the runner seeing (Windows' helper started again).
+export type Hold = { stop(): void; renew?(): void };
 
 export class KeepAwake {
   private deps: KeepAwakeDeps;
   private timer?: TimerHandle;
-  private held?: { stop(): void };
+  private held?: Hold;
   private lastBusy = 0;
   private power?: Power;
   private powerAt = 0;
@@ -73,9 +82,9 @@ export class KeepAwake {
     if (now - this.powerAt >= BATTERY_EVERY_MS) this.readPower(now);
     if (this.lowBattery()) return this.release('the battery is low');
     if (!this.held) {
-      this.held = (this.deps.hold ?? caffeinate)();
-      if (this.held) this.deps.log.info('keeping the Mac awake while threads work');
-    }
+      this.held = (this.deps.hold ?? defaultHold)();
+      if (this.held) this.deps.log.info('keeping the computer awake while threads work');
+    } else this.held.renew?.();
   }
 
   private lowBattery(): boolean {
@@ -102,11 +111,21 @@ export class KeepAwake {
     if (!this.held) return;
     this.held.stop();
     this.held = undefined;
-    this.deps.log.info('letting the Mac sleep again', { why });
+    this.deps.log.info('letting the computer sleep again', { why });
   }
 }
 
-function caffeinate(): { stop(): void } | undefined {
+function defaultHold(): Hold | undefined {
+  return process.platform === 'win32' ? helperHold() : caffeinate();
+}
+
+function helperHold(): Hold {
+  const ask = (on: number) => void win32Helper().ask('awake', { on }).catch(() => undefined);
+  ask(1);
+  return { stop: () => ask(0), renew: () => ask(1) };
+}
+
+function caffeinate(): Hold | undefined {
   if (process.platform !== 'darwin') return undefined;
   let child: ChildProcess;
   try {
@@ -120,6 +139,7 @@ function caffeinate(): { stop(): void } | undefined {
 
 // `pmset -g batt`: "Now drawing from 'Battery Power'" and "-InternalBattery-0 (id=…)	87%; discharging".
 function readPower(): Promise<Power | undefined> {
+  if (process.platform === 'win32') return win32Helper().ask('power').then(parseWinPower, () => undefined);
   if (process.platform !== 'darwin') return Promise.resolve(undefined);
   return new Promise((resolve) => {
     execFile('/usr/bin/pmset', ['-g', 'batt'], { timeout: 10_000 }, (err, stdout) => {
@@ -133,4 +153,11 @@ export function parsePower(out: string): Power | undefined {
   if (!out.trim()) return undefined;
   const pct = /(\d{1,3})%/.exec(out);
   return { onBattery: /'Battery Power'/.test(out), ...(pct ? { percent: Number(pct[1]) } : {}) };
+}
+
+// The helper's answer to power: "<on battery 0|1> <percent, -1 unknown>".
+export function parseWinPower(text: string): Power | undefined {
+  const m = /^([01]) (-1|\d{1,3})$/.exec(text.trim());
+  if (!m) return undefined;
+  return { onBattery: m[1] === '1', ...(m[2] !== '-1' ? { percent: Number(m[2]) } : {}) };
 }

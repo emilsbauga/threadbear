@@ -134,6 +134,46 @@ pub(crate) fn pictures(text: &str, local: bool) -> std::borrow::Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// `![title](/path/page.html)` in this Mac's own reply, with the livePages
+/// experiment on: a fenced block the live page card draws (live_pages.rs),
+/// rather than a link. On its own, with a blank line each side, as a card
+/// sits between paragraphs.
+pub(crate) fn live_pages(text: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if !text.contains("![") || !text.contains(".htm") {
+        return Cow::Borrowed(text);
+    }
+    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else { return Cow::Borrowed(text) };
+    let mut swaps: Vec<(usize, usize, String)> = Vec::new();
+    collect_images(&tree, &mut |image| {
+        let Some(at) = &image.position else { return };
+        let Some(path) = picture_path(&image.url) else { return };
+        let path = path.to_string_lossy().into_owned();
+        let lower = path.to_ascii_lowercase();
+        if !(lower.ends_with(".html") || lower.ends_with(".htm")) || path.contains(['\n', '\r', '`']) {
+            return;
+        }
+        let title: String = image.alt.chars().map(|c| if c == '\n' || c == '\r' || c == '`' { ' ' } else { c }).collect();
+        swaps.push((at.start.offset, at.end.offset, format!("\n\n```{}\n{path}\n{}\n```\n\n", crate::live_pages::fence(), title.trim())));
+    });
+    if swaps.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    swaps.sort_by_key(|s| s.0);
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut at = 0;
+    for (start, end, block) in swaps {
+        if start < at || end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            continue;
+        }
+        out.push_str(&text[at..start]);
+        out.push_str(&block);
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    Cow::Owned(out)
+}
+
 fn collect_images(node: &markdown::mdast::Node, found: &mut impl FnMut(&markdown::mdast::Image)) {
     if let markdown::mdast::Node::Image(image) = node {
         found(image);
@@ -141,6 +181,126 @@ fn collect_images(node: &markdown::mdast::Node, found: &mut impl FnMut(&markdown
     for child in node.children().into_iter().flatten() {
         collect_images(child, found);
     }
+}
+
+/// `[words](/a/path)` (or `<file:///a/path>`, or a path in backticks that
+/// `prepare` linked) to a file that isn't on this Mac, as its words alone,
+/// so a link that can only say "Couldn't find" doesn't look like one. On 16
+/// Nov 2026 an agent linked the finished clip at a path that left out its
+/// project folder (thread 4e8b6ac9); the runner's Stop hook now sends a reply
+/// like that back once (adapter.ts, missingFileLinks), and this is for any
+/// that get past it. Only an absolute, `~/` or `file://` path, as the runner
+/// checks: a relative one is looked for from the thread's folder and what
+/// its tools touched when it's clicked (`find_file`). Another Mac's thread
+/// keeps its links, as its files are there.
+pub(crate) fn dead_file_links(text: &str, local: bool) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if !local || cfg!(windows) || !(text.contains("](") || text.contains("<file:")) {
+        return Cow::Borrowed(text);
+    }
+    // Rows ask on every frame: the answer is kept a couple of seconds by the
+    // text, so a file that turns up is seen soon without parsing each frame.
+    use std::hash::{Hash, Hasher};
+    use std::sync::{LazyLock, Mutex};
+    static SEEN: LazyLock<Mutex<std::collections::HashMap<u64, (std::time::Instant, Option<String>)>>> = LazyLock::new(Default::default);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let key = hasher.finish();
+    if let Some((when, known)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if when.elapsed() < std::time::Duration::from_secs(2) {
+            return known.clone().map_or(Cow::Borrowed(text), Cow::Owned);
+        }
+    }
+    let found = unlink_dead_files(text);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.len() > 500 {
+        seen.clear();
+    }
+    seen.insert(key, (std::time::Instant::now(), found.clone()));
+    found.map_or(Cow::Borrowed(text), Cow::Owned)
+}
+
+/// `dead_file_links`'s work: the text with those links as their words, or
+/// None when it has none.
+fn unlink_dead_files(text: &str) -> Option<String> {
+    let tree = markdown::to_mdast(text, &markdown::ParseOptions::gfm()).ok()?;
+    let mut swaps: Vec<(usize, usize, usize, usize)> = Vec::new();
+    collect_links(&tree, &mut |link| {
+        let (Some(at), Some(first), Some(last)) = (&link.position, link.children.first().and_then(|c| c.position()), link.children.last().and_then(|c| c.position())) else { return };
+        if dead_file_url(&link.url) {
+            swaps.push((at.start.offset, at.end.offset, first.start.offset, last.end.offset));
+        }
+    });
+    if swaps.is_empty() {
+        return None;
+    }
+    swaps.sort_by_key(|s| s.0);
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (start, end, words_start, words_end) in swaps {
+        let bounds = [start, end, words_start, words_end];
+        if start < at || end > text.len() || words_start < start || words_end > end || bounds.iter().any(|&b| !text.is_char_boundary(b)) {
+            continue;
+        }
+        out.push_str(&text[at..start]);
+        out.push_str(&text[words_start..words_end]);
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
+}
+
+fn collect_links(node: &markdown::mdast::Node, found: &mut impl FnMut(&markdown::mdast::Link)) {
+    if let markdown::mdast::Node::Link(link) = node {
+        found(link);
+    }
+    for child in node.children().into_iter().flatten() {
+        collect_links(child, found);
+    }
+}
+
+/// Whether a link's address is a path on this Mac that isn't there. Only
+/// when no reading of it is: as written and decoded, whole and without a
+/// `?query` or `#heading`, less a `:12` line, as the click's own lookup
+/// tries them (`find_file`). A path on a network share counts as there, as
+/// a look can hang the frame on a share that's gone away.
+fn dead_file_url(url: &str) -> bool {
+    // A path in backticks that `prepare` linked (`link_code_paths`): the
+    // code's own text, encoded once.
+    let texts = match url.strip_prefix("tbpath:") {
+        Some(rest) => vec![percent_decode(rest.strip_prefix("?p=").unwrap_or(rest))],
+        None => {
+            let path = url.strip_prefix("file://").map_or(url, |rest| rest.strip_prefix("localhost").unwrap_or(rest));
+            // Cut before decoding too: an encoded %23 is part of the name.
+            let cut = path.split(['?', '#']).next().unwrap_or("");
+            vec![path.to_owned(), percent_decode(path), percent_decode(cut)]
+        }
+    };
+    let home = threadbear_core::reducer::text::home_directory();
+    let mut looked = false;
+    for text in &texts {
+        let cut = text.split(['?', '#']).next().unwrap_or("");
+        for candidate in [text.as_str(), cut] {
+            let path = strip_line(candidate);
+            let full = if let Some(rest) = path.strip_prefix("~/") {
+                format!("{home}/{rest}")
+            } else if path.starts_with('/') && !path.starts_with("//") {
+                path.to_owned()
+            } else {
+                continue;
+            };
+            if ["/Volumes/", "/Network/", "/net/"].iter().any(|share| full.starts_with(share)) {
+                return false;
+            }
+            looked = true;
+            if threadbear_core::open_policy::local_metadata(std::path::Path::new(&full)).is_ok() {
+                return false;
+            }
+        }
+    }
+    // Nothing absolute or ~/ to look at: a relative path is looked for
+    // from the thread's folder when it's clicked.
+    looked
 }
 
 /// The file a picture's address names on this Mac, if it's a file.
@@ -270,8 +430,10 @@ pub(crate) fn picture_source(uri: &gpui_kit::SharedUri, local: bool) -> gpui_kit
     }
     #[cfg(not(windows))]
     {
-        let path = picture_path(uri.as_ref()).filter(|path| local && is_picture_file(path)).map(|path| picture_file(&path.to_string_lossy())).unwrap_or_default();
-        gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(std::sync::Arc::from(path.as_path())))
+        match picture_path(uri.as_ref()).filter(|path| local && is_picture_file(path)) {
+            Some(path) => file_picture(&path.to_string_lossy()),
+            None => gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(std::sync::Arc::from(std::path::Path::new("")))),
+        }
     }
 }
 
@@ -311,7 +473,15 @@ pub(crate) fn file_picture(path: &str) -> ImageSource {
     }
     #[cfg(not(windows))]
     {
-        picture_file(path).into()
+        let path = picture_file(path);
+        // Over the GPU's limit, gpui's own loader's picture would draw
+        // nothing: read and shrunk to fit instead (fit_picture.rs).
+        // Keyed by its size and time too, so a picture written again at the
+        // same path is read again.
+        let meta = threadbear_core::open_policy::local_metadata(&path).ok().filter(|_| !path.as_os_str().is_empty());
+        let Some(meta) = meta.filter(|meta| crate::fit_picture::file_size(&path, meta).is_some_and(crate::fit_picture::too_big)) else { return path.into() };
+        let key = (path, meta.len(), meta.modified().ok());
+        ImageSource::Custom(std::sync::Arc::new(move |window, cx| crate::fit_picture::use_fitted(&key, window, cx)))
     }
 }
 
@@ -327,8 +497,7 @@ struct PictureRetries {
 #[cfg(windows)]
 impl Global for PictureRetries {}
 
-#[cfg(windows)]
-fn checked_picture_bytes(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+pub(crate) fn checked_picture_bytes(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
     let mut file = threadbear_core::open_policy::local_open(path)?;
     let meta = file.metadata()?;
@@ -357,6 +526,7 @@ impl Asset for LocalPicture {
         async move {
             let bytes = checked_picture_bytes(&path)?;
             let format = crate::viewer::format_of(&path.to_string_lossy(), &bytes).ok_or_else(|| std::io::Error::other("Not a picture"))?;
+            let (format, bytes) = crate::fit_picture::fit_bytes(format, bytes).ok_or_else(|| std::io::Error::other(crate::fit_picture::TOO_BIG))?;
             Image::from_bytes(format, bytes).to_image_data(renderer).map_err(Into::into)
         }
     }
@@ -520,16 +690,11 @@ fn spaced_path_ok(path: &str) -> bool {
     !last.contains(' ') || last.rsplit_once('.').is_some()
 }
 
-/// `Foo.swift:12` or `Foo.swift:12:4` names the file, and a line in it.
+/// `Foo.swift:12`, `Foo.swift:12:4` or `Foo.swift:12-18` names the file, and
+/// a line (or lines) in it: core's rule, so what reads as a path here is what
+/// a click finds.
 fn strip_line(text: &str) -> &str {
-    let mut path = text;
-    for _ in 0..2 {
-        match path.rsplit_once(':') {
-            Some((head, tail)) if !head.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => path = head,
-            _ => break,
-        }
-    }
-    path
+    threadbear_core::file_refs::strip_line(text)
 }
 
 /// A file and any `?query` or `#fragment` for its page, split at the first.
@@ -589,7 +754,14 @@ impl ThreadPane {
         let state = match self.rows.documents.get(key) {
             Some(state) => state.clone(),
             None => {
-                let state = cx.new(|cx| TextViewState::markdown(text, cx));
+                // What a streaming reply adds fades in, word after word,
+                // rather than popping onto the page (the kit's stream fade,
+                // off unless asked for; Mike picked it from clips on 18 Nov).
+                // Only text added to what's there fades: a row drawn whole,
+                // or replaced, is there at once, and none of it under Reduce
+                // Motion.
+                let motion = gpui_kit::base::TextViewMotion::default().with_stream_fade(threadbear_core::juice::REPLY_FADE).with_stream_fade_stagger(threadbear_core::juice::REPLY_FADE_WORD);
+                let state = cx.new(|cx| TextViewState::markdown(text, cx).motion(motion));
                 if self.rows.documents.len() >= DOCUMENTS_KEPT {
                     // Far more than a screen's worth; the oldest are the least
                     // likely to come back soon.
@@ -628,7 +800,7 @@ const DOCUMENTS_KEPT: usize = 600;
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_path, pictures, prepare};
+    use super::{dead_file_links, live_pages, looks_like_path, pictures, prepare};
 
     #[test]
     fn windows_pictures_name_a_drive_file_before_any_file_access() {
@@ -665,6 +837,72 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn a_link_to_a_file_that_isnt_there_is_its_words() {
+        let dir = std::env::temp_dir().join(format!("tb-dead-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let here = dir.join("clip.mp4");
+        std::fs::write(&here, b"x").unwrap();
+        let here = here.to_string_lossy().into_owned();
+        let gone = dir.join("gone.mp4").to_string_lossy().into_owned();
+        let reply = format!("**Attach:** [`clip.mp4`]({gone}:3). Kept: [clip]({here}), [web](https://x.dev/a), [rel](docs/nope.md), [mail](mailto:a@b.c), [home](~/no-such-threadbear-file.md#top).\n\n```\n[block]({gone})\n```");
+        assert_eq!(
+            dead_file_links(&reply, true),
+            format!("**Attach:** `clip.mp4`. Kept: [clip]({here}), [web](https://x.dev/a), [rel](docs/nope.md), [mail](mailto:a@b.c), home.\n\n```\n[block]({gone})\n```"),
+        );
+        assert_eq!(dead_file_links(&reply, false), reply, "another Mac's thread keeps its links");
+        // A path in backticks `prepare` linked, a link whose words are that
+        // path in backticks (which `prepare` would link again if it ran
+        // after), and an autolink.
+        let code = format!("Gone: `{gone}`, kept: `{here}`, and [`{gone}`]({gone}), <file://{gone}>.");
+        assert_eq!(
+            dead_file_links(&prepare(&code, "t"), true),
+            prepare(&format!("Gone: `{gone}`, kept: `{here}`, and `{gone}`, file://{gone}."), "t").replace(&format!("[`{gone}`](tbpath:?p={})", super::encode_component(&gone)), &format!("`{gone}`")),
+        );
+        // Kept: a query or heading after a real file, a literal %20 in its
+        // name, a share that could hang the frame. Gone: spaces round it.
+        let literal = dir.join("a%20b.mp4");
+        std::fs::write(&literal, b"x").unwrap();
+        let literal = literal.to_string_lossy().into_owned();
+        let kept = format!("`{here}?view=full` [h]({here}#top) [l]({literal}) [s](/Volumes/no-such-share/x.mp4)");
+        assert_eq!(dead_file_links(&prepare(&kept, "t"), true), prepare(&kept, "t"));
+        assert_eq!(dead_file_links(&format!("[clip]( {gone} )"), true), "clip");
+        assert_eq!(dead_file_links(&format!("[clip](\t{gone})"), true), "clip");
+        let hashed = dir.join("report#final.md");
+        std::fs::write(&hashed, b"x").unwrap();
+        let hashed = format!("[r](file://{}#section)", hashed.to_string_lossy().replace('#', "%23"));
+        assert_eq!(dead_file_links(&hashed, true), hashed);
+        let plain = "No links to files here, [web](https://x.dev).";
+        assert!(matches!(dead_file_links(plain, true), std::borrow::Cow::Borrowed(_)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Unix paths: `/w/garden.html` isn't a whole path on Windows, where the
+    // rewrite rightly leaves it (Desktop app run 44601898647).
+    #[cfg(unix)]
+    #[test]
+    fn a_page_in_a_reply_becomes_a_live_page_card() {
+        let fence = crate::live_pages::fence();
+        assert_eq!(live_pages("Turn it: ![Garden lights](/w/garden.html) there"), format!("Turn it: \n\n```{fence}\n/w/garden.html\nGarden lights\n```\n\n there"));
+        assert_eq!(live_pages("![](file:///w/a%20b.htm)"), format!("\n\n```{fence}\n/w/a b.htm\n\n```\n\n"));
+        assert_eq!(live_pages("![shot](/w/a.png) ![web](https://x.io/p.html)"), "![shot](/w/a.png) ![web](https://x.io/p.html)", "pictures and web pages aren't pages here");
+        assert_eq!(live_pages("`![g](/w/g.html)` in code"), "`![g](/w/g.html)` in code");
+        let fenced = live_pages("![g](/w/g.html)").into_owned();
+        let tree = markdown::to_mdast(&fenced, &markdown::ParseOptions::gfm()).unwrap();
+        let mut codes = Vec::new();
+        fn walk(n: &markdown::mdast::Node, out: &mut Vec<(Option<String>, String)>) {
+            if let markdown::mdast::Node::Code(c) = n {
+                out.push((c.lang.clone(), c.value.clone()));
+            }
+            for ch in n.children().into_iter().flatten() {
+                walk(ch, out);
+            }
+        }
+        walk(&tree, &mut codes);
+        assert_eq!(codes, vec![(Some(fence.to_owned()), "/w/g.html\ng".to_owned())]);
+    }
+
     #[test]
     fn a_web_picture_or_another_macs_stays_a_link() {
         assert_eq!(pictures("see ![chart](https://x.y/c.png)", true), "see [\\[chart\\]](<https://x.y/c.png>)");
@@ -686,7 +924,6 @@ mod tests {
     fn source_path(url: &str, local: bool) -> String {
         match super::picture_source(&url.to_owned().into(), local) {
             gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(path)) => path.to_string_lossy().into_owned(),
-            #[cfg(windows)]
             gpui_kit::ImageSource::Custom(_) => super::picture_path(url).filter(|p| super::checked_picture_bytes(p).is_ok()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             _ => panic!("a path"),
         }
@@ -751,7 +988,7 @@ mod tests {
 
     #[test]
     fn reads_paths_as_paths_and_commands_as_commands() {
-        for path in ["app/Sources/Foo.swift", "Foo.swift:12", "/tmp/a.txt:12:4", "~/.zshrc", "./check.sh", "runner/src/", "guide.md#links"] {
+        for path in ["app/Sources/Foo.swift", "Foo.swift:12", "/tmp/a.txt:12:4", "src/a.ts:121-125", "~/.zshrc", "./check.sh", "runner/src/", "guide.md#links"] {
             assert!(looks_like_path(path), "{path} should read as a path");
         }
         for not_path in ["npm test", "tb land", "example.com", "readme", "-rf", "a*b", "https://x.y/z", "open exports/a.mp4"] {
@@ -765,6 +1002,8 @@ mod tests {
     #[test]
     fn code_paths_become_links_outside_fences_and_links() {
         assert_eq!(prepare("see `src/a.rs` here", "t"), "see [`src/a.rs`](tbpath:?p=src/a.rs) here");
+        // With its lines, which the click takes to the pane.
+        assert_eq!(prepare("see `src/a.ts:121-125`", "t"), "see [`src/a.ts:121-125`](tbpath:?p=src/a.ts%3A121-125)");
         assert_eq!(prepare("`npm test` stays", "t"), "`npm test` stays");
         // Already a link's words, or in a code block: left as they are.
         assert_eq!(prepare("[`src/a.rs`](https://x.y)", "t"), "[`src/a.rs`](https://x.y)");

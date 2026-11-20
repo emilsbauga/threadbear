@@ -23,6 +23,8 @@ import kotlinx.coroutines.withContext
  * a release build asks; nothing about the phone goes with the request.
  * Installing is Android's: the APK opens in the browser, which downloads it,
  * and Android asks to install it over this one (same key, newer version).
+ * The fdroid build never asks (SELF_UPDATE): F-Droid updates it, so
+ * [available] stays null and the menu and Settings show no update.
  */
 object Updates {
     private val _available = MutableStateFlow<AppUpdate.Available?>(null)
@@ -34,6 +36,7 @@ object Updates {
     val installed: String? get() = BuildConfig.RELEASE_DATE.takeIf { it.isNotEmpty() }
 
     fun check(scope: CoroutineScope) {
+        if (!BuildConfig.SELF_UPDATE) return
         val mine = installed ?: return
         val url = AppUpdate.latestUrl(BuildConfig.UPDATE_REPO) ?: return
         val now = SystemClock.elapsedRealtime()

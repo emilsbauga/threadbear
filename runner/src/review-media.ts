@@ -97,9 +97,11 @@ export function withCharset(bytes: Buffer): Buffer {
 // they're inside `root`. Links to other pages aren't followed.
 export function namedFiles(text: string, base: string, root: string): string[] {
   const refs: string[] = [];
-  for (const m of text.matchAll(/\b(?:src|href|poster|data)\s*=\s*["']([^"']+)["']/gi)) refs.push(m[1]);
+  // Quoted or bare: `<link rel=stylesheet href=base.css>` is a stylesheet
+  // too, and missing it showed Mike a review's pages unstyled (19 Nov).
+  for (const m of text.matchAll(/\b(?:src|href|poster|data)\s*=\s*(?:["']([^"']+)["']|([^\s"'<>=`]+))/gi)) refs.push(m[1] ?? m[2]);
   // Loops, not push(...): a page of millions of names overflowed the stack.
-  for (const m of text.matchAll(/\bsrcset\s*=\s*["']([^"']+)["']/gi)) for (const s of m[1].split(',')) refs.push(s.trim().split(/\s+/)[0]);
+  for (const m of text.matchAll(/\bsrcset\s*=\s*(?:["']([^"']+)["']|([^\s"'<>=`]+))/gi)) for (const s of (m[1] ?? m[2]).split(',')) refs.push(s.trim().split(/\s+/)[0]);
   // `url(...)` and a query or hash cut off are read in one pass each
   // (linear-text.ts): as regexes, a page of `url(` and spaces, or a name
   // of `?` after `?`, took time in the square of its length, on the

@@ -8,6 +8,7 @@ import { FakeClock } from '../../src/clock.ts';
 import type { UpdateFailure } from '../../src/fix-update.ts';
 import { nullLogger } from '../../src/log.ts';
 import { CHECK_INTERVAL_MS, FIRST_CHECK_MS, MACHINE_WAIT_MS, MAX_MACHINE_TRIES, MAX_SLEPT_TRIES, SOON_MS, RunnerUpdater, runDeploy, launcherDiffers, launchAgentBehind, launcherSourcesHash, appOfExecutable, updateDir, watchMainRef, decideUpdate, failedAlready, releaseTreeAt, syncClone, updateFilePath, buildTreeAt, landChecked, passedLandCheck, LAND_CHECK_COMMANDS, LAND_CHECK_STEPS, type UpdateDeps } from '../../src/update.ts';
+import { APP_STAGED_REASON } from '../../src/reinstall.ts';
 import { LAND_TIMES_FILE } from '../../src/land-queue.ts';
 import type { ReleaseJson } from '../../src/release.ts';
 import { noFileWatches, patiently } from '../helpers/patience.ts';
@@ -106,9 +107,20 @@ test('syncClone brings a clone to main and reports its release tree; docs and te
   fs.mkdirSync(path.join(dir, 'runner', 'node_modules', 'left'), { recursive: true });
   await syncClone(repo, 'runner/', dir);
   assert.ok(fs.existsSync(path.join(dir, 'runner', 'node_modules', 'left')));
+  // The repo root's node_modules too (the backend tests load convex from
+  // there), but no other folder's.
+  fs.mkdirSync(path.join(dir, 'node_modules', 'convex'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'web', 'node_modules', 'stray'), { recursive: true });
+  await syncClone(repo, 'runner/', dir);
+  assert.ok(fs.existsSync(path.join(dir, 'node_modules', 'convex')));
+  assert.ok(!fs.existsSync(path.join(dir, 'web')));
   commit('lock', 'runner/package-lock.json', '{"name":"x","lockfileVersion":3,"v":2}\n');
   await syncClone(repo, 'runner/', dir);
   assert.ok(!fs.existsSync(path.join(dir, 'runner', 'node_modules')));
+  assert.ok(fs.existsSync(path.join(dir, 'node_modules', 'convex')));
+  commit('root lock', 'package-lock.json', '{"name":"r","lockfileVersion":3}\n');
+  await syncClone(repo, 'runner/', dir);
+  assert.ok(!fs.existsSync(path.join(dir, 'node_modules')));
   assert.equal(releaseTreeAt(repo, 'runner/', 'nonsense'), undefined);
 });
 
@@ -468,6 +480,15 @@ test('launchAgentBehind: launch.mjs, a plist that runs node, and an app built fr
   // The app is from older launcher sources, or its build.json is gone.
   built('old');
   assert.equal(launchAgentBehind(main, home, sup, undefined, 'darwin'), "Threadbear Runner.app was built from older launcher sources than main's.");
+  // A new one staged beside it, built from main's: it waits for the job's next start.
+  const staged = path.join(home, '.Threadbear Runner.app.staged');
+  fs.mkdirSync(path.join(staged, 'Contents', 'Resources'), { recursive: true });
+  fs.writeFileSync(path.join(staged, 'Contents', 'Resources', 'build.json'), JSON.stringify({ sources: launcherSourcesHash(path.join(main, 'launcher')) }));
+  assert.equal(launchAgentBehind(main, home, sup, undefined, 'darwin'), APP_STAGED_REASON);
+  // A staged one that's older than main's too doesn't count.
+  fs.writeFileSync(path.join(staged, 'Contents', 'Resources', 'build.json'), JSON.stringify({ sources: 'older' }));
+  assert.match(launchAgentBehind(main, home, sup, undefined, 'darwin')!, /older launcher sources/);
+  fs.rmSync(staged, { recursive: true });
   fs.rmSync(path.join(app, 'Contents', 'Resources', 'build.json'));
   assert.match(launchAgentBehind(main, home, sup, undefined, 'darwin')!, /older launcher sources/);
   // Both at once, a sentence each.
@@ -529,6 +550,27 @@ test('a failed backend deploy holds the runner back until main changes', async (
   await h.u.check();
   assert.deepEqual(h.backendDeploys, ['c2', 'c3']);
   assert.equal(h.deploys, 1);
+});
+
+// A backend deploy that left a stepping stone live (deploy-backend.mjs: a
+// backfill that couldn't finish, with a machine switched off meanwhile) is
+// tried again at the next check, not left until main changes.
+test('a backend deploy that left a stepping stone live is tried again at the next check', async () => {
+  const h = harness();
+  h.backendResult = { ok: false, error: 'The commandState backfill failed' };
+  fs.writeFileSync(path.join(h.home, 'backend.json'), JSON.stringify({ stepping: { commit: 'c2', names: ['commandState'] } }));
+  h.u.start();
+  await h.u.check();
+  await h.u.check();
+  assert.deepEqual(h.backendDeploys, ['c2', 'c2']);
+  // It went through, and the marker's gone: the runner is built, once.
+  h.backendResult = { ok: true };
+  fs.writeFileSync(path.join(h.home, 'backend.json'), JSON.stringify({}));
+  await h.u.check();
+  assert.deepEqual(h.backendDeploys, ['c2', 'c2', 'c2']);
+  assert.equal(h.deploys, 1);
+  await h.u.check();
+  assert.deepEqual(h.backendDeploys, ['c2', 'c2', 'c2']);
 });
 
 // deploy.mjs's exit for a step the Mac slept through (SleptThrough), so the
@@ -1017,6 +1059,32 @@ test('landChecked: a commit a landing checked on a check host needs no second ch
   assert.equal(await landChecked(repo, 'runner/', src), undefined);
 });
 
+test("landChecked: someone's copy that pulled Mike's main skips what his landings ran", async () => {
+  const { repo, commit } = makeRepo();
+  const git = (...args: string[]) => {
+    const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const mikes = path.join(tmpDir(), 'mikes.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', mikes]).status, 0);
+  const his = commit('his change', 'runner/src/main.ts', 'console.log(3)\n');
+  // The remote says Mike's URL; insteadOf sends its fetches to the stand-in.
+  git('config', `url.${mikes}.insteadOf`, 'https://github.com/mikecann/threadbear.git');
+  git('remote', 'add', 'upstream', 'https://github.com/mikecann/threadbear.git');
+  git('push', '-q', 'upstream', 'main');
+  assert.match((await landChecked(repo, 'runner/', his)) ?? '', /upstream\/main has this commit/);
+  // A commit of this copy's own, even with a stale ref saying his main has it.
+  const own = commit('mine', 'runner/src/main.ts', 'console.log(4)\n');
+  git('update-ref', 'refs/remotes/upstream/main', own);
+  assert.equal(await landChecked(repo, 'runner/', own), undefined);
+  // A fetch that fails checks.
+  fs.rmSync(mikes, { recursive: true, force: true });
+  assert.equal(await landChecked(repo, 'runner/', his), undefined);
+  // A remote that isn't Mike's counts for nothing.
+  git('remote', 'set-url', 'upstream', 'https://github.com/someone/threadbear.git');
+  assert.equal(await landChecked(repo, 'runner/', his), undefined);
+});
+
 // landChecked rests on a landing's check running everything a build's own
 // checks do. These hold the two together.
 test("a build's own checks are no more than tb land's: the same steps, command and test run", () => {
@@ -1045,7 +1113,10 @@ test("a build's own checks are no more than tb land's: the same steps, command a
   const deploySteps = fs.readFileSync(new URL('../../scripts/deploy-steps.mjs', import.meta.url), 'utf8');
   const deploy = fs.readFileSync(new URL('../../scripts/deploy.mjs', import.meta.url), 'utf8');
   assert.match(deploySteps, /step\(name, checkSh, \['--runner'\]/);
-  assert.match(deploySteps, /step\('Unit tests', c\.npm, \['test'\]/);
+  // Off Windows; there it runs less (test-windows.mjs leaves out the files
+  // known to fail there), which a landing's full run still covers.
+  assert.match(deploySteps, /: \[c\.npm, \['test'\]\];/);
+  assert.match(deploySteps, /step\('Unit tests', \.\.\.suite, opts, io\)/);
   assert.match(deploy, /step\('Typecheck', c\.npm, \['run', 'typecheck'\]/);
 });
 

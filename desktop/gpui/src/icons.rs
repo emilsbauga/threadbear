@@ -12,6 +12,10 @@ use gpui_kit::component::Icon;
 /// here: the star's shape, filled with the current text colour.
 const STAR_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.4 7 .7-5.2 4.7 1.5 6.9L12 17.7l-6.2 3.5 1.5-6.9-5.2-4.7 7-.7z" fill="black"/></svg>"#;
 
+/// A bear's head with a plus: start a thread about this (Settings' sections,
+/// Mike, 17 Nov). Drawn in Lucide's line style to sit with the other icons.
+const BEAR_PLUS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 7.6A2.6 2.6 0 1 1 8.4 4.6"/><path d="M11.6 4.6A2.6 2.6 0 1 1 14.8 7.6"/><circle cx="10" cy="12" r="6.6"/><circle cx="7.6" cy="10.6" r=".5" fill="black"/><circle cx="12.4" cy="10.6" r=".5" fill="black"/><ellipse cx="10" cy="14.4" rx="1.9" ry="1.4"/><path d="M19.5 15.5v7M16 19h7"/></svg>"#;
+
 /// A filled message bubble distinguishes a board card worked on by this
 /// thread from the outline button that opens another thread.
 const BUBBLE_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 3h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7l-5 3V5a2 2 0 0 1 2-2z" fill="black"/></svg>"#;
@@ -33,6 +37,14 @@ const LOCK_OPEN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 /// low, and beside the Swift card's it read as a different mark.
 const CHECKMARK_TALL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.5l5 5.5L20 3.5"/></svg>"#;
 
+/// The list panels' status shapes (issue #67): filled, with the mark cut out,
+/// so the shape reads at 13 px whatever its colour. A circle for needs you, a
+/// diamond for failed and a triangle for a warning, so a red-green
+/// colour-blind eye tells them apart by shape, not by orange against red.
+const CIRCLE_ALERT_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><mask id="m"><rect width="24" height="24" fill="white"/><path d="M12 6.8v6.4" stroke="black" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="17.2" r="1.55" fill="black"/></mask><circle cx="12" cy="12" r="10.5" fill="black" mask="url(#m)"/></svg>"#;
+const DIAMOND_X_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><mask id="m"><rect width="24" height="24" fill="white"/><path d="M8.9 8.9l6.2 6.2M15.1 8.9l-6.2 6.2" stroke="black" stroke-width="2.5" stroke-linecap="round"/></mask><path d="M12 .8L23.2 12 12 23.2.8 12z" fill="black" stroke="black" stroke-width="1.2" stroke-linejoin="round" mask="url(#m)"/></svg>"#;
+const TRIANGLE_ALERT_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><mask id="m"><rect width="24" height="24" fill="white"/><path d="M12 9.2v5.2" stroke="black" stroke-width="2.5" stroke-linecap="round"/><circle cx="12" cy="18" r="1.45" fill="black"/></mask><path d="M12 2.2L23 21.4H1z" fill="black" stroke="black" stroke-width="1.6" stroke-linejoin="round" mask="url(#m)"/></svg>"#;
+
 /// The done card's tick (`checkmark` at 14 pt): about 12 by 12 at 16.
 pub fn tall_checkmark() -> Icon {
     Icon::default().data(CHECKMARK_TALL)
@@ -45,12 +57,21 @@ pub fn tall_checkmark() -> Icon {
 const CLAUDE_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017l-1.344 3.46H0L6.57 3.522zm4.132 9.959L8.453 7.687 6.205 13.48H10.7z"/></svg>"#;
 const CODEX_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z"/></svg>"#;
 
-/// A provider's logo ("claude", "codex"), or its symbol where there's no logo
+/// Grok's, OpenCode's and Cursor's marks, from the same set as the two above
+/// (LobeHub's icons), so the Usage panel's cards each carry their provider's logo.
+const GROK_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/></svg>"#;
+const OPENCODE_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M16 6H8v12h8V6zm4 16H4V2h16v20z"/></svg>"#;
+const CURSOR_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/></svg>"#;
+
+/// A provider's logo ("claude", "codex", "grok", "opencode", "cursor"), or its symbol where there's no logo
 /// (`ProviderMark`, with `ModelPicker.providerSymbol`'s fallbacks).
 pub fn provider_mark(provider: &str) -> Icon {
     match if provider.is_empty() { "claude" } else { provider } {
         "claude" => Icon::default().data(CLAUDE_LOGO),
         "codex" => Icon::default().data(CODEX_LOGO),
+        "grok" => Icon::default().data(GROK_LOGO),
+        "opencode" => Icon::default().data(OPENCODE_LOGO),
+        "cursor" => Icon::default().data(CURSOR_LOGO),
         _ => symbol("cpu"),
     }
 }
@@ -68,6 +89,9 @@ pub fn runner_symbol(icon: Option<&str>) -> &'static str {
     }
 }
 
+/// A virtual runner's symbol: its Runs on entry and its threads' tiles.
+pub const VIRTUAL_RUNNER: &str = "cloud.bolt";
+
 /// The bundled icon for one of the app's SF Symbol names.
 pub fn symbol(name: &str) -> Icon {
     try_symbol(name).unwrap_or_else(|| Icon::new(IconName::CircleQuestionMark))
@@ -78,6 +102,7 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
     let lucide = match name {
         "star" => IconName::Star,
         "star.fill" => return Some(Icon::default().data(STAR_FILLED)),
+        "bear.plus" => return Some(Icon::default().data(BEAR_PLUS)),
         "bubble.left.fill" => return Some(Icon::default().data(BUBBLE_FILLED)),
         "star.slash" => IconName::StarOff,
         "tray" | "tray.full" => IconName::Inbox,
@@ -134,6 +159,9 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         // The symbols a runner can name for itself (`RunnerInfo.icon`).
         "laptopcomputer" => IconName::Laptop,
         "cloud" => IconName::Cloud,
+        // A virtual runner (Runs on, a box thread's row): a machine made on
+        // demand, so not the plain cloud a Hetzner runner names for itself.
+        "cloud.bolt" => IconName::CloudLightning,
         "server.rack" => IconName::Server,
         "smartphone" => IconName::Smartphone,
         "arrow.right.square" => IconName::SquareArrowRight,
@@ -187,6 +215,9 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         "doc.plaintext" => IconName::FileText,
         "safari" => IconName::Compass,
         "exclamationmark.triangle" => IconName::TriangleAlert,
+        "exclamationmark.triangle.fill" => return Some(Icon::default().data(TRIANGLE_ALERT_FILLED)),
+        "exclamationmark.circle.fill" => return Some(Icon::default().data(CIRCLE_ALERT_FILLED)),
+        "xmark.diamond.fill" => return Some(Icon::default().data(DIAMOND_X_FILLED)),
         "bolt.horizontal" | "bolt.horizontal.circle" => IconName::Zap,
         "lock" => IconName::Lock,
         "lock.open" => return Some(Icon::default().data(LOCK_OPEN)),
@@ -262,6 +293,8 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         "sparkle.magnifyingglass" => IconName::Search,
         "text.quote" => IconName::TextQuote,
         "arrow.up.circle.fill" => IconName::CircleArrowUp,
+        // A list panel row's switch when its patch names no icon.
+        "power" => IconName::Power,
         _ => return None,
     };
     Some(Icon::new(lucide))

@@ -4,7 +4,7 @@
 // its figures while its details are open and the threads running on it.
 import { Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
-import type { Dump } from '../support/driver.ts';
+import { okValue, type Dump } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 
 /** The runner's own line and the indented ones under it. */
@@ -64,4 +64,20 @@ Then('the Runners panel lists {string} before {string}', async function (this: T
   await new Promise((done) => setTimeout(done, 1500));
   const d = await this.app.dump();
   assert.ok(at(d, first) < at(d, second), `the order went back: ${d.runners?.lines.join(' | ')}`);
+});
+
+// Year-long token… for another runner's Claude login: the login's line ends
+// with its button, whatever its sign-in says between.
+Then('the Runners panel offers a year-long token for {string} under {string}', async function (this: ThreadbearWorld, login: string, name: string) {
+  await this.until(`a year-long token offered for ${login} under ${name}`, (d) => under(d, name)?.some((l) => l.startsWith(login) && l.endsWith('[Year-long token…]')));
+});
+
+When('I copy {string}', async function (this: ThreadbearWorld, words: string) {
+  await this.app.do({ cmd: 'clipboard', set: words });
+});
+
+// A scripted app opens nothing for real: the gate keeps what it would have.
+Then('the app opened the claude.ai page for that token', async function (this: ThreadbearWorld) {
+  const opened = JSON.parse(okValue(await this.app.do({ cmd: 'opened' }))) as string[];
+  assert.ok(opened.some((u) => u.startsWith('https://claude.com/cai/oauth/authorize?')), `opened: ${opened.join(' | ')}`);
 });

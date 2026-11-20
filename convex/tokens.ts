@@ -178,13 +178,14 @@ export const dropDevices = internalMutation({
 });
 
 // `npx convex run tokens:issueCode '{"name":"iphone","days":90}'`: a one-use
-// pairing code, as the Mac app's QR code carries (ios/scripts/pair-qr.swift).
+// pairing code, as the Mac app's QR code carries (ios/scripts/pair-qr.swift),
+// or with `"kind":"browser"` the website's sign-in code (web/scripts/sign-in.swift).
 export const issueCode = internalMutation({
-  args: { name: v.string(), days: v.optional(v.number()) },
+  args: { name: v.string(), days: v.optional(v.number()), kind: v.optional(tokenKind) },
   returns: v.object({ code: v.string(), expiresAt: v.string() }),
-  handler: async (ctx, { name, days }) => {
+  handler: async (ctx, { name, days, kind }) => {
     if (days !== undefined && (!Number.isFinite(days) || days < 1 || days > MAX_DAYS)) throw new ConvexError({ kind: 'badArgs', message: `days must be 1 to ${MAX_DAYS}` });
-    const { code, expiresAt } = await issuePairingCode(ctx, { kind: 'phone', name: name.trim().slice(0, 80) || 'iphone', days });
+    const { code, expiresAt } = await issuePairingCode(ctx, { kind: kind ?? 'phone', name: name.trim().slice(0, 80) || (kind === 'browser' ? 'web' : 'iphone'), days });
     return { code, expiresAt };
   },
 });

@@ -68,6 +68,8 @@ impl Threadbear {
                             this.settings.saved.thread_milestone_shown = Some(tier);
                             this.settings.save();
                             this.milestone.note = Some(tier);
+                            // A rare win: confetti from the note's paw (confetti.rs).
+                            this.throw_confetti("milestone", threadbear_core::confetti::MILESTONE_BURST, cx);
                             visible = Some(Instant::now());
                             cx.notify();
                             true
@@ -122,6 +124,8 @@ pub(crate) fn milestone_mark(cx: &App) -> AnyElement {
         .child(dot(9., 0., 4., 5.))
         .child(dot(13., 4., 4., 5.))
         .child(dot(3., 8., 11., 8.))
+        // Where the milestone's confetti pops from (confetti.rs).
+        .child(crate::confetti::anchor("milestone"))
         .into_any_element()
 }
 

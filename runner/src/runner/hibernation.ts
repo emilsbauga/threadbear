@@ -4,7 +4,7 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import type { ThreadSummary } from '../protocol.ts';
+import type { ReviewFinding, ThreadSummary } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import { SAID_MAX, WAKE_SYSTEM, awayFor, hibernateNote, localWhen, readWakeAnswer, wakePrompt } from '../wake-when.ts';
 import type { ThreadState } from '../runner.ts';
@@ -13,18 +13,16 @@ import { parseWhen } from '../when.ts';
 import type { WaitFor } from '../needs.ts';
 import path from 'node:path';
 import { providerName } from '../providers.ts';
-import { LAB_REVIEW_REPLY_CHARS, addVerdict, findingLine } from './lab-review.ts';
+import { LAB_REVIEW_REPLY_CHARS, addVerdict, addVerdicts, answerEach, findingLine, panelWake } from './lab-review.ts';
 import { cutSafely, safeEnd } from '../safe-cut.ts';
-import { above, raises, type Authority } from '../threadbear-mcp.ts';
+import { above, LEAST, raises, type Authority } from '../threadbear-mcp.ts';
 
-// A thread that isn't here (on another runner of this Mac's) counts as the
-// least access, so what it said is never passed up on a guess.
-const LEAST: Authority = { mode: 'ask', confined: true };
 
-// The less of two: the lower mode, and in a sandbox if either is.
+// The less of two: the lower mode, or LEAST if either is.
 export function leastAuthority(a: Authority | undefined, b: Authority): Authority {
   if (!a) return b;
-  return { mode: raises(a.mode, b.mode) ? b.mode : a.mode, confined: a.confined || b.confined };
+  if (a === LEAST || b === LEAST) return LEAST;
+  return { mode: raises(a.mode, b.mode) ? b.mode : a.mode };
 }
 
 // How long a thread waiting on others sleeps at most when end_turn gave no
@@ -53,7 +51,7 @@ export const hibernationPart = {
     const by = params.by === 'agent' ? ('agent' as const) : undefined;
     const input = { said, now: this.clock.now(), timeZone, title: st.rec.title, first: gist.first, brief: st.rec.brief?.text, ...(by ? { by } : {}) };
     this.update({ threadId: st.rec.id, snoozedUntil: NO_WAKE_TIME });
-    st.rec.wakeWhen = { said, pending: true };
+    st.rec.wakeWhen = { said, pending: true, ...(by ? { by } : {}) };
     this.markDirty(st);
     const ask = (withThread: boolean) =>
       models.generate({
@@ -79,6 +77,7 @@ export const hibernationPart = {
       this.markDirty(st);
       this.armSnoozeTimer();
       if (this.bucket(st.rec) === 'inbox') this.kickQueue(st);
+      if (by) this.recheckStarter(st);
       throw new RpcError(ErrorCode.other, `Couldn't work out when to wake it: ${answer.error}`);
     }
     st.rec.snoozedUntil = answer.until ?? NO_WAKE_TIME;
@@ -87,6 +86,9 @@ export const hibernationPart = {
     if (st.rec.wakeChecked && (!by || st.rec.wakeChecked.said !== said)) delete st.rec.wakeChecked;
     this.emit(st, { type: 'system.note', text: hibernateNote(answer, said, timeZone, by) });
     this.armSnoozeTimer();
+    // Its starter's card counts it as working while it waits to land
+    // (loose-ends.ts): its own loose ends may have come in first.
+    if (by) this.recheckStarter(st);
     this.log.info('hibernated in words', { threadId: st.rec.id, until: answer.until, topic: answer.topic });
     return { thread: this.summary(st), ...answer };
   },
@@ -205,13 +207,13 @@ export const hibernationPart = {
 
   // A review of this thread's change has started (runner/lab-review.ts):
   // it hibernates until the review finishes, as end_turn's waitFor would.
-  waitOnReview(this: Runner, st: ThreadState, reviewId: string): void {
-    this.waitOn(st, [{ id: reviewId }], undefined);
-    const w = st.rec.waitingOn?.find((x) => x.threadId === reviewId);
-    if (w) {
-      w.review = true;
-      this.markDirty(st);
+  // A panel's several reviews: until every one has.
+  waitOnReview(this: Runner, st: ThreadState, reviewIds: string[]): void {
+    this.waitOn(st, reviewIds.map((id) => ({ id })), undefined);
+    for (const w of st.rec.waitingOn ?? []) {
+      if (reviewIds.includes(w.threadId)) w.review = true;
     }
+    this.markDirty(st);
   },
 
   // A turn finished with nothing needed and nothing left running: kept with
@@ -267,34 +269,57 @@ export const hibernationPart = {
     {
       const waits = st.rec.waitingOn;
       if (!waits || st.rt.deleted || st.rec.archivedAt || this.bucket(st.rec) !== 'snoozed') return;
+      const putAway: string[] = [];
       for (const w of waits) {
-        if (w.done) continue;
+        if (w.done) {
+          // One finished under the release before verdicts were kept here.
+          const t = w.review && w.done.how === 'finished' && !w.done.verdict ? this.threads.get(w.threadId) : undefined;
+          if (t?.rec.reviewVerdict) {
+            w.done.verdict = structuredClone(t.rec.reviewVerdict);
+            this.markDirty(st);
+          }
+          continue;
+        }
         const t = this.threads.get(w.threadId);
         if (!t || t.rt.deleted) continue;
         const fin = t.rec.finished;
         // One waiting for something in particular hears from the librarian
         // (waitMet), not from any finish.
-        if (fin && !w.until) w.done = { at: fin.at, how: 'finished', ...(fin.reply ? { reply: fin.reply } : {}) };
+        // A review's verdict is kept with its reply, so a panel member
+        // deleted while the others still work keeps its findings.
+        if (fin && !w.until) {
+          const edited = w.review ? [...reviewEdits(this, t)] : [];
+          w.done = { at: fin.at, how: 'finished', ...(fin.reply ? { reply: fin.reply } : {}), ...(w.review && t.rec.reviewVerdict ? { verdict: structuredClone(t.rec.reviewVerdict) } : {}), ...(edited.length ? { edited } : {}) };
+        }
         else if (t.rec.archivedAt) w.done = { at: t.rec.archivedAt, how: 'archived' };
         else continue;
         w.title = t.rec.title;
         this.markDirty(st);
+        if (w.review && w.done.how === 'finished' && !t.rec.archivedAt && !t.rt.turn) putAway.push(t.rec.id);
       }
-      if (waits.every((x) => x.done)) this.deliverWaits(st, waits);
+      if (waits.every((x) => x.done)) return this.deliverWaits(st, waits);
+      // One of a review panel that's done while the rest still work is put
+      // away now, as a single review is once it's back, rather than sitting
+      // in the inbox (Gemini's review of the panel, 19 Nov 2026). Its wait
+      // is already done, with its reply and verdict.
+      for (const id of putAway) this.update({ threadId: id, archived: true, archivedBy: 'threadbear' });
     }
   },
 
   // What a thread's agent can do now (threadbear-mcp.ts, Authority).
   authorityNow(this: Runner, threadId: string): Authority {
-    if (!this.threads.has(threadId)) return LEAST;
-    return { mode: this.accessOf(threadId), confined: this.confinedOf(threadId) };
+    const st = this.threads.get(threadId);
+    if (!st || st.rec.confined) return LEAST;
+    return { mode: this.accessOf(threadId) };
   },
 
   // Whether a thread with access `me` may be handed another thread's words
-  // without a card: the other has no less access (mode or sandbox), as
+  // without a card: the other has no less access (its mode), as
   // send_message goes by. One not here counts as the least.
   mayTellOf(this: Runner, me: Authority, threadId: string): boolean {
-    return !above(me, this.authoritySaved(threadId));
+    const them = this.authoritySaved(threadId);
+    if (them === LEAST) return false;
+    return !above(me, them);
   },
 
   // What a thread's agent is held to as a sender: its saved mode, as
@@ -303,20 +328,20 @@ export const hibernationPart = {
   // Daybreak finding 111). One not here counts as the least.
   authoritySaved(this: Runner, threadId: string): Authority {
     const st = this.threads.get(threadId);
-    if (!st) return LEAST;
-    return { mode: st.rec.permissionMode ?? 'ask', confined: Boolean(st.rec.confined) };
+    if (!st || st.rec.confined) return LEAST;
+    return { mode: st.rec.permissionMode ?? 'ask' };
   },
 
   // Whether what a waited-on thread said may go to the waiting thread's
   // agent as a message, as send_message would let it without a card: the
   // waited-on thread has no less access than the waiting one has now, or the
   // waiting one's agent asked for it itself (end_turn's waitFor) and hasn't
-  // been raised since. A wait the quiet inbox made was never asked for, so
-  // it counts only the first (Daybreak, 12 Nov 2026: an Ask helper's closing
-  // reply started a turn in its Full-access starter).
+  // been raised since. A wait the agent never asked for (`by` missing) counts
+  // only the first (Daybreak, 12 Nov 2026: an Ask helper's closing reply
+  // started a turn in its Full-access starter).
   mayHear(this: Runner, me: Authority, w: NonNullable<ThreadState['rec']['waitingOn']>[number]): boolean {
     if (this.mayTellOf(me, w.threadId)) return true;
-    return !w.quiet && w.by !== undefined && !above(me, w.by);
+    return w.by !== undefined && !above(me, w.by);
   },
 
   deliverWaits(this: Runner, st: ThreadState, waits: NonNullable<ThreadState['rec']['waitingOn']>): void {
@@ -325,6 +350,7 @@ export const hibernationPart = {
     // (Codex's review of the Daybreak fix, 12 Nov 2026).
     const me = this.authorityNow(st.rec.id);
     const held = waits.filter((x) => !this.mayHear(me, x));
+    if (!held.length && waits.length > 1 && waits.every((x) => x.review)) return this.deliverPanel(st, waits);
     if (!held.length && waits.length === 1 && waits[0].review) return this.deliverReview(st, waits[0]);
     if (held.length) {
       // Woken for Mike instead, with no turn: he reads them and says what next.
@@ -344,11 +370,7 @@ export const hibernationPart = {
     });
     const one = waits.length === 1;
     const why = one ? `"${waits[0].title}" finished` : 'the threads it was waiting on finished';
-    // A wait the runner started (experiment quietInbox, quiet-inbox.ts): the
-    // agent never said it would wait, and may have nothing more to do.
-    const text = waits.every((x) => x.quiet)
-      ? `Threadbear hibernated this thread after your last turn, as all it had left open was the thread${one ? '' : 's'} it started. ${one ? 'It has' : 'They have'} finished now.\n\n${parts.join('\n\n')}\n\nIf that leaves something to do, or to tell the user, do it now; if not, say so in a line. read_thread has the rest of ${one ? 'it' : 'them'}.`
-      : `The thread${one ? '' : 's'} you hibernated to wait on ${one ? 'has' : 'have'} finished.\n\n${parts.join('\n\n')}\n\nCarry on from here. read_thread has the rest of ${one ? 'it' : 'them'}.`;
+    const text = `The thread${one ? '' : 's'} you hibernated to wait on ${one ? 'has' : 'have'} finished.\n\n${parts.join('\n\n')}\n\nCarry on from here. read_thread has the rest of ${one ? 'it' : 'them'}.`;
     // Reports held for it while they worked come with this wake rather than
     // as a second one (runner/nested.ts).
     const reports = this.takeHeld(st);
@@ -380,7 +402,7 @@ export const hibernationPart = {
         text = `${who} reviewed the change you just made${round} (thread ${id8}) and found nothing that holds up.${edits}\n\nIts reply:\n\n${findings}\n\nSay so in a line in your reply and finish as you were.`;
       } else if (added.length) {
         text = `${who} reviewed the change you just made${round} (thread ${id8}). Its findings, numbered:\n\n${added.map(findingLine).join('\n')}\n\nIts reply, with the detail:\n\n${findings}${edits}\n\n` +
-          'Check each finding against the code: fix what holds up and run the tests again. When you call end_turn, answer every one in its `findings`, by number: `[{ "id": ' + added[0].id + ', "outcome": "fixed" }]`, one per finding, each "fixed", "disputed" with a note saying why it doesn\'t hold up, or "left" with a note saying what the user has to decide (that goes with needs "you" and an ask). Fixes get another review. In your reply, say briefly what it found and what you did about each.';
+          answerEach(added[0].id);
       } else {
         text = `${who} reviewed the change you just made (thread ${id8}). Its findings:\n\n${findings}${edits}\n\n` +
           'Check each finding against the code: fix what holds up and run the tests again. In your reply, say briefly what it found, what you fixed, and anything you left and why. If it found nothing, say so in a line and finish as you were.';
@@ -394,6 +416,49 @@ export const hibernationPart = {
     this.log.info('woke after a lab review', { threadId: st.rec.id, reviewer: w.threadId });
     if (reviewer && !reviewer.rt.deleted && !reviewer.rec.archivedAt && !reviewer.rt.turn) {
       this.update({ threadId: w.threadId, archived: true, archivedBy: 'threadbear' });
+    }
+  },
+
+  // A review panel has all come back (or gone): the thread wakes with every
+  // reviewer's findings numbered together (lab-review.ts, addVerdicts), as
+  // deliverReview does for one. Each review thread is put away.
+  deliverPanel(this: Runner, st: ThreadState, waits: NonNullable<ThreadState['rec']['waitingOn']>): void {
+    const ledger = st.rec.labReview;
+    const parts = waits.map((w) => {
+      const reviewer = this.threads.get(w.threadId);
+      const by = ledger?.panel?.find((p) => p.threadId === w.threadId)?.reviewer ?? (reviewer ? providerName(reviewer.rec.provider) : 'A reviewer');
+      const reviewed = w.done?.how === 'finished' || w.done?.how === 'met';
+      return { w, reviewer, by, reviewed, verdict: reviewed ? (w.done?.verdict ?? reviewer?.rec.reviewVerdict) : undefined };
+    });
+    const done = parts.filter((x) => x.reviewed);
+    // None came back: the change wasn't reviewed, and the round isn't
+    // delivered, as for a single review put away first.
+    const leftOut: Omit<ReviewFinding, 'id' | 'round'>[] = [];
+    const added = ledger && done.length ? addVerdicts(ledger, done.map((x) => ({ by: x.by, verdict: x.verdict })), leftOut) : [];
+    // One that never reviewed means the panel didn't all look: no pass.
+    if (ledger && done.length && done.length < parts.length) ledger.passed = false;
+    if (ledger) this.markDirty(st);
+    const text = panelWake(
+      parts.map((x) => ({
+        by: x.by,
+        threadId: x.w.threadId,
+        reviewed: x.reviewed,
+        reply: x.w.done?.reply,
+        // As it was when it finished, kept in case it's gone since.
+        edited: !x.reviewed ? [] : Array.isArray(x.w.done?.edited) ? x.w.done.edited : x.reviewer ? [...reviewEdits(this, x.reviewer)] : [],
+      })),
+      added,
+      ledger,
+      leftOut,
+    );
+    this.wake(st, { why: 'the review panel reviewed the change' });
+    this.armSnoozeTimer();
+    this.sendTo(st, text, [], { origin: 'runner', queue: true });
+    this.log.info('woke after a review panel', { threadId: st.rec.id, reviewers: waits.map((w) => w.threadId) });
+    for (const { w, reviewer } of parts) {
+      if (reviewer && !reviewer.rt.deleted && !reviewer.rec.archivedAt && !reviewer.rt.turn) {
+        this.update({ threadId: w.threadId, archived: true, archivedBy: 'threadbear' });
+      }
     }
   },
 
@@ -501,6 +566,7 @@ export const hibernationPart = {
     delete rec.untilRelease;
     delete rec.wakeWhen;
     delete rec.waitingOn;
+    delete rec.hibernatedForApp;
   },
 };
 

@@ -62,6 +62,7 @@ npm run check                           # steps line up, no apps needed
 TB_APP=gpui  node_modules/.bin/cucumber-js        # or swift
 TB_TAGS='@sidebar.search' ...                     # just these
 TB_INCLUDE_PENDING=1 ...                          # to see what's left
+TB_SHARD=2/2 ...                                  # half the files, as CI's second Linux job does
 TB_REDUCE_MOTION=on ...                           # GPUI with Reduce Motion (off otherwise, whatever the Mac says)
 ```
 
@@ -170,7 +171,11 @@ runs are queued ahead, again every five minutes. The holder is in
 `~/.cache/threadbear-perf.lock.waiting`. Read that file, not `lsof`, to see who holds it: every waiter has the
 lock file open too, so a waiter at 0% CPU looks like a stuck holder. A thread
 killed its own queued run that way on 14 Nov. Other
-checkouts and landing checks cannot build over a measurement. Cargo and Swift
+checkouts and landing checks cannot build over a measurement. Plain builds
+(`remote.sh --build`) may share a host that allows it
+(`~/.cache/threadbear-check/builds-at-once` there; `scripts/perf-lock.pl`
+says how), never with a measurement: a measurement started inside one
+refuses, so measure through `remote.sh` without `--build`. Cargo and Swift
 build executables run at background priority; the benchmark keeps normal
 priority. Cancellation keeps the locks until the remote command has stopped.
 
@@ -230,3 +235,30 @@ checkout cannot reuse the other checkout's binary. The marker returns only
 after Cargo succeeds. A cleanup that cannot yet observe killed work stopping
 keeps the host locked and writes `~/.cache/threadbear-check/perf-cleanup.log`
 after 30 seconds; it does not let another measurement start over that work.
+
+## Hunting bugs on purpose
+
+Three tools look for bugs nobody wrote a scenario for. They grew out of a
+fuzzing experiment on 18 Nov 2026 (write-ups in `~/dev/me/misc/threadbear-fuzz`
+on Mike's Mac) and run each night on Tinker Desk (`scripts/nightly-fuzz.sh`).
+All three use a debug build with `automation` on the mock runner's demo
+threads, never real data, and keep their output under
+`~/.cache/threadbear-check`. Run them through `desktop/scripts/remote.sh
+tinker-desk --desk -- ...`, never on Mike's Mac.
+
+- `tools/stress.mjs --cond slow+dark --shard 2/8` reruns these specs under
+  shaken conditions (a slow runner answering out of order, window sizes, dark,
+  Reduce Motion, random order) and records each scenario's result. The slow
+  runner is what found real races: a scenario that fails only under a
+  condition is worth reading, after checking it passes on plain main.
+- `tools/fuzz-monkey.sh <seed> [minutes] [--mock-weight 40]` is a seeded
+  random walk that checks the app stays alive, answers, doesn't stall its main
+  thread and keeps a consistent state. A failure keeps its trace, which
+  `fuzz-monkey.ts --replay <trace> --shrink` cuts down. No model, so it's
+  cheap, but it can't see what merely looks wrong.
+- `tools/fuzz-agent-desk.sh <model> <minutes> [area...]` has a cheap model
+  (`opencode:<free model>` or `claude:claude-haiku-5-5`) use the app like a
+  person and report what looks broken, with the commands to repeat it. It
+  finds what the other two can't (Escape not closing a menu, two controls with
+  one screen-reader name), and most of its reports are false alarms, so
+  repeat each one before believing it.

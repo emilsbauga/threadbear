@@ -7,6 +7,14 @@ import { hasLiveToken, tiedToRevoked } from '../../../convex/pushTargets.ts';
 import { convexSite, deploymentVouches } from '../../../relay/convex/verify.ts';
 
 const now = 1_000_000;
+
+// A Response as fetch gives it: `url` is where the answer came from, and
+// `redirected` whether it took a redirect to get there.
+function answered(res: Response, url: string, redirected = false): Response {
+  Object.defineProperty(res, 'url', { value: url });
+  Object.defineProperty(res, 'redirected', { value: redirected });
+  return res;
+}
 const tok = (id: string, name: string, extra: { expiresAt?: number; revokedAt?: number } = {}) => ({ _id: id, name, expiresAt: now + 1000, ...extra });
 
 test('a phone registered with a token gets pushes only while that token is live', () => {
@@ -61,13 +69,13 @@ test('a registration counts as the deployment\'s only when it answers ok for the
   const calls: { url: string; body: string }[] = [];
   const answer = (status: number, body: unknown) => (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), body: String(init?.body) });
-    return new Response(JSON.stringify(body), { status });
+    return answered(new Response(JSON.stringify(body), { status }), String(url));
   }) as typeof fetch;
   assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', answer(200, { ok: true })), true);
   assert.deepEqual(calls[0], { url: 'https://a-b-1.convex.site/relay/verify', body: JSON.stringify({ nonce: 'n1' }) });
   assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', answer(404, { ok: false })), false);
   assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', answer(200, { ok: 'yes' })), false);
   // The static site's index.html for an old backend with no such route.
-  assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', (async () => new Response('<html>', { status: 200 })) as typeof fetch), false);
+  assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', (async (url: string) => answered(new Response('<html>', { status: 200 }), url)) as typeof fetch), false);
   assert.equal(await deploymentVouches('https://a-b-1.convex.site', 'n1', (async () => { throw new Error('offline'); }) as typeof fetch), false);
 });

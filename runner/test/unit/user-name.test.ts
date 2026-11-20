@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { firstName, USER_NAME, userLine } from '../../src/user-name.ts';
 import { buildThreadbearTools, FILING_PROJECTS, patchesLine, SHOWING_THE_USER } from '../../src/threadbear-mcp.ts';
-import { ALREADY_ENDED, ARCHIVE_ADDED, SNOOZE_ADDED, CODEX_END_TURN_DESCRIPTION, END_TURN_DESCRIPTION, endTurnDescription, NARRATION_ONLY, NO_REPLY, tryFirstNudge } from '../../src/needs.ts';
+import { ALREADY_ENDED, ARCHIVE_ADDED, SNOOZE_ADDED, CODEX_END_TURN_DESCRIPTION, END_TURN_DESCRIPTION, endTurnDescription, NARRATION_ONLY, NO_REPLY, tryFirstNudge, plainCardNudge } from '../../src/needs.ts';
 import { dynamicToolSpecs, NAMESPACE_DESCRIPTION, TOOL_GUIDANCE } from '../../src/adapters/codex/tools.ts';
 import { SYSTEM } from '../../src/librarian.ts';
 import { EXPLAIN_SYSTEM } from '../../src/explain.ts';
@@ -42,6 +42,7 @@ test('nothing an agent reads names Mike, apart from the user line', () => {
     ['NARRATION_ONLY', NARRATION_ONLY],
     ['NO_REPLY', NO_REPLY],
     ['tryFirstNudge', tryFirstNudge()],
+    ['plainCardNudge', plainCardNudge()],
     ['NAMESPACE_DESCRIPTION', NAMESPACE_DESCRIPTION],
     ['TOOL_GUIDANCE', TOOL_GUIDANCE],
     ['librarian SYSTEM', SYSTEM],

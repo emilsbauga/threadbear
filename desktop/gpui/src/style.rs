@@ -57,11 +57,220 @@ impl Appearance {
 
     pub fn title(self) -> &'static str {
         match self {
-            Appearance::System => "Same as the Mac",
+            // Named for the machine it's on: "Same as the Mac" read oddly on
+            // Windows (17 Nov).
+            Appearance::System if cfg!(target_os = "macos") => "Same as the Mac",
+            Appearance::System if cfg!(target_os = "windows") => "Same as Windows",
+            Appearance::System => "Same as the system",
             Appearance::Light => "Light",
             Appearance::Dark => "Dark",
         }
     }
+}
+
+/// Settings > General > Appearance's accent: the system's, or one of the bear
+/// colours from Wayne Sutton's fork (waynesutton/threadbear d088877f, "Bear
+/// Colour"), brought in when Mike picked "the look plus accent, density, text
+/// size and font" for Appearance (17 Nov). Buttons, ticks, the outline of a
+/// card that needs you and the tint behind your own messages take it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accent {
+    System,
+    Fur,
+    Honey,
+    Berry,
+    Rose,
+    Plum,
+    Sky,
+    Moss,
+    Slate,
+}
+
+static ACCENT: AtomicU32 = AtomicU32::new(0);
+
+impl Accent {
+    pub const ALL: [Accent; 9] = [Accent::System, Accent::Fur, Accent::Honey, Accent::Berry, Accent::Rose, Accent::Plum, Accent::Sky, Accent::Moss, Accent::Slate];
+
+    /// What the settings file keeps.
+    pub fn name(self) -> &'static str {
+        match self {
+            Accent::System => "system",
+            Accent::Fur => "fur",
+            Accent::Honey => "honey",
+            Accent::Berry => "berry",
+            Accent::Rose => "rose",
+            Accent::Plum => "plum",
+            Accent::Sky => "sky",
+            Accent::Moss => "moss",
+            Accent::Slate => "slate",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Accent {
+        Accent::ALL.into_iter().find(|a| a.name() == name).unwrap_or(Accent::System)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Accent::System if cfg!(target_os = "macos") => "The Mac's accent",
+            Accent::System => "Blue",
+            Accent::Fur => "Fur",
+            Accent::Honey => "Honey",
+            Accent::Berry => "Berry",
+            Accent::Rose => "Rose",
+            Accent::Plum => "Plum",
+            Accent::Sky => "Sky",
+            Accent::Moss => "Moss",
+            Accent::Slate => "Slate",
+        }
+    }
+
+    /// The colour, or None for the system's (the Mac's accent, blue elsewhere).
+    pub fn rgb(self) -> Option<u32> {
+        match self {
+            Accent::System => None,
+            Accent::Fur => Some(0xd69454),
+            Accent::Honey => Some(0xe0a33a),
+            Accent::Berry => Some(0xc2414b),
+            Accent::Rose => Some(0xd9668c),
+            Accent::Plum => Some(0x8a5cc2),
+            Accent::Sky => Some(0x3e8ed0),
+            Accent::Moss => Some(0x5e9b4f),
+            Accent::Slate => Some(0x6b7280),
+        }
+    }
+}
+
+pub fn accent_choice() -> Accent {
+    Accent::ALL.get(ACCENT.load(Ordering::Relaxed) as usize).copied().unwrap_or(Accent::System)
+}
+
+/// Puts the accent on every window. The theme's kit colours follow too
+/// (`refresh_system_accent`), so buttons and focus rings change with it.
+pub fn set_accent_choice(accent: Accent, cx: &mut App) {
+    ACCENT.store(Accent::ALL.iter().position(|a| *a == accent).unwrap_or(0) as u32, Ordering::Relaxed);
+    refresh_system_accent(cx);
+    bump_look();
+}
+
+/// Settings > General > Appearance's Spacing: Compact tightens the sidebar's
+/// rows and the room around each of your messages, for those who want more
+/// on screen, as Jordan Newton's fork does with its denser sizes
+/// (newtonjordan466-bit/threadbear 223f077c).
+static COMPACT: AtomicBool = AtomicBool::new(false);
+
+pub fn compact() -> bool {
+    COMPACT.load(Ordering::Relaxed)
+}
+
+pub fn set_compact(on: bool) {
+    if COMPACT.swap(on, Ordering::Relaxed) != on {
+        bump_look();
+    }
+}
+
+/// Settings > General > Appearance's Font: the whole app's, but code keeps
+/// its monospaced one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Font {
+    /// The default since 18 Nov (Mike picked it over the system's own after
+    /// seeing both): Allo (allo.joshpuckett.me), bundled in fonts/allo and
+    /// added at launch (`fonts::register`), so it's the same everywhere
+    /// without installing anything.
+    Allo,
+    System,
+    Serif,
+    Mono,
+}
+
+static FONT: AtomicU32 = AtomicU32::new(0);
+
+impl Font {
+    /// What a fresh install, or settings with no font saved, get. FONT starts
+    /// at 0, so it's first in ALL as well.
+    pub const DEFAULT: Font = Font::Allo;
+    pub const ALL: [Font; 4] = [Font::Allo, Font::System, Font::Serif, Font::Mono];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Font::System => "system",
+            Font::Serif => "serif",
+            Font::Mono => "mono",
+            Font::Allo => "allo",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Font {
+        Font::ALL.into_iter().find(|f| f.name() == name).unwrap_or(Font::DEFAULT)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Font::System => "System",
+            Font::Serif => "Serif",
+            Font::Mono => "Monospaced",
+            Font::Allo => "Allo",
+        }
+    }
+
+    /// The family to ask for, None for the system's own. One that every
+    /// install of that system has: Charter ships with macOS, Georgia with
+    /// Windows; elsewhere GPUI falls back from Noto Serif if it's missing.
+    fn family(self, cx: &App) -> Option<SharedString> {
+        match self {
+            Font::System => None,
+            Font::Serif if cfg!(target_os = "macos") => Some("Charter".into()),
+            Font::Serif if cfg!(target_os = "windows") => Some("Georgia".into()),
+            Font::Serif => Some("Noto Serif".into()),
+            Font::Mono => Some(cx.theme().mono_font_family.clone()),
+            Font::Allo => Some("Allo".into()),
+        }
+    }
+}
+
+pub fn font_choice() -> Font {
+    Font::ALL.get(FONT.load(Ordering::Relaxed) as usize).copied().unwrap_or(Font::DEFAULT)
+}
+
+/// Names the family in both looks' theme configs as well as on the theme,
+/// as switching between light and dark loads the config's family again.
+pub fn set_font_choice(choice: Font, cx: &mut App) {
+    use gpui_kit::component::Theme;
+    use std::rc::Rc;
+    FONT.store(Font::ALL.iter().position(|f| *f == choice).unwrap_or(0) as u32, Ordering::Relaxed);
+    // System is named too, not left out: a config with no family keeps
+    // whatever the theme had, so going back from Monospaced stayed
+    // Monospaced (Mike, 17 Nov). `.SystemUIFont` is GPUI's name for the
+    // system's own, which the kit then resolves to the installed family.
+    let family = choice.family(cx).unwrap_or_else(|| ".SystemUIFont".into());
+    let theme = Theme::global_mut(cx);
+    let mode = theme.mode;
+    for config in [&mut theme.light_theme, &mut theme.dark_theme] {
+        let mut changed = (**config).clone();
+        changed.font_family = Some(family.clone());
+        *config = Rc::new(changed);
+    }
+    theme.font_family = family;
+    Theme::change(mode, None, cx);
+    bump_look();
+}
+
+/// Goes up with each change to the accent, spacing or font, so what's
+/// measured or drawn once and kept (the transcript's rows, the sidebar's far
+/// rows, the reading styles) is done again, as a new zoom does.
+static LOOK: AtomicU32 = AtomicU32::new(0);
+
+fn bump_look() {
+    LOOK.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn look_revision() -> u32 {
+    LOOK.load(Ordering::Relaxed)
+}
+
+/// The zoom and the look together: what row heights depend on.
+pub fn layout_key() -> u64 {
+    (zoom_percent() as u64) << 32 | look_revision() as u64
 }
 
 pub fn appearance() -> Appearance {
@@ -94,6 +303,13 @@ pub fn set_appearance(appearance: Appearance, window: &mut Window, cx: &mut App)
 /// `zoomed`: a design size at the window's zoom (`TypeScale.scaled`).
 pub fn zoomed(size: f32) -> f32 {
     threadbear_core::zoom::scaled(size, zoom_percent())
+}
+
+/// The zoom as a plain scale, 1.25 at 125%: for turning the window's pixels
+/// into points. Not `zoomed(1.)`, which rounds to a whole point and so is 1
+/// from 80% to 140%.
+pub fn zoom_scale() -> f32 {
+    zoom_percent() as f32 / 100.
 }
 
 /// A SwiftUI `Text`'s own line height at `size`, as SwiftUI lays it out on
@@ -209,12 +425,12 @@ pub(crate) fn refresh_system_clock() {
     }
 }
 
-pub(crate) type ReadingStyleKey = (bool, u64, u32);
+pub(crate) type ReadingStyleKey = (bool, u64, u32, u32);
 
 /// A system appearance can replace the contrast colours without changing
 /// the app's fixed light/dark look or the Increase Contrast switch.
 pub(crate) fn reading_style_key(cx: &App) -> ReadingStyleKey {
-    (cx.theme().is_dark(), cx.try_global::<SystemContrast>().map_or(0, |s| s.revision), zoom_percent())
+    (cx.theme().is_dark(), cx.try_global::<SystemContrast>().map_or(0, |s| s.revision), zoom_percent(), look_revision())
 }
 
 pub(crate) fn increase_contrast(cx: &App) -> bool {
@@ -331,37 +547,73 @@ fn contrast_colour(cx: &App, index: usize, fallback: Hsla) -> Hsla {
 struct SystemAccent { light: Rgba, dark: Rgba }
 impl Global for SystemAccent {}
 
+/// The kit's own accent colours, as they were before any accent was put on
+/// them: what a system accent goes back to where there's no system one to
+/// read (Windows, Linux).
+struct KitAccent([[Option<SharedString>; 4]; 2]);
+impl Global for KitAccent {}
+
 /// System Settings can change the accent while this app is behind it. Read
 /// it at launch and on return, once for both appearances, rather than ask
-/// AppKit for every button in every frame.
+/// AppKit for every button in every frame. An accent picked in Settings
+/// stands in for it, on every system.
 pub(crate) fn refresh_system_accent(cx: &mut App) {
+    use gpui_kit::component::Theme;
+    use std::rc::Rc;
+    let chosen = accent_choice().rgb().map(|hex| {
+        let c = Rgba::from(rgb(hex));
+        (c, c)
+    });
     #[cfg(target_os = "macos")]
-    {
-        use gpui_kit::component::Theme;
-        use std::rc::Rc;
-        let Some((light, dark)) = system_control_accent(false).zip(system_control_accent(true)) else { return };
-        let accent = SystemAccent { light, dark };
-        if cx.try_global::<SystemAccent>() == Some(&accent) { return; }
-        cx.set_global(accent);
-        let theme = Theme::global_mut(cx);
-        let mode = theme.mode;
-        for (config, color) in [(&mut theme.light_theme, light), (&mut theme.dark_theme, dark)] {
-            let hex: SharedString = format!("#{:02x}{:02x}{:02x}", (color.r * 255.).round() as u8, (color.g * 255.).round() as u8, (color.b * 255.).round() as u8).into();
-            let mut changed = (**config).clone();
-            changed.colors.primary = Some(hex.clone());
-            changed.colors.ring = Some(hex);
-            let shade = |toward: f32| -> SharedString {
-                let mix = |c: f32| ((c * 0.9 + toward * 0.1) * 255.).round() as u8;
-                format!("#{:02x}{:02x}{:02x}", mix(color.r), mix(color.g), mix(color.b)).into()
-            };
-            changed.colors.primary_hover = Some(shade(1.));
-            changed.colors.primary_active = Some(shade(0.));
-            *config = Rc::new(changed);
-        }
-        Theme::change(mode, None, cx);
-    }
+    let system = system_control_accent(false).zip(system_control_accent(true));
     #[cfg(not(target_os = "macos"))]
-    let _ = cx;
+    let system: Option<(Rgba, Rgba)> = None;
+    if !cx.has_global::<KitAccent>() {
+        let theme = Theme::global(cx);
+        let saved = [&theme.light_theme, &theme.dark_theme].map(|t| {
+            let c = &t.colors;
+            [c.primary.clone(), c.ring.clone(), c.primary_hover.clone(), c.primary_active.clone()]
+        });
+        cx.set_global(KitAccent(saved));
+    }
+    let Some((light, dark)) = chosen.or(system) else {
+        // Back to no accent of our own: the kit's blue again.
+        if cx.has_global::<SystemAccent>() {
+            cx.remove_global::<SystemAccent>();
+            let saved = cx.global::<KitAccent>().0.clone();
+            let theme = Theme::global_mut(cx);
+            let mode = theme.mode;
+            for (config, [primary, ring, hover, active]) in [&mut theme.light_theme, &mut theme.dark_theme].into_iter().zip(saved) {
+                let mut changed = (**config).clone();
+                changed.colors.primary = primary;
+                changed.colors.ring = ring;
+                changed.colors.primary_hover = hover;
+                changed.colors.primary_active = active;
+                *config = Rc::new(changed);
+            }
+            Theme::change(mode, None, cx);
+        }
+        return;
+    };
+    let accent = SystemAccent { light, dark };
+    if cx.try_global::<SystemAccent>() == Some(&accent) { return; }
+    cx.set_global(accent);
+    let theme = Theme::global_mut(cx);
+    let mode = theme.mode;
+    for (config, color) in [(&mut theme.light_theme, light), (&mut theme.dark_theme, dark)] {
+        let hex: SharedString = format!("#{:02x}{:02x}{:02x}", (color.r * 255.).round() as u8, (color.g * 255.).round() as u8, (color.b * 255.).round() as u8).into();
+        let mut changed = (**config).clone();
+        changed.colors.primary = Some(hex.clone());
+        changed.colors.ring = Some(hex);
+        let shade = |toward: f32| -> SharedString {
+            let mix = |c: f32| ((c * 0.9 + toward * 0.1) * 255.).round() as u8;
+            format!("#{:02x}{:02x}{:02x}", mix(color.r), mix(color.g), mix(color.b)).into()
+        };
+        changed.colors.primary_hover = Some(shade(1.));
+        changed.colors.primary_active = Some(shade(0.));
+        *config = Rc::new(changed);
+    }
+    Theme::change(mode, None, cx);
 }
 
 #[cfg(target_os = "macos")]
@@ -513,6 +765,9 @@ pub fn answer_box_fill(cx: &App) -> Hsla {
 /// The system's accent (NSColor.controlAccentColor): the outline of a box
 /// that needs Mike, ticks and the agent's own pick.
 pub fn accent(cx: &App) -> Hsla {
+    if let Some(hex) = accent_choice().rgb() {
+        return rgb_hsla(hex);
+    }
     pick(cx, rgb_hsla(0x0a84ff), rgb_hsla(0x007aff))
 }
 
@@ -649,6 +904,28 @@ pub fn sidebar_selected(cx: &App) -> Hsla {
 
 pub fn sidebar_selection(cx: &App, active: bool) -> Hsla {
     primary_opacity(cx, if active { 0.08 } else { 0.06 })
+}
+
+/// The status marks' colours: a list panel's rows, the sidebar's Failed
+/// and its spinner and tick, the sub-agents' marks. From Okabe and Ito's
+/// palette, which a red-green colour-blind eye still tells apart (issue #67,
+/// Mike picked "safe for everyone, no setting" on 17 Nov): failed is a rose
+/// rather than red, so it doesn't turn into the needs-you orange for a
+/// deuteranope. Each mark has its own shape too. An error's words keep
+/// `failed`'s red: they're read, not told apart at a glance.
+pub fn status_failed(cx: &App) -> Hsla {
+    pick(cx, rgb_hsla(0xe0457b), rgb_hsla(0xc42a63))
+}
+
+/// A list row's `warning`: Okabe-Ito's yellow, a darker gold on light.
+pub fn status_warning(cx: &App) -> Hsla {
+    pick(cx, rgb_hsla(0xf0e442), rgb_hsla(0x8f7a00))
+}
+
+/// Working and done: Okabe-Ito's sky blue (its blue on light), so neither
+/// leans on the accent, which can be any colour, red included.
+pub fn status_progress(cx: &App) -> Hsla {
+    pick(cx, rgb_hsla(0x56b4e9), rgb_hsla(0x0072b2))
 }
 
 /// Theme.failed.
@@ -840,6 +1117,22 @@ mod group_hover_text_tests {
         .expect("the test window");
     }
 
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::Font;
+
+    /// FONT starts at 0, so the default has to be first, and an unknown or
+    /// missing name lands on it too.
+    #[test]
+    fn default_is_first_and_the_fallback() {
+        assert_eq!(Font::ALL[0], Font::DEFAULT);
+        assert_eq!(Font::from_name("gone"), Font::DEFAULT);
+        for font in Font::ALL {
+            assert_eq!(Font::from_name(font.name()), font);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -104,8 +104,11 @@ codesign --remove-signature "$STAGE_DIR/Contents/MacOS/$APP_NAME" 2>/dev/null ||
 codesign --force --timestamp=none --sign "$SIGN_IDENTITY" \
   ${SIGNING_REQUIREMENTS[@]+"${SIGNING_REQUIREMENTS[@]}"} "$STAGE_DIR" >/dev/null
 
-# Two renames: the old app is gone for an instant, never half there. A
-# running launcher keeps its old executable open, so it isn't disturbed.
+# Two renames: the old app is gone for an instant, never half there. Never
+# build over the app a running launcher started from: it keeps running, but
+# macOS can no longer check it against its bundle, so every privacy grant
+# asked for under it fails until it restarts (15 Nov 2026).
+# install-runner.sh builds beside it instead (.<name>.staged).
 rm -rf "$OLD_DIR"
 if [ -e "$FINAL_DIR" ]; then mv "$FINAL_DIR" "$OLD_DIR"; fi
 mv "$STAGE_DIR" "$FINAL_DIR"

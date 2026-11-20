@@ -14,13 +14,13 @@
 //      TB_WEB_RUNTIME_ARCHIVE=<the pinned archive> node features/tools/real-typing.ts'
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GpuiDriver } from '../support/gpui.ts';
 import { sleep, type Dump } from '../support/driver.ts';
 import { startSites, stopSites } from '../support/web-pages.ts';
-import { assertInFront, windowFrame, work } from './real-screen.ts';
+import { runtimeParent } from '../support/web-runtime.ts';
+import { assertInFront, assertOwnScreen, windowFrame, work } from './real-screen.ts';
 import { ensurePerfLock } from './perf-lock.ts';
 
 await ensurePerfLock();
@@ -70,6 +70,8 @@ for arg in CommandLine.arguments.dropFirst() {
     usleep(50_000); command(9)
   } else if arg.hasPrefix("type:") {
     for c in arg.dropFirst(5) { if let code = codes[c] { key(code, true, []); usleep(20_000); key(code, false, []); usleep(40_000) } }
+  } else if arg.hasPrefix("backspace:") {
+    for _ in 0..<Int(arg.dropFirst(10))! { key(51, true, []); usleep(20_000); key(51, false, []); usleep(60_000) }
   } else if arg == "new-thread" {
     command(45)
   } else if arg.hasPrefix("click:") {
@@ -91,6 +93,7 @@ execFileSync('swiftc', ['-O', `${keys}.swift`, '-o', keys]);
 const post = (...args: string[]) => execFileSync(keys, args);
 /** Keys go to the app in front: this one, or nothing's posted. */
 async function inFront(): Promise<void> {
+  assertOwnScreen();
   for (let i = 0; i < 20; i += 1) {
     if (Number(execFileSync(keys, ['front']).toString().trim()) === app.pid) return;
     await app.do({ cmd: 'front' });
@@ -100,7 +103,7 @@ async function inFront(): Promise<void> {
 }
 
 // The web runtime, installed once into a folder of this run's.
-const runtime = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tb-real-typing-runtime-'));
+const runtime = fs.mkdtempSync(path.join(runtimeParent(), 'tb-real-typing-runtime-'));
 process.env.THREADBEAR_WEB_RUNTIME_DIR = runtime;
 const sites = await startSites();
 
@@ -164,6 +167,44 @@ async function dictateIntoNewThread(what: string, word: string): Promise<void> {
   check(`${what}: letters typed after it land there too`, typed, `${JSON.stringify(composer(after).text)}, keyboard with ${keyboard(after)}`);
 }
 
+/**
+ * Backspace in a box in the page, with one of GPUI's boxes still focused
+ * behind it: GPUI answered every key as the window's key equivalent first, so
+ * a key with no character went to its box out of sight (Mike, 19 Nov, the
+ * YouTube panel's reply box).
+ */
+async function backspaceInPage(): Promise<void> {
+  await clickInPage();
+  // Words in the thread's own box, focused behind the page, for a stolen
+  // Backspace to take from.
+  await app.do({ cmd: 'type', text: 'behind the page', replace: true });
+  await clickInPage();
+  const before = composer(await app.dump()).text ?? '';
+  const js = `(() => { let t = document.getElementById('reply'); if (!t) { t = document.createElement('textarea'); t.id = 'reply'; t.style = 'position:fixed;left:16px;top:16px;width:300px;height:60px'; document.body.append(t); } t.value = 'reply abcd'; const r = t.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`;
+  const evalIn = async <T,>(code: string): Promise<T> => (JSON.parse((await app.do({ cmd: 'webPanel', do: 'eval', js: code })).replace(/^ok\s*/, '')) as { value: T }).value;
+  const [px, py] = await evalIn<number[]>(js);
+  const slot = pages(await app.dump()).find((p) => p.title === 'Panel home')!.slot!;
+  const [wx, wy] = windowFrame(app.pid!);
+  const at: [number, number] = [wx + slot[0] + px, wy + slot[1] + py];
+  assertInFront(app.pid!, [at]);
+  post(`click:${at[0]},${at[1]}`);
+  // The caret to the end, where a person's click past the text leaves it.
+  // The click gives the page the keyboard; the box gets the page's focus
+  // here, in case the click landed beside it.
+  const focused = await evalIn<boolean>(`(() => { const t = document.getElementById('reply'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); return document.activeElement === t; })()`);
+  check('the box in the page has the focus', focused);
+  check('and the page has the keyboard', await until((d) => keyboard(d) === 'page'), keyboard(await app.dump()));
+  await inFront();
+  post('backspace:2');
+  const value = () => evalIn<string>(`document.getElementById('reply').value`);
+  const end = Date.now() + 3000;
+  let got = await value();
+  while (got !== 'reply ab' && Date.now() < end) { await sleep(100); got = await value(); }
+  check('Backspace in a box in the page deletes there', got === 'reply ab', JSON.stringify(got));
+  const after = composer(await app.dump()).text ?? '';
+  check("Backspace in the page leaves the app's own box alone", after === before, `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+}
+
 await app.start();
 try {
   for (let i = 0; i < 300; i += 1) {
@@ -185,6 +226,8 @@ try {
   // A page had it, then the new-thread page put it out of sight.
   await clickInPage();
   await dictateIntoNewThread('after a click in a page', 'second');
+
+  await backspaceInPage();
 
   // A page had it, then a click on a thread in the sidebar: the letters are
   // that thread's.

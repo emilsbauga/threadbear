@@ -77,9 +77,18 @@ function updateState(home: string, change: (s: RunnerState) => boolean): boolean
 }
 
 // The release <home>/runner/current names, if there's a link.
-export function currentLink(home: string): string | undefined {
+// On Windows it's a text file with the release's id (launch.mjs's
+// readCurrentLink says why).
+export function currentLink(home: string, platform: NodeJS.Platform = process.platform): string | undefined {
+  const file = path.join(home, 'runner', 'current');
   try {
-    return path.basename(fs.readlinkSync(path.join(home, 'runner', 'current')));
+    return path.basename(fs.readlinkSync(file));
+  } catch {
+    if (platform !== 'win32') return undefined;
+  }
+  try {
+    const id = fs.readFileSync(file, 'utf8').trim();
+    return id && !/[\\/]/.test(id) ? id : undefined;
   } catch {
     return undefined;
   }
@@ -97,7 +106,8 @@ export function pointCurrentAt(home: string, id: string): void {
   const link = path.join(home, 'runner', 'current');
   const tmp = `${link}.${process.pid}.tmp`;
   fs.rmSync(tmp, { force: true });
-  fs.symlinkSync(path.join('releases', id), tmp);
+  if (process.platform === 'win32') fs.writeFileSync(tmp, id + '\n');
+  else fs.symlinkSync(path.join('releases', id), tmp);
   fs.renameSync(tmp, link);
   updateState(home, (s) => {
     s.current = id;
@@ -292,4 +302,22 @@ export function onSupervisorGone(fn: () => void): () => void {
   // keeps the process alive anyway, so let the channel not hold it.
   (process.channel as { unref?: () => void } | undefined)?.unref?.();
   return () => process.off('disconnect', handler);
+}
+
+// Calls fn once when the supervisor asks this runner to stop over IPC
+// ({ type: 'stop' }), which is how launch.mjs stops it on Windows: there
+// SIGTERM is a hard kill, so the runner would never save its threads or
+// stop its CLIs. Elsewhere launch.mjs sends SIGTERM as before. Returns an
+// unsubscribe; does nothing when not supervised.
+export function onStopRequest(fn: () => void): () => void {
+  if (!supervised()) return () => {};
+  let called = false;
+  const handler = (m: unknown) => {
+    if (called || !m || typeof m !== 'object' || (m as { type?: unknown }).type !== 'stop') return;
+    called = true;
+    fn();
+  };
+  process.on('message', handler);
+  (process.channel as { unref?: () => void } | undefined)?.unref?.();
+  return () => process.off('message', handler);
 }

@@ -6,8 +6,9 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { defaultHome, runnerUrl, type Config } from './config.ts';
+import { defaultHome, peekRunnerJson, runnerUrl, type Config } from './config.ts';
 import { newTbClient } from './tb-connect.ts';
+import { realPathSync } from './platform.ts';
 import { RunnerClient, RpcClientError } from './client.ts';
 import { ErrorCode, type Account, type ImageRef, type PersistedEvent, type RunnerDefaults, type ThreadSummary } from './protocol.ts';
 import { providerName } from './providers.ts';
@@ -16,12 +17,19 @@ import type { RestartResult, RunnerStatus } from './restart.ts';
 import type { UpstreamStatus } from './upstream.ts';
 import { forTerminal } from './terminal-text.ts';
 import { localOnly } from './convex-admin.ts';
+import type { ProfileLine, ProfileResult } from './self-profile.ts';
+import { buildCheckup, checkupOff, postDraft, saveDraft, skipped } from './checkup.ts';
 
 export const DEV_HELP = `Working on Threadbear itself:
   tb status [--json]              the runner: version, live CLIs, busy threads, a pending restart
   tb self [--json]                the thread this command runs in (THREADBEAR_THREAD_ID)
   tb updates [check] [--json]     Mike's newest release and what this copy's main is missing
                                   (docs/bringing-in-updates.md); check fetches upstream now
+  tb checkup [--text "note"] [--post | --skip] [--json]
+                                  in someone else's copy, after bringing in a release: drafts
+                                  the check-up for Mike (docs/bringing-in-updates.md, 7);
+                                  --post sends the draft once they've said Send, --skip notes
+                                  they didn't
   tb restart [--now] [--resume "text" | --no-resume] [--reason "text"] [--thread ID]
              [--max-wait 30m]     restart once no thread is busy (or now), for dev runners and
                                   sandboxes. Inside a thread it carries that thread on
@@ -39,7 +47,21 @@ export const DEV_HELP = `Working on Threadbear itself:
   tb export <threadId> [--out DIR]
                                   thread.json, events.ndjson and media/ for the mock runner,
                                   in app/.fixtures/threads/<id> by default
+  tb profile [seconds] [--json]   where the runner's CPU goes: profiles its main thread for 10 s
+                                  (up to 120), writes a .cpuprofile and lists the busiest code
   tb rpc <method> ['{"json": "params"}']`;
+
+export function printProfile(r: ProfileResult): string {
+  const s = r.summary;
+  const pct = (ms: number) => (s.ms ? `${Math.round((ms / s.ms) * 100)}%` : '0%');
+  const table = (title: string, lines: ProfileLine[]) => [title, ...lines.slice(0, 15).map((l) => `  ${String(l.ms).padStart(6)} ms ${String(l.pct).padStart(5)}%  ${l.name}${l.where ? `  ${l.where}` : ''}`)].join('\n');
+  return [
+    `Profiled ${(s.ms / 1000).toFixed(1)} s: busy ${s.busyMs} ms (${pct(s.busyMs)}), garbage collection ${s.gcMs} ms (${pct(s.gcMs)}).`,
+    table('The runner\'s own code, with what it called:', s.own),
+    table('Where the time was spent:', s.self),
+    `Open it in Chrome DevTools (Performance, Load profile) or speedscope.app: ${r.file}`,
+  ].join('\n\n');
+}
 
 export type Flags = Record<string, string | boolean | string[] | undefined>;
 type Resolve = (prefix: string | undefined) => Promise<string>;
@@ -99,6 +121,8 @@ export async function runDev(client: RunnerClient, cmd: string, args: string[], 
       process.stdout.write(formatUpstream(r.upstream, Date.now()) + '\n');
       return 0;
     }
+    case 'checkup':
+      return checkupCommand(client, f);
     case 'self': {
       const id = env.THREADBEAR_THREAD_ID;
       if (!id) {
@@ -248,6 +272,13 @@ export async function runDev(client: RunnerClient, cmd: string, args: string[], 
       console.log(`To look at it in a debug app, then dump, shot and stop it:`);
       console.log(`  ${shQuote(path.join(root, 'app', 'Tools', 'dev-app.sh'))} start --mock --fixtures ${shQuote(out)}`);
       console.log(`Its events by seq (line N of events.ndjson is seq N): ${tbCommand()} events ${id.slice(0, 8)} --from N --to M`);
+      return 0;
+    }
+    case 'profile': {
+      const seconds = args[0] === undefined ? 10 : Number(args[0]);
+      const r = await client.call<ProfileResult>('runner.profile', { seconds });
+      if (f.json) return printJson(r);
+      console.log(printProfile(r));
       return 0;
     }
     case 'rpc': {
@@ -463,7 +494,7 @@ export function formatStatus(s: RunnerStatus, threads: ThreadSummary[], now: num
   if (s.sync?.scrub) lines.push(...formatSecrets(s.sync.scrub, s.secretCheck, now, s.sync.full));
   // Releases never touch the LaunchAgent (launch.mjs, the plist, Threadbear
   // Runner.app); only Mike's install-runner.sh does.
-  if (u?.launcherChanged) lines.push(`${u.launcherReason ?? 'launch.mjs on main differs from the installed one.'} Update it in the app's Updates panel stages it for the next login (or the runner does by itself, with the selfReinstall experiment).`);
+  if (u?.launcherChanged) lines.push(`${u.launcherReason ?? 'launch.mjs on main differs from the installed one.'} The runner stages it by itself for the next login; Update it in the app's Updates panel tries again after a failure.`);
   if (s.macScreen?.fullDiskAccess === false) lines.push('Threadbear Runner has no Full Disk Access here, so macOS can stop and wait for someone to answer a prompt. System Settings > Privacy & Security > Full Disk Access turns it on.');
   if (s.macScreen?.dialogs) lines.push(`${plural(s.macScreen.dialogs, 'dialog', 'dialogs')} waiting on this Mac's screen${s.macScreen.dialogsSince ? `, for ${duration(now - Date.parse(s.macScreen.dialogsSince))}` : ''}. A privacy prompt can hold up other apps until someone answers it.`);
   // Other runners' names and problems (their own heartbeats), thread titles
@@ -821,7 +852,12 @@ export function exportThread(t: ThreadSummary, events: PersistedEvent[], out: st
       let name = base;
       for (let i = 2; names.has(name); i++) name = `${i}-${base}`;
       names.add(name);
-      fs.copyFileSync(img.path, path.join(mediaDir, name));
+      // The runner keeps media read-only, and a copy keeps that, so a
+      // second export of the same thread has to take the old copy away
+      // first (18 Nov: re-exporting failed with EACCES).
+      const dest = path.join(mediaDir, name);
+      fs.rmSync(dest, { force: true });
+      fs.copyFileSync(img.path, dest);
       rel = `media/${name}`;
       copied.set(img.path, rel);
     }
@@ -882,7 +918,7 @@ function fallbackLog(cfg: Config): string {
 function sameDir(a: string, b: string): boolean {
   const real = (p: string) => {
     try {
-      return fs.realpathSync(p);
+      return realPathSync(p);
     } catch {
       return path.resolve(p);
     }
@@ -975,4 +1011,38 @@ function follow(file: string, filter: string | undefined, from: number): Promise
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
   });
+}
+
+// tb checkup (checkup.ts): drafts, sends or skips the check-up for Mike.
+async function checkupCommand(client: RunnerClient, f: Flags): Promise<number> {
+  const s = await client.call<RunnerStatus>('runner.status');
+  const checkout = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
+  if (!checkout) {
+    console.error('Run tb checkup inside the Threadbear checkout.');
+    return 1;
+  }
+  const off = checkupOff(checkout, peekRunnerJson(s.home));
+  if (off) {
+    console.log(off);
+    return 0;
+  }
+  if (f.post) {
+    const r = postDraft(s.home, Date.now());
+    (r.code ? console.error : console.log)(r.message);
+    return r.code;
+  }
+  if (f.skip) {
+    skipped(s.home, Date.now());
+    console.log("Skipped. The next check-up counts from now.");
+    return 0;
+  }
+  const id = process.env.THREADBEAR_THREAD_ID;
+  const self = id ? (await listAll(client)).find((t) => t.id === id) : undefined;
+  const logLines = s.logFile && fs.existsSync(s.logFile) ? lastLines(s.logFile, 20_000, ' ERROR ') : [];
+  const c = buildCheckup({ home: s.home, checkout, logLines, patches: self?.patches ?? [], updateFailing: s.update?.state === 'failed', ...(typeof f.text === 'string' ? { note: f.text } : {}), now: Date.now() });
+  const draft = saveDraft(s.home, c);
+  if (f.json) return printJson({ ...c, draft: draft.text, file: draft.file });
+  console.log(draft.text);
+  console.log(`\n(Saved as ${draft.file}. Show them this on a card; tb checkup --post sends exactly this once they say Send.)`);
+  return 0;
 }

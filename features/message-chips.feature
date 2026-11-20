@@ -25,3 +25,9 @@ Feature: Chips in my messages
     Then my message "Look at" shows the chips "card: Fix the share button" and "thread: Tidy the imports"
     When I follow "thread:demo_tidy_imports" in my message "Look at"
     Then the open thread is "Tidy the imports in the uploader"
+
+  @transcript.user @swift-pending
+  Scenario: A web address I paste is a link in my message
+    When I open the thread "Morning brief"
+    And I send "Someone opened an issue: https://github.com/mikecann/fluent-convex/issues/8."
+    Then my message "Someone opened" shows the link "https://github.com/mikecann/fluent-convex/issues/8"

@@ -6,6 +6,7 @@ mod inline;
 mod inline_element;
 mod inline_flow;
 mod inline_object;
+mod link_glint;
 #[cfg(test)]
 mod inline_virtual_tests;
 mod markdown_ext;

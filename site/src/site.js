@@ -175,20 +175,19 @@ if (prompt) {
       }, 6000);
     });
   }
+}
 
-  // "See the prompt" in the hero: a link down to it without JavaScript, a peek at it here with.
-  for (const link of document.querySelectorAll("[data-peek]")) {
-    const peek = document.getElementById(link.getAttribute("aria-controls"));
-    peek.querySelector("code").textContent = text;
-    link.setAttribute("role", "button");
-    link.addEventListener("click", (event) => {
-      event.preventDefault();
-      const open = link.getAttribute("aria-expanded") !== "true";
-      link.setAttribute("aria-expanded", String(open));
-      peek.hidden = !open;
-      link.textContent = open ? "Hide the prompt" : "See the prompt";
-    });
-  }
+// What's new's dot: shown until you've opened /changelog since the newest release came out.
+// Release dates are YYYY-MM-DD, so comparing them as strings is comparing dates. Storage can
+// throw (Safari's private windows used to), in which case the dot just stays.
+{
+  const KEY = "threadbear-seen-release";
+  const link = document.querySelector(".whats-new[data-release]");
+  const latest = link?.dataset.release;
+  try {
+    if (latest && document.body.classList.contains("page-changelog")) localStorage.setItem(KEY, latest);
+    if (latest && (localStorage.getItem(KEY) ?? "") >= latest) link.classList.add("seen");
+  } catch {}
 }
 
 // "Send this page to my Mac": only on a phone (or anything with a touch screen and no mouse)

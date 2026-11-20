@@ -122,4 +122,14 @@ class ModelsTest {
         assertEquals(listOf("c2"), WaitingSends.shown(waiting, listOf(old, arrived, pics)).map { it.commandId })
         assertEquals("[Picture 1] here\n\n[1 picture]", WaitingSends.mirrored(WaitingSend("x", CommandState.TAKEN, "[Picture 1] here", 2, 0.0)))
     }
+
+    // Daybreak 141: another runner's project with the same id never stands in for the thread's own.
+    @Test fun projectsAreLookedUpUnderTheThreadsOwnRunner() {
+        val mine = PhoneProject(id = "p_shared", runnerId = "laptop", title = "Main project")
+        val theirs = PhoneProject(id = "p_shared", runnerId = "mini", title = "Mini project")
+        val projects = ProjectsByRunner(listOf(theirs, mine))
+        assertEquals("Main project", projects.find("laptop", "p_shared")?.title)
+        assertEquals("Mini project", projects.find("mini", "p_shared")?.title)
+        assertNull(projects.find("bruce", "p_shared"))
+    }
 }

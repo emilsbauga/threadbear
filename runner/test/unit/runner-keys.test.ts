@@ -7,6 +7,7 @@ import path from 'node:path';
 import { tmpDir } from '../helpers/fakes.ts';
 import { runnerKeysCommand, remoteCommand, REMOTE_ADMIN_CHECK, convexScratchDir, sshTrouble } from '../../src/runner-keys.ts';
 import { spawnSync } from 'node:child_process';
+import { convexPoster } from '../../src/sync.ts';
 
 const URL_ = 'https://opulent-moose-249.ap-southeast-2.convex.cloud';
 
@@ -194,6 +195,22 @@ test("on a runner key's Mac, tb runner says only the main Mac can", async () => 
   };
   assert.equal(await runnerKeysCommand(s.cfg, ['list'], {}, deps), 1);
   assert.match(s.printed.join('\n'), /only the main Mac's key .* Run tb runner on the main Mac/);
+});
+
+// 17 Nov 2026: adding a fourth runner printed only "[Request ID: …] Server
+// Error", as the HTTP API puts a ConvexError's words in errorData, not
+// errorMessage. Through the real poster, as tb runner uses it.
+test("a refusal the backend wrote for the user (a ConvexError) is what tb runner prints, not Server Error", async () => {
+  const s = setup();
+  const reply = (body: unknown) => (async () => new Response(JSON.stringify(body), { status: 400 })) as unknown as typeof fetch;
+  const post = convexPoster(URL_, reply({ status: 'error', errorMessage: '[Request ID: e2aae7b2e96a7d3a] Server Error', errorData: { kind: 'tooMany', message: 'At most 3 runner keys: revoke one first.' } }));
+  assert.equal(await runnerKeysCommand(s.cfg, ['revoke', 'cb921b2447ea'], {}, { ...s.deps, post }), 1);
+  assert.deepEqual(s.printed, ['At most 3 runner keys: revoke one first.']);
+  // An error with no words of its own keeps the request id to look up in the logs.
+  const t = setup();
+  const odd = convexPoster(URL_, reply({ status: 'error', errorMessage: '[Request ID: abc123] Server Error' }));
+  assert.equal(await runnerKeysCommand(t.cfg, ['list'], {}, { ...t.deps, post: odd }), 1);
+  assert.deepEqual(t.printed, ['[Request ID: abc123] Server Error']);
 });
 
 // Plain JS with no types, as setup runs before any packages are installed.

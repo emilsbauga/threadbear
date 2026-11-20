@@ -10,9 +10,10 @@
 // left typed in would hold every update off, and is quick to type again),
 // Settings' standing instructions (saved as they're typed), a review's
 // reply (kept on this computer through a restart) and the schedule editor
-// (open at all holds it). Codex's review of the restart, 12 Nov: the
-// project page's boxes, a card's Something else and a secret's field were
-// missed.
+// (open at all holds it), and a card's or a question's Something else
+// (drafts.rs carries them across, 19 Nov). Codex's review of the restart,
+// 12 Nov: the project page's boxes, a card's Something else and a secret's
+// field were missed.
 use gpui_kit::component::input::{InputState, TextareaState};
 use gpui_kit::*;
 use std::cell::RefCell;
@@ -40,6 +41,10 @@ struct Watched {
     /// said only "a field" sat for hours with nobody able to find it
     /// (13 Nov).
     label: String,
+    /// The thread it's on, when it's on one: named in the hold, with a
+    /// button there to open it, as a card's box is easy to forget in a
+    /// thread he isn't looking at (19 Nov).
+    thread: Option<String>,
     /// What it says now, or none once it's gone.
     now: Box<dyn Fn(&App) -> Option<String>>,
     saved: String,
@@ -52,10 +57,16 @@ thread_local! {
 /// Puts a new field on the list, with what it holds now as saved. `label`
 /// says where it is, as the end of "what you're typing in ...".
 pub(crate) fn watch<T: Typed>(input: &Entity<T>, label: impl Into<String>, cx: &App) {
+    watch_in(input, label, None, cx);
+}
+
+/// `watch` for a field on a thread: the hold names the thread, as
+/// "{label} in “title”".
+pub(crate) fn watch_in<T: Typed>(input: &Entity<T>, label: impl Into<String>, thread: Option<String>, cx: &App) {
     let saved = input.read(cx).typed();
     let weak = input.downgrade();
     let now = Box::new(move |cx: &App| weak.upgrade().map(|i| i.read(cx).typed()));
-    WATCHED.with(|w| w.borrow_mut().push(Watched { id: input.entity_id(), label: label.into(), now, saved }));
+    WATCHED.with(|w| w.borrow_mut().push(Watched { id: input.entity_id(), label: label.into(), thread, now, saved }));
 }
 
 /// What the field holds now is saved (or is what's there to begin with):
@@ -74,16 +85,16 @@ pub(crate) fn any(cx: &App) -> bool {
     first(cx).is_some()
 }
 
-/// The first field on the list holding words not saved, by its label.
-/// Fields that have gone are dropped as it looks.
-pub(crate) fn first(cx: &App) -> Option<String> {
+/// The first field on the list holding words not saved, by its label and
+/// the thread it's on. Fields that have gone are dropped as it looks.
+pub(crate) fn first(cx: &App) -> Option<(String, Option<String>)> {
     WATCHED.with(|w| {
         let mut w = w.borrow_mut();
         let mut typed = None;
         w.retain(|entry| match (entry.now)(cx) {
             Some(now) => {
                 if typed.is_none() && threadbear_core::app_update::typed_since(&entry.saved, &now) {
-                    typed = Some(entry.label.clone());
+                    typed = Some((entry.label.clone(), entry.thread.clone()));
                 }
                 true
             }

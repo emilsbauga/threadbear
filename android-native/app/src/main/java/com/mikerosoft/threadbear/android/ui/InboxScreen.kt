@@ -79,6 +79,7 @@ import com.mikerosoft.threadbear.kit.InboxSections
 import com.mikerosoft.threadbear.kit.PhoneProject
 import com.mikerosoft.threadbear.kit.PhoneSection
 import com.mikerosoft.threadbear.kit.PhoneThread
+import com.mikerosoft.threadbear.kit.ProjectsByRunner
 import com.mikerosoft.threadbear.kit.ProjectMark
 import com.mikerosoft.threadbear.kit.RelativeTime
 import com.mikerosoft.threadbear.kit.RowStatus
@@ -104,7 +105,7 @@ fun rememberNow(everyMs: Long = 5000): Instant {
 /** What the rows around the inbox need to draw and act. */
 private class RowContext(
     val now: Instant,
-    val projects: Map<String, PhoneProject>,
+    val projects: ProjectsByRunner,
     val wakes: Map<String, ScheduleWake>,
     val open: (String) -> Unit,
     val hibernate: (PhoneThread) -> Unit,
@@ -157,8 +158,8 @@ fun InboxScreen(
     val previous = remember { arrayOfNulls<InboxSections>(1) }
     val glide = remember(sections) { previous[0]?.changedHeadings(sections) ?: false }
     SideEffect { previous[0] = sections }
-    val projectById = remember(projects) { projects.associateBy { it.id } }
-    val rows = RowContext(now, projectById, wakeMap, open, { hibernating = it }, glide)
+    val projectsByRunner = remember(projects) { ProjectsByRunner(projects) }
+    val rows = RowContext(now, projectsByRunner, wakeMap, open, { hibernating = it }, glide)
     val searching = query.isNotBlank()
     // The button shows once the backend has a Pocket, or there are cards from before.
     val showsPocket = cards.isNotEmpty() || (identity?.apiVersion ?: 0) >= BackendApi.POCKET
@@ -299,7 +300,8 @@ private fun SearchResults(
     query: String, sections: InboxSections, wakes: Map<String, ScheduleWake>, rows: RowContext,
     padding: PaddingValues, back: Set<String>,
 ) {
-    val shell = LocalModel.current.shell
+    val model = LocalModel.current
+    val shell = model.shell
     // Only while a search is on: it looks in the put-away lists too.
     val asleep by shell.searchHibernating.collectAsStateWithLifecycle()
     val archived by shell.searchArchived.collectAsStateWithLifecycle()
@@ -307,7 +309,9 @@ private fun SearchResults(
     // The phone has only the newest 100 archived threads, so Convex looks
     // through the rest, once typing pauses.
     var older by remember { mutableStateOf<List<PhoneThread>>(emptyList()) }
-    LaunchedEffect(text) {
+    // Again once the backend's version is known: before, it can't tell
+    // whether Convex can look (Codex's review, 16 Nov).
+    LaunchedEffect(text, model.apiVersion) {
         older = emptyList()
         delay(300)
         older = shell.searchOlderArchived(text)
@@ -670,7 +674,7 @@ private fun StartingRow(row: StartingThread, runners: List<com.mikerosoft.thread
 
 @Composable
 fun ThreadRow(
-    t: PhoneThread, now: Instant, projects: Map<String, PhoneProject>, modifier: Modifier = Modifier,
+    t: PhoneThread, now: Instant, projects: ProjectsByRunner, modifier: Modifier = Modifier,
     /** Under the Running heading the time alone; elsewhere "Working 38s", as the iPhone. */
     underRunning: Boolean = false,
     /** The schedule that messages it next: the row says when, where the time would be. */
@@ -680,6 +684,7 @@ fun ThreadRow(
 ) {
     val signals = LocalSignals.current
     val kind = RowStatus.kind(t)
+    val renamed by LocalModel.current.renamed.collectAsStateWithLifecycle()
     Row(
         modifier.fillMaxWidth().animateContentSize().padding(start = 6.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -696,12 +701,12 @@ fun ThreadRow(
                 needs -> Box(Modifier.size(7.dp).clip(CircleShape).background(signals.accent))
             }
         }
-        ProjectTile(t.projects?.firstOrNull()?.let { projects[it.id] }, t.projects?.firstOrNull()?.title ?: t.folderName, 38.dp)
+        ProjectTile(t.projects?.firstOrNull()?.let { projects.find(t.runnerId, it.id) }, t.projects?.firstOrNull()?.title ?: t.folderName, 38.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    t.title.ifEmpty { "Untitled" },
+                    LocalModel.current.title(t, renamed),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = if (t.needsYou || kind == RowStatus.Kind.NEEDS_YOU || done) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),

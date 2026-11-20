@@ -772,6 +772,11 @@ impl DockView {
             ));
         }
         let custom = if single { self.content.header(&selected, window, cx) } else { None };
+        let fills = custom.is_some() && self.content.header_fills(&selected, cx);
+        // A custom header takes the tab's place, and its × with it: without
+        // one at the bar's end, a thread's own panel could only be closed
+        // from a right-click menu (Wayne, 19 Nov 2026).
+        let header_close = custom.is_some() && self.content.closable(&selected, cx);
         if let Some(custom) = custom {
             let press_panel = selected.clone();
             bar = bar.child(
@@ -779,6 +784,9 @@ impl DockView {
                     .id(ElementId::Name(format!("dock-header-{}", group.id).into()))
                     .pl(px(8.))
                     .min_w(px(0.))
+                    // Takes the bar's empty space from the strip after it,
+                    // which a press on the header still moves the window from.
+                    .when(fills, |d| d.flex_1())
                     .child(custom)
                     // Lowest priority: the header's own buttons and chips win.
                     .on_mouse_down(
@@ -819,7 +827,8 @@ impl DockView {
         bar = bar.child(
             div()
                 .id(ElementId::Name(format!("dock-bar-space-{}", group.id).into()))
-                .flex_1()
+                // Gives way to a header that fills, or they'd share the space.
+                .when(!fills, |d| d.flex_1())
                 .h_full()
                 .min_w(px(0.))
                 .child(measure(move |bounds, _, cx| {
@@ -837,6 +846,26 @@ impl DockView {
         );
         if let Some(accessory) = self.content.accessory(&selected, window, cx) {
             bar = bar.child(accessory);
+        }
+        if header_close {
+            let title = self.content.title(&selected, cx);
+            let close = selected.clone();
+            bar = bar.child(
+                div()
+                    .id(ElementId::Name(format!("dock-header-close-{}", group.id).into()))
+                    .flex_none()
+                    .size(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.tab_hover))
+                    .child(svg().path(Lucide::Close.path()).size(px(13.)).text_color(theme.secondary))
+                    .tooltip(move |window, cx| Tooltip::new(format!("Close {title}")).build(window, cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.model.update(cx, |m, cx| m.close(&close, cx)))),
+            );
         }
         bar
     }

@@ -125,6 +125,9 @@ pub struct Site {
     /// is served only while its bytes still match, so a page rewritten after
     /// the click gets nothing.
     pub page_digest: Option<String>,
+    /// The page alone, nothing beside it (a live page in the transcript,
+    /// whose scripts run: one file, as the phone gets it).
+    pub page_only: bool,
     /// What it may read, and their names' bytes together (`MAX_ALLOWED_BYTES`).
     allowed: Mutex<(HashSet<String>, usize)>,
     /// The folder, held open for the site's life: every read starts here, so
@@ -153,13 +156,19 @@ impl Site {
                 return None;
             }
             let root_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-            Some(Site { root, allowed: Mutex::new((HashSet::from([page.clone()]), page.len())), page, page_digest, root_fd })
+            Some(Site { root, allowed: Mutex::new((HashSet::from([page.clone()]), page.len())), page, page_digest, page_only: false, root_fd })
         }
         #[cfg(not(unix))]
         {
             let _ = (root, page, page_digest);
             None
         }
+    }
+
+    /// A live page's site: its own bytes, while they're `page_digest`, and
+    /// nothing else in its folder, whatever it names.
+    pub fn page_only(file: &Path, page_digest: String) -> Option<Site> {
+        Site::new(file, Some(page_digest)).map(|site| Site { page_only: true, ..site })
     }
 
     /// Whether `relative` is one the page may read now (for tests).
@@ -179,7 +188,7 @@ impl Site {
         let relative = parts.join("/");
         let ext = extension(&relative);
         let is_page = relative == self.page;
-        if !is_page && !(ASSET_EXTENSIONS.contains(&ext.as_str()) && self.allows(&relative)) {
+        if !is_page && (self.page_only || !(ASSET_EXTENSIONS.contains(&ext.as_str()) && self.allows(&relative))) {
             return None;
         }
         let data = self.read(&parts)?;
@@ -192,7 +201,7 @@ impl Site {
         }
         let scanned = SCANNED_EXTENSIONS.contains(&ext.as_str());
         let utf8 = scanned && std::str::from_utf8(&data).is_ok();
-        if scanned {
+        if scanned && !self.page_only {
             let head = &data[..data.len().min(SCAN_BYTES)];
             // A character cut in two at the end reads as U+FFFD, which names nothing.
             let text = String::from_utf8_lossy(head);

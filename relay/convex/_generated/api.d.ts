@@ -9,6 +9,7 @@
  */
 
 import type * as apns from "../apns.js";
+import type * as crons from "../crons.js";
 import type * as fcm from "../fcm.js";
 import type * as fcmMessage from "../fcmMessage.js";
 import type * as http from "../http.js";
@@ -25,6 +26,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   apns: typeof apns;
+  crons: typeof crons;
   fcm: typeof fcm;
   fcmMessage: typeof fcmMessage;
   http: typeof http;

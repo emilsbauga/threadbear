@@ -1,0 +1,4 @@
+node_modules
+dist/
+# Made by `npx convex dev`: names the throwaway deployment.
+.env.local

@@ -23,15 +23,18 @@ use threadbear_core::tour::{SetupChecklist, SetupItem};
 /// `devices.list` and `runner.status` (Swift's `devices*` and `localOnly`).
 #[derive(Default)]
 pub(crate) struct SetupState {
-    devices: DeviceList,
+    pub(crate) devices: DeviceList,
     /// `devices.list` has answered since the runner connected.
     loaded: bool,
     /// A runner from before devices (-32601).
     unsupported: bool,
     local_only: bool,
     /// Open signed in, while its token is on its way.
-    opening: bool,
+    pub(crate) opening: bool,
     pub(crate) view: Option<Entity<crate::activity_panels::PanelView>>,
+    /// How many items were left the last time the panel was drawn: the
+    /// last one ticking itself throws confetti (confetti.rs).
+    last_left: Option<usize>,
 }
 
 impl Threadbear {
@@ -94,6 +97,10 @@ impl Threadbear {
 
     /// Open signed in: a browser token, and the website opened with it, as
     /// Settings › Phone & browser's button does.
+    pub(crate) fn setup_open_website_now(&mut self, cx: &mut Context<Self>) {
+        self.setup_open_website(cx);
+    }
+
     fn setup_open_website(&mut self, cx: &mut Context<Self>) {
         if self.setup.opening {
             return;
@@ -128,9 +135,20 @@ impl Threadbear {
         let fg = style::label_text(cx);
         let secondary = style::secondary_text(cx);
         let mut children: Vec<AnyElement> = vec![];
+        // The last item just ticked itself while the list's open: confetti
+        // from "All set.", once this frame has drawn it.
+        let left = list.left();
+        if threadbear_core::confetti::setup_finished(self.setup.last_left.replace(left), left) {
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.throw_confetti("setup-done", threadbear_core::confetti::SETUP_BURST, cx)).ok();
+            })
+            .detach();
+        }
         if list.left() == 0 {
             children.push(
                 h_flex()
+                    .relative()
+                    .child(crate::confetti::anchor("setup-done"))
                     .items_center()
                     .gap(px(10.))
                     .child(crate::tour::waving_bear(36., secondary))

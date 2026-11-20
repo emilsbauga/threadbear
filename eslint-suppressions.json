@@ -1,0 +1,521 @@
+{
+  "convex/boxMachine.ts": {
+    "machines/no-direct-state-writes": {
+      "count": 2
+    }
+  },
+  "convex/boxService.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 44
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 5
+    },
+    "@convex-dev/no-process-env": {
+      "count": 3
+    },
+    "machines/no-direct-state-writes": {
+      "count": 2
+    },
+    "mikecann-lint/prefer-kind-discriminant": {
+      "count": 7
+    }
+  },
+  "convex/boxes.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 20
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 2
+    },
+    "@convex-dev/no-process-env": {
+      "count": 1
+    }
+  },
+  "convex/commandMachine.ts": {
+    "machines/no-direct-state-writes": {
+      "count": 1
+    }
+  },
+  "convex/devices.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 8
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 1
+    }
+  },
+  "convex/http.ts": {
+    "machines/no-brand-bypass": {
+      "count": 1
+    }
+  },
+  "convex/lib.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 3
+    },
+    "@convex-dev/no-process-env": {
+      "count": 2
+    }
+  },
+  "convex/memorySync.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 3
+    }
+  },
+  "convex/migrations.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 6
+    },
+    "machines/no-direct-state-writes": {
+      "count": 7
+    }
+  },
+  "convex/moveMachine.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 3
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 1
+    },
+    "machines/no-direct-state-writes": {
+      "count": 3
+    }
+  },
+  "convex/moves.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 12
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 6
+    },
+    "@convex-dev/no-process-env": {
+      "count": 1
+    },
+    "machines/no-direct-state-writes": {
+      "count": 2
+    }
+  },
+  "convex/phone.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 13
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 5
+    },
+    "@convex-dev/no-process-env": {
+      "count": 2
+    }
+  },
+  "convex/projectHeads.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 3
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 1
+    }
+  },
+  "convex/projectNotes.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 6
+    }
+  },
+  "convex/push.ts": {
+    "@convex-dev/no-process-env": {
+      "count": 6
+    }
+  },
+  "convex/relay.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 6
+    },
+    "@convex-dev/no-process-env": {
+      "count": 1
+    },
+    "machines/no-direct-state-writes": {
+      "count": 2
+    }
+  },
+  "convex/requestMachine.ts": {
+    "machines/no-direct-state-writes": {
+      "count": 2
+    }
+  },
+  "convex/schema.ts": {
+    "@convex-dev/no-duplicate-indexes": {
+      "count": 11
+    },
+    "machines/no-optional-on-machine-tables": {
+      "count": 61
+    }
+  },
+  "convex/share.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 1
+    },
+    "@convex-dev/no-process-env": {
+      "count": 1
+    }
+  },
+  "convex/shareRekey.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 5
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 2
+    }
+  },
+  "convex/sync.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 117
+    },
+    "@convex-dev/no-collect-in-query": {
+      "count": 17
+    },
+    "@convex-dev/no-filter-in-query": {
+      "count": 3
+    },
+    "@convex-dev/no-process-env": {
+      "count": 4
+    },
+    "machines/no-direct-state-writes": {
+      "count": 10
+    }
+  },
+  "convex/tokens.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 8
+    }
+  },
+  "convex/wakes.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 3
+    }
+  },
+  "relay/convex/apns.ts": {
+    "@convex-dev/no-process-env": {
+      "count": 1
+    }
+  },
+  "relay/convex/fcm.ts": {
+    "@convex-dev/no-process-env": {
+      "count": 2
+    }
+  },
+  "relay/convex/relay.ts": {
+    "@convex-dev/explicit-table-ids": {
+      "count": 12
+    }
+  },
+  "runner/src/adapters/acp/mcp-http.ts": {
+    "@eslint-community/eslint-comments/require-description": {
+      "count": 1
+    }
+  },
+  "runner/src/adapters/codex/tools.ts": {
+    "@eslint-community/eslint-comments/require-description": {
+      "count": 3
+    }
+  },
+  "runner/src/adapters/codex/types.ts": {
+    "mikecann-lint/prefer-kind-discriminant": {
+      "count": 9
+    }
+  },
+  "runner/src/patch-trust.ts": {
+    "@eslint-community/eslint-comments/require-description": {
+      "count": 1
+    }
+  },
+  "runner/src/protocol.ts": {
+    "mikecann-lint/prefer-kind-discriminant": {
+      "count": 23
+    }
+  },
+  "runner/test/deploy/deploy.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/e2e/codex.e2e.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/e2e/runner.e2e.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/e2e/sync.e2e.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/helpers/fake-acp-agent.mjs": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/awake-timer.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/codex-adapter.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 21
+    }
+  },
+  "runner/test/unit/codex-appserver.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/context-budget.test.ts": {
+    "@eslint-community/eslint-comments/require-description": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/frozen-cli.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/handover.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 6
+    }
+  },
+  "runner/test/unit/hangup-guard.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/land-queue.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/main.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/moves.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/notion-tasks.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/patch-hash-binding.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/patch-trust-later.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/patches.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/perf-lock.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 6
+    }
+  },
+  "runner/test/unit/proc.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/project-heads.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/relay.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 13
+    }
+  },
+  "runner/test/unit/release.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/remote-turn.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/restart.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/rpc.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 6
+    }
+  },
+  "runner/test/unit/runner-pools.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/runner.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/schedules.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/shared-cargo.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/shell-allowlist.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/site-serve.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/sync-main.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/tb-dev.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/upstream-limits.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/upstream-refs.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/windows-release.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 4
+    }
+  },
+  "runner/test/unit/worktrees-landing.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/worktrees-new.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 7
+    }
+  },
+  "runner/test/unit/worktrees-spares.test.ts": {
+    "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "web/src/App.tsx": {
+    "mikecann-lint/click-shows-progress": {
+      "count": 3
+    },
+    "react-hooks/exhaustive-deps": {
+      "count": 4
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "web/src/inbox.tsx": {
+    "@eslint-community/eslint-comments/require-description": {
+      "count": 1
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 3
+    }
+  },
+  "web/src/link-policy.ts": {
+    "@eslint-community/eslint-comments/require-description": {
+      "count": 1
+    }
+  },
+  "web/src/live.ts": {
+    "react-hooks/refs": {
+      "count": 3
+    }
+  },
+  "web/src/menu.tsx": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "web/src/messages.tsx": {
+    "mikecann-lint/click-shows-progress": {
+      "count": 1
+    }
+  },
+  "web/src/pages.tsx": {
+    "mikecann-lint/click-shows-progress": {
+      "count": 2
+    },
+    "react-hooks/purity": {
+      "count": 2
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "web/src/rail.tsx": {
+    "react-hooks/globals": {
+      "count": 1
+    },
+    "react-hooks/purity": {
+      "count": 1
+    }
+  },
+  "web/src/replace-sign-in.tsx": {
+    "mikecann-lint/click-shows-progress": {
+      "count": 1
+    }
+  },
+  "web/src/share.tsx": {
+    "mikecann-lint/click-shows-progress": {
+      "count": 1
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "web/src/sidebar.tsx": {
+    "react-hooks/purity": {
+      "count": 2
+    }
+  },
+  "web/src/transcript.ts": {
+    "react-hooks/refs": {
+      "count": 3
+    }
+  }
+}

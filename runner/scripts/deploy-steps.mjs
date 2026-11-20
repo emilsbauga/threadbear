@@ -10,6 +10,15 @@ import path from 'node:path';
 // A failure with a message for whoever ran the script; no stack trace.
 export class Fail extends Error {}
 
+// Whether <dir>/node_modules is a finished npm install. npm writes
+// node_modules/.package-lock.json at the end, so an npm ci cut off partway
+// (the runner restarting under it) leaves packages without it, and without
+// .bin: deploys then failed "tsc: command not found" every time, as the
+// half install counted as there (found on a fork, 11 Nov 2026).
+export function packagesInstalled(dir) {
+  return fs.existsSync(path.join(dir, 'node_modules', '.package-lock.json'));
+}
+
 // A step that didn't exit 0, with where its output went.
 export class StepFailed extends Fail {
   constructor(message, logFile, status) {
@@ -88,7 +97,10 @@ export function step(name, cmd, args, opts, io = {}) {
   const logFile = path.join(tmpdir, `threadbear-deploy-${process.pid}-${slug}.log`);
   const fd = fs.openSync(logFile, 'w');
   const sleepsBefore = slept();
-  const r = spawn(cmd, args, { ...opts, stdio: ['ignore', fd, fd] });
+  // A script (npm-cli.js on Windows, where npm.cmd can't be started
+  // without a shell) runs on this Node.
+  const [bin, binArgs] = /\.[cm]?js$/.test(cmd) ? [process.execPath, [cmd, ...args]] : [cmd, args];
+  const r = spawn(bin, binArgs, { ...opts, stdio: ['ignore', fd, fd] });
   fs.closeSync(fd);
   const secs = `${((Date.now() - started) / 1000).toFixed(1)}s`;
   if (r.status === 0) {
@@ -209,14 +221,18 @@ export function remoteChecks(hosts, root, opts, io = {}) {
 export const TEST_LIMITS = ['--test-timeout=300000', '--test-force-exit'];
 export function unitTests(c, opts, io = {}) {
   const { say = console.log } = io;
+  // On Windows, only the files that cover what Windows alone runs
+  // (test/windows-update-gate.txt says why): no landing is checked on
+  // Windows, so the whole suite there is a report on GitHub, not a gate.
+  const suite = (c.platform ?? process.platform) === 'win32' ? [c.node ?? process.execPath, ['scripts/test-windows.mjs', '--gate']] : [c.npm, ['test']];
   try {
-    step('Unit tests', c.npm, ['test'], opts, io);
+    step('Unit tests', ...suite, opts, io);
   } catch (e) {
     if (!(e instanceof StepFailed)) throw e;
     const files = failedTestFiles(readOr(e.logFile));
     if (!files.length) {
       say(`The unit tests failed without naming a test file; running them once more.`);
-      step('Unit tests, again', c.npm, ['test'], opts, io);
+      step('Unit tests, again', ...suite, opts, io);
       say(`The second run passed (first run's output: ${e.logFile})`);
       return;
     }

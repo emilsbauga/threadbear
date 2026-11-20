@@ -109,24 +109,56 @@ pub(crate) trait FileDragExt: StatefulInteractiveElement + Sized {
             file.note_grabbed();
             cx.new(|_| DragPicture { path: file.path.clone(), grabbed })
         })
-        // Looked at as it leaves the window: a file that's gone since, or
-        // isn't the one grabbed any more, goes nowhere, as `FileDrag.writer`
-        // has it.
-        .external_drag_payload(|file: &DraggedFile, _, _| {
-            let real = file.still_grabbed()?;
-            let is_dir = threadbear_core::open_policy::local_metadata(&real).ok()?.is_dir();
-            Some(ExternalDragPayload::Files(FileDragPaths::new([(real, is_dir)])))
-        })
+        .external_drag_payload(|file: &DraggedFile, _, _| outside(file))
     }
 }
 
 impl<E: StatefulInteractiveElement + Sized> FileDragExt for E {}
 
+/// What goes to the system as the drag leaves the window: a file that's gone
+/// since, or isn't the one grabbed any more, goes nowhere, as
+/// `FileDrag.writer` has it.
+fn outside(file: &DraggedFile) -> Option<ExternalDragPayload> {
+    let real = file.still_grabbed()?;
+    let is_dir = threadbear_core::open_policy::local_metadata(&real).ok()?.is_dir();
+    Some(ExternalDragPayload::Files(FileDragPaths::new([(real, is_dir)])))
+}
+
+/// `path` grabbed now, for a drag that starts later with no element to hang
+/// `file_drag` on: a file link in a reply, which is a run of the text view's
+/// words (`reply_links::link_pressed`). The file is noted as it's pressed,
+/// so one swapped in before the pointer has moved far enough goes nowhere.
+pub(crate) fn grab(path: PathBuf) -> DraggedFile {
+    let file = DraggedFile::new(path);
+    file.note_grabbed();
+    file
+}
+
+/// Starts dragging a `grab`bed file out: the same drag as `file_drag`'s, its
+/// picture under the pointer.
+pub(crate) fn start(file: DraggedFile, window: &mut Window, cx: &mut App) {
+    // GPUI draws the drag this far up and left of the pointer; DragPicture
+    // moves its picture back under it from there, as it does a grabbed
+    // element's corner.
+    let grabbed = point(gpui_kit::px(PICTURE), gpui_kit::px(PICTURE));
+    let view = cx.new(|_| DragPicture { path: file.path.clone(), grabbed });
+    let leaving = file.clone();
+    let drag = AnyDrag {
+        view: view.into(),
+        value: std::sync::Arc::new(file),
+        cursor_offset: grabbed,
+        cursor_style: None,
+        external_payload_source: Some(Box::new(move |_, _| outside(&leaving))),
+    };
+    cx.start_drag(drag, window);
+}
+
 /// `file-drag`: the mouse pressed on something that drags out as a file and
 /// moved to the window's point `x`, `y`, then let go, through the window's
 /// own dispatch: `"tile": index` (a picture in the transcript, the lowest one
 /// on screen at that place in its row), `"highlight": title` (a Highlights
-/// row) or `"pane": true` (the picture open in the pane).
+/// row), `"pane": true` (the picture open in the pane) or `"link": words`
+/// (a file link in a reply, the last one or `"row"`'s).
 #[cfg(feature = "automation")]
 pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
@@ -134,6 +166,15 @@ pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, 
     let from = cx
         .update_window(window, |_, window, cx| -> Result<Point<Pixels>, String> {
             window.render_frame(cx);
+            // A file link in a reply, by its words: where the kit drew them.
+            if let Some(words) = cmd["link"].as_str() {
+                let at = crate::reply_links::link_point(&app, cmd["row"].as_str().unwrap_or(""), words, window, cx)?;
+                crate::thread::scripted_input(|| {
+                    window.pointer_move(at, None, cx);
+                    window.pointer_down(at, MouseButton::Left, cx);
+                });
+                return Ok(at);
+            }
             let found = if let Some(index) = cmd["tile"].as_u64() {
                 // A tile's label is its file's name (rows/images.rs).
                 let count = cmd["count"].as_u64().unwrap_or(1) as usize;
@@ -146,7 +187,7 @@ pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, 
             } else if cmd["pane"].as_bool() == Some(true) {
                 window.find_all("hl-picture")
             } else {
-                return Err("file-drag takes tile, highlight or pane".into());
+                return Err("file-drag takes tile, highlight, pane or link".into());
             };
             let at = found.into_iter().filter(|e| e.visible()).last().map(|e| e.visible_bounds().center()).ok_or("nothing like that on screen to drag")?;
             crate::thread::scripted_input(|| {

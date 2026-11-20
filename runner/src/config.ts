@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import { readSandbox, type SandboxConfig } from './sandbox.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { extraUpdatesFrom, type ExtraUpdate } from './updates/extra.ts';
@@ -7,10 +6,12 @@ import crypto from 'node:crypto';
 import { atomicWriteFileSync } from './fsutil.ts';
 import { RELEASE } from './release.ts';
 import { gatewayBase, gatewayUrlFrom } from './connectors.ts';
+import type { MailWatchSettings } from './mail-watch.ts';
 import { credentialUrlProblem } from './secure-url.ts';
-import { parseLabReviewers, type LabReviewer } from './lab-reviewers.ts';
+import { reviewerLists, type LabReviewer } from './lab-reviewers.ts';
 import { findGatewayClient } from './notion-tasks.ts';
 import { onPath } from './adapters/acp/agents.ts';
+import { dataDirFor, exeName, logFileFor } from './platform.ts';
 import { CLI_POLICIES, isEffortLevel, isProvider, type CliPolicy, type EffortLevel, type PermissionMode, type Provider } from './protocol.ts';
 import type { PiProfile } from './protocol.ts';
 import { parsePiProfiles } from './pi-profiles.ts';
@@ -90,6 +91,9 @@ export type Config = {
   // Where accounts are discovered. Tests can narrow these.
   claudeMainDir: string;
   claudeMainJson: string;
+  // Box mode (box-mode.ts): claude-main's email as the boot exchange gave
+  // it, as a setup-token login writes no oauthAccount to .claude.json.
+  claudeMainEmail?: string;
   tokenStatsAccountsDir: string;
   // <data dir>/accounts: more logins for anyone without Token Stats (the
   // guide's "Adding another login"), claude-N and codex-N as there.
@@ -112,9 +116,18 @@ export type Config = {
   // would read every login's last 14 days (gigabytes) for nothing.
   tokenTally?: boolean;
   accountNotes: Record<string, string>;
+  // Logins left out of the list altogether (runner.json hiddenLogins, e.g.
+  // ["claude-main"]): ~/.claude is always found as claude-main, so this is
+  // the only way to drop it once its plan has lapsed, rather than have its
+  // Usage row (and its sign-in warning dot) sit there for good.
+  hiddenLogins?: string[];
   poolFolders?: Record<string, string[]>;
-  // Folders whose threads run their CLI in a container (sandbox.ts).
-  sandbox?: SandboxConfig;
+  // The folders runner.json's `sandbox` named, from the sandboxed-threads
+  // experiment Threadbear no longer has (taken out 16 Nov 2026). A thread
+  // in one won't start, rather than run on the machine unconfined without
+  // its owner knowing (Runner.retiredSandbox): taking the key out of
+  // runner.json is the owner saying that's fine.
+  retiredSandboxFolders?: string[];
   // runner.json's pools as written (pools.ts readPools checks each);
   // absent means the built-in ones. pools.save replaces it.
   pools?: unknown[];
@@ -139,6 +152,15 @@ export type Config = {
   // on its model and effort if it names them. Unset is Codex then Claude,
   // which is the other provider for either (lab-review.ts, reviewLogin).
   labReviewers?: LabReviewer[];
+  // Who reviews a big or risky change, all at once (runner.json `labPanel`,
+  // Settings > General > Code review > Big or risky changes;
+  // lab-reviewers.ts). Unset is no panel: one reviewer, as for any change.
+  labPanel?: LabReviewer[];
+  // How many lines of code a change needs for the panel to review it all
+  // at once (runner.json `labPanelLines`, 150 when
+  // unset; lab-review.ts, panelChange). A change to auth, payments or
+  // secrets gets the panel whatever its size.
+  labPanelLines: number;
   // Keep the Mac out of idle sleep while threads work (keep-awake.ts). On
   // unless runner.json says `keepAwake: false` (Settings > General).
   keepAwake: boolean;
@@ -154,7 +176,7 @@ export type Config = {
   // THREADBEAR_SYNC=off turns it off for tests and dev runners.
   // urlRefused: why the configured url isn't used (plain http off this
   // Mac, secure-url.ts), so sync is off and tb status says why.
-  sync: { enabled: boolean; url?: string; urlRefused?: string; site?: string; name?: string; runnerId?: string; icon?: string; pastedPictures?: boolean; full?: boolean; fullAsked?: string; usageWarning?: boolean };
+  sync: { enabled: boolean; url?: string; urlRefused?: string; site?: string; name?: string; runnerId?: string; icon?: string; pastedPictures?: boolean; full?: boolean; usageWarning?: boolean };
   // The silent on-device secret check (src/secret-check.ts): off unless asked.
   secretCheck?: boolean;
   // Mike's Connectors gateway's base URL (connectors.ts), for the app's
@@ -197,6 +219,7 @@ export type RunnerJson = {
   pi?: { enabled?: boolean; path?: string; profiles?: unknown[] };
   cliUpdates?: Partial<CliUpdatesConfig>;
   accountNotes?: Record<string, string>;
+  hiddenLogins?: string[];
   poolFolders?: Record<string, string[]>;
   sandbox?: unknown;
   pools?: unknown[];
@@ -204,6 +227,9 @@ export type RunnerJson = {
   // This machine's main is GitHub's (follow-origin.ts): read by that file,
   // each time, so it needs no restart.
   followOrigin?: boolean;
+  // Main checkouts whose main tb land pushes to origin after landing,
+  // folding GitHub's in first when it has moved (follow-origin.ts).
+  pushAfterLanding?: string[];
   // The ssh host that ./check.sh sends the repo's checks to, so suites and
   // the app's test windows stay off this Mac (scripts/check-remote.sh), or
   // checkHosts, several tried in order, which wins (a check.sh from before
@@ -225,17 +251,22 @@ export type RunnerJson = {
   oneReply?: boolean;
   labReview?: boolean;
   labReviewers?: unknown;
+  labPanel?: unknown;
+  labPanelLines?: unknown;
   keepAwake?: boolean;
+  // spareWeek: false stops the runner starting a thread by itself when a
+  // login's week is about to go unused (spare-week.ts). On when absent.
+  spareWeek?: boolean;
   // bringIn: how often a fork's runner starts a thread to bring in Mike's
   // releases (bring-in.ts): every so many days, 'important' or 'off'.
-  releases?: { publish?: boolean; signingKey?: string; signingProvider?: string; bringIn?: number | 'important' | 'off' };
+  // checkup: false stops that thread offering Mike a check-up (checkup.ts).
+  releases?: { publish?: boolean; signingKey?: string; signingProvider?: string; bringIn?: number | 'important' | 'off'; checkup?: boolean };
   models?: { pool?: string | null; privateFolders?: string[] };
   // icon: an SF Symbol for this runner in lists (machine.ts works one out).
   // An rpcUrl left from the direct link between Macs (gone 13 Nov 2026) is ignored.
   // full: true sends tool output to your Convex deployment as well, scrubbed first
-  // (docs/full-convex.md). Unset to start: the main runner asks once, when a
-  // phone, the website or another machine would show it (convex-use.ts), noting
-  // when in fullAsked.
+  // (docs/full-convex.md). Off unless set. fullAsked, fullAskedThread and
+  // fullAskedQuestion are left from the once-only offer (taken out 16 Nov 2026).
   // usageWarning: false hides tb status's warning near Convex's Free limits.
   // pastedPictures: false keeps pictures you paste off your Convex deployment
   // (docs/on-your-mac.md).
@@ -249,28 +280,32 @@ export type RunnerJson = {
   // The gateway, when it isn't the `connectors` MCP server in
   // ~/.claude.json; url "" or enabled: false turns the panel's polling off.
   connectors?: { url?: string; enabled?: boolean; headersHelper?: string };
+  // The email watcher (experiment mailWatch, mail-watch.ts): the command
+  // that prints new emails, how often, when the pile comes, and the
+  // decisions it may act on.
+  mailWatch?: MailWatchSettings;
 };
 
 // What defaults.permissionMode may be. Not Plan first: that waits for Mike
 // to approve a plan, so a thread nobody's watching (a schedule, one from
 // the phone) would only sit there.
 export type DefaultMode = Exclude<PermissionMode, 'plan'>;
-function labReviewersFrom(v: unknown): { labReviewers?: LabReviewer[] } {
-  const list = parseLabReviewers(v);
-  return list ? { labReviewers: list } : {};
-}
+// See Config.labPanelLines.
+export const LAB_PANEL_LINES = 150;
+
 
 export function defaultModeOf(v: unknown): DefaultMode | undefined {
   return v === 'full' || v === 'ask' || v === 'auto' ? v : undefined;
 }
 
 export function defaultHome(userHome = os.homedir()): string {
-  return path.join(userHome, 'Library', 'Application Support', 'Threadbear');
+  return dataDirFor({ home: userHome });
 }
 
+// ~\ too on Windows, where a person types the separator they're used to.
 export function expandHome(p: string, userHome = os.homedir()): string {
   if (p === '~') return userHome;
-  if (p.startsWith('~/')) return path.join(userHome, p.slice(2));
+  if (p.startsWith('~/') || (path.sep === '\\' && p.startsWith('~\\'))) return path.join(userHome, p.slice(2));
   return p;
 }
 
@@ -281,7 +316,7 @@ export function expandHome(p: string, userHome = os.homedir()): string {
 // then says is missing. Only ~/.local/bin counted until 13 Nov 2026, though
 // INSTALL.md said the PATH's would do (jayehzzz's fork).
 function findClaude(pathEnv: string, userHome: string): string {
-  const native = path.join(userHome, '.local', 'bin', 'claude');
+  const native = path.join(userHome, '.local', 'bin', exeName('claude'));
   if (onPath('claude', path.dirname(native))) return native;
   return onPath('claude', pathEnv) ?? native;
 }
@@ -441,7 +476,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { readOnl
     port,
     host: '127.0.0.1',
     maxLive: Number.isFinite(maxLive) && maxLive >= 1 ? Math.floor(maxLive) : DEFAULT_MAX_LIVE,
-    logFile: expand(env.THREADBEAR_LOG || path.join(userHome, 'Library', 'Logs', 'threadbear-runner.log')),
+    logFile: expand(env.THREADBEAR_LOG || logFileFor({ home: userHome })),
     claudePath: expand(env.THREADBEAR_CLAUDE_PATH || json.claudePath || findClaude(env.PATH ?? '', userHome)),
     idleMs,
     defaults: {
@@ -465,7 +500,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { readOnl
     // balance, and it's no longer in Settings).
     oneReply: json.oneReply !== false,
     labReview: json.labReview !== false,
-    ...labReviewersFrom(json.labReviewers),
+    ...reviewerLists(json.labReviewers, json.labPanel),
+    labPanelLines: typeof json.labPanelLines === 'number' && Number.isFinite(json.labPanelLines) && json.labPanelLines >= 0 ? Math.floor(json.labPanelLines) : LAB_PANEL_LINES,
     // On for everyone since 10 Nov 2026, after a few days as an experiment
     // on Mike's Mac; Settings turns it off for anyone who'd rather.
     keepAwake: json.keepAwake !== false,
@@ -483,8 +519,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { readOnl
     cliUpdates: cliUpdatesConfig(json.cliUpdates, env.THREADBEAR_CLI_UPDATES),
     tokenTally: env.THREADBEAR_TOKEN_TALLY !== 'off',
     accountNotes: stringMap(json.accountNotes) ?? { ...DEFAULT_ACCOUNT_NOTES },
+    ...((h) => (h.length ? { hiddenLogins: h } : {}))(
+      Array.isArray(json.hiddenLogins) ? json.hiddenLogins.filter((x): x is string => typeof x === 'string' && x !== '') : [],
+    ),
     poolFolders: folderMap(json.poolFolders) ?? { ...DEFAULT_POOL_FOLDERS },
-    ...((sb) => (sb ? { sandbox: sb } : {}))(readSandbox(json.sandbox, expand)),
+    ...((f) => (f.length ? { retiredSandboxFolders: f } : {}))(retiredSandboxFolders(json.sandbox, expand)),
     ...(Array.isArray(json.pools) && json.pools.length ? { pools: json.pools } : {}),
     sync: syncConfig(json.sync, env),
     secretCheck: json.secretCheck?.enabled === true,
@@ -532,12 +571,9 @@ function syncConfig(raw: RunnerJson['sync'], env: NodeJS.ProcessEnv): Config['sy
   const icon = nonEmpty(raw?.icon);
   if (icon) out.icon = icon;
   if (raw?.pastedPictures === false) out.pastedPictures = false;
-  // Unset stays unset: an install from before full sync was the default is
-  // asked, never switched on by an update (docs/full-convex.md step 6).
+  // Unset stays unset, which is off: an update never switches it on.
   if (raw?.full === true) out.full = true;
   else if (raw?.full === false) out.full = false;
-  const asked = nonEmpty(raw?.fullAsked);
-  if (asked) out.fullAsked = asked;
   if (raw?.usageWarning === false) out.usageWarning = false;
   return out;
 }
@@ -639,4 +675,11 @@ export function ensureHome(home: string): void {
 
 export function readToken(home: string): string {
   return fs.readFileSync(paths.token(home), 'utf8').trim();
+}
+
+// runner.json's old `sandbox: { folders: [...] }`, each folder absolute.
+function retiredSandboxFolders(raw: unknown, expand: (p: string) => string): string[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const folders = (raw as { folders?: unknown }).folders;
+  return Array.isArray(folders) ? folders.filter((f): f is string => typeof f === 'string' && !!f.trim()).map((f) => path.resolve(expand(f.trim()))) : [];
 }

@@ -10,6 +10,7 @@ import { tmpDir } from '../helpers/fakes.ts';
 import { findWorktreePatch, loadPatchSet } from '../../src/patches.ts';
 import { namedPaths, patchHash, PatchTrust, scanModule } from '../../src/patch-trust.ts';
 import { reachOf } from '../../src/script-trust.ts';
+import { IS_WINDOWS } from '../helpers/platform.ts';
 
 let n = 0;
 // A repo (a .git folder is enough for its top) with a patch and files.
@@ -123,7 +124,8 @@ test('a script the patch names still asks again when it changes or turns up, and
   }
   // Named, missing: ./build/tool.sh turns up, and so does an
   // extensionless program in a command's place.
-  for (const [run, made] of [['./build/tool.sh --go', 'build/tool.sh'], ['./bin/tool', 'bin/tool']]) {
+  // (An extensionless program only exists where files have an executable bit; NTFS has none.)
+  for (const [run, made] of [['./build/tool.sh --go', 'build/tool.sh'], ...(IS_WINDOWS ? [] : [['./bin/tool', 'bin/tool']])]) {
     const { folder, file } = repo(`export default { actions: [{ title: 'Go', run: ${JSON.stringify(run)} }] };\n`, {});
     const trust = new PatchTrust();
     trust.trustCurrent([file]);
@@ -144,6 +146,7 @@ test('a script the patch names still asks again when it changes or turns up, and
   }
   // So is an executable or #! file it only names, whatever its extension.
   for (const [name, body, mode] of [['run.cfg', 'echo hi\n', 0o755], ['hook.data', '#!/bin/sh\necho hi\n', 0o644]] as const) {
+    if (IS_WINDOWS && mode === 0o755) continue; // no executable bit on NTFS: only the #! file counts there
     const { folder, file } = repo(`export default { actions: [{ title: 'Go', run: 'true ./${name}' }] };\n`, { [name]: body });
     fs.chmodSync(path.join(folder, name), mode);
     const trust = new PatchTrust();
@@ -255,7 +258,7 @@ test("pantry's and alex.blog's hook scripts load, and changing anything they run
     const set = await load(folder, trust);
     assert.equal(set.patches[0].error, undefined, script);
     const real = fs.realpathSync(folder);
-    assert.equal(set.hooks[0].exec, `cd '${real}' && '${real}/${script}'`);
+    assert.equal(set.hooks[0].exec, `cd '${real}' && '${path.join(real, script)}'`);
     // A picture a script names isn't hashed: redrawing it asks nothing.
     assert.equal(patchHash(file).deps.some((d) => d.path.endsWith('.png')), false);
     for (const changed of changes) {

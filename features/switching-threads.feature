@@ -14,6 +14,16 @@ Feature: Switching threads
     Then the transcript is a spinner with no rows
     And the transcript shows my message "Uploads start again from zero if the app quits"
 
+  # The reply's words so far come with the read, with no turn of their own
+  # to say which turn they're in. The GPUI app drew them outside it, so its
+  # turn never ended in the transcript (stress run, 18 Nov). The Swift app
+  # is frozen.
+  @thread.loading @transcript.reply @swift-pending
+  Scenario: A reply that's streaming as its thread is read stays in its turn
+    When I start opening the thread "Morning brief"
+    And a reply starts streaming in it, slowly enough to outlast the read
+    Then the reply ends in its own turn
+
   @thread.kept
   Scenario: Going back to a thread shows it straight away
     When I open the thread "Make uploads resume after a crash"

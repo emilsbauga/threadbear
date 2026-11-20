@@ -12,6 +12,7 @@ import type { Schedule } from '../protocol.ts';
 import type { ThreadRecord } from '../store.ts';
 import { expandHome, peekRunnerJson } from '../config.ts';
 import { isDirectory } from '../fsutil.ts';
+import { standInFor } from '../pools.ts';
 import { ASK_CODEX_MODEL, HAIKU } from '../models/index.ts';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,7 +26,6 @@ import { selectAttachments } from '../intake-files.ts';
 import { emptyHighlights, pinItem } from '../highlights.ts';
 import { atomicWriteFileSync } from '../fsutil.ts';
 import { experimentOn } from '../experiments.ts';
-import { findSameWork, sameWorkNote, type SameWorkCandidate } from '../same-work.ts';
 
 export const newThreadsPart = {
   createIntakeDraft(this: Runner, item: IntakeRecord, files: AttachmentRef[] = []): string {
@@ -149,17 +149,14 @@ export const newThreadsPart = {
     // Not to sit under the thread in startedBy in the sidebar
     // (docs/protocol.md, "Nested threads").
     detached?: boolean;
-    // Started by a sandboxed thread's agent in a sandbox folder: shut in
-    // one too (ThreadRecord.confined).
-    confined?: boolean;
-    // The user has said this thread may run outside the sandbox the thread
-    // in startedBy is shut in (a create_thread card they allowed, their
-    // press of a button they allowed). Without it, a thread started from a
-    // sandboxed one is shut in too (makeThread).
-    unconfine?: boolean;
     // Projects it starts in (New Thread on a project's page), joined
     // before its first turn, so that turn already has the project's brief.
     projectIds?: string[];
+    // Box mode's one thread, made under the id the backend gave it (boxThread).
+    id?: string;
+    // The CLI the app had started ahead of it (threads.warm,
+    // runner/warm-start.ts): the thread is made under its id.
+    warmId?: string;
   }): { thread: ThreadSummary; turnId: string } {
     if (!params.text && !params.images?.length) throw new RpcError(ErrorCode.badParams, 'text or images required');
     checkImages(params.images ?? []);
@@ -170,13 +167,22 @@ export const newThreadsPart = {
       // Every one checked before the thread exists: a bad id makes nothing.
       for (const p of projectIds) projects.get(p);
     }
-    const { st, notes } = this.makeThread(params);
+    const spare = params.id === undefined && !projectIds.length ? this.claimSpare(params.warmId) : undefined;
+    let made;
+    try {
+      made = this.makeThread(params, spare ? { id: spare.id, sessionId: spare.sessionId } : undefined);
+    } catch (e) {
+      spare?.session.kill();
+      throw e;
+    }
+    const { st, notes, loginNote } = made;
+    if (spare) st.rt.spare = spare;
     if (projectIds.length) this.projects!.changeMembership(st.rec.id, { add: projectIds, by: 'mike' });
-    const sameWork = params.text?.trim() && experimentOn(this.cfg.home, 'sameWork') ? this.findSameWork(st, params.text) : undefined;
-    if (sameWork) notes.push(sameWork);
     const turnId = this.sendTo(st, params.text ?? '', params.images ?? [], { origin: params.origin, scheduleId: params.scheduleId });
     // Under the first turn, so they read as part of starting it.
     for (const text of notes) this.emit(st, { type: 'system.note', text }, st.rt.turn?.turnId ?? turnId);
+    // Kept on show by its shape, as moveLogin's is (is_login_note).
+    if (loginNote) this.emit(st, { type: 'system.note', text: loginNote, login: true }, st.rt.turn?.turnId ?? turnId);
     if (!st.rec.titleSet && params.text?.trim()) void this.titleFromModel(st, params.text);
     return { thread: this.summary(st), turnId };
   },
@@ -272,58 +278,9 @@ export const newThreadsPart = {
     return { threads: made.reverse() };
   },
 
-  // Open threads that may already be doing what a new thread's first
-  // message asks (same-work.ts), kept on the record for its first
-  // session's instructions. Returns a line for Mike's transcript, or
-  // undefined when there are none. Never fails the create.
-  findSameWork(this: Runner, st: ThreadState, text: string): string | undefined {
-    const { rec } = st;
-    try {
-      const candidates: SameWorkCandidate[] = [];
-      const me = this.authorityNow(rec.id);
-      for (const other of this.threads.values()) {
-        const o = other.rec;
-        // Not itself, the thread that started it (its starter knows what
-        // it's doing), another run of the same schedule, or a sample.
-        if (o.id === rec.id || o.archivedAt || o.sample || o.id === rec.startedBy?.threadId) continue;
-        if (rec.schedule && o.schedule?.id === rec.schedule.id) continue;
-        // Nor one with less access (mode or sandbox) than this one: its
-        // title and words are its agent's own (update_thread), and handing
-        // them to this agent is a message upward that send_message would
-        // ask Mike about first (Daybreak, 12 Nov 2026, finding 111).
-        if (!this.mayTellOf(me, o.id)) continue;
-        candidates.push({
-          id: o.id,
-          title: o.title,
-          asked: o.asked,
-          preview: o.preview,
-          keywords: o.keywords,
-          place: o.worktree && !o.worktree.removedAt ? o.worktree.mainCheckout : o.cwd,
-          projectIds: (o.projects ?? []).map((m) => m.id),
-          status: o.snoozedUntil || o.wakeWhen ? 'snoozed' : o.status === 'running' || o.status === 'starting' ? 'working' : 'idle',
-          lastActivityAt: o.lastActivityAt,
-        });
-      }
-      const matches = findSameWork(text, rec.cwd, (rec.projects ?? []).map((m) => m.id), candidates);
-      const note = sameWorkNote(matches, this.clock.now());
-      if (!note) return undefined;
-      rec.sameWork = note;
-      rec.sameWorkIds = matches.map((m) => m.candidate.id);
-      this.markDirty(st);
-      this.log.info('found threads that may be the same work', { threadId: rec.id, ids: matches.map((m) => m.candidate.id) });
-      const titles = matches.map((m) => `"${m.candidate.title.replace(/\s+/g, ' ').trim()}"`);
-      return `${titles.length === 1 ? 'An open thread' : `${titles.length} open threads`} may already be on this, so its agent will look first: ${titles.join(', ')}.`;
-    } catch (e) {
-      this.log.warn("couldn't look for threads doing the same work", { threadId: rec.id, error: String(e) });
-      return undefined;
-    }
-  },
-
   // The record and state of a new thread, before anything is sent to it:
   // its folder, login, model and effort as create picks them.
   makeThread(this: Runner, params: {
-    // Trusted runner-only initial record. No RPC accepts this field.
-    initial?: Pick<ThreadRecord, 'id' | 'intake' | 'backlog' | 'highlights' | 'highlightsAt'>;
     text: string;
     cwd?: string;
     accountId?: string;
@@ -337,10 +294,51 @@ export const newThreadsPart = {
     worktree?: boolean;
     startedBy?: ThreadStartedBy;
     detached?: boolean;
-    confined?: boolean;
-    unconfine?: boolean;
-  }): { st: ThreadState; notes: string[] } {
+    id?: string;
+    // Trusted runner-only initial record. No RPC accepts this field.
+    initial?: Pick<ThreadRecord, 'id'> & Partial<Pick<ThreadRecord, 'intake' | 'backlog' | 'highlights' | 'highlightsAt'>>;
+  }, ids?: { id: string; sessionId: string }): { st: ThreadState; notes: string[]; loginNote?: string } {
     this.checkAccepting();
+    const { rec, account, poolId, notes, loginNote } = this.draftRecord(params, ids);
+    this.store.create(rec);
+    const st: ThreadState = { rec, rt: newRuntime(this.clock.now()) };
+    this.threads.set(rec.id, st);
+    // What Mike picked last is what the next thread starts on, so a
+    // schedule's own login or pool (a 9:00 standup's) doesn't move it.
+    if (params.origin === 'schedule') {
+      /* keep the last pick */
+    } else if (!poolId) this.rememberAccount(account.id);
+    else if (params.poolId !== undefined) this.rememberPool(poolId);
+    return { st, notes, loginNote };
+  },
+
+  // A new thread's record as create works it out, without making the
+  // thread: makeThread's, and a CLI started ahead of one
+  // (runner/warm-start.ts), under the ids given.
+  draftRecord(this: Runner, params: {
+    text: string;
+    cwd?: string;
+    accountId?: string;
+    poolId?: string;
+    model?: string;
+    effort?: EffortLevel;
+    permissionMode?: PermissionMode;
+    title?: string;
+    origin?: MessageOrigin;
+    scheduleId?: string;
+    worktree?: boolean;
+    startedBy?: ThreadStartedBy;
+    detached?: boolean;
+    id?: string;
+    // Trusted runner-only initial record. No RPC accepts this field.
+    initial?: Pick<ThreadRecord, 'id'> & Partial<Pick<ThreadRecord, 'intake' | 'backlog' | 'highlights' | 'highlightsAt'>>;
+  }, ids?: { id: string; sessionId: string }): { rec: ThreadRecord; account: Account; poolId?: string; notes: string[]; loginNote?: string } {
+    // A box runs one thread (docs/virtual-runners.md, decision 1): only that
+    // one, once, under its own id. Anything else asks the main Mac
+    // (create_thread from a box files a request, as from any runner key).
+    if (this.boxThread !== undefined) {
+      if (params.id !== this.boxThread || this.threads.has(this.boxThread)) throw new RpcError(ErrorCode.badParams, "This runner is a box for one thread, so it can't start another here.");
+    } else if (params.id !== undefined) throw new RpcError(ErrorCode.badParams, 'Only a box names the id of a new thread.');
     // New threads belong on the new release.
     if (this.draining) throw new RpcError(ErrorCode.busy, 'This runner is handing over to a new one; start the thread there.');
     // A blank folder means the default, not the runner's own folder.
@@ -354,28 +352,30 @@ export const newThreadsPart = {
       const picked = this.pickForNew({ poolId: params.poolId, cwd, model: params.model });
       if (picked) ({ poolId, accountId } = picked);
     }
+    // A schedule pinned to a signed-out login runs this time on a pool
+    // holding it (pools.ts, standInFor), saying so as a pool move would.
+    let loginNote: string | undefined;
+    if (params.origin === 'schedule' && accountId !== undefined && params.poolId === undefined) {
+      const accounts = this.usableAccounts();
+      const stand = standInFor(this.pools(), accounts, accountId, cwd);
+      if (stand) {
+        const title = (id: string) => accounts.find((a) => a.id === id)?.title ?? id;
+        const ended = accounts.find((a) => a.id === accountId)?.planEnded;
+        loginNote = `Moved to ${title(stand.accountId)}: ${title(accountId)}${ended ? "'s plan has ended" : ' is signed out'}.`;
+        ({ poolId, accountId } = stand);
+      }
+    }
     accountId ??= this.defaultAccountId();
     const account = this.accounts.get(accountId);
     if (!account) throw new RpcError(ErrorCode.accountNotFound, `No account called ${accountId}`);
     this.checkProvider(account);
     if (account.provider === 'pi' && params.permissionMode === 'plan') throw new RpcError(ErrorCode.badParams, 'Plan first is not available for Pi threads.');
     if (!isDirectory(cwd)) throw new RpcError(ErrorCode.badParams, `Folder not found: ${cwd}`);
-    // In a sandbox folder a Claude thread is shut in it from the start. One
-    // asked for that which can't be (a Codex login, a folder outside) is
-    // refused rather than started outside (sandbox.ts).
-    const canSandbox = providerInfo(account.provider).sandbox;
-    const sandboxed = canSandbox && this.sandboxed(cwd);
-    // Started from a thread that's shut in a sandbox: shut in too, unless
-    // the user said otherwise. A caller that forgets `confined` (a lab
-    // review did, Daybreak 10 Nov 2026) gets a refusal, not a thread
-    // outside the sandbox with the same access.
-    const parent = params.startedBy?.threadId ? this.threads.get(params.startedBy.threadId) : undefined;
-    const confined = Boolean(params.confined) || (Boolean(parent?.rec.confined) && params.unconfine !== true);
-    if (confined && !sandboxed) {
-      throw new RpcError(ErrorCode.badParams, canSandbox ? `${cwd} isn't in a sandbox folder, and a sandboxed thread can only start threads in one without asking.` : `A sandboxed thread can only start Claude threads, as ${providerName(account.provider)} doesn't run in the sandbox.`);
-    }
+    // A folder the old sandbox experiment shut threads in (config.ts).
+    const retired = this.retiredSandbox(cwd);
+    if (retired) throw new RpcError(ErrorCode.badParams, retired);
     const now = this.isoNow();
-    const id = params.initial?.id ?? crypto.randomUUID();
+    const id = params.initial?.id ?? params.id ?? ids?.id ?? crypto.randomUUID();
     const rec: ThreadRecord = {
       id,
       title: params.title?.trim() ? cutSafely(params.title.trim(), 200) : titleFrom(params.text),
@@ -386,7 +386,6 @@ export const newThreadsPart = {
       provider: account.provider,
       // None named: runner.json's default (a new install's is auto), else full.
       permissionMode: params.permissionMode ?? this.cfg.defaults.permissionMode ?? 'full',
-      ...(sandboxed ? { confined: true as const } : {}),
       status: 'idle',
       createdAt: now,
       updatedAt: now,
@@ -394,7 +393,7 @@ export const newThreadsPart = {
       preview: '',
       lastSeq: 0,
       lastSeenSeq: 0,
-      nativeSessionId: crypto.randomUUID(),
+      nativeSessionId: ids?.sessionId ?? crypto.randomUUID(),
       sessionUsed: false,
       lastTurnCompletedSeq: 0,
       queue: [],
@@ -418,16 +417,7 @@ export const newThreadsPart = {
       // Only means something for a thread another thread started.
       if (params.detached && startedBy.kind === 'thread' && startedBy.threadId) rec.detached = true;
     }
-    this.store.create(rec);
-    const st: ThreadState = { rec, rt: newRuntime(this.clock.now()) };
-    this.threads.set(id, st);
-    // What Mike picked last is what the next thread starts on, so a
-    // schedule's own login or pool (a 9:00 standup's) doesn't move it.
-    if (params.origin === 'schedule') {
-      /* keep the last pick */
-    } else if (!poolId) this.rememberAccount(accountId);
-    else if (params.poolId !== undefined) this.rememberPool(poolId);
-    return { st, notes: checked.notes };
+    return { rec, account, ...(poolId ? { poolId } : {}), notes: checked.notes, loginNote };
   },
 
   // An account whose CLI this runner can't drive (a Codex login found

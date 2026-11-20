@@ -10,6 +10,12 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 /// Chromium can't be started twice in one process, and the forwarders keep
 /// the addresses they found.
 static LIBRARY: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+/// Why the last load failed (dlerror's words), for web-runtime.log.
+static LOAD_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn last_load_error() -> Option<String> {
+    LOAD_ERROR.lock().ok().and_then(|e| e.clone())
+}
 
 /// A function's address in the framework, looked up once.
 pub(crate) struct Slot {
@@ -67,6 +73,9 @@ pub unsafe extern "C" fn cef_load_library(path: *const c_char) -> c_int {
         let why = unsafe { libc::dlerror() };
         let why = if why.is_null() { "unknown".into() } else { unsafe { CStr::from_ptr(why) }.to_string_lossy() };
         eprintln!("threadbear-web: couldn't load {}: {why}", unsafe { CStr::from_ptr(path) }.to_string_lossy());
+        if let Ok(mut e) = LOAD_ERROR.lock() {
+            *e = Some(why.into_owned());
+        }
         return 0;
     }
     LIBRARY.store(handle, Ordering::Release);

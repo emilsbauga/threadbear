@@ -1,6 +1,7 @@
 // A text file worked on in the pane, a port of the editing half of the Swift
-// app's TextFileView: the bar's pencil (or a Markdown file's Markdown view)
-// puts up the file's own text with line numbers, ready to type in. What's
+// app's TextFileView: code and plain text open with it, and the bar's pencil
+// (or a Markdown file's Markdown view) puts up the file's own text with line
+// numbers, ready to type in. What's
 // typed is saved into the file a moment after the typing stops, on ⌘S, on
 // Done, on leaving the file and on quitting. The file is watched, so an
 // agent's rewrite shows up by itself; if it lands under unsaved typing, a bar
@@ -103,6 +104,7 @@ impl SidePane {
 
     /// Something was typed: saved a moment after the typing stops (`textDidChange`).
     pub(crate) fn edit_typed(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        self.clear_line_marks(thread_id, cx);
         let Some(edit) = self.edit_mut(thread_id) else { return };
         if !edit.session.takes_typing() {
             return;

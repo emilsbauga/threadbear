@@ -459,6 +459,13 @@ impl ThreadPane {
     pub(crate) fn question_card(&mut self, ix: usize, row: &Row, item: &QuestionItem, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let settled = item.resolution.is_some();
         let approval_id = item.request.approval_id.clone();
+        // Its picks from before a restart (drafts.rs), the first time it's
+        // drawn: its box is made in this same draw, so once only.
+        if !settled && !self.rows.others.contains_key(&approval_id) && !self.chosen.contains_key(&approval_id) {
+            if let Some(picks) = crate::drafts::saved_picks(&crate::drafts::question_picks_key(&self.summary.id, &approval_id)) {
+                self.chosen.insert(approval_id.clone(), picks);
+            }
+        }
         let chosen = self.chosen.get(&approval_id).cloned().unwrap_or_default();
         let busy = self.rows.answering.contains(&approval_id);
         let (label, quiet, secondary, accent, faint_icon) = (style::label_text(cx), style::quiet_text(cx), style::secondary_label(cx), style::control_accent(cx), style::faint_icon(cx));
@@ -519,13 +526,17 @@ impl ThreadPane {
         if let Some(input) = self.rows.others.get(approval_id) {
             return input.clone();
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Something else"));
-        // Its words are only here until they're sent: an update's restart
-        // waits for them (unsent.rs).
-        crate::unsent::watch(&input, "an approval's Something else box", cx);
+        // Its words go across a restart in the drafts file (drafts.rs), so
+        // they don't hold one off.
+        let saved = crate::drafts::saved(&crate::drafts::question_key(&self.summary.id, approval_id)).map(|d| d.text).unwrap_or_default();
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Something else").default_value(saved));
         let id = approval_id.to_owned();
         let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                let app = this.app.clone();
+                cx.defer(move |cx| {
+                    app.update(cx, |app, cx| app.drafts_changed(cx)).ok();
+                });
                 // Typing for a single-choice last question clears its picked
                 // option, so the answer is one or the other, never both.
                 let typed = input.read(cx).value().trim().to_string();
@@ -548,6 +559,53 @@ impl ThreadPane {
         input
     }
 
+    /// Questions' Something else boxes for the drafts file: each typed-in
+    /// one still waiting, and each answered one to drop.
+    pub(crate) fn question_box_drafts(&self, cx: &App) -> (Vec<(String, Option<crate::drafts::Draft>)>, std::collections::HashSet<String>) {
+        let thread = &self.summary.id;
+        // Every item, not just the rows shown: an answered question folds
+        // into its finished turn, and its saved words still have to go.
+        let (mut out, mut open) = (Vec::new(), std::collections::HashSet::new());
+        for r in self.feed.model().items() {
+            let threadbear_core::reducer::RowContent::Question(q) = &r.content else { continue };
+            let id = &q.request.approval_id;
+            let key = crate::drafts::question_key(thread, id);
+            let picks = crate::drafts::question_picks_key(thread, id);
+            if q.resolution.is_some() {
+                out.push((key, None));
+                out.push((picks, None));
+                continue;
+            }
+            open.insert(id.clone());
+            // Not drawn yet this run: what the file has stays.
+            let Some(input) = self.rows.others.get(id) else { continue };
+            out.push((key, Some(crate::drafts::Draft { text: input.read(cx).value().to_string(), images: Vec::new(), ..Default::default() })));
+            let chosen = self.chosen.get(id);
+            out.push((picks, chosen.and_then(|c| crate::drafts::picks_draft(c, c.values().all(Vec::is_empty)))));
+        }
+        (out, open)
+    }
+
+    /// A handover's incoming app taking over: a question's box made empty
+    /// while it waited is made again, with its saved words.
+    pub(crate) fn restore_question_boxes(&mut self, cx: &mut Context<Self>) {
+        let thread = self.summary.id.clone();
+        let before = self.rows.others.len();
+        let saved = |id: &str| {
+            crate::drafts::saved(&crate::drafts::question_key(&thread, id)).is_some() || crate::drafts::saved(&crate::drafts::question_picks_key(&thread, id)).is_some()
+        };
+        let empty: Vec<String> = self.rows.others.iter().filter(|(id, input)| input.read(cx).value().is_empty() && saved(id)).map(|(id, _)| id.clone()).collect();
+        for id in &empty {
+            self.rows.others.remove(id);
+            if self.chosen.get(id).is_some_and(|c| c.values().all(Vec::is_empty)) {
+                self.chosen.remove(id);
+            }
+        }
+        if self.rows.others.len() != before {
+            cx.notify();
+        }
+    }
+
     fn send_question_answer(&mut self, approval_id: &str, request: &QuestionRequest, cx: &mut Context<Self>) {
         let chosen = self.chosen.get(approval_id).cloned().unwrap_or_default();
         let typed = self.rows.others.get(approval_id).map(|i| i.read(cx).value().trim().to_owned()).unwrap_or_default();
@@ -555,6 +613,11 @@ impl ThreadPane {
         if answers.is_empty() {
             return;
         }
+        // Its saved words go once it's answered (drafts.rs).
+        let app = self.app.clone();
+        cx.defer(move |cx| {
+            app.update(cx, |app, cx| app.drafts_changed(cx)).ok();
+        });
         // The answers also go as the message, which the runner keeps in the
         // transcript, so the card can show what was chosen after the drafts
         // are gone.
@@ -616,7 +679,7 @@ impl ThreadPane {
             state
         });
         // A secret pasted and not yet saved: an update's restart waits for it.
-        crate::unsent::watch(&input, "a secret's field", cx);
+        crate::unsent::watch_in(&input, "a secret's field", Some(self.summary.id.clone()), cx);
         let id = approval_id.to_owned();
         let subscription = cx.subscribe_in(&input, window, move |this, input, event: &InputEvent, window, cx| match event {
             InputEvent::Change => cx.notify(),
@@ -836,6 +899,11 @@ fn question_option(
     if !busy {
         line = line.cursor_pointer().on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             let Some(id) = aid.clone() else { return };
+            // Kept across a quit with its box's words (drafts.rs).
+            let app = this.app.clone();
+            cx.defer(move |cx| {
+                app.update(cx, |app, cx| app.drafts_changed(cx)).ok();
+            });
             let picks = this.chosen.entry(id.clone()).or_default().entry(qi).or_default();
             if multi {
                 if let Some(at) = picks.iter().position(|p| *p == approval_title) {

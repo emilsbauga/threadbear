@@ -41,6 +41,32 @@ When('I write {string} as my own answer to ask {int}', async function (this: Thr
   await this.app.do({ cmd: 'decide', write: `${ask}:${words}` });
 });
 
+// A click in the box, through the window's hit testing as a real one goes,
+// so whatever's under it (the composer around it) has its say too.
+When('I click into the Something else box of ask {int}', async function (this: ThreadbearWorld, ask: number) {
+  const point = await this.app.do({ cmd: 'decide', boxPoint: ask });
+  const [, x, y] = point.trim().split(/\s+/);
+  assert.ok(x && y, point);
+  await this.app.do({ cmd: 'click-at', x: Number(x), y: Number(y) });
+});
+
+// The same click through AppKit, as a person's arrives (the Mac only).
+When('I click into the Something else box of ask {int} through AppKit', async function (this: ThreadbearWorld, ask: number) {
+  const point = await this.app.do({ cmd: 'decide', boxPoint: ask });
+  const [, x, y] = point.trim().split(/\s+/);
+  assert.ok(x && y, point);
+  await this.app.do({ cmd: 'native-click', x: Number(x), y: Number(y) });
+});
+
+When('I press Backspace {int} times on the keyboard', async function (this: ThreadbearWorld, times: number) {
+  await this.app.do({ cmd: 'native-keys', text: '\u007f'.repeat(times) });
+});
+
+// Wherever the cursor is, not the message box first.
+When('I type {string} where the cursor is', async function (this: ThreadbearWorld, text: string) {
+  await this.app.do({ cmd: 'type', text, here: true });
+});
+
 When('I send my picks', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'decide', send: true });
 });
@@ -100,6 +126,20 @@ When('the agent there finishes a turn another lab reviewed', async function (thi
 // the heading then "; #1 fixed: <claim>" a finding (RowDebug).
 Then("the transcript's review line says {string}", async function (this: ThreadbearWorld, words: string) {
   await this.until(`a review line saying "${words}"`, (d) => d.transcript.rows.some((r) => r.kind === 'labReview' && r.text.includes(words)));
+});
+
+// It folds like the line of work: its answered findings hidden till opened.
+Then("the transcript's review line is folded", async function (this: ThreadbearWorld) {
+  await this.until('a folded review line', (d) => d.transcript.rows.some((r) => r.kind === 'labReview' && r.expanded === false));
+});
+
+When("I open the transcript's review line", async function (this: ThreadbearWorld) {
+  const row = await this.until('a review line', (d) => d.transcript.rows.find((r) => r.kind === 'labReview'));
+  await this.app.do({ cmd: 'expand', row: row.id });
+});
+
+Then("the transcript's review line is open", async function (this: ThreadbearWorld) {
+  await this.until('an open review line', (d) => d.transcript.rows.some((r) => r.kind === 'labReview' && r.expanded === true));
 });
 
 Then("the card doesn't show {string}", async function (this: ThreadbearWorld, words: string) {
@@ -191,4 +231,30 @@ Then('the done card lists {string} as still open', async function (this: Threadb
 
 Then('the done card lists nothing as still open', async function (this: ThreadbearWorld) {
   await this.until('nothing still open on the done card', (d) => doneRow(d).includes('loose ends: none'));
+});
+
+// The done card's Archive menu (the inboxGuess experiment): "Didn't need
+// this", "Glad I saw this" or "Not sure", each of which archives with that answer.
+Then('the Archive menu offers {string}', async function (this: ThreadbearWorld, list: string) {
+  const result = String(await this.app.do({ cmd: 'menu-popover' }));
+  assert.match(result, /shown true/, `no menu showing: ${result}`);
+  const shown = JSON.parse(result.slice(result.indexOf('['))) as string[];
+  assert.deepEqual(shown, list.split(' | '));
+});
+
+When('I pick {string} from the Archive menu', async function (this: ThreadbearWorld, title: string) {
+  await this.app.do({ cmd: 'menu-popover', click: title });
+});
+
+// What the runner got with the archive: the verdict, or "" for none.
+Then('the runner was told I archived {string} as {string}', async function (this: ThreadbearWorld, title: string, verdict: string) {
+  let last: { threadId?: string; verdict?: string | null } | null = null;
+  for (let tries = 0; tries < 50 && !last; tries += 1) {
+    const text = await this.app.do({ cmd: 'mock', method: 'lastArchive', params: {} });
+    last = ((typeof text === 'string' ? JSON.parse(text) : text) as { params?: typeof last }).params ?? null;
+    if (!last) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const d = await this.app.dump();
+  assert.equal(last?.threadId, this.thread(d, title)?.id);
+  assert.equal(last?.verdict ?? '', verdict);
 });

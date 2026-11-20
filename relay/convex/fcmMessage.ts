@@ -7,6 +7,14 @@
 // Keep in step with convex/phone.ts.
 export const FCM_TOKEN = /^[A-Za-z0-9_:-]{20,4096}$/;
 
+// An Android notification's sealed text (http.ts /send): base64, so one
+// byte a character, and short enough that the whole message fits
+// Firebase's 4 KB of data. A bigger one fails as INVALID_ARGUMENT, which
+// the relay takes for a bad token (relay.ts tokenFault), so one that isn't
+// this goes without (http.ts /send) and the phone shows its stand-in.
+export const ANDROID_SEALED_MAX = 3_000;
+export const androidSealedOk = (x: unknown): x is string => typeof x === 'string' && x.length > 0 && x.length <= ANDROID_SEALED_MAX && /^[A-Za-z0-9+/]+={0,2}$/.test(x);
+
 // Data only, with no `notification` part: Firebase would show that itself,
 // and the app must open the sealed text first (docs/push-relay.md). High
 // priority, so it comes at once with the phone asleep; and it is worth

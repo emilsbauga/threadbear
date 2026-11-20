@@ -21,6 +21,9 @@ runner=""
 cleanup() {
   [ -n "$runner" ] && kill "$runner" 2>/dev/null || true
   [ -n "$runner" ] && wait "$runner" 2>/dev/null || true
+  # The dev runner's log beside the pictures, for a run where the app saw
+  # none of the other runner's threads (18 Nov) and nothing said why.
+  [ -f "$work/runner.log" ] && cp "$work/runner.log" "$OUT/mac-runner.log" 2>/dev/null || true
   rm -rf "$work"
 }
 trap cleanup EXIT

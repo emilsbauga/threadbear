@@ -138,6 +138,26 @@ test('parseBringIn and releaseDay', () => {
   assert.equal(releaseDay('release/2026-11-06'), '6 Nov');
 });
 
+test("a release's day is this Mac's, from when it was tagged, not Mike's", () => {
+  // release/2026-11-15 went out at 8:26 am on 14 Nov in California.
+  const tz = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    assert.equal(releaseDay('release/2026-11-15', '2026-11-14T16:26:37.000Z'), '14 Nov');
+    assert.equal(releaseDay('release/2026-11-15', 'soon'), '15 Nov', "a date that doesn't parse: the name's");
+    const { b, clock, started } = rig(5);
+    const r = release('release/2026-11-15');
+    const dated = { ...r, release: { ...r.release!, date: '2026-11-14T16:26:37.000Z' } };
+    b.consider(dated);
+    clock.advance(5 * DAY);
+    assert.equal(b.consider(dated), 'started');
+    assert.equal(started[0]!.title, "Bring in Mike's release of 14 Nov");
+  } finally {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
+});
+
 test("the same important words on several commits are said once", () => {
   const { b, started } = rig(5);
   const r = release('release/2026-11-06');

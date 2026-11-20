@@ -1,7 +1,7 @@
 // What Threadbear relies on in the Codex app-server protocol, by name, so a
 // Codex update that drops or renames any of it is caught before it's used
-// (E's update gate holds the version back; scripts/codex-schema-check.sh
-// says what changed). T3's adapter silently drops what it doesn't know;
+// (E's update gate holds the version back and starts a thread that looks
+// into it: updates/held-thread.ts). T3's adapter silently drops what it doesn't know;
 // this is the opposite.
 //
 // checkSurface works by text match on the output of
@@ -98,10 +98,16 @@ export const SERVER_REQUESTS = [
   'item/tool/requestUserInput',
   'item/tool/call',
   'mcpServer/elicitation/request',
-  'currentTime/read',
   'applyPatchApproval',
   'execCommandApproval',
 ];
+
+// Requests Codex may send that the runner answers, but whose going away
+// loses nothing: Codex just stops asking. Still answered for the versions
+// that send them; not required by the update gate. currentTime/read (Codex
+// asking the client for the time) went in 0.171.0, which the gate held
+// back on 20 Nov 2026 for it alone.
+export const OPTIONAL_SERVER_REQUESTS = ['currentTime/read'];
 
 // Requests Codex can send that the runner refuses with -32601 on purpose.
 export const REFUSED_SERVER_REQUESTS = ['account/chatgptAuthTokens/refresh', 'attestation/generate'];
@@ -198,7 +204,7 @@ export function checkSurface(generatedDir: string): SurfaceCheck {
 
   const known = new Set([...USED_NOTIFICATIONS, ...IGNORED_NOTIFICATIONS]);
   for (const m of notifications) if (!known.has(m)) added.push(`notification ${m}`);
-  const knownRequests = new Set([...SERVER_REQUESTS, ...REFUSED_SERVER_REQUESTS]);
+  const knownRequests = new Set([...SERVER_REQUESTS, ...OPTIONAL_SERVER_REQUESTS, ...REFUSED_SERVER_REQUESTS]);
   for (const m of serverRequests) if (!knownRequests.has(m)) added.push(`server request ${m}`);
 
   const items = read('ThreadItem');

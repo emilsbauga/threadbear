@@ -1,4 +1,4 @@
-<!--page {"title": "Threadbear · The agent app you can patch yourself", "description": "Threadbear is a Mac app for running Claude Code and Codex threads on the subscriptions you already have, with an iPhone app, a link for every thread, and the whole source to change however you like.", "path": "/"} -->
+<!--page {"title": "Threadbear · Get to your next decision fast", "description": "Threadbear is a desktop app (Mac, Windows and Linux) for running Claude Code, Codex, Grok, Cursor and OpenCode threads on the subscriptions you already have, with iPhone and Android apps, a link for every thread, and the whole source to change however you like.", "path": "/"} -->
 <!-- Every claim here is checked against the repo (AGENTS.md, docs/guide.md, docs/protocol.md,
      docs/convex-backend.md, docs/website.md, ios/README.md). Anything the page describes that
      isn't built yet has a "NOT BUILT" comment right beside it. Search for NOT BUILT and change
@@ -13,17 +13,32 @@
      order (Elaya's landing-page-design skill): hero, benefits, how it works, proof, FAQ, closing.
      Copy is written as Mike (~/.claude/skills/mike-voice). -->
     <section class="hero" aria-labelledby="hero-title">
-      <h1 id="hero-title" class="hero-title">The agent app you can patch yourself</h1>
-      <p class="hero-sub">A Mac app for running your Claude Code and Codex threads. You get all of the source, so when something bugs you, you (or more likely your agent) can change it.</p>
+      <!-- Mike picked this from four on 19 Nov (~/dev/me/misc/threadbear-hero-options): decisions
+           first, from his launch video, with "you can patch it" moved into the line below. It was
+           "The agent app you can patch yourself". On 20 Nov he had all five agents named here, each
+           with its logo inside the sentence (picked over a logo row and chips; the logos are the
+           desktop app's, LobeHub's icons, in src/icons/agent-*.svg). -->
+      <div class="hero-top">
+      <div class="hero-copy">
+      <h1 id="hero-title" class="hero-title">Get to your next decision <span class="fast">fast</span></h1>
+      <p class="hero-sub">An app for running all your <span class="agent">{{icon agent-claude}}Claude Code</span>, <span class="agent">{{icon agent-codex}}Codex</span>, <span class="agent">{{icon agent-grok}}Grok</span>, <span class="agent">{{icon agent-cursor}}Cursor</span> and <span class="agent">{{icon agent-opencode}}OpenCode</span> threads, where each one says just what it needs from you. You also get all the source, so you (or more likely your agent) can patch anything you like.</p>
       <!-- Installing is a prompt for your own agent, so the hero gives you that rather than a
-           Fork button (Mike, 5 Nov). The prompt itself is printed once, in #get: "See the prompt"
-           goes there without JavaScript, and with it opens a peek at the same text right here. -->
+           Fork button (Mike, 5 Nov). The prompt itself is printed once, in #get. Mike took the
+           "See the prompt" link beside it out on 17 Nov. -->
       <div class="hero-cta">
         {{copyButton}}
-        <a class="link-btn" href="#get" data-peek aria-controls="peek" aria-expanded="false">See the prompt</a>
       </div>
-      <div class="peek" id="peek" hidden><pre class="prompt-box"><code></code></pre></div>
-      <p class="risk">Free, for Macs with Apple silicon.</p>
+      {{platforms}}
+      </div>
+      <!-- The live inbox acting out the headline (src/live-inbox.js fills it; empty and hidden
+           without JavaScript). Mike picked it on 19 Nov, with the hero on a screen of its own.
+           Later that day he wasn't happy with the look (small, dark, in a half empty screen) and
+           picked "Paper window" from three fixes: these two columns kept and made bigger, the
+           window in the page's light colours, and all of it growing with the screen. He passed
+           over a centred hero with a big dark window, and a pile of decision cards with no
+           window (the review is thread 1617b148). -->
+      <div class="live"></div>
+      </div>
 
       <!-- The player: a clip per feature in the launch video's order, the list down the left
            (SLIDES in scripts/build.mjs, the playing in site.js). -->
@@ -50,15 +65,15 @@
         </li>
         <li>
           <span class="badge-icon">{{icon desktop}}</span>
-          <h3>Schedules that run on any of your Macs</h3>
+          <h3>Schedules that run on any of your machines</h3>
           <button type="button" class="tip-btn" aria-expanded="false" aria-controls="tip-schedules" aria-label="More about schedules">i</button>
-          <p class="tip" id="tip-schedules" hidden>Send a thread a message at a set time, once or over and over, or start a new thread each time. Pick which Mac it runs on and it runs there, even while this one's asleep.</p>
+          <p class="tip" id="tip-schedules" hidden>Send a thread a message at a set time, once or over and over, or start a new thread each time. Pick which machine it runs on and it runs there, even while this one's asleep.</p>
         </li>
         <li>
           <span class="badge-icon">{{icon key}}</span>
           <h3>Runs on your own Claude or Codex login</h3>
           <button type="button" class="tip-btn" aria-expanded="false" aria-controls="tip-login" aria-label="More about logins">i</button>
-          <p class="tip" id="tip-login" hidden>It drives the official <code>claude</code> and <code>codex</code> command line tools, logged in as you, so it's your plan doing the work. It never reads or copies your login tokens.</p>
+          <p class="tip" id="tip-login" hidden>It drives the official <code>claude</code> and <code>codex</code> command line tools, logged in as you, so it's your plan doing the work. It never reads or copies your login tokens. Grok, Cursor and OpenCode can run threads too, through their own command line tools.</p>
         </li>
       </ul>
     </section>
@@ -69,9 +84,9 @@
       <h2 class="section-title" id="where-title">Where your stuff lives</h2>
       <p class="section-lede">Installing it makes a Convex deployment in your own Convex account. None of it runs on a server of mine, so I never see any of it.</p>
       <ol class="flow" aria-label="Where your threads live">
-        <li><span class="badge-icon">{{icon desktop}}</span><b>Your Mac</b><span>The app and the runner, with every full transcript</span></li>
+        <li><span class="badge-icon">{{icon desktop}}</span><b>Your computer</b><span>The app and the runner, with every full transcript</span></li>
         <li><span class="badge-icon">{{icon database}}</span><b>Your Convex deployment</b><span>Titles, messages, what each tool did, and what needs you</span></li>
-        <li><span class="badge-icon">{{icon device-mobile}}</span><b>Your iPhone and browser</b><span>Read, reply and approve from anywhere</span></li>
+        <li><span class="badge-icon">{{icon device-mobile}}</span><b>Your phone and browser</b><span>Read, reply and approve from anywhere</span></li>
       </ol>
     </section>
 
@@ -97,7 +112,7 @@
         <h2 id="get-title">Install it with a prompt</h2>
         <p class="intro">There's nothing to download. You paste this into Claude Code or Codex and your agent sets it all up for you.</p>
         <ul class="needs" aria-label="What you need">
-          <li>A Mac with Apple silicon</li>
+          <li>A Mac with Apple silicon, or a Windows or Linux PC</li>
           <li>Claude Code or Codex</li>
           <li>A Convex account</li>
         </ul>
@@ -120,10 +135,10 @@
             <button type="button" class="btn btn-lg btn-ghost send-mac" hidden>{{icon desktop}}<span>Send this page to my Mac</span></button>
           </div>
         </figure>
-        <!-- The Mac app's Settings > Phone & browser shows the code (DevicesSettings.swift). -->
+        <!-- The desktop app's Settings > Phone & browser shows the code (desktop/gpui/src/settings_window.rs). -->
         <div class="phone-row">
-          {{appStoreBadge}}
-          <p>Then grab the iPhone app and pair it with the code in the Mac app's settings.</p>
+          <div class="store-badges">{{appStoreBadge}}{{androidBadge}}</div>
+          <p>Then grab the phone app and pair it with the code in the app's settings.</p>
         </div>
       </div>
     </section>
@@ -137,8 +152,8 @@
     <section class="block closing reveal" aria-labelledby="closing-title">
       <img class="bear-wave" src="/img/bear-wave.webp" alt="" width="280" height="378" loading="lazy" decoding="async">
       <h2 id="closing-title" class="closing-title">If you're gonna spend all day in one app, you want it exactly how you want it</h2>
-      <p class="risk">Free, for Macs with Apple silicon.</p>
       <div class="closing-cta">
         {{copyButton}}
       </div>
+      {{platforms}}
     </section>

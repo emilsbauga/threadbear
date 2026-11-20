@@ -14,6 +14,8 @@ what the iPhone has.
   `com.tinkerware.threadbear`), debug-signed for now.
 - Convex: `dev.convex:android-convexmobile`, used at its FFI layer
   (`MobileConvexClient`) so answers stay raw JSON, as the Swift app does.
+- Two flavours (below): `github`, the APK on GitHub releases, and
+  `fdroid`, for the F-Droid store, with no Google code.
 - Built with `android-native/build.sh` (capped memory, one Gradle worker
   pair, no Kotlin daemon), on the Hetzner box or the M5. On a Mac it takes
   the SDK from ~/Library/Android/sdk and its lock through lockf, and goes
@@ -72,9 +74,111 @@ Not ported: Quick Ask (Mike, 11 Nov: not needed), Whisper, the bear and pull-pee
 Pocket's "here" mark (it needs location and a map search), the rows flying
 between headings (RowFlight), the demo's sample data beyond what tests need.
 
+## Flavours
+
+One dimension, `store`, with two flavours. Everything is shared but the
+few pieces that would bring Google's closed code in, which live in
+`app/src/github/` and `app/src/fdroid/`, each with its own manifest.
+
+| | `github` | `fdroid` |
+| --- | --- | --- |
+| Where it's sold | GitHub releases (below) | the F-Droid store (Mike's choice, 19 Nov 2026, as Keith suggested) |
+| Push | Firebase, through the relay (`FirebasePush.kt`) | UnifiedPush, `org.unifiedpush.android:connector` 3.3.6 (`UnifiedPushTransport.kt`) |
+| Code scanner | ML Kit's Google code scanner, no camera permission | ZXing (`com.journeyapps:zxing-android-embedded` 4.3.0), CAMERA asked at the Scan tap (`QrScanner.kt`) |
+| Updates | asks GitHub (`Updates.kt`, `SELF_UPDATE` true) | none: F-Droid updates it (`SELF_UPDATE` false) |
+
+Both flavours share `Push` (the push key, showing a notification, the
+pairing lock), and each gives a `StorePush` (`PushTransport`): where the
+backend reaches the phone, forgetting that on unpairing, and how far it's
+set up for Settings.
+
+Building one: `./build.sh :app:assembleGithubDebug`, `:app:assembleFdroidDebug`,
+and `...Release` for each. CI builds `:app:assembleGithubDebug` and
+`:app:assembleFdroidRelease` on every push and runs
+`./check-fdroid-apk.sh` on the fdroid APK, which fails if any
+`com.google.firebase`, `com.google.android.gms` or `com.google.mlkit` class
+is in it. (Google's free libraries are fine there: Tink, which the
+UnifiedPush connector decrypts with, protobuf, Gson, ZXing, and Material
+Components through the Convex client.)
+
+### UnifiedPush (fdroid)
+
+The phone needs a UnifiedPush app, a "distributor" such as ntfy, which
+holds one connection for every app that uses it. Without one push is off,
+and Settings says notifications need one, with a link to
+https://unifiedpush.org/users/distributors/. With more than one and no
+default, Settings offers to choose. The connector makes the Web Push keys
+and decrypts each message itself.
+
+Only for a backend at API 93 or later (`BackendApi.WEB_PUSH`), on each
+connect and resume as for Firebase:
+
+1. `phone:webPushKey` (an action) gives the backend's VAPID public key,
+   kept per pairing (it's fixed for a deployment).
+2. `UnifiedPush.register` with it; the distributor answers with an
+   endpoint in `ThreadbearPushService.onNewEndpoint`, now and whenever it
+   changes.
+3. `phone:registerDevice` with `platform: "webpush"`, the endpoint URL as
+   `apnsToken` (https, 2048 characters at most), `pushKey` as for
+   Firebase, and `webPush: { p256dh, auth }` from the connector
+   (base64url, no padding). Notify me's `phone:setNotifications` takes the
+   endpoint as its `apnsToken`.
+
+The backend sends each notification as Web Push (RFC 8291 aes128gcm, with
+VAPID), and the decrypted body is `{"threadId", "e"}`, `e` sealed with
+the push key just as FCM's `data.e`, so `Push.show` opens it. One whose
+sealed text would take the body past 3993 bytes comes without `e`, and
+shows the stand-in ("A thread needs you"). The backend's `pushOff` (no
+relay and no Apple key, as on a self-hosted backend) is about the relay,
+so the fdroid build ignores it (`PushTransport.usesRelay`). Unpairing
+unregisters from the distributor (Firebase's deleteToken, here). An older
+backend gets no registration at all, and the app carries on without push.
+
+### F-Droid
+
+The listing's text and screenshots are in
+`android-native/app/fastlane/metadata/android/en-US/`, which F-Droid reads
+from the repo. Its build recipe (in F-Droid's fdroiddata repo, not here)
+builds the `fdroid` flavour with the release's date as a Gradle property,
+as it has no THREADBEAR_RELEASE in its environment. It writes the property
+from `$$VERSION$$` in `prebuild` rather than a fixed `gradleprops` line,
+since F-Droid's auto-update copies the last build block and changes only the
+version and commit:
+
+```yaml
+    subdir: android-native/app
+    gradle:
+      - fdroid
+    rm:
+      - vendor
+    prebuild: printf "\nthreadbearRelease=%s\n" "$$VERSION$$" >> ../gradle.properties
+```
+
+`rm: vendor` takes out the vendored state-machines tgz, which F-Droid's
+source scanner refuses (the app doesn't use it). The app targets Java 17
+bytecode with `jvmTarget` and `compileOptions`, not a JDK 17 toolchain, so
+it builds on F-Droid's image, which only has Java 21. Tested with F-Droid's
+own tools (`fdroid lint`, `fdroid build` in the buildserver image) on the
+cloud box, 19 Nov 2026: it builds, and the APK has no Google classes.
+
+The property and the environment variable both set the version; the
+property wins if both are there. F-Droid's update check can't read a version
+that comes from the tag, so each release's `release` job also attaches
+`android-version.txt` (`versionCode=20261119`, `versionName=2026-11-19`),
+which the recipe reads from `releases/latest/download/` (`UpdateCheckMode:
+HTTP`), with `AutoUpdateMode: Version release/%v` to build the matching tag.
+The draft recipe is in `~/dev/me/misc/threadbear-fdroid/` on Mike's M5 until
+it goes to fdroiddata. F-Droid signs with its own key, so its
+build and the GitHub one can't update each other: moving between them
+means uninstalling (and pairing again). The Convex client (`libconvexmobile.so`)
+and JNA (`libjnidispatch.so`) come from Maven Central with their native
+code already built; both are Apache-2.0, but F-Droid's reviewers may ask
+for them to be built from source in the recipe.
+
 ## Screens
 
-1. Pair: Scan the code (camera, ML Kit barcode) and Paste a pairing code,
+1. Pair: Scan the code (camera: ML Kit's scanner on github, ZXing's on
+   fdroid) and Paste a pairing code,
    both asking "Pair with <server>?" before keeping anything, trading the
    Mac's one-use code for a token (`tokens:claim`) and checking it with
    `phone:me`. No `threadbear://pair` link opens the app: any app can
@@ -151,8 +255,11 @@ an Android verdict for the daily tag to wait on.
   workflow is pinned to a full commit SHA, with its tag in a comment;
   `runner/test/unit/workflow-pins.test.ts` fails on a tag or branch.
 - The version is the tag's date (`versionName` 2026-11-12, `versionCode`
-  20261112), so each release installs over the last. A local build is
-  `dev`, version code 1, and never offers itself an update.
+  20261112), so each release installs over the last: `THREADBEAR_RELEASE`
+  in the environment, or `-PthreadbearRelease=2026-11-12` (what F-Droid
+  passes). A local build is `dev`, version code 1, and never offers itself
+  an update. The release job builds the github flavour
+  (`:app:assembleGithubRelease`).
 - The release key (`threadbear`, RSA 4096, made 11 Nov 2026, certificate
   SHA-256 `185d962a…c358`, pinned in the workflow) is a secret of the
   `android-release` environment (`ANDROID_KEYSTORE_BASE64`,
@@ -162,7 +269,8 @@ an Android verdict for the daily tag to wait on.
   on his Mac. A release's APK is never replaced once attached, and only
   the newest release tag is marked latest. The backup is
   `~/.config/threadbear-android/release.jks` and `release-password` on the
-  M5, which a local `:app:assembleRelease` signs with. Android installs an
+  M5, which a local `:app:assembleGithubRelease` (or `assembleFdroidRelease`)
+  signs with. Android installs an
   update only if it's signed like the installed app, so losing the key
   means everyone uninstalling and reinstalling.
 - The app asks GitHub for the latest release at most every six hours as

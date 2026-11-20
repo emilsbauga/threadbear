@@ -50,7 +50,13 @@ pub(crate) fn logs_dir() -> PathBuf {
 }
 
 pub(crate) fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    // Windows has no HOME unless a shell set one; its home is USERPROFILE.
+    // Without this the home was `.`, wherever the app was started from.
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| if cfg!(windows) { std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()) } else { None })
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn same(a: &Path, b: &Path) -> bool {

@@ -3,6 +3,7 @@
 // server and the real tb, as an agent's shell would.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { PATIENCE_MS } from '../helpers/patience.ts';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -179,6 +180,11 @@ for (const mode of MODES) {
         ['pools.save', { pools: [] }],
         ['devices.pair', {}],
         ['clis.update', { provider: 'claude' }],
+        ['accounts.useReset', { accountId: 'codex-main' }],
+        ['accounts.findWork', { accountId: 'codex-main' }],
+        ['accounts.recheck', {}],
+        ['accounts.yearToken', { accountId: 'claude-main' }],
+        ['accounts.yearToken', { accountId: 'claude-main', runnerId: 'cb921b2447ea', code: 'abcdefgh#ijklmnop' }],
         ['panels.convexKey', { threadId: me.id, panelId: 'x' }],
         ['no.such.method', {}],
       ];
@@ -237,6 +243,22 @@ test('a thread lowered to Ask loses it at once: the mode is read at each call', 
   }
 });
 
+// Codex's review, 19 Nov: a Full access thread could ask another runner for
+// a token page, approve it with an account of its own and send the code.
+test("a Full access thread can't make a year-long token, here or on another runner", async () => {
+  const { h, server, token, url } = await serve();
+  const me = thread(h, 'full');
+  try {
+    const c = await as(url, token, me.id);
+    for (const params of [{ accountId: 'claude-main' }, { accountId: 'claude-main', runnerId: 'cb921b2447ea', code: 'abcdefgh#ijklmnop' }]) {
+      await assert.rejects(c.call('accounts.yearToken', params), /user's to do/);
+    }
+    c.close();
+  } finally {
+    await server.close();
+  }
+});
+
 test('tb outside a thread uses the token and can do everything', async () => {
   const { h, server, url } = await serve();
   try {
@@ -251,7 +273,7 @@ test('tb outside a thread uses the token and can do everything', async () => {
 test("the owner token from a thread's own process tree gets that thread's limits", async () => {
   // Stands in for the lsof/ps lookup: this connection comes from thread `me`'s CLI.
   let from: string | undefined;
-  const { h, server, token, url } = await serve({ callerOfPort: async () => from });
+  const { h, server, token, url } = await serve({ callerOf: async () => from });
   const me = thread(h, 'auto');
   try {
     from = me.id;
@@ -275,27 +297,134 @@ test("the owner token from a thread's own process tree gets that thread's limits
   }
 });
 
-test("another thread's key lifted from its environment is worth the thief's own mode", async () => {
+test("another thread's key lifted from its environment is refused", async () => {
   let from: string | undefined;
-  const { h, server, token, url } = await serve({ callerOfPort: async () => from });
+  const { h, server, token, url } = await serve({ callerOf: async () => from });
   const thief = thread(h, 'ask');
   const victim = thread(h, 'full');
   try {
     from = thief.id;
     const c = await as(url, token, victim.id);
-    assert.equal((await c.call<{ threadId: string }>('auth.whoami')).threadId, thief.id);
-    await assert.rejects(c.call('threads.create', { text: 'x', permissionMode: 'full', accountId: 'claude-3' }), refused);
+    await assert.rejects(c.call('threads.create', { text: 'x', permissionMode: 'full', accountId: 'claude-3' }));
+    assert.equal(h.runner.list(['inbox']).length, 2, 'nothing made');
     c.close();
   } finally {
     await server.close();
   }
 });
 
+// Daybreak finding 137: the process lookup used to go by the client's port
+// alone, and its answer replaced the thread the key had proved. A
+// restricted thread that got the lookup to name a Full thread's process was
+// Full. Now the lookup can only agree with a key; naming another thread
+// closes the connection before any request runs.
+for (const mode of MODES) {
+  test(`${mode}: a thread's key whose process lookup names a Full thread can't act as it`, async () => {
+    let from: string | undefined;
+    const { h, server, token, url } = await serve({ callerOf: async () => from });
+    const me = thread(h, mode);
+    const full = thread(h, 'full', 'full one');
+    try {
+      from = full.id;
+      const c = await as(url, token, me.id);
+      await assert.rejects(c.call('threads.update', { threadId: me.id, permissionMode: 'full' }));
+      assert.equal(h.runner.get(me.id).permissionMode, mode, 'still restricted');
+      c.close();
+      // The lookup agreeing, or not finding a thread, leaves the key's thread.
+      for (const f of [me.id, undefined]) {
+        from = f;
+        const ok = await as(url, token, me.id);
+        assert.equal((await ok.call<{ threadId: string }>('auth.whoami')).threadId, me.id);
+        await assert.rejects(ok.call('threads.update', { threadId: me.id, permissionMode: 'full' }), refused);
+        ok.close();
+      }
+    } finally {
+      await server.close();
+    }
+  });
+}
+
+test("a lookup that can't say which thread holds the socket closes it, the owner token's too", async () => {
+  const { AmbiguousPeer } = await import('../../src/peer.ts');
+  const { h, server, token, url } = await serve({ callerOf: async () => { throw new AmbiguousPeer('two threads'); } });
+  const me = thread(h, 'auto');
+  try {
+    const owner = await RunnerClient.connect(url, token);
+    await assert.rejects(owner.call('threads.update', { threadId: me.id, permissionMode: 'full' }));
+    owner.close();
+    const c = await as(url, token, me.id);
+    await assert.rejects(c.call('auth.whoami'));
+    c.close();
+    assert.equal(h.runner.get(me.id).permissionMode, 'auto');
+  } finally {
+    await server.close();
+  }
+});
+
+// Daybreak finding 138: deleting a schedule went straight through the gate.
+for (const mode of MODES) {
+  test(`${mode}: schedules.delete with a thread's key can't delete a Full schedule or one with a check`, async () => {
+    const { h, server, token, url, scheduler } = await serve();
+    const me = thread(h, mode);
+    const full = thread(h, 'full', 'full one');
+    const fullSc = await scheduler.create({ text: 'Tidy', cron: '0 9 * * *', title: 'Full one', cwd: h.home, accountId: 'claude-3', permissionMode: 'full' });
+    const toFull = await scheduler.create({ text: 'Ping', cron: '0 9 * * *', title: 'To full', threadId: full.id });
+    const checked = await scheduler.create({ text: 'Watch', cron: '0 * * * *', title: 'Checked', cwd: h.home, accountId: 'claude-3', permissionMode: mode, check: 'true' });
+    const mine = await scheduler.create({ text: 'Later', cron: '0 9 * * *', title: 'Mine', threadId: me.id, createdBy: me.id });
+    const c = await as(url, token, me.id);
+    try {
+      for (const sc of [fullSc, toFull, checked]) {
+        await assert.rejects(c.call('schedules.delete', { scheduleId: sc.id }), (e: { code?: number; message?: string }) => refused(e) && /delete_schedule/.test(e.message ?? ''));
+        assert.ok(scheduler.find(sc.id), `${sc.title} still there`);
+      }
+      // By a prefix too: what's compared is what's deleted.
+      await assert.rejects(c.call('schedules.delete', { scheduleId: fullSc.id.slice(0, 8) }), refused);
+      // Unknown here: refused, not passed on.
+      await assert.rejects(c.call('schedules.delete', { scheduleId: 'nope-not-a-schedule' }), refused);
+      // Nor by first lowering it or taking its check off (verify-fix of 138).
+      await assert.rejects(c.call('schedules.update', { scheduleId: fullSc.id, permissionMode: mode }), refused);
+      assert.equal(scheduler.find(fullSc.id).permissionMode, 'full');
+      for (const off of [null, '']) {
+        await assert.rejects(c.call('schedules.update', { scheduleId: checked.id, check: off }), refused);
+        assert.equal(scheduler.find(checked.id).check, 'true');
+      }
+      await assert.rejects(c.call('schedules.delete', { scheduleId: checked.id }), refused);
+      // Nor by moving it to a login, pool, model, effort or zone it doesn't
+      // run on: a login another runner lacks stops it quietly (OpenCode's
+      // review of the 138 fix).
+      for (const sc of [fullSc, checked]) {
+        for (const change of [{ model: 'haiku' }, { effort: 'low' }, { timezone: 'Pacific/Kiritimati' }, { poolId: 'nope' }, { accountId: 'nonexistent-login' }]) {
+          await assert.rejects(c.call('schedules.update', { scheduleId: sc.id, ...change }), refused, `${sc.title}: ${JSON.stringify(change)}`);
+        }
+        assert.equal(scheduler.find(sc.id).accountId, 'claude-3');
+      }
+      // Nor by lowering the Full thread a schedule sends to, so it no
+      // longer looks above this one (OpenCode's review of the 138 fix).
+      await assert.rejects(c.call('threads.update', { threadId: full.id, permissionMode: mode }), refused);
+      assert.equal(h.runner.get(full.id).permissionMode, 'full');
+      await assert.rejects(c.call('schedules.delete', { scheduleId: toFull.id }), refused);
+      // Pausing one is still free.
+      await c.call('schedules.update', { scheduleId: fullSc.id, paused: true });
+      // One no higher than this thread, with no check, it may delete.
+      await c.call('schedules.delete', { scheduleId: mine.id });
+      assert.throws(() => scheduler.find(mine.id));
+      // The owner still can.
+      const owner = await RunnerClient.connect(url, token);
+      await owner.call('schedules.delete', { scheduleId: fullSc.id });
+      assert.throws(() => scheduler.find(fullSc.id));
+      owner.close();
+    } finally {
+      c.close();
+      await server.close();
+    }
+  });
+}
+
 test('a request frame sent before the process lookup finishes waits for it', async () => {
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
   let from: string | undefined;
-  const { h, server, token, url } = await serve({ callerOfPort: async () => { await held; return from; } });
+  const { h, server, token, url } = await serve({ callerOf: async () => { await held; return from; } });
   const me = thread(h, 'auto');
   from = me.id;
   try {
@@ -347,7 +476,9 @@ test('reading the runner token file: Claude tools are denied it outside Full acc
 });
 
 test('the process lookup walks parents to a CLI, and only a real thread counts', async () => {
-  const { threadOfPort } = await import('../../src/peer.ts');
+  const { threadOfSocket, AmbiguousPeer } = await import('../../src/peer.ts');
+  const sock = { remoteAddress: '127.0.0.1', remotePort: 1234, localAddress: '127.0.0.1', localPort: 8797 };
+  const threadOfPort = (_port: number, deps: Parameters<typeof threadOfSocket>[1]) => threadOfSocket(sock, deps);
   const table = async () => [
     { pid: 500, ppid: 400 }, // tb
     { pid: 400, ppid: 300 }, // zsh
@@ -365,26 +496,91 @@ test('the process lookup walks parents to a CLI, and only a real thread counts',
   assert.equal(grouped, 'th1', 'lost its parents, still in the tool command\'s group');
   const failing = await threadOfPort(1234, { registry, known: () => true, log: nullLogger, lsof: async () => { throw new Error('no lsof'); }, table });
   assert.equal(failing, undefined, 'a failed lookup falls back to the credential');
+  // A socket held by processes under two threads (handed to a child): no guessing.
+  const two = { threadOfPid: (p: number) => (p === 300 ? 'th1' : p === 800 ? 'th2' : undefined) };
+  const both = async () => [...(await table()), { pid: 800, ppid: 1 }];
+  await assert.rejects(threadOfSocket(sock, { registry: two, known: () => true, log: nullLogger, lsof: async () => [500, 800], table: both }), (e) => e instanceof AmbiguousPeer);
+  // Two holders under the same thread (a fork) are that thread.
+  assert.equal(await threadOfSocket(sock, { registry: two, known: () => true, log: nullLogger, lsof: async () => [500, 400], table: both }), 'th1');
+});
+
+test("lsof's answer counts only the process holding the client's end of exactly this connection", async () => {
+  const { socketOwners } = await import('../../src/peer.ts');
+  // A Full thread's process (100) talking to something on port 5432, a
+  // restricted one's (200) on 127.0.0.2:5432 and the attacker's real
+  // connection (300) from 127.0.0.1:5432; and the runner's own end (1).
+  const out = [
+    'p100', 'f10', 'n127.0.0.1:61000->127.0.0.1:5432',
+    'p200', 'f11', 'n127.0.0.2:5432->127.0.0.1:8797',
+    'p300', 'f12', 'n127.0.0.1:5432->127.0.0.1:8797', 'f13', 'n127.0.0.1:5432->127.0.0.1:8797',
+    'p1', 'f14', 'n127.0.0.1:8797->127.0.0.1:5432',
+    '',
+  ].join('\n');
+  assert.deepEqual(socketOwners(out, '127.0.0.1:5432->127.0.0.1:8797'), [300]);
+  assert.deepEqual(socketOwners(out, '127.0.0.2:5432->127.0.0.1:8797'), [200]);
+  assert.deepEqual(socketOwners(out, '127.0.0.1:9999->127.0.0.1:8797'), []);
 });
 
 test('the process lookup finds a real connection through lsof and ps', async () => {
-  const { threadOfPort } = await import('../../src/peer.ts');
+  const { threadOfSocket } = await import('../../src/peer.ts');
   const net = await import('node:net');
   const server = net.createServer();
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const addr = server.address() as { port: number };
-  const child = spawn(process.execPath, ['-e', `require('net').connect(${addr.port},'127.0.0.1');setTimeout(()=>{},60000)`], { stdio: 'ignore' });
-  const peer = new Promise<number>((r) => server.once('connection', (s) => r(s.remotePort!)));
+  const child = spawn(process.execPath, ['-e', `require('net').connect(${addr.port},'127.0.0.1');setTimeout(()=>{},600000)`], { stdio: 'ignore' });
+  const peer = new Promise<import('node:net').Socket>((r) => server.once('connection', r));
   try {
-    const port = await peer;
+    const s = await peer;
+    const sock = { remoteAddress: s.remoteAddress!, remotePort: s.remotePort!, localAddress: s.localAddress!, localPort: s.localPort! };
     const registry = { threadOfPid: (p: number) => (p === child.pid ? 'th9' : undefined) };
-    assert.equal(await threadOfPort(port, { registry, known: () => true, log: nullLogger }), 'th9');
+    // The runner's 3 s limit is for live connections; on a loaded Mac lsof
+    // alone took longer, so this real lookup gets the suite's patience.
+    const lookupMs = PATIENCE_MS;
+    assert.equal(await threadOfSocket(sock, { registry, known: () => true, log: nullLogger, lookupMs }), 'th9');
     // Under another process: its parent (this test) is the CLI.
     const up = { threadOfPid: (p: number) => (p === process.pid ? 'th8' : undefined) };
-    assert.equal(await threadOfPort(port, { registry: up, known: () => true, log: nullLogger }), 'th8');
+    assert.equal(await threadOfSocket(sock, { registry: up, known: () => true, log: nullLogger, lookupMs }), 'th8');
   } finally {
     child.kill();
     server.close();
+  }
+});
+
+// Daybreak finding 137, for real: a Full thread's process talks to
+// something on port P, and a restricted one connects to the runner from
+// source port P. `lsof -iTCP:P` lists both; only the exact connection may count.
+test('the process lookup names the process on this exact connection, not another sharing its port number', async (t) => {
+  const { threadOfSocket } = await import('../../src/peer.ts');
+  const net = await import('node:net');
+  const listen = (srv: import('node:net').Server, host: string) => new Promise<void>((r, j) => { srv.once('error', j); srv.listen(0, host, () => r()); });
+  // Something the Full thread's process talks to, on ::1 so its port can
+  // also be bound on 127.0.0.1 (Linux could use 127.0.0.2; a Mac has only 127.0.0.1).
+  const elsewhere = net.createServer();
+  try {
+    await listen(elsewhere, '::1');
+  } catch {
+    return t.skip('no IPv6 loopback here');
+  }
+  const P = (elsewhere.address() as { port: number }).port;
+  const runner = net.createServer();
+  await listen(runner, '127.0.0.1');
+  const R = (runner.address() as { port: number }).port;
+  const full = spawn(process.execPath, ['-e', `require('net').connect(${P},'::1');setTimeout(()=>{},600000)`], { stdio: 'ignore' });
+  let restricted: ReturnType<typeof spawn> | undefined;
+  try {
+    await new Promise((r) => elsewhere.once('connection', r));
+    const accepted = new Promise<import('node:net').Socket>((r) => runner.once('connection', r));
+    restricted = spawn(process.execPath, ['-e', `require('net').connect({port:${R},host:'127.0.0.1',localAddress:'127.0.0.1',localPort:${P}}).on('error',()=>process.exit(3));setTimeout(()=>{},600000)`], { stdio: 'ignore' });
+    const s = await accepted;
+    assert.equal(s.remotePort, P, 'the restricted client really shares the port number');
+    const sock = { remoteAddress: s.remoteAddress!, remotePort: s.remotePort!, localAddress: s.localAddress!, localPort: s.localPort! };
+    const registry = { threadOfPid: (p: number) => (p === full.pid ? 'full-thread' : p === restricted!.pid ? 'ask-thread' : undefined) };
+    assert.equal(await threadOfSocket(sock, { registry, known: () => true, log: nullLogger, lookupMs: PATIENCE_MS }), 'ask-thread');
+  } finally {
+    full.kill();
+    restricted?.kill();
+    runner.close();
+    elsewhere.close();
   }
 });
 
@@ -394,16 +590,16 @@ test('the registry names a thread only for a live CLI, and sees a draining runne
   try {
     const r = new ProcessRegistry(dir, nullLogger);
     r.add(process.pid, 'test', 'th1');
-    assert.equal(r.threadOfPid(process.pid), 'th1');
+    assert.equal(await r.threadOfPid(process.pid), 'th1');
     r.remove(process.pid);
-    assert.equal(r.threadOfPid(process.pid), undefined);
+    assert.equal(await r.threadOfPid(process.pid), undefined);
     // A draining runner's list is on disk beside this one's.
     const { processInfo } = await import('../../src/proc.ts');
     const lstart = processInfo(process.pid)!.lstart;
     fs.writeFileSync(path.join(dir, 'children-99.json'), JSON.stringify([{ pid: process.pid, command: 'x', startedAt: 'x', lstart, threadId: 'th2' }]));
-    assert.equal(r.threadOfPid(process.pid), 'th2');
+    assert.equal(await r.threadOfPid(process.pid), 'th2');
     fs.writeFileSync(path.join(dir, 'children-99.json'), JSON.stringify([{ pid: process.pid, command: 'x', startedAt: 'x', lstart: 'some other start', threadId: 'th2' }]));
-    assert.equal(r.threadOfPid(process.pid), undefined, 'a recycled pid');
+    assert.equal(await r.threadOfPid(process.pid), undefined, 'a recycled pid');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -424,7 +620,7 @@ test('tb goes by its key only for its own runner, never the token next to it', a
 
 test('tb runner refuses in a limited thread, whatever its environment says', async () => {
   let from: string | undefined;
-  const { h, server, token, url } = await serve({ callerOfPort: async () => from });
+  const { h, server, token, url } = await serve({ callerOf: async () => from });
   const me = thread(h, 'auto');
   try {
     const key = threadKey(token, me.id);
@@ -519,7 +715,7 @@ test("tb runner can't be talked past its check by pointing at no runner", async 
 
 test('a draining server takes the same care with a thread as the main one', async () => {
   let from: string | undefined;
-  const { h, server, token, url } = await serve({ onlyOwn: true, callerOfPort: async () => from });
+  const { h, server, token, url } = await serve({ onlyOwn: true, callerOf: async () => from });
   const me = thread(h, 'auto');
   try {
     from = me.id;
@@ -574,3 +770,33 @@ for (const mode of MODES) {
     }
   });
 }
+
+test("a login's cloud token and a thread on a virtual runner are the user's, from the app: refused to any thread's key, Full access too", async () => {
+  const started: unknown[] = [];
+  const tokens: unknown[] = [];
+  const { h, server, token, url } = await serve({
+    virtualStart: async (p) => {
+      started.push(p);
+      return { thread: { id: 'cloud-1', runnerId: 'abcdef012345' } };
+    },
+    methods: { 'cloudTokens.set': (p) => (tokens.push(p), {}), 'cloudTokens.make': (p) => (tokens.push(p), {}) },
+  });
+  const me = thread(h, 'full');
+  try {
+    const c = await as(url, token, me.id);
+    await assert.rejects(c.call('cloudTokens.set', { login: 'me@example.com', token: 'sk-ant-oat01-x' }), (e: { code?: number; message?: string }) => refused(e) && /card in the app/.test(e.message ?? ''));
+    await assert.rejects(c.call('cloudTokens.make', { login: 'me@example.com' }), refused);
+    await assert.rejects(c.call('threads.create', { text: 'x', serviceId: 'runnerServices:1', cwd: '/x', accountId: 'claude-3' }), (e: { code?: number; message?: string }) => refused(e) && /Runs on/.test(e.message ?? ''));
+    c.close();
+    assert.deepEqual([started.length, tokens.length], [0, 0]);
+    // The app, on the runner's token: through.
+    const app = await RunnerClient.connect(url, token);
+    assert.deepEqual(await app.call('threads.create', { text: 'x', serviceId: 'runnerServices:1', cwd: '/x', accountId: 'claude-3' }), { thread: { id: 'cloud-1', runnerId: 'abcdef012345' } });
+    assert.deepEqual(await app.call('cloudTokens.make', { login: 'me@example.com' }), {});
+    await assert.rejects(app.call('threads.create', { text: 'x', serviceId: 7 }), (e: { code?: number }) => e.code === -32602);
+    app.close();
+    assert.equal(started.length, 1);
+  } finally {
+    await server.close();
+  }
+});

@@ -4,19 +4,12 @@
 // hosting sends every unknown path to index.html, so a link works when
 // opened cold.
 import { useSyncExternalStore } from 'react';
+import { parsePath, type RailView, type Route } from './route-path';
 
-export type RailView = 'scheduled' | 'projects' | 'runners' | 'usage';
-export type Route = { page: 'list' } | { page: 'new' } | { page: 'thread'; threadId: string } | { page: 'share'; slug: string } | { page: RailView; id?: string };
+export type { RailView, Route };
 
 function parse(): Route {
-  const s = location.pathname.match(/^\/s\/([^/]+)\/?$/);
-  if (s) return { page: 'share', slug: decodeURIComponent(s[1]) };
-  const m = location.pathname.match(/^\/t\/([^/]+)\/?$/);
-  if (m) return { page: 'thread', threadId: decodeURIComponent(m[1]) };
-  if (/^\/new\/?$/.test(location.pathname)) return { page: 'new' };
-  const v = location.pathname.match(/^\/(scheduled|projects|runners|usage)(?:\/([^/]+))?\/?$/);
-  if (v) return { page: v[1] as RailView, ...(v[2] ? { id: decodeURIComponent(v[2]) } : {}) };
-  return { page: 'list' };
+  return parsePath(location.pathname);
 }
 
 let current = parse();
@@ -46,6 +39,11 @@ export function useRoute(): Route {
 
 export function threadPath(threadId: string): string {
   return `/t/${encodeURIComponent(threadId)}`;
+}
+
+/** A project's page: its runner and its id, as a project is only its runner's. */
+export function projectPath(runnerId: string, id: string): string {
+  return `/projects/${encodeURIComponent(runnerId)}/${encodeURIComponent(id)}`;
 }
 
 export function viewPath(view: RailView, id?: string): string {

@@ -66,6 +66,12 @@ pub(crate) struct SpellState {
     /// Counts edits, so a check waiting for typing to pause knows whether
     /// another edit came first.
     edits: u64,
+    /// The last correction, watched for being taken back, and the words
+    /// whose correction was.
+    autocorrect: spelling::Autocorrect,
+    /// The box's `values_set` when last looked at: a send or a draft put
+    /// back sets it whole, with no change event.
+    values_set: u64,
 }
 
 /// How long typing pauses before the whole box is checked again. Between
@@ -86,31 +92,55 @@ impl Composer {
         }
         let input = self.input.clone();
         let (text, selection) = Self::text_and_selection(&input, cx);
-        let old = std::mem::replace(&mut self.spell.last, text.clone());
+        let mut old = std::mem::replace(&mut self.spell.last, text.clone());
+        // After a value set whole, the text before it isn't what was typed
+        // onto: no word was just ended.
+        if self.new_value_check(cx) {
+            old = text.clone();
+        }
+        // Undo straight after a correction, or the original typed back over
+        // it: that word is left alone from now on, as NSTextView does.
+        if let Some(outcome) = self.spell.autocorrect.edited(&text) {
+            text_services::record_response(&outcome);
+        }
         let checks = self.checks(cx);
         let caret = selection.end;
         if selection.is_empty() && checks.any_substitution() && text.len() <= text_services::MAX_CHECKED {
             if let Some(typed) = spelling::typed_boundary(&old, &text, caret) {
                 let paragraph = text[..caret].rfind('\n').map_or(0, |i| i + 1);
-                let found = text_services::check(&text, paragraph..caret, &checks, true);
+                let found = self.spell.autocorrect.keep(&text, text_services::check(&text, paragraph..caret, &checks, true));
                 let chips: Vec<Range<usize>> = Self::chips_in(&input, cx).into_iter().map(|(r, _)| r).collect();
                 let subs: Vec<_> = spelling::substitutions(&found, caret, typed)
                     .into_iter()
-                    .filter(|(r, _)| !chips.iter().any(|c| c.start < r.end && r.start < c.end))
+                    .filter(|s| !chips.iter().any(|c| c.start < s.range.end && s.range.start < c.end))
                     .collect();
                 if !subs.is_empty() {
                     // Last first, so the ranges before stay right; each one
                     // Undo takes back, as AppKit's correction is.
-                    let shift: isize = subs.iter().map(|(r, with)| with.len() as isize - r.len() as isize).sum();
+                    let shift: isize = subs.iter().map(|s| s.with.len() as isize - s.range.len() as isize).sum();
+                    let caret = (caret as isize + shift).max(0) as usize;
                     input.update(cx, |s, cx| {
-                        for (range, with) in &subs {
-                            s.set_selected_range(range.clone(), cx);
-                            s.replace(with.clone(), window, cx);
+                        for sub in &subs {
+                            s.set_selected_range(sub.range.clone(), cx);
+                            s.replace(sub.with.clone(), window, cx);
                         }
-                        let caret = (caret as isize + shift).max(0) as usize;
                         s.set_selected_range(caret..caret, cx);
                     });
                     self.spell.last = Self::text_and_selection(&input, cx).0;
+                    // The quotes and dashes too, so the last correction's
+                    // place moves with them.
+                    if let Some(outcome) = self.spell.autocorrect.edited(&self.spell.last) {
+                        text_services::record_response(&outcome);
+                    }
+                    let landed = spelling::ranges_after(&subs);
+                    if let Some((sub, at)) = subs.iter().zip(landed).find(|(s, _)| s.kind == spelling::Kind::Correction) {
+                        if self.spell.last.get(at.clone()) == Some(sub.with.as_str()) {
+                            let original = text[sub.range.clone()].to_owned();
+                            if let Some(outcome) = self.spell.autocorrect.made(&self.spell.last, at, caret, &original, &sub.with) {
+                                text_services::record_response(&outcome);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -136,6 +166,20 @@ impl Composer {
         .detach();
     }
 
+    /// A value set whole since last time (a send, a draft put back) is a
+    /// new message: the last correction is done with.
+    fn new_value_check(&mut self, cx: &mut Context<Self>) -> bool {
+        let values_set = self.input.read(cx).values_set();
+        if values_set == self.spell.values_set {
+            return false;
+        }
+        self.spell.values_set = values_set;
+        if let Some(outcome) = self.spell.autocorrect.reset() {
+            text_services::record_response(&outcome);
+        }
+        true
+    }
+
     fn draw_spelling_marks(&mut self, cx: &mut Context<Self>) {
         let drawn: Vec<TextDecoration> = self.spell.marks.iter().map(|(r, grammar)| TextDecoration::new(r.clone(), mark_style(*grammar))).collect();
         self.input.update(cx, |s, cx| s.set_text_marks(drawn, cx));
@@ -147,6 +191,7 @@ impl Composer {
     /// typed and waits; otherwise (leaving the box, a right-click) it's
     /// checked too.
     pub(crate) fn refresh_spelling_marks(&mut self, now: bool, typing: bool, cx: &mut Context<Self>) {
+        self.new_value_check(cx);
         let checks = self.checks(cx);
         let input = self.input.clone();
         let (text, selection) = Self::text_and_selection(&input, cx);
@@ -154,7 +199,7 @@ impl Composer {
         let marks = if on {
             let mut asked = checks;
             asked.spelling = checks.spelling || now;
-            let found = text_services::check(&text, 0..text.len(), &asked, false);
+            let found = spelling::without_own_words(&text, text_services::check(&text, 0..text.len(), &asked, false));
             let chips: Vec<Range<usize>> = Self::chips_in(&input, cx).into_iter().map(|(r, _)| r).collect();
             // The word being typed waits until it's finished.
             let caret = (selection.is_empty() && typing && !now).then_some(selection.end);

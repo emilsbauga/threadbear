@@ -12,7 +12,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Runner } from '../runner.ts';
+import type { Runner, ThreadState, TurnHold } from '../runner.ts';
+import { CARRY_ON_TOKEN } from '../runner.ts';
+import type { ImageRef } from '../protocol.ts';
 import { normaliseRecord, type ThreadRecord } from '../store.ts';
 import type { RunnerPart } from './part.ts';
 import { providerName } from '../providers.ts';
@@ -20,15 +22,15 @@ import { paths } from '../config.ts';
 import { isDirectory } from '../fsutil.ts';
 import { readTree, writeTree, type PackEntry } from '../move-pack.ts';
 import { changedFiles, cloneRepo, cloneableUrl, originUrl, packGit, repoKey, repoTop, unpackGit, withoutCredentials, type GitMeta } from '../move-git.ts';
-import { movedSchedules, type MoveInfo, type MovePlan, type MovePreview, type MoveRow, type MovedSchedule, type ThreadMoving } from '../moves.ts';
+import { moveInfoFrom, movedSchedules, type MoveInfo, type MovePlan, type MovePreview, type MoveRow, type MovedSchedule, type ThreadMoving } from '../moves.ts';
 import { projectDirName, sessionTranscriptPath } from '../transcripts.ts';
 import { findWorktreePatch } from '../patches.ts';
-import { isPatchFile, patchHash } from '../patch-trust.ts';
+import { isPatchFile, mainCheckoutOf as mainCheckoutFromGit, patchHash } from '../patch-trust.ts';
 import { claudeCommands } from '../claude-trust.ts';
 import { untrustedGit } from '../safe-git.ts';
 import { isPermissionMode } from '../protocol.ts';
 import { isThreadIdShape } from '../thread-id.ts';
-import { fitReview } from '../reviews.ts';
+import { fitReview, keepPictureMarkers } from '../reviews.ts';
 import { cleanUpWorktree, makeWorktree, MAIN, parseCheckouts, realpath, type WorktreeRecord } from '../worktrees.ts';
 
 // What T placed for a move, so adopting after a restart and throwing it
@@ -43,12 +45,125 @@ function stageOf(home: string, moveId: string): string {
   return path.join(home, 'moves', moveId);
 }
 
-// A path on S under its home, as the same path under this machine's.
-function swapHome(p: string, fromHome: string): string {
+// A path on S under its home, as the same path under this machine's, or
+// undefined for one that isn't: S's paths are its word, and that runner
+// may be an extra Mac, so none outside its home names a place here, and
+// none that leaves this home once normalised (`..`) does either (Daybreak
+// 136, 16 Nov 2026: an absolute repoTop came through as it was).
+function swapHome(p: string | undefined, fromHome: string): string | undefined {
   const home = os.homedir();
-  if (p === fromHome) return home;
-  if (fromHome && p.startsWith(fromHome.endsWith('/') ? fromHome : `${fromHome}/`)) return path.join(home, p.slice(fromHome.length));
-  return p;
+  if (!p || !path.isAbsolute(p) || path.resolve(p) !== p || !path.isAbsolute(fromHome)) return undefined;
+  let out: string;
+  if (p === fromHome) out = home;
+  else if (p.startsWith(fromHome.endsWith('/') ? fromHome : `${fromHome}/`)) out = path.join(home, p.slice(fromHome.length));
+  else return undefined;
+  return lexicallyInside(out, home) ? out : undefined;
+}
+
+function lexicallyInside(p: string, root: string): boolean {
+  const rel = path.relative(root, p);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+// Whether `p` is `root` or a folder inside it as the disk has them, links
+// followed: false if either isn't there.
+function inside(p: string, root: string): boolean {
+  try {
+    return lexicallyInside(fs.realpathSync(p), fs.realpathSync(root));
+  } catch {
+    return false;
+  }
+}
+
+// `subdir` (moves.ts cleanSubdir, plain names) under `top`.
+function under(top: string, subdir: string): string {
+  return subdir ? path.join(top, ...subdir.split('/')) : top;
+}
+
+// Whether a moving thread's repo may be cloned to `to` here: a new folder
+// under this home, in a plain place (plainPlace), beside a repo one of this
+// runner's own threads works in (`roots`, their main checkouts' folders as
+// the disk has them). Where to clone is the old runner's word, so it only
+// ever picks a name among this machine's own repos, never somewhere a tool
+// would load from, such as ~/.claude/skills or a node_modules (Daybreak
+// 136, 16 Nov 2026; security review, 17 Nov 2026).
+function cloneSpot(to: string, roots: ReadonlySet<string>): boolean {
+  const home = os.homedir();
+  const parent = path.dirname(to);
+  if (!lexicallyInside(to, home) || parent === home || !plainPlace(to)) return false;
+  try {
+    fs.lstatSync(to);
+    return false;
+  } catch {
+    // Not there: the clone makes it.
+  }
+  if (!isDirectory(parent) || !inside(parent, home) || !plainPlace(parent)) return false;
+  return roots.has(realpath(parent));
+}
+
+// Folder names that tools look for in every folder above where they run
+// (Node's node_modules, a bin on PATH, Ruby's and Go's vendor and go), so
+// a clone by one of those names beside a repo would be loaded from by that
+// repo's tools (security review, 16 Nov 2026). The name is the repo's own,
+// from its origin, so a real one rarely is.
+const LOADED_NAMES = new Set(['node_modules', 'bin', 'sbin', 'lib', 'lib64', 'libexec', 'include', 'share', 'vendor', 'site-packages', 'dist-packages', 'go', 'pkg', 'library', 'applications']);
+
+// Where a repo that isn't here is cloned to: beside where the old runner
+// has it, under the repo's own name from its origin (never the old
+// runner's folder name), so this runner names the folder.
+function cloneTarget(repoTop: string | undefined, fromHome: string, origin: string): string | undefined {
+  const mapped = swapHome(repoTop, fromHome);
+  const key = repoKey(origin);
+  const name = key.slice(key.lastIndexOf('/') + 1);
+  if (!mapped || !/^[a-z0-9][a-z0-9._-]{0,99}$/.test(name)) return undefined;
+  return path.join(path.dirname(mapped), name);
+}
+
+// A folder where repos and work live, not where tools keep what they load:
+// not the home itself, and no folder on the way to it (from the home, or
+// from / outside it) hidden (~/.claude, ~/.config, ~/.ssh) or one tools
+// load from (LOADED_NAMES: ~/Library, a node_modules or vendor anywhere
+// above it). As written and, when it's there, as the disk has it (a plain
+// name that's a link into one of those). Even beside a repo one of this
+// runner's threads works in there (a skill's own repo in ~/.claude/skills,
+// a checkout inside a node_modules), a clone would be loaded as one of
+// them, so S's word only ever names a plain place (Daybreak 136, 16 Nov
+// 2026; security review, 17 Nov 2026).
+function plainPlace(p: string): boolean {
+  const plain = (dir: string, home: string) => {
+    if (dir === home) return false;
+    const rel = lexicallyInside(dir, home) ? path.relative(home, dir) : dir;
+    return rel.split(path.sep).every((part) => part === '' || (!part.startsWith('.') && !LOADED_NAMES.has(part.toLowerCase())));
+  };
+  const home = os.homedir();
+  return plain(path.resolve(p), home) && (!fs.existsSync(p) || plain(realpath(p), realpath(home)));
+}
+
+// Whether a worktree patch found from `repo` (in `folder`) belongs to that
+// repo: makeWorktree makes the worktree from the main checkout of the repo
+// the patch is in, which a patch found upward from a nested checkout isn't.
+async function patchMakesIn(folder: string, repo: string): Promise<boolean> {
+  const top = await repoTop(folder);
+  const main = top ? ((await mainCheckoutOf(top)) ?? top) : undefined;
+  return main !== undefined && realpath(main) === realpath(repo);
+}
+
+// The thread's folder inside its repo (`top`), on S's word: no folder on
+// the way from the repo down to it hidden (.git, .github) or one installed
+// packages live in, as written and links followed (security review, 17 Nov
+// 2026). A plain `lib` or `bin` in a repo is where work happens, so only
+// those packages' own folders count here.
+const PACKAGE_DIRS = new Set(['node_modules', 'vendor', 'site-packages', 'dist-packages']);
+function plainBelow(cwd: string, top: string): boolean {
+  const plain = (rel: string) => rel.split(path.sep).every((part) => part === '' || (!part.startsWith('.') && !PACKAGE_DIRS.has(part.toLowerCase())));
+  return plain(path.relative(top, cwd)) && plain(path.relative(realpath(top), realpath(cwd)));
+}
+
+// Two plans for the same move say the same: the row's plan (this runner's
+// answer, as the backend gives it back) and the one placing works out again.
+function samePlan(a: MovePlan, b: MovePlan): boolean {
+  const k = (p: MovePlan) => JSON.stringify([p.cwd, p.accountId, p.worktree?.repo ?? null, p.worktree?.subdir ?? null, p.clone?.url ?? null, p.clone?.to ?? null, p.within ?? null]);
+  return k(a) === k(b);
 }
 
 // What the moved record (the old runner's word, and that runner may be an
@@ -108,6 +223,63 @@ function fitMovedReviews(rec: Record<string, any>): boolean {
   return JSON.stringify(rec.reviews) !== before;
 }
 
+// A queued answer to a review names its reply's pictures as the other
+// runner's files, which here could be any file: they don't come with the
+// move, as fitReview leaves them out of the reviews (Codex's review, 17
+// Nov 2026). Done here, before anything on this runner reads the record,
+// so no later step that fails can leave them in a queue that's sent.
+function dropMovedReplyImages(rec: Record<string, any>): boolean {
+  if (!Array.isArray(rec.queue)) return false;
+  let changed = false;
+  rec.queue = rec.queue.map((q: any) => {
+    if (!q || typeof q !== 'object' || q.reviewId === undefined) return q;
+    const hasResponseImages = q.reviewResponse && typeof q.reviewResponse === 'object' && 'images' in q.reviewResponse;
+    if (Array.isArray(q.images) && q.images.length === 0 && !hasResponseImages) return q;
+    changed = true;
+    // The words say where they were (keepPictureMarkers).
+    const gone = (list: unknown) => (Array.isArray(list) ? list : []).map(() => false);
+    const next = { ...q, images: [], ...(typeof q.text === 'string' ? { text: keepPictureMarkers(q.text, gone(q.images)) } : {}) };
+    if (hasResponseImages) {
+      const { images, ...rest } = q.reviewResponse;
+      next.reviewResponse = typeof rest.reply === 'string' ? { ...rest, reply: keepPictureMarkers(rest.reply, gone(images)) } : rest;
+    }
+    return next;
+  });
+  return changed;
+}
+
+// A moved thread's queued messages' pictures name the other runner's media
+// folder, which can be at another path (another user, Linux): each that came
+// with the move (a real file, not a link, in `now`, the record's media folder
+// as it is) is this thread's copy here, in `final`, by its name. Anything else
+// is left out when it's sent (ownInput), as it was never this thread's
+// (Codex's review, 17 Nov). True if it changed any.
+function rebaseQueuedPictures(rec: Record<string, any>, threadId: string, now: string, final: string): boolean {
+  if (!Array.isArray(rec.queue)) return false;
+  let changed = false;
+  for (const q of rec.queue) {
+    if (!q || typeof q !== 'object' || !Array.isArray(q.images)) continue;
+    q.images = q.images.map((img: ImageRef) => {
+      if (!img || typeof img !== 'object' || typeof img.path !== 'string') return img;
+      const from = img.path.replace(/\\/g, '/').split('/');
+      // .../<thread id>/media/<name>, as any runner keeps them.
+      if (from.length < 3 || from.at(-2) !== 'media' || from.at(-3) !== threadId) return img;
+      const name = from.at(-1)!;
+      const here = path.join(final, name);
+      if (!/^[^/\\]+$/.test(name) || name === '.' || name === '..' || here === img.path) return img;
+      try {
+        const st = fs.lstatSync(path.join(now, name));
+        if (!st.isFile() || st.isSymbolicLink()) return img;
+      } catch {
+        return img;
+      }
+      changed = true;
+      return { ...img, path: here };
+    });
+  }
+  return changed;
+}
+
 // On the main Mac, a thread from another runner arrives with at most Ask
 // (Mike, 10 Nov 2026): its mode is that runner's word, an extra Mac may be
 // compromised, and the main Mac's sidebar never showed what mode the
@@ -154,6 +326,7 @@ function sanitizeMoved(rec: Record<string, any>, atMostAsk: boolean, from: strin
   let changed = normaliseRecord(rec);
   changed = dropMovedPowers(rec) || changed;
   changed = fitMovedReviews(rec) || changed;
+  changed = dropMovedReplyImages(rec) || changed;
   if (atMostAsk) {
     const capped = capMovedMode(rec);
     if (capped.was && !notes.some((n) => n.includes('so it asks before tools run here'))) notes.push(cappedNote(capped.was, from));
@@ -499,8 +672,11 @@ export const movesPart = {
     const top = await repoTop(rec.cwd);
     // Which repo, never a password or token in its address (move-git.ts).
     const raw = top ? await originUrl(top) : undefined;
-    const origin = raw ? withoutCredentials(raw) : undefined;
-    const rel = top ? path.relative(top, rec.cwd) : '';
+    // An address that can't be told from a login is left out ('').
+    const origin = (raw ? withoutCredentials(raw) : '') || undefined;
+    // As the disk has both: git gives the top with links followed, and a
+    // folder reached through a link would otherwise come out as `../..`.
+    const rel = top ? path.relative(realpath(top), realpath(rec.cwd)) : '';
     return {
       title: rec.title,
       cwd: rec.cwd,
@@ -598,9 +774,15 @@ export const movesPart = {
   },
 
   // T: where the thread will run here, and on which login, or why it can't.
+  // Everything in `row.info` is the old runner's word (moves.ts
+  // moveInfoFrom), so this runner picks the place: a repo of its own, a
+  // clone beside one (cloneSpot), or the same folder under its home, with
+  // the thread's folder inside it. placeMove plans again and checks the
+  // folder as made before the thread takes it (Daybreak 136, 16 Nov 2026).
   async planMove(this: Runner, row: MoveRow): Promise<MovePlan | { problem: string }> {
-    const info = row.info!;
     const here = this.moveRunnerName(row.to);
+    const info = moveInfoFrom(row.info);
+    if (!info) return { problem: `The thread's runner didn't describe it properly, so ${here} can't take it.` };
     const accounts = this.accounts.list();
     let account = row.accountId ? accounts.find((a) => a.id === row.accountId) : undefined;
     if (row.accountId && !account) return { problem: `${here} has no login ${row.accountId}.` };
@@ -611,57 +793,96 @@ export const movesPart = {
     if (!account) return { problem: `${here} has no ${providerName(info.provider)} login.` };
     const leftBehind: string[] = [];
     const subdir = info.subdir ?? '';
-    const into = (top: string) => (subdir ? path.join(top, ...subdir.split('/')) : top);
+    const home = os.homedir();
+    // The folders this runner's own repos are in: where a clone may go.
+    const roots = new Set<string>();
+    // Those repos' own main checkouts, links followed: found from S's path,
+    // a repo outside this home is the thread's only if it's one of these.
+    const known = new Set<string>();
 
     // A repo: the same one here, by its origin.
     const findRepo = async (): Promise<string | undefined> => {
       if (!info.origin) return undefined;
       const want = repoKey(info.origin);
+      const mine = new Set<string>();
+      for (const t of this.threads.values()) mine.add(t.rec.worktree?.mainCheckout ?? t.rec.cwd);
       const tops = new Set<string>();
-      if (info.repoTop) tops.add(swapHome(info.repoTop, info.home));
-      for (const t of this.threads.values()) tops.add(t.rec.worktree?.mainCheckout ?? t.rec.cwd);
+      // S's own path for it, here, only where repos live (plainPlace):
+      // otherwise any repo under a hidden folder, whose origin S can name,
+      // would become the thread's.
+      const theirs = swapHome(info.repoTop, info.home);
+      if (theirs && plainPlace(theirs) && (!fs.existsSync(theirs) || inside(theirs, home))) tops.add(theirs);
+      for (const c of mine) tops.add(c);
+      // This runner's own repos first, all of them, so a match found from
+      // S's path is weighed against the whole set.
+      for (const c of mine) {
+        if (!isDirectory(c)) continue;
+        const top = await repoTop(c);
+        if (!top) continue;
+        const main = realpath(mainCheckoutFromGit(top) ?? top);
+        roots.add(realpath(path.dirname(main)));
+        known.add(main);
+      }
       for (const c of tops) {
         if (!isDirectory(c)) continue;
         const top = await repoTop(c);
-        const origin = top ? await originUrl(top) : undefined;
-        if (top && origin && repoKey(origin) === want) return (await mainCheckoutOf(top)) ?? top;
+        if (!top) continue;
+        const origin = await originUrl(top);
+        if (origin && repoKey(origin) === want) return (await mainCheckoutOf(top)) ?? top;
       }
       return undefined;
     };
 
     if (row.cwd) {
+      // Mike's pick on the main Mac (startMove takes it only from its key).
       if (!isDirectory(row.cwd)) return { problem: `There's no folder ${row.cwd} on ${here}.` };
       const top = await repoTop(row.cwd);
       const origin = top ? await originUrl(top) : undefined;
       if (info.worktree && top && origin && info.origin && repoKey(origin) === repoKey(info.origin)) {
         const repo = (await mainCheckoutOf(top)) ?? top;
-        return { cwd: repo, accountId: account.id, worktree: { repo, subdir }, leftBehind };
+        return { cwd: repo, accountId: account.id, worktree: { repo, subdir }, within: repo, leftBehind };
       }
       if (info.worktree) leftBehind.push(`Its worktree's git work stays behind, as ${row.cwd} isn't a copy of ${info.origin ?? 'its repo'}.`);
-      return { cwd: row.cwd, accountId: account.id, leftBehind };
+      return { cwd: row.cwd, accountId: account.id, within: row.cwd, leftBehind };
     }
     if (info.origin) {
       let repo = await findRepo();
       let cloneTo: { url: string; to: string } | undefined;
-      if (!repo && info.repoTop) {
-        const to = swapHome(info.repoTop, info.home);
+      if (!repo) {
         // Both are the old runner's word: a clone only from an address git
-        // can't read as an option, into a new folder named in full.
-        const plain = path.isAbsolute(to) && path.resolve(to) === to;
-        if (plain && cloneableUrl(info.origin) && !fs.existsSync(to) && isDirectory(path.dirname(to))) {
+        // can't read as an option, into a new folder this runner would
+        // pick (cloneSpot).
+        const to = cloneTarget(info.repoTop, info.home, info.origin);
+        if (to && cloneableUrl(info.origin) && cloneSpot(to, roots)) {
           cloneTo = { url: info.origin, to };
           repo = to;
         }
       }
-      if (!repo) return { problem: `${here} has no copy of ${info.origin}.` };
-      const plan: MovePlan = info.worktree ? { cwd: repo, accountId: account.id, worktree: { repo, subdir }, leftBehind } : { cwd: into(repo), accountId: account.id, leftBehind };
-      if (cloneTo) plan.clone = cloneTo;
-      if (!cloneTo && !info.worktree && !isDirectory(plan.cwd)) return { problem: `There's no folder ${plan.cwd} on ${here}.` };
-      return plan;
+      if (!repo) return { problem: `${here} has no copy of ${info.origin}. Pick a folder to move it into.` };
+      // One of this runner's own threads' repos can be anywhere, the home
+      // itself too (a dotfiles repo, whose Library/LaunchAgents would be a
+      // subdir): on S's word the thread only goes into one in a plain place.
+      if (!cloneTo && (!plainPlace(repo) || !(inside(repo, home) || known.has(realpath(repo))))) return { problem: `${here}'s copy of ${info.origin} is ${repo}, the home folder or a hidden or tools' folder, so the thread only goes there if you pick it.` };
+      // A worktree is made with a worktree patch, which for a fresh clone
+      // could be a trusted one in a folder above it, running its setup in
+      // the old runner's checkout: clone it there first, by hand.
+      if (info.worktree && cloneTo) return { problem: `${here} has no copy of ${info.origin} to make the thread's worktree in. Clone it there yourself, then move it again.` };
+      if (info.worktree) return { cwd: repo, accountId: account.id, worktree: { repo, subdir }, within: repo, leftBehind, ...(cloneTo ? { clone: cloneTo } : {}) };
+      const cwd = under(repo, subdir);
+      if (cloneTo) return { cwd, accountId: account.id, within: repo, leftBehind, clone: cloneTo };
+      if (!isDirectory(cwd)) return { problem: `There's no folder ${cwd} on ${here}.` };
+      if (!inside(cwd, repo)) return { problem: `${cwd} on ${here} leads out of ${repo}, so the thread can't go there. Pick a folder to move it into.` };
+      if (!plainBelow(cwd, repo)) return { cwd: repo, accountId: account.id, within: repo, leftBehind: [...leftBehind, `Its folder ${cwd} is a hidden or tools' folder in the repo, so it runs at the top, in ${repo}.`] };
+      return { cwd, accountId: account.id, within: repo, leftBehind };
     }
     const cwd = swapHome(info.cwd, info.home);
+    if (!cwd) return { problem: `${here} has no place for ${info.cwd}, as it isn't in the home folder there. Pick a folder to move it into.` };
     if (!isDirectory(cwd)) return { problem: `There's no folder ${cwd} on ${here}. Pick one to move it into.` };
-    return { cwd, accountId: account.id, leftBehind };
+    if (!inside(cwd, home)) return { problem: `${cwd} on ${here} leads out of the home folder, so the thread can't go there. Pick a folder to move it into.` };
+    // Not the home itself, a hidden folder or ~/Library (keys, settings,
+    // what tools load), on the old runner's word: Mike picks those.
+    if (!plainPlace(cwd)) return { problem: `${cwd} on ${here} is the home folder or a hidden, Library or tools' folder in it, so the thread only goes there if you pick it.` };
+    return { cwd, accountId: account.id, within: home, leftBehind };
   },
 
   // T: everything in place but the thread itself, which waits in staging
@@ -670,7 +891,12 @@ export const movesPart = {
     // The id names the thread's folder here, and the apps put it in shell
     // lines and links: only a thread id's shape (thread-id.ts).
     if (!isThreadIdShape(row.threadId)) throw new Error("The moved thread's id isn't a thread id.");
-    const plan = row.plan!;
+    // Planned again here rather than read from the row (which the backend
+    // hands back), with every check planMove makes just before anything is
+    // cloned or made, and it must be the plan this runner said it had.
+    const plan = await this.planMove(row);
+    if ('problem' in plan) throw new Error(plan.problem);
+    if (!row.plan || !samePlan(plan, row.plan)) throw new Error(`Where the thread would go on ${this.moveRunnerName(row.to)} changed since the move was planned, so it stays where it is. Move it again.`);
     const stage = stageOf(this.cfg.home, row.moveId);
     fs.rmSync(stage, { recursive: true, force: true });
     fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
@@ -681,7 +907,8 @@ export const movesPart = {
       const recFile = path.join(stage, 'thread', 'thread.json');
       const rec = JSON.parse(fs.readFileSync(recFile, 'utf8'));
       if (rec.id !== row.threadId) throw new Error("The moved thread's record is for another thread.");
-      if (rec.confined) throw new Error("A thread in a sandbox can't move yet.");
+      // From an older runner, a thread it ran in the sandbox experiment.
+      if (rec.confined) throw new Error("A thread that ran in a sandbox can't move here: Threadbear no longer has one to run it in.");
       const manifest = entries.find((e) => e.path === 'move.json');
       if (manifest) {
         const m = JSON.parse(manifest.data.toString('utf8')) as { leftBehind?: string[]; fromName?: unknown };
@@ -701,17 +928,23 @@ export const movesPart = {
       if (plan.clone) {
         const cloned = await cloneRepo(plan.clone.url, plan.clone.to);
         if (!cloned.ok) throw new Error(cloned.reason);
+        // What git made is the folder planned, not one a link leads to.
+        if (realpath(plan.clone.to) !== path.join(realpath(path.dirname(plan.clone.to)), path.basename(plan.clone.to))) throw new Error(`The clone of ${plan.clone.url} didn't end up in ${plan.clone.to}.`);
       }
 
       if (plan.worktree) {
         const patch = await findWorktreePatch(plan.worktree.repo, this.panelsRoot, this.patchCache, undefined, this.patchTrust);
         if (!patch) throw new Error(`${plan.worktree.repo} on ${this.moveRunnerName(row.to)} has no worktree patch, so the thread's worktree has nowhere to go.`);
+        // makeWorktree makes it in the repo the patch is in: the one planned
+        // and previewed, never a repo around it whose patch was found by
+        // looking upward (security review, 17 Nov 2026).
+        if (!(await patchMakesIn(patch.folder, plan.worktree.repo))) throw new Error(`${plan.worktree.repo} on ${this.moveRunnerName(row.to)} has no worktree patch of its own, so the thread's worktree has nowhere to go.`);
         const made = await makeWorktree({ cwd: plan.worktree.repo, threadId: row.threadId, patch });
         if (!made.ok) throw new Error(`Couldn't make the thread's worktree: ${made.reason}`);
         placed.worktree = { ...made.worktree, movedIn: true };
         placed.patchFile = made.patchFile;
         placed.patchName = patch.patch;
-        placed.cwd = plan.worktree.subdir ? path.join(made.worktree.path, ...plan.worktree.subdir.split('/')) : made.worktree.path;
+        placed.cwd = under(made.worktree.path, plan.worktree.subdir);
         save();
         const metaEntry = entries.find((e) => e.path === 'git/meta.json');
         if (metaEntry) {
@@ -725,7 +958,7 @@ export const movesPart = {
           // Patches and Claude settings it changed are held to the stored
           // hashes here, even in an always-trusted checkout.
           placed.gitTips = [meta.head, ...(meta.wip ? [meta.wip] : [])];
-          if (await trustTouchedByMove(placed.worktree, os.homedir(), placed.gitTips, plan.worktree.subdir ? path.join(made.worktree.path, ...plan.worktree.subdir.split('/')) : made.worktree.path)) {
+          if (await trustTouchedByMove(placed.worktree, os.homedir(), placed.gitTips, under(made.worktree.path, plan.worktree.subdir))) {
             this.patchTrust.unvouch?.(placed.worktree.path);
             placed.leftBehind.push(UNVOUCHED_NOTE);
             save();
@@ -733,6 +966,23 @@ export const movesPart = {
         }
       }
 
+      // The folder the thread will run in, as made: inside its repo (the
+      // new worktree, the clone), Mike's pick or this home, links followed.
+      // One its git work didn't make (an ignored folder, say) is its top.
+      const within = placed.worktree?.path ?? plan.within;
+      if (!within) throw new Error("The move's plan didn't say what folder the thread stays inside.");
+      if (!fs.existsSync(placed.cwd) && placed.cwd !== within && isDirectory(within)) {
+        placed.leftBehind.push(`Its folder ${placed.cwd} isn't in this copy, so it runs at the top, in ${within}.`);
+        placed.cwd = within;
+      }
+      // S's subdir in a clone or a new worktree, as made: not a hidden or
+      // tools' folder in it (plainBelow), unless it's Mike's own pick.
+      if (placed.cwd !== row.cwd && isDirectory(placed.cwd) && inside(placed.cwd, within) && !plainBelow(placed.cwd, within)) {
+        placed.leftBehind.push(`Its folder ${placed.cwd} is a hidden or tools' folder in the repo, so it runs at the top, in ${within}.`);
+        placed.cwd = within;
+      }
+      if (!isDirectory(placed.cwd) || !inside(placed.cwd, within)) throw new Error(`${placed.cwd} on ${this.moveRunnerName(row.to)} isn't a folder inside ${within}, so the thread can't go there.`);
+      save();
       const account = this.accounts.list().find((a) => a.id === plan.accountId);
       if (!account) throw new Error(`No login ${plan.accountId} here.`);
       const sid: string | undefined = rec.nativeSessionId;
@@ -795,7 +1045,10 @@ export const movesPart = {
     const clean = (recFile: string) => {
       try {
         const rec = JSON.parse(fs.readFileSync(recFile, 'utf8'));
-        if (sanitizeMoved(rec, atMostAsk, placed.fromName, placed.leftBehind)) fs.writeFileSync(recFile, JSON.stringify(rec, null, 2));
+        let changed = sanitizeMoved(rec, atMostAsk, placed.fromName, placed.leftBehind);
+        // Before adopting starts its queue (Codex's review, 17 Nov).
+        changed = rebaseQueuedPictures(rec, row.threadId, path.join(path.dirname(recFile), 'media'), this.store.mediaDir(row.threadId)) || changed;
+        if (changed) fs.writeFileSync(recFile, JSON.stringify(rec, null, 2));
       } catch {
         // No record to read: adopt says the thread didn't load.
       }
@@ -821,6 +1074,9 @@ export const movesPart = {
     const st = this.threads.get(row.threadId);
     if (!st) throw new Error("The moved thread didn't load.");
     if (sanitizeMoved(st.rec as unknown as Record<string, any>, atMostAsk, placed.fromName, placed.leftBehind)) this.store.save(st.rec);
+    // Again in memory, for one loaded before this (a crash left it live),
+    // for what's still queued.
+    if (rebaseQueuedPictures(st.rec as unknown as Record<string, any>, row.threadId, this.store.mediaDir(row.threadId), this.store.mediaDir(row.threadId))) this.store.save(st.rec);
     const lines = [`Moved from ${placed.fromName} to ${this.moveRunnerName(row.to)}, in ${placed.cwd}.`, ...placed.leftBehind];
     this.emit(st, { type: 'system.note', text: lines.join(' ') });
     this.markDirty(st);
@@ -867,7 +1123,7 @@ export const movesPart = {
     const now = Date.now();
     const row: MoveRow = { moveId: 'preview', threadId: '', from: '', to: p.self, state: 'asking', info: p.info, ...(p.cwd ? { cwd: p.cwd } : {}), ...(p.accountId ? { accountId: p.accountId } : {}), createdAt: now, updatedAt: now };
     const plan = await this.planMove(row);
-    if ('problem' in plan) return { accounts, leftBehind: [], problems: [plan.problem] };
+    if ('problem' in plan) return { accounts, leftBehind: [], problems: [plan.problem], checksPreview: true };
     const problems: string[] = [];
     // placeMove's own check, seen before Mike presses Move rather than
     // after the thread has frozen and packed. A repo still to be cloned
@@ -875,6 +1131,7 @@ export const movesPart = {
     if (plan.worktree && !plan.clone) {
       const patch = await findWorktreePatch(plan.worktree.repo, this.panelsRoot, this.patchCache, undefined, this.patchTrust).catch(() => undefined);
       if (!patch) problems.push(`${plan.worktree.repo} on ${this.moveRunnerName(p.self)} has no worktree patch, so the thread's worktree has nowhere to go.`);
+      else if (!(await patchMakesIn(patch.folder, plan.worktree.repo))) problems.push(`${plan.worktree.repo} on ${this.moveRunnerName(p.self)} has no worktree patch of its own (the one found is another repo's), so the thread's worktree has nowhere to go.`);
     }
     return {
       cwd: plan.cwd,
@@ -882,13 +1139,156 @@ export const movesPart = {
       accounts,
       leftBehind: plan.leftBehind,
       problems,
+      checksPreview: true,
       ...(plan.worktree ? { worktree: true } : {}),
-      ...(plan.clone ? { clone: plan.clone.to } : {}),
+      ...(plan.clone ? { clone: plan.clone.to, cloneFrom: plan.clone.url } : {}),
     };
   },
 
   moveRunnerName(this: Runner, runnerId: string): string {
     return this.runnerNames?.(runnerId) ?? runnerId;
+  },
+
+  // Box mode: no turn starts in the thread while `reason` holds it
+  // (Runtime.holds); messages wait in its queue.
+  holdTurns(this: Runner, threadId: string, reason: TurnHold): void {
+    const st = this.threads.get(threadId);
+    if (!st) return;
+    (st.rt.holds ??= new Set()).add(reason);
+  },
+
+  // The hold lifted; what waited in the queue goes on.
+  releaseTurns(this: Runner, threadId: string, reason: TurnHold): void {
+    const st = this.threads.get(threadId);
+    if (!st?.rt.holds?.delete(reason)) return;
+    if (!st.rt.holds.size) st.rt.holds = undefined;
+    this.kickQueue(st);
+  },
+
+  // Box mode's save (src/box-save.ts). Every save the backend asks for is a
+  // stopping one (to sleep, at its day's hours, or to be archived), and
+  // once it's acknowledged the backend may delete the box: so nothing may
+  // change the thread's folder after the copy is taken. Turns are held, a
+  // running turn is interrupted (`turnGraceMs` to end), and the CLI closed;
+  // then `stopOthers` (box-procs.ts) kills every other process the box
+  // started, whatever it is (a setup's background children, a teardown,
+  // anything the agent left running), the runner's own work is waited for,
+  // and it looks once more that nothing new started, before the record is
+  // written out and returned. The hold stays whatever happens, a failure
+  // here included: only the backend lets it go (box-save.ts SaveHold).
+  async quiesceForSave(this: Runner, threadId: string, opts: { stopOthers?: () => Promise<unknown>; turnGraceMs?: number; waitMs?: number } = {}): Promise<ThreadRecord> {
+    const st = this.threads.get(threadId);
+    if (!st) throw new Error("The box's thread isn't here, so there's nothing to save.");
+    const { rt } = st;
+    this.holdTurns(threadId, 'save');
+    if (rt.turn || rt.approvals.size) this.interrupt(threadId);
+    const waitFor = async (busy: () => boolean, ms: number) => {
+      for (const end = Date.now() + ms; busy(); ) {
+        if (Date.now() > end) return false;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return true;
+    };
+    // The turn ends by itself if it can; if not, closing its CLI ends it.
+    await waitFor(() => Boolean(rt.turn), opts.turnGraceMs ?? 30_000);
+    this.flushDeltas(st);
+    if (rt.session && !rt.closing) {
+      this.rememberStoppedWork(st);
+      this.releaseSession(st);
+    }
+    await opts.stopOthers?.();
+    if (rt.closing) await rt.closing;
+    // And the patches' functions already being read (a live poll): no new
+    // one starts while the save holds it (readPatches).
+    const busy = () => Boolean(rt.turn || rt.restoreSetup || rt.hooksRunning || rt.runningActions?.size || rt.editing || rt.cleaning || rt.preparing || this.patchReads.size);
+    if (!(await waitFor(busy, opts.waitMs ?? 60_000))) throw new Error("The thread's work didn't stop in time, so it wasn't saved. It stays stopped until the backend wakes it.");
+    // Nothing new since: whatever the waits above let finish may have started something.
+    await opts.stopOthers?.();
+    this.flushDeltas(st);
+    this.store.save(st.rec);
+    return structuredClone(st.rec);
+  },
+
+  // Box mode, after a box restored its thread from a save (box-save.ts): the
+  // worktree's setup again, as the save carries no installed packages. The
+  // thread's turns are held ('setup', set as it loaded: RunnerDeps
+  // boxHolds) until it's done; a setup that fails says so, and the turns go
+  // ahead all the same. It's a writer a stopping save waits for
+  // (rt.restoreSetup). The checkout is the box's own clone, trusted as the
+  // runner's own checkout is.
+  async setUpRestored(this: Runner, threadId: string): Promise<void> {
+    const st = this.threads.get(threadId);
+    const run = async () => {
+      const w = st?.rec.worktree;
+      if (!st || !w || w.removedAt || !w.patchFile) return;
+      const patch = await findWorktreePatch(w.mainCheckout, this.panelsRoot, this.patchCache, undefined, this.patchTrust).catch(() => undefined);
+      if (!patch) {
+        this.emit(st, { type: 'system.note', text: "Couldn't find the worktree's patch after restoring this thread, so its setup didn't run again. Run it yourself if the thread needs it." });
+        return;
+      }
+      const ok = await this.setUpWorktree(st, { worktree: w, patchFile: path.join(w.path, w.patchFile) }, patch);
+      if (ok === false) this.emit(st, { type: 'system.note', text: "The worktree's setup failed after this thread was restored on a new machine. The thread carries on; run the setup yourself if it needs it." });
+    };
+    const going = run().catch((e: unknown) => {
+      if (st) this.emit(st, { type: 'system.note', text: `The worktree's setup couldn't run after this thread was restored: ${String((e as Error)?.message ?? e)}. The thread carries on.` });
+    });
+    if (st) st.rt.restoreSetup = going;
+    try {
+      await going;
+    } finally {
+      if (st && st.rt.restoreSetup === going) st.rt.restoreSetup = undefined;
+      this.releaseTurns(threadId, 'setup');
+    }
+  },
+
+  // Box mode: a turn refused with the box's cloud token (errorKind auth). A
+  // box has one login, so there's nowhere to move: the thread says so once,
+  // waits with its turns held (messages queue behind), and the backend is
+  // told (onBoxTokenRefused) so the token card shows on Mike's Mac.
+  holdForToken(this: Runner, st: ThreadState, turnId: string): void {
+    const { rec } = st;
+    const already = Boolean(rec.waitingForToken);
+    // Which token was refused: the one the box ran on (box.json), kept with
+    // the wait so a restart says it again with that version (box-token.ts).
+    const was = rec.waitingForToken;
+    const refusedSetAt = was?.refusedSetAt ?? this.boxTokenSetAt?.();
+    rec.waitingForToken = { since: was?.since ?? this.isoNow(), turnId, ...(refusedSetAt !== undefined ? { refusedSetAt } : {}), reported: was?.reported ?? false };
+    this.holdTurns(rec.id, 'token');
+    if (!already) this.emit(st, { type: 'system.note', text: "Claude refused this box's token. The thread carries on once a new one is set." });
+    this.markDirty(st);
+    this.onBoxTokenRefused?.(rec.id);
+  },
+
+  // The backend has heard the box's refusal (box-token.ts): kept, so a restart doesn't say it again.
+  tokenRefusalReported(this: Runner, threadId: string): void {
+    const st = this.threads.get(threadId);
+    if (!st?.rec.waitingForToken || st.rec.waitingForToken.reported) return;
+    st.rec.waitingForToken.reported = true;
+    this.markDirty(st);
+  },
+
+  // A newer cloud token is on disk (box-token.ts): the CLI goes so the next
+  // one starts on it, and the thread carries on by itself, unless a message
+  // of Mike's waited meanwhile, which goes instead.
+  tokenReplaced(this: Runner, threadId: string): void {
+    const st = this.threads.get(threadId);
+    if (!st?.rec.waitingForToken) return;
+    delete st.rec.waitingForToken;
+    this.markDirty(st);
+    if (st.rt.session && !st.rt.closing) this.releaseSession(st);
+    const queued = st.rec.queue.length > 0;
+    this.releaseTurns(threadId, 'token');
+    if (!queued && this.bucket(st.rec) === 'inbox') this.carryOn(st, CARRY_ON_TOKEN);
+  },
+
+  // Box mode's degraded state (box-mode.ts): the box can't use its folder,
+  // so its thread runs nothing and says why, and the box stays up holding
+  // its key until a person sees to it.
+  holdBroken(this: Runner, threadId: string, why: string): void {
+    const st = this.threads.get(threadId);
+    if (!st) return;
+    this.holdTurns(threadId, 'broken');
+    this.emit(st, { type: 'system.note', text: `This thread's machine can't run it: ${why} It stays up, with nothing run, until someone looks at it.` });
   },
 };
 

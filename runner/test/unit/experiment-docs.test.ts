@@ -16,7 +16,7 @@ test('docs/experiments.md matches the experiment files', () => {
     return;
   }
   const written = fs.existsSync(FILE) ? fs.readFileSync(FILE, 'utf8') : '';
-  // In any order: a union merge of two threads' new lines may leave them unsorted.
+  // In any order: merging two threads' new lines may leave them unsorted.
   assert.deepEqual(sortedLines(written), sortedLines(made), 'docs/experiments.md is out of date: run `npm run experiment-docs` in runner/ and commit it');
 });
 

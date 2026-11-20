@@ -5,7 +5,8 @@
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import { convexFolderFor, type ConvexKey, type ConvexDeployments, type ConvexLogin } from '../convex-keys.ts';
-import type { EventBody } from '../protocol.ts';
+import type { EventBody, Panel } from '../protocol.ts';
+import { borrowedPanelId } from './buttons.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import { Projects } from '../projects.ts';
 import { threadEnv } from '../restart.ts';
@@ -17,8 +18,11 @@ import { CLAUDE_PATCH_ID, claudeCommands, claudeOptions, settingsCommands, setti
 import { canonicalPath, runsAsCodeByName, type CodeWrite } from '../code-writes.ts';
 import { patchCommands, sayValue } from '../patch-commands.ts';
 import type { PatchInfo } from '../protocol.ts';
-import { actionRunProblem, automaticTrust, isInside, EMPTY_PATCH_SET, PATCH_EXTENSIONS, patchDirs, projectRoots, hookApplies, loadPatchSet, applyLive, hasLive, projectPanels, renderListPanel, renderPanel, runCommand, PATCH_SH_MAX_BYTES, type CommandOutcome, type PanelRender, type PatchSet, type PatchThread, type ProjectFolder, projectPatchFiles } from '../patches.ts';
+import { actionRunProblem, automaticTrust, isInside, EMPTY_PATCH_SET, PATCH_EXTENSIONS, patchDirs, projectRoots, hookApplies, loadPatchSet, applyLive, hasLive, projectPanels, renderListPanel, renderPanel, toggleListPanel, NoSwitches, runCommand, PATCH_SH_MAX_BYTES, type CommandOutcome, type PanelRender, type PatchSet, type PatchThread, type ProjectFolder, projectPatchFiles } from '../patches.ts';
 import { liveCommandEnv } from '../shell-allowlist.ts';
+import { codeOfUnhashedPatch, commandShown, shellWords, type CodeScan, type UnsureWhy } from '../unhashed-scan.ts';
+import type { EditsAsk } from '../trust-off-thread.ts';
+export { codeOfUnhashedPatch, commandShown, shellWords, type UnsureWhy };
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,177 +31,8 @@ import type { ThreadRecord } from '../store.ts';
 import { FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, PATCHES_TTL_MS } from '../runner.ts';
 import { safeStart } from '../safe-cut.ts';
 
-// What a patch that loads without a hash makes code, its commands run from
-// `from` (writeRunsAsCode): every file it reaches, as canonical lower-case
-// paths, and `all` when something it can run can't all be followed, with
-// `why` saying what, for the thread and Patches. Kept until anything its
-// hash was made from changes, and for a few seconds at most, as what a
-// command reaches from that folder isn't in that hash.
-export type UnsureWhy = { file: string; line?: number; command?: string; problem: string; fix?: string };
-type CodeScan = { at: number; h: PatchHash; all: boolean; files: Set<string>; why?: UnsureWhy };
-const scans = new Map<string, CodeScan>();
 // The files in a Claude login's folder that hold its user settings.
 const LOGIN_SETTINGS = /^(settings(\..*)?\.json|\.claude\.json)$/i;
-const SCAN_TTL_MS = 10_000;
-// A web address held in a constant (`const PAGE = \`https://x/\${id}\``), so not
-// in the default export where `url` would say so. Run as a command it's one
-// file by that very name, which `files` has: only characters a shell neither
-// splits at nor expands, so no `?`, `[`, `;` or `$`, and no `..` to leave the
-// folder by (Codex's review). Only for a file read the old way (patchCommands
-// couldn't read it), where every string is taken for a command.
-const PLAIN_WEB_ADDRESS = /^https?:\/\/(?!.*\.\.)[\w.~/%:-]*$/i;
-export function codeOfUnhashedPatch(file: string, from: string, now: number): CodeScan {
-  const key = `${file}\0${from}`;
-  const hit = scans.get(key);
-  if (hit && now - hit.at < SCAN_TTL_MS && hit.h.looked.same()) return hit;
-  const h = patchHash(file);
-  const files = new Set<string>();
-  const add = (f: string) => files.add(canonicalPath(f).toLowerCase());
-  // Code it can't follow: any edit might be what it runs.
-  let all = Boolean(h.incomplete);
-  let why: UnsureWhy | undefined = h.incomplete ? { file, problem: h.incomplete } : undefined;
-  const unsure = (w: UnsureWhy) => {
-    all = true;
-    why ??= w;
-  };
-  for (const f of [file, h.root, ...h.deps.map((d) => d.path), ...h.unnamed]) add(f);
-  const worktreeReach = new Set<string>();
-  // The folder holding its `.threadbear/patches`, as a worktree's commands run from there.
-  const patchFolder = path.dirname(path.dirname(path.dirname(file)));
-  // Each file's commands; if any file can't be read that way, none is: a
-  // function it hands on (`export { execSync as run } from ...`) can be
-  // called from another by a name nothing here knows (Codex's review).
-  const reads = new Map<string, ReturnType<typeof patchCommands>>();
-  for (const [module, bytes] of h.code) {
-    const rootPath = canonicalPath(h.root);
-    const own = canonicalPath(module) === rootPath && ![...h.edges.values()].some((to) => [...to.values()].some((f) => canonicalPath(f) === rootPath));
-    try {
-      reads.set(module, patchCommands(bytes.toString('utf8'), module, own));
-    } catch (e) {
-      reads.set(module, { unknown: { line: 1, why: `Threadbear couldn't read it (${e instanceof Error ? e.message : String(e)})` } });
-    }
-  }
-  const oneUnknown = [...reads.entries()].find(([, r]) => 'unknown' in r);
-  for (const [module, r] of reads) {
-    if ('unknown' in r && r.unknown.hard) unsure({ file: module, line: r.unknown.line, problem: `${r.unknown.why}, so Threadbear can't tell what it runs`, fix: "Write the patch's actions, hooks and worktree out in its default export, so Threadbear can see their commands." });
-  }
-  for (const [module, bytes] of h.code) {
-    const text = bytes.toString('utf8');
-    for (const n of namedPaths(text)) add(path.resolve(from, n));
-    const scan = scanModule(text, module);
-    // Imported by anything it imports, its default export has a name after all.
-    const rootPath = canonicalPath(h.root);
-    const own = canonicalPath(module) === rootPath && ![...h.edges.values()].some((to) => [...to.values()].some((f) => canonicalPath(f) === rootPath));
-    // Every string as a command, for the files it would reach: only ever
-    // adds files, and never makes every edit ask by itself.
-    for (const command of scan.strings) {
-      if (!/\S/.test(command) || command.length > 2000) continue;
-      commandFiles(command, from).files.forEach(add);
-    }
-    // What it runs, where it runs it (patch-commands.ts). A `worktree` setup
-    // and check don't count: setup runs what's committed, in a new worktree,
-    // and worktree-setup.sh won't install from an uncommitted package.json in
-    // the main checkout; the check runs when a land is asked for. So neither
-    // runs what an agent just wrote until it has got past a step that's asked
-    // about.
-    // Anything it trips on is read the old way, never skipped.
-    const mine = reads.get(module)!;
-    // Read exactly where it can be, and the old way as well when any file
-    // of the patch can't be.
-    const old = 'unknown' in mine ? mine.unknown : oneUnknown && 'unknown' in oneUnknown[1] ? { ...oneUnknown[1].unknown, why: `${path.basename(oneUnknown[0])} ${oneUnknown[1].unknown.why}` } : undefined;
-    if ('commands' in mine) {
-      const read = mine;
-      for (const c of read.commands) {
-        if (c.text.length > 4000) {
-          unsure({ file: module, line: c.line, command: c.text, problem: 'the command is too long to follow.' });
-          continue;
-        }
-        if (c.worktree) {
-          for (const f of commandFiles(c.text, patchFolder).files) worktreeReach.add(canonicalPath(f).toLowerCase());
-          continue;
-        }
-        // Its scripts outside the folder too: a path built in code, from a
-        // constant, is in no word of the text.
-        const reach = commandFilesOutside(c.text, from);
-        reach.files.forEach(add);
-        // And every absolute or `~/` path in the command as it was worked
-        // out, there yet or not: the follow passes over a missing script
-        // outside the repo, which an agent could then write (Codex's review).
-        // A child_process call's runs from its cwd (patchCommands puts it as `cd '<dir>' && `).
-        const cd = /^cd '([^']*)' && /.exec(c.text);
-        const base = cd ? cd[1] : from;
-        for (const word of shellWords(c.text)) {
-          if (!word || word.includes('__threadbear_value') || word.length > 4096) continue;
-          if (word.startsWith('/') && word.length > 1) add(word);
-          else if (word.startsWith('~/')) add(path.join(os.homedir(), word.slice(2)));
-          // `../../other/go.mjs`, from where it runs: the follow passes over
-          // one outside the repo that isn't there yet, too.
-          else if (word.includes('/')) add(path.resolve(base, word));
-        }
-        if (reach.problem) unsure({ file: module, line: c.line, command: c.text, problem: sayValue(reach.problem) });
-      }
-    }
-    if (old) {
-      const read = { unknown: old };
-      // Read the old way: each string in it as a command run from where its
-      // commands run. A problem means there may be more it runs, unless the
-      // patch file's own default export has it as something else (scanModule).
-      const data = new Set(own ? scan.data : []);
-      const worktree = new Set(own ? scan.worktree : []);
-      for (const command of scan.strings) {
-        if (!/\S/.test(command) || command.length > 2000) continue;
-        const reach = commandFiles(command, from);
-        if (worktree.has(command)) {
-          for (const f of commandFiles(command, patchFolder).files) worktreeReach.add(canonicalPath(f).toLowerCase());
-        } else if (PLAIN_WEB_ADDRESS.test(command)) add(path.resolve(from, command));
-        else if (reach.problem && !data.has(command)) {
-          const at = text.indexOf(command);
-          const shown = commandShown(command);
-          unsure({
-            file: module,
-            problem: `${read.unknown.why} (line ${read.unknown.line}), so Threadbear reads every string in it as a command it might run, and can't follow \`${shown}\`${at >= 0 ? ` (line ${text.slice(0, at).split('\n').length})` : ''}: ${reach.problem.replace(/^the command (line \d+ )?/, 'it ')}`,
-            fix: "Take that out, or keep to `sh`, `run` fields, child_process and Node's own modules, so Threadbear can see what it runs.",
-          });
-        }
-      }
-    }
-    // Absolute and `~/` paths, there yet or not.
-    for (const word of text.split(/[\s'"`;&|()<>=,[\]{}]+/)) {
-      if (word.startsWith('/') && word.length > 1) add(word);
-      else if (word.startsWith('~/')) add(path.join(os.homedir(), word.slice(2)));
-    }
-  }
-  // A script it names that runs something it can't follow, other than a
-  // worktree's own (above). A hook or action that runs one is a problem as a
-  // command too; this also catches what's named some other way.
-  const stuck = Object.keys(h.blocked ?? {}).find((s) => !worktreeReach.has(canonicalPath(s).toLowerCase()));
-  if (stuck) unsure({ file: stuck, problem: h.blocked![stuck] });
-  const scan = { at: now, h, all, files, ...(why ? { why } : {}) };
-  scans.set(key, scan);
-  if (scans.size > 200) scans.delete(scans.keys().next().value!);
-  return scan;
-}
-
-// A command's words roughly as a shell splits them, quotes taken off, so a
-// quoted path with a space is one word (Codex's review). Only for finding
-// paths in it: the follower is what reads it properly.
-export function shellWords(command: string): string[] {
-  const words: string[] = [];
-  let word = '';
-  let quote: string | undefined;
-  for (const ch of command) {
-    if (quote) {
-      if (ch === quote) quote = undefined;
-      else word += ch;
-    } else if (ch === "'" || ch === '"') quote = ch;
-    else if (/[\s;&|()<>=`]/.test(ch)) {
-      if (word) words.push(word);
-      word = '';
-    } else word += ch;
-  }
-  if (word) words.push(word);
-  return words;
-}
 
 // Credentials a note could carry: a URL's user and password, `key=value`
 // for a word like token, and long runs that look like a key.
@@ -231,31 +66,6 @@ function editsAskWords(patch: string, why: UnsureWhy | undefined): string {
   return `${head}: Threadbear can't follow \`${shown}\`${line}, as it ${problem}. ${EDITS_ASK_FIX}`;
 }
 
-// A command as the note shows it: its first few words, with anything after
-// a word like token or key, and anything long enough to be one, left out.
-// The note is kept in the transcript and goes to the phone, and a patch's
-// command can carry a credential (Codex's review).
-export function commandShown(command: string): string {
-  const words = command
-    .replace(/\$\{__threadbear_value\}/g, '${...}')
-    // A URL's user and password.
-    .replace(/:\/\/[^\s/@]*@/g, '://...@')
-    .split(/\s+/)
-    .filter(Boolean);
-  const out: string[] = [];
-  for (const [i, w] of words.entries()) {
-    if (out.length >= 4) {
-      out.push('...');
-      break;
-    }
-    const secretish =
-      (i > 0 && /token|key|secret|pass|auth|bearer|cookie/i.test(words[i - 1])) ||
-      /(token|key|secret|pass|auth)[^=]*=/i.test(w) ||
-      /^[A-Za-z0-9_+=-]{24,}$/.test(w.replace(/^['"]|['"]$/g, ''));
-    out.push(secretish ? '...' : w.length > 80 ? `${w.slice(0, 80)}...` : w);
-  }
-  return out.join(' ');
-}
 
 const EDITS_ASK_FIX = "Write the command as plain text, or build it only from constants in the file (like `node ${join(import.meta.dirname, 'x.mjs')}`), so Threadbear can see what it runs.";
 
@@ -321,6 +131,9 @@ export const patchesPart = {
     const { rec, rt } = st;
     const entry = rt.patches;
     if (!entry || entry.refreshing) return;
+    // A box's save holds the thread: its patches' functions (and the live
+    // commands they run) wait, as they could write behind the save's copy.
+    if (rt.holds?.has('save')) return;
     entry.refreshing = true;
     const cwd = rec.cwd;
     const key = entry.key;
@@ -329,10 +142,12 @@ export const patchesPart = {
     try {
       base = await this.loadSharedPatchSet(cwd, this.projects?.foldersFor(rec) ?? [], this.projects?.allFolders() ?? []);
       // Claude threads only: a Codex thread doesn't read them.
-      const claude = rec.provider === 'claude' ? this.claudePatchInfo(cwd, claudeOptions(rec)) : undefined;
+      const claude = rec.provider === 'claude' ? await this.claudePatchInfo(cwd, claudeOptions(rec)) : undefined;
       if (claude) base = { ...base, patches: [...base.patches, claude] };
-      base = this.withEditsAsk(base, cwd);
+      base = await this.withEditsAsk(base, cwd);
       set = await applyLive(base, { cwd, threadId: rec.id, thread: this.patchThread(rec), run: (command, dir) => this.runLiveCommand(rec.id, command, dir), verify: (file, hash) => this.patchTrust.verify(file, hash) });
+      const borrowed = await this.borrowedPanelSet(st);
+      if (borrowed.length) set = { ...set, panels: [...set.panels, ...borrowed] };
     } catch (e) {
       this.log.warn('could not read the folder for patches', { threadId: rec.id, cwd, error: String(e) });
       base = entry.base;
@@ -366,6 +181,33 @@ export const patchesPart = {
     if (entry.live) this.armLivePoll();
   },
 
+  // Panel buttons' panels (docs/protocol.md, "Reply buttons"): each pressed
+  // one's panel as a thread in its folder has it, its badge and summary run
+  // there (a patch's server starts from them), under an id of its own and
+  // with `{threadId}` left empty: the thread beside it isn't one of that
+  // folder's, so the page shouldn't take it for one (the YouTube page then
+  // offers its own threads to ask in). One that has gone is left out.
+  async borrowedPanelSet(this: Runner, st: ThreadState): Promise<Panel[]> {
+    const { rec } = st;
+    const out: Panel[] = [];
+    for (const { cwd, panelId } of this.borrowedPanels(st)) {
+      try {
+        if (!isDirectory(cwd)) continue;
+        const theirs = await this.loadSharedPatchSet(cwd, [], this.projects?.allFolders() ?? []);
+        const panel = theirs.panels.find((p) => p.id === panelId && p.kind === 'url');
+        if (!panel) continue;
+        const one = { ...EMPTY_PATCH_SET, panels: [panel], patches: theirs.patches.filter((p) => p.id === panel.patch) };
+        const live = await applyLive(one, { cwd, threadId: rec.id, thread: this.patchThread(rec), run: (command, dir) => this.runLiveCommand(rec.id, command, dir), verify: (file, hash) => this.patchTrust.verify(file, hash) });
+        const shown = live.panels[0];
+        if (!shown) continue;
+        out.push({ ...shown, id: borrowedPanelId(cwd, panelId), from: cwd, ...(shown.url ? { url: shown.url.replaceAll('{threadId}', '') } : {}) });
+      } catch (e) {
+        this.log.warn('could not read a panel button\'s panel', { threadId: rec.id, cwd, error: String(e) });
+      }
+    }
+    return out;
+  },
+
   // Threads in the same folder with the same projects get the same set, so
   // it's read once per FOLDER_CACHE_MS for all of them: a couple of hundred
   // threads share a few dozen folders, and each reading its own set again
@@ -391,6 +233,9 @@ export const patchesPart = {
   forgetFolders(this: Runner): void {
     this.folderCache.clear();
     this.claudeChecks.clear();
+    this.claudeChecksGen++;
+    // And a look already under way isn't shared with the reads after this.
+    this.offThread?.forget();
     this.sharedPatchSets.clear();
     // A turn may have changed what they read (comments resolved, a handback).
     // One still running is kept, so it isn't started again beside itself.
@@ -649,22 +494,28 @@ export const patchesPart = {
 
   // The patch list with `editsAsk` on each patch that loads without a hash
   // and runs something it can't follow from where it runs (writeRunsAsCode).
-  withEditsAsk(this: Runner, set: PatchSet, cwd: string): PatchSet {
+  // The scan runs on the trust worker (trust-off-thread.ts): it follows
+  // every command from each thread's folder, and held the main thread for
+  // seconds at a time (19 Nov).
+  async withEditsAsk(this: Runner, set: PatchSet, cwd: string): Promise<PatchSet> {
     let changed = false;
-    const patches = set.patches.map((info) => {
-      if (!info.file || info.error || info.untrusted) return info;
-      const unhashed = info.source === 'home' || (info.source === 'project' && this.patchTrust.loadsUnhashed(path.dirname(info.file)));
-      if (!unhashed) return info;
-      let scan: CodeScan;
-      try {
-        scan = codeOfUnhashedPatch(info.file, info.source === 'home' ? cwd : (info.folder ?? cwd), this.clock.now());
-      } catch {
-        return info;
-      }
-      if (!scan.all) return info;
-      changed = true;
-      return { ...info, editsAsk: editsAskText(info.file, scan.why) };
-    });
+    const patches = await Promise.all(
+      set.patches.map(async (info) => {
+        if (!info.file || info.error || info.untrusted) return info;
+        const unhashed = info.source === 'home' || (info.source === 'project' && this.patchTrust.loadsUnhashed(path.dirname(info.file)));
+        if (!unhashed) return info;
+        let scan: EditsAsk;
+        const from = info.source === 'home' ? cwd : (info.folder ?? cwd);
+        try {
+          scan = this.offThread ? await this.offThread.editsAsk(info.file, from, this.clock.now()) : codeOfUnhashedPatch(info.file, from, this.clock.now());
+        } catch {
+          return info;
+        }
+        if (!scan.all) return info;
+        changed = true;
+        return { ...info, editsAsk: editsAskText(info.file, scan.why) };
+      }),
+    );
     return changed ? { ...set, patches } : set;
   },
 
@@ -675,15 +526,26 @@ export const patchesPart = {
   // run unasked (`grants`, listed for the app to show), so the check is
   // kept per folder and kind of thread. One that can't be checked shows
   // why, with nothing to trust.
-  claudePatchInfo(this: Runner, cwd: string, opts: ClaudeOptions = {}): PatchInfo | undefined {
-    const now = this.clock.now();
+  // The look at the folder runs on the trust worker where there is one
+  // (lookClaude): a folder that isn't a git checkout is walked, up to
+  // 20,000 folders, which held the main thread for seconds (19 Nov). It's
+  // judged here each time, so a Trust click counts at once.
+  async claudePatchInfo(this: Runner, cwd: string, opts: ClaudeOptions = {}): Promise<PatchInfo | undefined> {
     const key = `${opts.grants ? 'grants' : 'full'}\0${cwd}`;
     let hit = this.claudeChecks.get(key);
-    if (!hit || now - hit.at >= FOLDER_CACHE_MS) {
-      hit = { at: now, verdict: this.patchTrust.checkClaude(cwd, opts) };
-      this.claudeChecks.set(key, hit);
+    if (!hit || this.clock.now() - hit.at >= FOLDER_CACHE_MS) {
+      const at = this.clock.now();
+      const gen = this.claudeChecksGen;
+      const look = this.offThread && this.patchTrust.lookClaude ? await this.patchTrust.lookClaude(cwd, opts) : undefined;
+      // Without a worker (box mode, tests) the verdict is kept, as looking
+      // again would be on this thread.
+      hit = look ? { at, look } : { at, verdict: this.patchTrust.checkClaude(cwd, opts) };
+      // Not when forgetFolders cleared them meanwhile (the next read looks
+      // again), nor over a newer look.
+      const now = this.claudeChecks.get(key);
+      if (gen === this.claudeChecksGen && (!now || now.at <= at)) this.claudeChecks.set(key, hit);
     }
-    const v = hit.verdict;
+    const v = hit.verdict ?? this.patchTrust.checkClaude(cwd, opts, hit.look);
     if (v.trusted) return undefined;
     if (v.reason === 'unchecked') return { id: CLAUDE_PATCH_ID, source: 'claude', ...(v.files.length ? { file: v.files[0] } : {}), error: `Skipped, and can't be trusted as they are: ${v.problem}` };
     const helpers = [...v.files.slice(1), ...v.named];
@@ -763,16 +625,35 @@ export const patchesPart = {
     const st = this.mustGet(threadId);
     const panel = this.patchSet(st).panels.find((p) => p.id === panelId);
     if (!panel) throw new RpcError(ErrorCode.badParams, `This thread has no panel called ${panelId}`);
-    if (panel.kind === 'list') {
-      return renderListPanel(panel, this.patchSet(st), {
-        cwd: st.rec.cwd,
-        threadId,
-        thread: this.patchThread(st.rec),
-        run: (command, cwd) => this.runPatchCommand(threadId, command, cwd),
-        verify: (file, hash) => this.patchTrust.verify(file, hash),
-      });
-    }
+    if (panel.kind === 'list') return renderListPanel(panel, this.patchSet(st), this.listPanelContext(threadId));
     return renderPanel(panel, paths.panels(this.cfg.home, threadId), this.screenshot);
+  },
+
+  // A list row's switch pressed (`panels.toggle`): the patch's toggle
+  // function, then the panel's rows again.
+  async togglePanel(this: Runner, threadId: string, panelId: string, toggleId: string, on: boolean): Promise<PanelRender> {
+    const st = this.mustGet(threadId);
+    const panel = this.patchSet(st).panels.find((p) => p.id === panelId);
+    if (!panel || panel.kind !== 'list') throw new RpcError(ErrorCode.badParams, `This thread has no list panel called ${panelId}`);
+    try {
+      return await toggleListPanel(panel, this.patchSet(st), this.listPanelContext(threadId), toggleId, on);
+    } catch (e) {
+      if (e instanceof NoSwitches) throw new RpcError(ErrorCode.badParams, e.message);
+      throw new RpcError(ErrorCode.other, String((e as Error)?.message ?? e));
+    }
+  },
+
+  // What a list panel's functions run with: the thread's folder and its
+  // patch commands, checked against what trusting the patch covers.
+  listPanelContext(this: Runner, threadId: string) {
+    const st = this.mustGet(threadId);
+    return {
+      cwd: st.rec.cwd,
+      threadId,
+      thread: this.patchThread(st.rec),
+      run: (command: string, cwd: string) => this.runPatchCommand(threadId, command, cwd),
+      verify: (file: string, hash: string) => this.patchTrust.verify(file, hash),
+    };
   },
 
   // Cloud deployments in the Convex panel's project, through its CLI.
@@ -934,7 +815,7 @@ export const patchesPart = {
         '```\n' + (shown.trim() || '(no output)') + '\n```\n\n' +
         (outcome.ok ? 'Nothing to do unless something above surprises you.' : 'If this is from your change, fix it; if not, say so and carry on.');
       try {
-        this.sendTo(st, text, [], { origin: 'runner' });
+        this.sendTo(st, text, [], { origin: 'runner', wakeReason: `${hook.title} ${verdict}` });
       } catch (e) {
         this.log.warn('could not tell the agent a hook result', { threadId: st.rec.id, hook: hook.id, error: String(e) });
       }
@@ -967,7 +848,7 @@ export const patchesPart = {
     while (st.rt.cleaning) await st.rt.cleaning;
     const gone = st.rec.worktree;
     if (gone?.removedAt && isInside(action.folder ?? st.rec.cwd, gone.path)) {
-      throw new RpcError(ErrorCode.other, `Didn't run ${action.title}: this thread's worktree at ${gone.path} was removed when it was archived, and the folder may be another thread's now. Send the thread a message first, and it carries on in the main checkout.`);
+      throw new RpcError(ErrorCode.other, `Didn't run ${action.title}: this thread's worktree at ${gone.path} was removed when it was archived, and the folder may be another thread's now. Send the thread a message first, and it carries on in a fresh worktree.`);
     }
     const running = (st.rt.runningActions ??= new Set());
     if (running.has(actionId)) throw new RpcError(ErrorCode.busy, `${action.title} is already running.`);

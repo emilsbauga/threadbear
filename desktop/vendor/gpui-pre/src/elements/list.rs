@@ -794,7 +794,16 @@ impl ListState {
             cursor.summary(&Count(logical_scroll_top.item_ix), Bias::Right);
         let offset = summary.height + logical_scroll_top.offset_in_item;
 
-        Point::new(px(0.), -offset)
+        // Never past the end of the range. Between a change and the next
+        // layout the anchor can sit beyond it: past the last item once the
+        // view reaches the end (following the tail, scroll_to_end, a drag to
+        // the end), which read as the whole content's height, a viewport too
+        // far; or on a row that rows removed below it have left too low.
+        // Callers that scroll by offset (gpui-base's ScrollBounce, the
+        // scrollbar) took the gap for a jump: a second trackpad packet in the
+        // same frame threw the transcript past its bottom edge and left a
+        // viewport of finger travel to unwind (Threadbear, 17 Nov 2026).
+        Point::new(px(0.), -offset.min(state.max_scroll_offset()))
     }
 
     /// Return the bounds of the viewport in pixels.
@@ -849,7 +858,10 @@ impl StateInner {
         let height = self
             .scrollbar_drag_start_height
             .unwrap_or_else(|| self.items.summary().height);
-        (height - bounds.size.height).max(px(0.))
+        // With the list's padding, as set_offset_from_scrollbar and layout
+        // count it, so the range the scrollbar reports is the one they use.
+        let padding = self.last_padding.unwrap_or_default();
+        (height + padding.top + padding.bottom - bounds.size.height).max(px(0.))
     }
 
     fn visible_range(
@@ -1846,6 +1858,63 @@ mod test {
         // Scroll position should stay at the top of the list
         assert_eq!(state.logical_scroll_top().item_ix, 0);
         assert_eq!(state.logical_scroll_top().offset_in_item, px(0.));
+    }
+
+    #[gpui::test]
+    fn test_scrollbar_offset_at_the_end_before_layout(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+
+        // Ten 20px items in a 100px viewport: 100px of scroll range.
+        let state = ListState::new(10, crate::ListAlignment::Top, px(10.)).measure_all();
+        state.set_follow_mode(FollowMode::Tail);
+
+        struct TestView(ListState);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                list(self.0.clone(), |_, _, _| {
+                    div().h(px(20.)).w_full().into_any()
+                })
+                .w_full()
+                .h_full()
+            }
+        }
+
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
+            cx.new(|_| TestView(state.clone())).into_any_element()
+        });
+        assert_eq!(state.max_offset_for_scrollbar().y, px(100.));
+        assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-100.));
+
+        // Half a pixel from the end counts as the end: following resumes and
+        // the anchor goes past the last item until the next layout.
+        state.set_offset_from_scrollbar(point(px(0.), px(-99.5)));
+        assert!(state.is_following_tail());
+        assert_eq!(
+            state.scroll_px_offset_for_scrollbar().y,
+            px(-100.),
+            "an offset read before the next layout is still inside the range"
+        );
+
+        // The same from scroll_to_end.
+        state.scroll_to(ListOffset {
+            item_ix: 2,
+            offset_in_item: px(0.),
+        });
+        state.scroll_to_end();
+        assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-100.));
+
+        // Rows removed below a view at the end, before the next layout: the
+        // anchor's row hasn't moved but the range is shorter.
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
+            cx.new(|_| TestView(state.clone())).into_any_element()
+        });
+        state.set_offset_from_scrollbar(point(px(0.), px(-60.)));
+        assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-60.));
+        state.splice(8..10, 0);
+        assert_eq!(state.max_offset_for_scrollbar().y, px(60.));
+        assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-60.));
+        state.splice(7..8, 0);
+        assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-40.));
     }
 
     #[gpui::test]

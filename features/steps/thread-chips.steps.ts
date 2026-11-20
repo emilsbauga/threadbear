@@ -69,3 +69,23 @@ When('the agent in {string} sends this thread a message', async function (this: 
 Then('the message is headed by the thread chip {string}', async function (this: ThreadbearWorld, title: string) {
   await this.until(`a message headed by the chip "${title}"`, (d) => d.transcript.rows.some((r) => r.kind === 'user' && r.chips?.includes(`thread: ${title}`)));
 });
+
+// A reply that links a thread by its id, as an agent that started or waits
+// on it does (`[words](thread:<id>)`).
+When('a reply linking {string} to the thread {string} streams in', async function (this: ThreadbearWorld, words: string, id: string) {
+  const d = await this.app.dump();
+  await this.app.do({ cmd: 'mock', method: 'stream', params: { threadId: d.selection?.id, text: `Over to [${words}](thread:${id}) for now.`, hz: 60 } });
+  await this.until('the reply with its link', (dump) => [...dump.transcript.rows].reverse().some((r) => (r as Row & { linkMarks?: string[] }).linkMarks?.some((m) => m.startsWith(`${id}:`))));
+});
+
+Then('the mark before the link to {string} says {string}', async function (this: ThreadbearWorld, id: string, state: string) {
+  await this.until(`the mark "${id}: ${state}"`, (d) => [...d.transcript.rows].reverse().some((r) => (r as Row & { linkMarks?: string[] }).linkMarks?.includes(`${id}: ${state}`)));
+});
+
+When('the thread {string} starts working', async function (this: ThreadbearWorld, id: string) {
+  await this.app.do({ cmd: 'mock', method: 'status', params: { threadId: id, status: 'running', needsYou: false } });
+});
+
+When("the thread {string} finishes, saying it's done", async function (this: ThreadbearWorld, id: string) {
+  await this.app.do({ cmd: 'mock', method: 'status', params: { threadId: id, status: 'idle', needsYou: false, needs: 'nothing' } });
+});

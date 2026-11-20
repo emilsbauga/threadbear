@@ -55,14 +55,16 @@ export function readPairingText(text: string): URLSearchParams | undefined {
   return new URLSearchParams(Buffer.from(body, 'base64url').toString('utf8'));
 }
 
-// What the website takes (web/src/token.ts): the token in the #fragment,
-// which a browser never sends to a server.
-export function signInLink(site: string, token: string): string {
-  return `${site}/#token=${token}`;
+// What the website takes (web/src/token.ts): a one-use sign-in code in the
+// #fragment, which a browser never sends to a server, and which the site
+// trades for the browser's token with tokens:claim. Never the token itself:
+// a link is copied, synced, kept in history and shown to other apps, and a
+// token in one stayed good for its whole life (API 81).
+export function signInLink(site: string, code: string): string {
+  return `${site}/#code=${code}`;
 }
 
-// `onPaired`: a phone or browser token was issued here, the moment full sync
-// starts to help (convex-use.ts FullSyncOffer).
+// `onPaired`: a phone or browser token was issued here.
 export function devicesMethods(sync: ConvexSync, onPaired?: (kind: DeviceKind) => void): Record<string, (p: Record<string, unknown>) => unknown> {
   return {
     'devices.list': async (): Promise<DeviceList> => {
@@ -105,15 +107,17 @@ export function devicesMethods(sync: ConvexSync, onPaired?: (kind: DeviceKind) =
         const device: Device = { id: issued.id, kind: 'phone', name: name.trim(), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + days * 86_400_000).toISOString(), expired: false };
         return { device, pairingLink: pairingText(url, issued.code, sync.pairingKeys()) };
       }
-      let issued: { id: string; token: string; expiresAt: string };
+      // A browser's one-use sign-in code, as a phone's: the token is made
+      // when the website trades it, and `device` stands for it until then.
+      let issued: { id: string; code: string; expiresAt: string };
       try {
-        issued = await sync.issueToken({ kind: kind as DeviceKind, name: name.trim(), days });
+        issued = await sync.issuePairingCode({ name: name.trim(), days, kind: 'browser' });
       } catch (e) {
         throw new RpcError(ErrorCode.other, (e as Error).message);
       }
       onPaired?.(kind as DeviceKind);
-      const device: Device = { id: issued.id, kind: kind as DeviceKind, name: name.trim(), createdAt: new Date().toISOString(), expiresAt: issued.expiresAt, expired: false };
-      return { device, signInLink: signInLink(site!, issued.token) };
+      const device: Device = { id: issued.id, kind: kind as DeviceKind, name: name.trim(), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + days * 86_400_000).toISOString(), expired: false };
+      return { device, signInLink: signInLink(site!, issued.code) };
     },
     'devices.revoke': async (p): Promise<DeviceList> => {
       const id = p.deviceId;

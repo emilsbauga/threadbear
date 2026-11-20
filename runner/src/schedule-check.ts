@@ -23,7 +23,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { atomicWriteFileSync } from './fsutil.ts';
+import { IS_WINDOWS } from './platform.ts';
+import { killGroup } from './proc.ts';
 import { safeStart, safeStartOfPartial } from './safe-cut.ts';
+import { plainShell } from './system-tools.ts';
 
 // How long a check may run unless its schedule says (checkTimeoutSecs),
 // and the most it can say: a Slack read through `codex exec` took 77 s by
@@ -50,7 +53,8 @@ export function keptCheckFile(home: string, scheduleId: string, check: string): 
 
 // What a check printed that hasn't reached a thread yet, and the command
 // that printed it.
-export type KeptCheck = { check: string; at: string; extra: string };
+// `cwd`: the folder it ran in, as only that folder's run may carry it (older files have none).
+export type KeptCheck = { check: string; at: string; extra: string; cwd?: string };
 
 export function readKeptCheck(home: string, scheduleId: string, check: string): KeptCheck | undefined {
   let kept: KeptCheck;
@@ -207,12 +211,15 @@ export function runCheck(p: { command: string; cwd: string; home: string; schedu
       clearTimeout(timer);
       resolve(r);
     };
-    const child = spawn('/bin/sh', ['-c', p.command], {
+    // sh -c, or Git Bash on Windows.
+    const [shell, ...shellArgs] = plainShell();
+    const child = spawn(shell, [...shellArgs, p.command], {
       cwd: fs.existsSync(p.cwd) ? p.cwd : undefined,
       env: { ...process.env, THREADBEAR_SCHEDULE_ID: p.scheduleId, THREADBEAR_CHECK_STATE: state },
       stdio: ['ignore', 'pipe', 'pipe'],
-      // Its own process group, so a timeout stops whatever it started too.
-      detached: true,
+      // Its own process group, so a timeout stops whatever it started too
+      // (Windows stops the whole tree with taskkill instead).
+      detached: !IS_WINDOWS,
     });
     // Whether what's kept has lost its start, maybe in a secret whose start is gone.
     let cutFront = false;
@@ -227,11 +234,7 @@ export function runCheck(p: { command: string; cwd: string; home: string; schedu
     child.stdout?.on('data', take);
     child.stderr?.on('data', take);
     const timer = setTimeout(() => {
-      try {
-        if (child.pid) process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        child.kill('SIGKILL');
-      }
+      if (child.pid && !killGroup(child.pid, 'SIGKILL')) child.kill('SIGKILL');
       // Says how to give it longer, for the agent that reads it.
       finish({ ok: false, output: clip(out, cutFront), why: `it took longer than ${Math.round((p.timeoutMs ?? CHECK_TIMEOUT_MS) / 1000)} seconds; the schedule's checkTimeoutSecs can give it up to ${MAX_CHECK_TIMEOUT_SECS}` });
     }, p.timeoutMs ?? CHECK_TIMEOUT_MS);

@@ -18,7 +18,9 @@ if ! xcrun simctl list devices booted | grep -qF "($SIM)"; then
 fi
 # Before the build, so being refused doesn't come after minutes of compiling.
 scripts/sim.sh boot >/dev/null
-DD=/tmp/threadbear-dd-$SIM
+# This account's alone, as install-phone.sh's is: a fixed /tmp name could be
+# another account's (Tinker Desk has two, 19 Nov 2026).
+DD=$(node scripts/private-dir.mjs "$HOME/Library/Caches/Threadbear/ios-builds/dd-$SIM") || exit 1
 # One Threadbear build at a time on this machine (scripts/one-build.sh).
 ../scripts/one-build.sh xcodebuild -project Threadbear.xcodeproj -scheme Threadbear -configuration Debug -destination "id=$SIM" \
   -derivedDataPath "$DD" build | grep -E " error:|BUILD (SUCCEEDED|FAILED)"
@@ -49,5 +51,6 @@ shot slash-commands -ThreadbearOpen a3 -ThreadbearDraft /co
 shot typed-out -ThreadbearOpen a3 -ThreadbearTypedOut
 shot heard-live -ThreadbearOpen a3 -ThreadbearHeardLive
 shot pictures -ThreadbearPictures -ThreadbearOpen pics
+shot review -ThreadbearOpen a3 -ThreadbearReview
 shot new-thread -ThreadbearCompose "Add a dark mode to the garden planner, matching the system setting"
 shot pair --unpaired

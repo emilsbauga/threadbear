@@ -9,10 +9,13 @@
 // big to send whole.
 //
 // Through Convex, the only way this app reaches another Mac so far, the
-// runner sends no pictures at all, just a line saying how many it kept there,
-// and answers a `files.read` for another runner with "Files on another runner
-// are kept there for now." So these tiles turn up for the mock runner's mac-mini,
-// which plays a direct link, and for whatever comes next.
+// runner gives a message the pictures pasted into it that Mac put up
+// (backend API 87, runner/src/relay.ts), and answers `files.read` for one
+// from the backend's file storage; a picture that never went up has a
+// `threadbear-relay:` path and says why when asked. Tools' pictures still
+// stay on that Mac: "Files on another runner are kept there for now." A
+// message sent from here draws its pictures from this runner's inbox, which
+// the runner answers for too, until that Mac shows the message.
 use crate::call;
 use gpui_kit::*;
 use serde_json::json;
@@ -22,7 +25,7 @@ use threadbear_client::runner::Client;
 use threadbear_core::folders::FileRead;
 
 /// Biggest picture asked for whole (`files.read`'s own default).
-const MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) enum Picture {
@@ -56,7 +59,13 @@ pub(crate) fn picture(runner: &str, path: &str, client: &Arc<Client>, redraw: An
             Ok(value) => match FileRead::decode(&value) {
                 Some(read) if read.truncated => Picture::Truncated,
                 Some(read) => match crate::viewer::format_of(&key.1, &read.data) {
-                    Some(format) => Picture::Ready(Arc::new(Image::from_bytes(format, read.data))),
+                    Some(format) => {
+                        // Shrunk to what the GPU can draw (fit_picture.rs), off this thread.
+                        match cx.background_executor().spawn(async move { crate::fit_picture::fit_bytes(format, read.data) }).await {
+                            Some((format, data)) => Picture::Ready(Arc::new(Image::from_bytes(format, data))),
+                            None => Picture::Failed(crate::fit_picture::TOO_BIG.into()),
+                        }
+                    }
                     None => Picture::Failed("It isn't a picture this app can show.".into()),
                 },
                 None => Picture::Failed("Couldn't read the runner's answer.".into()),
@@ -72,6 +81,21 @@ pub(crate) fn picture(runner: &str, path: &str, client: &Arc<Client>, redraw: An
     })
     .detach();
     Picture::Loading
+}
+
+/// Drawn already: its bytes, for the viewer (viewer.rs), which shows the
+/// picture a tile's click opens without asking that Mac again.
+pub(crate) fn ready(runner: &str, path: &str, cx: &App) -> Option<Arc<Image>> {
+    match cx.try_global::<RemotePictures>()?.pictures.get(&(runner.to_owned(), path.to_owned()))? {
+        Picture::Ready(image) => Some(image.clone()),
+        _ => None,
+    }
+}
+
+/// A picture the other Mac hasn't put up (yet): the runner's place for it,
+/// `threadbear-relay:<thread>/<seq>/Picture N` (runner/src/relay.ts).
+pub(crate) fn not_up_yet(path: &str) -> bool {
+    path.starts_with("threadbear-relay:")
 }
 
 /// A click on one that couldn't be got: asked for again on the next draw.

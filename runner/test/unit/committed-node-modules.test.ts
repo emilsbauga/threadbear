@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpDir } from '../helpers/fakes.ts';
 import { loadPatchSet } from '../../src/patches.ts';
 import { PatchTrust, patchHash } from '../../src/patch-trust.ts';
+import { slashes } from '../../src/platform.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'protocol.file.allow=always', '-C', cwd, ...args], { stdio: 'pipe' }).toString();
 
@@ -56,7 +57,7 @@ test("a committed node_modules/zod is hashed with the patch: a pull that changes
   git(folder, 'commit', '-qm', 'lib');
   const h = patchHash(patchIn(folder));
   assert.equal(h.incomplete, undefined);
-  const covered = h.deps.map((d) => path.relative(folder, d.path)).sort();
+  const covered = h.deps.map((d) => slashes(path.relative(folder, d.path))).sort();
   assert.deepEqual(covered, ['node_modules/zod/index.mjs', 'node_modules/zod/lib.mjs', 'node_modules/zod/package.json'], 'every committed file, and its import of ./lib.mjs');
   const trust = new PatchTrust();
   assert.equal(trust.trustCurrent([patchIn(folder)]).length, 1);
@@ -114,7 +115,7 @@ test("a package another committed package imports, and one an installed package 
     'node_modules/helper/h.mjs': 'export const m = 1;\n',
     'packages/web/node_modules/deep/x.mjs': 'export default 1;\n',
   });
-  const covered = patchHash(patchIn(folder)).deps.map((d) => path.relative(folder, d.path));
+  const covered = patchHash(patchIn(folder)).deps.map((d) => slashes(path.relative(folder, d.path)));
   assert.ok(covered.includes('node_modules/helper/h.mjs'));
   assert.ok(covered.includes('packages/web/node_modules/deep/x.mjs'), 'committed anywhere in the repo, as an installed package may import it');
 });
@@ -177,7 +178,7 @@ test("a script a patch's command runs that imports a committed package has that 
   });
   git(folder, 'add', '.');
   git(folder, 'commit', '-qm', 'script');
-  const covered = patchHash(patchIn(folder)).deps.map((d) => path.relative(folder, d.path));
+  const covered = patchHash(patchIn(folder)).deps.map((d) => slashes(path.relative(folder, d.path)));
   assert.ok(covered.includes('scripts/count.mjs'));
   assert.ok(covered.includes('node_modules/zod/index.mjs'), 'what the script imports from the committed package');
 });
@@ -257,7 +258,7 @@ test("Codex 4: require('payload') finding a committed node_modules/payload.js (n
   });
   git(folder, 'add', '.');
   git(folder, 'commit', '-qm', 'script');
-  const covered = patchHash(patchIn(folder)).deps.map((d) => path.relative(folder, d.path));
+  const covered = patchHash(patchIn(folder)).deps.map((d) => slashes(path.relative(folder, d.path)));
   assert.ok(covered.includes('node_modules/payload.js'), covered.join(', '));
 });
 
@@ -293,6 +294,6 @@ test('Codex round 2: on a Mac, a package committed under NODE_MODULES (which `no
   });
   git(folder, 'add', '.');
   git(folder, 'commit', '-qm', 'script');
-  const covered = patchHash(patchIn(folder)).deps.map((d) => path.relative(folder, d.path));
+  const covered = patchHash(patchIn(folder)).deps.map((d) => slashes(path.relative(folder, d.path)));
   assert.ok(covered.includes('NODE_MODULES/zod/index.js'), covered.join(', '));
 });

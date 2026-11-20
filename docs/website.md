@@ -25,10 +25,12 @@ Built 28 Oct 2026 (thread 66935d23).
   Projects, a tile per runner with a dot for online, then Usage and a gear
   (appearance, sign out). Each opens a list in the sidebar and a page beside
   it (`web/src/pages.tsx`, at `/scheduled`, `/projects`, `/runners`, `/usage`,
-  each with `/<id>`), which subscribe only while they're showing. A schedule
+  each with `/<id>`, a project's with `/<runnerId>/<id>` as its id is only
+  its runner's own), which subscribe only while they're showing. A schedule
   has Pause and Run now (`phone:schedule`); anything else, and any change to a
   project, is on the Mac or through an agent. A project's page lists all its
-  threads, live then archived, newest first, from `phone:projectThreads` (Show
+  threads, live then archived, newest first, from `phone:projectThreads`
+  for that runner's project (Show
   more for older ones). A runner's page has its CPU, memory and disk, reported
   only while that view is open (docs/protocol.md, Sync, "Runner figures"), and
   its tile an orange dot while it's low on memory or disk. The sidebar and rail
@@ -113,11 +115,34 @@ else for now, and it needed a Resend key Threadbear doesn't have.
 
 ## Signing in
 
-The browser holds a phone token (`convex/tokens.ts`) in localStorage. The
-Mac app issues one through the runner (docs/protocol.md "Devices"):
+The browser holds a browser token (`convex/tokens.ts`) in localStorage. The
+Mac app gets one for it through the runner (docs/protocol.md "Devices"):
 Settings › Phone & browser › "Open signed in" opens the site in the default
-browser with the token in the link's `#fragment`, and the same tab lists
-the signed-in browsers with Revoke. Since 28 Oct that's the usual way.
+browser with a one-use sign-in code in the link's `#fragment`, which the
+page trades for the token (`tokens:claim`) and wipes from the address bar,
+and the same tab lists the signed-in browsers with Revoke. Since 28 Oct
+that's the usual way. The code works once, for ten minutes; the link
+never holds the token (since 16 Nov: a token in a link stayed good for 90
+days wherever the link was seen), and the page doesn't keep one from an
+old link's `#token=`. A browser that's already signed in asks before it
+trades a link's code ("Sign this browser in again?", `web/src/replace-sign-in.tsx`),
+as a thread's words can link to this site with a `#code=` of their own;
+until you say yes nothing is claimed, and a swap that fails keeps the
+sign-in it had.
+
+Every link the site draws from a thread (a reply's Markdown, an ask's
+links, a draft's addresses, a picture shown as a link) goes through one
+rule, `web/src/link-policy.ts`: a web page (http or https with a host)
+opens; any other kind (`mailto:`, `slack:`, `intent:`) asks first, naming
+the whole address (`web/src/link-confirm.tsx`), and has no `href` for a
+middle click to take past the question; and `javascript:`, `data:`,
+`file:` and the like, or an address over 2,048 characters, are just
+words. The backend also keeps only web links on a thread's asks and links
+(API 82).
+Every page the backend serves, the shared ones (`/s/`) too, says no
+other site may frame it (`X-Frame-Options: DENY`, `frame-ancestors
+'none'`; `NO_FRAMES` in `convex/http.ts`), so that question can't be
+clicked through from a page laid over a hidden frame.
 
 From a terminal, by someone logged in to the Convex team:
 
@@ -126,9 +151,10 @@ From a terminal, by someone logged in to the Convex team:
     npm run web:sign-in -- --dev         # the dev deployment's site
     npm run web:sign-in -- --local       # Vite on localhost:5181, dev data
 
-`web/scripts/sign-in.swift` puts the token in the link's `#fragment`, which
-browsers never send to a server; the page keeps it and wipes it from the
-address bar. The token is never printed. Revoke a browser from Settings ›
+`web/scripts/sign-in.swift` puts a one-use sign-in code
+(`tokens:issueCode` with `kind: "browser"`) in the link's `#fragment`,
+which browsers never send to a server; the page trades it for the token
+and wipes it from the address bar. Neither is ever printed. Revoke a browser from Settings ›
 Phone & browser, or with `npx convex run tokens:revoke '{"name":"web-mac"}'
 --prod`; it then shows the sign-in page. The page is `noindex` and sends no referrer.
 

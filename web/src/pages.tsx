@@ -11,7 +11,7 @@ import { useLiveQuery, usePageAway } from './live';
 import { useInbox } from './inbox';
 import { MessageText } from './messages';
 import { CommandState } from './command-state';
-import { go, threadPath, type RailView, viewPath } from './route';
+import { go, projectPath, threadPath, type RailView, viewPath } from './route';
 import { ago, day, folderName } from './format';
 import { readTheme, setTheme, type Theme } from './theme';
 import { bytesWords, statsFresh, isOnline, matchesSchedule, runnersShown, runnerState, scheduleSections, sinceWords, tightest, untilWords } from './view-logic';
@@ -337,7 +337,7 @@ function PageGone({ view, what }: { view: RailView; what: string }) {
 // browser can't draw).
 const iconOf = (p: object) => (p as { icon?: { url?: string } }).icon?.url;
 
-export function ProjectsList({ token, selected }: { token: string; selected?: string }) {
+export function ProjectsList({ token, selected }: { token: string; selected?: { runnerId: string; id: string } }) {
   const rows = useLiveQuery(api.phone.projects, { token });
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
@@ -372,8 +372,8 @@ export function ProjectsList({ token, selected }: { token: string; selected?: st
             {shown.map((p) => (
               <ListRow
                 key={`${p.runnerId}/${p.id}`}
-                href={viewPath('projects', p.id)}
-                on={p.id === selected}
+                href={projectPath(p.runnerId, p.id)}
+                on={p.runnerId === selected?.runnerId && p.id === selected.id}
                 title={p.title}
                 sub={`${p.threadCount} ${p.threadCount === 1 ? 'thread' : 'threads'}`}
                 right={p.lastActivityAt ? ago(Date.parse(p.lastActivityAt)) : undefined}
@@ -394,16 +394,17 @@ export function ProjectsList({ token, selected }: { token: string; selected?: st
 const PROJECT_THREADS_FIRST = 50;
 const PROJECT_THREADS_MORE = 100;
 
-export function ProjectPage({ token, id }: { token: string; id: string }) {
+export function ProjectPage({ token, runnerId, id }: { token: string; runnerId?: string; id: string }) {
   const rows = useLiveQuery(api.phone.projects, { token });
-  // The list says which runner has it; its goals, state and notes are read for
-  // this project alone.
-  const head = rows?.find((x) => x.id === id);
+  // The address says which runner's project it is (route-path.ts); its goals,
+  // state, notes and threads are read for that runner's project alone, as
+  // another runner can have a project with the same id (Daybreak 141).
+  const head = runnerId === undefined ? undefined : rows?.find((x) => x.runnerId === runnerId && x.id === id);
   const p = useLiveQuery(api.phone.project, head ? { token, runnerId: head.runnerId, id } : 'skip');
   const [limit, setLimit] = useState(PROJECT_THREADS_FIRST);
   // Archived threads too, so the list matches the "22 threads" in the
   // sidebar rather than only the ones still in the inbox.
-  const threads = useLiveQuery(api.phone.projectThreads, { token, projectId: id, limit });
+  const threads = useLiveQuery(api.phone.projectThreads, head ? { token, runnerId: head.runnerId, projectId: id, limit } : 'skip');
   // A new project starts from the first page again.
   useEffect(() => setLimit(PROJECT_THREADS_FIRST), [id]);
   if (!rows) return <div className="pad muted">Loading…</div>;

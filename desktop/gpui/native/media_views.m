@@ -24,6 +24,7 @@
 #import <AppKit/AppKit.h>
 #import <PDFKit/PDFKit.h>
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -69,9 +70,40 @@ static const long long TBDocumentLimit = 256LL * 1024 * 1024;
 
 // ---------------------------------------------------------------- the file
 
+// The most of one film's bytes AVFoundation may be holding at once. It keeps
+// what it's handed for as long as it likes, so a request it never cancels
+// would otherwise pull in the whole file. Past this, the next megabyte waits
+// until some is let go: slower, never cut short. Well above anything it has
+// to hold whole, such as a long film's index.
+#ifndef TB_FILE_HELD_LIMIT
+#define TB_FILE_HELD_LIMIT (256LL * 1024 * 1024)
+#endif
+static const long long TBFileHeldLimit = TB_FILE_HELD_LIMIT;
+// How long a request waits at that limit with nothing let go before it fails.
+// AVFoundation may never let go (it promises nothing), and a request waiting
+// keeps the source and its file open: failing it ends that, and the film
+// shows as failed rather than the app running out of memory (Codex's third
+// review, 17 Nov).
+#ifndef TB_FILE_HELD_WAIT_NS
+#define TB_FILE_HELD_WAIT_NS (10 * NSEC_PER_SEC)
+#endif
+
+// How many bytes handed to AVFoundation it still holds, counted down as it
+// lets each go. Its own object, as AVFoundation may let go of the last after
+// the source has gone.
+@interface TBHeldBytes : NSObject {
+ @public
+  _Atomic long long count;
+}
+@end
+
+@implementation TBHeldBytes
+@end
+
 // The checked file, held open, serving a film's bytes to AVFoundation as it
 // asks for them, from a queue of its own. Closes the file when it goes.
 @interface TBFileSource : NSObject <AVAssetResourceLoaderDelegate>
+@property(nonatomic, readonly) TBHeldBytes *held;
 @property(nonatomic, readonly) int fd;
 @property(nonatomic, readonly) long long length;
 @property(nonatomic, readonly, copy) NSString *contentType;
@@ -89,6 +121,7 @@ static const long long TBDocumentLimit = 256LL * 1024 * 1024;
     NSString *ext = path.pathExtension.lowercaseString;
     _contentType = [ext isEqualToString:@"mov"] ? AVFileTypeQuickTimeMovie : [ext isEqualToString:@"m4v"] ? AVFileTypeAppleM4V : AVFileTypeMPEG4;
     _queue = dispatch_queue_create("threadbear.media.file", DISPATCH_QUEUE_SERIAL);
+    _held = [TBHeldBytes new];
     if (fstat(fd, &_opened) != 0) {
       memset(&_opened, 0, sizeof _opened);
     }
@@ -102,35 +135,80 @@ static const long long TBDocumentLimit = 256LL * 1024 * 1024;
   }
 }
 
+// Each request is answered a megabyte at a time, one block on the queue per
+// megabyte, so a cancel lands between them. Answered in one go, AVFoundation
+// asked for everything to the end and held all of it: an 8 GB export in a
+// thread took the app past 48 GB until it died (17 Nov). Telling it the
+// whole file is on hand (entireLengthAvailableOnDemand) makes it ask for
+// just the ranges it needs instead: about 10 MB held for a 1.8 GB film
+// played and sought, against 1.8 GB before, and TBFileHeldLimit caps it if
+// it doesn't. A request is never finished short of what it asked for:
+// AVFoundation takes that as the file's end.
 - (BOOL)resourceLoader:(AVAssetResourceLoader *)loader shouldWaitForLoadingOfRequestedResource:(AVAssetResourceLoadingRequest *)request {
   AVAssetResourceLoadingContentInformationRequest *info = request.contentInformationRequest;
   if (info) {
     info.contentType = self.contentType;
     info.contentLength = self.length;
     info.byteRangeAccessSupported = YES;
+    info.entireLengthAvailableOnDemand = YES;
   }
   AVAssetResourceLoadingDataRequest *data = request.dataRequest;
-  if (data) {
-    long long end = data.requestsAllDataToEndOfResource ? self.length : MIN(self.length, data.requestedOffset + (long long)data.requestedLength);
-    long long at = data.currentOffset;
-    while (at < end) {
-      if (request.isCancelled) {
-        return YES;
-      }
-      size_t chunk = (size_t)MIN(1024LL * 1024, end - at);
-      NSMutableData *bytes = [NSMutableData dataWithLength:chunk];
-      ssize_t got = pread(self.fd, bytes.mutableBytes, chunk, at);
-      if (got <= 0) {
-        [request finishLoadingWithError:[NSError errorWithDomain:NSPOSIXErrorDomain code:got < 0 ? errno : EIO userInfo:nil]];
-        return YES;
-      }
-      bytes.length = (NSUInteger)got;
-      [data respondWithData:bytes];
-      at += got;
-    }
+  if (!data) {
+    [request finishLoading];
+    return YES;
   }
-  [request finishLoading];
+  long long end = data.requestsAllDataToEndOfResource ? self.length : MIN(self.length, data.requestedOffset + (long long)data.requestedLength);
+  [self serve:request upTo:end waitingSince:0];
   return YES;
+}
+
+// The next megabyte of a request, then the rest from a later block.
+// `waitingSince` is when it started waiting at the hold limit, or 0.
+- (void)serve:(AVAssetResourceLoadingRequest *)request upTo:(long long)end waitingSince:(uint64_t)waitingSince {
+  if (request.isCancelled || request.isFinished) {
+    return;
+  }
+  long long at = request.dataRequest.currentOffset;
+  if (at >= end) {
+    [request finishLoading];
+    return;
+  }
+  TBHeldBytes *held = self.held;
+  if (atomic_load(&held->count) >= TBFileHeldLimit) {
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    uint64_t since = waitingSince ? waitingSince : now;
+    if (now - since >= TB_FILE_HELD_WAIT_NS) {
+      [request finishLoadingWithError:[NSError errorWithDomain:NSPOSIXErrorDomain code:ENOMEM userInfo:nil]];
+      return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), self.queue, ^{
+      [self serve:request upTo:end waitingSince:since];
+    });
+    return;
+  }
+  @autoreleasepool {
+    size_t chunk = (size_t)MIN(1024LL * 1024, end - at);
+    void *buffer = malloc(chunk);
+    ssize_t got = buffer ? pread(self.fd, buffer, chunk, at) : -1;
+    if (got <= 0) {
+      int failure = got < 0 ? (buffer ? errno : ENOMEM) : EIO;
+      free(buffer);
+      [request finishLoadingWithError:[NSError errorWithDomain:NSPOSIXErrorDomain code:failure userInfo:nil]];
+      return;
+    }
+    atomic_fetch_add(&held->count, (long long)got);
+    // Counted back down when AVFoundation lets the bytes go.
+    NSData *bytes = [[NSData alloc] initWithBytesNoCopy:buffer
+                                                 length:(NSUInteger)got
+                                            deallocator:^(void *gone, NSUInteger length) {
+                                              free(gone);
+                                              atomic_fetch_sub(&held->count, (long long)length);
+                                            }];
+    [request.dataRequest respondWithData:bytes];
+  }
+  dispatch_async(self.queue, ^{
+    [self serve:request upTo:end waitingSince:0];
+  });
 }
 
 // The open file as it was when the gate opened it: the same size, last

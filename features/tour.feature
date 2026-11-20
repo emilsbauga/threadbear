@@ -48,18 +48,21 @@ Feature: The tour, the pages' intros and Finish setting up
   # How a launch decides on the tour by itself. The Swift app keeps whether
   # it's been seen in its own defaults, and a scripted Swift app never starts
   # it, so these are the GPUI app's: it reads the Swift app's on first launch.
-  @tour.firstrun @swift-pending
-  Scenario: A new install gets the tour by itself, with no Skip
+  # Since 17 Nov a new install gets the setup cards (hello.feature) rather
+  # than the tour, which Help still has.
+  @tour.hello @swift-pending
+  Scenario: A new install gets the setup cards by itself, not the tour
     Given the app opens as a new install would, with no Swift app before it
-    Then the tour shows "Welcome to Threadbear"
-    And the tour can't be skipped
+    Then the setup cards show "Hi, I'm Threadbear"
+    And no tour card shows
 
   @tour.firstrun @swift-pending
   Scenario: Someone who finished the Swift app's tour doesn't get it again
     Given the app opens as a new install would, after a Swift app whose tour was finished
     Then no tour card shows
+    And no setup card shows
 
-  @tour.firstrun @swift-pending
-  Scenario: Someone who never finished the Swift app's tour gets it
+  @tour.hello @swift-pending
+  Scenario: Someone who never finished the Swift app's tour gets the setup cards
     Given the app opens as a new install would, after a Swift app whose tour was never finished
-    Then the tour shows "Welcome to Threadbear"
+    Then the setup cards show "Hi, I'm Threadbear"

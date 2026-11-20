@@ -88,7 +88,7 @@ impl SettingsWindow {
         let app = self.app.upgrade()?;
         let t = app.read(cx);
         let this_mac = t.remote.all_runners.iter().find(|r| r.is_self).cloned();
-        let others = t.remote.runners.clone();
+        let others = t.remote.machines();
         let order = t.runners_panel.order.clone();
         let default = t.new_thread.prefs.remembered.default_runner.clone();
         let orderable = rules::can_order(order.is_some(), &others, &t.remote.all_runners);
@@ -233,12 +233,12 @@ fn row(label: &'static str, control: impl IntoElement, cx: &App) -> AnyElement {
 pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) -> Result<Option<Value>, String> {
     use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
     if let Some(name) = cmd["defaultRunner"].as_str() {
-        let runner = if name == "This Mac" { None } else { Some(app.read(cx).remote.runners.iter().find(|r| r.name == name).ok_or_else(|| format!("no runner {name}"))?.id.clone()) };
+        let runner = if name == "This Mac" { None } else { Some(app.read(cx).remote.machines().into_iter().find(|r| r.name == name).ok_or_else(|| format!("no runner {name}"))?.id) };
         app.update(cx, |t, cx| t.set_default_runner(runner, cx));
         return Ok(Some(json!("ok")));
     }
     let (Some(from), Some(onto)) = (cmd["drag"].as_str(), cmd["onto"].as_str()) else { return Ok(None) };
-    let id_of = |name: &str| app.read(cx).remote.all_runners.iter().map(|r| (r.id.clone(), r.name.clone())).chain(app.read(cx).remote.runners.iter().map(|r| (r.id.clone(), r.name.clone()))).find(|(_, n)| n == name).map(|(id, _)| id).ok_or_else(|| format!("no runner {name}"));
+    let id_of = |name: &str| app.read(cx).remote.all_runners.iter().map(|r| (r.id.clone(), r.name.clone())).chain(app.read(cx).remote.machines().into_iter().map(|r| (r.id, r.name))).find(|(_, n)| n == name).map(|(id, _)| id).ok_or_else(|| format!("no runner {name}"));
     let (a, b) = (id_of(from)?, id_of(onto)?);
     let handle = app.read(cx).settings_window.as_ref().map(|(h, _)| *h).ok_or("the Settings window isn't open")?;
     handle

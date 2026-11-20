@@ -245,7 +245,9 @@ impl ReviewWindow {
             .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| this.stage_scrolled(ev, cx)))
             .on_pinch(cx.listener(|this, ev: &PinchEvent, _, cx| this.stage_pinched(ev, cx)))
             .child(
+                // With an id, so a GIF option plays (files.rs, the pane's picture).
                 img(crate::rows::markdown::file_picture(&path))
+                    .id(SharedString::from(format!("stage-picture-{path}")))
                     .absolute()
                     .left(pt(image.x))
                     .top(pt(image.y))
@@ -297,8 +299,11 @@ impl ReviewWindow {
         }
         let play_tip = if crate::media_view::SHOWN_HERE { "Play it in the app this computer plays videos in" } else { "Play it in the app this computer plays videos in: this window can't play clips yet" };
         let (icon, words, tip, path) = match (shot.video(), shot.page()) {
-            (Some(video), _) => (IconName::Play, "Play the clip", play_tip, video.to_owned()),
-            (_, Some(page)) => (IconName::Globe, "Open the page", "Open it in your browser: this window can't show pages yet", page.to_owned()),
+            (Some(video), _) => (IconName::Play, "Play the clip", play_tip.to_owned(), video.to_owned()),
+            // Says why it isn't here: this window does show pages, so "can't
+            // show pages yet" sent Mike looking for why it was a button at
+            // all (16 Nov, Chromium hadn't started after an update).
+            (_, Some(page)) => (IconName::Globe, "Open the page", format!("Open it in your browser. It isn't showing here because {}", self.page_away_why(page, cx)), page.to_owned()),
             _ => return div().into_any_element(),
         };
         let unavailable = style::secondary_text(cx);
@@ -340,9 +345,39 @@ impl ReviewWindow {
                     }))
                     // Dimmed, so it reads as a still with something to open,
                     // and the button stands out over any mockup.
-                    .child(div().absolute().inset_0().bg(hsla(0., 0., 0., 0.35)).flex().items_center().justify_center().child(button)),
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .bg(hsla(0., 0., 0., 0.35))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            // Under it, after a failed start, the way to get
+                            // pages back here (web panels and Settings have it too).
+                            .child(v_flex().items_center().gap(px(10.)).child(button).children(shot.page().and_then(|_| crate::web_runtime::try_again_button("review-web-try-again", cx)))),
+                    ),
             )
             .into_any_element()
+    }
+
+    /// Why a page shot is its still rather than the page: what stopped
+    /// `stage_page`.
+    fn page_away_why(&self, path: &str, cx: &App) -> String {
+        if let Some((_, why)) = self.stage.page_failed.as_ref().filter(|(p, _)| p == path) {
+            return why.clone();
+        }
+        use crate::web_runtime::Engine;
+        use threadbear_core::web_runtime::State;
+        let Some(runtime) = crate::web_runtime::runtime(cx) else { return "pages can't show here on this system yet".into() };
+        let r = runtime.read(cx);
+        match (&r.state, &r.engine) {
+            (State::Ready, Engine::Failed(why)) => format!("the web runtime didn't start: {why}"),
+            (State::Ready, Engine::Waiting(_)) => "the web runtime is waiting for the last copy of Threadbear to quit".into(),
+            (State::Ready, _) => "the web runtime is starting".into(),
+            (State::Unavailable, _) => "pages can't show here on this system yet".into(),
+            (state, _) => format!("the web runtime isn't ready ({})", state.words().to_lowercase()),
+        }
     }
 
     /// The page's view, placed where it's drawn each frame, or None while the

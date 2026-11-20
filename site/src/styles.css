@@ -115,6 +115,11 @@ code { font-family: var(--mono); font-size: .875em; }
 .nav-links a:hover { background: rgba(31, 28, 24, .05); color: var(--ink); }
 .nav-links a:active { transform: scale(.98); }
 .nav-links a[aria-current="page"] { background: var(--well); color: var(--ink); }
+/* What's new's dot (site.js hides it once you've seen the newest release). Blue, as it's the one
+   thing on the bar saying "look here", the way the app marks unread threads. */
+.whats-new { position: relative; }
+.new-dot { position: absolute; top: 7px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: #2f7cf6; box-shadow: 0 0 0 2px var(--card); }
+.whats-new.seen .new-dot, .whats-new[aria-current="page"] .new-dot { display: none; }
 
 /* Buttons (B1, B2): 8 px by 12 px, 16 px semibold, or 14 px in the header. */
 .btn {
@@ -183,6 +188,10 @@ code { font-family: var(--mono); font-size: .875em; }
 .corner svg { width: 100%; height: 100%; display: block; fill: var(--ink); }
 .corner.github { right: 0; clip-path: polygon(0 0, 100% 0, 100% 100%); }
 .corner.github .octo { fill: var(--page); }
+/* Convex's corner, top left: the GitHub one's mirror image, with the mark in the page colour. */
+.corner.convex { left: 0; clip-path: polygon(0 0, 100% 0, 0 100%); }
+.corner.convex .convex-mark { position: absolute; top: 7px; left: 7px; width: 30px; height: 30px; fill: var(--page); transition: transform 300ms var(--ease); }
+.corner.convex:hover .convex-mark { transform: rotate(-20deg); }
 .corner.github:hover .arm { animation: octo-wave 560ms var(--ease); transform-origin: 130px 106px; }
 @keyframes octo-wave { 0%, 100% { transform: rotate(0) } 20%, 60% { transform: rotate(-25deg) } 40%, 80% { transform: rotate(10deg) } }
 
@@ -259,17 +268,25 @@ a.appstore:active { transform: scale(.98); }
 .prompt-box code { font-size: inherit; }
 
 /* hero: one line, the copy button, then the player, all inside the first 900 px on a laptop */
-.hero { max-width: 1240px; margin: 0 auto; padding: var(--s-300) var(--s-300) 0; text-align: center; }
+/* The extra room above the title and above the player is Mike's call (17 Nov): at 24px the
+   title sat right under the nav and the clip nearly touched the "Free" line. */
+.hero { max-width: 1240px; margin: 0 auto; padding: var(--s-500) var(--s-300) 0; text-align: center; }
 .hero-title { font-size: 60px; line-height: 60px; font-weight: 600; letter-spacing: -.035em; }
 .hero-sub { font-size: 18px; line-height: 28px; color: var(--body); max-width: 700px; margin: var(--s-100) auto 0; }
+/* Each agent named in the hero line carries its logo, in the ink colour, sized to the text. */
+.agent { white-space: nowrap; }
+.agent .icon { display: inline-block; width: 0.95em; height: 0.95em; vertical-align: -0.12em; margin-right: 0.22em; color: var(--ink); }
 .hero-cta { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: var(--s-100) var(--s-300); margin-top: var(--s-300); }
 .risk { margin-top: var(--s-100); font-size: 14px; line-height: 20px; font-weight: 500; color: var(--ink-soft); }
-.peek { max-width: 640px; margin: var(--s-200) auto 0; }
-.peek .prompt-box { box-shadow: var(--lift); }
+/* The platforms, as logos with "Free" under them (build.mjs platforms()). */
+.platforms { display: flex; flex-direction: column; align-items: center; margin-top: var(--s-200); }
+.platform-logos { display: flex; gap: var(--s-200); color: var(--ink-soft); }
+.platform svg { width: 22px; height: 22px; display: block; }
+.platforms .risk { margin-top: var(--s-50); }
 
 /* The player: the features down the left, the clip on the right (scripts/build.mjs's SLIDES,
    site.js plays it). */
-.player { display: grid; grid-template-columns: 292px minmax(0, 1fr); gap: var(--s-400); align-items: center; max-width: 1120px; margin: var(--s-300) auto 0; text-align: left; }
+.player { display: grid; grid-template-columns: 292px minmax(0, 1fr); gap: var(--s-400); align-items: center; max-width: 1120px; margin: var(--s-700) auto 0; text-align: left; }
 .feats { list-style: none; display: flex; flex-direction: column; gap: var(--s-50); }
 .feat button {
   position: relative; overflow: hidden; width: 100%; display: grid; grid-template-columns: 36px minmax(0, 1fr); column-gap: var(--s-100); align-items: center;
@@ -380,7 +397,8 @@ a.video-card:hover .video-play { scale: 1.06; }
 .send-mac[hidden] { display: none; }
 .phone-row { display: flex; align-items: center; gap: var(--s-200); margin-top: var(--s-300); padding: 0 var(--s-50); }
 .phone-row p { font-size: 16px; line-height: 24px; color: var(--body); }
-.phone-row .appstore { flex: none; }
+.store-badges { display: flex; flex-wrap: wrap; gap: var(--s-100); flex: none; }
+.appstore.android .appstore-logo { margin-top: 0; }
 
 /* FAQ, as an accordion. */
 .faq-list { max-width: 760px; margin: 0 auto; border-top: 1px solid var(--line); }
@@ -421,7 +439,7 @@ a.video-card:hover .video-play { scale: 1.06; }
    the playing one filling as its clip runs), and its line moves under the clip. */
 @media (max-width: 860px) {
   /* The corner sat on the nav pill; the menu links the code instead. */
-  .corner.github { display: none; }
+  .corner.github, .corner.convex { display: none; }
   .hero { padding: var(--s-300) var(--s-200) 0; }
   .hero-title { font-size: 36px; line-height: 40px; }
   .hero-sub { font-size: 16px; line-height: 24px; }
@@ -510,6 +528,34 @@ a.video-card:hover .video-play { scale: 1.06; }
 .doc-index a { display: block; padding: var(--s-100) 0; border-bottom: 1px solid var(--line); font-size: 16px; line-height: 24px; font-weight: 500; text-decoration: none; }
 .doc-next { margin-top: var(--s-500); padding-top: var(--s-200); border-top: 1px solid var(--line); font-size: 16px; line-height: 24px; font-weight: 500; }
 .doc-next a { text-decoration: none; }
+/* The docs search (src/docs-search.js): a button above the docs list that looks like a field, and
+   the box it opens over the page, near the top like a command palette, with the results under it.
+   A result's matched words are marked in honey, and the heading a result opens flashes once. */
+.docs-search-open { display: flex; align-items: center; gap: var(--s-100); width: 100%; margin-bottom: var(--s-200); padding: var(--s-75) var(--s-100); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); color: var(--ink-faint); font: inherit; font-size: 14px; line-height: 20px; text-align: left; cursor: pointer; transition: border-color 300ms var(--ease), color 300ms var(--ease); }
+.docs-search-open[hidden] { display: none; }
+.docs-search-open:hover { border-color: var(--ink-faint); color: var(--ink-soft); }
+.docs-search-open .icon { font-size: 16px; }
+.docs-search-open span { flex: 1; }
+.docs-search-open kbd, .docs-search kbd { font-family: var(--sans); font-size: 12px; line-height: 16px; padding: 0 var(--s-50); border: 1px solid var(--line); border-radius: var(--r); color: var(--ink-faint); background: var(--page); }
+.docs-search { width: min(640px, calc(100vw - var(--s-400))); max-height: min(560px, calc(100dvh - var(--s-900))); margin: var(--s-900) auto auto; padding: 0; border: 0; border-radius: var(--r-2xl); background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(31, 28, 24, .08), 0 24px 64px rgba(60, 45, 20, .22); overflow: hidden; }
+.docs-search[open] { display: flex; flex-direction: column; }
+.docs-search::backdrop { background: rgba(31, 28, 24, .28); backdrop-filter: blur(2px); }
+.ds-field { display: flex; align-items: center; gap: var(--s-100); padding: var(--s-100) var(--s-200); border-bottom: 1px solid var(--line); }
+.ds-field .icon { font-size: 20px; color: var(--ink-faint); }
+.ds-field input { flex: 1; min-width: 0; padding: var(--s-75) 0; border: 0; outline: 0; background: none; color: var(--ink); font: inherit; font-size: 18px; line-height: 28px; }
+.ds-results { list-style: none; overflow-y: auto; padding: var(--s-75); }
+.ds-results:empty { display: none; }
+.ds-results a { display: flex; flex-direction: column; gap: var(--s-25); padding: var(--s-75) var(--s-100); border-radius: var(--r-lg); text-decoration: none; color: var(--ink); }
+.ds-results [aria-selected="true"] a { background: var(--well); }
+.ds-title { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--s-75); font-size: 15px; line-height: 20px; font-weight: 500; }
+.ds-page { font-size: 13px; font-weight: 400; color: var(--ink-faint); white-space: nowrap; }
+.ds-text { font-size: 14px; line-height: 20px; color: var(--ink-soft); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ds-results mark { background: var(--honey-tint); color: var(--honey-d); border-radius: var(--r-sm); }
+@media (pointer: coarse) { .docs-search kbd, .docs-search-open kbd { display: none; } }
+.ds-empty { padding: var(--s-300) var(--s-200); font-size: 14px; line-height: 20px; color: var(--ink-soft); }
+@keyframes ds-flash { from { background-color: var(--honey-tint); } to { background-color: transparent; } }
+.doc :target, .doc .ds-flash { animation: ds-flash 2s var(--ease); border-radius: var(--r-md); }
+::highlight(docs-search) { background-color: #f3dcae; color: var(--ink); }
 @media (max-width: 860px) {
   .docs { grid-template-columns: minmax(0, 1fr); margin: var(--s-500) auto var(--s-700); padding: 0 var(--s-200); gap: var(--s-300); }
   .docs-nav { position: static; }
@@ -573,4 +619,175 @@ a.video-card:hover .video-play { scale: 1.06; }
   .cl-button { left: calc(var(--s-500) * -1 - 1px); }
   .cl-feature { padding: var(--s-200); }
   .cl-year { display: none; }
+}
+
+/* ---------- the hero's live inbox (src/live-inbox.js) ---------- */
+
+/* Hero: copy on the left, the live inbox on the right, on wide screens. The hero fills the first
+   screen, so the feature player starts on the second (Mike, 19 Nov: two dark app windows one
+   above the other said the same thing).
+
+   On wide screens everything in it is a multiple of --hu, a length that's 1px on a 1440 by 900
+   screen and grows with the screen, so a big monitor gets the same picture a bit bigger and
+   not a laptop-sized island (Mike, 19 Nov: "you've got to think about really large screens
+   too"). It stops at 1.25px: at 1.8 times on his big monitor it felt "way too big", "it should
+   have like a maximum size". It's the smaller of the width's share and the height's, so the
+   hero always fits the first screen. That makes the hero's type fluid, the one place off the
+   type scale. Text stops shrinking at its 1440 size; only the headline and the spacing go
+   smaller. */
+.js .hero-top { min-height: calc(100svh - 104px); display: flex; flex-direction: column; justify-content: center; padding-bottom: var(--s-400); }
+@media (min-width: 1081px) {
+  .js .hero { --hu: clamp(.8334px, min(100vw / 1440, (100svh - 104px) / 640), 1.25px); max-width: none; }
+  .js .hero-top {
+    display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 7fr); gap: calc(64 * var(--hu));
+    align-items: center; max-width: calc(1240 * var(--hu)); margin: 0 auto; text-align: left;
+    /* A window much taller than it's wide (a monitor on its side) doesn't get a screen of air:
+       the hero stops at 62% of the width. And it sits a little above the middle, where the eye
+       puts the centre. */
+    min-height: min(100svh - 104px, 62vw); padding-bottom: 10svh;
+  }
+  .js .hero-top .hero-title { font-size: calc(72 * var(--hu)); line-height: 1; }
+  .js .hero-top .hero-sub { margin: calc(16 * var(--hu)) 0 0; max-width: calc(520 * var(--hu)); font-size: max(18px, 18 * var(--hu)); line-height: 1.5556; }
+  .js .hero-top .hero-cta { justify-content: flex-start; margin-top: calc(32 * var(--hu)); }
+  .js .hero-top .btn-lg { font-size: max(16px, 16 * var(--hu)); line-height: 1.5; padding: max(12px, 12 * var(--hu)) max(24px, 24 * var(--hu)); min-height: max(56px, 56 * var(--hu)); border-radius: max(12px, 12 * var(--hu)); gap: max(12px, 12 * var(--hu)); }
+  .js .hero-top .btn-lg .icon { font-size: max(20px, 20 * var(--hu)); }
+  .js .hero-top .platforms { align-items: flex-start; margin-top: max(16px, 16 * var(--hu)); }
+  .js .hero-top .platform-logos { gap: max(16px, 16 * var(--hu)); }
+  .js .hero-top .platform svg { width: max(22px, 22 * var(--hu)); height: max(22px, 22 * var(--hu)); }
+  .js .hero-top .risk { font-size: max(14px, 14 * var(--hu)); line-height: 1.4286; }
+  /* The player under it grows by the same share, so it doesn't look small after the hero. */
+  .js .player { max-width: max(1120px, 1120 * var(--hu)); grid-template-columns: max(292px, 250 * var(--hu)) minmax(0, 1fr); }
+}
+/* Full width: it sizes to its container (container-type), so in the hero's flex column it'd
+   otherwise shrink to nothing. */
+.live { width: 100%; margin: var(--s-600) auto 0; max-width: 580px; }
+@media (min-width: 1081px) { .live { margin: 0; max-width: none; } }
+@media (max-width: 860px) { .live { margin-top: var(--s-500); } }
+.live:empty { display: none; }
+
+/* The headline's last word arrives quick and settles. */
+.js .hero-title .fast { display: inline-block; }
+@media (prefers-reduced-motion: no-preference) {
+  .js .hero-title .fast {
+    animation: ld-fast 620ms 260ms both;
+    animation-timing-function: cubic-bezier(.3, 1.5, .5, 1);
+    animation-timing-function: linear(0, .09 2%, .33 5%, .65 9%, .9 13%, 1.04 17%, 1.1 21%, 1.09 25%, 1.05 30%, 1.01 36%, .99 44%, 1);
+  }
+}
+@keyframes ld-fast {
+  from { opacity: 0; transform: translateX(.55em) skewX(-14deg); }
+  30% { opacity: 1; }
+  to { opacity: 1; transform: none; }
+}
+
+/* The window, in the page's own paper, white and warm greys with ink for what's chosen, so it
+   belongs to the page (Mike picked this "Paper window" on 19 Nov over the app's dark colours,
+   which sat on the page as a dark slab; the feature clips under it stay dark). It's drawn 580
+   wide and every size in it is a multiple of --u, so it fills its column at any width; on a
+   phone --u is 1px. Hairlines stay 1px. */
+.ld { container-type: inline-size; }
+.ld-win {
+  --u: calc(100cqw / 580); --rh: calc(46 * var(--u));
+  position: relative; height: calc(420 * var(--u)); display: grid; grid-template-columns: calc(218 * var(--u)) minmax(0, 1fr);
+  background: #fffdf9; color: var(--ink); border-radius: calc(12 * var(--u)); overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(31, 28, 24, .09), 0 2px 4px rgba(31, 28, 24, .04), 0 calc(30 * var(--u)) calc(64 * var(--u)) calc(-24 * var(--u)) rgba(60, 45, 20, .3);
+  font: calc(12.5 * var(--u))/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  text-align: left; user-select: none; -webkit-user-select: none; contain: layout paint; isolation: isolate;
+}
+.ld .ic { width: calc(14 * var(--u)); height: calc(14 * var(--u)); fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.ld-lights { position: absolute; left: calc(12 * var(--u)); top: calc(12 * var(--u)); display: flex; gap: calc(7 * var(--u)); z-index: 2; }
+.ld-lights i { width: calc(10 * var(--u)); height: calc(10 * var(--u)); border-radius: 50%; background: #e0dacd; }
+
+.ld-side { position: relative; padding: calc(36 * var(--u)) calc(8 * var(--u)) calc(8 * var(--u)); background: #f4f1ea; border-right: 1px solid var(--line); }
+.ld-sec { display: flex; align-items: center; gap: calc(7 * var(--u)); height: calc(28 * var(--u)); padding: 0 calc(8 * var(--u)); color: var(--ink-soft); font-weight: 600; font-size: calc(12 * var(--u)); }
+.ld-sec .rule { flex: 1; height: 1px; background: rgba(31, 28, 24, .08); }
+.ld-sec.run { margin-top: calc(4 * var(--u)); }
+/* Running and Hibernating ride over the rows like a curtain, so rows arrive from under them. */
+.ld-after { position: relative; z-index: 1; background: #f4f1ea; }
+.ld-count { display: inline-grid; overflow: hidden; height: calc(17 * var(--u)); min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-faint); }
+.ld-count > span { grid-area: 1 / 1; }
+
+.ld-rows { position: relative; height: calc(var(--rh) * 4); }
+.ld-row {
+  position: absolute; left: 0; right: 0; top: 0; height: calc(var(--rh) - 2 * var(--u));
+  display: flex; align-items: center; gap: calc(9 * var(--u)); padding: 0 calc(8 * var(--u)) 0 calc(14 * var(--u)); border-radius: calc(8 * var(--u));
+}
+.ld-row::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; background: #e6e0d3;
+  opacity: 0; transition: opacity 180ms var(--ease);
+}
+.ld-row.sel::before { opacity: 1; }
+.ld-row > * { position: relative; }
+.ld-dot { position: absolute; left: calc(3 * var(--u)); top: 50%; width: calc(6 * var(--u)); height: calc(6 * var(--u)); margin-top: calc(-3 * var(--u)); border-radius: 50%; background: #3d7be0; }
+.ld-av { width: calc(28 * var(--u)); height: calc(28 * var(--u)); border-radius: calc(7 * var(--u)); background: #e9e3d6; display: grid; place-items: center; flex: none; color: var(--ink-soft); font-size: calc(17 * var(--u)); font-weight: 600; }
+.ld-av .ic { width: calc(15 * var(--u)); height: calc(15 * var(--u)); }
+.ld-tx { min-width: 0; flex: 1; }
+.ld-t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ld-s { display: flex; justify-content: space-between; gap: calc(6 * var(--u)); color: var(--ink-soft); font-size: calc(11.5 * var(--u)); }
+.ld-s span:last-child { color: var(--ink-faint); flex: none; }
+
+.ld-main { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.ld-head { position: relative; height: calc(40 * var(--u)); flex: none; border-bottom: 1px solid var(--line); font-weight: 600; font-size: calc(13 * var(--u)); }
+.ld-ht { position: absolute; left: calc(16 * var(--u)); right: calc(16 * var(--u)); top: calc(11 * var(--u)); display: flex; gap: calc(8 * var(--u)); align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.ld-ht .ic { color: var(--ink-faint); }
+.ld-body { position: relative; flex: 1; }
+.ld-tr { position: absolute; inset: calc(16 * var(--u)) calc(16 * var(--u)) 0; }
+.ld-bubble { margin-left: auto; width: fit-content; max-width: 84%; background: #efeae0; border-radius: calc(12 * var(--u)); padding: calc(7 * var(--u)) calc(11 * var(--u)); }
+.ld-worked { margin-top: calc(14 * var(--u)); color: var(--ink-faint); font-size: calc(11.5 * var(--u)); display: flex; gap: calc(6 * var(--u)); align-items: center; }
+.ld-said { margin-top: calc(6 * var(--u)); color: var(--body); }
+
+.ld-compose {
+  position: relative; margin: 0 calc(14 * var(--u)) calc(14 * var(--u)); border: 1px solid #ddd6c8; border-radius: calc(12 * var(--u)); background: var(--card); overflow: hidden; flex: none;
+  box-shadow: 0 calc(6 * var(--u)) calc(18 * var(--u)) calc(-10 * var(--u)) rgba(60, 45, 20, .25);
+}
+.ld-cardarea { position: relative; height: calc(106 * var(--u)); border-bottom: 1px solid var(--line); overflow: hidden; }
+.ld-card { position: absolute; inset: 0; padding: calc(11 * var(--u)) calc(13 * var(--u)); background: var(--card); }
+.ld-ch { display: flex; align-items: center; gap: calc(6 * var(--u)); font-weight: 600; }
+.ld-ch span:first-child { font-size: calc(13 * var(--u)); }
+.ld-ch b { margin-left: auto; font-weight: 500; color: var(--ink-faint); font-size: calc(11.5 * var(--u)); }
+.ld-q { margin-top: calc(6 * var(--u)); display: flex; gap: calc(7 * var(--u)); }
+.ld-q i { font-style: normal; color: var(--ink-faint); }
+.ld-btns { display: flex; gap: calc(7 * var(--u)); margin-top: calc(10 * var(--u)); flex-wrap: nowrap; }
+.ld-btn {
+  position: relative; padding: calc(4 * var(--u)) calc(10 * var(--u)); border-radius: calc(7 * var(--u)); background: var(--card); color: var(--ink); font-size: calc(12 * var(--u)); white-space: nowrap;
+  box-shadow: inset 0 0 0 1px #d9d2c3; transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+.ld-btn:first-child { box-shadow: inset 0 0 0 1px var(--ink-faint); }
+.ld-btn.chosen { background: var(--ink); color: #fff; box-shadow: none; }
+.ld-input { padding: calc(9 * var(--u)) calc(13 * var(--u)) calc(4 * var(--u)); color: var(--ink-faint); }
+.ld-bar { display: flex; align-items: center; gap: calc(10 * var(--u)); padding: calc(2 * var(--u)) calc(9 * var(--u)) calc(8 * var(--u)) calc(13 * var(--u)); color: var(--ink-faint); font-size: calc(11 * var(--u)); }
+.ld-bar .grow { flex: 1; }
+.ld-send { width: calc(20 * var(--u)); height: calc(20 * var(--u)); border-radius: 50%; background: #ece7dc; display: grid; place-items: center; color: var(--ink-soft); }
+.ld-send .ic { width: calc(11 * var(--u)); height: calc(11 * var(--u)); }
+
+/* Inbox zero. It starts hidden here, not in the markup (the CSP blocks style=""), and the bear's
+   pivots are here for the same reason. */
+.ld .b-fig { transform-box: view-box; transform-origin: 12px 22px; }
+.ld .b-eyes { transform-box: view-box; transform-origin: 10.5px 11.66px; }
+.ld .b-paw { transform-box: view-box; transform-origin: 16.4px 16.6px; }
+.ld-zero { opacity: 0; }
+.ld-zero { position: absolute; inset: calc(40 * var(--u)) 0 0 calc(218 * var(--u)); display: grid; place-content: center; justify-items: center; gap: calc(12 * var(--u)); pointer-events: none; }
+.ld-zero .bear { width: calc(76 * var(--u)); height: calc(76 * var(--u)); color: var(--honey); overflow: visible; }
+.ld-zero p { color: var(--ink-soft); font-size: calc(13 * var(--u)); }
+
+/* The pointer, and on a phone a fingertip. */
+.ld-ptr { position: absolute; left: 0; top: 0; width: calc(18 * var(--u)); height: calc(22 * var(--u)); z-index: 5; pointer-events: none; opacity: 0; filter: drop-shadow(0 1px 1.5px rgba(31, 28, 24, .35)); }
+.ld-ptr svg { display: block; width: 100%; height: 100%; transform-origin: 16% 9%; }
+.ld-touch { display: none; }
+
+/* Narrow (a phone): the decision on top, where the first screen shows it, the list under it,
+   no transcript and no window buttons. */
+@container (max-width: 519px) {
+  .ld-win { --u: 1px; --rh: 44px; grid-template-columns: minmax(0, 1fr); height: auto; }
+  .ld-lights, .ld-head, .ld-body { display: none; }
+  .ld-main { order: -1; height: 190px; justify-content: flex-end; }
+  .ld-compose { margin: 14px 14px 0; }
+  .ld-side { border-right: 0; padding-top: 10px; padding-bottom: 6px; }
+  .ld-side, .ld-after { background: #fffdf9; }
+  .ld-zero { inset: 0 0 auto; height: 190px; }
+  .ld-btns { flex-wrap: wrap; row-gap: 6px; }
+  .ld-cardarea { height: 112px; }
+  .ld-ptr { width: 34px; height: 34px; margin: -17px 0 0 -17px; filter: none; }
+  .ld-ptr svg { display: none; }
+  .ld-touch { display: block; width: 100%; height: 100%; border-radius: 50%; background: rgba(31, 28, 24, .14); box-shadow: inset 0 0 0 1.5px rgba(31, 28, 24, .4); }
 }

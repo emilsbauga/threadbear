@@ -516,7 +516,9 @@ final class MockRunnerTests: XCTestCase {
         let none = try await client.threadHighlights(threadId: "demo_tunnel")
         XCTAssertEqual(none, ThreadHighlights())
         let render = try await client.renderPanel(threadId: "demo_landing_pages", panelId: "deploys.previews")
-        XCTAssertEqual(render.items?.map(\.tone), [.done, .attention, .failed, nil, nil])
+        // Then a Checks row of each tone (issue #67). The Swift app doesn't
+        // know warning or working, so it reads them as plain.
+        XCTAssertEqual(render.items?.map(\.tone), [.done, .attention, .failed, nil, nil, .attention, .failed, nil, nil, .done])
     }
 
     /// Other runners' threads: listed by this runner, and read through it

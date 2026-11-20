@@ -60,6 +60,17 @@ function plant(repo: string, prog: (name: string, body?: string) => string) {
   set('credential.helper', `!${prog('credential', 'exit 1')}`);
   set('core.alternateRefsCommand', prog('alternate-refs', 'exit 0'));
   set('submodule.recurse', 'true');
+  // Hooks named in config (git 2.54), which core.hooksPath doesn't reach.
+  for (const h of ['reference-transaction', 'post-index-change', 'post-checkout']) {
+    set(`hook.cfg-${h}.event`, h);
+    set(`hook.cfg-${h}.command`, prog(`config-hook-${h}`, 'cat >/dev/null; exit 0'));
+  }
+  // One with no name at all, and one with a line separator in it, which a
+  // regex's . skips (Codex's third review).
+  set('hook..event', 'reference-transaction');
+  set('hook..command', prog('config-hook-unnamed', 'cat >/dev/null; exit 0'));
+  set('hook.a\u2028b.event', 'reference-transaction');
+  set('hook.a\u2028b.command', prog('config-hook-separator', 'cat >/dev/null; exit 0'));
 }
 
 // origin, S's checkout and T's, each with programs planted in its config.
@@ -232,6 +243,12 @@ test('a moving thread\'s repo is cloned only from an https or ssh address', () =
 // be untracked here, which trust reads as installed and doesn't hash.
 test("a move whose uncommitted work brings files under node_modules doesn't unpack", async () => {
   const { root, s, t } = repos();
+  // A global gitignore with node_modules/ in it (a common one) would keep the
+  // package out of the pack, and the move would go through without it. An
+  // empty file, not /dev/null, which Windows' git doesn't have.
+  const noExcludes = path.join(root, 'no-excludes');
+  fs.writeFileSync(noExcludes, '');
+  git(s, 'config', 'core.excludesFile', noExcludes);
   const sw = path.join(root, 's-threads/slot-1');
   git(s, 'worktree', 'add', '-q', '-b', 'thread/abcd1234', sw, 'main');
   const tw = path.join(root, 't-threads/slot-1');

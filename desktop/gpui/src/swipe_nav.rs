@@ -304,6 +304,11 @@ impl Threadbear {
                                 }
                                 return false;
                             }
+                            // The Archived note swipes away under the fingers
+                            // (header.rs), so a gesture on it isn't Back's.
+                            if this.archived_note.is_some() && (this.toast_hovered || this.toast_swipe.x != gpui_kit::px(0.)) {
+                                return false;
+                            }
                             // A row's swipe under way has the whole gesture,
                             // wherever the pointer's got to (row_swipe.rs).
                             if let Some(mine) = this.row_swipe_scrolled(event, window, cx) {
@@ -441,11 +446,17 @@ pub(crate) async fn page_swipe_command(app: &WeakEntity<Threadbear>, window: Any
     let app = app.upgrade().ok_or("the app has gone")?;
     let (dx, dy) = (cmd["dx"].as_f64().unwrap_or(0.), cmd["dy"].as_f64().unwrap_or(0.));
     let steps = cmd["steps"].as_u64().unwrap_or(8).max(1);
-    // Right of the middle, so over the thread rather than the sidebar.
+    // Right of the middle, so over the thread rather than the sidebar;
+    // `x` and `y` (points from the top left) for somewhere else, such as a
+    // note floating over the panel.
+    let (x, y) = (cmd["x"].as_f64(), cmd["y"].as_f64());
     let at = cx
         .update_window(window, |_, window, cx| {
             let size = window.viewport_size();
-            let at = point(size.width * 0.6, size.height * 0.45);
+            let at = match (x, y) {
+                (Some(x), Some(y)) => point(gpui_kit::px(x as f32), gpui_kit::px(y as f32)),
+                _ => point(size.width * 0.6, size.height * 0.45),
+            };
             crate::thread::scripted_input(|| window.pointer_move(at, None, cx));
             at
         })

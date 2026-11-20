@@ -5,7 +5,7 @@
 // cut down to one page and a 404. `npm run build`, then `npm run serve` to look at it on :5176.
 //
 // Pages can use {{mac <name> [classes]}} for a Mac app screenshot, {{phone <name> [hero] [classes]}}
-// for an iPhone one, {{icon <name>}} for a Phosphor icon, {{fork}} and {{appStoreBadge}} for the
+// for an iPhone one, {{icon <name>}} for a Phosphor icon, {{fork}}, {{appStoreBadge}} and {{androidBadge}} for the
 // two ways to get it, and {{commits}} / {{firstDay}} for the repo's own numbers.
 //
 // The changelog (/changelog) isn't in src either: scripts/changelog.mjs makes it from site/changelog/.
@@ -27,8 +27,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_STORE_LIVE, APP_STORE_URL, GITHUB_PUBLIC, GITHUB_URL, LAUNCH_VIDEO_ID, SITE_URL } from "../site.mjs";
-import { markdown, readGuide, summary } from "./docs.mjs";
-import { changelogPage, readPeople, readReleases } from "./changelog.mjs";
+import { markdown, readGuide, searchEntries, summary } from "./docs.mjs";
+import { changelogFeed, changelogPage, readPeople, readReleases } from "./changelog.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const src = join(root, "src");
@@ -199,6 +199,15 @@ function appStoreBadge() {
   return APP_STORE_LIVE ? `<a class="appstore" href="${APP_STORE_URL}">${label}</a>` : `<span class="appstore soon">${label}</span>`;
 }
 
+/**
+ * The Android twin of the App Store badge. It's not on Google Play (Mike has no Play account yet),
+ * so rather than a store it goes to the docs' "On Android" part, which says how to install the
+ * APK each release attaches on GitHub (Mike, 19 Nov).
+ */
+function androidBadge() {
+  return `<a class="appstore android" href="/docs/phone-and-browser#on-android">${icon("android-logo").replace('class="icon"', 'class="icon appstore-logo"')}<span><small>Get it for</small><b>Android</b></span></a>`;
+}
+
 
 /**
  * How people install it: a prompt for their own agent, the same as README.md's "The easy way: let
@@ -214,6 +223,32 @@ const INSTALL_PROMPT = "Fork https://github.com/mikecann/threadbear and clone th
  */
 function copyButton() {
   return `<button type="button" class="btn btn-lg copy-prompt">${icon("copy")}${icon("check")}<span>Copy the install prompt</span></button>`;
+}
+
+/**
+ * What it runs on, as logos, with "Free" under them. The GPUI app is one app for all three
+ * (docs/gpui-port.md), so this replaced "Free, for Macs with Apple silicon." (Mike, 17 Nov).
+ */
+function platforms() {
+  const logo = (name, label) => `<span class="platform" title="${label}">${icon(name)}<span class="visually-hidden">${label}</span></span>`;
+  return `<div class="platforms">
+        <div class="platform-logos">${logo("apple-logo", "Mac")}${logo("windows-logo", "Windows")}${logo("linux-logo", "Linux")}</div>
+        <p class="risk">Free for Mac, Windows and Linux</p>
+      </div>`;
+}
+
+// Convex's mark (the three swooshes), from convex.dev's logo, coloured by CSS.
+const CONVEX_MARK = `<g transform="matrix(1,0,0,1,-129.225,-127.948)"><g transform="matrix(4.16667,0,0,4.16667,0,0)"><g transform="matrix(1,0,0,1,86.6099,107.074)"><path d="M0,-6.544C13.098,-7.973 25.449,-14.834 32.255,-26.287C29.037,2.033 -2.48,19.936 -28.196,8.94C-30.569,7.925 -32.605,6.254 -34.008,4.088C-39.789,-4.83 -41.69,-16.18 -38.963,-26.48C-31.158,-13.247 -15.3,-5.131 0,-6.544"/></g><g transform="matrix(1,0,0,1,47.1708,74.7779)"><path d="M0,-2.489C-5.312,9.568 -5.545,23.695 0.971,35.316C-21.946,18.37 -21.692,-17.876 0.689,-34.65C2.754,-36.197 5.219,-37.124 7.797,-37.257C18.41,-37.805 29.19,-33.775 36.747,-26.264C21.384,-26.121 6.427,-16.446 0,-2.489"/></g><g transform="matrix(1,0,0,1,91.325,66.4152)"><path d="M0,-14.199C-7.749,-24.821 -19.884,-32.044 -33.173,-32.264C-7.482,-43.726 24.112,-25.143 27.557,2.322C27.877,4.876 27.458,7.469 26.305,9.769C21.503,19.345 12.602,26.776 2.203,29.527C9.838,15.64 8.889,-1.328 0,-14.199"/></g></g></g>`;
+
+/**
+ * Convex's logo in the top left corner, the GitHub corner's twin, to say the backend is Convex
+ * (like Video to Markdown's ConvexCorner). The mark is Convex's, drawn in the page colour.
+ */
+function convexCorner() {
+  return `<a class="corner convex" href="https://convex.dev" target="_blank" rel="noopener noreferrer" aria-label="Made with Convex" title="Made with Convex">
+    <svg viewBox="0 0 250 250" aria-hidden="true"><path d="M0,0 L250,0 L0,250 Z"/></svg>
+    <svg class="convex-mark" viewBox="0 0 367 370" aria-hidden="true">${CONVEX_MARK}</svg>
+  </a>`;
 }
 
 /** The corner triangle with the octocat, like Walkies' and Poddle's, once the repo's public. */
@@ -238,12 +273,14 @@ const FAQ = [
   // what Mike's real deployment used, not measured on anyone else's.
   ["What does it cost?",
     "Threadbear is free. You need Claude Code or Codex, so a Claude or ChatGPT plan, which you're probably paying for already, and a Convex account for your deployment. With one Mac and a few threads a day that should fit on Convex's <a href=\"https://www.convex.dev/pricing\">free plan</a> very comfortably. If you use it as much as I do you'll go over, but on Starter that only comes to about US$1.50 a month."],
-  ["Which Macs does it run on?",
-    "Macs with Apple silicon, on macOS 26 or later."],
-  // A Linux runner still needs a Mac set up first (INSTALL.md, section 6), hence "second". Taylor's
-  // fork isn't Mike's and he hasn't run it, hence "check it over"; he asked for the link on 6 Nov 2026.
-  ["Is there a Windows or Linux version?",
-    "Not of the app, it's Mac only. A Linux server can be a second, always-on machine though (<a href=\"https://github.com/mikecann/threadbear/blob/main/INSTALL.md#6-a-runner-on-linux-optional\">section 6 of INSTALL.md</a> has how), so your threads can run there while you drive them from your Mac, your phone or the website. If you want a proper Windows or Linux version then I thoroughly encourage you to spend some tokens and build it, I'd personally love to see it. Taylor Rupe has already got one going on Windows through WSL in <a href=\"https://github.com/t-rupe/threadbear/blob/main/wsl/README.md\">their own fork</a>, with no Mac needed (you use the website and the iPhone app instead). I haven't tried it myself, so get your agent to check it over first."],
+  // The GPUI app (desktop/README.md) is one app for all three since Mike's 17 Nov switch. Windows'
+  // runner isn't native yet (docs/gpui-port/runner-windows.md), and INSTALL.md is still written for
+  // a Mac, hence the second answer. Taylor's fork isn't Mike's and he hasn't run it; he asked for
+  // the link on 6 Nov 2026.
+  ["What does it run on?",
+    "Macs with Apple silicon on macOS 26 or later, Windows and Linux. It's one app for all three now, built on <a href=\"https://gpui.rs\">GPUI</a> (the same thing Zed is built on)."],
+  ["How well does it work on Windows and Linux?",
+    "It's early days to be honest. I use it on my Mac all day, but I've only just started trying it on Windows myself. The install guide is mostly written for a Mac, so on Windows or Linux your agent will have to work a few bits out for itself. The runner (the little process that drives your agents) now runs on Windows itself, no WSL needed, but for now a project's hooks and setup scripts only run when you click its buttons. If something's off then get your agent to fix it, that's kinda the whole point. A Linux server also makes a nice always-on second machine (<a href=\"https://github.com/mikecann/threadbear/blob/main/INSTALL.md#6-a-runner-on-linux-optional\">section 6 of INSTALL.md</a> has how), and Taylor Rupe got Threadbear going on Windows through WSL in <a href=\"https://github.com/t-rupe/threadbear/blob/main/wsl/README.md\">their own fork</a> before any of this, so that's worth a look too."],
   // The 5-hour meter and the Agent SDK: docs/guide.md, "Accounts, pools and Usage".
   ["Does it use my subscription or an API key?",
     "Your subscription. Threadbear runs the official <code>claude</code> and <code>codex</code> command line tools, logged in as you, and it never reads or copies your login tokens. Claude threads go through Claude Code's Agent SDK though, and Anthropic's 5-hour limit seems to charge that more per token than typing into a terminal (people have measured anywhere from about 1.6 to 2.9x, while weekly limits look about the same). <a href=\"/docs/accounts\">The docs on accounts</a> have more."],
@@ -254,17 +291,18 @@ const FAQ = [
   // keep-awake.ts, off by default). If that goes on for everyone, this answer has to change.
   // A new thread from the phone waits for the first Mac unless you pick another (docs/guide.md).
   ["What happens when my Mac's asleep?",
-    "You can still read all your threads on your phone and the website, because they're synced to your Convex deployment. The agents run on your Mac though, so they can't do anything while it's asleep (Threadbear won't keep it awake unless you turn on <a href=\"/docs/experiments\">that experiment</a>), and anything you send from your phone waits for it to wake up. If you want work to keep going, a second Mac or a Linux server can be an always-on machine, and you can pick it when you start a thread from your phone."],
-  ["Do I need the iPhone app?",
-    "No, the Mac app does everything on its own. The iPhone app and the browser links are for when you're away from your desk."],
+    "You can still read all your threads on your phone and the website, because they're synced to your Convex deployment. The agents run on your Mac though, so they can't do anything while it's asleep (Threadbear won't keep it awake unless you turn on <a href=\"/docs/experiments\">that experiment</a>), and anything you send from your phone waits for it to wake up. If you want work to keep going, a second Mac, a Linux server or a Windows PC can be an always-on machine, and you can pick it when you start a thread from your phone."],
+  ["Do I need the phone app?",
+    "No, the desktop app does everything on its own. The iPhone and Android apps and the browser links are for when you're away from your desk."],
   // runner/src/sync.ts mirrors this; docs/on-your-mac.md has the full list. Full sync starts off
-  // and is offered once a phone, the website or another machine is paired (docs/full-convex.md, step 6).
+  // and is never offered since 16 Nov (92b0d7ded): Settings > General > Full sync turns it on.
   ["What goes up to Convex?",
-    "The thread list, the text of every message, a line for what each tool did, anything waiting on you, your projects and schedules, your logins' emails and usage, and any pictures you paste in. Anything that looks like a secret gets scrubbed out on the way up, but that's not a guarantee, and nothing can scrub a picture. The tool output itself stays on your Mac to start with. Once you pair your phone or add another machine, Threadbear asks if you want that going up too (kept 30 days), so you can see what the agent actually did from anywhere, even with your Mac asleep. Things like your .env files and the agent's screenshots stay on your Mac either way. It's your deployment in your own Convex account, so none of it comes to me. The <a href=\"/docs/privacy\">privacy docs</a> have the rest, including the switch that keeps pictures on your Mac."],
-  // Self-hosting is step 8 of docs/setup-and-updates.md and isn't built, so setup can't do it. With
-  // sync off the Mac app still works, since it talks to the runner (docs/protocol.md, "Sync").
+    "The thread list, the text of every message, a line for what each tool did, anything waiting on you, your projects and schedules, your logins' emails and usage, and any pictures you paste in. Anything that looks like a secret gets scrubbed out on the way up, but that's not a guarantee, and nothing can scrub a picture. The tool output itself stays on your Mac unless you turn on full sync in Settings, which sends that up too (kept 30 days), so you can see what the agent actually did from anywhere, even with your Mac asleep. Things like your .env files and the agent's screenshots stay on your Mac either way. It's your deployment in your own Convex account, so none of it comes to me. The <a href=\"/docs/privacy\">privacy docs</a> have the rest, including the switch that keeps pictures on your Mac."],
+  // Self-hosting: `./threadbear setup --self-hosted` runs Convex's backend in Docker on the Mac
+  // (docs/guide.md, "Self-hosting your backend"; docs/self-hosting.md). With sync off the app still
+  // works, since it talks to the runner (docs/protocol.md, "Sync").
   ["Do I have to use Convex?",
-    "Pretty much, yes (and by the way I work at Convex, so I'm a bit biased). Setup makes a deployment in your own Convex account, and that's how your phone, the website and your other machines see your threads. You can turn the syncing off with <code>\"sync\": { \"enabled\": false }</code> in <code>runner.json</code> and the Mac app carries on by itself, but you'd lose all of that. If you'd rather keep it on your own server, <a href=\"https://docs.convex.dev/self-hosting\">Convex's backend is open source</a> and you can run it yourself, but setup won't do that for you, so that one's up to you and your agent."],
+    "Pretty much, yes (and by the way I work at Convex, so I'm a bit biased). Setup makes a deployment in your own Convex account, and that's how your phone, the website and your other machines see your threads. You can turn the syncing off with <code>\"sync\": { \"enabled\": false }</code> in <code>runner.json</code> and the Mac app carries on by itself, but you'd lose all of that. If you'd rather keep it all on your own machine, <a href=\"https://docs.convex.dev/self-hosting\">Convex's backend is open source</a> and setup can run it for you in Docker, though you lose phone notifications (<a href=\"/docs/self-hosting\">the self-hosting docs</a> have the rest)."],
   ["What can a patch do?",
     "Add buttons above the message box that run a command or send a prompt, add panels beside the thread (a web page, or a list Threadbear draws itself), and run a command after each turn, like a typecheck, telling the agent when it fails. A patch is a plain file in your repo, so it gets reviewed and committed like anything else."],
   ["Why would I want my own copy of the code?",
@@ -274,7 +312,7 @@ const FAQ = [
   ["Why is it called Threadbear?",
     "A threadbare teddy is the one you've had for years, worn and patched and loved for it, and that's what I wanted this to be. There are a few bear words in the app too: snoozing a thread is Hibernate, the archive is the Den, and while an agent works it says Bear with me."],
   ["When can I get it?",
-    "Right now. Copy the prompt from <a href=\"/#get\">Install it with a prompt</a>, paste it into Claude Code or Codex and let it set things up for you. The iPhone app is on the App Store."],
+    "Right now. Copy the prompt from <a href=\"/#get\">Install it with a prompt</a>, paste it into Claude Code or Codex and let it set things up for you. The iPhone app is on the App Store, and the Android one <a href=\"/docs/phone-and-browser#on-android\">comes from GitHub</a>."],
 ];
 
 /** The FAQ as an accordion: every answer's still in the page for search engines, just folded. */
@@ -289,8 +327,8 @@ function structuredData() {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: "Threadbear",
-    description: "A Mac app Mike Cann made for running Claude Code and Codex threads on your own subscriptions, with an iPhone app, a link per thread and patches your agents can write.",
-    operatingSystem: "macOS 26 or later, Apple silicon",
+    description: "A desktop app for Mac, Windows and Linux that Mike Cann made for running Claude Code and Codex threads on your own subscriptions, with an iPhone app, a link per thread and patches your agents can write.",
+    operatingSystem: "macOS 26 or later (Apple silicon), Windows, Linux",
     applicationCategory: "DeveloperApplication",
     offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
     url: `${SITE_URL}/`,
@@ -330,8 +368,7 @@ function fill(template, values) {
 }
 
 /** Copies a file into dist with a hash of its contents in the name, so it can be cached for good. */
-function fingerprint(name) {
-  const body = readFileSync(join(src, name));
+function fingerprint(name, body = readFileSync(join(src, name))) {
   const hash = createHash("sha256").update(body).digest("hex").slice(0, 8);
   const hashed = name.replace(/\.(\w+)$/, `.${hash}.$1`);
   writeFileSync(join(dist, hashed), body);
@@ -349,10 +386,13 @@ cpSync(join(root, "public"), dist, { recursive: true, filter: (from) => !from.en
 
 const styles = fingerprint("styles.css");
 const siteScript = fingerprint("site.js");
+// The home page hero's live inbox, only on the home page.
+const liveInboxScript = fingerprint("live-inbox.js");
 const layout = readFileSync(join(src, "layout.html"), "utf8");
 const shared = {
   site: SITE_URL, styles, commits: commits.toLocaleString("en-AU"), firstDay,
-  appStoreBadge: appStoreBadge(), copyButton: copyButton(), prompt: escape(INSTALL_PROMPT), showcase: showcase(), launchVideo: launchVideo(), faq: faq(), githubCorner: githubCorner(),
+  appStoreBadge: appStoreBadge(), androidBadge: androidBadge(), copyButton: copyButton(), prompt: escape(INSTALL_PROMPT), showcase: showcase(), launchVideo: launchVideo(), faq: faq(), githubCorner: githubCorner(), convexCorner: convexCorner(), platforms: platforms(),
+  latestRelease: readReleases(join(root, "changelog"))[0]?.release ?? "",
   // Moves the top bar in to clear the corner, when there is one.
   bodyClass: GITHUB_PUBLIC ? " has-corner" : "",
 };
@@ -378,7 +418,8 @@ function writePage(name, page, content, label = `${name}.html`) {
     // the docs list, where it's the page itself).
     docsCurrent: inDocs ? ' aria-current="page"' : "",
     structuredData: name === "index" ? structuredData() : "",
-    script: `<script src="${siteScript}" defer></script>`,
+    // The docs pages also get their search box's script (src/docs-search.js), a module.
+    script: `<script src="${siteScript}" defer></script>${name === "index" ? `\n  <script src="${liveInboxScript}" defer></script>` : ""}${inDocs ? `\n  <script type="module" src="${docsSearchScript}"></script>` : ""}`,
     content,
   });
   if (/\{\{[\w -]+\}\}/.test(out)) throw new Error(`${label} has a {{placeholder}} left over: ${out.match(/\{\{[\w -]+\}\}/)[0]}`);
@@ -417,10 +458,17 @@ const docIcon = (slug) => {
   if (!docIcons[slug]) throw new Error(`docs/guide.md's section ${slug} has no icon in site/docs-icons.json`);
   return icon(docIcons[slug]);
 };
+// The docs search (src/docs-search.js): its index, the guide cut at every heading, written with a
+// hash in its name like the scripts, and the button above the docs list that opens the box. The
+// button stays hidden until the script's running, so without JavaScript there's no dead button.
+const docsSearchScript = fingerprint("docs-search.js");
+const docsSearchIndex = fingerprint("docs-search.json", JSON.stringify(searchEntries(guide)));
+const docsSearchButton = `<button type="button" class="docs-search-open" data-index="${docsSearchIndex}" aria-label="Search the docs" hidden>${icon("magnifying-glass")}<span>Search</span><kbd>⌘K</kbd></button>`;
 function docsNav(current) {
   const items = guide.sections.map(({ slug, title }) =>
     `          <li><a href="/docs/${slug}"${slug === current ? ' aria-current="page"' : ""}>${docIcon(slug)}<span>${escape(title)}</span></a></li>`);
   return `      <nav class="docs-nav" aria-label="Docs">
+        ${docsSearchButton}
         <a class="docs-home" href="/docs"${current ? "" : ' aria-current="page"'}>${icon("book-open")}<span>${escape(guide.title)}</span></a>
         <ol>
 ${items.join("\n")}
@@ -461,6 +509,8 @@ writePage("changelog", {
   description: "What's new in Threadbear, a release at a time, with a look at the biggest changes.",
   path: "/changelog",
 }, changelogPage({ releases: readReleases(join(root, "changelog")), githubUrl: GITHUB_URL, people: readPeople(join(root, "changelog")) }));
+// The same releases as data, for a fork's Updates panel (changelogFeed says what's in it).
+writeFileSync(join(dist, "changelog.json"), JSON.stringify(changelogFeed(readReleases(join(root, "changelog")))));
 
 // Every link and image that stays on the site has to land somewhere: a page, a file, and the
 // #anchor on it if there is one.

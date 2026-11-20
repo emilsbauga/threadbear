@@ -117,8 +117,9 @@ pub(crate) fn install(cx: &mut gpui_kit::App) {
     let _ = cx;
 }
 
-/// The image-only attachment picker. AppKit filters the sheet by type;
-/// elsewhere GPUI's unfiltered picker is checked before anything is added.
+/// The attachment picker: pictures, which become chips, and Markdown files,
+/// which go in as their path as a dropped file does. AppKit filters the sheet
+/// by type; elsewhere GPUI's unfiltered picker is checked before anything is added.
 pub(crate) fn choose_images(window: &gpui_kit::Window, cx: &mut gpui_kit::App) -> impl std::future::Future<Output = Result<Option<Vec<PathBuf>>, String>> {
     #[cfg(target_os = "macos")]
     {
@@ -147,8 +148,8 @@ pub(crate) fn choose_images(window: &gpui_kit::Window, cx: &mut gpui_kit::App) -
 }
 
 fn image_selection(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
-    if paths.iter().any(|path| !crate::composer::is_picture(path)) {
-        return Err("Choose image files to attach.".to_owned());
+    if paths.iter().any(|path| !crate::composer::is_picture(path) && !crate::composer::is_markdown(path)) {
+        return Err("Choose images or Markdown files to attach.".to_owned());
     }
     Ok(paths)
 }
@@ -511,11 +512,14 @@ pub(crate) fn fixture_drag(window: &gpui_kit::Window, phase: i32, vanish: Option
 #[cfg(test)]
 mod tests {
     #[test]
-    fn image_picker_does_not_turn_a_nonimage_into_a_file_chip() {
+    fn image_picker_takes_pictures_and_markdown_only() {
         let image = std::path::PathBuf::from("photo.HEIC");
-        let document = std::path::PathBuf::from("notes.md");
+        let notes = std::path::PathBuf::from("notes.md");
+        let readme = std::path::PathBuf::from("README.Markdown");
         assert_eq!(super::image_selection(vec![image.clone()]).unwrap(), vec![image.clone()]);
-        assert!(super::image_selection(vec![image, document]).is_err());
+        assert_eq!(super::image_selection(vec![image.clone(), notes.clone(), readme.clone()]).unwrap(), vec![image.clone(), notes, readme]);
+        assert!(super::image_selection(vec![image, "report.pdf".into()]).is_err());
+        assert!(super::image_selection(vec!["notes.md.command".into()]).is_err());
         assert!(super::image_selection(vec!["photo.png.command".into()]).is_err());
         assert!(super::image_selection(vec!["drawing.svg".into()]).is_err());
         assert!(super::image_selection(vec!["icon.ico".into()]).is_err());

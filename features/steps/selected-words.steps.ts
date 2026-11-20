@@ -46,6 +46,11 @@ Then('the composer starts with a quote of {string}', async function (this: Threa
   await this.until(`"> ${words}" in the composer`, (d) => d.composer.text.startsWith(`> ${words}`));
 });
 
+When('I ask the follow-up {string} in the pane', async function (this: ThreadbearWorld, question: string) {
+  // Typed into the pane's box and asked, as Return does (`explain` with `ask`).
+  await this.app.do({ cmd: 'explain', ask: question });
+});
+
 Then('the pane explains {string} with {string}', async function (this: ThreadbearWorld, words: string, answer: string) {
   // The Swift dump's line: "explain “words” | the answer" once it's in.
   await this.until(`an explanation of "${words}"`, (d) => previewLine(d)?.startsWith(`explain “${words}”`) && previewLine(d)?.includes(answer), 20_000);

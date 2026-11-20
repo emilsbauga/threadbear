@@ -14,28 +14,84 @@ import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
-import com.google.firebase.messaging.FirebaseMessaging
-import com.google.firebase.messaging.FirebaseMessagingService
-import com.google.firebase.messaging.RemoteMessage
+import android.app.Activity
+import com.mikerosoft.threadbear.kit.PhoneBackend
 import com.mikerosoft.threadbear.kit.PushSeal
+import com.mikerosoft.threadbear.kit.WebPush
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import kotlinx.coroutines.tasks.await
 
 /**
- * Notifications through the push relay (docs/push-relay.md), the iPhone's
- * PushKey and notification extension in one: Firebase, set up from the
- * build's config (none means push is off), this phone's 32-byte key that
- * the backend seals each notification with, and the registration that
- * hands the backend the Firebase token and that key.
+ * Where the backend reaches this phone: a Firebase token (platform
+ * "android"), or a UnifiedPush endpoint URL with its Web Push keys
+ * ("webpush", backend API 93). Either goes in registerDevice's apnsToken.
+ */
+data class PushAddress(val token: String, val platform: String, val webPush: WebPush.Keys? = null) {
+    companion object {
+        const val FIREBASE = "android"
+        const val WEB_PUSH = "webpush"
+    }
+}
+
+/** How far this phone's push is set up, for Settings. */
+enum class PushSetup {
+    READY,
+    /** fdroid: no UnifiedPush app on the phone, so no notifications. */
+    NO_DISTRIBUTOR,
+    /** fdroid: more than one, and none picked yet. */
+    CHOOSE_DISTRIBUTOR,
+}
+
+/**
+ * How notifications reach the phone, each store's own (`StorePush` in
+ * src/github: Firebase through the push relay; in src/fdroid: UnifiedPush).
+ * Everything else about a notification is shared, in [Push].
+ */
+interface PushTransport {
+    /** Whether this build can get notifications at all on this phone. */
+    fun available(context: Context): Boolean
+
+    /** Called once, from the Application. */
+    fun start(context: Context)
+
+    /**
+     * Whether the backend's `pushOff` (no relay and no Apple key) means no
+     * notifications for this phone: true for Firebase, which goes through
+     * the relay; UnifiedPush doesn't, so the fdroid build ignores it.
+     */
+    val usesRelay: Boolean
+
+    /**
+     * This phone's address for the backend, or null when there's none yet:
+     * UnifiedPush's arrives later, through its service, which registers it.
+     * [cacheKey] names the pairing, for anything kept per backend.
+     */
+    suspend fun address(context: Context, backend: PhoneBackend, apiVersion: Int, cacheKey: String): PushAddress?
+
+    /** Unpairing: the transport forgets this phone, so the old backend can't reach it. */
+    suspend fun forget(context: Context)
+
+    fun setup(context: Context): PushSetup
+
+    /** Lets the person pick a push app ([PushSetup.CHOOSE_DISTRIBUTOR]); [done] once one's picked. */
+    fun choose(activity: Activity, done: () -> Unit)
+}
+
+/**
+ * Notifications, the iPhone's PushKey and notification extension in one:
+ * this phone's 32-byte key that the backend seals each notification with,
+ * showing one, and the pairing lock that keeps an old pairing's from
+ * showing. The registration (AppModel.registerPush) hands the backend this
+ * phone's address from [transport] and that key.
  */
 object Push {
+    /** This store's way in (src/github or src/fdroid). */
+    val transport: PushTransport get() = StorePush
+
     const val CHANNEL = "threads"
 
     /**
@@ -49,8 +105,8 @@ object Push {
         private set
 
     /**
-     * True from a pairing change that forgets the old server until Firebase
-     * has deleted its token: nothing is posted in between, as a push from
+     * True from a pairing change that forgets the old server until the transport
+     * has forgotten this phone: nothing is posted in between, as a push from
      * the old server could still arrive and be opened then.
      */
     @Volatile private var quiet = false
@@ -59,7 +115,7 @@ object Push {
      * The pairing changed: in-flight notifications are dropped. With [forget]
      * (another server, or none) the shown ones go, the push key is retired
      * in the same step (so nothing the old server sealed opens from here on),
-     * and posting stays off until [forget] has finished deleting the token.
+     * and posting stays off until [forget] has finished forgetting the address.
      */
     fun pairingChanged(context: Context, forget: Boolean) = synchronized(lock) {
         generation++
@@ -70,29 +126,23 @@ object Push {
         }
     }
 
-    /** Off for a build without a google-services.json (app/build.gradle.kts). */
-    val available: Boolean get() = BuildConfig.FIREBASE_APP_ID.isNotEmpty()
+    /** Off for a github build without a google-services.json, or an fdroid one with no UnifiedPush app. */
+    fun available(context: Context): Boolean = transport.available(context)
 
     /** Called once, from the Application. */
     fun start(context: Context) {
-        if (!available || FirebaseApp.getApps(context).isNotEmpty()) return
-        val options = FirebaseOptions.Builder()
-            .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
-            .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
-            .setApplicationId(BuildConfig.FIREBASE_APP_ID)
-            .setApiKey(BuildConfig.FIREBASE_API_KEY)
-            .build()
-        FirebaseApp.initializeApp(context, options)
         val manager = context.getSystemService(NotificationManager::class.java)
         // One channel: Threadbear's notifications are all "a thread wants you".
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "Threads", NotificationManager.IMPORTANCE_HIGH))
+        transport.start(context)
     }
+
+    /** Whether this backend sends this phone notifications at all (`pushOff` only counts for the relay). */
+    fun sentBy(identity: com.mikerosoft.threadbear.kit.PhoneIdentity?): Boolean =
+        !transport.usesRelay || identity?.sendsNotifications != false
 
     fun permitted(context: Context): Boolean =
         Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-
-    /** This phone's Firebase token, or null when push is off or Firebase can't say. */
-    suspend fun token(): String? = if (!available) null else runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull()
 
     /**
      * What a thread id can be, from a push or another app's intent: a
@@ -132,7 +182,7 @@ object Push {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         synchronized(lock) {
-            // The pairing changed while this was being opened (Firebase calls
+            // The pairing changed while this was being opened (push services call
             // us off the main thread): it was for the old one, so it's dropped.
             if (quiet || opening != generation || !PairingStore(context).paired()) return
             try {
@@ -144,14 +194,15 @@ object Push {
     }
 
     /**
-     * Unpairing: Firebase forgets this phone's token, so the old backend's
-     * next send comes back UNREGISTERED and it drops the phone, and a new
-     * push key is made for the next pairing.
+     * Unpairing: the transport forgets this phone (Firebase deletes its
+     * token, so the old backend's next send comes back UNREGISTERED and it
+     * drops the phone; UnifiedPush unregisters from the distributor, so the
+     * endpoint stops working), and a new push key is made for the next pairing.
      */
     suspend fun forget(context: Context) {
         try {
             PushKeyStore(context).clear()
-            if (available) runCatching { FirebaseMessaging.getInstance().deleteToken().await() }
+            runCatching { transport.forget(context) }
         } finally {
             synchronized(lock) { quiet = false }
         }
@@ -162,18 +213,6 @@ object Push {
 
     /** Opening a thread clears its notification, as reading it on the iPhone does. */
     fun clear(context: Context, threadId: String) = NotificationManagerCompat.from(context).cancel(threadId, 1)
-}
-
-/** Firebase's side: a new token to register, and each notification. */
-class ThreadbearMessagingService : FirebaseMessagingService() {
-    override fun onNewToken(token: String) {
-        (application as ThreadbearApplication).model.registerPush(token)
-    }
-
-    override fun onMessageReceived(message: RemoteMessage) {
-        val threadId = Push.validThreadId(message.data["threadId"]) ?: return
-        Push.show(this, threadId, message.data["e"])
-    }
 }
 
 /**

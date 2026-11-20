@@ -22,6 +22,38 @@ When('Mike has a release of 10 Nov with 3 new changes', async function (this: Th
   await this.app.do({ cmd: 'mock', method: 'updates', params: { state: 'idle', upstream: { state: 'available', release } } });
 });
 
+// Two releases on the page (16 Nov's one card, 14 Nov's two, one a clip)
+// and 15 Nov with no entry yet, so its notes show.
+When('Mike has releases of 14 to 16 Nov with cards on the What\'s new page', async function (this: ThreadbearWorld) {
+  const site = 'https://threadbear.mikecann.app';
+  const card = (kind: string, title: string, file: string, clip = false) => ({ kind, title, text: `What ${title} does.`, picture: `${site}/media/changelog/${file}`, ...(clip ? { clip: true } : {}) });
+  const release = {
+    tag: 'release/2026-11-16',
+    date: '2026-11-16T09:00:00+08:00',
+    commit: '0123456789abcdef0123456789abcdef01234567',
+    changes: 41,
+    subjects: ['Pairing: a one-use code'],
+    important: [
+      { commit: '1', why: 'Pairing used a reusable token' },
+      { commit: '2', why: 'A swapped file could launch an app' },
+      { commit: '3', why: 'Pairing used a reusable token' },
+    ],
+    notes: [
+      { tag: 'release/2026-11-16', date: '2026-11-16T09:00:00+08:00', lines: ['Code review picks its reviewers'] },
+      { tag: 'release/2026-11-15', date: '2026-11-15T09:00:00+08:00', lines: ["A note for a day the page hasn't got yet"] },
+      { tag: 'release/2026-11-14', date: '2026-11-14T09:00:00+08:00', lines: ['Open Anything'] },
+    ],
+    changelog: {
+      page: `${site}/changelog`,
+      releases: [
+        { tag: 'release/2026-11-16', link: `${site}/changelog#2026-11-16`, highlights: [card('changed', 'Pick who reviews code', '2026-11-16/code-reviewers.webp')], added: 1, changed: 3, fixed: 6 },
+        { tag: 'release/2026-11-14', link: `${site}/changelog#2026-11-14`, highlights: [card('added', 'The new app, for everyone', '2026-11-14/new-app-offer.webp'), card('added', 'Open Anything', '2026-11-14/open-anything.webp', true)], added: 3, changed: 16, fixed: 8 },
+      ],
+    },
+  };
+  await this.app.do({ cmd: 'mock', method: 'updates', params: { state: 'idle', upstream: { state: 'available', release } } });
+});
+
 When('my copy has 2 changes of its own to the old app', async function (this: ThreadbearWorld) {
   const changes = [
     { commit: 'abc1234def567890abc1234def567890abc1234d', short: 'abc1234', subject: 'Orange dock badge', date: '2026-11-02T09:00:00+08:00', files: ['dock/Sources/Badge.swift'] },
@@ -34,6 +66,14 @@ When('my copy has 2 changes of its own to the old app', async function (this: Th
 // screenshots use): staged is def5678 over abc1234.
 When("the app's next version, def5678, is ready", async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'updates', preview: 'staged' });
+});
+
+When("the app's next version is building", async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'updates', preview: 'building' });
+});
+
+When("the app has no update on its way", async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'updates', preview: 'none' });
 });
 
 When("the app's next version is waiting for a Mac to build it on", async function (this: ThreadbearWorld) {

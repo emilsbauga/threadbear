@@ -9,7 +9,7 @@
 // the runner's messages (startingTurn, turnAccepted). See "B. Codex events
 // and images" in docs/step4-plan.md.
 import path from 'node:path';
-import type { EventBody, Hunk, ImageRef, PlanEntry, ToolKind, UsageWindow } from '../../protocol.ts';
+import type { EventBody, Hunk, ImageRef, PlanEntry, ToolKind, UsageResets, UsageWindow } from '../../protocol.ts';
 import { isEffortLevel } from '../../protocol.ts';
 import type { AdapterOutput, BackgroundTask, TurnResult } from '../types.ts';
 import { truncateResultText, type NormalizerContext } from '../context.ts';
@@ -844,6 +844,21 @@ export function limitsFromRateLimits(snapshot: AnyMsg | null | undefined): Extra
   out.blocked = snapshot.ordinaryUsageAllowed === false || Boolean(main.rateLimitReachedType);
   const plan = planTitle(main.planType);
   if (plan) out.plan = plan;
+  const resets = resetsFrom(snapshot.rateLimitResetCredits);
+  if (resets) out.resets = resets;
+  return out;
+}
+
+// The read's `rateLimitResetCredits`: how many resets the login has left, and
+// when the soonest of those listed expires. A read that leaves it out (an
+// older Codex) says nothing, so what's known stays.
+export function resetsFrom(summary: AnyMsg | null | undefined): UsageResets | undefined {
+  if (!summary || typeof summary !== 'object' || typeof summary.availableCount !== 'number' || !Number.isFinite(summary.availableCount)) return undefined;
+  const out: UsageResets = { available: Math.max(0, Math.floor(summary.availableCount)) };
+  const ends = (Array.isArray(summary.credits) ? summary.credits : [])
+    .filter((c: AnyMsg) => c && c.status === 'available' && typeof c.expiresAt === 'number' && Number.isFinite(c.expiresAt))
+    .map((c: AnyMsg) => c.expiresAt as number);
+  if (out.available > 0 && ends.length) out.nextExpiresAt = new Date(Math.min(...ends) * 1000).toISOString();
   return out;
 }
 

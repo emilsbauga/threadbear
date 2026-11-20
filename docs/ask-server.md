@@ -24,14 +24,39 @@ The token goes in an `Authorization: Bearer <token>` header. Agent Archive's
 tokens look like `aa_<16 hex>_<secret>`, but the phone sends whatever you
 give it.
 
-A server can also hand both over in a link, usually as a QR code:
-`threadbear://quickask?url=<address>&token=<token>`, both URL-encoded.
-A link's address has to be `https://` (or have no scheme), since opening
-it sends the token and every later question there; an `http://` one is
-refused and nothing changes. The phone asks before using any link, the
-first one included: "Use Quick Ask on <host>?", saying whether it sets up
-Ask, switches it from another host, or gives the same host a new token.
-Nothing changes until you say yes.
+A server can also set the phone up with a one-use setup code, shown as a
+QR code (or text to paste). It holds the server's address and the code,
+never the token:
+`TBASK1_<unpadded base64url of {"url": "<address>", "code": "aq_<43 base64url characters>"}>`,
+with exactly those two fields. It's plain text, not a link, so the iPhone's
+Camera opens nothing with it and no other app can catch it: Settings > Ask
+> Scan the code (or Paste a setup code) reads it. The address has to be
+`https://` (or have no scheme), as the token and every later question go
+there. The phone asks first, the first time included: "Use Quick Ask on
+<host>?", saying whether it sets up Ask, switches it from another host, or
+gives the same host a new token. On a yes it trades the code at
+`POST /api/quick/claim`, below, and keeps the token it gets back. Nothing
+changes until you say yes and the claim works.
+
+Threadbear used to take `threadbear://quickask?url=<address>&token=<token>`
+links. Any app on an iPhone can say it opens `threadbear://` links, so one
+could catch the token as the link opened. The phone now refuses every
+`threadbear://quickask` link, opened, scanned or pasted, and says to scan
+the setup code instead. A server that makes no setup codes still works with
+an address and token typed in Settings.
+
+## POST /api/quick/claim
+
+No `Authorization`; the code is the credential. Body
+`{"code": "aq_…"}`, `Content-Type: application/json`. The server should
+mark the code used and make the token in one step, so it works once, and
+only for a few minutes after it was made (Agent Archive: ten).
+
+- 200 `{"token": "<token>", "expiresAt": <ms>}`. The phone keeps `token`
+  (printable ASCII, at most 4096 characters, or it's refused).
+- Anything else is a refusal, with `{ "error": "..." }` shown if there is
+  one: Agent Archive sends 400 for a malformed code and 410 for an
+  unknown, used or expired one. A 404 says the server takes no setup codes.
 
 ## GET /api/quick/ping
 

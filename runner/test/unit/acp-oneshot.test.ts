@@ -1,6 +1,5 @@
 // Small jobs over ACP (models/acp-oneshot.ts), against the pretend agent, and
 // the pool guard that decides who gets them (models/index.ts).
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,6 +12,9 @@ import type { Account, Pool } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import { ProcessRegistry } from '../../src/proc.ts';
 import { FakeClock } from '../../src/clock.ts';
+import { testSkippedOnWindows } from '../helpers/platform.ts';
+
+const test = testSkippedOnWindows("The pretend ACP agent is a #! script, which Windows can't start as a program, and ACP agents are an experiment that is off by default");
 
 const FAKE = path.join(import.meta.dirname, '..', 'helpers', 'fake-acp-agent.mjs');
 const account: Account = { id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: '/x' };
@@ -24,6 +26,13 @@ function rig(agent: AcpAgent = ACP_AGENTS.opencode, env: Record<string, string> 
   const log = (): Record<string, unknown>[] => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   return { root, ask, log };
 }
+
+test('a small job offers no forms, as there is no one to answer one', async () => {
+  const r = rig();
+  const res = await r.ask({ account, user: 'form', cwd: r.root, timeoutMs: 8000 });
+  assert.equal(res.ok, true);
+  assert.ok(r.log().some((l) => l.form === 'not offered'));
+});
 
 test('it answers, with no MCP servers, in the read-only mode', async () => {
   const r = rig();

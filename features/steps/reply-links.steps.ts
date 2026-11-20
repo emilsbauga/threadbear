@@ -5,7 +5,7 @@ import { Given, Then, When } from '@cucumber/cucumber';
 import { tempFolder } from '../support/temp.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 import { okValue, type Dump, type Row } from '../support/driver.ts';
-import { previewLine } from '../support/pane.ts';
+import { pane, previewShown } from '../support/pane.ts';
 
 // A reply's links (reply-links.feature): what a click, a ⌘-click and a
 // right-click do, and the card that shows on a rest. Both apps take `peek`
@@ -19,6 +19,12 @@ Given('a file {string} saying {string} in a folder of its own', function (this: 
   const dir = tempFolder('tb-links-');
   this.file = path.join(dir, name);
   fs.writeFileSync(this.file, text.replaceAll('\\n', '\n'));
+});
+
+Given('a picture {string} in a folder of its own', function (this: LinkWorld, name: string) {
+  const dir = tempFolder('tb-links-');
+  this.file = path.join(dir, name);
+  fs.copyFileSync(new URL('../../app/Tools/mock-runner/fixtures/demo-upload-resume/media/progress-before.png', import.meta.url), this.file);
 });
 
 const file = (world: LinkWorld): string => {
@@ -44,6 +50,23 @@ When('a reply linking {string} to {string} streams in', async function (this: Li
 
 When('a reply linking {string} to that file streams in', async function (this: LinkWorld, words: string) {
   await streamReply(this, `Here's [${words}](${file(this)}) to look at.`);
+});
+
+When('a reply linking {string} to lines {string} of that file streams in', async function (this: LinkWorld, words: string, lines: string) {
+  await streamReply(this, `Here's [${words}](${file(this)}:${lines}) to look at.`);
+});
+
+When('a reply that read that file and names lines {string} of it in code streams in', async function (this: LinkWorld, lines: string) {
+  // As agents mostly write them: its name in inline code, its lines after it.
+  await streamReply(this, `The port is set in \`${path.basename(file(this))}:${lines}\`.`, file(this));
+});
+
+Then('the pane tints lines {string} of the file', async function (this: ThreadbearWorld, lines: string) {
+  await this.until(`lines ${lines} tinted`, (d) => pane(d)?.previewLines === lines);
+});
+
+Then('the pane tints no lines of the file', async function (this: ThreadbearWorld) {
+  await this.until('no lines tinted', (d) => previewShown(d)?.startsWith('file ') && !pane(d)?.previewLines);
 });
 
 When('a reply linking {string} to {string} and {string} to that file streams in', async function (this: LinkWorld, page: string, url: string, words: string) {
@@ -105,12 +128,12 @@ Then("the clipboard holds that file's path", async function (this: LinkWorld) {
 
 Then('the pane is showing that file', async function (this: LinkWorld) {
   const want = `file ${file(this).replaceAll('\\', '/')}`;
-  await this.until(`the pane showing ${want}`, (d) => previewLine(d) === want);
+  await this.until(`the pane showing ${want}`, (d) => previewShown(d) === want);
 });
 
 Then("the pane isn't showing that file", async function (this: LinkWorld) {
   const d = await this.app.dump();
-  assert.notEqual(previewLine(d), `file ${file(this).replaceAll('\\', '/')}`, 'the pane is showing it');
+  assert.notEqual(previewShown(d), `file ${file(this).replaceAll('\\', '/')}`, 'the pane is showing it');
 });
 
 /** What the app would have handed the system to open, since last asked. */

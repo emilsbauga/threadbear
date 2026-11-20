@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { macOnlyTest as test } from '../helpers/platform.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

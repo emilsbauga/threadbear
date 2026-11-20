@@ -9,7 +9,7 @@ private func frame(_ window: [String: Any]) -> CGRect? {
 
 // The injected hit-test keeps the fail-closed decision testable without a
 // desktop, Accessibility permission or real input events.
-func windowAt(_ windows: [[String: Any]], point: CGPoint, displays: [CGRect], dockPID: Int32?, notificationPIDs: Set<Int32> = [], hitPID: () -> Int32?) -> [String: Any]? {
+func windowAt(_ windows: [[String: Any]], point: CGPoint, displays: [CGRect], dockPID: Int32?, notificationPIDs: Set<Int32> = [], betterDisplayPIDs: Set<Int32> = [], hitPID: () -> Int32?) -> [String: Any]? {
     let covering = windows.filter {
         // Only the system process's sentinel is see-through. An ordinary
         // app can use the same title, and notification banners still block.
@@ -25,16 +25,29 @@ func windowAt(_ windows: [[String: Any]], point: CGPoint, displays: [CGRect], do
     // accept the ordinary window directly beneath it when AX proves input at
     // this point reaches that same process. Mission Control, AX failures and
     // other overlays must keep blocking input.
-    guard let dockPID,
-          top[kCGWindowOwnerPID as String] as? Int32 == dockPID,
-          top[kCGWindowOwnerName as String] as? String == "Dock",
-          top[kCGWindowName as String] as? String == "Dock",
-          top[kCGWindowLayer as String] as? Int == 20,
-          let bounds = frame(top), displays.contains(bounds),
-          // Moving the pointer to an edge can reveal an auto-hidden Dock
-          // after this preflight. Never allow that through the exception.
-          bounds.insetBy(dx: 24, dy: 24).contains(point),
-          let beneath = covering.dropFirst().first,
+    // BetterDisplay's own display-sized overlay (its software dimming), at
+    // the top window level, is the same case on Tinker Desk (19 Nov): only
+    // the real app's, named as it names them, and with the same AX proof.
+    // Both can be up at once (BetterDisplay's over the Dock's, 19 Nov), so
+    // skip each in turn; the first other window must still be an ordinary
+    // one that AX proves input reaches.
+    func passThrough(_ w: [String: Any]) -> Bool {
+        let ownerPID = w[kCGWindowOwnerPID as String] as? Int32
+        let isDock = dockPID != nil && ownerPID == dockPID
+            && w[kCGWindowOwnerName as String] as? String == "Dock"
+            && w[kCGWindowName as String] as? String == "Dock"
+            && w[kCGWindowLayer as String] as? Int == 20
+        let isBetterDisplay = ownerPID.map(betterDisplayPIDs.contains) ?? false
+            && w[kCGWindowOwnerName as String] as? String == "BetterDisplay"
+            && (w[kCGWindowName as String] as? String)?.hasPrefix("BetterDisplay Overlay for Display ") == true
+        guard isDock || isBetterDisplay, let bounds = frame(w) else { return false }
+        // Moving the pointer to an edge can reveal an auto-hidden Dock
+        // after this preflight. Never allow that through the exception.
+        return displays.contains(bounds) && bounds.insetBy(dx: 24, dy: 24).contains(point)
+    }
+    let overlays = covering.prefix(while: passThrough)
+    guard !overlays.isEmpty,
+          let beneath = covering.dropFirst(overlays.count).first,
           beneath[kCGWindowLayer as String] as? Int == 0,
           let pid = beneath[kCGWindowOwnerPID as String] as? Int32,
           hitPID() == pid else { return top }
@@ -53,9 +66,12 @@ let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "co
 let notificationPIDs = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.notificationcenterui")
     .filter { $0.bundleURL?.path == "/System/Library/CoreServices/NotificationCenter.app" }
     .map { $0.processIdentifier })
-let result = windowAt(windows, point: point, displays: displays, dockPID: dockPID, notificationPIDs: notificationPIDs) {
+let betterDisplayPIDs = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "pro.betterdisplay.BetterDisplay")
+    .filter { $0.bundleURL?.path == "/Applications/BetterDisplay.app" }
+    .map { $0.processIdentifier })
+let result = windowAt(windows, point: point, displays: displays, dockPID: dockPID, notificationPIDs: notificationPIDs, betterDisplayPIDs: betterDisplayPIDs) {
     guard AXIsProcessTrusted() else {
-        fputs("Dock overlay: Accessibility access is unavailable; refusing input.\n", stderr)
+        fputs("Pass-through overlay: Accessibility access is unavailable; refusing input.\n", stderr)
         return nil
     }
     let system = AXUIElementCreateSystemWide()
@@ -63,7 +79,7 @@ let result = windowAt(windows, point: point, displays: displays, dockPID: dockPI
     var element: AXUIElement?
     let error = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &element)
     guard error == .success, let element else {
-        fputs("Dock overlay: Accessibility hit-test failed (\(error.rawValue)); refusing input.\n", stderr)
+        fputs("Pass-through overlay: Accessibility hit-test failed (\(error.rawValue)); refusing input.\n", stderr)
         return nil
     }
     var pid: pid_t = 0

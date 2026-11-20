@@ -162,7 +162,16 @@ export type GetAccountRateLimitsResponse = {
   ordinaryUsageAllowed: boolean | null;
   rateLimits: RateLimitSnapshot;
   rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;
+  // Only on the read (updates never carry it); absent from Codex before 0.169.
+  rateLimitResetCredits?: RateLimitResetCreditsSummary | null;
 };
+// The login's usage-limit resets. `credits` may be capped or null (only the
+// count known).
+export type RateLimitResetCreditsSummary = {
+  availableCount: number;
+  credits?: { id: string; status: string; expiresAt?: number | null; title?: string | null }[] | null;
+};
+export type ConsumeAccountRateLimitResetCreditResponse = { outcome: 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed' };
 export type GetAccountResponse = { account: { type: string; email?: string | null; planType?: string | null } | null };
 
 // ---- Requests from Codex

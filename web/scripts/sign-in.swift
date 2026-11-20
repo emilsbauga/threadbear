@@ -1,9 +1,11 @@
-// Signs a browser in to the Threadbear website (docs/website.md) without the
-// token ever being printed, copied or left on disk. Issues a phone token
-// with `npx convex run tokens:issue` (so only someone logged in to the
-// Convex team can do it) and puts it in the link's #fragment, which the
-// page keeps in localStorage and wipes from the address bar. The fragment
-// never reaches a server.
+// Signs a browser in to the Threadbear website (docs/website.md) without its
+// token ever being printed, copied, left on disk or put in a link. Issues a
+// one-use sign-in code, good for ten minutes, with `npx convex run
+// tokens:issueCode` (so only someone logged in to the Convex team can do it)
+// and puts it in the link's #fragment, which never reaches a server; the page
+// trades it for the browser's token with tokens:claim and wipes it from the
+// address bar. A link with the token itself stayed good for 90 days wherever
+// it was seen (API 81).
 //
 //   npm run web:sign-in                       Chrome on this Mac, prod site
 //   npm run web:sign-in -- --qr               a QR code to scan on another device
@@ -48,7 +50,7 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
-var issue = ["npx", "convex", "run", "tokens:issue", "{\"name\":\"\(name)\",\"days\":\(days)}"]
+var issue = ["npx", "convex", "run", "tokens:issueCode", "{\"name\":\"\(name)\",\"days\":\(days),\"kind\":\"browser\"}"]
 if prod { issue.append("--prod") }
 let p = Process()
 p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -60,13 +62,13 @@ p.standardError = FileHandle.standardError
 try! p.run()
 let data = out.fileHandleForReading.readDataToEndOfFile()
 p.waitUntilExit()
-guard p.terminationStatus == 0 else { fail("npx convex run tokens:issue failed") }
+guard p.terminationStatus == 0 else { fail("npx convex run tokens:issueCode failed") }
 let output = String(decoding: data, as: UTF8.self)
 guard let json = output.range(of: #"\{[\s\S]*\}"#, options: .regularExpression).map({ String(output[$0]) }),
       let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
-      let token = object["token"] as? String else { fail("Couldn't read the token from tokens:issue") }
+      let code = object["code"] as? String else { fail("Couldn't read the code from tokens:issueCode") }
 
-let link = "\(site)/#token=\(token)"
+let link = "\(site)/#code=\(code)"
 
 if qr {
     let filter = CIFilter(name: "CIQRCodeGenerator")!
@@ -77,7 +79,7 @@ if qr {
     try! NSBitmapImageRep(ciImage: image).representation(using: .png, properties: [:])!.write(to: file)
     try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     NSWorkspace.shared.open(file)
-    // Preview has the picture once it's open, so no copy of the token stays
+    // Preview has the picture once it's open, so no copy of the code stays
     // on disk (same as ios/scripts/pair-qr.swift).
     Thread.sleep(forTimeInterval: 3)
     try? FileManager.default.removeItem(at: file)

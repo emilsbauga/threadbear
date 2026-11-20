@@ -146,3 +146,24 @@ Feature: The chips under the message box
     And I paste the picture into the composer
     And the composer holds 2 pictures
     Then clicking the thumbnail of picture 1 opens picture 1 of 2
+
+  @composer.chiphover @swift-pending
+  Scenario: Many pictures wrap onto more rows, and the last one can still be opened
+    When the window is 1000 points wide
+    And I paste the picture into the composer 8 times
+    And the composer holds 8 pictures
+    Then clicking the thumbnail of picture 8 opens picture 8 of 8
+
+  # The × over a thumbnail is an edit ⌘Z takes back, and the chip it brings
+  # back has to bring its picture: it came back empty, and the message then
+  # went without the picture (Codex's review of the ⌘Z fix, 18 Nov).
+  @composer.picturechips @swift-pending
+  Scenario: Undoing a picture's × brings the picture back with its chip
+    When I type "Look at this" in the composer
+    And I paste the picture into the composer
+    And the composer holds 1 picture
+    And I remove picture 1 with its ×
+    Then the composer holds 0 pictures
+    When I put the cursor in the composer
+    And I press ⌘Z
+    Then the composer holds 1 picture

@@ -13,6 +13,7 @@ use IPC::Open3;
 use IO::Select;
 use Symbol qw(gensym);
 use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+use Time::Local qw(timegm);
 $SIG{CHLD} = 'DEFAULT';
 
 my ($mode, $dir) = splice @ARGV, 0, 2;
@@ -26,28 +27,71 @@ sub note_if_stuck {
         close $out;
     }
 }
-sub started {
-    my ($pid) = @_;
+# A process's identity is its pid and when it started. On Linux ps works
+# lstart out as the kernel's boot time plus the process's age, and the boot
+# time moves whenever the clock is stepped: WSL resyncing with Windows moved
+# it 75 s in 15 minutes (17 Nov), so an anchor's lstart stopped matching its
+# record, the anchor was killed as a stranger and the locks were kept for
+# good. Seconds since boot don't move. Read the boot time either side of ps
+# and try again if it moved meanwhile. macOS's lstart is fixed at fork.
+my %month;
+@month{qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)} = (0 .. 11);
+sub boot_time {
+    return 0 unless $^O eq 'linux';
+    open(my $stat, '<', '/proc/stat') or return 0;
+    while (<$stat>) { return $1 if /^btime\s+(\d+)/; }
+    return 0;
+}
+sub since_boot {
+    my ($lstart, $boot) = @_;
+    return $lstart unless $boot &&
+        $lstart =~ /^\w{3}\s+(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d+)$/ && exists $month{$1};
+    my $at = eval { timegm($5, $4, $3, $2, $month{$1}, $6) };
+    return defined($at) ? 'boot+' . ($at - $boot) : $lstart;
+}
+# Runs ps with these arguments and hands back its output lines, each row's
+# trailing lstart already turned into since_boot. Undef if ps failed.
+sub ps_rows {
+    my @args = @_;
     local $ENV{LC_ALL} = 'C';
     local $ENV{TZ} = 'UTC';
-    open(my $ps, '-|', 'ps', '-p', $pid, '-o', 'lstart=') or return '';
-    my $time = do { local $/; <$ps> } // '';
-    return '' unless close $ps;
+    # Never settle for rows read while the boot time moved: one converted
+    # with the wrong boot time is off by the step, and that mismatch is
+    # what killed anchors. A step is a moment, so the next read is clean;
+    # pause after a few in case the clock is being slewed in small steps.
+    for (my $try = 1; ; $try++) {
+        my $boot = boot_time();
+        open(my $ps, '-|', 'ps', @args) or return undef;
+        my @lines = <$ps>;
+        return undef unless close $ps;
+        if (boot_time() != $boot) {
+            select(undef, undef, undef, 0.1) if $try >= 3;
+            next;
+        }
+        for (@lines) {
+            s/\s+$//;
+            s/(\w{3}\s+\w{3}\s+\d+\s+\d+:\d+:\d+\s+\d+)$/since_boot($1, $boot)/e;
+        }
+        return \@lines;
+    }
+}
+sub started {
+    my ($pid) = @_;
+    my $rows = ps_rows('-p', $pid, '-o', 'lstart=') or return '';
+    my $time = join('', @$rows);
     $time =~ s/^\s+|\s+$//g;
     return $time;
 }
 # One process table for ancestry; descriptor ownership is checked separately.
 sub snapshot {
     for (;;) {
-        local $ENV{LC_ALL} = 'C';
-        local $ENV{TZ} = 'UTC';
-        if (open(my $ps, '-|', 'ps', '-axo', 'pid=,ppid=,pgid=,uid=,stat=,lstart=')) {
+        if (my $lines = ps_rows('-axo', 'pid=,ppid=,pgid=,uid=,stat=,lstart=')) {
             my %rows;
-            while (<$ps>) {
+            for (@$lines) {
                 next unless /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/;
                 $rows{$1} = { parent => $2, group => $3, uid => $4, state => $5, born => $6 };
             }
-            return %rows if close($ps) && %rows;
+            return %rows if %rows;
         }
         note_if_stuck('ps unavailable while finding performance children; locks retained');
         select(undef, undef, undef, 0.2);
@@ -140,11 +184,8 @@ sub held_groups {
 }
 sub anchor_matches {
     my ($anchor, $group) = @_;
-    local $ENV{LC_ALL} = 'C';
-    local $ENV{TZ} = 'UTC';
-    open(my $ps, '-|', 'ps', '-p', $anchor->{pid}, '-o', 'pgid=,uid=,stat=,lstart=') or return 0;
-    my $row = <$ps> // '';
-    return 0 unless close $ps;
+    my $rows = ps_rows('-p', $anchor->{pid}, '-o', 'pgid=,uid=,stat=,lstart=') or return 0;
+    my $row = $rows->[0] // '';
     return $row =~ /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/ &&
         $1 == $group && $2 == $< && $3 !~ /^Z/ && $4 eq $anchor->{born};
 }
@@ -241,7 +282,7 @@ sub start_anchor {
     open(STDOUT, '>', '/dev/null');
     open(STDERR, '>', '/dev/null');
     # Never hold a command's output pipes, host locks, or an app-looking argv.
-    POSIX::close(198); POSIX::close(199);
+    POSIX::close(198); POSIX::close(199); POSIX::close(200);
     $0 = "threadbear-perf-anchor $group";
     @ARGV = ();
     my $time = started($$);

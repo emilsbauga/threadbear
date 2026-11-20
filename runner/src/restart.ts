@@ -162,7 +162,11 @@ export function threadEnv(threadId: string, home: string, basePath = process.env
     THREADBARE_THREAD_ID: threadId,
     THREADBARE_HOME: home,
     THREADBARE_RUNNER_HOME: home,
-    PATH: basePath ? `${BIN_DIR}:${basePath}` : BIN_DIR,
+    // On Windows the runner's Node goes on too: bin/tb is a node script,
+    // and Git Bash (Claude's Bash tool there) runs it with whatever node
+    // is on PATH, which a fresh PC hasn't got (cmd and PowerShell run
+    // tb.cmd, which uses THREADBEAR_NODE).
+    PATH: [BIN_DIR, ...(process.platform === 'win32' ? [path.dirname(process.execPath)] : []), ...(basePath ? [basePath] : [])].join(path.delimiter),
   };
 }
 
@@ -613,7 +617,7 @@ export class Restarter {
       // release that isn't the one it deployed, from the message itself.
       const heads = [this.deps.rolledBack, warning].filter(Boolean);
       const text = heads.length ? `Note from the runner: ${heads.join(' ')} Check tb logs before going on. Your message for after the restart follows.\n\n${r.text}` : r.text;
-      runner.send(r.threadId, text, [], { origin: 'runner' });
+      runner.send(r.threadId, text, [], { origin: 'runner', wakeReason: 'The runner restarted' });
       log.info('resumed a thread after the restart', { threadId: r.threadId });
     } catch (e) {
       log.error('could not resume a thread after the restart', { threadId: r.threadId, error: String(e) });

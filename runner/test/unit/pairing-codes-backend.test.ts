@@ -100,12 +100,10 @@ test('spent and expired codes are swept a few at a time', async () => {
   assert.equal(s.rows('pairingCodes').length, 2);
 });
 
-test("an older runner's sync:issueToken gets no phone token to put in a link, and a browser still signs in", async () => {
+test("an older runner's sync:issueToken gets no phone token to put in a link", async () => {
   const s = await setup();
   assert.match(await refusal(call(s.ctx, sync.issueToken, { key: OWNER, kind: 'phone', name: 'iPhone' })), /too old to pair a phone/);
   assert.equal(s.rows('tokens').length, 0);
-  const browser = await call(s.ctx, sync.issueToken, { key: OWNER, kind: 'browser', name: 'Chrome' });
-  assert.match(browser.token, /^tb_/);
 });
 
 test('pair-qr.swift\'s tokens:issueCode makes a code, not a token', async () => {
@@ -114,4 +112,36 @@ test('pair-qr.swift\'s tokens:issueCode makes a code, not a token', async () => 
   assert.match(made.code, /^tbp_/);
   assert.equal(s.rows('tokens').length, 0);
   assert.match((await claim(s.ctx, made.code)).token, /^tb_/);
+});
+
+// The website's sign-in link (API 81): it carried a browser's 90-day token in
+// its #fragment, which anything that saw the link (another app offered it, a
+// synced history, a copied URL) could keep using. Now it carries a one-use
+// code the site trades with tokens:claim, and runners can't mint a browser
+// token for a link at all.
+test('a browser sign-in code is traded once for a browser token', async () => {
+  const s = await setup();
+  const made = await call(s.ctx, sync.issuePairingCode, { key: OWNER, name: 'Chrome', days: 30, kind: 'browser' });
+  assert.equal(s.rows('tokens').length, 0, 'a token exists before the browser has claimed it');
+  const got = await claim(s.ctx, made.code);
+  const t = s.rows('tokens')[0]!;
+  assert.equal(t.kind, 'browser');
+  assert.equal(t.name, 'Chrome');
+  assert.ok(t.expiresAt - Date.now() < 31 * 86_400_000 && t.expiresAt - Date.now() > 29 * 86_400_000);
+  assert.ok(await call(s.ctx, phone.me, { token: got.token }));
+  assert.match(await refusal(claim(s.ctx, made.code)), /expired or was already used/);
+  assert.equal(s.rows('tokens').length, 1);
+  // Only the main Mac's key makes one.
+  assert.notEqual(await refusal(call(s.ctx, sync.issuePairingCode, { key: MINI_KEY, name: 'x', kind: 'browser' })), 'accepted');
+});
+
+test('sync:issueToken mints no browser token for a link any more, and tokens:issueCode makes a browser code', async () => {
+  const s = await setup();
+  assert.match(await refusal(call(s.ctx, sync.issueToken, { key: OWNER, kind: 'browser', name: 'Chrome' })), /too old to sign a browser in/);
+  assert.equal(s.rows('tokens').length, 0);
+  const made = await call(s.ctx, tokens.issueCode, { name: 'web-ipad', kind: 'browser' });
+  assert.equal(s.rows('tokens').length, 0);
+  await claim(s.ctx, made.code);
+  assert.equal(s.rows('tokens')[0]!.kind, 'browser');
+  assert.equal(s.rows('tokens')[0]!.name, 'web-ipad');
 });

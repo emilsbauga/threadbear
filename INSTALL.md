@@ -10,8 +10,10 @@ can do yourself. `README.md` says what Threadbear is.
 Run these and fix what's missing before going on:
 
 - `sw_vers -productVersion` and `uname -m`: macOS on `arm64` (Apple silicon).
-- `xcodebuild -version`: Xcode 26 or newer. If it's missing or older, **Ask**
-  them to install Xcode from the App Store and open it once, then carry on.
+- `xcode-select -p`: Xcode's command line tools. If it fails, run
+  `xcode-select --install` and **Ask** them to click Install in the window
+  it opens, then carry on. Full Xcode isn't needed, and setup installs Rust
+  for the app if it isn't there.
 - `node -v`: 24 or newer. If not, install it with nvm
   (`nvm install 24 && nvm use 24`) or Homebrew (`brew install node@24`), and
   use that `node` for the rest.
@@ -127,7 +129,9 @@ New threads start in `~/ThreadbearThreads`, which setup makes (not
 They can change it in the app's Settings, and pick a folder for each
 thread as they start it.
 
-It takes a few minutes (it builds the Mac app). Along the way:
+The first run takes 30 to 45 minutes, most of it building the Mac app
+(installing Rust first if there's no `rustup`), and needs about 5 GB free.
+Tell them, so they can leave it running. Along the way:
 
 - If they aren't logged in to Convex, it opens a Convex page in the browser
   and waits. **Ask** them to approve it (and to make a free account if they
@@ -137,8 +141,10 @@ It takes a few minutes (it builds the Mac app). Along the way:
 - Any other stop says what's wrong; fix it and run the same command again. It
   carries on from where it got to.
 
-It finishes with "Threadbear is set up." Then open the app:
-`open ~/Applications/Threadbear.app`.
+It opens the app once it's built (`~/Applications/Threadbear GPUI.app`) and
+finishes with "Threadbear is set up." The app starts with a few setup cards:
+their agents, where threads start, the phone, and a few things worth turning
+on. **Ask** them to go through them.
 
 Setup also puts `Threadbear Runner.app` in `~/Applications`. It's the small
 program that runs the runner in the background; it isn't for opening. When
@@ -151,7 +157,9 @@ do that. Tell them that prompt is Threadbear's, so they can answer it.
 Both happen in the app, in Settings (⌘,) › Phone & browser. **Ask** them to
 open it there:
 
-- "Show the code" shows a QR code to scan with the Threadbear iPhone app.
+- "Show the code" shows a QR code to scan with the Threadbear iPhone or
+  Android app. The Android one isn't on Google Play yet: docs/guide.md, "On
+  Android", says how to install it from GitHub.
 - "Open signed in" opens their Threadbear website in their browser, signed in.
 - The same tab lists what's paired, each with Revoke.
 
@@ -165,8 +173,7 @@ yourself: it can run their agents.
 Say what was set up (their Convex project and its URL, where the app is), and
 that the runner and app update themselves when their `main` changes. Also say,
 in a line, that full sync is off: it would let their phone, the website and other
-machines show tool output and diffs too, and Threadbear offers it once they pair a
-phone or add a machine (`tb settings full on` turns it on now).
+machines show tool output and diffs too, and `tb settings full on` turns it on.
 
 ## Another Mac (optional)
 
@@ -249,3 +256,31 @@ Threads on it are opened and steered from the Mac through Convex, so nothing con
 What's left out on Linux: everything that needs a Mac, such as the iOS
 simulator, Xcode, BrowserBear, ComputerCub and noticing dialogs on the screen.
 Threads that need those belong on the Mac.
+
+## 7. A runner on Windows (optional, new)
+
+A Windows 10 or 11 PC can be a runner too, natively, with no WSL
+(docs/gpui-port/runner-windows-plan.md). It's new, so expect rough edges:
+patches run only when clicked, and the Mac-only
+tools are off. Do this as the person who'll use it, in PowerShell, with no
+admin rights needed.
+
+1. **Git for Windows** from https://git-scm.com/download/win (its bash runs
+   patch actions, checks and `tb land`, and it's what Claude Code's Bash
+   tool uses). **Node 24 or newer** from nodejs.org (the zip, unpacked
+   somewhere of yours such as `%LOCALAPPDATA%\Programs\node`, needs no admin).
+2. **Claude Code** with its native installer (`irm https://claude.ai/install.ps1 | iex`,
+   which puts it in `%USERPROFILE%\.local\bin\claude.exe`, where the runner
+   looks), then `claude auth login`.
+3. **The code:** clone their fork (any folder) and, in `runner\`, `npm ci`.
+4. **Join their backend** as in section 6, step 6, with the data folder
+   `%LOCALAPPDATA%\Threadbear` (not the Mac's names: on Windows it's there).
+5. **Install:** `node scripts\install-windows.mjs` in `runner\`, with the
+   Node from step 1 (`--dry-run` says what it will do). It builds the first
+   release, registers a Scheduled Task for this user in Task Scheduler's
+   Threadbear folder that starts the runner at logon with no window, puts
+   `tb` on the user's PATH and waits until the runner is up. The runner then
+   follows its checkout's `main` and builds its own releases, as on a Mac,
+   so keep that checkout pulling theirs. `--uninstall` takes it off again.
+
+The desktop app (the GPUI build for Windows) finds this runner by itself.

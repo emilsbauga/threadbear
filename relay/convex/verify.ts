@@ -32,21 +32,64 @@ export function convexSite(raw: string | undefined): string | null {
 }
 
 export const VERIFY_TIMEOUT_MS = 5_000;
+// A yes is `{"ok":true}`; anything much longer isn't one.
+const MAX_ANSWER_BYTES = 1_024;
 
 // Whether the deployment says the nonce is its own: a 200 with
 // `{ ok: true }` from its /relay/verify. A timeout, an error or any other
 // answer is a no.
+//
+// Never follows a redirect (Daybreak 140, 16 Nov 2026): convexSite only
+// checks the first address, and anyone can make a convex.site deployment
+// answer 307 to somewhere else, which fetch would follow with the POST and
+// its body, turning the relay into a way to post at hosts it should never
+// call. `redirect: 'error'` makes Convex's fetch throw on any 3xx (checked
+// on the relay's dev deployment: "fetch attempted redirect"), and the
+// answer must still say it came from the address asked, in case a runtime
+// ignores that option. Any other relay fetch whose address comes from a
+// caller must do the same.
 export async function deploymentVouches(site: string, nonce: string, fetcher: typeof fetch = fetch): Promise<boolean> {
+  const url = `${site}/relay/verify`;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), VERIFY_TIMEOUT_MS);
   try {
-    const res = await fetcher(`${site}/relay/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce }), signal: abort.signal });
-    if (res.status !== 200) return false;
-    const b = (await res.json().catch(() => null)) as { ok?: unknown } | null;
+    const res = await fetcher(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce }), redirect: 'error', signal: abort.signal });
+    if (res.redirected || res.url !== url || res.status !== 200) {
+      await res.body?.cancel().catch(() => {});
+      return false;
+    }
+    const text = await boundedText(res, MAX_ANSWER_BYTES);
+    if (text === null) return false;
+    const b = JSON.parse(text) as { ok?: unknown } | null;
     return b?.ok === true;
   } catch {
     return false;
   } finally {
     clearTimeout(timer);
   }
+}
+
+// The body as text, or null past `max` bytes (stops reading there).
+async function boundedText(res: Response, max: number): Promise<string | null> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    parts.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    all.set(p, at);
+    at += p.byteLength;
+  }
+  return new TextDecoder().decode(all);
 }

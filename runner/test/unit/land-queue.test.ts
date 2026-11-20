@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { land, landTargetFromGit, type LandTarget } from '../../src/worktrees.ts';
-import { joinQueue, leaveQueue, queueDir, readRunning, setRunning, waiting, waitingLine, writeEntry } from '../../src/land-queue.ts';
-import { capture, commit, holdUntil, makeBranch, makeRepo, sh, until, wrapGit, write } from '../helpers/worktrees-harness.ts';
+import { land, landLimits, landTargetFromGit, type LandTarget } from '../../src/worktrees.ts';
+import { joinQueue, leaveQueue, queueDir, readEntry, readRunning, setRunning, waiting, waitingLine, writeEntry } from '../../src/land-queue.ts';
+import { PATCH, capture, commit, holdUntil, makeBranch, makeRepo, sh, startTb, until, wrapGit, write } from '../helpers/worktrees-harness.ts';
 
 // A check that writes down which of the files it saw, and holds the first
 // landing (a.txt alone) until the test lets it go, so the rest queue up.
@@ -106,6 +106,138 @@ test('a real group check records every entry id and identifies each member as be
     codes = await Promise.all([first, ...rest]);
   }
   assert.deepEqual(codes, [0, 0, 0], caps.map((cap) => cap.err.join('\n')).join('\n'));
+});
+
+// On 18 Nov a holder's tb waited 1 h 55 min, took the lock and started the
+// check for a group of nine, and a few minutes in the agent's two-hour tool
+// limit killed it: the check was lost for all nine. The landing now runs in a
+// process of its own (land-detach.ts), so killing the tb that was run, and its
+// whole process group, leaves the group's check to finish and land them all.
+test("a holder's tb killed during its group check still lands the whole group", async () => {
+  const { root, main } = makeRepo(PATCH(`{ check: "./check.sh" }`));
+  commit(main, { 'check.sh': `#!/bin/sh
+ls *.txt | tr '\\n' ' ' >> '${root}/checks'; echo >> '${root}/checks'
+if test -f b.txt; then touch '${root}/group-checking'; ${holdUntil(`${root}/group-release`)}; fi
+` }, 'Add check');
+  sh(main, 'chmod +x check.sh && git add check.sh && git commit -qm executable');
+  const [b, c, d] = branches(main, ['b', 'c', 'd']);
+  const common = path.join(main, '.git');
+  const base = sh(main, 'git rev-parse main');
+  // c and d already waiting in the line, each with its tb's lock on its entry.
+  const entries = [c, d].map((t) => joinQueue(common, { branch: t.branch, path: t.path, base, commit: sh(t.path, 'git rev-parse HEAD'), check: './check.sh', checkFrom: '' }));
+  const holders = entries.map((e, i) => {
+    const lock = path.join(queueDir(common), `${e.id}.lock`);
+    const hold = `touch '${root}/held-${i}'; ${holdUntil(`${root}/drop`)}`;
+    const p = spawn('/bin/sh', ['-c', process.platform === 'darwin' ? `/usr/bin/lockf -k '${lock}' /bin/sh -c "${hold}"` : `flock -x '${lock}' /bin/sh -c "${hold}"`], { stdio: 'ignore' });
+    p.on('error', () => {});
+    return p;
+  });
+  const env = { THREADBEAR_HOME: path.join(root, 'no-runner'), THREADBEAR_THREAD_ID: undefined };
+  try {
+    await until(() => [0, 1].every((i) => fs.existsSync(path.join(root, `held-${i}`))), 'the others waiting');
+    const tb = startTb(['land'], b.path, env);
+    try {
+      await until(() => fs.existsSync(path.join(root, 'group-checking')), 'the group check');
+      const running = readRunning(common);
+      assert.deepEqual(running?.branches, [b.branch, c.branch, d.branch]);
+      assert.notEqual(running?.pid, tb.child.pid, 'the check runs in a process of its own');
+      // As a tool's time limit does: a signal, then everything in its group.
+      tb.child.kill('SIGTERM');
+      const { code, out } = await tb.done;
+      assert.equal(code, 143, out);
+      assert.match(out, /stopped \(SIGTERM\) during its check, which carries on in a process of its own \(pid \d+\) and lands what passes/);
+      try { process.kill(-tb.child.pid!, 'SIGKILL'); } catch { /* gone */ }
+      assert.equal(readRunning(common)?.pid, running?.pid, 'still checking');
+    } finally {
+      write(root, { 'group-release': '' });
+    }
+    await until(() => ['b', 'c', 'd'].every((n) => fs.existsSync(path.join(main, `${n}.txt`))) && entries.every((e) => readEntry(common, e.id)?.result), 'the group landed');
+    for (const e of entries) assert.deepEqual(readEntry(common, e.id)?.result?.together, [b.branch, ...[c, d].map((t) => t.branch).filter((x) => x !== e.branch)]);
+    assert.deepEqual(fs.readFileSync(path.join(root, 'checks'), 'utf8').trim().split('\n').map((l) => l.trim()), ['b.txt c.txt d.txt'], 'one check');
+    // Its next tb land waits for it to finish, then has nothing to land.
+    const again = capture();
+    assert.equal(await land(b, again.opts), 0, again.err.join('\n'));
+    assert.equal(sh(b.path, `git log --oneline main..${b.branch}`), '');
+  } finally {
+    write(root, { 'group-release': '', drop: '' });
+    await Promise.all(holders.map((p) => new Promise((r) => (p.exitCode !== null ? r(null) : p.once('close', r)))));
+  }
+});
+
+// Someone else holds the landing lock until `drop` is written.
+async function lockHeld(root: string, common: string) {
+  const lock = path.join(common, 'threadbear-land.lock');
+  const hold = `touch '${root}/lock-held'; ${holdUntil(`${root}/lock-drop`)}`;
+  const p = spawn('/bin/sh', ['-c', process.platform === 'darwin' ? `/usr/bin/lockf -k '${lock}' /bin/sh -c "${hold}"` : `flock -x '${lock}' /bin/sh -c "${hold}"`], { stdio: 'ignore' });
+  p.on('error', () => {});
+  await until(() => fs.existsSync(path.join(root, 'lock-held')), 'the lock held');
+  return async () => {
+    write(root, { 'lock-drop': '' });
+    if (p.exitCode === null) await new Promise((r) => p.once('close', r));
+  };
+}
+
+// Stopped before its check starts, a landing still leaves the line: it may
+// have been stopped on purpose, and nobody would hear how it went. The tb
+// that was run passes the signal on to the landing's own process, or, killed
+// outright, the landing notices its tb has gone.
+for (const signal of ['SIGTERM', 'SIGKILL'] as const) test(`a tb land ${signal === 'SIGTERM' ? 'stopped' : 'killed outright'} while it waits takes its landing out of the line`, async () => {
+  const { root, main } = makeRepo(PATCH(`{ check: "true" }`));
+  const [b] = branches(main, ['b']);
+  const common = path.join(main, '.git');
+  const drop = await lockHeld(root, common);
+  try {
+    const tb = startTb(['land'], b.path, { THREADBEAR_HOME: path.join(root, 'no-runner'), THREADBEAR_THREAD_ID: undefined });
+    await until(() => tb.output().includes('Waiting for another landing'), 'tb waiting');
+    assert.equal(waiting(common).length, 1);
+    tb.child.kill(signal);
+    const { code, out } = await tb.done;
+    if (signal === 'SIGTERM') {
+      assert.equal(code, 143, out);
+      assert.match(out, /stopped \(SIGTERM\) while it waited in the landing queue: thread\/b0000000 is out of the line and nothing of it landed/);
+    }
+    await until(() => waiting(common).length === 0, 'out of the line');
+  } finally {
+    await drop();
+  }
+  // Nothing landed later either.
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(!fs.existsSync(path.join(main, 'b.txt')));
+});
+
+// Its tb gone in the second before the landing's process looked again, just
+// as the lock came: it stops there rather than check and land (Codex's review).
+test('a landing whose tb has gone by the time it gets the lock stops before its check', async () => {
+  const { root, main } = makeRepo();
+  const [b] = branches(main, ['b']);
+  const before = sh(main, 'git rev-parse main');
+  const c = capture();
+  assert.equal(await land({ ...b, check: `touch '${root}/checked'` }, { ...c.opts, onLocked: () => false }), 129);
+  assert.match(c.err.join('\n'), /stopped just as it got the landing lock, before its check: thread\/b0000000 is out of the line/);
+  assert.ok(!fs.existsSync(path.join(root, 'checked')));
+  assert.equal(sh(main, 'git rev-parse main'), before);
+  assert.deepEqual(waiting(path.join(main, '.git')), []);
+  // And the lock is free again.
+  assert.equal(await land({ ...b, check: 'true' }, capture().opts), 0);
+});
+
+test('a landing that has waited long says a tool time limit may stop it', async () => {
+  const { root, main } = makeRepo();
+  const [b] = branches(main, ['b']);
+  const drop = await lockHeld(root, path.join(main, '.git'));
+  const before = { ...landLimits };
+  Object.assign(landLimits, { longWaitMs: 0, progressMs: 50 });
+  const c = capture();
+  try {
+    const landing = land({ ...b, check: 'true' }, c.opts);
+    await until(() => c.out.some((l) => l.startsWith('Still waiting to land')), 'a second line');
+    await drop();
+    assert.equal(await landing, 0);
+  } finally {
+    Object.assign(landLimits, before);
+    await drop();
+  }
+  assert.match(c.out.find((l) => l.startsWith('Still waiting'))!, /It has waited 0 min: if what ran tb land stops it before it gets the lock \(an agent's tool time limit\), it leaves the line/);
 });
 
 test('a group check that fails is narrowed down, and only the one that broke it is refused', async () => {
@@ -367,13 +499,14 @@ test('a commit made in the holder while its group check runs is carried onto its
     await until(() => caps.every((x) => x.out.some((l) => l.startsWith('Waiting for another landing'))), 'b and c waiting');
     write(root, { release: '' });
     assert.equal(await first, 0);
-    // Redirection creates the file before pwd writes it. An empty read
-    // resolves to this test process's cwd, outside the fixture repo.
-    await until(() => {
-      try { return fs.readFileSync(path.join(root, 'holder'), 'utf8').trim().length > 0; }
-      catch { return false; }
-    }, 'the group check');
-    const holder = fs.realpathSync(fs.readFileSync(path.join(root, 'holder'), 'utf8').trim());
+    // Wait for pwd's whole line, not just the file: the shell makes the file
+    // before pwd writes to it, and realpathSync('') is this process's own
+    // folder, so reading it empty committed fix.txt into the checkout running
+    // the tests (seen on a fork, 14 Nov).
+    const said = () => (fs.existsSync(path.join(root, 'holder')) ? fs.readFileSync(path.join(root, 'holder'), 'utf8') : '');
+    await until(() => said().endsWith('\n'), 'the group check');
+    const holder = fs.realpathSync(said().trim());
+    assert.ok(holder.startsWith(root + path.sep), `the holder is one of this test's worktrees, not ${holder}`);
     commit(holder, { 'fix.txt': 'fix\n' }, 'Fix during the check');
   } finally {
     write(root, { 'group-release': '' });

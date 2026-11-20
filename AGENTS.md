@@ -22,6 +22,11 @@ This file is written for Mike's own copy. The machines it names (the M5,
 `bruce`, `cloud`, `tinker-desk`) and paths under `~/dev/me` are his: in
 anyone else's copy (`origin` isn't mikecann/threadbear), skip those steps
 and ask the user what they use instead, rather than trying to reach them.
+There, a release of Mike's comes in through `docs/bringing-in-updates.md`
+(checked and landed), never a plain `git merge upstream/main`: that skips
+the checks, and a release's new checks then fail every other thread's
+landing. One change of his they ask for by name can still be
+cherry-picked.
 
 ## Rules
 
@@ -74,6 +79,12 @@ and ask the user what they use instead, rather than trying to reach them.
   A scenario's `shows` are the words each surface must show.
 - Only ever spawn the official `claude` (and later `codex`) binaries under
   Mike's own logins. Never read or copy OAuth tokens or Keychain credentials.
+  The one exception is a login's year-long token that Mike made with
+  Year-long token… (`threadbear-token.json` in that login's folder): the
+  runner passes it to that login's CLI and nowhere else (Mike, 17 Nov), but
+  to Convex as that login's cloud token when Mike picks it on a cloud token
+  card (`cloudTokens.useMac`). A cloud token made with Make one goes only to
+  `boxes:setCloudToken`, never to disk or the log.
 - Tests that hit a real model use the cheapest model, tiny prompts, a temp
   working folder and a temp runner data dir, never the real one.
 - Never kill processes you didn't start; T3 Code runs the same CLIs.
@@ -236,6 +247,12 @@ else may be using that desktop: first check nothing's recording it
 names, including variants) and that your window really is in front (`front`,
 then a look at the screen). Wake its screen with `caffeinate -u`, or the events go nowhere.
 
+A spec or tool that installs the web runtime puts it in `runtimeParent()`
+(`features/support/web-runtime.ts`), never straight in the temp folder:
+remote.sh's temp folder is on Tinker Desk's external SSD, and Chromium's
+helpers run from there asked macOS for that disk on every new build, with
+nobody at the screen to answer (19 Nov).
+
 ## The GPUI port
 
 The desktop app is being rewritten as one GPUI app for Mac, Windows and Linux
@@ -264,12 +281,21 @@ since you last looked, as Tyler did for #2 while a thread was writing its own
 fix (6 Nov). Their hand test may know more than you can find out. Merge with
 `gh pr merge --rebase` so it shows as merged and stays theirs, and put anything
 of your own in a commit on top. A comment to them goes past Mike first.
+Work rewritten by hand from their PR or fork gets a `Co-Authored-By:`
+trailer for them, as 434438d9 does for Wayne.
 
-A commit on someone's fork isn't an offer, however good it looks: they haven't
-asked for it to go anywhere. Don't suggest bringing one in, and don't take one,
-unless Mike asks for that one by name or they've opened a PR. Mike, 6 Nov: "I
-don't think you should be pulling in anybody's stuff willy nilly." Telling him
-what people have built is fine, and that's all the fork watch schedule does.
+A commit on someone's fork isn't an offer: they haven't asked for it to go
+anywhere. The fork watch schedule (`~/dev/me/misc/schedules/threadbear-fork-watch`)
+is what brings them in. It takes the small ones it's sure of by itself (a real
+bug, test or check fix, small enough to read whole, that changes nothing about
+how Threadbear works), written fresh from what the diff does and credited as
+above, and asks Mike about features and anything that changes how something
+works. Mike, 19 Nov: "for these small things like these fixes... that you are
+pretty certain are valuable, I think in the future you should just
+automatically pull them in. And leaving it up to me, the bigger decisions."
+Outside that schedule, don't take a fork's commit unless Mike asks for that
+one by name or its author has opened a PR (his 6 Nov "I don't think you
+should be pulling in anybody's stuff willy nilly" still stands for the rest).
 
 ## Experiments
 
@@ -291,8 +317,9 @@ default, on for him (Mike asked 6 Nov).
   `docs/experiments.md` with it: the guide and the forking table point
   there, and `experiment-docs.test.ts` fails while it's out of date. Edit
   the experiment's file, never the generated doc. One file each and a
-  union merge on the doc mean two threads adding experiments at once
-  don't collide when they land.
+  line-by-line merge on the doc (`scripts/merge-lines.mjs`) mean two
+  threads adding or taking out experiments at once don't collide when
+  they land.
 - Book the check-in when it lands: `schedule_message` with `new_thread`
   in this repo, about four days out, telling that thread to look at how
   the experiment has gone and ask Mike whether to turn it on for
@@ -321,6 +348,10 @@ interrupt, snooze or archive it. The runner puts its own `tb` on your PATH;
 if `tb` isn't found (an older runner, or outside a thread), use
 `runner/bin/tb`. `tb --help` lists the rest.
 
+- Lint is mikecann-lint (`eslint.config.mjs`). `./check.sh` lints the code files a
+  landing changed (everything when the lint setup or packages change), so a landing
+  that adds a lint problem doesn't land. Fix the cause the message names; old problems
+  are exempt in `eslint-suppressions.json`. A disable comment needs a reason after `--`.
 - `./check.sh` runs every check (`--quick`: the runner's typecheck and
   unit tests, about a minute, the Mac app's release build when `app/`
   or `dock/` changed, and the GPUI port's core and client tests and a
@@ -331,7 +362,16 @@ if `tb` isn't found (an older runner, or outside a thread), use
   (`scripts/check-remote.sh`); one run at a time, so it may say it's
   waiting for another thread's. A host short of disk is passed over (8 GiB
   free for Swift, 2 otherwise), and if none has room the check fails and
-  names them. A host that stops answering partway is dropped for the next
+  names them. Tinker Desk's GPUI build folder (`~/.cache/threadbear-check/gpui`)
+  is a volume on its external SSD mounted there, not a link (remote.sh
+  refuses links on that path). A `--desk` run that sits with no output may
+  be waiting on macOS asking Desk Runner to reach a removable volume:
+  `desk "screencapture -x /tmp/s.png"` shows the screen (17 Nov). Fix
+  that yourself, never ask Mike (19 Nov: "I want you to be able to access
+  that hard drive"): `desk "open 'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_FilesAndFolders'"`,
+  click Desk Runner.app's row open with a CGEvent click run through `desk`
+  (it has Accessibility) and see Removable Volumes is on. On 19 Nov it
+  was on already, and opening the row was enough. Close System Settings after. A host that stops answering partway is dropped for the next
   one. If none can be reached it runs here
   at low priority. `--e2e` always runs here, as it needs the claude login. It skips the deploy tests and BearDock's
   unless something they cover changed from main (`--all` runs them
@@ -348,12 +388,20 @@ if `tb` isn't found (an older runner, or outside a thread), use
   reused with its Swift build caches so the app builds warm. Your system prompt says where. Commit there. When
   the work is done and checked, `tb land` rebases it on main, runs
   `./check.sh --quick` and fast-forwards main in the main checkout
-  (`--dry-run` first if you like; it never pushes). Landings waiting
-  for the lock are checked together in the next check, and a failed
-  group is halved until the one that broke it is found
-  (docs/thread-worktrees.md, "Landing together"), so run it in the
-  background and expect up to two checks' wait. Mike's Land chip does
-  the same. If it refuses, it says why and what to fix: commit your
+  (`--dry-run` first if you like). On Mike's Mac it then pushes main to
+  GitHub, merging GitHub's in first if that has moved
+  (`pushAfterLanding` in runner.json). Landings waiting
+  for the lock are checked together in the next check. When a group
+  fails, what failed is run on each landing alone and the broken ones
+  are left out, told why at once (docs/thread-worktrees.md, "Landing
+  together"; a failed check ends with the `./check.sh --only "..."`
+  that runs just what failed, the quick way to see your fix work), so run it in the
+  background with the longest timeout and expect up to two checks' wait.
+  A time limit that stops it while it waits for the lock takes it out of
+  the line (it says so; run it again), but once its check has started
+  that finishes and lands by itself, as `tb land` runs it in a process of
+  its own (docs/thread-worktrees.md, "A landing outlives its tb").
+  Mike's Land chip does the same. If it refuses, it says why and what to fix: commit your
   changes, sort out the conflicting files, fix the check, or wait for
   whoever has uncommitted changes in main's checkout. It also holds a
   landing that changes what the Desktop app workflow checks (desktop/,
@@ -386,8 +434,8 @@ if `tb` isn't found (an older runner, or outside a thread), use
   change it. To try a runner change, start `runner/scripts/dev-runner.sh` in
   the background and use the `<dev home>/tb` it prints (a bare `tb` reaches
   the live runner unless `THREADBEAR_HOME` is set in that same command).
-  Its threads start in `<dev home>/work` on claude-main (or
-  `TB_E2E_ACCOUNT`) and claude-haiku-5-5 (its `runner.json` defaults), from `tb` or a debug app's composer alike.
+  Its threads start in `<dev home>/work` on the first Claude login that
+  works (`TB_E2E_ACCOUNT` picks one) and claude-haiku-5-5 (its `runner.json` defaults), from `tb` or a debug app's composer alike.
   For real-sized data use `--clone-real`, never `--home` on a copy of the
   real data dir: a copy's threads are Mike's real sessions and folders
   (docs/dev-tools.md, section 4).
@@ -431,10 +479,9 @@ if `tb` isn't found (an older runner, or outside a thread), use
   (`runner/launcher/`), a small app that runs `node launch.mjs` so macOS's
   privacy prompts say "Threadbear Runner", not "node". Releases never
   rebuild it: a change under `runner/launcher/` only ships through a
-  reinstall. Once it's on main the Updates panel offers Update it, which
-  stages it to take over at Mike's next login (with the `selfReinstall`
-  experiment the runner does that by itself, `runner/src/reinstall.ts`);
-  say so in your end_turn too.
+  reinstall. Once it's on main the runner stages it by itself to take over
+  at Mike's next login (`runner/src/reinstall.ts`; the Updates panel's
+  Update it tries again after a failure); say so in your end_turn too.
 - Never pass `--now`, run `install-runner.sh`, `tb restart` the live runner,
   `launchctl kickstart` it or stop its node process: each ends your own turn
   and stops other threads' work. If one is needed, finish and tell Mike the

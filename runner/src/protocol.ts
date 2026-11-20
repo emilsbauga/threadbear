@@ -37,7 +37,6 @@ export type ProviderInfo = {
   loginCommand: string;
   effort: 'claude' | 'codex' | 'none';
   autoMode: 'classifier' | 'asks';
-  sandbox: boolean;
   rewind: boolean;
   smallJobs: boolean;
   usageReadings: boolean;
@@ -121,7 +120,14 @@ export type AccountUsage = {
   stale?: boolean; // Token Stats has gone quiet and there's no live reading since
   blocked?: boolean; // the provider says this login is at its limit
   notice?: string; // Token Stats' own note
+  // Codex: the usage-limit resets the login has left (docs/protocol.md,
+  // "Usage resets"), from its last account/rateLimits/read.
+  resets?: UsageResets;
 };
+
+// A Codex login's free "Full reset" credits, each of which restores its
+// 5-hour and weekly limits at once. nextExpiresAt: the soonest one to expire.
+export type UsageResets = { available: number; nextExpiresAt?: string };
 
 export type Account = {
   piProfileId?: string;
@@ -142,6 +148,20 @@ export type Account = {
   plan?: string;
   note?: string; // from runner.json's accountNotes ("Convex work only")
   usage?: AccountUsage;
+  // Claude: the CLI says it's signed out, its sign-in has ended, or a turn
+  // on it was refused since (sign-in-state.ts). Pools skip it.
+  signedOut?: boolean;
+  // Claude: when this sign-in ends and the CLI can't renew it (28 days
+  // after signing in, from Claude Code 2.1.325).
+  loginEndsAt?: string;
+  // Claude: its paid plan has lapsed (the CLI's cached profile says the free
+  // plan, which has no Claude Code: accounts.ts). Pools skip it, and nothing
+  // offers to sign it in or promises a reset.
+  planEnded?: boolean;
+  // Claude: runs on a year-long token Mike made for it (year-token.ts),
+  // not its 28-day sign-in. madeAt, when known, is when; loginEndsAt is
+  // then a year on. The token itself never leaves the runner.
+  yearToken?: { madeAt?: string };
 };
 
 export type CliPolicy = 'auto' | 'notify' | 'off';
@@ -165,7 +185,9 @@ export type CliStatus = {
   // update on demand (ACP agents).
   canUpdateNow?: boolean;
   checkedAt?: string;
-  hold?: { version: string; reason: string; missing?: string[] };
+  // threadId: the thread started to look into a protocol hold;
+  // investigating: it's still open.
+  hold?: { version: string; reason: string; missing?: string[]; threadId?: string; investigating?: boolean };
   update?: {
     state: CliUpdateState;
     targetVersion?: string;
@@ -212,8 +234,10 @@ export type ThreadStatus = 'idle' | 'starting' | 'running' | 'waiting' | 'error'
 
 // Who archived a thread, and how Mike said it went (Who archived a thread).
 export type ArchivedBy = 'mike' | 'agent' | 'threadbear';
-export type ArchiveVerdict = 'worked' | 'didntWork' | 'notNeeded';
-export const ARCHIVE_VERDICTS: readonly ArchiveVerdict[] = ['worked', 'didntWork', 'notNeeded'];
+// The last two are the inboxGuess experiment's (runner/inbox-guess.ts):
+// whether he needed to see the thread at all, from the Archive menu.
+export type ArchiveVerdict = 'worked' | 'didntWork' | 'notNeeded' | 'didntNeedToSee' | 'gladISaw' | 'notSure';
+export const ARCHIVE_VERDICTS: readonly ArchiveVerdict[] = ['worked', 'didntWork', 'notNeeded', 'didntNeedToSee', 'gladISaw', 'notSure'];
 
 export type BacklogDraft = { text: string; images: ImageRef[]; attachments?: AttachmentRef[]; revision: number; context?: string };
 // What fills a thread's context, in Claude's own words (threads.contextUsage,
@@ -268,8 +292,9 @@ export type ThreadSummary = {
   snoozedUntilRelease?: true; // with snoozedUntilRestart: until it starts on a new release
   // Hibernated in Mike's words ("Hibernate in words"): what he said, the
   // topic it waits for, and pending while the time is worked out.
-  wakeWhen?: { said: string; topic?: string; pending?: true };
+  wakeWhen?: { said: string; topic?: string; pending?: true; agent?: true };
   waitingOn?: { threadId: string; title: string; until?: string; done?: true }[]; // hibernating until these finish (or do `until`)
+  awaitingAppRestart?: true; // hibernating until the Mac app restarts onto what this thread landed
   woke?: { at: string; since?: string }; // woke from hibernating by itself, not looked at yet
   onOldRunner?: boolean; // finishing a turn on a runner that handed over (Handovers)
   archivedAt?: string;
@@ -633,6 +658,7 @@ export type Panel = {
   badge?: number; // a count on its rail button, from the patch's badge function
   summary?: string; // a line or few for its card in Highlights, from the patch's summary function
   convex?: { deployment: string; deploymentUrl: string; team?: string; project?: string }; // the Convex panel's cloud deployment, for panels.convexKey
+  from?: string; // a panel button's: the folder whose patch it is (Reply buttons)
 };
 
 // One row of a `list` panel, as its patch's `items` function returns it.
@@ -642,11 +668,14 @@ export type PanelItem = {
   url?: string;
   path?: string;
   icon?: string;
-  tone?: 'attention' | 'failed' | 'done';
+  tone?: 'attention' | 'failed' | 'warning' | 'working' | 'done';
   // A heading drawn over the row where it differs from the row before's.
   section?: string;
   // Short, faint, at the end of the title's line: a date or a count.
   trailing?: string;
+  // A switch at the end of the title's line; a press sends panels.toggle
+  // (docs/protocol.md, Patches, "Row toggles").
+  toggle?: { id: string; on: boolean; icon?: string; title?: string };
 };
 
 export type BackgroundKind = 'agent' | 'shell' | 'monitor' | 'other';
@@ -732,12 +761,19 @@ export type TurnErrorKind = 'usageLimit' | 'contextWindow' | 'auth' | 'network';
 // agent's answer (end_turn's findings), absent until it gives one.
 export type ReviewSeverity = 'high' | 'medium' | 'low';
 export type ReviewOutcome = 'fixed' | 'disputed' | 'left';
-export type ReviewFinding = { id: number; round: number; severity: ReviewSeverity; claim: string; where?: string; case?: string; outcome?: ReviewOutcome; note?: string };
+// by: which of a panel found it (its reviewer line), on a round several
+// reviewed.
+export type ReviewFinding = { id: number; round: number; severity: ReviewSeverity; claim: string; where?: string; case?: string; outcome?: ReviewOutcome; note?: string; by?: string };
+// One of a review panel (runner/lab-review.ts): several reviewers at once
+// on a big or risky change.
+export type PanelReviewer = { reviewer: string; threadId: string; independent: boolean };
 export type LabReviewLedger = {
-  reviewer: string; // "Codex (codex-1)"
-  independent: boolean; // another lab, not a fresh session of the same one
+  reviewer: string; // "Codex (codex-1)"; a panel's names, joined with ", "
+  independent: boolean; // another lab, not a fresh session of the same one (a panel: any of it)
   rounds: number;
-  threadId: string; // the latest round's review thread
+  threadId: string; // the latest round's review thread (a panel's first)
+  // The latest round's panel, when several reviewed it at once.
+  panel?: PanelReviewer[];
   // The latest round found nothing that holds up.
   passed: boolean;
   // A round whose reviewer gave no verdict in end_turn: its reply is all
@@ -762,7 +798,10 @@ export type CodexTurnUsage = {
 // pickedIds: every option picked, in the review's order, with pickedId the
 // first of them for clients from before several could be picked (4 Nov).
 // reply: Mike's own words on the whole review. none: none of them will do.
-export type ReviewDraft = { pickedId?: string; pickedIds?: string[]; notes: Record<string, string>; reply?: string; none?: true };
+// images: pictures pasted into the reply, each placed by a [Picture N] marker
+// in reply, as a message's are (Mike, 17 Nov: a picture pasted in the review
+// window went in as its file path).
+export type ReviewDraft = { pickedId?: string; pickedIds?: string[]; notes: Record<string, string>; reply?: string; images?: ImageRef[]; none?: true };
 
 // One picture of an option: its first, or another screen or state of it.
 // media: a video (video/mp4, video/quicktime) or page (text/html) the
@@ -789,8 +828,9 @@ export type DesignReview = {
 };
 
 // A button an agent put in its reply (docs/protocol.md, "Reply buttons"):
-// pressing it starts a thread with the brief, or sends a message to a
-// thread. Exactly one of start and send.
+// pressing it starts a thread with the brief, sends a message to a
+// thread, or opens another folder's patch panel beside this one. Exactly one
+// of start, send and panel.
 export type ReplyButtonStart = {
   text: string;
   title?: string;
@@ -803,6 +843,9 @@ export type ReplyButtonStart = {
   why?: string;
 };
 export type ReplyButtonSend = { threadId: string; threadTitle: string; text: string };
+// A web panel of another folder's patches (its id there and its title),
+// shown beside the thread whose reply has the button.
+export type ReplyButtonPanel = { cwd: string; panelId: string; title: string };
 export type ReplyButton = {
   id: string;
   title: string;
@@ -810,6 +853,8 @@ export type ReplyButton = {
   turnId?: string;
   start?: ReplyButtonStart;
   send?: ReplyButtonSend;
+  panel?: ReplyButtonPanel;
+  // A panel button's threadId is its own thread's: it can be pressed again.
   pressed?: { at: string; threadId: string };
   failed?: { at: string; error: string };
 };
@@ -820,7 +865,7 @@ export type EventBody =
   | { type: 'button.updated'; button: ReplyButton }
   // origin is set only on messages the runner sent by itself (the resume
   // after a restart).
-  | { type: 'user.message'; text: string; images: ImageRef[]; attachments?: AttachmentRef[]; origin?: MessageOrigin; scheduleId?: string; reviewId?: string; reviewResponse?: ReviewDraft; answers?: AskAnswer[]; editOf?: number }
+  | { type: 'user.message'; text: string; images: ImageRef[]; attachments?: AttachmentRef[]; origin?: MessageOrigin; wakeReason?: string; scheduleId?: string; reviewId?: string; reviewResponse?: ReviewDraft; answers?: AskAnswer[]; editOf?: number }
   // summary: the turn's summary, written by the runner from end_turn
   // givesWay: the turn's summary, with bullet replies off: any message of
   // the turn is the reply over it, however short

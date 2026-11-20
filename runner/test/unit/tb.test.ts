@@ -223,6 +223,40 @@ test('tb new on codex-main with a model and effort, tb accounts with and without
   }
 });
 
+test('tb accounts --json prints every login with its merged usage, for scripts checking room left', async () => {
+  const usage = {
+    windows: [{ kind: 'weekly_model' as const, title: 'Weekly Fable', remainingPercent: 38, resetsAt: '2026-11-20T09:00:00.000Z' }],
+    readAt: '2026-11-17T08:00:00.000Z',
+    source: 'shared' as const,
+    stale: true,
+    blocked: true,
+  };
+  const accounts = withCodex().map((a) => (a.id === 'claude-3' ? { ...a, note: 'Work only', usage, signedOut: true } : a));
+  const h = makeHarness(undefined, {}, { accounts: new FakeAccounts(accounts) });
+  const server = new RpcServer({ host: '127.0.0.1', port: 0, token: readToken(h.home), runner: h.runner, log: nullLogger });
+  const { port } = await server.listen();
+  const url = `ws://127.0.0.1:${port}/rpc`;
+  try {
+    const j = tb(h, url, ['accounts', '--json']);
+    assert.equal(await j.exited, 0, j.out());
+    const out = JSON.parse(j.out());
+    assert.deepEqual(out.accounts.map((a: { id: string }) => a.id), accounts.map((a) => a.id));
+    assert.equal(out.defaultAccountId, 'claude-main');
+    const three = out.accounts.find((a: { id: string }) => a.id === 'claude-3');
+    assert.equal(three.provider, 'claude');
+    assert.equal(three.title, 'three@example.com');
+    assert.equal(three.note, 'Work only');
+    assert.equal(three.signedOut, true);
+    assert.equal(three.isDefault, false);
+    assert.deepEqual(three.usage, usage);
+    assert.equal(out.accounts.find((a: { id: string }) => a.id === 'claude-main').isDefault, true);
+    // Not the models list or config folder: that's tb accounts <account> --json.
+    assert.equal(three.configDir, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
 test('tb pools lists the pools with their logins, and tb new --pool starts a thread on one', async () => {
   const h = makeHarness(undefined, {}, { accounts: new FakeAccounts(withCodex()) });
   const server = new RpcServer({ host: '127.0.0.1', port: 0, token: readToken(h.home), runner: h.runner, log: nullLogger });

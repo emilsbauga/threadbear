@@ -36,6 +36,12 @@ impl TextareaState {
     pub fn text_marks(&self) -> &[super::TextDecoration] {
         &self.extras.marks
     }
+
+    /// This app's: counts [`Self::set_value`] calls, which emit no change
+    /// event, so the app can tell a whole new value from an edit.
+    pub fn values_set(&self) -> u64 {
+        self.extras.values_set
+    }
 }
 
 /// An unstyled ordinary multi-line text input.

@@ -6,7 +6,8 @@
 // every send is a logged no-op. Each device row says whether it's a
 // sandbox (Xcode) or production (TestFlight, App Store) install, and
 // goes to the matching APNs host.
-import { createPrivateKey, randomBytes, sign } from 'node:crypto';
+import { createPrivateKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { request as httpsRequest } from 'node:https';
 import http2 from 'node:http2';
 import { v } from 'convex/values';
 import { internal } from './_generated/api';
@@ -15,6 +16,8 @@ import { failureText } from './pushHealth';
 import { pushText } from './pushText';
 import { seal } from './pushSeal';
 import { API_VERSION } from './version';
+import { encryptWebPush, pinnedLookup, vapidAuthorization, WEB_PUSH_PLAINTEXT_MAX, type VapidKey } from './webPush';
+import { endpointProblem, privateAddress } from './webPushEndpoint';
 
 // The push relay (relay/, docs/push-relay.md): Mike's Convex project that
 // holds his Apple key, for backends that don't have one. A deployment with
@@ -25,7 +28,12 @@ const RELAY_URL = 'https://impartial-hound-393.ap-southeast-2.convex.site';
 // platform "android" (API 66): apnsToken is the phone's Firebase token, and the
 // push goes through the relay to Firebase, even for a backend with an Apple
 // key of its own, which has no use for Android.
-type Target = { apnsToken: string; environment: 'sandbox' | 'production'; notify: 'away' | 'always' | 'off'; pushKey?: string; platform?: 'android' };
+// platform "webpush" (API 93, the F-Droid build): apnsToken is a UnifiedPush
+// endpoint and this deployment posts to it itself (sendWebPush), relay or not.
+type Target = { apnsToken: string; environment: 'sandbox' | 'production'; notify: 'away' | 'always' | 'off'; pushKey?: string; platform?: 'android' | 'webpush'; webPush?: { p256dh: string; auth: string } };
+
+// This deployment's own site address (relay registration, the VAPID subject).
+const siteUrl = (): string | undefined => process.env.CONVEX_SITE_URL;
 
 async function relayInstall(ctx: ActionCtx, url: string): Promise<{ installId: string; installKey: string } | { failure: string }> {
   const known = await ctx.runQuery(internal.devices.relayInstall, { url });
@@ -34,7 +42,7 @@ async function relayInstall(ctx: ActionCtx, url: string): Promise<{ installId: s
   // names by posting the nonce back to that deployment's /relay/verify
   // (http.ts), so nobody can use up its allowance of new installs by
   // calling /register anonymously (relay/convex/http.ts).
-  const deployment = process.env.CONVEX_SITE_URL;
+  const deployment = siteUrl();
   const nonce = randomBytes(24).toString('hex');
   if (deployment) await ctx.runMutation(internal.devices.startRelayCheck, { nonce });
   const res = await fetch(`${url}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: `api-${API_VERSION}`, ...(deployment ? { deployment, nonce } : {}) }) }).catch((e: Error) => e);
@@ -180,10 +188,31 @@ async function sendAlert(ctx: ActionCtx, alert: { title: string; body: string; t
   return r;
 }
 
+// Two sends' summaries as one.
+function both(a: SendSummary, b: SendSummary): SendSummary {
+  const bad = (a.broken ?? 0) + (b.broken ?? 0);
+  const why = a.failure ?? b.failure;
+  return { sent: a.sent + b.sent, failed: a.failed + b.failed, ...(bad ? { broken: bad } : {}), ...(why ? { failure: why } : {}) };
+}
+
 async function deliver(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, which: (notify: 'away' | 'always' | 'off') => boolean): Promise<SendSummary> {
   const all: Target[] = await ctx.runQuery(internal.devices.targets, {});
-  const targets = all.filter((t) => which(t.notify));
-  if (!targets.length) return { sent: 0, failed: 0, skipped: 'noDevices' };
+  const chosen = all.filter((t) => which(t.notify));
+  if (!chosen.length) return { sent: 0, failed: 0, skipped: 'noDevices' };
+  // UnifiedPush phones are sent to from here, whatever else is set up.
+  const web = chosen.filter((t) => t.platform === 'webpush');
+  const targets = chosen.filter((t) => t.platform !== 'webpush');
+  if (!targets.length) return await sendWebPush(ctx, alert, web);
+  if (!web.length) return await deliverRest(ctx, alert, targets);
+  // Side by side, so a slow UnifiedPush server never holds up Apple's or
+  // Firebase's, and each awaited to the end even if the other throws (a bad
+  // Apple key throws), so neither is cut off when the action returns.
+  const threw = (e: unknown): SendSummary => (console.error(`[push] a send threw: ${(e as Error)?.name ?? 'Error'}`), { sent: 0, failed: 1, broken: 1, failure: '0 send threw' });
+  const [w, rest] = await Promise.all([sendWebPush(ctx, alert, web).catch(threw), deliverRest(ctx, alert, targets).catch(threw)]);
+  return both(w, rest);
+}
+
+async function deliverRest(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, targets: Target[]): Promise<SendSummary> {
   const cfg = apnsConfig();
   if (!cfg || process.env.PUSH_VIA === 'relay') return await sendViaRelay(ctx, alert, targets);
   // An Apple key is no use for an Android phone: those go through the relay,
@@ -223,10 +252,121 @@ async function deliver(ctx: ActionCtx, alert: { title: string; body: string; thr
   }
   const direct: SendSummary = { sent, failed, broken, ...(failure ? { failure } : {}) };
   if (!android.length) return direct;
-  const relayed = await sendViaRelay(ctx, alert, android);
-  const bad = (direct.broken ?? 0) + (relayed.broken ?? 0);
-  const why = direct.failure ?? relayed.failure;
-  return { sent: direct.sent + relayed.sent, failed: direct.failed + relayed.failed, ...(bad ? { broken: bad } : {}), ...(why ? { failure: why } : {}) };
+  return both(direct, await sendViaRelay(ctx, alert, android));
+}
+
+// This deployment's VAPID key (webPushVapid), made here the first time if a
+// phone never asked for it (phone:webPushKey makes it too).
+async function vapid(ctx: ActionCtx): Promise<VapidKey> {
+  const known = await ctx.runQuery(internal.devices.vapidKey, {});
+  if (known) return known;
+  const jwk = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' });
+  return await ctx.runMutation(internal.devices.putVapidKey, { x: jwk.x!, y: jwk.y!, d: jwk.d! });
+}
+
+// The F-Droid build's notifications (API 93): straight to each phone's
+// UnifiedPush endpoint, encrypted for it (RFC 8291) and signed with this
+// deployment's VAPID key (RFC 8292). What's inside is what the relay's
+// Firebase message carries: the thread id and the title and text sealed with
+// the phone's own key, so its distributor's server sees neither. A 404 or 410
+// means the phone or its distributor dropped the registration, so the row
+// goes, as a gone Apple token's does.
+async function sendWebPush(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, targets: Target[]): Promise<SendSummary> {
+  if (!targets.length) return { sent: 0, failed: 0 };
+  const key = await vapid(ctx);
+  // RFC 8292 wants an https: or mailto: subject; a dev deployment's site is http.
+  const site = siteUrl();
+  const subject = site?.startsWith('https://') ? site : 'https://threadbear.mikecann.app';
+  // All at once (a phone token has at most 5, MAX_DEVICES_PER_TOKEN), each
+  // with its own 10-second limit, so one slow server can't hold up the rest.
+  const results = await Promise.all(targets.map((t) => webPushOne(t, alert, key, subject).catch((e: Error) => ({ status: 0, reason: e.message }))));
+  let sent = 0;
+  let failed = 0;
+  let broken = 0;
+  let failure: string | undefined;
+  for (const [i, said] of results.entries()) {
+    const t = targets[i];
+    if (said.status >= 200 && said.status < 300) {
+      sent++;
+      continue;
+    }
+    failed++;
+    console.warn(`[webpush] ${failureText(said.status, said.reason)} for …${t.apnsToken.slice(-6)}`);
+    if (said.status === 404 || said.status === 410) await ctx.runMutation(internal.devices.drop, { apnsToken: t.apnsToken });
+    else {
+      broken++;
+      failure ??= failureText(said.status, said.reason);
+    }
+  }
+  return { sent, failed, broken, ...(failure ? { failure } : {}) };
+}
+
+async function webPushOne(t: Target, alert: { title: string; body: string; threadId: string }, key: VapidKey, subject: string): Promise<{ status: number; reason?: string }> {
+  if (!t.webPush) return { status: 0, reason: 'no keys' };
+  const problem = endpointProblem(t.apnsToken);
+  if (problem) return { status: 0, reason: `endpoint is ${problem}` };
+  let text = JSON.stringify({ threadId: alert.threadId, ...(t.pushKey ? { e: seal(t.pushKey, JSON.stringify({ title: alert.title, body: alert.body })) } : {}) });
+  // A very long title or text: the phone shows its stand-in rather than nothing.
+  if (Buffer.byteLength(text) > WEB_PUSH_PLAINTEXT_MAX) text = JSON.stringify({ threadId: alert.threadId });
+  let body: Buffer;
+  try {
+    body = encryptWebPush(Buffer.from(text), Buffer.from(t.webPush.p256dh, 'base64url'), Buffer.from(t.webPush.auth, 'base64url'));
+  } catch {
+    // Keys that aren't a point on the curve: no send can ever work, so the
+    // registration goes, as a dropped one does (410).
+    return { status: 410, reason: 'keys unusable' };
+  }
+  return await postPinned(t.apnsToken, { TTL: '3600', Urgency: 'high', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', Authorization: vapidAuthorization(t.apnsToken, key, subject) }, body, 10_000);
+}
+
+// Posts over node:https rather than fetch, so the addresses the endpoint's
+// name resolves to are checked as the socket connects to them (the lookup
+// below), not in a separate lookup a name could answer differently. The
+// connection goes to an address that was checked, TLS still checks the
+// certificate for the name, and redirects are never followed (https.request
+// doesn't). `ms` covers everything, the lookup included, and at most 256
+// bytes of an error's body are read.
+function postPinned(endpoint: string, headers: Record<string, string>, body: Buffer, ms: number): Promise<{ status: number; reason?: string }> {
+  return new Promise((resolve) => {
+    const u = new URL(endpoint);
+    let done = false;
+    let req: ReturnType<typeof httpsRequest> | undefined;
+    const finish = (r: { status: number; reason?: string }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      req?.destroy();
+      resolve(r);
+    };
+    const timer = setTimeout(() => finish({ status: 0, reason: 'timeout' }), ms);
+    req = httpsRequest(
+      {
+        hostname: u.hostname.replace(/^\[|\]$/g, ''),
+        port: u.port || 443,
+        path: `${u.pathname}${u.search}`,
+        method: 'POST',
+        headers: { ...headers, 'Content-Length': String(body.length) },
+        agent: false,
+        lookup: pinnedLookup(privateAddress) as never,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status >= 200 && status < 300) {
+          res.resume();
+          return finish({ status });
+        }
+        let got = Buffer.alloc(0);
+        res.on('data', (c: Buffer) => {
+          got = Buffer.concat([got, c]).subarray(0, 256);
+          if (got.length >= 256) finish({ status, reason: got.toString('utf8').slice(0, 80) });
+        });
+        res.on('end', () => finish({ status, reason: got.toString('utf8').slice(0, 80) || undefined }));
+        res.on('error', () => finish({ status }));
+      },
+    );
+    req.on('error', (e) => finish({ status: 0, reason: e.message }));
+    req.end(body);
+  });
 }
 
 // Scheduled by sync:upsertThreads when a thread starts needing Mike, and by
@@ -235,9 +375,10 @@ async function deliver(ctx: ActionCtx, alert: { title: string; body: string; thr
 // (the default) only while he isn't at the Mac (the rest are held for when
 // he leaves), "off" none.
 export const notify = internalAction({
-  args: { threadId: v.string(), held: v.optional(v.boolean()) },
+  // retried: devices.holdPush found him gone and sent this back once.
+  args: { threadId: v.string(), held: v.optional(v.boolean()), retried: v.optional(v.boolean()) },
   returns: vSendResult,
-  handler: async (ctx, { threadId, held }): Promise<SendSummary> => {
+  handler: async (ctx, { threadId, held, retried }): Promise<SendSummary> => {
     const t: { title: string; status: string; preview: string; pendingApproval?: any; needsYou: boolean; atMac: boolean; mac?: string } | null = await ctx.runQuery(internal.devices.threadForPush, { threadId });
     // It may have been seen on the Mac in the meantime.
     if (!t || !t.needsYou) return { sent: 0, failed: 0, skipped: 'noLongerNeedsYou' };
@@ -248,7 +389,7 @@ export const notify = internalAction({
     // it's held again (Codex's review).
     if (held) {
       if (!t.atMac) return await sendAlert(ctx, alert, (n) => n === 'away');
-      await ctx.runMutation(internal.devices.holdPush, { threadId });
+      await ctx.runMutation(internal.devices.holdPush, { threadId, ...(retried ? { retried } : {}) });
       return { sent: 0, failed: 0, skipped: 'atMac' };
     }
     if (!t.atMac) return await sendAlert(ctx, alert);

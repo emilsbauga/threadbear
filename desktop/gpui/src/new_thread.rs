@@ -38,11 +38,16 @@ pub(crate) struct NewThreadState {
     pub(crate) runner_problem: Option<String>,
     /// The box should take the cursor at the next render (⌘N, or the button).
     pub(crate) focus_pending: bool,
+    /// The settings last sent to `threads.warm`, and the id the runner gave
+    /// for them (docs/protocol.md, "Warm start"): sent back with
+    /// `threads.create` while the box still has those settings.
+    pub(crate) warm_asked: Option<Value>,
+    pub(crate) warm: Option<(Value, String)>,
 }
 
 impl NewThreadState {
     pub(crate) fn new() -> Self {
-        NewThreadState { composer: None, picks: NewThreadPicks::default(), prefs: prefs::load(), creating: false, error: None, runner_problem: None, focus_pending: false }
+        NewThreadState { composer: None, picks: NewThreadPicks::default(), prefs: prefs::load(), creating: false, error: None, runner_problem: None, focus_pending: false, warm_asked: None, warm: None }
     }
 
     /// Saved when something that sticks changes (a model, a login used, the
@@ -75,6 +80,51 @@ impl Threadbear {
         let home = home_dir();
         let draft = Draft { logins, picks: &self.new_thread.picks, mem: &self.new_thread.prefs.remembered, home: &home, now_ms: now_ms() };
         f(&draft)
+    }
+
+    /// What `threads.warm` is asked for: the new thread's settings as
+    /// `threads.create` would send them, without the words. None for a thread
+    /// that starts on another runner or a virtual one, or while disconnected.
+    fn warm_params(&self) -> Option<Value> {
+        if self.new_thread.picks.runner.is_some() || self.new_thread.picks.service.is_some() || !matches!(self.status, Status::Connected { .. }) {
+            return None;
+        }
+        let logins = self.draft_logins();
+        let mut params = self.with_draft(&logins, |d| d.create_params("", Vec::new(), false));
+        if let Some(map) = params.as_object_mut() {
+            map.remove("text");
+            map.remove("images");
+        }
+        if let Some(project) = &self.new_thread.picks.project {
+            params["projectIds"] = json!([project]);
+        }
+        Some(params)
+    }
+
+    /// Asks the runner to start the new thread's CLI now, while its first
+    /// message is written (docs/protocol.md, "Warm start"), unless it was
+    /// already asked for these settings. On ⌘N or the button, and as the box
+    /// changes, so a folder or model picked after opening gets its own.
+    pub(crate) fn warm_new_thread(&mut self, cx: &mut Context<Self>) {
+        let Some(params) = self.warm_params() else { return };
+        if self.new_thread.warm_asked.as_ref() == Some(&params) {
+            return;
+        }
+        self.new_thread.warm_asked = Some(params.clone());
+        self.new_thread.warm = None;
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let res = call(client, "threads.warm", params.clone()).await;
+            let id = res.ok().and_then(|v| v["warmId"].as_str().map(str::to_owned));
+            this.update(cx, |this, _| {
+                // Only for the settings still asked for.
+                if this.new_thread.warm_asked.as_ref() == Some(&params) {
+                    this.new_thread.warm = id.map(|id| (params, id));
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The box's chips read the draft through a `ThreadSummary`, as a
@@ -131,9 +181,25 @@ impl Threadbear {
         if let Some(runner) = &runner {
             params["runnerId"] = json!(runner);
         }
+        // A virtual runner: the folder and login are this Mac's, and the
+        // runner here starts the thread there (Virtual runners, "Starting
+        // from the Mac"); the box's runner comes back as the thread's.
+        let service = self.new_thread.picks.service.clone().filter(|_| runner.is_none());
+        if let Some(service) = &service {
+            params["serviceId"] = json!(service);
+        }
         let project = self.new_thread.picks.project.clone().filter(|p| self.sidebar.projects.iter().any(|known| &known.id == p));
         if let Some(project) = &project {
             params["projectIds"] = json!([project]);
+        }
+        // The CLI started for this draft, while its settings are the ones it
+        // was started with (warm start). Used once either way.
+        let warm = self.new_thread.warm.take();
+        self.new_thread.warm_asked = None;
+        if let (Some((warmed, id)), Some(now)) = (warm, self.warm_params()) {
+            if warmed == now {
+                params["warmId"] = json!(id);
+            }
         }
         let account = self.with_draft(&logins, |d| d.account_id());
         let used_pool = params.get("poolId").is_some();
@@ -142,9 +208,11 @@ impl Threadbear {
         crate::activity::sent(None, images.len(), 0, false);
         cx.notify();
         let client = self.client.clone();
-        let runner_name = runner.as_deref().map(|id| self.runner_name_of(id));
+        let runner_name = runner.as_deref().map(|id| self.runner_name_of(id)).or_else(|| service.as_deref().map(|id| self.service_name_of(id)));
         cx.spawn_in(window, async move |this, cx| {
             let res = call(client, "threads.create", params).await;
+            // On a virtual runner, the thread is its box's runner's.
+            let runner = runner.or_else(|| service.and_then(|_| res.as_ref().ok().and_then(|v| v["thread"]["runnerId"].as_str()).filter(|id| !id.is_empty()).map(str::to_owned)));
             this.update_in(cx, |this, window, cx| this.finish_new_thread(res, stored, runner, runner_name, account, used_pool, window, cx)).ok();
         })
         .detach();
@@ -203,7 +271,15 @@ impl Threadbear {
             self.opening.next = Some(crate::open_motion::Opening::FromNewPage { box_top });
         }
         self.consider_milestone(cx);
+        // Still on the new-thread page (nothing else was picked while it
+        // started): the thread takes the page's place in back/forward, so the
+        // mouse's back button goes to where Mike was before ⌘N, not to the
+        // emptied box (`showStartedThread`; missed in the port, 18 Nov).
+        let page = (self.selected.is_none() && self.home_page().is_none() && self.projects.open.is_none()).then(|| self.place());
         self.open(id, window, cx);
+        if let Some(page) = page {
+            self.history.drop_previous_if(&page);
+        }
         self.apply_default_runner(cx);
         cx.notify();
     }
@@ -251,10 +327,15 @@ impl Threadbear {
         if by_mike {
             self.new_thread.picks.runner_picked = true;
         }
-        if self.new_thread.picks.runner == runner {
+        if self.new_thread.picks.runner == runner && self.new_thread.picks.service.is_none() {
             return;
         }
         let picks = &mut self.new_thread.picks;
+        picks.service = None;
+        if picks.runner == runner {
+            cx.notify();
+            return;
+        }
         picks.runner = runner.clone();
         picks.cwd = None;
         picks.account = None;
@@ -271,9 +352,43 @@ impl Threadbear {
         cx.notify();
     }
 
+    /// A virtual runner for the new thread (Runs on's entries after the
+    /// machines): the draft goes back to this Mac's folder and logins, as
+    /// the runner here reads the repo and the login's email for it.
+    pub(crate) fn choose_new_thread_service(&mut self, service: String, by_mike: bool, cx: &mut Context<Self>) {
+        if by_mike {
+            self.new_thread.picks.runner_picked = true;
+        }
+        if self.new_thread.picks.service.as_deref() == Some(service.as_str()) {
+            return;
+        }
+        if self.new_thread.picks.runner.is_some() {
+            self.choose_new_thread_runner(None, false, cx);
+        }
+        self.new_thread.picks.service = Some(service);
+        self.new_thread.runner_problem = None;
+        cx.notify();
+    }
+
+    /// A virtual runner's name, or "the cloud" for one no longer listed.
+    pub(crate) fn service_name_of(&self, id: &str) -> String {
+        self.remote.services().iter().find(|s| s.id == id).map_or_else(|| "the cloud".to_owned(), |s| s.name.clone())
+    }
+
+    /// Default ▸ a virtual runner: new threads start there.
+    pub(crate) fn set_default_service(&mut self, service: String, cx: &mut Context<Self>) {
+        self.new_thread.prefs.remembered.default_runner = None;
+        self.new_thread.prefs.remembered.default_service = Some(service);
+        self.new_thread.picks.runner_picked = false;
+        self.new_thread.save();
+        self.apply_default_runner(cx);
+        cx.notify();
+    }
+
     /// `setDefaultRunner`: where the next new thread starts (nil: this Mac),
     /// and the runner the draft in front of Mike starts on.
     pub(crate) fn set_default_runner(&mut self, runner: Option<String>, cx: &mut Context<Self>) {
+        self.new_thread.prefs.remembered.default_service = None;
         self.new_thread.prefs.remembered.default_runner = runner;
         self.new_thread.picks.runner_picked = false;
         self.new_thread.save();
@@ -288,7 +403,11 @@ impl Threadbear {
         if self.new_thread.picks.runner_picked {
             return;
         }
-        let ready = self.new_thread.prefs.remembered.default_runner.clone().filter(|id| self.remote.runners.iter().any(|r| &r.id == id && r.online));
+        // A virtual runner's always there while it's listed.
+        if let Some(service) = self.new_thread.prefs.remembered.default_service.clone().filter(|id| self.remote.services().iter().any(|s| &s.id == id)) {
+            return self.choose_new_thread_service(service, false, cx);
+        }
+        let ready = self.new_thread.prefs.remembered.default_runner.clone().filter(|id| self.remote.machines().iter().any(|r| &r.id == id && r.online));
         self.choose_new_thread_runner(ready, false, cx);
     }
 
@@ -297,9 +416,11 @@ impl Threadbear {
     #[cfg(feature = "automation")]
     pub(crate) fn runner_menu_lines(&self) -> Vec<String> {
         let chosen = self.new_thread.picks.runner.clone();
+        let service = self.new_thread.picks.service.clone();
         let default = self.new_thread.prefs.remembered.default_runner.clone();
-        let mut lines = vec![format!("{}This Mac{}", if chosen.is_none() { "[x] " } else { "[ ] " }, if default.is_none() { " *" } else { "" }), "---".to_owned()];
-        for runner in &self.remote.runners {
+        let default_service = self.new_thread.prefs.remembered.default_service.clone();
+        let mut lines = vec![format!("{}This Mac{}", if chosen.is_none() && service.is_none() { "[x] " } else { "[ ] " }, if default.is_none() && default_service.is_none() { " *" } else { "" }), "---".to_owned()];
+        for runner in &self.remote.machines() {
             let mut line = format!("{}{}", if chosen.as_deref() == Some(runner.id.as_str()) { "[x] " } else { "[ ] " }, runner.name);
             if default.as_deref() == Some(runner.id.as_str()) {
                 line.push_str(" *");
@@ -309,11 +430,19 @@ impl Threadbear {
             }
             lines.push(line);
         }
+        // The virtual runners: always there, so no offline word.
+        for s in self.remote.services() {
+            let on = |id: &Option<String>| id.as_deref() == Some(s.id.as_str());
+            lines.push(format!("{}{}{}", if on(&service) { "[x] " } else { "[ ] " }, s.name, if on(&default_service) { " *" } else { "" }));
+        }
         lines.push("---".to_owned());
         lines.push("[ ] Default".to_owned());
-        lines.push(format!("    {}This Mac", if default.is_none() { "[x] " } else { "[ ] " }));
-        for runner in &self.remote.runners {
+        lines.push(format!("    {}This Mac", if default.is_none() && default_service.is_none() { "[x] " } else { "[ ] " }));
+        for runner in &self.remote.machines() {
             lines.push(format!("    {}{}", if default.as_deref() == Some(runner.id.as_str()) { "[x] " } else { "[ ] " }, runner.name));
+        }
+        for s in self.remote.services() {
+            lines.push(format!("    {}{}", if default_service.as_deref() == Some(s.id.as_str()) { "[x] " } else { "[ ] " }, s.name));
         }
         if let Some(runner) = chosen.as_deref() {
             let current = self.draft_summary().cwd;
@@ -350,18 +479,29 @@ impl Threadbear {
     pub(crate) fn open_runner_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         use crate::sidebar::{MenuAction, MenuRow};
         let chosen = self.new_thread.picks.runner.clone();
+        let service = self.new_thread.picks.service.clone();
         let default = self.new_thread.prefs.remembered.default_runner.clone();
+        let default_service = self.new_thread.prefs.remembered.default_service.clone();
         let own = self.self_runner_symbol();
-        let mut rows = vec![MenuRow::runner("This Mac", own, chosen.is_none(), default.is_none(), MenuAction::Runner(None)), MenuRow::separator()];
-        for runner in &self.remote.runners {
+        let mut rows = vec![MenuRow::runner("This Mac", own, chosen.is_none() && service.is_none(), default.is_none() && default_service.is_none(), MenuAction::Runner(None)), MenuRow::separator()];
+        for runner in &self.remote.machines() {
             let name = if runner.online { runner.name.clone() } else { format!("{} (offline)", runner.name) };
             let symbol = crate::icons::runner_symbol(runner.icon.as_deref());
             rows.push(MenuRow::runner(name, symbol, chosen.as_deref() == Some(runner.id.as_str()), default.as_deref() == Some(runner.id.as_str()), MenuAction::Runner(Some(runner.id.clone()))));
         }
+        // After the machines, one line per virtual runner: its own icon, and
+        // no online word, as it's always there (docs/virtual-runners.md).
+        for s in self.remote.services() {
+            let on = |id: &Option<String>| id.as_deref() == Some(s.id.as_str());
+            rows.push(MenuRow::runner(s.name.clone(), crate::icons::VIRTUAL_RUNNER, on(&service), on(&default_service), MenuAction::Service(s.id.clone())));
+        }
         rows.push(MenuRow::separator());
-        let mut defaults = vec![MenuRow::runner("This Mac", own, default.is_none(), false, MenuAction::DefaultRunner(None))];
-        for runner in &self.remote.runners {
+        let mut defaults = vec![MenuRow::runner("This Mac", own, default.is_none() && default_service.is_none(), false, MenuAction::DefaultRunner(None))];
+        for runner in &self.remote.machines() {
             defaults.push(MenuRow::runner(runner.name.clone(), crate::icons::runner_symbol(runner.icon.as_deref()), default.as_deref() == Some(runner.id.as_str()), false, MenuAction::DefaultRunner(Some(runner.id.clone()))));
+        }
+        for s in self.remote.services() {
+            defaults.push(MenuRow::runner(s.name.clone(), crate::icons::VIRTUAL_RUNNER, default_service.as_deref() == Some(s.id.as_str()), false, MenuAction::DefaultService(s.id.clone())));
         }
         rows.push(MenuRow::submenu("Default", "star", defaults));
         // On another runner there's no "+": its folders are here, always with
@@ -691,13 +831,22 @@ pub(crate) fn runner_menu_command(app: &Entity<Threadbear>, cmd: &Value, cx: &mu
     if app.read(cx).selected.is_some() {
         return Err("runner is for a new thread".to_owned());
     }
+    let service = |name: &str, cx: &App| app.read(cx).remote.services().iter().find(|s| s.name == name).map(|s| s.id.clone());
     if let Some(name) = cmd["setDefault"].as_str() {
-        let runner = if name == "This Mac" { None } else { Some(app.read(cx).remote.runners.iter().find(|r| r.name == name).ok_or_else(|| format!("no runner {name}"))?.id.clone()) };
+        if let Some(id) = service(name, cx) {
+            app.update(cx, |t, cx| t.set_default_service(id, cx));
+            return Ok(json!("ok"));
+        }
+        let runner = if name == "This Mac" { None } else { Some(app.read(cx).remote.machines().into_iter().find(|r| r.name == name).ok_or_else(|| format!("no runner {name}"))?.id) };
         app.update(cx, |t, cx| t.set_default_runner(runner, cx));
         return Ok(json!("ok"));
     }
     if let Some(title) = cmd["click"].as_str() {
-        let runner = if title == "This Mac" { None } else { Some(app.read(cx).remote.runners.iter().find(|r| r.name == title).ok_or_else(|| format!("no item {title}"))?.id.clone()) };
+        if let Some(id) = service(title, cx) {
+            app.update(cx, |t, cx| t.choose_new_thread_service(id, true, cx));
+            return Ok(json!("ok"));
+        }
+        let runner = if title == "This Mac" { None } else { Some(app.read(cx).remote.machines().into_iter().find(|r| r.name == title).ok_or_else(|| format!("no item {title}"))?.id) };
         app.update(cx, |t, cx| t.choose_new_thread_runner(runner, true, cx));
         return Ok(json!("ok"));
     }

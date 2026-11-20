@@ -3,8 +3,10 @@
 // main's (launchAgentBehind in update.ts). Releases never change those, so
 // until 14 Nov 2026 the Updates panel showed the command for Mike to copy
 // into a terminal, with a path that wasn't even his checkout's. Now the
-// Updates panel's Update it (runner.reinstall) does it, and with the
-// selfReinstall experiment the runner does it by itself.
+// runner does it by itself, and the Updates panel's Update it
+// (runner.reinstall) tries again after a failure. It was the selfReinstall
+// experiment from 14 to 18 Nov 2026, standard once it had staged four times
+// on Mike's Mac without stopping anything.
 //
 // It stages rather than reinstalls (15 Nov): the new app, launch.mjs and
 // plist go in place without stopping anything, and take over the next time
@@ -32,6 +34,18 @@ export const DEFAULT_LABEL = 'com.mikerosoft.threadbear.runner';
 // those after a stage that said it worked is a failure (it staged from a
 // checkout that isn't at main, say).
 export const RUNS_NODE_REASON = 'The LaunchAgent still runs node, not Threadbear Runner.app, so privacy prompts say "node".';
+// The other: a new Threadbear Runner.app is staged beside the one the job
+// runs, and launch.mjs moves it in when launchd next starts the job. It's
+// never built over the running one, as macOS then fails every privacy grant
+// (Screen Recording in agents' shells) until the job restarts (16 Nov 2026).
+export const APP_STAGED_REASON = 'A new Threadbear Runner.app is staged and goes in when the runner next starts (logging in again, or the Mac restarting).';
+const WAITS_FOR_RESTART = new Set([RUNS_NODE_REASON, APP_STAGED_REASON]);
+
+// Where install-runner.sh --stage builds the new app (launch.mjs's
+// stagedAppPath, which this must match).
+export function stagedAppPath(app: string): string {
+  return path.join(path.dirname(app), `.${path.basename(app)}.staged`);
+}
 // How long a reinstall with no result yet counts as running when whether
 // its job is still going can't be asked (jobAlive). Otherwise it runs as
 // long as it runs: a check host can take hours, and a Mac asleep halfway
@@ -52,8 +66,8 @@ export type ReinstallStatus = {
   state: 'waiting' | 'running' | 'staged' | 'failed';
   reason?: string;
   logFile?: string;
-  // The runner does it by itself (the selfReinstall experiment), rather
-  // than because someone pressed Reinstall now.
+  // The runner does it by itself, rather than because someone pressed
+  // Update it.
   auto?: true;
 };
 
@@ -62,8 +76,8 @@ type Saved = {
   // launcherKey of what it was reinstalling for, so a failed one isn't
   // tried again by itself until main's launcher changes.
   key?: string;
-  // Reinstall now was pressed, so it goes ahead once threads finish even
-  // with the experiment off.
+  // Update it (Try again) was pressed, so it goes ahead even for a main
+  // it has already tried.
   requested?: boolean;
   startedAt?: string;
   // The job's label, for asking whether it's still going.
@@ -93,8 +107,6 @@ export type ReinstallDeps = {
   // Why the LaunchAgent is behind main, and a key for what main has
   // (updater.status()), or undefined when it isn't.
   behind: () => { reason: string; key: string } | undefined;
-  // The selfReinstall experiment.
-  auto: () => boolean;
   onChange?: () => void;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -384,7 +396,7 @@ export class Reinstaller {
   }
 
   status(): ReinstallStatus | undefined {
-    const behind = this.deps.behind();
+    const behind = this.behind();
     if (!behind || !this.deps.checkout) return undefined;
     const s = this.saved;
     const logFile = reinstallLogPath(this.deps.home);
@@ -392,20 +404,30 @@ export class Reinstaller {
     if (s.finished && s.key === behind.key && !s.requested) {
       // It ran for what main has now. Staged and still behind: what's
       // running is the old job, until launchd next starts it.
-      if (s.finished.code === 0 && behind.reason === RUNS_NODE_REASON) return { state: 'staged', logFile };
+      if (s.finished.code === 0 && WAITS_FOR_RESTART.has(behind.reason)) return { state: 'staged', logFile };
       const reason = s.finished.code === 0 ? `It finished, but this is still so: ${behind.reason}` : s.finished.reason;
       return { state: 'failed', reason, logFile };
     }
     if (s.requested) return { state: 'waiting' };
-    if (this.deps.auto()) return { state: 'waiting', auto: true };
-    return undefined;
+    return { state: 'waiting', auto: true };
+  }
+
+  // What main's launcher has that this one doesn't. Nothing on Windows:
+  // there's no launcher job to reinstall there by itself yet (spawnJob
+  // refuses), and its task runs launch.mjs from the data dir, which
+  // install-windows.mjs puts back. Reported as behind, each change on main
+  // was a failed reinstall in the Updates panel and an error in Sentry
+  // (THREADBEAR-27, 18 Nov).
+  private behind(): ReturnType<ReinstallDeps['behind']> {
+    if ((this.deps.platform ?? process.platform) === 'win32') return undefined;
+    return this.deps.behind();
   }
 
   // Update it (runner.reinstall): stages it straight away. Nothing stops,
   // so nothing waits for busy threads.
   request(): ReinstallStatus | undefined {
     if (!this.deps.checkout) throw new Error("This runner isn't running a release, so there's no LaunchAgent to reinstall.");
-    if (!this.deps.behind()) return undefined;
+    if (!this.behind()) return undefined;
     if (!this.running()) {
       // The last run's result goes, or it would be read as this one's.
       this.saved = { key: this.saved.key, requested: true };
@@ -430,7 +452,7 @@ export class Reinstaller {
       this.timer = this.deps.clock.setTimeout(() => this.consider(), POLL_MS);
       return;
     }
-    const behind = this.deps.behind();
+    const behind = this.behind();
     if (behind?.key !== this.lastKey) {
       this.lastKey = behind?.key;
       this.changed();
@@ -438,7 +460,7 @@ export class Reinstaller {
     if (!behind || !this.deps.checkout) return;
     const s = this.saved;
     const triedThis = s.key === behind.key && s.finished !== undefined;
-    const due = s.requested || (this.deps.auto() && !triedThis);
+    const due = s.requested || !triedThis;
     if (!due) return;
     this.begin(behind.key);
     this.timer = this.deps.clock.setTimeout(() => this.consider(), POLL_MS);

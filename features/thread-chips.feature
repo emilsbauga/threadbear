@@ -34,3 +34,16 @@ Feature: Threads named in a reply
     And I press the thread chip "Tidy the imports in the uploader"
     Then the open thread is "Tidy the imports in the uploader"
     And the open thread's row is in view in the sidebar
+
+  # A link to another thread has a mark before it saying how that thread's
+  # getting on, which changes as it does (Mike, 17 Nov, after Capy's marks).
+  # The Swift app is frozen and draws only the link.
+  @rich.threadlinkmarks @transcript.reply @swift-pending
+  Scenario: A link to another thread shows that thread's state as it changes
+    When I open the thread "Morning brief"
+    And a reply linking "the uploads thread" to the thread "demo_upload_resume" streams in
+    Then the mark before the link to "demo_upload_resume" says "Needs you"
+    When the thread "demo_upload_resume" starts working
+    Then the mark before the link to "demo_upload_resume" says "Working"
+    When the thread "demo_upload_resume" finishes, saying it's done
+    Then the mark before the link to "demo_upload_resume" says "Done"

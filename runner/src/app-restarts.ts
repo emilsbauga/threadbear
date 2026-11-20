@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Clock } from './clock.ts';
@@ -30,11 +31,20 @@ type Watch = {
   fromDesktopShort?: string;
   due?: AppBuild;
   dueApp?: AppKind;
+  // The commit the app has to contain, in the thread's repo: main's HEAD
+  // when it asked, or the commit it named. An app swapping in a build it
+  // staged before the thread landed is a different tree but hasn't got the
+  // change (2f98f449, 17 Nov), so that keeps it waiting.
+  // `trees`: that commit's tree of each app's folders, as its hello's
+  // `tree` says it: a build of a later commit with the same app folders
+  // (main moved on with only runner changes before the thread asked) has
+  // the change too, and may be the only build that comes (Codex, 18 Nov).
+  want?: { commit: string; short: string; repo: string; trees?: Partial<Record<AppKind, string>> };
 };
 type SavedState = { build?: AppBuild; desktopBuild?: AppBuild; watching: Watch[] };
 
 // After a day the request has likely been forgotten: only the note.
-const MAX_AGE_MS = 24 * 60 * 60_000;
+export const MAX_AGE_MS = 24 * 60 * 60_000;
 
 export function appRestartsPath(home: string): string {
   return path.join(home, 'app-restart.json');
@@ -46,9 +56,61 @@ export function asksForAppRestart(asks: { action?: unknown; why?: unknown; where
   return (asks ?? []).some((a) => /restart to update/i.test(`${a.action ?? ''} ${a.why ?? ''} ${a.where ?? ''}`));
 }
 
+// The two questions asked of git, swappable in tests. `resolve` gives a
+// full commit id or undefined; `contains` says whether `commit` has
+// `ancestor` in its history, or undefined when git can't tell (a commit it
+// doesn't know, no repo), or 'busy' when git didn't answer in time. Neither
+// wakes the thread: an unconfirmed build is the false news this is here to
+// stop (Codex's and Gemini's review, 19 Nov). The watch still ends after a
+// day at most, like any other. `tree` gives
+// the trees of `dirs` at `commit`, joined with + as the apps' builds do
+// (app/build-app.sh, desktop/scripts/make-bundle.sh).
+export type RestartGit = {
+  resolve(repo: string, rev: string): string | undefined;
+  contains(repo: string, ancestor: string, commit: string): boolean | 'busy' | undefined;
+  tree?(repo: string, commit: string, dirs: string[]): string | undefined;
+};
+
+// The folders each app's `tree` is made from.
+const APP_DIRS: Record<AppKind, string[]> = { mac: ['app', 'dock'], desktop: ['desktop'] };
+
+export const realGit: RestartGit = {
+  resolve(repo, rev) {
+    try {
+      return execFileSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  contains(repo, ancestor, commit) {
+    try {
+      execFileSync('git', ['-C', repo, 'merge-base', '--is-ancestor', ancestor, commit], { timeout: 5000, stdio: 'ignore' });
+      return true;
+    } catch (e) {
+      const err = e as { status?: number | null; signal?: string | null; code?: string };
+      if (err.status === 1) return false;
+      return err.signal || err.code === 'ETIMEDOUT' ? 'busy' : undefined;
+    }
+  },
+  tree(repo, commit, dirs) {
+    try {
+      // Not --verify: it takes one revision, and the Swift app's is two.
+      const out = execFileSync('git', ['-C', repo, 'rev-parse', ...dirs.map((d) => `${commit}:${d}`)], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+      const lines = out.split('\n').filter(Boolean);
+      return lines.length === dirs.length ? lines.join('+') : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
 // `away`: whether a draining runner still has the thread (handover.ts's
-// Peers), so it isn't here yet but will be.
-type Deps = { runner: Pick<Runner, 'get' | 'note' | 'send' | 'has'>; home: string; clock: Clock; log: Logger; away?: (threadId: string) => boolean };
+// Peers), so it isn't here yet but will be. `appRepo`: the Threadbear
+// checkout the apps are built from (release.ts's ownCheckout). A thread
+// asking from another folder (~/dev/me/misc) named a Threadbear commit
+// its own folder doesn't have, and the wait fell back to any new build,
+// telling it the app had restarted onto one without it (42071b05, 19 Nov).
+type Deps = { runner: Pick<Runner, 'get' | 'note' | 'send' | 'has'>; home: string; clock: Clock; log: Logger; away?: (threadId: string) => boolean; git?: RestartGit; appRepo?: string };
 
 const appName = (app: AppKind) => (app === 'desktop' ? 'Threadbear GPUI app' : 'Threadbear app');
 
@@ -63,20 +125,68 @@ export class AppRestarts {
   // other than the one it's running now. Asking again replaces the request.
   // `running` names each app's build, the GPUI app's first: with both
   // connected, `build` alone was the frozen Swift app's (13 Nov).
-  watch(threadId: string, text?: string): { build?: AppBuild; running?: string } {
+  // `commit`: what the new build must contain, by default main's HEAD in
+  // the thread's folder (a thread's worktree shares its refs).
+  watch(threadId: string, text?: string, commit?: string): { build?: AppBuild; running?: string; waitingFor?: string } {
     const state = this.read();
     state.watching = state.watching.filter((w) => w.threadId !== threadId);
+    let want: Watch['want'];
+    try {
+      want = this.wanted(threadId, commit);
+    } catch (e) {
+      // Asking again replaces the request, even one that can't be armed:
+      // else an earlier commit's wait stays set behind the refusal.
+      this.write(state);
+      throw e;
+    }
     state.watching.push({
       threadId,
       ...(text?.trim() ? { text: text.trim() } : {}),
       requestedAt: new Date(this.deps.clock.now()).toISOString(),
       ...(state.build ? { fromTree: state.build.tree, fromShort: state.build.short } : {}),
       ...(state.desktopBuild ? { fromDesktopTree: state.desktopBuild.tree, fromDesktopShort: state.desktopBuild.short } : {}),
+      ...(want ? { want } : {}),
     });
     this.write(state);
     const build = state.desktopBuild ?? state.build;
     const running = [state.desktopBuild && `the GPUI app on ${state.desktopBuild.short}`, state.build && `the Swift app on ${state.build.short}`].filter(Boolean).join(', ');
-    return { ...(build ? { build } : {}), ...(running ? { running } : {}) };
+    return { ...(build ? { build } : {}), ...(running ? { running } : {}), ...(want ? { waitingFor: want.short } : {}) };
+  }
+
+  // Main's HEAD is looked for in the apps' own checkout first, then the
+  // thread's folder (a dev runner, or one with no checkout to hand). A named
+  // commit is looked for the other way round, so `HEAD` from a thread's
+  // worktree is its own, not the main checkout's (Gemini's review). A named
+  // commit found in neither is refused rather than waiting for any build.
+  private wanted(threadId: string, commit?: string): Watch['want'] {
+    const git = this.deps.git ?? realGit;
+    let cwd: string | undefined;
+    try {
+      cwd = this.deps.runner.get(threadId).cwd;
+    } catch {
+      cwd = undefined;
+    }
+    const named = commit?.trim();
+    const repos = [...new Set((named ? [cwd, this.deps.appRepo] : [this.deps.appRepo, cwd]).filter((r): r is string => !!r))];
+    let repo: string | undefined;
+    let full: string | undefined;
+    for (const r of repos) {
+      full = named ? git.resolve(r, named) : (git.resolve(r, 'refs/heads/main') ?? git.resolve(r, 'refs/heads/master'));
+      if (full) {
+        repo = r;
+        break;
+      }
+    }
+    if (!full || !repo) {
+      if (named) throw new Error(`Can't find commit ${named} in ${repos.join(' or ') || 'any repo'}, so can't tell which build has it. Name a commit in the Threadbear repo the app is built from, or leave commit out to wait for its main.`);
+      return undefined;
+    }
+    const trees: Partial<Record<AppKind, string>> = {};
+    for (const app of ['mac', 'desktop'] as const) {
+      const t = git.tree?.(repo, full, APP_DIRS[app]);
+      if (t) trees[app] = t;
+    }
+    return { commit: full, short: full.slice(0, 9), repo, ...(Object.keys(trees).length ? { trees } : {}) };
   }
 
   isWatching(threadId: string): boolean {
@@ -87,9 +197,32 @@ export class AppRestarts {
   appHello(build: AppBuild, app: AppKind = 'mac'): void {
     const state = this.read();
     const { runner, log, away } = this.deps;
+    const git = this.deps.git ?? realGit;
     const now: Watch[] = [];
     const kept: Watch[] = [];
-    for (const w of state.watching) {
+    const older: Watch[] = [];
+    // One git question per wanted commit, however many threads wait on it.
+    const asked = new Map<string, boolean | 'busy' | undefined>();
+    const has = (want: NonNullable<Watch['want']>) => {
+      if (want.trees?.[app] === build.tree) return true;
+      const key = `${want.repo}\0${want.commit}`;
+      if (!asked.has(key)) {
+        let answer = git.contains(want.repo, want.commit, build.commit);
+        // The thread's folder may not know the build (a fork's own
+        // checkout, a worktree since removed): the apps' checkout may.
+        const { appRepo } = this.deps;
+        if (answer === undefined && appRepo && appRepo !== want.repo) answer = git.contains(appRepo, want.commit, build.commit);
+        asked.set(key, answer);
+      }
+      return asked.get(key);
+    };
+    for (const watch of state.watching) {
+      // This app on another build than the one a handed-over thread was
+      // due to hear about (rolled back, or a newer one): that's no longer
+      // news. If this one is, it's set again below.
+      const stale = watch.due && (watch.dueApp ?? 'mac') === app && watch.due.tree !== build.tree;
+      const { due: _d, dueApp: _a, ...rest } = watch;
+      const w: Watch = stale ? rest : watch;
       const known = app === 'desktop' ? w.fromDesktopTree : w.fromTree;
       const other = app === 'desktop' ? w.fromTree : w.fromDesktopTree;
       // A build of an app the watch had no build of counts only when it
@@ -97,7 +230,16 @@ export class AppRestarts {
       // the GPUI app's first hello with a build isn't a restart).
       const counts = known !== undefined ? known !== build.tree : other === undefined;
       if (!counts) kept.push(w);
-      else if (runner.has(w.threadId)) now.push(w);
+      // Git too slow to say: unchanged, so the next hello asks again.
+      else if (w.want && has(w.want) === 'busy') kept.push(w);
+      // A new build, but one without the commit it's waiting for, or one
+      // git can't place: keep waiting, from this build, so a reconnect on
+      // it isn't news again.
+      else if (w.want && has(w.want) !== true) {
+        const moved = app === 'desktop' ? { fromDesktopTree: build.tree, fromDesktopShort: build.short } : { fromTree: build.tree, fromShort: build.short };
+        kept.push({ ...w, ...moved });
+        if (runner.has(w.threadId)) older.push(w);
+      } else if (runner.has(w.threadId)) now.push(w);
       // Finishing a turn on the old runner after a handover: told when it
       // comes across (THREADBEAR-5).
       else if (away?.(w.threadId)) kept.push({ ...w, due: build, dueApp: app });
@@ -107,6 +249,14 @@ export class AppRestarts {
     else state.build = build;
     state.watching = kept;
     this.write(state);
+    for (const w of older) {
+      try {
+        const why = has(w.want!) === false ? `which doesn't have ${w.want!.short} yet` : `and git can't tell whether that has ${w.want!.short}`;
+        runner.note(w.threadId, `${appName(app)} restarted onto ${build.short}, ${why}. Still waiting.`);
+      } catch (e) {
+        log.warn('could not note an older app build', { threadId: w.threadId, error: String(e) });
+      }
+    }
     for (const w of now) this.tell(w, build, app);
   }
 
@@ -137,7 +287,7 @@ export class AppRestarts {
       runner.note(w.threadId, note);
       if (why) return;
       const head = `The ${appName(app)} has restarted onto ${build.short} (${build.commit}), as you asked to hear.`;
-      runner.send(w.threadId, w.text ? `${head}\n\n${w.text}` : `${head} Check your change in the running app.`, [], { origin: 'runner' });
+      runner.send(w.threadId, w.text ? `${head}\n\n${w.text}` : `${head} Check your change in the running app.`, [], { origin: 'runner', wakeReason: `The ${appName(app)} restarted onto ${build.short}` });
       log.info('told a thread the app restarted', { threadId: w.threadId, build: build.short, app });
     } catch (e) {
       log.warn('could not tell a thread the app restarted', { threadId: w.threadId, error: String(e) });

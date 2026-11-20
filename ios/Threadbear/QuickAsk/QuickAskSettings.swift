@@ -34,8 +34,8 @@ final class QuickAskSettings {
         speakAnswers = defaults.object(forKey: Keys.speak) == nil ? true : defaults.bool(forKey: Keys.speak)
         token = Keychain.read(service: Keys.service, account: Keys.tokenAccount)
         #if DEBUG
-        // `-QuickAskServer <url> -QuickAskToken <aa_…>` for the simulator, which asks before
-        // opening a threadbear://quickask link. Not kept.
+        // `-QuickAskServer <url> -QuickAskToken <aa_…>` for the simulator, which has no
+        // camera to scan a setup code with. Not kept.
         if let server = defaults.string(forKey: "QuickAskServer") { baseURLString = server }
         if let token = defaults.string(forKey: "QuickAskToken") { self.token = token }
         #endif
@@ -62,12 +62,11 @@ final class QuickAskSettings {
         setToken("")
     }
 
-    /// A `threadbear://quickask` link (QuickAskLink, from a QR code, so the token never goes
-    /// through a clipboard). Already https; the caller has asked first (ThreadbearApp), as
-    /// a QR code or a link from anyone could otherwise take every later question.
-    func apply(_ link: QuickAskLink) {
-        baseURLString = link.server
-        setToken(link.token)
+    /// A token claimed with a setup code (QuickAskSetup), for the server that code named.
+    /// The caller asked first, as a code from anyone could otherwise take every later question.
+    func apply(_ setup: QuickAskSetup, token: String) {
+        baseURLString = setup.server
+        setToken(token)
     }
 }
 

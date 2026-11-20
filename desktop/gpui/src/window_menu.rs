@@ -90,9 +90,14 @@ impl EditItem {
 
 /// The main window, so a Close from the menu or ⌘W off a Mac knows it's
 /// the one that quits.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct MainWindow(AnyWindowHandle);
 impl Global for MainWindow {}
+
+/// The main window, for an action only its handlers (shell.rs) take, sent
+/// from another window (Settings' Restart Threadbear).
+pub(crate) fn main_window(cx: &App) -> Option<AnyWindowHandle> {
+    cx.try_global::<MainWindow>().map(|m| m.0)
+}
 
 /// Set up once the main window is open: its close quits, and File's and
 /// Window's commands reach whichever window is in front, the Settings
@@ -118,6 +123,13 @@ pub(crate) fn install(main: &mut Window, cx: &mut App) {
     cx.on_action(|_: &crate::shell::BringAllToFront, cx| bring_all_to_front(cx));
     let paste_plain = if cfg!(target_os = "macos") { "alt-shift-cmd-v" } else { "ctrl-shift-v" };
     cx.bind_keys([KeyBinding::new(paste_plain, crate::composer_spelling::PasteAndMatchStyle, None)]);
+    // ⌘Z outside a text box too, where a text box's own binding doesn't
+    // reach: it's how an archive comes back (shell.rs,
+    // `undo_key_is_archive`). A Mac's only: elsewhere it'd be Ctrl+Z, which
+    // a terminal panel needs for itself.
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([KeyBinding::new("cmd-z", gpui_kit::component::input::Undo, None)]);
+    }
 }
 
 fn with_front_window(cx: &mut App, f: impl FnOnce(&mut Window)) {

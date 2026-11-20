@@ -45,8 +45,8 @@ export const prepare = internalMutation({
         || t.attachments.length !== attachments.length || t.attachments.some((f, i) => (['id', 'name', 'mediaType', 'size', 'sha256'] as const).some(k => f[k] !== attachments[i][k]))) return fail(409, 'Message ID already has different content');
       if (t.state === 'cancelled') {
         if (!t.cloudDeleted) return fail(409, 'Cancelled upload cleanup is pending');
-        await ctx.db.patch(t._id, { state: 'preparing', uploaded: attachments.map(() => 0), cloudDeleted: false, updatedAt: Date.now() });
-        return { status: 200, body: summary((await ctx.db.get(t._id))!) };
+        await ctx.db.patch("intakeTransfers", t._id, { state: 'preparing', uploaded: attachments.map(() => 0), cloudDeleted: false, updatedAt: Date.now() });
+        return { status: 200, body: summary((await ctx.db.get("intakeTransfers", t._id))!) };
       }
       return { status: 200, body: summary(t) };
     }
@@ -55,8 +55,8 @@ export const prepare = internalMutation({
     const n = c.hourStart === hourStart ? c.hourCount ?? 0 : 0;
     if (n >= 120) return fail(429, 'New-message allowance reached; retry next UTC hour');
     const id = await ctx.db.insert('intakeTransfers', { clientId: c.clientId, messageId: m.messageId, message: m, attachments, uploaded: attachments.map(() => 0), state: 'preparing', updatedAt: Date.now() });
-    await ctx.db.patch(c._id, { hourStart, hourCount: n + 1 });
-    return { status: 201, body: summary((await ctx.db.get(id))!) };
+    await ctx.db.patch("intakeClients", c._id, { hourStart, hourCount: n + 1 });
+    return { status: 201, body: summary((await ctx.db.get("intakeTransfers", id))!) };
   },
 });
 
@@ -87,7 +87,7 @@ export const putChunk = internalMutation({
       : fail(409, 'Block already has different content');
     await ctx.db.insert('intakeChunks', { transferId: t._id, attachmentId, index, storageId, bytes, sha256 });
     const uploaded = [...t.uploaded]; uploaded[pos] = (uploaded[pos] ?? 0) + 1;
-    await ctx.db.patch(t._id, { uploaded, updatedAt: Date.now() });
+    await ctx.db.patch("intakeTransfers", t._id, { uploaded, updatedAt: Date.now() });
     return { status: 201, body: { attachmentId, index, bytes, sha256 }, keepStorage: true };
   },
 });
@@ -102,11 +102,11 @@ export const finalize = internalMutation({
       if (t.state !== 'preparing' || t.attachments.some((f, i) => (t.uploaded[i] ?? 0) !== count(f))) return fail(409, 'Attachments are not complete');
       id = await ctx.db.insert('intakeMessages', { clientId: c.clientId, messageId, message: t.message, attachments: t.attachments, ...(t.attachments.length ? { hasAttachments: true } : {}),
         transferId: t._id, state: 'received', receivedAt: Date.now() });
-      await ctx.db.patch(t._id, { state: 'finalized', receiptId: id, updatedAt: Date.now() });
-      const row = (await ctx.db.get(id))!;
+      await ctx.db.patch("intakeTransfers", t._id, { state: 'finalized', receiptId: id, updatedAt: Date.now() });
+      const row = (await ctx.db.get("intakeMessages", id))!;
       return { status: 201, body: { receiptId: id, messageId, state: row.state, receivedAt: row.receivedAt } };
     }
-    const row = (await ctx.db.get(id))!;
+    const row = (await ctx.db.get("intakeMessages", id))!;
     return { status: 200, body: { receiptId: id, messageId, state: row.state, receivedAt: row.receivedAt } };
   },
 });
@@ -116,7 +116,7 @@ export const status = internalQuery({
     const c = await auth(ctx, keyHash); if (!c) return fail(401, 'Invalid intake credential');
     const t = await transfer(ctx, c.clientId, messageId);
     if (!t) return fail(404, 'Transfer not found');
-    const row = t.receiptId ? await ctx.db.get(t.receiptId) : null;
+    const row = t.receiptId ? await ctx.db.get("intakeMessages", t.receiptId) : null;
     return { status: 200, body: { ...summary(t), ...(row ? { receipt: { receiptId: row._id, messageId: row.messageId, state: row.state, receivedAt: row.receivedAt } } : {}) } };
   },
 });
@@ -126,7 +126,7 @@ export const cancel = internalMutation({
     const c = await auth(ctx, keyHash); if (!c) return fail(401, 'Invalid intake credential');
     const t = await transfer(ctx, c.clientId, messageId); if (!t) return fail(404, 'Transfer not found');
     if (t.receiptId) return fail(409, 'Finalized transfers cannot be cancelled');
-    await ctx.db.patch(t._id, { state: 'cancelled', cleanupPending: true });
+    await ctx.db.patch("intakeTransfers", t._id, { state: 'cancelled', cleanupPending: true });
     await ctx.scheduler.runAfter(0, internal.intakeFiles.cleanDelivered, { transferId: t._id });
     return { status: 200, body: { cancelled: true } };
   },
@@ -134,12 +134,12 @@ export const cancel = internalMutation({
 export const cleanDelivered = internalMutation({
   args: { transferId: v.id('intakeTransfers') }, returns: v.null(),
   handler: async (ctx, { transferId }) => {
-    const t = await ctx.db.get(transferId);
+    const t = await ctx.db.get("intakeTransfers", transferId);
     if (!t || (!t.localSaved && t.state !== 'cancelled')) return null;
     const chunks = await ctx.db.query('intakeChunks').withIndex('by_block', q => q.eq('transferId', transferId)).take(32);
-    for (const c of chunks) { await ctx.storage.delete(c.storageId); await ctx.db.delete(c._id); }
+    for (const c of chunks) { await ctx.storage.delete(c.storageId); await ctx.db.delete("intakeChunks", c._id); }
     if (chunks.length === 32) await ctx.scheduler.runAfter(0, internal.intakeFiles.cleanDelivered, { transferId });
-    else await ctx.db.patch(transferId, { cloudDeleted: true, cleanupPending: undefined });
+    else await ctx.db.patch("intakeTransfers", transferId, { cloudDeleted: true, cleanupPending: undefined });
     return null;
   },
 });
@@ -156,7 +156,7 @@ export const intakeChunkAccess = query({
   args: { key: v.string(), runnerId: v.string(), receiptId: v.id('intakeMessages'), attachmentId: v.string(), index: v.number(), leaseToken: v.string() },
   handler: async (ctx, { key, runnerId, receiptId, attachmentId, index, leaseToken }) => {
     const caller = await runnerAuth(ctx, key, 'intakeChunkAccess'); await actAs(ctx, caller, runnerId);
-    const row = await ctx.db.get(receiptId);
+    const row = await ctx.db.get("intakeMessages", receiptId);
     if (!row?.transferId || row.deliveryState || row.leaseToken !== leaseToken || (row.leaseUntil ?? 0) <= Date.now()) return null;
     const c = await ctx.db.query('intakeClients').withIndex('by_client', q => q.eq('clientId', row.clientId)).unique();
     if (!c || c.revokedAt !== undefined || c.consumerRunnerId !== runnerId) return null;

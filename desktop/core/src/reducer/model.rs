@@ -117,6 +117,13 @@ pub struct TranscriptModel {
     /// before it gets a divider.
     last_turn_end: Option<f64>,
     messaged_turns: HashSet<String>,
+    /// Turns the runner's own message started (it told the thread the app
+    /// restarted, say), with what it said woke it: no one wrote, so they
+    /// get the divider too, saying that instead of what finished.
+    runner_turns: HashMap<String, String>,
+    /// A "Woke up" note since the last turn ended: that already says the
+    /// thread woke and why, so the turn it starts gets no divider as well.
+    woke_note_since_turn: bool,
     /// Turns whose `turn.started` has been seen: a message after it went
     /// into that turn, so it can't be edited on its own.
     started_turns: HashSet<String>,
@@ -633,6 +640,8 @@ impl TranscriptModel {
         self.turn_starts.clear();
         self.last_turn_end = None;
         self.messaged_turns.clear();
+        self.runner_turns.clear();
+        self.woke_note_since_turn = false;
         self.started_turns.clear();
         self.hidden = Self::hidden_ranges(&self.events);
         self.completed_turns.clear();
@@ -655,6 +664,20 @@ impl TranscriptModel {
             }
         }
         self.events = events;
+        // A turn whose start is on an older page (a long run of more than a
+        // page of events) still counts as running if nothing in this page
+        // finished it. A page that has the turn's message would have its
+        // start too. Worked out before what's still streaming is put back
+        // below, as that's this turn's.
+        if self.open_turn.is_none() && self.has_older_events() {
+            if let Some(first) = self.events.first().and_then(|e| e.turn_id.clone()) {
+                let last_with_turn = self.events.iter().rev().find_map(|e| e.turn_id.as_deref());
+                let has_user_message = self.events.iter().any(|e| matches!(e.payload, EventPayload::UserMessage { .. }) && e.turn_id.as_deref() == Some(first.as_str()));
+                if last_with_turn == Some(first.as_str()) && !self.completed_turns.contains(&first) && !has_user_message {
+                    self.open_turn = Some(first);
+                }
+            }
+        }
         self.streaming.clear();
         // Re-add anything still streaming, unless the history now has its
         // persisted text. Reducing a delta puts it back in `streaming`.
@@ -670,26 +693,14 @@ impl TranscriptModel {
             } else {
                 EventPayload::AssistantTextDelta { item_id, text }
             };
-            let event = Event::new(self.last_seq, "", "", None, "", payload);
+            // Still streaming, so the open turn's (`inProgress` has no turn).
+            let event = Event::new(self.last_seq, "", "", self.open_turn.clone().as_deref(), "", payload);
             self.reduce(&event);
         }
         for item in &mut self.items {
             if let Some(old) = previous.get(&item.id) {
                 if old.content == item.content {
                     item.version = old.version;
-                }
-            }
-        }
-        // A turn whose start is on an older page (a long run of more than a
-        // page of events) still counts as running if nothing in this page
-        // finished it. A page that has the turn's message would have its
-        // start too.
-        if self.open_turn.is_none() && self.has_older_events() {
-            if let Some(first) = self.events.first().and_then(|e| e.turn_id.clone()) {
-                let last_with_turn = self.events.iter().rev().find_map(|e| e.turn_id.as_deref());
-                let has_user_message = self.events.iter().any(|e| matches!(e.payload, EventPayload::UserMessage { .. }) && e.turn_id.as_deref() == Some(first.as_str()));
-                if last_with_turn == Some(first.as_str()) && !self.completed_turns.contains(&first) && !has_user_message {
-                    self.open_turn = Some(first);
                 }
             }
         }
@@ -752,6 +763,20 @@ impl TranscriptModel {
         self.mark_inserted(anchor + 1);
     }
 
+    /// A row made before its turn was known (from a subscribe's
+    /// `inProgress`, which has none) takes the turn of the first event for
+    /// it that says one. Its version moves with the `update` that follows.
+    fn adopt_turn(&mut self, id: &str, turn_id: Option<&str>) {
+        let (Some(&i), Some(turn)) = (self.item_index.get(id), turn_id) else { return };
+        if self.items[i].turn_id.is_none() {
+            // The run it was in is drawn again too: it may have been grouped
+            // with other turnless rows before it, a group it leaves now.
+            let was_in = self.run_start(i as isize);
+            self.items[i].turn_id = Some(turn.to_owned());
+            self.mark_inserted(was_in);
+        }
+    }
+
     fn update(&mut self, id: &str, body: impl FnOnce(&mut RowContent)) {
         let Some(&i) = self.item_index.get(id) else { return };
         body(&mut self.items[i].content);
@@ -787,7 +812,7 @@ impl TranscriptModel {
         let seq = event.seq;
         let turn_id = event.turn_id.clone();
         match &event.payload {
-            EventPayload::UserMessage { text, images, origin, answers, edit_of, review } => {
+            EventPayload::UserMessage { text, images, origin, wake_reason, answers, edit_of, review } => {
                 // Mike's reply answers the open card, so it goes, picked or not.
                 if origin.as_deref() != Some("runner") {
                     self.close_open_asks();
@@ -796,6 +821,7 @@ impl TranscriptModel {
                     text: text.clone(),
                     images: images.clone(),
                     origin: origin.clone(),
+                    wake_reason: wake_reason.clone(),
                     answers: answers.clone(),
                     edit_of: *edit_of,
                     review: review.clone(),
@@ -805,7 +831,11 @@ impl TranscriptModel {
                 // sent into a running turn went into that turn.
                 message.editable = message.is_mike() && turn_id.as_ref().is_some_and(|t| !self.started_turns.contains(t));
                 if let Some(turn) = &turn_id {
-                    self.messaged_turns.insert(turn.clone());
+                    if message.is_from_runner() {
+                        self.runner_turns.entry(turn.clone()).or_insert_with(|| wake_reason.clone().unwrap_or_default());
+                    } else {
+                        self.messaged_turns.insert(turn.clone());
+                    }
                 }
                 self.append(Row::new(&format!("u:{seq}"), seq, turn_id, RowContent::User(message)));
             }
@@ -854,13 +884,14 @@ impl TranscriptModel {
                     // A reply the CLI sent as a thinking block signed as
                     // narration (runner: isNarration in normalize.ts) streams
                     // as reasoning and lands as text: it takes that row's place.
-                    let mut row = Row::new(&id, self.items[i].seq, self.items[i].turn_id.clone(), RowContent::Assistant(make(item_id, text)));
+                    let mut row = Row::new(&id, self.items[i].seq, self.items[i].turn_id.clone().or_else(|| turn_id.clone()), RowContent::Assistant(make(item_id, text)));
                     row.version = next_row_version();
                     self.items[i] = row;
                     self.item_index.remove(&thought);
                     self.item_index.insert(id, i);
                     self.mark_inserted(i);
                 } else if self.item_index.contains_key(&id) {
+                    self.adopt_turn(&id, turn_id.as_deref());
                     let item = make(item_id, text);
                     self.update(&id, move |content| *content = RowContent::Assistant(item));
                 } else if !text.is_empty() {
@@ -874,6 +905,7 @@ impl TranscriptModel {
                 let id = format!("r:{item_id}");
                 let item = TextItem::new(item_id, text);
                 if self.item_index.contains_key(&id) {
+                    self.adopt_turn(&id, turn_id.as_deref());
                     self.update(&id, move |content| *content = RowContent::Reasoning(item));
                 } else if !super::text::trim_ws_nl(text).is_empty() {
                     self.append(Row::new(&id, seq, turn_id, RowContent::Reasoning(item)));
@@ -889,6 +921,7 @@ impl TranscriptModel {
                     return;
                 }
                 if self.item_index.contains_key(&id) {
+                    self.adopt_turn(&id, turn_id.as_deref());
                     let delta = text.clone();
                     self.update(&id, move |content| {
                         if let RowContent::Assistant(item) = content {
@@ -920,6 +953,7 @@ impl TranscriptModel {
                     return;
                 }
                 if self.item_index.contains_key(&id) {
+                    self.adopt_turn(&id, turn_id.as_deref());
                     let delta = text.clone();
                     self.update(&id, move |content| {
                         if let RowContent::Reasoning(item) = content {
@@ -946,11 +980,16 @@ impl TranscriptModel {
                     // A row with persisted text is final; leave it alone.
                     let still_streaming = matches!(&self.items[i].content, RowContent::Assistant(item) | RowContent::Reasoning(item) if item.is_streaming);
                     if still_streaming {
+                        let turn = turn_id.or_else(|| self.open_turn.clone());
+                        self.adopt_turn(&id, turn.as_deref());
                         self.update(&id, move |c| *c = content);
                         self.streaming.insert(item_id.clone(), (kind, text.clone()));
                     }
                 } else if !text.is_empty() {
-                    self.append(Row::new(&id, seq, turn_id, content));
+                    // The runner's `inProgress` says no turn: what's still
+                    // streaming is the open turn's.
+                    let turn = turn_id.or_else(|| self.open_turn.clone());
+                    self.append(Row::new(&id, seq, turn, content));
                     self.streaming.insert(item_id.clone(), (kind, text.clone()));
                 }
             }
@@ -1219,11 +1258,15 @@ impl TranscriptModel {
                     self.turn_starts.insert(key.clone(), date);
                 }
                 // A turn nobody's message started: the agent picked up again
-                // as background work finished. Mark how long it was away.
+                // as background work finished, or the runner told it
+                // something it was waiting for. Mark how long it was away,
+                // unless a "Woke up" note just said so.
                 let gap_id = format!("gap:{key}");
-                if !self.messaged_turns.contains(&key) && !self.item_index.contains_key(&gap_id) {
+                let runner_wake = self.runner_turns.get(&key).cloned();
+                let noted = runner_wake.is_some() && self.woke_note_since_turn;
+                if !self.messaged_turns.contains(&key) && !noted && !self.item_index.contains_key(&gap_id) {
                     if let (Some(from), Some(to)) = (self.last_turn_end, self.turn_starts.get(&key).copied()) {
-                        let gap = TurnGap { from, to, woke_by: woke_by.clone() };
+                        let gap = TurnGap { from, to, woke_by: woke_by.clone(), runner_wake };
                         self.append(Row::new(&gap_id, seq, turn_id, RowContent::Gap(gap)));
                     }
                 }
@@ -1247,6 +1290,7 @@ impl TranscriptModel {
                 if let Some(date) = parse_iso8601(&event.ts) {
                     self.last_turn_end = Some(date);
                 }
+                self.woke_note_since_turn = false;
                 if let Some(turn) = &turn_id {
                     self.completed_turns.insert(turn.clone());
                 }
@@ -1313,6 +1357,9 @@ impl TranscriptModel {
             }
 
             EventPayload::SystemNote(text) => {
+                if text.starts_with("Woke up") {
+                    self.woke_note_since_turn = true;
+                }
                 self.append(Row::new(&format!("n:{seq}"), seq, turn_id, RowContent::Note(text.clone())));
             }
 
@@ -1710,7 +1757,7 @@ impl TranscriptModel {
                     continue;
                 }
                 waiting = Some(match waiting.take() {
-                    Some((_, earlier)) => (k, TurnGap { from: earlier.from, to: gap.to, woke_by: [earlier.woke_by, gap.woke_by.clone()].concat() }),
+                    Some((_, earlier)) => (k, TurnGap { from: earlier.from, to: gap.to, woke_by: [earlier.woke_by, gap.woke_by.clone()].concat(), runner_wake: gap.runner_wake.clone().or(earlier.runner_wake) }),
                     None => (k, gap.clone()),
                 });
                 continue;

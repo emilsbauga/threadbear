@@ -127,7 +127,8 @@ pub(crate) fn row_menu(row: &Row, open: bool) -> Vec<(&'static str, RowMenuActio
     let mut items = vec![];
     if message_text(row).is_some() {
         items.push(("Copy message", RowMenuAction::CopyMessage));
-        if matches!(row.kind(), RowKind::Tool | RowKind::Reasoning | RowKind::Diff | RowKind::Group) {
+        let folding_review = matches!(&row.content, RowContent::LabReview(review) if review.folds());
+        if folding_review || matches!(row.kind(), RowKind::Tool | RowKind::Reasoning | RowKind::Diff | RowKind::Group) {
             items.push((if open { "Collapse" } else { "Expand" }, RowMenuAction::Toggle));
         }
     }

@@ -8,11 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { Given, Then, When } from '@cucumber/cucumber';
 import type { ThreadbearWorld } from '../support/world.ts';
-import { okValue, type Dump } from '../support/driver.ts';
+import { okValue, sleep, type Dump } from '../support/driver.ts';
 import { pane } from '../support/pane.ts';
 import { sites } from '../support/web-runtime.ts';
 
-type PageInfo = { key: string; url?: string; title?: string; address?: string; loading?: boolean; loads?: number; canGoBack?: boolean; hidden?: boolean; muted?: boolean; slot?: [number, number, number, number] };
+type PageInfo = { key: string; url?: string; title?: string; address?: string; loading?: boolean; loads?: number; canGoBack?: boolean; hidden?: boolean; muted?: boolean; slot?: [number, number, number, number]; frame?: [number, number, number, number]; picture?: [number, number] | null };
 type ConvexInfo = { project?: string | null; label?: string; deployment?: string; choices?: string[]; note?: string | null; failure?: string | null; code?: string | null; signInFailure?: string | null };
 type WebPane = { url?: string; shows: string; note?: string; buttons: string[]; page?: PageInfo; convex?: ConvexInfo };
 
@@ -52,6 +52,33 @@ Given('the thread has the Convex panel, signed out of Convex', async function (t
 
 Then('the panel shows the page {string}', async function (this: ThreadbearWorld, title: string) {
   await this.until(`the panel showing "${title}"`, (d) => web(d)?.shows === 'page' && web(d)?.page?.title === title && web(d)?.page?.loading === false && web(d)?.page?.hidden === false, LOADED_MS);
+});
+
+// Across the top of the window its height comes in half points, which is
+// what made Chromium's picture of it drift taller with each resize (16 Nov).
+When("the panel is moved across the top of the window and the window resized {int} times", async function (this: ThreadbearWorld, times: number) {
+  await this.app.do({ cmd: 'dock-move', panel: 'mock.page', edge: 'top' });
+  for (let i = 0; i < times; i += 1) {
+    await this.app.do({ cmd: 'resize', w: 1240, h: 700 + ((i * 37) % 121) });
+    // Each its own frame, as a person's resize is.
+    await sleep(120);
+  }
+  await this.app.do({ cmd: 'resize', w: 1240, h: 800 });
+});
+
+Then("the panel's page is drawn the size of its view", async function (this: ThreadbearWorld) {
+  let last = '';
+  await this.until("the page's picture the size of its view", (d) => {
+    const page = pages(d).find((p) => p.hidden === false);
+    if (!page?.frame || !page.picture) return false;
+    const [, , width, height] = page.frame;
+    const [pw, ph] = page.picture;
+    last = `view ${width} x ${height}, picture ${pw} x ${ph}`;
+    // A point either way, for a half-point view Chromium rounds.
+    return Math.abs(pw - width) <= 1 && Math.abs(ph - height) <= 1;
+  }, 5000).catch((error: Error) => {
+    throw new Error(`${error.message} (${last})`);
+  });
 });
 
 let loadsBefore = 0;

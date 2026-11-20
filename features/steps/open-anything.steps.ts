@@ -40,9 +40,3 @@ Then("the box's first thread is {string}, archived", async function (this: Threa
 Then('the box lists the thread {string}', async function (this: ThreadbearWorld, title: string) {
   await this.until(`"${title}" under Threads`, (d) => d.anything?.groups.find((g) => g.title === 'Threads')?.items.some((i) => i === title || i.startsWith(`${title} | `)));
 });
-
-// A key that would open it, given a moment to have done so.
-Then('the Open Anything box stays down', async function (this: ThreadbearWorld) {
-  await new Promise((r) => setTimeout(r, 1000));
-  await this.until('the Open Anything box down', (d) => !d.anything);
-});

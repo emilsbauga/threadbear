@@ -8,6 +8,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '../../..');
+// Only there to catch a hang, as in remote-cache.test.ts: a run takes a few
+// seconds alone, but at a load of 30+ (18 Nov) one took more than 15 s and
+// was killed mid-way, and at 60+ some took over 100 s (Seth, 1d64f3eca).
+const STUCK = 240_000;
 
 for (const mode of ['ordinary', 'perf', 'try', 'try-env', 'busy-copy', 'busy-run']) test(`remote.sh host leases: ${mode}`, async (t) => {
   const perf = mode === 'perf';
@@ -23,7 +27,7 @@ for (const mode of ['ordinary', 'perf', 'try', 'try-env', 'busy-copy', 'busy-run
   let holder: ReturnType<typeof spawn> | undefined;
   async function hold() {
     fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
-    holder = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $f, ">>", $ARGV[0]) or die $!; flock($f, LOCK_EX) or die $!; $|=1; print "held\\n"; sleep 60', path.join(home, '.cache/threadbear-perf.lock')]);
+    holder = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $f, ">>", $ARGV[0]) or die $!; flock($f, LOCK_EX) or die $!; $|=1; print "held\\n"; sleep 600', path.join(home, '.cache/threadbear-perf.lock')]);
     t.after(() => holder?.kill());
     await new Promise((r) => holder!.stdout!.once('data', r));
   }
@@ -59,10 +63,10 @@ echo 'fake 0 0 41943040 0% /'
   child.stdout!.on('data', (s) => { output += s; });
   child.stderr!.on('data', (s) => { output += s; });
   const done = new Promise((r) => child.on('exit', r));
-  const timeout = setTimeout(() => child.kill('SIGTERM'), 15_000);
+  const timeout = setTimeout(() => child.kill('SIGTERM'), STUCK);
   t.after(() => clearTimeout(timeout));
   if (mode === 'busy-run') {
-    const end = Date.now() + 10_000;
+    const end = Date.now() + STUCK;
     while (!fs.existsSync(path.join(home, 'start-holder'))) {
       assert.ok(Date.now() < end, output);
       await new Promise((r) => setTimeout(r, 20));

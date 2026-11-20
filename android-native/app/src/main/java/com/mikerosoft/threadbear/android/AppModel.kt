@@ -1,6 +1,9 @@
 package com.mikerosoft.threadbear.android
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import com.mikerosoft.threadbear.kit.BackendApi
 import com.mikerosoft.threadbear.kit.InboxSections
 import com.mikerosoft.threadbear.kit.Pairing
@@ -21,8 +24,10 @@ import com.mikerosoft.threadbear.kit.ThreadsView
 import com.mikerosoft.threadbear.kit.TransportError
 import com.mikerosoft.threadbear.kit.WaitingSends
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -31,6 +36,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -59,6 +66,31 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
     val pairing: StateFlow<Pairing?> = _pairing
     private val _identity = MutableStateFlow<PhoneIdentity?>(null)
     val identity: StateFlow<PhoneIdentity?> = _identity
+    // Compose state as well as the flow, so a menu or button gated on
+    // apiVersion redraws when phone:me answers late (an offline launch):
+    // reading it while drawing is enough to be told.
+    private var knownApi by mutableIntStateOf(0)
+    // Above init, which may connect: an initializer after it would set this
+    // back to null once askIdentity had started.
+    private var identityJob: Job? = null
+
+    /** The API version as a flow, 0 until phone:me has answered (backendAnd). */
+    val apiVersions: StateFlow<Int> = _identity.map { it?.apiVersion ?: 0 }.stateIn(scope, SharingStarted.Eagerly, 0)
+
+    /**
+     * The backend with what `gate` makes of the API version, again whenever
+     * either changes: a subscription that picks its query by version picks
+     * again once phone:me answers late, rather than retrying the one it
+     * chose at 0 for good (Codex's review, 16 Nov). Only a change in what
+     * `gate` says starts it over, not the version arriving as such.
+     */
+    fun <K> backendAnd(gate: (Int) -> K): Flow<Pair<PhoneBackend?, K>> =
+        combine(_backend, apiVersions.map(gate).distinctUntilChanged()) { b, k -> b to k }
+
+    private fun setIdentity(me: PhoneIdentity?) {
+        _identity.value = me
+        knownApi = me?.apiVersion ?: 0
+    }
 
     /** A pairing link waiting for a yes. */
     val pendingPair = MutableStateFlow<PairingRequest?>(null)
@@ -73,6 +105,8 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
 
     /** Archived (or hibernated) from here, hidden until the list agrees. */
     val puttingAway = MutableStateFlow<Set<String>>(emptySet())
+    /** Renamed from here: the new title shows at once, until the list has it (or it fails). */
+    val renamed = MutableStateFlow<Map<String, String>>(emptyMap())
     /** Stop pressed, until the turn ends. */
     val stopping = MutableStateFlow<Set<String>>(emptySet())
 
@@ -83,47 +117,87 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         store.load()?.let { connect(it) }
     }
 
-    val apiVersion: Int get() = _identity.value?.apiVersion ?: 0
+    /** The backend's API version, 0 until phone:me has answered. */
+    val apiVersion: Int get() = knownApi
 
     private fun connect(pairing: Pairing) {
         transport?.close()
         val t = ConvexFfiTransport(pairing.deploymentUrl)
         transport = t
         _pairing.value = pairing
-        _backend.value = PhoneBackend(t, pairing.token)
-        scope.launch {
-            try {
-                _identity.value = _backend.value?.me()
-                registerPush()
-            } catch (e: TransportError.Unauthorized) {
-                report(e)
-            } catch (_: Exception) {
-                // Offline: the lists say so; me is asked again on the next launch.
+        val b = PhoneBackend(t, pairing.token)
+        _backend.value = b
+        askIdentity(b)
+    }
+
+    /**
+     * phone:me, on connecting and again on every reconnect, as the iPhone's
+     * AppModel asks on each fresh connection. It used to be asked once per
+     * process, so an offline launch (or one a push started) or a call that
+     * failed during a deploy left the API version at 0 until Android killed
+     * the app, hiding Stars, photos, slash commands and older search. One
+     * that fails tries again, backing off, while `b` is still the backend.
+     */
+    private fun askIdentity(b: PhoneBackend) {
+        identityJob?.cancel()
+        identityJob = scope.launch {
+            var wait = 2_000L
+            while (_backend.value === b) {
+                try {
+                    val me = b.me()
+                    if (_backend.value !== b) return@launch
+                    setIdentity(me)
+                    registerPush()
+                    sendNotifyMode(b)
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: TransportError.Unauthorized) {
+                    report(e)
+                    return@launch
+                } catch (_: Exception) {
+                    delay(wait)
+                    wait = (wait * 2).coerceAtMost(60_000L)
+                }
             }
         }
     }
 
     /** Every list follows the backend, and starts again after a dropped connection. */
-    private fun <T> follow(initial: T, read: (PhoneBackend) -> Flow<T>): StateFlow<T> =
-        _backend.flatMapLatest { b ->
-            if (b == null) flowOf(initial) else read(b).retryWhen { cause, _ ->
+    private fun <T> follow(initial: T, read: (PhoneBackend) -> Flow<T>): StateFlow<T> = follow(initial, { }) { b, _ -> read(b) }
+
+    /** One whose query depends on the API version: `gate` says which (backendAnd). */
+    private fun <T, K> follow(initial: T, gate: (Int) -> K, read: (PhoneBackend, K) -> Flow<T>): StateFlow<T> =
+        backendAnd(gate).flatMapLatest { (b, k) ->
+            if (b == null) flowOf(initial) else read(b, k).retryWhen { cause, _ ->
                 if (cause is TransportError.Unauthorized) { report(cause); false } else { delay(2000); true }
             }.catch { }
         }.stateIn(scope, SharingStarted.WhileSubscribed(5000), initial)
 
-    val inbox: StateFlow<List<PhoneThread>?> = follow(null) { b ->
-        if (apiVersion in 1 until BackendApi.THREAD_CHANGES) b.threads(ThreadsView.INBOX) else b.inboxChanges()
+    val inbox: StateFlow<List<PhoneThread>?> = follow(null, { it in 1 until BackendApi.THREAD_CHANGES }) { b, older ->
+        if (older) b.threads(ThreadsView.INBOX) else b.inboxChanges()
     }
     val runners: StateFlow<List<PhoneRunner>> = follow(emptyList()) { it.runners() }
     val projects: StateFlow<List<PhoneProject>> = follow(emptyList()) { it.projects() }
     val counts: StateFlow<PhoneCounts?> = follow(null) { it.counts() }
     val wakes: StateFlow<List<ScheduleWake>> = follow(emptyList()) { it.wakes() }
     /** Every runner's logins and their models (backend API 20), for the new thread pickers. */
-    val accounts: StateFlow<List<PhoneAccount>> = follow(emptyList()) { b ->
-        if (apiVersion in 1 until BackendApi.MODELS) flowOf(emptyList()) else b.accounts()
+    val accounts: StateFlow<List<PhoneAccount>> = follow(emptyList(), { it in 1 until BackendApi.MODELS }) { b, older ->
+        if (older) flowOf(emptyList()) else b.accounts()
     }
     val connected: StateFlow<Boolean> = _backend.flatMapLatest { it?.connected ?: flowOf(false) }
         .stateIn(scope, SharingStarted.Eagerly, false)
+
+    init {
+        // Back online, or the socket came back: ask phone:me again (askIdentity).
+        scope.launch {
+            var was = false
+            connected.collect { up ->
+                if (up && !was) _backend.value?.let { askIdentity(it) }
+                was = up
+            }
+        }
+    }
 
     /** A put-away list, only while its heading is open. */
     fun putAway(section: PhoneSection): StateFlow<List<PhoneThread>?> = sectionLists.getOrPut(section) {
@@ -191,7 +265,7 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
                 store.save(pairing)
                 trial.close()
                 connect(pairing)
-                _identity.value = me
+                setIdentity(me)
                 note("Paired with ${shown.host}")
                 registerPush()
             } catch (e: Exception) {
@@ -205,59 +279,94 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
 
     // Push
 
-    /** The Firebase token the backend has for this phone, once registered (for Notify me). */
+    /** The push address (Firebase token or UnifiedPush endpoint) the backend has for this phone, once registered (for Notify me). */
     private val _pushToken = MutableStateFlow<String?>(null)
     val pushToken: StateFlow<String?> = _pushToken
 
     /**
-     * Hands the backend this phone's Firebase token and push key, as the
+     * Hands the backend this phone's push address and push key, as the
      * iPhone's didRegister: on each connect, after pairing, when the
-     * permission's given, and when Firebase makes a new token. Not while
+     * permission's given, and when the transport has a new address
+     * ([fresh]: a new Firebase token, a new UnifiedPush endpoint). Not while
      * notifications aren't allowed (nothing would show), nor for a backend
-     * that sends none (self-hosted). Quiet on failure: the next launch tries again.
+     * that sends none (self-hosted), nor a Web Push address for a backend
+     * before API 93. Quiet on failure: the next launch tries again.
      */
-    fun registerPush(newToken: String? = null) {
+    fun registerPush(fresh: PushAddress? = null) {
         val b = _backend.value ?: return
-        if (!Push.available || !Push.permitted(appContext)) return
+        if (!Push.available(appContext) || !Push.permitted(appContext)) return
         // Already registered this run: the resume check costs nothing then.
-        if (newToken == null && _pushToken.value != null) return
-        if (_identity.value?.sendsNotifications == false) return
+        if (fresh == null && _pushToken.value != null) return
+        if (!Push.sentBy(_identity.value)) return
+        val api = apiVersion
+        if (fresh?.platform == PushAddress.WEB_PUSH && api < BackendApi.WEB_PUSH) return
+        val cacheKey = _pairing.value?.deploymentUrl ?: return
         val epoch = pairingEpoch
         scope.launch {
-            // One at a time with forgetting an old pairing's token (pairingChanged),
-            // so a quick re-pair can't register the token being deleted, and work
+            // One at a time with forgetting an old pairing's address (pairingChanged),
+            // so a quick re-pair can't register the address being forgotten, and work
             // for a pairing that's since changed is dropped, not finished.
             pushLock.withLock {
                 if (epoch != pairingEpoch) return@withLock
-                val token = newToken ?: Push.token() ?: return@withLock
+                val address = fresh ?: Push.transport.address(appContext, b, api, cacheKey) ?: return@withLock
                 val key = PushKeyStore(appContext).loadOrCreate()?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
                 try {
-                    b.registerDevice(token, "production", "android", key)
+                    b.registerDevice(address.token, "production", address.platform, key, address.webPush)
                     if (epoch == pairingEpoch) {
-                        _pushToken.value = token
+                        _pushToken.value = address.token
                         // Settings' Notify me picker shows once there's a token.
-                        shell.pushToken.value = token
+                        shell.pushToken.value = address.token
                         // As the iPhone: the phone's own choice goes with each
                         // registration (a backend before the setting notifies every time).
-                        if (apiVersion >= com.mikerosoft.threadbear.kit.BackendApi.NOTIFICATION_SETTING) {
-                            runCatching { b.setNotifications(token, shell.notifyMode.value) }
+                        if (apiVersion >= BackendApi.NOTIFICATION_SETTING) {
+                            runCatching { b.setNotifications(address.token, shell.notifyMode.value) }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                 }
             }
         }
     }
 
+    /** The distributor dropped this phone's endpoint: registered afresh on the next resume. */
+    fun pushUnregistered() {
+        scope.launch {
+            pushLock.withLock {
+                _pushToken.value = null
+                shell.pushToken.value = null
+            }
+        }
+    }
+
     private val pushLock = kotlinx.coroutines.sync.Mutex() // fair: queued work runs in order
+
+    /**
+     * The phone's Notify me choice, once phone:me has answered: a
+     * registration made before it had (an offline launch, a new Firebase
+     * token) couldn't tell whether the backend takes it, so it went without
+     * (Codex's review, 16 Nov). Sent again on each reconnect; it's one row.
+     */
+    private fun sendNotifyMode(b: PhoneBackend) {
+        if (apiVersion < BackendApi.NOTIFICATION_SETTING) return
+        val epoch = pairingEpoch
+        scope.launch {
+            pushLock.withLock {
+                val token = _pushToken.value ?: return@withLock
+                if (epoch != pairingEpoch || _backend.value !== b) return@withLock
+                runCatching { b.setNotifications(token, shell.notifyMode.value) }
+            }
+        }
+    }
     @Volatile private var pairingEpoch = 0
 
     /**
      * The pairing changed (unpaired, or paired with something else): what's
      * queued for the old one is dropped, and with [forget] the old backend
-     * loses this phone (Firebase deletes the token, so its next send comes
-     * back UNREGISTERED and it drops the device) and the push key is made
-     * anew, so the old backend's sealed notifications can't be opened.
+     * loses this phone (Push.forget: the transport forgets its address) and
+     * the push key is made anew, so the old backend's sealed notifications
+     * can't be opened.
      */
     private fun pairingChanged(forget: Boolean) {
         // Another server (or none): its notifications come down and any being
@@ -277,7 +386,8 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         transport = null
         _backend.value = null
         _pairing.value = null
-        _identity.value = null
+        identityJob?.cancel()
+        setIdentity(null)
     }
 
     // Changes, each showing at once
@@ -290,6 +400,7 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
             else -> {}
         }
         val b = _backend.value ?: return
+        if (change is ThreadChange.Rename) return rename(b, threadId, change)
         val hides = change is ThreadChange.Archive || change is ThreadChange.ArchiveWithVerdict || change is ThreadChange.Snooze
         if (hides) puttingAway.update { it + threadId }
         scope.launch {
@@ -301,6 +412,28 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
                 report(e)
             } finally {
                 if (hides) puttingAway.update { it - threadId }
+            }
+        }
+    }
+
+    /** A thread's title as shown here: one just typed on this phone, else its own. */
+    fun title(thread: PhoneThread, renamed: Map<String, String>) =
+        (renamed[thread.threadId] ?: thread.title).ifEmpty { "Untitled" }
+
+    private fun rename(b: PhoneBackend, threadId: String, change: ThreadChange.Rename) {
+        val title = change.title.trim()
+        if (title.isEmpty()) return
+        renamed.update { it + (threadId to title) }
+        scope.launch {
+            try {
+                b.update(threadId, ThreadChange.Rename(title))
+                // The live thread carries the new title within a moment.
+                delay(3000)
+            } catch (e: Exception) {
+                report(e)
+            } finally {
+                // A later rename may have replaced this one meanwhile.
+                renamed.update { if (it[threadId] == title) it - threadId else it }
             }
         }
     }

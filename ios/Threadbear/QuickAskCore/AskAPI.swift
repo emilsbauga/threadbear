@@ -22,6 +22,7 @@ nonisolated struct AskBody: Codable, Equatable, Sendable {
 nonisolated enum AskAPI {
     static let pingPath = "/api/quick/ping"
     static let askPath = "/api/quick/ask"
+    static let claimPath = "/api/quick/claim"
     static let historyLimit = 3
 
     static func body(question: String, history: [Exchange], timeZone: TimeZone, now: Date) -> AskBody {
@@ -199,28 +200,69 @@ nonisolated enum AskFailure: Error, Equatable, Sendable {
 /// Opening one hands every later question, and the token, to whatever server it names, so a
 /// link has to be https (Mike's is `tailscale serve`, which always is), and every one is
 /// confirmed first, naming its host (ThreadbearApp), the first one included.
-nonisolated struct QuickAskLink: Equatable, Sendable {
-    /// The server as the link gave it, kept as typed (Settings shows it).
+/// A Quick Ask setup code, as the server shows it for the phone's own scanner (or Paste):
+/// `TBASK1_` and the unpadded base64url of `{"url": <server>, "code": <aq_ code>}`. Plain
+/// text, not a link, so the Camera opens nothing with it and no other app can catch it; the
+/// code works once, for ten minutes, and is traded for the token at `POST /api/quick/claim`
+/// (docs/ask-server.md). It used to be a `threadbear://quickask?url=…&token=…` link, which
+/// any app claiming the `threadbear` scheme could have caught as it opened, so a link like
+/// that is refused from everywhere now (opened, scanned or pasted), token or not.
+nonisolated struct QuickAskSetup: Equatable, Sendable {
+    static let textPrefix = "TBASK1_"
+
+    /// The server as the code gave it, kept as typed (Settings shows it).
     var server: String
-    var token: String
+    var code: String
 
     enum Refusal: Error, Equatable {
-        /// Not a quickask link at all: something else (pairing) may want it.
+        /// Not a Quick Ask code or link at all: something else (pairing) may want it.
         case notQuickAsk
-        /// A quickask link, but missing its server or token, or not https.
+        /// A `threadbear://quickask` link: never taken, as it could have been caught.
+        case link
+        /// A setup code, but broken, with an unknown field, or not https.
         case unusable
     }
 
-    static func parse(_ url: URL) -> Result<QuickAskLink, Refusal> {
-        guard url.scheme == "threadbear", url.host() == "quickask" else { return .failure(.notQuickAsk) }
-        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-              let server = items.first(where: { $0.name == "url" })?.value,
+    static func parse(_ raw: String) -> Result<QuickAskSetup, Refusal> {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: text), url.scheme?.lowercased() == "threadbear", url.host()?.lowercased() == "quickask" {
+            return .failure(.link)
+        }
+        guard text.hasPrefix(textPrefix) else { return .failure(.notQuickAsk) }
+        let body = String(text.dropFirst(textPrefix.count))
+        guard body.count <= 4096, body.wholeMatch(of: /[A-Za-z0-9_-]+/) != nil,
+              let data = base64URLDecoded(body),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == ["url", "code"],
+              let server = object["url"] as? String, let code = object["code"] as? String,
+              code.wholeMatch(of: /aq_[A-Za-z0-9_-]{43}/) != nil,
               // No scheme is taken as https, as Settings does; plain http never is, as the
               // token and every question would go over it in the clear.
-              AskAPI.normalizeBaseURL(server)?.scheme?.lowercased() == "https",
-              let token = items.first(where: { $0.name == "token" })?.value, !token.isEmpty
+              let base = AskAPI.normalizeBaseURL(server), base.scheme?.lowercased() == "https",
+              // A server, and maybe a path in front of /api: no sign-in, query or fragment
+              // that could make the address read as one host and go to another.
+              base.user() == nil, base.password() == nil, base.query() == nil, base.fragment() == nil
         else { return .failure(.unusable) }
-        return .success(QuickAskLink(server: server, token: token))
+        return .success(QuickAskSetup(server: server, code: code))
+    }
+
+    private static func base64URLDecoded(_ text: String) -> Data? {
+        var base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        return Data(base64Encoded: base64)
+    }
+
+    /// Why a Quick Ask link was refused, wherever it came from.
+    static let linkRefusal = "Any app on the phone could have read that link on its way here. In Threadbear, go to Settings › Ask › Scan the code, and scan the code your server shows. Nothing was changed."
+
+    /// What the alert before a claim says: where questions will go, and what it replaces.
+    func confirmMessage(current: URL?) -> String {
+        let ending = "Only say yes if you just scanned a code from your own server."
+        guard let current else { return "Questions will go to \(hostName). \(ending)" }
+        if changesServer(from: current) {
+            return "Questions will go to \(hostName) instead of \(Self.hostName(current)). \(ending)"
+        }
+        return "Quick Ask gets a new token for \(hostName). \(ending)"
     }
 
     /// Host and port, as an alert names it ("mac-mini.tail1234.ts.net:9443").
@@ -231,12 +273,59 @@ nonisolated struct QuickAskLink: Equatable, Sendable {
         return url.port.map { "\(host):\($0)" } ?? host
     }
 
-    /// Whether this link would point Quick Ask somewhere other than `current`, for the
+    /// Whether this code would point Quick Ask somewhere other than `current`, for the
     /// alert's wording. Only the host and port count: a new token for the same server is
-    /// the usual re-pair. No server yet is a change too: that first link is the one an
+    /// the usual re-pair. No server yet is a change too: that first code is the one an
     /// attacker's would most likely be.
     func changesServer(from current: URL?) -> Bool {
         guard let current else { return true }
         return Self.hostName(current) != hostName
+    }
+
+    /// `POST <server>/api/quick/claim` with `{"code"}`. The server only, never another
+    /// path: the code goes nowhere but where it says it's from.
+    func claimRequest() -> URLRequest? {
+        guard let base = AskAPI.normalizeBaseURL(server), base.scheme?.lowercased() == "https" else { return nil }
+        var request = URLRequest(url: base.appending(path: AskAPI.claimPath))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["code": code])
+        request.timeoutInterval = 20
+        return request
+    }
+
+    /// The token from a claim's answer, or why there isn't one, in words for an alert.
+    /// `answeredFrom` is where the answer really came from: only the claim's own address
+    /// counts, as a redirect could otherwise have the real server's token kept for this
+    /// code's (another) server (Grok's review). The claim follows no redirects either.
+    func token(status: Int, body: Data, answeredFrom: URL?) -> Result<String, ClaimFailure> {
+        guard let asked = claimRequest()?.url, answeredFrom == asked else {
+            return .failure(.refused("The server sent the code somewhere else."))
+        }
+        return Self.token(status: status, body: body)
+    }
+
+    static func token(status: Int, body: Data) -> Result<String, ClaimFailure> {
+        if (300..<400).contains(status) { return .failure(.refused("The server sent the code somewhere else.")) }
+        guard status == 200 else {
+            if status == 410 || status == 400 {
+                let reason = (AskAPI.errorMessage(from: body) ?? "That code has expired or was already used")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+                return .failure(.refused("\(reason). Make a new one on your server and scan that."))
+            }
+            if status == 404 { return .failure(.refused("That server doesn't take setup codes. Update it, or enter its token by hand.")) }
+            return .failure(.refused(AskAPI.errorMessage(from: body) ?? "The server answered \(status)."))
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let token = object["token"] as? String,
+              // Something a header can carry, and no more than a token needs.
+              !token.isEmpty, token.count <= 4096, token.wholeMatch(of: /[\x21-\x7E]+/) != nil
+        else { return .failure(.refused("The server's answer had no token in it.")) }
+        return .success(token)
+    }
+
+    enum ClaimFailure: Error, Equatable {
+        case refused(String)
+        var message: String { switch self { case .refused(let message): message } }
     }
 }

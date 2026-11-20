@@ -134,7 +134,7 @@ wrap_resource_handler! {
                 }
                 let header = |name: &str, value: &str| response.set_header_by_name(Some(&CefString::from(name)), Some(&CefString::from(value)), 1);
                 // The page can't loosen it, and a 404's carries the stricter one.
-                header("Content-Security-Policy", &policy(self.preview.scripts || answer.status != 200));
+                header("Content-Security-Policy", &policy(self.preview.scripts || answer.status != 200, self.preview.workers && answer.status == 200));
                 header("Permissions-Policy", crate::preview_rules::PERMISSIONS);
                 header("X-Content-Type-Options", "nosniff");
                 // A rewritten picture is asked for again, and nothing's kept.

@@ -284,6 +284,9 @@ impl MenuRow {
 pub(crate) enum MenuAction {
     Star(bool),
     Archive,
+    /// Archive with his answer from the done card's menu, whether he needed
+    /// to see the thread (`threads.update`'s `verdict`; inboxGuess).
+    ArchiveAs(&'static str),
     Unarchive,
     Backlog(bool),
     Wake,
@@ -311,6 +314,10 @@ pub(crate) enum MenuAction {
     /// the chosen runner (new_thread.rs).
     Runner(Option<String>),
     DefaultRunner(Option<String>),
+    /// A virtual runner, by its id (`RemoteThreads.services`), and the
+    /// same as the default.
+    Service(String),
+    DefaultService(String),
     DraftFolder(String),
     /// Other… under that Folder: a path on that Mac, typed (`typeRemoteFolder`).
     TypeDraftFolder,
@@ -454,7 +461,10 @@ pub(crate) struct Palette {
     pub(crate) secondary: Hsla,
     pub(crate) faint: Hsla,
     pub(crate) accent: Hsla,
+    /// The status marks' failed rose and working-and-done blue
+    /// (`style::status_failed`), safe for a red-green colour-blind eye.
     pub(crate) failed: Hsla,
+    pub(crate) progress: Hsla,
     pub(crate) hover: Hsla,
     pub(crate) selected: Hsla,
     pub(crate) tile: Hsla,
@@ -477,7 +487,8 @@ pub(crate) fn palette(cx: &App) -> Palette {
         secondary: style::secondary_text(cx),
         faint: style::faint_text(cx),
         accent: style::accent(cx),
-        failed: style::failed(cx),
+        failed: style::status_failed(cx),
+        progress: style::status_progress(cx),
         hover: style::sidebar_hover(cx),
         selected: style::sidebar_selected(cx),
         tile: style::primary_opacity(cx, 0.08),
@@ -498,6 +509,9 @@ pub(crate) fn palette(cx: &App) -> Palette {
 pub(crate) mod metrics {
     /// From the sidebar's edges to a row's highlight.
     pub const OUTER_INSET: f32 = 8.;
+    /// Over the search row: 4 beside a Mac's traffic lights, more where
+    /// there are none and it would sit against the window's top edge.
+    pub const SEARCH_TOP: f32 = if cfg!(target_os = "macos") { 4. } else { 10. };
     /// Inside a row's highlight, left of its text: wider than the right side
     /// to leave a gutter for the unread dot, so titles line up with or without.
     pub const LEADING: f32 = 18.;
@@ -512,6 +526,12 @@ pub(crate) mod metrics {
     pub const NEST_INDENT: f32 = 22.;
     pub const NEST_GUIDE: f32 = LEADING + 4.;
     pub const NEST_TILE: f32 = 24.;
+
+    /// Over and under a thread row's words: 8, or 4 with Appearance's
+    /// Compact spacing.
+    pub fn row_pad() -> f32 {
+        if crate::style::compact() { 4. } else { 8. }
+    }
 }
 pub(crate) use metrics::*;
 
@@ -626,11 +646,36 @@ impl Threadbear {
 
     /// The nestedThreads experiment is on for this Mac's runner: Settings'
     /// switch first, as it changes without a new hello, else the hello's
-    /// list (as `open_anything_on`).
+    /// list.
     pub(crate) fn nested_threads_on(&self) -> bool {
-        let id = nested::EXPERIMENT;
+        self.experiment_on(nested::EXPERIMENT)
+    }
+
+    /// Whether an experiment is on for this Mac's runner: Settings' switch
+    /// first, as it changes without a new hello, else the hello's list.
+    fn experiment_on(&self, id: &str) -> bool {
         let switch = self.runner_settings.as_ref().and_then(|s| s["experiments"].as_array()?.iter().find(|e| e["id"] == id).map(|e| e["on"].as_bool() == Some(true)));
         switch.unwrap_or_else(|| self.remote.experiments.iter().any(|e| e == id))
+    }
+
+    /// The done card's Archive. With the inboxGuess experiment on it first
+    /// asks whether he needed to see the thread at all, in a menu at the
+    /// button: the runner keeps his answer beside a model's guess, to find
+    /// out whether threads like it could skip his inbox (Mike, 18 Nov 2026;
+    /// docs/protocol.md, "Inbox guess"). Either answer archives. Only for a
+    /// thread on this Mac's runner: another's wouldn't be sent the answer.
+    /// ⌘E, a row's box and a swipe stay one step.
+    pub(crate) fn archive_from_card(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else { return };
+        // Only where the thread stands finished with nothing for him: an old
+        // done card's Archive, further up a thread that's since asked him
+        // something, isn't an answer about this.
+        let asks = self.experiment_on("inboxGuess") && self.threads.get(&id).is_some_and(|t| !t.is_archived() && t.runner_id.is_none() && t.needs.as_deref() == Some("nothing") && !t.needs_you);
+        if !asks {
+            return self.toggle_archive(window, cx);
+        }
+        let rows = vec![MenuRow::item("Didn't need this", "eye.slash", MenuAction::ArchiveAs("didntNeedToSee")), MenuRow::item("Glad I saw this", "eye", MenuAction::ArchiveAs("gladISaw")), MenuRow::item("Not sure", "questionmark.circle", MenuAction::ArchiveAs("notSure"))];
+        self.open_menu(Some(id), rows, at, false, window, cx);
     }
 
     /// The line above a thread's transcript saying which thread started it,
@@ -712,7 +757,14 @@ impl Threadbear {
     }
 
     pub(crate) fn archive_row(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.archive_row_as(id, None, window, cx);
+    }
+
+    /// `verdict`: what he picked from the done card's Archive menu, if it
+    /// asked (`archive_from_card`), sent with the archive.
+    pub(crate) fn archive_row_as(&mut self, id: String, verdict: Option<&'static str>, window: &mut Window, cx: &mut Context<Self>) {
         let next = self.neighbour_of(&id, cx, now_ms());
+        let from_inbox = self.in_inbox(&id, cx);
         // The open thread's page drops into the Archived heading, before the
         // thread moves and the next one opens (archive_flight.rs).
         self.launch_flight(&id, crate::archive_flight::Destination::Archive, cx);
@@ -722,7 +774,12 @@ impl Threadbear {
             let was_open = self.selected.as_deref() == Some(id.as_str());
             self.show_archived_note(id.clone(), title, was_open, cx);
         }
-        self.update_thread(&id, move |t| t.archived_at = Some(at), json!({ "archived": true, "archivedBy": "mike" }), cx);
+        let mut params = json!({ "archived": true, "archivedBy": "mike" });
+        if let Some(verdict) = verdict {
+            params["verdict"] = json!(verdict);
+        }
+        self.update_thread(&id, move |t| t.archived_at = Some(at), params, cx);
+        self.cheer_if_inbox_cleared(from_inbox, cx);
         self.leave_selection(&id, next, window, cx);
     }
 
@@ -746,6 +803,7 @@ impl Threadbear {
     /// Snooze until a moment, moving off it if it's open (`AppModel.snooze`).
     pub(crate) fn snooze_row(&mut self, id: String, until_ms: i64, window: &mut Window, cx: &mut Context<Self>) {
         let next = self.neighbour_of(&id, cx, now_ms());
+        let from_inbox = self.in_inbox(&id, cx);
         // The open thread's page sinks into the moon (archive_flight.rs).
         self.launch_flight(&id, crate::archive_flight::Destination::Hibernate, cx);
         let until = iso_time(until_ms);
@@ -755,10 +813,14 @@ impl Threadbear {
             move |t| {
                 t.snoozed_until = Some(local);
                 t.wake_when = None;
+                // Mike's own snooze replaces a wait on its work, as the runner's does.
+                t.waiting_on = None;
+                t.awaiting_app_restart = None;
             },
             json!({ "snoozedUntil": until }),
             cx,
         );
+        self.cheer_if_inbox_cleared(from_inbox, cx);
         self.leave_selection(&id, next, window, cx);
     }
 
@@ -818,6 +880,9 @@ impl Threadbear {
             |t| {
                 t.snoozed_until = Some("9999-12-31T00:00:00.000Z".into());
                 t.snoozed_until_restart = Some(true);
+                t.waiting_on = None;
+                t.awaiting_app_restart = None;
+                t.wake_when = None;
             },
             json!({ "snoozedUntil": "restart" }),
             cx,
@@ -836,6 +901,8 @@ impl Threadbear {
             t.snoozed_until = Some("9999-12-31T00:00:00.000Z".into());
             t.snoozed_until_restart = None;
             t.wake_when = Some(json!({ "said": said, "pending": true }));
+            t.waiting_on = None;
+            t.awaiting_app_restart = None;
         }
         let guess = self.threads.get(&id).cloned();
         self.leave_selection(&id, next, window, cx);
@@ -949,6 +1016,8 @@ impl Threadbear {
             }
             MenuAction::Runner(runner) => return self.choose_new_thread_runner(runner, true, cx),
             MenuAction::DefaultRunner(runner) => return self.set_default_runner(runner, cx),
+            MenuAction::Service(id) => return self.choose_new_thread_service(id, true, cx),
+            MenuAction::DefaultService(id) => return self.set_default_service(id, cx),
             MenuAction::DraftFolder(folder) => return self.change_new_draft(&json!({ "cwd": folder }), cx),
             MenuAction::TypeDraftFolder => {
                 self.type_remote_folder(window, cx);
@@ -974,6 +1043,7 @@ impl Threadbear {
         match action {
             MenuAction::Star(on) => self.star_row(&id, on, cx),
             MenuAction::Archive => self.archive_row_sliding(id, window, cx),
+            MenuAction::ArchiveAs(verdict) => self.archive_row_as(id, Some(verdict), window, cx),
             MenuAction::Unarchive => self.unarchive_row(&id, cx),
             MenuAction::Backlog(later) => {
                 self.set_backlogged(&id, later, cx);
@@ -1013,6 +1083,8 @@ impl Threadbear {
             MenuAction::Sort(_)
             | MenuAction::Runner(_)
             | MenuAction::DefaultRunner(_)
+            | MenuAction::Service(_)
+            | MenuAction::DefaultService(_)
             | MenuAction::DraftFolder(_)
             | MenuAction::TypeDraftFolder
             | MenuAction::EditSchedule(_)
@@ -1122,14 +1194,106 @@ impl Threadbear {
             .collect()
     }
 
+    /// The machine chip under a thread's box: the machine it's on, ticked,
+    /// then the others to move it to (offline ones greyed), or Cancel Move
+    /// while one's going. The same moves as the row's Move to, where Mike's
+    /// already looking: he asked for it on 17 Nov after Capy's "Cloud ▸ Move
+    /// to a device" under its box, as the ⋯ menu was the only way.
+    pub(crate) fn machine_menu_rows(&self, t: &ThreadSummary) -> Vec<MenuRow> {
+        let name = self.runner_label(t).unwrap_or_else(|| "This Mac".to_owned());
+        let symbol = match t.runner_id.as_deref() {
+            Some(id) => self.runner_icon_symbol(Some(id)),
+            None => self.self_runner_symbol(),
+        };
+        let mut rows = vec![MenuRow::runner(name, symbol, true, false, MenuAction::CopyId).disabled(), MenuRow::separator()];
+        if t.moving.as_ref().is_some_and(|m| !matches!(m["state"].as_str(), Some("cancelled") | Some("failed"))) {
+            rows.push(MenuRow::item("Cancel Move", "xmark.circle", MenuAction::CancelMove));
+            return rows;
+        }
+        for r in self.move_targets(t.runner_id.as_deref()) {
+            let title = if r.online { format!("Move to {}", r.name) } else { format!("Move to {}, offline", r.name) };
+            let mut row = MenuRow::item(title, crate::icons::runner_symbol(r.icon.as_deref()), MenuAction::MoveTo(r.id, r.name));
+            row.enabled = r.online;
+            rows.push(row);
+        }
+        rows
+    }
+
+    /// Opens the machine chip's menu (`machine_menu_rows`) at `position`.
+    pub(crate) fn open_machine_menu(&mut self, id: String, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.threads.get(&id).cloned() else { return };
+        let menu_rows = self.machine_menu_rows(&t);
+        self.open_menu(Some(id), menu_rows, position, false, window, cx);
+    }
+
+    /// The machine menu as lines, for scripts: "✓ m5", then each move, "(off)"
+    /// after one that can't be picked.
+    pub(crate) fn machine_menu_lines(&self, id: &str) -> Vec<String> {
+        let Some(t) = self.threads.get(id) else { return vec![] };
+        self.machine_menu_rows(t)
+            .into_iter()
+            .filter(|r| !r.separator)
+            .map(|r| match (r.checked, r.enabled) {
+                (true, _) => format!("✓ {}", r.title),
+                (false, false) => format!("{} (off)", r.title),
+                _ => r.title,
+            })
+            .collect()
+    }
+
+    /// A pick from the machine menu, by its title, as a click on it does.
+    pub(crate) fn machine_menu_click(&mut self, id: &str, title: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let Some(t) = self.threads.get(id).cloned() else { return Err("no such thread".into()) };
+        let row = self.machine_menu_rows(&t).into_iter().find(|r| r.title == title && !r.separator).ok_or_else(|| format!("no item {title}"))?;
+        if !row.enabled {
+            return Err(format!("{title} can't be picked"));
+        }
+        match row.action {
+            Some(MenuAction::MoveTo(runner_id, runner_name)) => self.open_move(crate::move_sheet::MoveRequest { thread_id: id.to_owned(), runner_id, runner_name }, window, cx),
+            Some(MenuAction::CancelMove) => self.cancel_move(id.to_owned(), cx),
+            _ => return Err(format!("{title} does nothing")),
+        }
+        Ok(())
+    }
+}
+
+/// Gives a menu opened by hand (`PopupMenu::build`, not the kit's
+/// `context_menu`) the keyboard, as the kit's own context menus do, so its
+/// Escape binding (the kit's `Cancel`) closes it. Without this Escape went
+/// nowhere and a row's menu stayed up (the fuzzing run, 18 Nov). Returns the
+/// menu's focus and what had the keyboard before (not a menu this one
+/// replaces), for `give_back_focus` when it closes.
+pub(crate) fn focus_menu(view: &Entity<PopupMenu>, replacing: Option<&Entity<PopupMenu>>, window: &mut Window, cx: &mut App) -> (FocusHandle, Option<FocusHandle>) {
+    let replaced = replacing.map(|m| m.focus_handle(cx));
+    let before = window.focused(cx).filter(|f| replaced.as_ref() != Some(f));
+    let menu_focus = view.focus_handle(cx);
+    window.focus(&menu_focus, cx);
+    crate::web_panels::keyboard_to_app(window);
+    (menu_focus, before)
+}
+
+/// When a menu closes with the keyboard still on it, hands the keyboard back
+/// to what had it before; a choice that moved it on (a rename field) keeps it.
+pub(crate) fn give_back_focus(menu_focus: &FocusHandle, before: Option<&FocusHandle>, window: &mut Window, cx: &mut App) {
+    if menu_focus.is_focused(window) || menu_focus.contains_focused(window, cx) {
+        if let Some(before) = before {
+            window.focus(before, cx);
+            crate::web_panels::keyboard_to_app(window);
+        }
+    }
+}
+
+impl Threadbear {
     /// Opens `rows` as a popup menu at `position`, for a row or a heading.
     pub(crate) fn open_menu(&mut self, thread: Option<String>, menu_rows: Vec<MenuRow>, position: Point<Pixels>, confirm_busy: bool, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.entity().downgrade();
         let (build_rows, build_thread) = (menu_rows.clone(), thread.clone());
         let view = PopupMenu::build(window, cx, move |menu, window, cx| fill_menu(menu, &build_rows, entity.clone(), build_thread.clone(), window, cx));
+        let (menu_focus, before) = focus_menu(&view, self.sidebar.menu.as_ref().map(|m| &m.view), window, cx);
         // The menu closes itself on Escape, a click outside or a choice.
-        let dismissed = cx.subscribe(&view, |this, _, _: &DismissEvent, cx| {
+        let dismissed = cx.subscribe_in(&view, window, move |this, _, _: &DismissEvent, window, cx| {
             this.sidebar.menu = None;
+            give_back_focus(&menu_focus, before.as_ref(), window, cx);
             cx.notify();
         });
         self.sidebar.menu = Some(OpenMenu { thread, position, view, rows: menu_rows, confirm_busy, _dismissed: dismissed });
@@ -1364,7 +1528,9 @@ impl Threadbear {
                 }
                 // Under the empty Inbox heading.
                 if section.key == "inbox" && section.rows.is_empty() && !searching {
-                    let empty = div().pl(px(LEADING)).pt(px(14.)).text_size(px(style::size::SIDEBAR_PREVIEW)).text_color(p.secondary).child("Nothing in the inbox.").into_any_element();
+                    // Confetti pops from here when the last thread leaves (confetti.rs).
+                    let note = div().relative().child("Nothing in the inbox.").child(crate::confetti::anchor("inbox-empty"));
+                    let empty = div().pl(px(LEADING)).pt(px(14.)).text_size(px(style::size::SIDEBAR_PREVIEW)).text_color(p.secondary).child(note).into_any_element();
                     body = place("note:inbox-empty".into(), empty, body);
                 }
                 // Its height as drawn, for a fold to run to or from.
@@ -1416,7 +1582,11 @@ impl Threadbear {
             .size_full()
             .bg(p.side)
             // One line: search and New thread (Mike asked 30 Oct).
-            .child(h_flex().gap(px(6.)).px(px(OUTER_INSET)).pt(px(4.)).items_stretch().child(self.render_search(&p, cx)).child(self.render_new_thread(new_thread_active, &p, cx)))
+            // On a Mac the row sits level with the traffic lights in the
+            // window's top strip; with no lights beside it (Windows, Linux)
+            // it sat against the window's top edge, so it gets more room
+            // there (Mike, on his Windows laptop, 17 Nov).
+            .child(h_flex().gap(px(6.)).px(px(OUTER_INSET)).pt(px(SEARCH_TOP)).items_stretch().child(self.render_search(&p, cx)).child(self.render_new_thread(new_thread_active, &p, cx)))
             // Nothing about the connection here: the banner over the thread
             // says it, as the Swift app's does, and only once it's worth
             // saying (`connection_banner`). The raw error showed here in the
@@ -1497,6 +1667,8 @@ impl Threadbear {
         self.note_navigation();
         self.new_thread.picks.project = None;
         self.new_thread.focus_pending = true;
+        // Its CLI starts now, while the message is written (warm start).
+        self.warm_new_thread(cx);
         cx.notify();
     }
 
@@ -1668,7 +1840,8 @@ impl Threadbear {
             look.done = false;
         }
         let nested_row = matches!(nest, Nest::Child { .. });
-        let trailing = rows::trailing(t, &look, mode, clock, wake);
+        let trailing = self.row_trailing(t, &look, mode, clock, wake);
+        let job = rows::job_mark(t, &look);
         let id = t.id.clone();
         // Not while a page is in the thread's place: it isn't what's showing.
         let selected = self.selected.as_deref() == Some(id.as_str()) && self.home_page().is_none() && self.projects.open.is_none();
@@ -1792,7 +1965,9 @@ impl Threadbear {
                         .line_height(px(15.))
                         .text_color(secondary)
                         .tip(tip.clone())
-                        .child(format!("\u{2022} {runner}")),
+                        // A middle dot, as the app's other separators: Allo's bullet is
+                        // much bigger than the system font's (18 Nov).
+                        .child(format!("\u{b7} {runner}")),
                 )
             })
             // With the hover buttons up, room for them here as on the title's
@@ -1800,6 +1975,13 @@ impl Threadbear {
             // project line ran on under them (Mike, 12 Nov). It's cut short
             // before them instead.
             .child(div().flex_1().min_w(px(if show_buttons { actions_room } else { 6. })))
+            // While a job it left runs on (rows::job_mark), the grey arc a
+            // Running row turns beside "1 job", smaller and in the time's grey;
+            // its tip says which job. Not the transcript's paw: on this line
+            // a paw already means another thread started it.
+            .when_some(job.filter(|_| !show_buttons), |s, tip| {
+                s.child(div().id(ElementId::Name(format!("job-{id}").into())).flex_none().mr(px(-2.)).tip(tip).child(crate::spinner::TurningArc::new(10., p.faint).layered()))
+            })
             .when(!show_buttons, |s| s.child(render_trailing(&trailing, id.clone(), p, cx.reduce_motion())));
 
         let actions = mode.actions();
@@ -1821,8 +2003,8 @@ impl Threadbear {
             .relative()
             .items_center()
             .gap(px(10.))
-            .pt(px(8.))
-            .pb(px(8.))
+            .pt(px(row_pad()))
+            .pb(px(row_pad()))
             .pl(px(LEADING + if nested_row { NEST_INDENT } else { 0. }))
             .pr(px(TRAILING))
             .rounded(px(CORNER))
@@ -1860,7 +2042,7 @@ impl Threadbear {
                 this.open_row_menu(menu_id.clone(), ev.position, window, cx)
             }))
             .child(tile)
-            .child(v_flex().flex_1().min_w_0().gap(px(3.)).child(h_flex().child(title_el).when(show_buttons, |s| s.child(div().flex_none().w(px(actions_room)).h(px(1.))))).child(second_line))
+            .child(v_flex().flex_1().min_w_0().gap(px(if style::compact() { 1. } else { 3. })).child(h_flex().child(title_el).when(show_buttons, |s| s.child(div().flex_none().w(px(actions_room)).h(px(1.))))).child(second_line))
             .when_some(buttons, |s, b| s.child(h_flex().absolute().right(px(TRAILING - 5.)).top_0().bottom_0().items_center().gap(px(2.)).child(b)))
             // A tour sample's row, for the tour to light it (tour.rs).
             .when(is_sample, |s| s.children(crate::tour::mark(threadbear_core::tour::Target::SampleRow(t.title.clone()))))
@@ -1989,6 +2171,19 @@ impl Threadbear {
             .collect()
     }
 
+    /// What a row says at its right (`rows::trailing`), and for a thread on
+    /// a virtual runner what its box is doing, quietly (`box_trailing`):
+    /// starting, asleep, waking, needing a token. Not once it's archived,
+    /// nor while it's moving.
+    pub(crate) fn row_trailing(&self, t: &ThreadSummary, look: &RowLook, mode: RowMode, clock: &Clock, wake: Option<&threadbear_core::inbox::Wake>) -> rows::Trailing {
+        if mode != RowMode::Archive && t.moving.is_none() {
+            if let Some(line) = self.remote.box_of(t.runner_id.as_deref()).and_then(rows::box_trailing) {
+                return line;
+            }
+        }
+        rows::trailing(t, look, mode, clock, wake)
+    }
+
     /// The sidebar as `dump` reports it, in the Swift app's shape.
     #[cfg(feature = "automation")]
     pub(crate) fn sidebar_dump(&self, cx: &App) -> Value {
@@ -2002,14 +2197,14 @@ impl Threadbear {
             let mode = RowMode::of(key, t, now);
             let look = RowLook::of(t, section);
             let plain = if mode == RowMode::Inbox { look } else { RowLook::PLAIN };
-            let tail = rows::trailing(t, &plain, mode, &clock, (key == "hibernating").then(|| wakes.get(&t.id)).flatten());
+            let tail = self.row_trailing(t, &plain, mode, &clock, (key == "hibernating").then(|| wakes.get(&t.id)).flatten());
             let hovered = self.sidebar.hover_override.as_deref() == Some(t.id.as_str());
             let tile = match rows::tile(t).0 {
                 Tile::Letter(l) => l,
                 Tile::Folder if t.runner_id.is_some() => "runner".to_string(),
                 Tile::Folder => "folder".to_string(),
             };
-            let mark = if plain.done { Some("tick") } else if plain.unread { Some("dot") } else { None };
+            let mark = if plain.status == rows::RowStatus::Failed { Some("failed") } else if plain.done { Some("tick") } else if plain.unread { Some("dot") } else { None };
             let finished_shown = key != "inbox" && key != "starred";
             let subagents: Vec<Value> = if matches!(key, "hibernating" | "archived") {
                 vec![]
@@ -2024,6 +2219,7 @@ impl Threadbear {
             json!({
                 "id": t.id, "title": t.title, "status": t.status, "needsYou": t.needs_you, "unread": look.unread, "hovered": hovered,
                 "background": (look.status == rows::RowStatus::Background).then(|| rows::background_short(&t.background_tasks())),
+                "job": rows::job_mark(t, &plain),
                 "waiting": t.waiting_for_room_until_ms().map(|u| rows::waiting_line(u, &clock)).or_else(|| t.waiting_for_network.as_ref().map(|_| "Waiting for connection".to_string())),
                 "subagents": subagents,
                 "origin": rows::byline(t).map(|b| b.symbol),
@@ -2131,6 +2327,41 @@ fn abbreviate_home(path: &str) -> String {
     }
 }
 
+impl Threadbear {
+    /// A small copy of a thread's tile, `side` across, for the mark before a
+    /// link to it in a reply (thread_link_marks.rs): its project's picture,
+    /// symbol or letter, its machine's icon for another runner's thread with
+    /// no project, else the folder. No dot or tick: the mark draws its own.
+    pub(crate) fn mini_tile(&self, t: &ThreadSummary, side: f32, cx: &App) -> AnyElement {
+        let p = palette(cx);
+        let radius = px(side * 0.3);
+        let glyph = side * 0.62;
+        let project_icon = t.projects.as_ref().and_then(|ps| ps.first()).and_then(|first| self.sidebar.project_icons.get(&first.id));
+        let tinted = |content: AnyElement, fill: Hsla| div().flex().flex_none().items_center().justify_center().size(px(side)).rounded(radius).bg(fill).child(content).into_any_element();
+        match (rows::tile(t).0, project_icon) {
+            (Tile::Letter(letter), Some(ProjectIcon { image_path: Some(path), .. })) => {
+                let (secondary, fill) = (p.secondary, p.tile);
+                img(std::path::PathBuf::from(path))
+                    .flex_none()
+                    .size(px(side))
+                    .rounded(radius)
+                    .object_fit(ObjectFit::Contain)
+                    .with_fallback(move || div().flex().items_center().justify_center().size(px(side)).rounded(radius).bg(fill).text_size(px(glyph)).font_semibold().text_color(secondary).child(letter.clone()).into_any_element())
+                    .into_any_element()
+            }
+            (Tile::Letter(_), Some(ProjectIcon { symbol: Some(symbol), .. })) if icons::try_symbol(symbol).is_some() => tinted(icons::symbol(symbol).with_size(px(glyph)).text_color(p.secondary).into_any_element(), p.tile),
+            (Tile::Letter(letter), _) => tinted(div().text_size(px(glyph)).line_height(px(side)).font_semibold().text_color(p.secondary).child(letter).into_any_element(), p.tile),
+            (Tile::Folder, _) => {
+                let glyph_icon = match t.runner_id.as_deref() {
+                    Some(id) => icon(self.runner_icon_symbol(Some(id)), glyph, p.secondary),
+                    None => icon("folder", glyph * 0.9, p.faint),
+                };
+                tinted(glyph_icon.into_any_element(), p.tile_empty)
+            }
+        }
+    }
+}
+
 /// `ProjectTiles`: the row's tile, with the dot or tick in the gutter.
 /// `behind` is the colour drawn just under the tile (the row's highlight over
 /// the sidebar), which the ring round the front tile takes so a stacked pair
@@ -2170,9 +2401,25 @@ fn render_tile(t: &ThreadSummary, look: &RowLook, behind: Hsla, project_icon: Op
         (Tile::Letter(_), Some(ProjectIcon { symbol: Some(symbol), .. })) if icons::try_symbol(symbol).is_some() => tinted(icons::symbol(symbol).with_size(px(scaled(14.))).text_color(p.secondary).into_any_element()),
         (Tile::Letter(letter), _) => tinted(div().text_size(px(scaled(14.))).font_semibold().text_color(p.secondary).child(letter.clone()).into_any_element()),
     };
-    let mark: Option<AnyElement> = if look.done {
+    let mark: Option<AnyElement> = if look.status == rows::RowStatus::Failed {
+        // Its last turn failed: a diamond where the dot would be, so it reads
+        // apart from needs you by shape, not just by its colour (issue #67).
+        Some(
+            div()
+                .id(SharedString::from(format!("failed-{}", t.id)))
+                .tip("The last turn failed")
+                .absolute()
+                .left(px(-(LEADING + 10.) / 2. - 1.))
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .child(icon("xmark.diamond.fill", 10., p.failed))
+                .into_any_element(),
+        )
+    } else if look.done {
         // Finished with nothing needed: a tick where the dot would be.
-        Some(div().absolute().left(px(-(LEADING + 10.) / 2. - 1.)).top_0().bottom_0().flex().items_center().child(icon("checkmark", 10., p.accent)).into_any_element())
+        Some(div().absolute().left(px(-(LEADING + 10.) / 2. - 1.)).top_0().bottom_0().flex().items_center().child(icon("checkmark", 10., p.progress)).into_any_element())
     } else if look.unread {
         Some(
             div()
@@ -2272,8 +2519,8 @@ fn trailing_words(trailing: &rows::Trailing, id: String, p: &Palette) -> AnyElem
             .gap(px(5.))
             .text_size(meta).line_height(px(15.))
             .font_medium()
-            .text_color(p.accent)
-            .child(crate::spinner::TurningArc::new(12., p.accent).layered())
+            .text_color(p.progress)
+            .child(crate::spinner::TurningArc::new(12., p.progress).layered())
             .child(text)
             .into_any_element(),
         TrailingKind::Background => h_flex()
@@ -2560,12 +2807,35 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
             // scrolled to first, as a person would, so the click's middle
             // lands on it (settings_window::scroll_into_view). Partly counts
             // as shown above, with its middle maybe past the pane's edge.
-            if cmd["settings"].as_bool() == Some(true) {
+            // The same elsewhere, for one wholly out of sight: the PR tab's
+            // Close without merging and the Runners panel's Paste code sit
+            // below their pane's bottom on GitHub's 1024 by 768 Macs. Each
+            // scroll whose column it's in is tried till it shows.
+            let settings = cmd["settings"].as_bool() == Some(true);
+            if settings || found.is_empty() {
                 let target = found.last().cloned().or_else(|| window.elements().into_iter().filter(|e| e.label().is_some_and(&matches)).last());
-                if target.is_some_and(|t| crate::settings_window::scroll_into_view(app, t.bounds(), cx)) {
-                    window.refresh();
-                    window.render_frame(cx);
-                    found = shown(window);
+                if let Some(bounds) = target.map(|t| t.bounds()) {
+                    if settings {
+                        if crate::settings_window::scroll_into_view(app, bounds, cx) {
+                            window.refresh();
+                            window.render_frame(cx);
+                            found = shown(window);
+                        }
+                    } else {
+                        let scrolls = app.read(cx).side.read(cx).prs.shown_scroll().into_iter().chain(crate::activity_panels::panel_scrolls());
+                        for scroll in scrolls {
+                            let pane = scroll.bounds();
+                            if bounds.center().x < pane.left() || bounds.center().x > pane.right() || !crate::settings_window::scroll_to(&scroll, bounds) {
+                                continue;
+                            }
+                            window.refresh();
+                            window.render_frame(cx);
+                            found = shown(window);
+                            if !found.is_empty() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             let Some(target) = found.last() else { return Err(format!("no control with the tip {tip:?}")) };

@@ -56,6 +56,14 @@ Then("the activity bar's {string} button has no dot", async function (this: Thre
   });
 });
 
+// The Updates icon itself: a ring turning round it while the next version
+// is on its way, filled green once it's ready, plain otherwise.
+Then("the Updates icon shows {string}", async function (this: ThreadbearWorld, look: string) {
+  const want = ({ 'a turning ring': 'coming', 'green': 'ready', 'nothing': 'none' } as Record<string, string>)[look];
+  assert.ok(want, `the Updates icon shows a turning ring, green or nothing, not ${look}`);
+  await this.until(`the Updates icon showing ${look}`, (d) => d.rails?.activity.find((b) => b.title === 'Updates')?.nextVersion === want);
+});
+
 Then('the right rail has a {string} button', async function (this: ThreadbearWorld, title: string) {
   await this.until(`a ${title} button in the right rail`, (d) => d.rails?.right.some((b) => b.title === title));
 });

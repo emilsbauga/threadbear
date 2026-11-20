@@ -582,7 +582,8 @@ impl<'a> Sections<'a> {
         let mut newest: HashMap<&str, i64> = HashMap::new();
         let mut unfiled = Vec::new();
         for thread in threads {
-            let inbox = !thread.is_archived() && !thread.snoozed(now_ms);
+            // One waiting on its own work is under Running in the sidebar, so here too.
+            let inbox = !thread.is_archived() && (!thread.snoozed(now_ms) || thread.waiting_on_work());
             let mut filed = false;
             for membership in thread.projects.iter().flatten() {
                 let Some(id) = shown_ids.get(membership.id.as_str()).copied() else { continue };

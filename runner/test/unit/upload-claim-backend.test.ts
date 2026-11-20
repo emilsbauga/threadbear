@@ -9,6 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { call, load, memoryBackend } from '../helpers/convex-memory.ts';
+import { storedType } from '../../../convex/uploads.ts';
 
 const OWNER = 'owner-key';
 const MINI_KEY = 'tbr_mac-mini';
@@ -247,4 +248,12 @@ test('/phone/upload: a revoked phone or one over its day reads nothing', async (
   const b2 = body(1000);
   assert.equal((await take(actionCtx(s2), r, post(url2, b2.stream))).status, 429);
   assert.equal(b2.seen.bytes, 0);
+});
+
+test("an upload is kept as a picture's or video's type, anything else as plain bytes, so its URL never opens as a page", () => {
+  assert.equal(storedType('image/png'), 'image/png');
+  assert.equal(storedType('Video/MP4; codecs=avc1'), 'video/mp4');
+  for (const said of ['text/html', 'text/html; charset=utf-8', 'image/svg+xml', 'application/xhtml+xml', 'text/xml', '', null]) {
+    assert.equal(storedType(said), 'application/octet-stream', String(said));
+  }
 });

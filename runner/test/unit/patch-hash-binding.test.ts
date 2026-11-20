@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { tmpDir } from '../helpers/fakes.ts';
+import { IS_WINDOWS, shPath, skipOnWindows } from '../helpers/platform.ts';
 import { applyLive, loadPatchSet, renderListPanel, runCommand } from '../../src/patches.ts';
 import { folderKey, namedPaths, PatchTrust, patchHash, scanModule } from '../../src/patch-trust.ts';
 import { makeRecipeToShell, rcConfig, Reads, reachOf, reachOfCommand, setsMakeShell, yamlListItems } from '../../src/script-trust.ts';
@@ -20,6 +22,9 @@ function write(folder: string, files: Record<string, string>): void {
   for (const [name, body] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true });
     fs.writeFileSync(path.join(folder, name), body);
+    // Windows scans a file the first time it is read after it is written,
+    // which took 250 ms for a 300 KB one: read here, not in what is timed.
+    if (IS_WINDOWS) fs.readFileSync(path.join(folder, name));
   }
 }
 
@@ -38,8 +43,16 @@ const follow = (folder: string) => ({
 });
 
 // CPU time, not the clock's: a busy Mac takes a test process off the CPU
-// for whole seconds, which the clock counts and this doesn't.
+// for whole seconds, which the clock counts and this doesn't. Windows only
+// moves a process's CPU time in ticks of about 16 ms, so a pass of a few ms
+// reads as 0 and the limit below falls to its fixed part; there the clock's
+// time is used instead.
 const timed = <T>(fn: () => T): { ms: number; out: T } => {
+  if (IS_WINDOWS) {
+    const t = performance.now();
+    const out = fn();
+    return { ms: performance.now() - t, out };
+  }
   const t = process.cpuUsage();
   const out = fn();
   const d = process.cpuUsage(t);
@@ -52,7 +65,10 @@ const timed = <T>(fn: () => T): { ms: number; out: T } => {
 // full speed and 10 s in the background. Both move together, while the
 // quadratic regexes this replaces took thousands of times one pass
 // (minutes at these sizes). At full speed, each parse below takes well
-// under 100 ms.
+// under 100 ms. On Windows the lexer ran 400 to 1,100 ms over a 40 KB script
+// against under 2 ms for the plain pass, beyond a limit of 200 times, so the
+// limit there is three times as wide and counts the pass as at least 3 ms:
+// still far short of what a quadratic one took.
 // Up to three tries: a busy Mac (a build or another suite running) can
 // stall one timing for a second, which failed the runner's build of main
 // on 6 Nov with this test passing alone. Quadratic work is slow every
@@ -62,7 +78,8 @@ function assertLinear<T>(label: string, ref: () => unknown, fn: () => T, factor 
   for (let attempt = 0; attempt < 3; attempt++) {
     const base = Math.min(timed(ref).ms, timed(ref).ms, timed(ref).ms);
     const { ms, out } = timed(fn);
-    if (ms < factor * base + 50) return out;
+    const limit = IS_WINDOWS ? 3 * factor * Math.max(base, 3) + 50 : factor * base + 50;
+    if (ms < limit) return out;
     last = `${label}: ${Math.round(ms)} ms, against ${Math.round(base)} ms for one pass`;
   }
   assert.fail(`${last} (three tries)`);
@@ -176,12 +193,12 @@ test('F10: a bare import of a real package in node_modules, or a builtin, still 
   trust.trustCurrent([patchIn(folder)]);
   const set = await loadPatchSet(folder, root, new Map(), [], [], undefined, trust);
   assert.equal(set.patches[0]?.error, undefined);
-  assert.deepEqual(set.actions.map((a) => a.title), ['Padded/']);
+  assert.deepEqual(set.actions.map((a) => a.title), ['Padded' + path.sep]);
 });
 
 // ---- F11: the hash's encoding ----
 
-test("F11: two different file sets that version 2's newline-joined encoding hashed alike hash apart, and a path with a newline can't be trusted at all", () => {
+test("F11: two different file sets that version 2's newline-joined encoding hashed alike hash apart, and a path with a newline can't be trusted at all", skipOnWindows("Windows can't make a file or folder with a newline in its name"), () => {
   const folder = path.join(tmpDir(), 'repo');
   fs.mkdirSync(path.join(folder, '.git'), { recursive: true });
   const evil = 'echo evil\n';
@@ -320,7 +337,7 @@ test("F17: what an .npmrc or .yarnrc sets is still found a line at a time: npm's
     'pkgs/a/post.sh': 'echo hi\n',
     'run.sh': 'pnpm install\n',
   });
-  assert.ok(reachOf(path.join(folder, 'run.sh'), follow(folder)).files.some((f) => f.endsWith('pkgs/a/post.sh')));
+  assert.ok(reachOf(path.join(folder, 'run.sh'), follow(folder)).files.some((f) => shPath(f).endsWith('pkgs/a/post.sh')));
 });
 
 test("F17: one rc file is read once for all of a patch's commands, and one too big for a config file fails closed", () => {
@@ -433,7 +450,10 @@ test("F20: a folder whose .git is a symlink to a real worktree's .git doesn't ta
   }
   // The real worktree is still its main checkout.
   assert.equal(folderKey(patchIn(wt, 'x.ts')), fs.realpathSync(main));
-  // A .git file naming a record whose gitdir is a fifo isn't waited on.
+});
+
+test("F20: a .git file naming a record whose gitdir is a fifo isn't waited on", skipOnWindows('Windows has no FIFOs to make'), () => {
+  const root = tmpDir();
   const fifoed = path.join(root, 'fifoed');
   const record = path.join(root, 'fake-record');
   fs.mkdirSync(record, { recursive: true });
@@ -574,7 +594,7 @@ test("F22: a tool patch's live command can't run a script of the tool's own repo
     '.git/HEAD': 'ref: refs/heads/main\n',
     // The script's path is put together in code, so no string names it.
     '.threadbear/patches/t.ts': `import path from 'node:path';
-const script = path.resolve(import.meta.dirname, '..', '..', 'bin', 'badge' + '.sh');
+const script = path.resolve(import.meta.dirname, '..', '..', 'bin', 'badge' + '.sh').split(path.sep).join('/');
 export default { appliesTo: ['*.foo'], panels: [{ title: 'Status', url: 'http://localhost:3000', badge: async ({ sh }) => Number(await sh(script)) }] };\n`,
     'bin/badge.sh': `#!/bin/sh\ntouch ${JSON.stringify(ran)}\necho 2\n`,
   });
@@ -647,10 +667,11 @@ test("F28: Codex's second round: node -, bash --rcfile x -s, wrappers, every -f,
   assert.match(reach('command bash --rcfile ./rc.sh -s < ./steps.txt').problem ?? '', /reading what to run from its input/);
   assert.ok(reach('env bash ./rc.sh < ./steps.txt').files.some((f) => f.endsWith('steps.txt')), 'into a wrapped shell, hashed');
   assert.ok(reach('make -f ./first.txt -f Makefile').files.some((f) => f.endsWith('first.txt')), 'every -f');
-  // The repo by another path to it: macOS's /tmp is /private/tmp.
-  const alias = fs.mkdtempSync('/tmp/tb-alias-');
+  // The repo by another path to it: macOS's /tmp is /private/tmp. (Windows
+  // has no /tmp: the temp folder, named with forward slashes for the shell.)
+  const alias = fs.mkdtempSync(IS_WINDOWS ? path.join(os.tmpdir(), 'tb-alias-') : '/tmp/tb-alias-');
   write(alias, { 'count.txt': 'echo 3\n' });
-  const viaAlias = reachOfCommand(`bash ${alias}/count.txt`, 'the command', { ...follow(alias), folder: fs.realpathSync(alias), top: fs.realpathSync(alias) });
+  const viaAlias = reachOfCommand(`bash ${shPath(alias)}/count.txt`, 'the command', { ...follow(alias), folder: fs.realpathSync(alias), top: fs.realpathSync(alias) });
   assert.ok(viaAlias.files.some((f) => f.endsWith('count.txt')), `${alias} is the repo`);
   fs.rmSync(alias, { recursive: true });
   for (const [yml, ok] of [['yarnPath: "\\u002e/yarn.cjs"\n', true], ['plugins:\n  - path: yarn.cjs\n    spec: x\n', true], ['yarnPath: !!str ./yarn.cjs\n', false], ['yarnPath: *a\n', false], ['yarnPath: "\\q"\n', false]] as const) {
@@ -695,11 +716,12 @@ test("F28: Codex's fourth round: env files, #! -s, $'' escapes, a Makefile linke
   assert.match(reach("$'\\142ash' -s < ./steps.txt").problem ?? '', /worked out as it runs/);
   fs.symlinkSync('/dev/stdin', path.join(folder, 'Makefile'));
   assert.match(reach('make < ./steps.txt').problem ?? '', /Makefile that reads from its input/);
-  fs.rmSync(path.join(folder, 'Makefile'));
+  // (unlink: rmSync leaves a link to nowhere in place on Windows)
+  fs.unlinkSync(path.join(folder, 'Makefile'));
   write(folder, { Makefile: 'include extra.mk\nall:\n\ttrue\n', 'config/extra.mk': 'x:\n\t./x.sh\n' });
   assert.ok(reach('make -I config').files.some((f) => f.endsWith('extra.mk')), 'make -I');
   write(folder, { 'sub/nested/Makefile': 'all:\n\t../../x.sh\n' });
-  assert.ok(reach('make -C sub -C nested').files.some((f) => f.toLowerCase().endsWith('sub/nested/makefile')), '-C twice');
+  assert.ok(reach('make -C sub -C nested').files.some((f) => shPath(f).toLowerCase().endsWith('sub/nested/makefile')), '-C twice');
   write(folder, { Makefile: 'X != sh payload.txt\nall: ; true\n' });
   assert.match(reach('gmake').problem ?? '', /!=/);
   write(folder, { '.yarnrc': 'yarn-path yarn.cjs\n' });
@@ -753,4 +775,14 @@ test('F28: a file redirected into a shell is hashed whatever it looks like, so c
   // Into Node with a script, it's that script's data: not hashed.
   write(folder, { 'x.js': 'process.stdin.pipe(process.stdout);\n', 'data.json': '{}' });
   assert.ok(!reachOfCommand('node ./x.js < ./data.json', 'the command', follow(folder)).files.some((f) => f.endsWith('data.json')));
+});
+
+// A Windows path has no /, so a command named by one was not taken for a path
+// and the script it names was never hashed: a trusted patch could run it changed.
+test('Windows: a single-quoted drive path to a script in the repo is followed, as ./x.sh is', { skip: IS_WINDOWS ? false : 'a Windows path' }, () => {
+  const folder = fs.realpathSync(tmpDir());
+  const evil = path.join(folder, 'tools', 'evil.sh');
+  write(folder, { 'tools/evil.sh': '#!/bin/sh\necho hi\n', 'run.sh': `#!/bin/sh\n'${evil}'\n` });
+  const reach = reachOf(path.join(folder, 'run.sh'), follow(folder));
+  assert.ok(reach.files.some((f) => f.split(path.sep).join('/').endsWith('tools/evil.sh')), `evil.sh should be hashed: ${JSON.stringify(reach)}`);
 });

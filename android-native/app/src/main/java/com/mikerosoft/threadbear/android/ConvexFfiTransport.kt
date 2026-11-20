@@ -42,6 +42,9 @@ class ConvexFfiTransport(deploymentUrl: String) : ConvexTransport, AutoCloseable
     override suspend fun mutation(name: String, args: Map<String, JsonElement>): String =
         call { client.mutation(name, jsonArgs(args)) }
 
+    override suspend fun action(name: String, args: Map<String, JsonElement>): String =
+        call { client.action(name, jsonArgs(args)) }
+
     private suspend inline fun call(crossinline body: suspend () -> String): String =
         try { body() } catch (e: ClientException) { throw map(e) }
 

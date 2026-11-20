@@ -8,6 +8,7 @@ import { networkInterfaces, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { skipOnWindows } from '../helpers/platform.ts';
 // @ts-expect-error plain .mjs without types
 import { byteRange, createSiteServer } from '../../../site/scripts/serve.mjs';
 
@@ -174,7 +175,7 @@ test('a dist given without its slash still keeps to itself', async () => {
 // Open files, where the system lists them for this process.
 const fds = () => readdirSync('/dev/fd').length;
 
-test('a client that goes away mid-file closes the file', async () => {
+test('a client that goes away mid-file closes the file', skipOnWindows("Windows has no /dev/fd to count a process's open files in"), async () => {
   writeFileSync(join(dist, 'big.mp4'), Buffer.alloc(16 * 1024 * 1024));
   const abandon = () =>
     new Promise<void>((done) => {

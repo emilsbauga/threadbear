@@ -134,10 +134,15 @@ the data dir (`<home>`, normally `~/Library/Application Support/Threadbear`):
   launch.mjs), and a runner with neither still runs node as the program.
   Any of those sets `launcherChanged` and `launcherReason`, which
   `tb status` and the app's Updates panel show (`launchAgentBehind` in
-  `src/update.ts`). The Updates panel's Update it (`runner.reinstall`)
-  has the runner run `install-runner.sh --stage` itself, or it does so by
-  itself with the `selfReinstall` experiment (`src/reinstall.ts`).
-  `--stage` rebuilds the app in place and puts launch.mjs and the plist in
+  `src/update.ts`). The runner then runs `install-runner.sh --stage` by
+  itself (`src/reinstall.ts`); the Updates panel's Update it
+  (`runner.reinstall`) runs it again after a failure.
+  `--stage` builds a new app beside the running one
+  (`.Threadbear Runner.app.staged`, never over it: macOS refuses every
+  privacy grant under a launcher whose bundle was replaced while it runs,
+  which took Screen Recording from agents' shells on 15 Nov; launch.mjs
+  moves it in when the job next starts, then exits so launchd starts the
+  new one) and puts launch.mjs and the plist in
   place without stopping or loading anything, so it never waits for an
   idle moment; launchd picks them up the next time it starts the job (the
   Mac restarting, logging in again). A full reinstall stops every runner
@@ -219,7 +224,9 @@ the data dir (`<home>`, normally `~/Library/Application Support/Threadbear`):
   tree's runner in the foreground on a temp data dir (refuses the real
   one) and prints the `<home>/tb` for `tb` and the `dev-app.sh start
   --home` line for the app. A new data dir's `runner.json` defaults threads
-  to `<home>/work`, claude-main (or `TB_E2E_ACCOUNT`) and claude-haiku-5-5 (`defaults.model`, which
+  to `<home>/work`, the first Claude login that isn't hidden, noted or
+  plan-ended, else claude-main (`runner/src/test-login.ts`; `TB_E2E_ACCOUNT`
+  picks one), and claude-haiku-5-5 (`defaults.model`, which
   the runner applies to a `threads.create` with no model).
 - Trying something on real-sized data (a sidebar with hundreds of
   threads, a long transcript): `dev-runner.sh --clone-real [FROM]`, never
@@ -241,12 +248,16 @@ the data dir (`<home>`, normally `~/Library/Application Support/Threadbear`):
   than stopping the live runner's CLIs it names. `--home` on a folder
   holding a thread whose folder isn't under `$TMPDIR` is refused.
   `test/unit/real-copy.test.ts` covers it.
-- `./check.sh [--quick | --app] [--e2e] [--shots DIR]` at the repo root:
+- `./check.sh [--quick | --app] [--e2e] [--shots DIR] [--only STEPS]` at the repo root:
   runner typecheck, unit tests and deploy tests, app `swift build` and
   `swift test` (with the mock runner's packages installed and its tests
   required). `--app` is the app's part alone. `--e2e`
   adds the runner's real-model e2e (cheapest model, temp dirs); `--shots`
-  runs `app/Tools/screenshots.sh`. One line per step, nonzero exit if
+  runs `app/Tools/screenshots.sh`. `--only "step;step=files"` runs just
+  those steps (and, for the runner's unit tests, those files); a failed
+  run ends with the `./check.sh --only` that runs what failed again, which `tb land`
+  uses to find the landing that broke a group
+  (docs/thread-worktrees.md, "Finding who broke a group"). One line per step, nonzero exit if
   anything failed, on the Node `runner/scripts/find-node.sh` picks.
   Unit tests preload `runner/test/helpers/clean-env.ts`: each process gets
   a temporary HOME and XDG folders, and inherited account/data overrides
@@ -312,7 +323,9 @@ driving it from a script") and in AGENTS.md ("Seeing and driving the app").
   from `runner.notice` and `runner.status`; while the runner is down it
   says "The runner is restarting. Reconnecting…" with a spinner and the
   app retries every half second. A `user.message` with `origin: "runner"`
-  is a centred note, "Sent by the runner after it restarted" over its text.
+  is a centred note over its text, saying why from its `wakeReason` ("Sent
+  by the runner: moved to another login"; the Swift app and a restart or
+  missing reason say "Sent by the runner after it restarted").
   The mock has `runner.status`, `mock.restartPending` and `mock.restart`,
   and `Tools/screenshots.sh --only 11` shoots all three states.
 - A thread whose turn ended with background sub-agents or shell jobs
@@ -423,7 +436,10 @@ rollback covers a release that doesn't come up.
   the runner's typecheck and unit tests run and not skipped), the build
   runs `deploy.mjs --skip-checks` (`landChecked` in `runner/src/update.ts`;
   the runner's log says `checksLeftOut`). The snapshot, the smoke test and
-  the crash rollback are as before. On 13 Nov each landing that changed the
+  the crash rollback are as before. Someone else's copy that pulled Mike's
+  main as it is has no such line, so there the proof is his main having
+  the commit, fetched fresh from whichever remote is his (`onMikesMain`; a
+  fork's runner ran the whole suite for each update before, 19 Nov). On 13 Nov each landing that changed the
   runner had the same tests run twice on the check hosts, five minutes
   apart (a build's `check.sh --runner` is those two steps and nothing
   more): about two hours a day of the hosts. The checks still run for a
@@ -480,9 +496,26 @@ rollback covers a release that doesn't come up.
   setting it needs no restart. A commit made only on that machine, or
   uncommitted changes git won't overwrite, are left alone and said; the
   runner keeps updating from GitHub either way. `tb land` refuses in the
-  followed repo, and a fix-update thread hands its fix to the main Mac
+  followed repo, and the fix for a failed update is made on the main Mac
   (Mike, 9 Nov: hand-made pull jobs on bruce and the Pixel failed quietly
   for days behind one commit a fix-update thread had made on their main).
+  From backend API 91 the machine starts no thread for it: its heartbeat
+  carries `updateFailed` (the commit, the error's last 2 KB, the log's
+  path), and the main Mac's runner, reading the other runners every 2
+  minutes, starts the fix thread in its own checkout (`RemoteUpdateFixer`
+  in `runner/src/fix-update.ts`): once per runner and commit, whatever kind
+  it says, at most one thread or message per runner every 10 minutes, and
+  only for a commit on its own main or GitHub's. A report the main Mac
+  hasn't fixed in 12 hours (its runner older than the backend, say) is
+  handed over from the machine as before.
+  Before, that machine's thread asked the main Mac for one, and a runner
+  key's ask is a Start it card (Mike, 19 Nov: "why do we have to treat
+  different runners differently?"). The brief names the machine by its
+  runner id; its name, error and log path are quoted as its words, never
+  instructions (Codex's review found the path and name outside the quote
+  at first). To see more, the thread starts one on that
+  machine, which the main Mac does without asking. Against an older
+  backend the machine still hands the fix over itself.
   `followProblem` in `runner.status`'s `update` says what's wrong: a local
   main that can't follow, GitHub out of reach for over an hour, or something
   that runs on GitHub's main and not here for over six hours. It goes up

@@ -36,7 +36,10 @@ exec 3<&0 </dev/null
 tree_of() {
   local kid
   echo "$1"
-  for kid in $(pgrep -P "$1" 2>/dev/null); do tree_of "$kid"; done
+  # Children by ps, not pgrep -P: Homebrew's proctools pgrep and pkill are
+  # reported to take -P with no pattern as every process on the machine, so a
+  # stop would signal them all (teodorboev's fork, 14 Nov 2026).
+  for kid in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do tree_of "$kid"; done
 }
 # stop <pid>...: each one's group (where it leads one) and tree, asked first and
 # made to after 5 s. Everything is found before anything is signalled, so none

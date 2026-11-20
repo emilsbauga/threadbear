@@ -22,6 +22,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { ConvexAdminError, convexEnv, prodArgs, readConvexAdmin } from '../src/convex-admin.ts';
 import { Fail, stepRetryingNetwork } from './deploy-steps.mjs';
+import { backfillsAt, lastJson, rearmCursor, STEPPING_FILE, withStepping } from './backend-stones.mjs';
 
 const HELP = `deploy-backend.mjs: deploy convex/ and web/ at a commit to the runner's Convex deployment, if they changed.
 
@@ -37,9 +38,11 @@ Options:
 const DEFAULT_HOME = path.join(os.homedir(), 'Library', 'Application Support', 'Threadbear');
 // What each part is built from. The root package files are the Convex
 // dependency's version, so they count for both.
-const FUNCTION_PATHS = ['convex', 'convex.json', 'package.json', 'package-lock.json'];
-const SITE_PATHS = ['web', 'package.json', 'package-lock.json'];
-const EXPORT_PATHS = ['convex', 'convex.json', 'web', 'package.json', 'package-lock.json', '.npmrc'];
+// vendor/ holds packages that aren't on npm (the state machines library),
+// which package.json installs from a file, so it's part of both.
+const FUNCTION_PATHS = ['convex', 'convex.json', 'package.json', 'package-lock.json', 'vendor'];
+const SITE_PATHS = ['web', 'package.json', 'package-lock.json', 'vendor'];
+const EXPORT_PATHS = ['convex', 'convex.json', 'web', 'package.json', 'package-lock.json', '.npmrc', 'vendor'];
 
 const say = (msg) => console.log(msg);
 
@@ -81,6 +84,13 @@ function readAdmin(home) {
     if (e instanceof ConvexAdminError) throw new Fail(e.message);
     throw e;
   }
+}
+
+// What a failed `convex run` said: its "Uncaught ..." line, which names the
+// error, rather than the stack's last frame (19 Nov 2026).
+function convexError(r) {
+  const lines = String(r.stderr || r.stdout).trim().split('\n');
+  return (lines.find((l) => l.startsWith('Uncaught ')) ?? lines.at(-1)).trim();
 }
 
 function hasRunnerKey(home) {
@@ -225,7 +235,10 @@ function main(argv) {
   // this was recorded have no url, and aren't redone for that alone.
   const siteUrl = readJson(path.join(home, 'runner.json')).sync?.url;
   const todo = {
-    functions: v.force || state.functions?.tree !== want.functions,
+    // A stepping-stone deploy left live (an interrupted run) is never up to
+    // date, whatever the tree says: its machine is off until the deploy ends.
+    // So is one whose timers haven't been rearmed since (rearmDue, below).
+    functions: v.force || state.functions?.tree !== want.functions || state.stepping !== undefined || state.rearmDue === true,
     site: v.force || state.site?.tree !== want.site || (state.site?.url !== undefined && state.site.url !== siteUrl),
   };
   if (!todo.functions && !todo.site) {
@@ -256,26 +269,31 @@ function main(argv) {
   const target = admin.kind === 'selfHosted' ? `the self-hosted backend at ${admin.url}` : (deployment ?? "the key's deployment");
   const what = [todo.functions && 'functions', todo.site && 'website'].filter(Boolean).join(' and ');
   if (v['dry-run']) {
-    say(`Would deploy the ${what} at ${short} to ${target}.`);
+    const backfills = todo.functions ? backfillsAt(repo, commit) : [];
+    say(`Would deploy the ${what} at ${short} to ${target}.${backfills.length ? ` First it checks these backfills have run there, and runs any that haven't: ${backfills.join(', ')}.` : ''}`);
     return 0;
   }
 
   if (unlocked) throw new Fail('No lockf or flock here to keep two backend deploys apart. Install flock (util-linux).');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'threadbear-backend-'));
-  process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
-  // Only the paths that commit has: git archive fails on a missing one, and an
-  // older commit (or a fork) may have no .npmrc (cross-lab review, 10 Nov 2026).
-  const present = spawnSync('git', ['-C', repo, 'ls-tree', '--name-only', commit, '--', ...EXPORT_PATHS], { encoding: 'utf8' });
-  if (present.status !== 0) throw new Fail(`git ls-tree failed: ${String(present.stderr).trim()}`);
-  const paths = present.stdout.split('\n').filter(Boolean);
-  const archive = spawnSync('git', ['-C', repo, 'archive', '--format=tar', commit, '--', ...paths], { maxBuffer: 512 * 1024 * 1024 });
-  if (archive.status !== 0) throw new Fail(`git archive failed: ${String(archive.stderr).trim()}`);
-  const untar = spawnSync('tar', ['-x', '-C', tmp], { input: archive.stdout });
-  if (untar.status !== 0) throw new Fail(`tar failed: ${String(untar.stderr).trim()}`);
+  const exportAt = (rev) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threadbear-backend-'));
+    process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+    // Only the paths that commit has: git archive fails on a missing one, and an
+    // older commit (or a fork) may have no .npmrc (cross-lab review, 10 Nov 2026).
+    const present = spawnSync('git', ['-C', repo, 'ls-tree', '--name-only', rev, '--', ...EXPORT_PATHS], { encoding: 'utf8' });
+    if (present.status !== 0) throw new Fail(`git ls-tree failed: ${String(present.stderr).trim()}`);
+    const paths = present.stdout.split('\n').filter(Boolean);
+    const archive = spawnSync('git', ['-C', repo, 'archive', '--format=tar', rev, '--', ...paths], { maxBuffer: 512 * 1024 * 1024 });
+    if (archive.status !== 0) throw new Fail(`git archive failed: ${String(archive.stderr).trim()}`);
+    const untar = spawnSync('tar', ['-x', '-C', dir], { input: archive.stdout });
+    if (untar.status !== 0) throw new Fail(`tar failed: ${String(untar.stderr).trim()}`);
+    return dir;
+  };
+  const tmp = exportAt(commit);
 
   // Only the key picks the deployment: anything left over from a checkout's
   // .env.local or a thread's environment could point somewhere else.
-  const env = convexEnv(admin, { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ''}` });
+  const env = convexEnv(admin, { ...process.env, PATH: [path.dirname(process.execPath), process.env.PATH ?? ''].join(path.delimiter) });
   const npm = path.join(path.dirname(process.execPath), 'npm');
   const npx = path.join(path.dirname(process.execPath), 'npx');
   const opts = { cwd: tmp, env };
@@ -290,6 +308,53 @@ function main(argv) {
     failed('packages', e);
   }
   if (todo.functions) {
+    // Stepping stones (backend-stones.mjs): backfills this commit needs to have
+    // run on the deployment before its schema can go out.
+    const run = (fn, args) => spawnSync(npx, ['convex', 'run', fn, JSON.stringify(args), ...prodArgs(admin)], { cwd: tmp, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    // A deployment whose functions are older than migrations.ts can't say: not done.
+    const isDone = (name) => {
+      const r = run('migrations:done', { name });
+      return r.status === 0 && lastJson(r.stdout) === true;
+    };
+    let pending = [];
+    try {
+      pending = backfillsAt(repo, commit).filter((name) => !isDone(name));
+    } catch (e) {
+      failed('backfills', e);
+    }
+    if (pending.length) {
+      try {
+        const file = path.join(tmp, STEPPING_FILE);
+        const original = fs.readFileSync(file, 'utf8');
+        fs.writeFileSync(file, withStepping(original, pending));
+        step(`Deploying the Convex functions at ${short} as a stepping stone for ${pending.join(', ')}`, npx, ['convex', 'deploy', '--typecheck', 'enable', '--skip-large-indexes-check'], opts);
+        fs.writeFileSync(file, original);
+        // Until the final deploy, a machine is off: a deploy never counts as
+        // up to date while this is here, and the runner's updater tries
+        // again at its next check rather than when main next changes. There's
+        // no going back to the release before: once a row has the new field,
+        // Convex refuses a schema without it.
+        writeJson(stateFile, { ...readJson(stateFile), stepping: { commit, names: pending, at: new Date().toISOString() }, rearmDue: true });
+        for (const name of pending) {
+          say(`Running the ${name} backfill...`);
+          // A page a run; a few hundred runs is a very big table. A run that
+          // fails (the network dropping) is tried again a few times.
+          for (let i = 0, misses = 0; ; i++) {
+            const r = run('migrations:run', { name });
+            if (r.status !== 0) {
+              if (++misses > 5) throw new Fail(`The ${name} backfill failed: ${String(r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ')}`);
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15_000);
+              continue;
+            }
+            if (lastJson(r.stdout)?.done === true) break;
+            if (i > 10_000) throw new Fail(`The ${name} backfill was still going after 10,000 runs.`);
+          }
+          say(`The ${name} backfill is done.`);
+        }
+      } catch (e) {
+        failed('backfills', e);
+      }
+    }
     try {
       // --skip-large-indexes-check: there's no terminal to say yes in, so
       // without it a new index on a big table (messages.search_text, 140k
@@ -299,7 +364,29 @@ function main(argv) {
     } catch (e) {
       failed('functions', e);
     }
-    writeJson(stateFile, { ...readJson(stateFile), functions: { tree: want.functions, commit, at: new Date().toISOString() }, failed: undefined });
+    writeJson(stateFile, { ...readJson(stateFile), functions: { tree: want.functions, commit, at: new Date().toISOString() }, failed: undefined, stepping: undefined });
+    // A timer due while a machine was off failed its job: deliver it again,
+    // a page of the week's scheduled jobs a run until the last. Recorded
+    // until it has gone through, so an interrupted or failed run does it
+    // next time.
+    if (readJson(stateFile).rearmDue) {
+      for (let i = 0, cursor = null; ; i++) {
+        const r = run('machines:rearmFailed', { cursor });
+        if (r.status !== 0) {
+          failed('timers', new Fail(`Couldn't deliver again the timers that failed while a machine was off: ${convexError(r)}`));
+        }
+        let next;
+        try {
+          next = rearmCursor(r.stdout);
+        } catch (e) {
+          failed('timers', new Fail(`Delivering again the timers that failed: ${e.message}`));
+        }
+        if (next === null) break;
+        if (i > 2000) failed('timers', new Fail('Delivering again the timers that failed was still going after 2,000 pages.'));
+        cursor = next;
+      }
+      writeJson(stateFile, { ...readJson(stateFile), rearmDue: undefined });
+    }
   }
   if (todo.site) {
     try {

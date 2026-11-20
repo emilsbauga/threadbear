@@ -598,9 +598,13 @@ public struct PhoneMessage: Codable, Sendable, Hashable, Identifiable {
     /// The reply buttons its text links as `[title](button:<id>)`, as they
     /// are now (backend API 59, ReplyButtons.swift).
     public var buttons: [MessageButton]?
+    /// The open card's asks a message of his answered, each its question
+    /// and the pick (backend API 89), which its text starts with: drawn as
+    /// the Mac does, the question small over the answer.
+    public var answers: [AskAnswer]?
     @FlexibleDate public var at: Date
 
-    public init(seq: Int, role: Role, text: String, origin: String? = nil, toolKind: String? = nil, summary: Bool = false, plan: Bool = false, turn: String? = nil, wokeBy: [WokeTask]? = nil, buttons: [MessageButton]? = nil, at: Date) {
+    public init(seq: Int, role: Role, text: String, origin: String? = nil, toolKind: String? = nil, summary: Bool = false, plan: Bool = false, turn: String? = nil, wokeBy: [WokeTask]? = nil, buttons: [MessageButton]? = nil, answers: [AskAnswer]? = nil, at: Date) {
         self.seq = seq
         self.role = role
         self.text = text
@@ -611,10 +615,11 @@ public struct PhoneMessage: Codable, Sendable, Hashable, Identifiable {
         self.turn = turn
         self.wokeBy = wokeBy
         self.buttons = buttons
+        self.answers = answers
         self._at = FlexibleDate(wrappedValue: at)
     }
 
-    private enum Keys: String, CodingKey { case seq, role, text, origin, toolKind, summary, plan, turn, wokeBy, buttons, at }
+    private enum Keys: String, CodingKey { case seq, role, text, origin, toolKind, summary, plan, turn, wokeBy, buttons, answers, at }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -632,6 +637,7 @@ public struct PhoneMessage: Codable, Sendable, Hashable, Identifiable {
         turn = try? c.decodeIfPresent(String.self, forKey: .turn)
         wokeBy = (try? c.decodeIfPresent([WokeTask].self, forKey: .wokeBy)).flatMap { $0 }
         buttons = (try? c.decodeIfPresent([MessageButton].self, forKey: .buttons)).flatMap { $0 }
+        answers = (try? c.decodeIfPresent([AskAnswer].self, forKey: .answers)).flatMap { $0 }
         _at = try c.decode(FlexibleDate.self, forKey: .at)
     }
 
@@ -647,6 +653,7 @@ public struct PhoneMessage: Codable, Sendable, Hashable, Identifiable {
         try c.encodeIfPresent(turn, forKey: .turn)
         try c.encodeIfPresent(wokeBy, forKey: .wokeBy)
         try c.encodeIfPresent(buttons, forKey: .buttons)
+        try c.encodeIfPresent(answers, forKey: .answers)
         try c.encode(_at, forKey: .at)
     }
 }
@@ -699,15 +706,22 @@ public struct MessageImage: Codable, Sendable, Hashable, Identifiable {
     public var url: String
     public var width: Int?
     public var height: Int?
+    /// What it is (API 95): `text/html` for a live page, run in a sealed
+    /// view rather than decoded (LivePageView.swift).
+    public var mediaType: String?
 
-    public init(seq: Int, src: String? = nil, pinned: Bool? = nil, url: String, width: Int? = nil, height: Int? = nil) {
+    public init(seq: Int, src: String? = nil, pinned: Bool? = nil, url: String, width: Int? = nil, height: Int? = nil, mediaType: String? = nil) {
         self.seq = seq
         self.src = src
         self.pinned = pinned
         self.url = url
         self.width = width
         self.height = height
+        self.mediaType = mediaType
     }
+
+    /// A live page an agent showed in its reply.
+    public var isPage: Bool { mediaType == "text/html" }
 }
 
 /// Where a thread's pictures go among its messages.
@@ -1035,6 +1049,10 @@ public enum BackendCompatibility {
     /// picture that finishes uploading after its row has left the live page
     /// still turns up.
     public static let imagesAPIVersion = 37
+    /// From 86 phone:designReviews and phone:respondReview read and answer a
+    /// thread's design reviews through its runner, and phone:reviewImages
+    /// follows their stills. Older backends: a review opens on the Mac.
+    public static let designReviewsAPIVersion = 86
 
     /// The line to show, or nil when the backend is fine.
     public static func problem(_ identity: PhoneIdentity) -> String? {
@@ -1055,11 +1073,22 @@ public struct CommandStatus: Codable, Sendable, Hashable {
     /// A slashCommands command's answer (API 62): phone:command's `result`.
     /// Anything that isn't a list of commands reads as none.
     public var commands: [SlashCommand]?
+    public var designReviews: DesignReviewResult?
     public init(state: CommandState, note: String? = nil, threadId: String? = nil, commands: [SlashCommand]? = nil) {
         self.state = state
         self.note = note
         self.threadId = threadId
         self.commands = commands
+        self.designReviews = nil
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(state, forKey: .state)
+        try c.encodeIfPresent(note, forKey: .note)
+        try c.encodeIfPresent(threadId, forKey: .threadId)
+        if let designReviews { try c.encode(designReviews, forKey: .commands) }
+        else { try c.encodeIfPresent(commands, forKey: .commands) }
     }
 
     private enum CodingKeys: String, CodingKey { case state, note, threadId, commands = "result" }
@@ -1070,6 +1099,13 @@ public struct CommandStatus: Codable, Sendable, Hashable {
         note = try c.decodeIfPresent(String.self, forKey: .note)
         threadId = try c.decodeIfPresent(String.self, forKey: .threadId)
         commands = try? c.decodeIfPresent([SlashCommand].self, forKey: .commands)
+        // A design review comes as JSON text (phone:command, API 86), as its
+        // notes' keys are option ids Convex can't take as object keys.
+        if let text = try? c.decodeIfPresent(String.self, forKey: .commands) {
+            designReviews = try? JSONDecoder().decode(DesignReviewResult.self, from: Data(text.utf8))
+        } else {
+            designReviews = try? c.decodeIfPresent(DesignReviewResult.self, forKey: .commands)
+        }
     }
 }
 

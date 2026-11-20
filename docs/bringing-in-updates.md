@@ -75,9 +75,14 @@ changes clash with it and how you'd settle each, and anything they'd need
 to do themselves (a change to `runner/launcher/` only takes effect after
 `runner/scripts/install-runner.sh`, which they run from a terminal). If
 the release looks halfway through something (a feature half there, a
-commit that says it's temporary, tests skipped), say so. Then ask whether
-to go ahead. Nothing from it has run, and nothing has changed but git's
-objects.
+commit that says it's temporary, tests skipped), say so. A release often
+adds checks that read the code (a security fix's source tests), and their
+own changes can fail one even where the merge is clean. Say that if a
+check the release added or changed (it's in `git diff main...<commit>`)
+fails on their code, you'll change their code the way it asks, never the
+check, and show them the diff when you land, so one go covers it. Then
+ask whether to go ahead. Nothing from it has run, and nothing has changed
+but git's objects.
 
 ## 4. Once they say go: merge, settle clashes, check
 
@@ -115,8 +120,12 @@ you land.
 ## 5. Land
 
 If the checks passed and every clash went the way you told them, `tb land`.
-If a check failed, or you had to rework something you hadn't told them
-about, say what and ask again first. The runner, the backend and the app
+A change to their code for a check the release added or changed, as
+section 3 said, needs no second ask: show them its diff once it's landed.
+Ask again first, saying what and why, if a check that was there before
+the release failed, if the fix would mean changing a check rather than
+their code, if anything else failed, or if you had to rework something
+you hadn't told them about. The runner, the backend and the app
 then update themselves from main, as they do for any change.
 
 If something goes wrong afterwards, `git revert -m 1 <merge commit>` on
@@ -124,9 +133,42 @@ main takes the whole release back out in one go.
 
 ## 6. Offer to push it
 
-`tb land` never pushes, so their own copy on GitHub (`origin`) is still on
+`tb land` doesn't push (unless they've listed the repo in runner.json's
+`pushAfterLanding`), so their own copy on GitHub (`origin`) is still on
 the old main: if this Mac went, the merge and anything of theirs not yet
 pushed would go with it. Once it's landed, if `git log origin/main..main`
 lists anything, say so and ask whether to push it. Run `git push origin
-main` only when they say yes. If `origin` isn't on GitHub, or they'd rather
-keep main to this Mac, leave it.
+main` only when they say yes. GitHub refuses a push that changes
+`.github/workflows/` (most releases do) from an HTTPS login without the
+`workflow` scope, which the GitHub CLI doesn't ask for by default. If
+`origin` pushes over HTTPS, look at `gh auth status` before you ask, and if
+its scopes lack `workflow`, ask them to run `gh auth refresh -h github.com
+-s workflow` in a Terminal (or push over SSH, where scopes don't apply).
+If `origin` isn't on GitHub, or they'd rather keep main to this Mac, leave
+it.
+
+## 7. Offer Mike a check-up
+
+Once it's landed (or once they've said not to land it), run `tb checkup`,
+with `--text "..."` for one or two plain sentences of your own on what went
+wrong, if anything: a clash with their changes and how it settled, a check
+that failed, a patch you had to fix. Leave out anything about their own
+work (project names, what their changes are for, file paths of theirs). It
+drafts a short report for Mike from facts the code picks: which release
+came in and how far behind main was, how often each of Threadbear's own
+runner errors came up since the last check-up, whether the runner's build
+of main is failing, and which of Mike's patches won't load. It names only
+what's in Mike's code; anything of theirs is just a count, and the draft is
+scrubbed of secrets and their home folder.
+
+Put the draft in your reply as it is, and ask with a card whether to send
+it: it goes as a comment on a public Discussion on Mike's GitHub repo,
+under their own GitHub login, so Mike can see what's going wrong in other
+people's copies and fix it. Answers: Send (`tb checkup --post`), Skip
+(`tb checkup --skip`), and Never ask (set `"releases": { "checkup": false }`
+in `runner.json`, then `tb checkup --skip`). If they want it worded
+differently, run `tb checkup` again with a new `--text` and show it again:
+`--post` sends exactly the last draft they saw. If `--post` says gh isn't
+signed in, give them the draft to paste and the link it prints. If it says
+Mike hasn't opened the Discussion yet, or `tb checkup` says check-ups are
+off here, skip this section and say nothing about it.

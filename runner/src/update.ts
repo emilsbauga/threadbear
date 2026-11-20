@@ -19,12 +19,14 @@ import type { Logger } from './log.ts';
 import { currentLink, readRelease, readState, type ReleaseJson } from './release.ts';
 import type { RestartResult } from './restart.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
-import { launcherKey, RUNS_NODE_REASON } from './reinstall.ts';
+import { APP_STAGED_REASON, launcherKey, RUNS_NODE_REASON, stagedAppPath } from './reinstall.ts';
 import { inBackground } from './background.ts';
+import { IS_WINDOWS } from './platform.ts';
 import type { UpdateFailure } from './fix-update.ts';
 import { machineTrouble } from './machine-trouble.ts';
 import { cleanGitError, followOrigin as fetchAndFollowOrigin, oldestMissingAt, type OriginResult } from './follow-origin.ts';
 import { LAND_TIMES_FILE } from './land-queue.ts';
+import { FETCH_TIMEOUT_MS, gitAsync as gitWithin, repoKey } from './upstream.ts';
 
 export const CHECK_INTERVAL_MS = 5 * 60_000;
 // After main's ref changes in the checkout (a commit or merge landing), the
@@ -296,34 +298,53 @@ function joinTreeHashes(lsTree: string): string | undefined {
   return hashes.length ? hashes.join('+') : undefined;
 }
 
+// The arguments for the clone the update builds in. Git for Windows changes
+// line endings on checkout (core.autocrlf) and stops at 260-character paths
+// (core.longpaths), and a build must see main's files as they are committed.
+// Nowhere else changes anything.
+export function cloneArgs(checkout: string, dir: string): string[] {
+  return IS_WINDOWS ? ['clone', '-q', '--no-checkout', '-c', 'core.autocrlf=false', '-c', 'core.longpaths=true', checkout, dir] : ['clone', '-q', '--no-checkout', checkout, dir];
+}
+
 // Brings <dir> to the checkout's main: a clone of the checkout (so only
 // what's committed on main is built, never a working tree), fetched and
 // reset each time. runner/node_modules is kept between runs for the checks,
-// and dropped when package-lock.json changed so they install afresh. `ref` is
-// the checkout's own main unless the machine follows GitHub's (follow-origin.ts).
+// and dropped when package-lock.json changed so they install afresh. So is
+// the repo root's, when the runner sits in a repo: the runner's backend
+// tests load convex/server and the state machines library from there
+// (test/helpers/convex-memory.ts), and deploy.mjs installs it for them. `ref`
+// is the checkout's own main unless the machine follows GitHub's
+// (follow-origin.ts).
 export async function syncClone(checkout: string, prefix: string, dir: string, ref = 'refs/heads/main'): Promise<MainInfo> {
   if (!fs.existsSync(path.join(dir, '.git'))) {
     await fs.promises.rm(dir, { recursive: true, force: true });
     await fs.promises.mkdir(path.dirname(dir), { recursive: true });
-    await gitAsync(path.dirname(dir), ['clone', '-q', '--no-checkout', checkout, dir]);
+    await gitAsync(path.dirname(dir), cloneArgs(checkout, dir));
   }
   await gitAsync(dir, ['fetch', '-q', checkout, ref]);
   await gitAsync(dir, ['checkout', '-q', '-B', 'main', 'FETCH_HEAD']);
-  const modules = path.join(dir, prefix, 'node_modules');
-  await gitAsync(dir, ['clean', '-qfdx', '-e', `${prefix}node_modules`]);
-  const lockFile = path.join(dir, prefix, 'package-lock.json');
-  // Beside the clone, not in it: git clean would take it out each time.
-  const stamp = path.join(path.dirname(dir), 'installed-lock');
-  const lock = fs.existsSync(lockFile) ? crypto.createHash('sha256').update(fs.readFileSync(lockFile)).digest('hex') : '';
-  let had = '';
-  try {
-    had = fs.readFileSync(stamp, 'utf8').trim();
-  } catch {
-    // first run
-  }
-  if (had !== lock) {
-    await fs.promises.rm(modules, { recursive: true, force: true });
-    fs.writeFileSync(stamp, lock + '\n');
+  // [folder in the clone, stamp file name]. The stamps are beside the
+  // clone, not in it: git clean would take them out each time.
+  const installs: [string, string][] = [[prefix, 'installed-lock']];
+  if (prefix) installs.push(['', 'installed-lock-root']);
+  // The root's node_modules is only /node_modules: an exclude without the
+  // slash would keep every node_modules in the clone.
+  await gitAsync(dir, ['clean', '-qfdx', ...installs.flatMap(([p]) => ['-e', `/${p}node_modules`])]);
+  for (const [p, name] of installs) {
+    const modules = path.join(dir, p, 'node_modules');
+    const lockFile = path.join(dir, p, 'package-lock.json');
+    const stamp = path.join(path.dirname(dir), name);
+    const lock = fs.existsSync(lockFile) ? crypto.createHash('sha256').update(fs.readFileSync(lockFile)).digest('hex') : '';
+    let had = '';
+    try {
+      had = fs.readFileSync(stamp, 'utf8').trim();
+    } catch {
+      // first run
+    }
+    if (had !== lock) {
+      await fs.promises.rm(modules, { recursive: true, force: true });
+      fs.writeFileSync(stamp, lock + '\n');
+    }
   }
   const tree = await releaseTreeAtAsync(dir, prefix, 'HEAD');
   if (!tree) throw new Error(`main in ${checkout} has no ${prefix}src to build`);
@@ -448,8 +469,48 @@ export async function landChecked(checkout: string, prefix: string, commit: stri
     return undefined; // not a checkout: can't tell, so check
   }
   const line = passedLandCheck(path.join(common, LAND_TIMES_FILE), commit);
-  if (!line) return undefined;
-  return `tb land's check passed them at this commit on ${line.host}${line.at ? ` at ${line.at}` : ''}`;
+  if (line) return `tb land's check passed them at this commit on ${line.host}${line.at ? ` at ${line.at}` : ''}`;
+  return onMikesMain(checkout, commit);
+}
+
+const MIKES_REPO = 'github.com/mikecann/threadbear';
+
+// Someone else's copy that follows Mike's main as it is (pulled, not
+// brought in through a checked landing) has no landing line for it, so its
+// runner ran the whole unit suite for every update: 6 minutes on a loaded
+// Mac, ADEMark's second account on Tinker Desk (19 Nov 2026). Mike's main
+// only moves to commits a landing's check passed, so a commit his main has
+// needs no second run. His main is fetched fresh for it, under whichever
+// remote's URL is his (its own name, upstream or origin), as setup does
+// (scripts/checked-upstream.mjs): a ref already here may be a fork's, left
+// behind when the remote was pointed at his. A fetch that fails checks.
+// It's the person's own checkout, so the fetch leaves FETCH_HEAD alone: a
+// `git merge FETCH_HEAD` of theirs would take Mike's main (Codex's review).
+export async function onMikesMain(checkout: string, commit: string): Promise<string | undefined> {
+  let remotes: string[];
+  try {
+    remotes = (await gitWithin(checkout, ['remote'])).split('\n').filter(Boolean);
+  } catch {
+    return undefined;
+  }
+  for (const remote of remotes) {
+    let url: string;
+    try {
+      url = await gitWithin(checkout, ['config', '--get', `remote.${remote}.url`]);
+    } catch {
+      continue;
+    }
+    if (repoKey(url) !== MIKES_REPO) continue;
+    const main = `refs/remotes/${remote}/main`;
+    try {
+      await gitWithin(checkout, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', remote, `+refs/heads/main:${main}`], { timeoutMs: FETCH_TIMEOUT_MS });
+      await gitWithin(checkout, ['merge-base', '--is-ancestor', commit, main]);
+      return `${remote}/main has this commit, and a landing's check passed them there`;
+    } catch {
+      // not fetched, or not his
+    }
+  }
+  return undefined;
 }
 
 // deploy.mjs from the clone, stopping after it has pointed current at the
@@ -727,6 +788,13 @@ export class RunnerUpdater {
         if (this.stopped) return undefined;
         this.backendFailed = b.ok ? undefined : (b.error ?? 'unknown error');
         if (!b.ok) {
+          // A stepping-stone deploy left live (deploy-backend.mjs: its backfill
+          // couldn't finish, and the backend couldn't be put back) has a
+          // machine switched off: tried again at the next check, not only
+          // once main changes.
+          // Likewise timers that failed while it was off and still need delivering.
+          const left = readJsonSync<{ stepping?: unknown; rearmDue?: unknown }>(path.join(home, 'backend.json'));
+          if (left?.stepping !== undefined || left?.rearmDue === true) this.backendTried = undefined;
           log.error('could not deploy the backend at main', { commit: main.short, error: this.backendFailed });
           this.failed(
             { kind: 'backend', commit: main.commit, short: main.short, subject: main.subject, error: this.backendFailed ?? 'unknown error', logFile: backendLogPath(home) },
@@ -966,7 +1034,7 @@ export function launcherSourcesHash(dir: string): string | undefined {
 // Releases never change any of it, and the runner can't reinstall the
 // launchd job it runs in from inside it, so install-runner.sh runs as a
 // launchd job of its own (reinstall.ts): from the Updates panel's
-// Reinstall now, or by itself with the selfReinstall experiment. The app is the one
+// by itself, or Update it after a failure. The app is the one
 // install-runner.sh put in the plist (THREADBEAR_RUNNER_APP), else the
 // process that started launch.mjs, for a plist written before that
 // variable; a supervised runner with neither still runs node as the
@@ -987,13 +1055,18 @@ export function launchAgentBehind(
     if (!app) {
       why.push(RUNS_NODE_REASON);
     } else {
-      let built: unknown;
-      try {
-        built = JSON.parse(fs.readFileSync(path.join(app, 'Contents', 'Resources', 'build.json'), 'utf8')).sources;
-      } catch {
-        // missing or unreadable: rebuilt by the same command
-      }
-      if (built !== onMain) why.push('Threadbear Runner.app was built from older launcher sources than main\'s.');
+      // missing or unreadable: rebuilt by the same command
+      const builtFrom = (a: string): unknown => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(a, 'Contents', 'Resources', 'build.json'), 'utf8')).sources;
+        } catch {
+          return undefined;
+        }
+      };
+      // A new app staged beside it (install-runner.sh --stage) goes in only
+      // when launchd next starts the job (launch.mjs takeStagedApp), like a
+      // runner still on node.
+      if (builtFrom(app) !== onMain) why.push(builtFrom(stagedAppPath(app)) === onMain ? APP_STAGED_REASON : "Threadbear Runner.app was built from older launcher sources than main's.");
     }
   }
   return why.length ? why.join(' ') : undefined;

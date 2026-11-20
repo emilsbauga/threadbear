@@ -99,18 +99,19 @@ in a thread answers the challenge with the key in place of the token, and adds
 `"threadId"` to `auth.prove`'s params. The runner works the key out from the
 id, so it keeps nothing per thread and a key only ever names its own thread.
 `tb` falls back to the token only when it's pointed at another runner's data
-dir (a dev runner) or when it has no key. A sandboxed thread gets no key. A
+dir (a dev runner) or when it has no key. A
 thread that started before this (an older runner's CLI still finishing a turn)
 has none either, and its older `tb` carries on as before until its next start.
 
 The connection then belongs to that thread: every request is checked against
 what the thread can do at that moment (`runner/src/rpc-gate.ts`), by the same
 rules as its threadbear tools ("Raising access"). A thread on Full access
-outside a sandbox isn't limited. Any other gets the reads, and the writes that
+isn't limited. Any other gets the reads, and the writes that
 don't reach past it: a thread or schedule at most as high as its own
 (`permissionMode` is filled in with the caller's when left out), a message to
-a thread no higher, lowering a mode, renaming, snoozing or archiving another
-thread, moving a thread no higher (`unconfine` is forced false). Anything else
+a thread no higher, lowering its own mode or that of a thread no higher,
+renaming, snoozing or archiving another thread, moving a thread no higher (`unconfine` is forced false, which an
+older runner across a handover reads as an agent's move). Anything else
 is refused with `-32060`, whose message says which tool to use instead. Unknown
 methods are refused too. In particular it can't answer a card
 (`approvals.respond`, `plans.approve`, `secrets.answer`), press a button, run
@@ -122,12 +123,26 @@ for: `{}` for its owner, or `{"threadId", "mode", "limited"}`.
 **Who's really calling.** A key can be got round by wiping it from the
 environment and reading the token file, so the runner doesn't only go by what's
 presented. After auth it finds the process at the other end of the connection
-(`lsof` on the client's port) and walks up its parents; if one is a thread's
-CLI, the connection is that thread, whatever it authenticated with. So the token
-in a thread's shell, or a key lifted from another thread's environment with
-`ps eww`, is worth no more than the thread's own mode. A client that isn't under
+and walks up its parents; if one is a thread's CLI, the connection is that
+thread. On Windows the runner's helper (`runner/src/win32-helper.ps1`)
+answers in place of `lsof` and `ps`, and a parent that started after its
+child isn't counted: Windows keeps a dead parent's id as its children's
+parent id and gives the id to the next process. The process is the one `lsof` shows holding a socket named exactly
+client address and port `->` the runner's address and port: never one that
+only shares the client's port number (another loopback address, or a socket
+whose far end uses that number), which could be another thread's (Daybreak
+finding 137). The lookup can only lower what a credential gets: the owner
+token from under a thread's CLI is that thread, but a thread's key is already
+a thread, so a lookup naming a different thread (a key lifted from another
+thread's environment with `ps eww`) closes the connection with 4403 before
+any request runs, as does one whose socket is held by processes under two
+threads. So the token in a thread's shell is worth no more than the thread's
+own mode, and another thread's key used from under a thread is worth nothing.
+A key used from a process the lookup can't place (one that started a new
+session, or a lookup that failed or took over 3 seconds) is taken at its word,
+like the token below. A client that isn't under
 a CLI (the app, a terminal, a patch's action, the runner's own jobs) is what it
-says it is. If the lookup fails (no `lsof`), the runner goes by the credential.
+says it is. If the lookup fails (no `lsof`, or it times out), the runner goes by the credential.
 A process that has lost its parents (a `nohup`, a backgrounded subshell) still
 counts if it's in a process group a thread's tool command ran in, as the
 registry has noted them. One that deliberately starts a new session and reads
@@ -139,6 +154,12 @@ uses this Mac's keys from disk, so the runner never sees them: from a thread the
 need the real runner to say it isn't limited. A CLI started by a runner older
 than this has no key and isn't recorded with its thread, so it keeps the old
 `tb` until its next start.
+
+**No browsers.** An upgrade with an `Origin` header is turned away with HTTP
+403 before anything else is looked at. Browsers always send one on a
+WebSocket and the runner's own clients (`tb`, the apps, another runner)
+never do, so a web page that can reach `127.0.0.1` can't take the slots
+below and keep them out (Daybreak finding 146).
 
 **Limits before auth.** Until a connection has authenticated, a frame is at
 most 64 KiB (more closes it with 1009), there are 3 seconds to finish, and
@@ -174,7 +195,6 @@ type ProviderInfo = {
                         // (Grok: "codex", each model's effortLevels narrowing it)
   autoMode: "classifier" | "asks"     // Auto: a classifier judges each action, or
                         // it behaves like Ask (Codex)
-  sandbox: boolean      // can run a sandboxed thread
   rewind: boolean       // can go back to an earlier message
   smallJobs: boolean    // can run small jobs (titles, summaries)
   usageReadings: boolean // reports how much room a login has
@@ -201,6 +221,26 @@ type Account = {
   plan?: string         // "Max", "Team", "Pro Lite"
   note?: string         // Mike's own note for the account ("Convex work only")
   usage?: AccountUsage  // absent when nothing is known (and from older runners)
+  signedOut?: boolean   // Claude: no turn can run on it until someone signs it
+                        // in again (see "Signed out" under Pools). Pools skip it
+  loginEndsAt?: string  // Claude: when this sign-in ends and can't be renewed
+                        // (28 days after signing in, from Claude Code 2.1.325).
+                        // Clients warn a few days ahead
+  yearToken?: { madeAt?: string } // Claude: runs on a year-long token
+                        // Mike made for it, not its 28-day sign-in ("Year-long
+                        // tokens", below). madeAt is when; loginEndsAt is a
+                        // year on. The token itself is never sent
+  planEnded?: boolean   // Claude: its paid plan has lapsed. The CLI's cached
+                        // claude.ai profile (oauthAccount in the login's
+                        // .claude.json, fetched again at most daily while the
+                        // CLI runs on it) says organizationType claude_free,
+                        // or a Pro or Max plan with billingType none (a lapsed
+                        // Max still cached as claude_max). The free plan has
+                        // no Claude Code. Its plan and usage are
+                        // left out (a stale reset would promise room that
+                        // isn't coming). Pools and the default account skip
+                        // it; clients say "Plan ended", and offer no sign-in
+                        // or reset for it
 }
 
 // "ultra" is Codex's multi-agent level. Claude never offers it.
@@ -232,6 +272,9 @@ type AccountUsage = {
                         // there's no live reading since
   blocked?: boolean     // the provider says this login is at its limit
   notice?: string       // Token Stats' own note ("64,390 credits · 2 limit resets available")
+  resets?: { available: number, nextExpiresAt?: string } // Codex: the usage
+                        // resets it has left, from its last read (Pools,
+                        // "Usage resets"); left out once the soonest has expired
 }
 
 type CliStatus = {
@@ -249,9 +292,14 @@ type CliStatus = {
   inUse: { version: string, threadIds: string[] }[] // versions live sessions run
   previousVersion?: string  // Codex: the kept version "Go back" returns to
   checkedAt?: string
-  hold?: { version: string, reason: string, missing?: string[] } // why an
+  hold?: { version: string, reason: string, missing?: string[],
+          threadId?: string, investigating?: boolean } // why an
                         // update wasn't installed by itself ("the app-server
-                        // protocol changed", with what it lost)
+                        // protocol changed", with what it lost). A protocol
+                        // hold starts a thread that looks into it (threadId;
+                        // investigating while it's open), and is checked
+                        // again once per runner start, so the landing that
+                        // fixes it installs the version by itself
   update?: {            // the latest update, while it runs and after
     state: "waiting" | "running" | "succeeded" | "unchanged" | "failed"
     targetVersion?: string
@@ -317,12 +365,19 @@ type ThreadSummary = {
                         // snoozedUntil is then 9999-12-31T00:00:00.000Z
   snoozedUntilRelease?: true // with snoozedUntilRestart: only a start on
                         // another release than the one it went to sleep on
-  wakeWhen?: { said: string, topic?: string, pending?: true }
+  wakeWhen?: { said: string, topic?: string, pending?: true, agent?: true }
                         // hibernated in Mike's words (Hibernate in words);
-                        // only while snoozedUntil is set
+                        // only while snoozedUntil is set. `agent`: its own
+                        // agent set it (end_turn's snooze); with an
+                        // "unlanded" loose end it's waiting to land, and
+                        // the sidebar puts it under Running
   waitingOn?: { threadId, title, until?, done?: true }[] // hibernating until these
                         // threads finish (end_turn's waitFor); only
                         // while snoozedUntil is set
+  awaitingAppRestart?: true // hibernating until the Mac app restarts onto
+                        // what this thread landed (wait_for_app_restart);
+                        // only while snoozedUntil is set. With an unfinished
+                        // waitingOn, the sidebar puts it under Running.
   startedBy?: { kind, label, icon?, threadId?, threadTitle?, why? } // who
                         // started it when Mike didn't (Who started a thread)
   detached?: true       // a thread another thread started that doesn't
@@ -342,7 +397,7 @@ type ThreadSummary = {
   archivedAt?: string
   archivedBy?: "mike" | "agent" | "threadbear" // who archived it; only
                         // while archivedAt is set (Who archived a thread)
-  archiveVerdict?: "worked" | "didntWork" | "notNeeded" // how it went, Mike's
+  archiveVerdict?: "worked" | "didntWork" | "notNeeded" | "didntNeedToSee" | "gladISaw" | "notSure" // how it went, Mike's
                         // pick from the done card's Archive menu
   starredAt?: string    // Mike starred it, at this time: it stays in the
                         // Starred section above the Inbox, hibernating or
@@ -505,6 +560,8 @@ type Panel = {
   }                     // a client that knows it shows Convex's embedded
                         // dashboard with panels.convexKey (see "The Convex
                         // panel"); one that doesn't shows `url`
+  from?: string         // a panel button's (see Reply buttons): the folder
+                        // whose patch it is, as the thread isn't there
 }
 
 // One row of a `list` panel (panels.render).
@@ -514,11 +571,25 @@ type PanelItem = {
   url?: string          // a click opens it in the browser, or the panel if Mike set "Default"
   path?: string         // a click previews the file in the pane
   icon?: string         // an SF Symbol name
-  tone?: "attention" | "failed" | "done" // orange, red or a tick; absent: plain
+  tone?: "attention" | "failed" | "warning" | "working" | "done"
+                        // each its own shape and a colour a red-green colour-blind
+                        // eye tells apart (issue #67): an orange circle, a rose
+                        // diamond, a yellow triangle, a turning blue arc, a blue
+                        // tick; absent: plain. A client that doesn't know a tone
+                        // draws the row plain
   section?: string      // a heading over this row and the ones after it with the same
                         // section, drawn where it changes ("Waiting · 1"); at most 80 characters
   trailing?: string     // short and faint at the end of the title's line, like a date
                         // ("5d"); at most 24 characters
+  toggle?: {            // a switch drawn as an icon at the end of the title's line, lit
+                        // when on and faint when off; a press sends panels.toggle. Only
+                        // on rows of a panel whose patch has a `toggle` function (see
+                        // Patches, "Row toggles"); dropped from any other panel's rows
+    id: string          // what panels.toggle hands back; at most 200 characters
+    on: boolean
+    icon?: string       // an SF Symbol name; absent: "power"
+    title?: string      // its tooltip ("Auto-fix #812"); at most 80 characters
+  }
 }
 
 // A grouping above folders that carries goals, state and notes forward
@@ -761,11 +832,22 @@ type Settings = {
                         // Absent from an older runner, where it was an
                         // experiment, so a client shows no switch
   labReviewers?: { provider: Provider, model?: string, effort?: EffortLevel }[]
-                        // who reviews, in order (Settings > General > Code review): the
-                        // first of another lab with a login that has room,
-                        // on its model and effort when it names them.
+                        // who reviews, in order (Settings > General > Code
+                        // review > Every change): the first of another lab
+                        // with a login that has room, on its model and
+                        // effort when it names them. A provider may come
+                        // more than once on different models.
                         // runner.json's labReviewers, else Codex then Claude.
                         // Absent from an older runner: no list to show
+  labPanel?: { provider: Provider, model?: string, effort?: EffortLevel }[]
+                        // the review panel (Code review > Big or risky
+                        // changes), which reviews a big or risky change all
+                        // at once (Review by another lab); [] for none.
+                        // runner.json's labPanel, else the entries of an
+                        // older runner.json's labReviewers ticked
+                        // panel: true. Absent from an older runner, which
+                        // sent those ticks in labReviewers instead
+  labPanelLines?: number // lines of code that make a change big (150)
   keepAwake?: boolean   // keep the Mac out of idle sleep while threads
                         // work (keep-awake.ts); on by default, sent only by
                         // a runner on a Mac, so clients show no switch
@@ -774,6 +856,10 @@ type Settings = {
                         // to bring in Mike's releases, in days (1 to 365;
                         // 5 by default), only for important ones, or never
                         // (runner.json releases.bringIn; "Mike's releases")
+  spareWeek?: boolean   // a thread suggesting work when a login's week is
+                        // about to go unused (runner/src/spare-week.ts);
+                        // runner.json spareWeek, on unless false. Absent
+                        // from an older runner: clients show no switch
   fullSync: boolean     // full sync, as runner.json's sync.full says; it
                         // takes effect when the runner next starts
                         // (docs/full-convex.md; `tb settings full on|off`)
@@ -807,6 +893,11 @@ their own (A2, A3) that couldn't be picked; Mike also picked more than one
 or none, and answered most reviews in the thread in his own words (4 Nov
 2026), hence several picks, `none` and `reply`.
 
+It's only for options that are seen: images, videos, page designs. A
+thread put a research shortlist in one as a page of text per option, and
+Mike found comparing words there pointless (20 Nov 2026), so the tool and
+the instructions send options in words to the reply instead.
+
 `recommended` is the agent's own pick, marked with a star and "Recommended" in the rail and
 over its picture, worded as an asks card marks `suggested`. Both notes are
 inline markdown. Mike, 7 Nov 2026: the note was drawn raw in grey, so
@@ -818,7 +909,9 @@ a paragraph.
 // are two or more; pickedId is always the first pick, for older clients.
 // Clients send pickedIds (it wins over pickedId); a client that sends only
 // pickedId still works. none: none of them will do, never with picks.
-type ReviewDraft = { pickedId?: string, pickedIds?: string[], notes: Record<string, string>, reply?: string, none?: true }
+// images: pictures pasted into the reply, each placed by a [Picture N] in
+// reply, as a message's are (see Reply pictures, below).
+type ReviewDraft = { pickedId?: string, pickedIds?: string[], notes: Record<string, string>, reply?: string, images?: ImageRef[], none?: true }
 // media: a video (video/mp4, video/quicktime) or an HTML page (text/html)
 // the window plays or shows in place of image, which is then its still.
 type ReviewShot = { title?: string, image: ImageRef, media?: ImageRef }
@@ -851,7 +944,7 @@ The following RPCs take full thread/review IDs. Unknown IDs are errors.
 | method | params | result |
 |---|---|---|
 | `reviews.create` | `{ threadId, title, note?, options: { id, title, path?, shots?: { path, title? }[], url?, note?, reference? }[] }` | `{ review: DesignReview }` |
-| `reviews.get` | `{ threadId, reviewId }` | `{ review: DesignReview }` |
+| `reviews.get` | `{ threadId, reviewId }` | `{ review: DesignReview }`; `reviewId` may be the start of one (8 or more characters) that names only it, among every review the thread has |
 | `reviews.list` | `{ threadId }` | `{ reviews: DesignReview[] }` pending reviews only, oldest first |
 | `reviews.save` | `{ threadId, reviewId, revision, draft: ReviewDraft }` | `{ review: DesignReview }` |
 | `reviews.respond` | `{ threadId, reviewId, revision, draft: ReviewDraft }` | `{ review: DesignReview, turnId?: string }` |
@@ -878,7 +971,7 @@ shots each and 40 in all, each image at most 25 MB, video 200 MB and page
 IDs and titles, title/note at most 200/4000 characters, `url` http or https.
 Draft notes are at most 4000 characters per option and the reply 8000;
 unknown option IDs, picks of reference options and `none` with picks are
-invalid. A response needs a pick, `none`, a reply or a nonblank note.
+invalid. A response needs a pick, `none`, a reply, a picture or a nonblank note.
 Saving an empty draft is allowed. The agent's message reads `Picked A.
 <title>.` or `Picked A + D. <title> + <title>.`, or `Picked none of them.`,
 then the reply as written, then any notes. With a pick, a last paragraph
@@ -887,6 +980,19 @@ names the pickable options passed over (`Passed over: B. <title>; C.
 later offer one as a new follow-up. The Mac, phone and GPUI apps read that
 wording back for Mike's bubble (`ReviewAnswer`), leaving the passed-over
 paragraph out, so change them with it.
+
+Reply pictures: a picture pasted or dropped in the window's reply box is a
+chip, as in the thread's box, imported with `media.import` and sent in the
+draft's `images` with `[Picture N]` markers in `reply` (Mike, 17 Nov 2026:
+the box was plain text, so a pasted screenshot went in as its file path).
+At most 20. Save and respond take only pictures in the runner's `inbox/`
+(what `media.import` made) or ones already kept with the review, never a
+link, and copy each into `media/<thread>/reviews/<id>/reply/` under a name
+from its contents, so a draft outlives the inbox's week, saving the same
+picture again keeps one copy, and a retried answer naming the inbox copy
+is the same answer. The saved draft names those copies, and the window
+takes them in place of its own. Pictures alone are an answer. The agent's
+message carries them as its `images`.
 
 Every change persists a `review.updated` event with `{ review: DesignReview }`.
 An option's `url` is an http or https page; the Mac app drops any other
@@ -931,6 +1037,46 @@ patch panels are independent of these review windows. Reviews take
 pictures, videos and pages, with a live `url` per option opened in the
 browser; overlays are deferred.
 
+#### Reviews on the phone
+
+Backend API 86 adds `phone:designReviews(token, threadId, reviewId?)` and
+`phone:respondReview(token, threadId, reviewId, revision, draft)`. Both queue
+commands on the owning runner. Without an id the first returns pending
+review titles (`{ reviews: [{ id, title }], truncated? }`); with an id, or
+the start of one as a `review:` link gives, it returns that review, pending
+or not (`{ review }`). `phone:command` carries the result, as JSON text
+for the phone to parse (a draft's notes are keyed by option id, which
+Convex can't take as an object key). The runner must
+be online to read or answer a review. Responses use `reviews.respond`,
+including its revision checks and idempotent retry behavior.
+
+What the phone gets of a review has no paths in it: each shot's still is
+named by an opaque `src` (`review:<reviewId>:<sha256 of its path>`), and the
+draft or response is only `pickedId`, `pickedIds`, `notes`, `reply` and
+`none`. A draft's pasted pictures (`images`, paths on the Mac) stay there,
+and an answer from the phone keeps them. The answer's `notes` go as a list,
+`[{ id, text }]`, as an option's id can be any text and Convex refuses an
+object key that isn't plain ASCII or starts with `$`; the runner rebuilds
+the draft from those fields alone.
+
+A review's stills go up only when the phone opens that review: the
+runner queues them as the `designReviews` command with an id runs, as reply
+pictures at seq 0 whose `src` and `path` are both the opaque source, and `phone:reviewImages(token,
+threadId, sources)` follows them as they arrive (`phone:images` leaves them
+out). Only a file in the review's own media folder that isn't a link
+goes (a moved review's paths are the other runner's word). One over the
+reply-picture limit (10 MB) or in a format the phone
+doesn't take is shrunk to a JPEG first, and one that can't be sent at all
+comes with `preview: false`, so the phone says so rather than waiting.
+
+The phone's Reviews sheet opens from the pending-review button or a
+`review:<id>` link. It shows reference and recommended options, each shot's
+still, multiple picks, none, per-option notes and a reply. HTML and video
+originals stay on the Mac; the phone labels their stills. Loading and
+failed submissions keep the user's draft. A stale revision reloads the
+review and requires another deliberate send. Older backends keep the
+Mac-only explanation.
+
 ### Reply buttons
 
 Standard since 11 Nov 2026 (it was the `replyButtons` experiment). Mike asked on 7 Nov 2026
@@ -956,7 +1102,7 @@ type ReplyButton = {
   title: string         // what the button says, at most 60 characters
   createdAt: string
   turnId?: string       // the turn that made it
-  // Exactly one of start and send.
+  // Exactly one of start, send and panel.
   start?: {             // a new thread, as create_thread would make it
     text: string        // the brief, at most 20,000 characters
     title?: string
@@ -973,15 +1119,47 @@ type ReplyButton = {
     threadTitle: string // its title when made
     text: string        // at most 20,000 characters
   }
-  pressed?: { at: string, threadId: string } // the thread it started, or the one it messaged
+  panel?: {             // another folder's patch panel, opened beside this thread
+    cwd: string         // the folder, checked when made
+    panelId: string     // its web panel's id there, checked when made
+    title: string       // its title then: "YouTube"
+  }
+  pressed?: { at: string, threadId: string } // the thread it started, or the one it messaged; a panel button's own thread, at its last press
   failed?: { at: string, error: string }     // the last press failed; it can be pressed again
 }
 ```
 
 | method | params | result |
 |---|---|---|
-| `buttons.press` | `{ threadId, buttonId }` | `{ button: ReplyButton }` Starts the thread or sends the message, once. A button already pressed returns as it is, with nothing run again, so a dropped reply or a second click (or a press from the phone and the Mac) never fires twice. A press that fails (the folder has gone, the target thread was deleted) is saved as `failed`, and the error comes back as `-32602` |
+| `buttons.press` | `{ threadId, buttonId }` | `{ button: ReplyButton }` Starts the thread or sends the message, once. A button already pressed returns as it is, with nothing run again, so a dropped reply or a second click (or a press from the phone and the Mac) never fires twice. A press that fails (the folder has gone, the target thread was deleted) is saved as `failed`, and the error comes back as `-32602`. A panel button is the exception: every press opens its panel again (below) |
 | `buttons.list` | `{ threadId }` | `{ buttons: ReplyButton[] }` every button the thread has, oldest first |
+
+**Panel buttons.** Mike asked on 18 Nov 2026 for the Daily brief's "Go
+through comments" to open the YouTube patch's panel (from
+`yt-channel-manager`) rather than start a thread, as he'd write his
+comment replies there. A patch's panels only show for threads in its
+folder, so `add_button`'s `panel: { folder, panel }` names a folder and one
+of its web panels, by id or title, found as a thread there would have
+them (a list panel, which the runner renders for a thread in that folder,
+is refused). Pressing it adds that panel to the pressing thread's
+`panels`, from then on, and asks for it to be shown as `show_panel` does
+(a `panelRequest`), on every press: it opens a panel rather than doing a
+job, so it's never spent, and the agent hears nothing of it. The panel's
+`badge` and `summary` run in its folder whenever the thread's patches are
+read, as for that folder's own threads, which is what starts a patch's
+server (the YouTube patch's badge starts its page's). Its `id` is
+`<panelId>@<8 hex of its folder's hash>` and it has `from`, its folder,
+so nothing takes the thread for one of that folder's (the YouTube page
+lists the threads that have its panel as ones to ask in). Its url's
+`{threadId}` is left empty, for the same reason: the page sees no thread
+of its own, and the YouTube page then offers its recent threads and New
+thread for Ask Claude. A thread's newest press of each panel counts, so
+a brief that makes the same button every day still has one panel. A
+folder that has gone by the press fails it; a panel that isn't there
+once the patches are read again (its patch broke, or its `when` hid it)
+is saved as `failed` after the press. Only this runner's apps show it: the
+phone and the website get start and send buttons only, so a panel
+button's link is drawn there as its words.
 
 Every change persists a `button.updated` event with `{ button }`; clients
 keep the latest per id, as for reviews, and redraw any link to it. A
@@ -1061,7 +1239,7 @@ Persisted event types (stored in `events.ndjson`, returned by `threads.events`):
 
 | type | fields |
 |---|---|
-| `user.message` | `text`, `images: ImageRef[]`, `answers?: AskAnswer[]` (the open card's asks it answers, as `threads.send` gave them: for showing, the agent only gets `text`), `origin?: "runner" \| "schedule" \| "phone"` (`runner` when the runner sent the message by itself, such as the resume after a restart; `schedule` when a schedule sent it, with `scheduleId`; `phone` when it came from the phone through the Convex mirror (Sync), and the agent then gets it after a line saying so and whether the user is at the Mac, though `text` keeps what was typed; absent for anything a person or client sent; a message typed by the user that starts a turn 12 hours or more after the thread's last turn ended, and doesn't answer a card or a review, also reaches the agent after a line asking it to open with what the thread is for and where it stands, and `text` keeps what was typed), `scheduleId?`, `editOf?: number` (the seq of the message this one replaced, see Editing a message) |
+| `user.message` | `text`, `images: ImageRef[]`, `answers?: AskAnswer[]` (the open card's asks it answers, as `threads.send` gave them: for showing, the agent only gets `text`), `origin?: "runner" \| "schedule" \| "phone"` (`runner` when the runner sent the message by itself, such as the resume after a restart; `schedule` when a schedule sent it, with `scheduleId`; `phone` when it came from the phone through the Convex mirror (Sync), and the agent then gets it after a line saying so and whether the user is at the Mac, though `text` keeps what was typed; absent for anything a person or client sent; a message typed by the user that starts a turn 12 hours or more after the thread's last turn ended, and doesn't answer a card or a review, also reaches the agent after a line asking it to open with what the thread is for and where it stands, and `text` keeps what was typed), `wakeReason?: string` (only for runner messages: what woke the thread, shown on its turn divider), `scheduleId?`, `editOf?: number` (the seq of the message this one replaced, see Editing a message) |
 | `assistant.text` | `itemId`, `text` (complete markdown for that block), `summary?: true` (the turn's summary, written by the runner from `end_turn`; see "Needs you"), `givesWay?: true` (on a summary, with bullet replies off: see "The summary"), `narration?: true` (Claude sent this as a narration block, whose text reaches the runner only as a short summary of what the agent wrote, not its words: see Transient events), `final?: true` (with one reply, the agent's message after `end_turn`, the turn's reply: see "Needs you", One reply). A later `assistant.text` with the same `itemId` replaces the earlier one where it stands |
 | `reasoning` | `itemId`, `text` (summary) |
 | `tool.call` | `itemId`, `name` (raw tool name), `kind` (`command` \| `read` \| `edit` \| `write` \| `search` \| `web` \| `mcp` \| `task` \| `todo` \| `image` \| `other`; `image` is image generation), `title` (one line, e.g. "npm test" or "Edit src/a.ts"), `input` (object, large strings truncated to 16 KB) |
@@ -1263,7 +1441,7 @@ HTTP intake does not start a task. HTTP actions use the deployment's
   cannot call runner or phone APIs, provision keys, enumerate intake, or change
   receipt states. No clients are provisioned by default.
 
-### File intake (backend API 72)
+### File intake (backend API 96)
 
 V1 stays text-only and its four-field receipts remain unchanged. V2 uses the
 same restricted bearer credential and JSON envelopes up to 64 KiB:
@@ -1313,7 +1491,7 @@ before another download. Unregistered upload blobs left by an action crash are
 removed after a day; registered pending uploads and finalized transfers do not expire.
 Older runners omit `includeAttachments` on `pendingIntake` and see text-only items.
 
-### Intake to Backlog (backend API 72)
+### Intake to Backlog (backend API 96)
 
 The `externalIntake` experiment enables a runner's 15-second consumer.
 A failed pending poll is logged once per outage and retried quietly; it does
@@ -1354,7 +1532,7 @@ way. A validated send clears the marker; failed validation retains it.
 Archiving retains the marker, so restoring returns the thread to Backlog.
 The Mac thread menu offers Move to Backlog and Move to Inbox. Deferred
 conversations take precedence over stars and do not count toward the inbox badge.
-Backend API 72 mirrors the marker; older backends omit it.
+Backend API 96 mirrors the marker; older backends omit it.
 
 Backlog is a collapsible section in the existing thread list. Unsent items are
 threads with a saved first prompt, not turns or a separate task store.
@@ -1431,12 +1609,13 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `hello` | `{ client: string, version: string, build?: { commit, short, tree }, pid?: number }` (`build`: the Mac apps' own builds, see App restarts; a draining runner's link to the primary says `client: "threadbear-drain"` with its `pid`, for the log) | `{ runnerVersion, protocol: 1, accounts: Account[], providers?: ProviderInfo[], piProfiles?: PiProfile[], pools?: Pool[], defaults: { cwd, accountId, poolId?, model?, models?: { claude?, codex? }, efforts?: { claude?: EffortLevel, codex?: EffortLevel }, permissionMode?: "full" \| "ask" \| "auto" }, clis?: CliStatus[], updates?: RunnerUpdates, experiments?: string[] }`. `providers` is what each provider this runner knows is called and can do, in its own order (`ProviderInfo` above; absent from older runners, when a client uses what it knows of Claude and Codex). `experiments` is the ids of the experiments on for this runner (docs/experiments.md), read at each `hello`, so the app shows what belongs to one (the Projects page's decisions for `projectDecisions`) from its next connect. `updates` is under Runner updates; `pools` and `defaults.poolId` under Pools. `defaults.accountId` is the account a `threads.create` with no `accountId` uses: the one with the most room among the last-used account's provider (skipping blocked ones, ones under 1% and ones with a note), worked out again as usage changes; a client keeps its own copy of the rule rather than asking again. `defaults.models[provider]` is the model a new thread on that provider gets when it names none (`runner.json`'s `defaults.models`; a dev runner sets the cheapest); `defaults.model` is the same for Claude, kept for older apps. Absent means the account's own default (`accounts[].defaultModel` names it, when known). `defaults.efforts[provider]` likewise for effort; absent means the model's own level. `defaults.permissionMode` is the mode a `threads.create` with none starts on, and the one the app's new-thread composer starts on and goes back to after each send (`runner.json`'s `defaults.permissionMode`, read at startup; `"plan"` or anything else there is ignored). Absent means `"full"`: setup writes `"auto"` into the `runner.json` it makes for a new install, and an install from before has none. A client that doesn't know the runner's (an older runner, or another runner reached through the backend) starts on `"full"`. `runnerVersion` is `<package version>+<release id>` when the runner runs from a release, else `<package version>+source` `client` is `threadbear-mac` for the Swift app and `threadbear-desktop` for the GPUI one; either counts as the app being open (including the Browser panel in both apps) |
 | `threads.list` | `{ include?: ("inbox" \| "snoozed" \| "archived")[], ids?: string[] }` (default `["inbox"]`; a value the runner doesn't know is left out; `ids` keeps only those threads, unknown ones left out; an older runner ignores it, so pick yours out of the answer) | `{ threads: ThreadSummary[] }` newest activity first |
 | `threads.search` | `{ query: string, limit?: number }` | `{ threads: ThreadSummary[] }` matches title, preview and `keywords` across all threads, archived included (Search) |
-| `threads.create` | `{ text: string, images?: ImageRef[], cwd?: string, accountId?: string, poolId?: string, model?: string, effort?: EffortLevel, permissionMode?: "full" \| "ask", title?: string, worktree?: boolean, startedBy?: { kind, label, icon?, threadId?, why? }, detached?: true, projectIds?: string[], confined?: true, unconfine?: true }` | `{ thread: ThreadSummary }` (the first turn starts straight away). `confined` and `unconfine`: see Sandboxed threads (a thread started from a confined one is confined unless `unconfine` says Mike allowed it). `projectIds` (New Thread on a project's page) puts it in those projects before its first turn, pinned as Mike's, so that turn already has their brief; an unknown project is `-32602` and makes no thread. In a repo that asks for worktrees (see Worktrees) the thread gets one of its own before its first turn; `worktree: false` starts it in the folder as it is. The thread's `provider` is its account's. With no `model`, the thread gets `defaults.models[provider]` from `hello`, or `defaults.model` for Claude, or else the account's own default. With no `effort`, `defaults.efforts[provider]`, or else the model's own level. With no `permissionMode`, `defaults.permissionMode`, or else `"full"`; the runner's own threads (bringing in releases, fixing a failed update, a note about this Mac) always name `"full"`. See "Models and effort across providers" |
+| `threads.create` | `{ text: string, images?: ImageRef[], cwd?: string, accountId?: string, poolId?: string, model?: string, effort?: EffortLevel, permissionMode?: "full" \| "ask", title?: string, worktree?: boolean, startedBy?: { kind, label, icon?, threadId?, why? }, detached?: true, projectIds?: string[], serviceId?: string, warmId?: string }` | `{ thread: ThreadSummary }` (the first turn starts straight away). `warmId` is one `threads.warm` gave this connection: the thread is made under it, and takes the CLI started for it when its settings still match (see Warm start below). `serviceId` starts it on a virtual runner instead (Virtual runners, "Starting from the Mac"). `confined: true` is refused (see Sandboxed threads (taken out)). `projectIds` (New Thread on a project's page) puts it in those projects before its first turn, pinned as Mike's, so that turn already has their brief; an unknown project is `-32602` and makes no thread. In a repo that asks for worktrees (see Worktrees) the thread gets one of its own before its first turn; `worktree: false` starts it in the folder as it is. The thread's `provider` is its account's. With no `model`, the thread gets `defaults.models[provider]` from `hello`, or `defaults.model` for Claude, or else the account's own default. With no `effort`, `defaults.efforts[provider]`, or else the model's own level. With no `permissionMode`, `defaults.permissionMode`, or else `"full"`; the runner's own threads (bringing in releases, fixing a failed update, a note about this Mac) always name `"full"`. See "Models and effort across providers" |
+| `cloudTokens.make`, `cloudTokens.set`, `cloudTokens.useMac`, `cloudTokens.list` | `{ login }`; `{ login, token }`; `{ login }`; `{}` | A virtual runner's cloud token for a Claude login (Virtual runners, "Cloud tokens on the Mac"): made with `claude setup-token` here (up to 10 minutes, waiting on Mike in the browser), pasted, or this Mac's year-long token for that login. `{}` once set; `list` answers `{ tokens: { login, madeAt, setAt, state }[] }`, never a token |
 | `threads.samples` | `{ cwd: string, remove?: boolean }` | `{ threads: ThreadSummary[] }`. The app's first-run tour's sample threads (`runner/src/samples.ts`): made up exchanges written as finished turns with no CLI, in `cwd` (the app's `~/ThreadbearThreads/Welcome`, where it writes an example patch), with `sample: true`; the first needs you, with a card of asks, and one is left unread. Asking again deletes any there are and makes them afresh (writing the patch again if it's gone, and trusting it as written). `remove: true` deletes them all, archived and hibernating ones too, and returns none. `threads.send` to a sample is `-32602` |
 | `threads.send` | `{ threadId, text, images?: ImageRef[], answers?: AskAnswer[], origin?: "phone", runnerId?: string \| null }` | `{ turnId }`. `runnerId` is the runner the client shows the thread on (`null` for this Mac's own): given, the primary refuses the message with `-32031` when it would reach any other runner (a thread still on the runner it's moving from, say), rather than passing it on; absent, it's routed as before, except that a message for another runner's thread is refused the same way while this runner knows of a move of it under way (an older app may have shown it as already moved). `text` can place the `images` among its words with `[Picture N]` markers (Pictures in a message). `origin: "phone"` is only for a phone command the primary passes on to a draining runner (Sync, "Commands"), so the message keeps its origin there; any other `origin` is `-32602`. If a turn is running and its CLI is live, the message goes into that turn straight away (a `user.message` under the running `turnId`, which is returned): the agent takes it at its next step, or right after its reply if that was already finishing, and the turn doesn't complete until it has been answered. If the thread was moved to another login (usually another provider) during the running turn, a message from Mike (or the phone) doesn't steer into the old CLI: the turn is stopped (`system.note` "Stopped here so <model> can take over.") and the message starts the next turn on the new login, with the handoff, as T3 Code does. If the agent is waiting on a card for its own tool call (an approval or a question, with an `itemId`), a message from Mike declines that card first (`approval.resolved` with `deny` and a `message` telling the agent he wrote instead), as the CLI reads nothing else until the card is answered; a background subagent's card is left open. Otherwise (the CLI is still starting or leaving, messages are already waiting, a move or fresh CLI is due on the next turn, Stop has been pressed, or the turn was opened only for a card) the message is queued and starts its own turn when the running one ends |
 | `threads.interrupt` | `{ threadId }` | `{}`. Stop ends the turn. Claude reports which user inputs it queued, started and cancelled. An input it never started is saved, including pictures, with a `system.note`; one it started is a deliberate cancel, even at zero tokens. With no receipt support, the fallback saves only a turn with no model output and zero input/output tokens, or one whose CLI never became ready. Saved inputs persist across restarts and precede the next ordinary user message in one model input, with pictures renumbered. Stop alone never retries them. `/clear` discards them; other slash commands and scheduled messages leave them saved. Editing a message discards saved rows in the cut history, and restores earlier saved rows when the edit cuts the input that carried them. A move to another runner drops automatic replay state (the original messages stay in its history). Missing pictures are marked unavailable; recovery only reads pictures inside this thread's own media folder |
 | `threads.edit` | `{ threadId, seq, text, images?: ImageRef[], stopBackground?: boolean, runnerId?: string \| null }` | `{ turnId, rewound: { seq, fromSeq, toSeq, files } }`. `runnerId` as for `threads.send`. Replaces the message at `seq` and carries on from there (see Editing a message): stops any turn, cuts the conversation back to just before it, undoes the agent's file changes since, and sends `text` as a new turn. Answers once the new turn has started, which can take a few seconds. `-32602` with the reason when the message can't be edited; `-32020` while another edit of the thread is under way or the runner is handing over; `-32050` while the thread has background work running and `stopBackground` isn't `true` (see Editing a message) |
-| `threads.update` | `{ threadId, title?, titleBy?: "mike" \| "agent", cwd?, accountId?, poolId?: string \| null, provider?: Provider, byAgent?: boolean, model?: string \| null, effort?: EffortLevel \| null, permissionMode?, snoozedUntil?: string \| null, archived?: boolean, archivedBy?: "mike" \| "agent" \| "threadbear", verdict?: "worked" \| "didntWork" \| "notNeeded", starred?: boolean, carryOnAtReset?: boolean, carryOn?: boolean, detached?: boolean }` | `{ thread: ThreadSummary }`. `detached` takes a thread out from under the thread that started it in the sidebar, or (`false`) puts it back (Nested threads). `carryOn` with an `accountId` on a thread whose last turn stopped at its login's limit carries on there at once with the runner's own carry-on message, rather than waiting for one from Mike (the limit box's Continue now on, since 12 Nov 2026); otherwise it's ignored. Since 13 Nov 2026 any move to another login (`accountId` or `poolId`) on an idle thread whose last turn stopped at a limit carries on the same way without `carryOn`, unless `carryOnAtReset` is `false` or the call is an agent's (`byAgent: true`, which the thread-key gate, `update_thread` and `move_thread` set, as the thread may have more access than the agent); a pool move picks a login of the provider it names (`provider`, which only goes with `poolId`: the menu's column), else of the named `model`'s, else of the thread's own, even when the thread's current login is in that pool (with none of that provider's logins free, the pool's usual pick, which may be the other provider's); an idle move with nothing to carry on gets a `system.note` ("<model> takes over from your next message."). `archivedBy` and `verdict` go with `archived: true`; see "Who archived a thread". `starred` sets or clears `starredAt`; starring a thread that's already starred keeps its place, and neither stops a turn. A `title` is Mike's unless `titleBy` is `"agent"` (the `update_thread` tool, unless the agent says Mike asked for it). Once Mike has named a thread, an agent's different title is `-32602` and nothing in the call changes, and no model title replaces it. `snoozedUntil` is an ISO time, or `"restart"` for until the runner next starts (any start: a planned restart, a crash, a reboot), when the thread wakes before the restart's resume is sent, so a thread put away while its own restart waited is still carried on. `"release"` is the same but only a start (or taking it over from a draining runner) on another release than this runner's wakes it, so a crash or a restart on the same build leaves it asleep (`snoozedUntilRelease`); a runner from a source checkout has no release to tell apart, so there it is `"restart"`. `update_thread`, `end_turn`'s `snooze` and `tb snooze` take it too. Snoozing or archiving releases the CLI (and archives a Codex thread in Codex too). Changing account or cwd takes effect on the next turn; an account change during a turn says so in a `system.note` ("<model> takes over from your next message, which stops this turn."), see `threads.send`. A model or effort change reaches a live Claude CLI straight away (`null` goes back to the default); on Codex it applies from the next turn, with a `system.note` if a turn is running. A folder change on the same Claude account copies the native session's transcript to the new folder and resumes it; on the same Codex account the session carries on in the new folder from the next turn. Otherwise (or if that fails) it starts a new native session with a handoff note: the thread so far under a 16,000-character budget (runner/src/handoff-history.ts, after T3 Code's): messages, tool calls with a little of their output, edited files and errors; the last user message, the last reply and the first message first, then newest to oldest, with gaps marked and a pointer to `read_thread` for the rest. An account of the other provider switches `provider`, resets `model` and `effort` to that provider's defaults unless the same call sets them, and clears the thread's "Always allow" rules. `model` and `effort` are checked as in "Models and effort across providers". `accountId` pins the thread to that login (clearing `poolId`). `poolId: null` pins it to its current login; a pool id puts it in that pool, and moves it onto one of the pool's logins at once (from the next turn) if its current one isn't in it; an unknown one is `-32602`. A move from one Claude login to another copies the session's transcript into the new login's config folder and resumes it there, as a folder move does |
+| `threads.update` | `{ threadId, title?, titleBy?: "mike" \| "agent", cwd?, accountId?, poolId?: string \| null, provider?: Provider, byAgent?: boolean, model?: string \| null, effort?: EffortLevel \| null, permissionMode?, snoozedUntil?: string \| null, archived?: boolean, archivedBy?: "mike" \| "agent" \| "threadbear", verdict?: "worked" \| "didntWork" \| "notNeeded" \| "didntNeedToSee" \| "gladISaw" \| "notSure", starred?: boolean, carryOnAtReset?: boolean, carryOn?: boolean, detached?: boolean }` | `{ thread: ThreadSummary }`. `detached` takes a thread out from under the thread that started it in the sidebar, or (`false`) puts it back (Nested threads). `carryOn` with an `accountId` on a thread whose last turn stopped at its login's limit carries on there at once with the runner's own carry-on message, rather than waiting for one from Mike (the limit box's Continue now on, since 12 Nov 2026); otherwise it's ignored. Since 13 Nov 2026 any move to another login (`accountId` or `poolId`) on an idle thread whose last turn stopped at a limit carries on the same way without `carryOn`, unless `carryOnAtReset` is `false` or the call is an agent's (`byAgent: true`, which the thread-key gate, `update_thread` and `move_thread` set, as the thread may have more access than the agent); a pool move picks a login of the provider it names (`provider`, which only goes with `poolId`: the menu's column), else of the named `model`'s, else of the thread's own, even when the thread's current login is in that pool (with none of that provider's logins free, the pool's usual pick, which may be the other provider's); an idle move with nothing to carry on gets a `system.note` ("<model> takes over from your next message."). `archivedBy` and `verdict` go with `archived: true`; see "Who archived a thread". `starred` sets or clears `starredAt`; starring a thread that's already starred keeps its place, and neither stops a turn. A `title` is Mike's unless `titleBy` is `"agent"` (the `update_thread` tool, unless the agent says Mike asked for it). Once Mike has named a thread, an agent's different title is `-32602` and nothing in the call changes, and no model title replaces it. `snoozedUntil` is an ISO time, or `"restart"` for until the runner next starts (any start: a planned restart, a crash, a reboot), when the thread wakes before the restart's resume is sent, so a thread put away while its own restart waited is still carried on. `"release"` is the same but only a start (or taking it over from a draining runner) on another release than this runner's wakes it, so a crash or a restart on the same build leaves it asleep (`snoozedUntilRelease`); a runner from a source checkout has no release to tell apart, so there it is `"restart"`. `update_thread`, `end_turn`'s `snooze` and `tb snooze` take it too. Snoozing or archiving releases the CLI (and archives a Codex thread in Codex too). Changing account or cwd takes effect on the next turn; an account change during a turn says so in a `system.note` ("<model> takes over from your next message, which stops this turn."), see `threads.send`. A model or effort change reaches a live Claude CLI straight away (`null` goes back to the default); on Codex it applies from the next turn, with a `system.note` if a turn is running. A folder change on the same Claude account copies the native session's transcript to the new folder and resumes it; on the same Codex account the session carries on in the new folder from the next turn. Otherwise (or if that fails) it starts a new native session with a handoff note: the thread so far under a 16,000-character budget (runner/src/handoff-history.ts, after T3 Code's): messages, tool calls with a little of their output, edited files and errors; the last user message, the last reply and the first message first, then newest to oldest, with gaps marked and a pointer to `read_thread` for the rest. An account of the other provider switches `provider`, resets `model` and `effort` to that provider's defaults unless the same call sets them, and clears the thread's "Always allow" rules. `model` and `effort` are checked as in "Models and effort across providers". `accountId` pins the thread to that login (clearing `poolId`). `poolId: null` pins it to its current login; a pool id puts it in that pool, and moves it onto one of the pool's logins at once (from the next turn) if its current one isn't in it; an unknown one is `-32602`. A move from one Claude login to another copies the session's transcript into the new login's config folder and resumes it there, as a folder move does |
 | `threads.retitle` | `{ dryRun?: boolean, threadIds?: string[] }` | `{ threads: { threadId, from: string, to?: string, reason?: string }[] }`. Gives a model title to every thread, archived and snoozed included, whose title is still its first message's first line and that nobody has named (`titleSet`); see "Titles" under "Settings and models". One entry per such thread: `to` when it was renamed, `reason` when it wasn't (no key, private folder, over budget, renamed meanwhile). With `threadIds`, those threads whatever their title (a poor model title can be asked for again), still never one named by hand. The model also gets the start of the thread's first reply. `dryRun` lists them without asking the model (`tb retitle`) |
 | `threads.delete` | `{ threadId }` | `{}`. Stops the thread's CLI and moves its folder to `trash/` in the data dir (a Codex thread is archived in Codex too). Every client gets `thread.deleted` |
 | `threads.events` | `{ threadId, afterSeq?: number, beforeSeq?: number, limit?: number }` (default: the newest 500) | `{ events: Event[], firstSeq, lastSeq, inProgress: { itemId, type: "assistant.text" \| "reasoning", text }[] }` |
@@ -1454,11 +1633,13 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `patches.trust` | `{ threadId, files: { file, hash }[] }` | `{ trusted: string[] }`. Trusts those versions of the thread's waiting patch files (each a `file` its `patches` lists with `untrusted`, and the `hash` given there), then every thread's patches are read again, so the answer comes once they have been. The `claude` entry's file trusts the folder's Claude Code settings the same way. `-32602` for a file the thread isn't waiting on, or one whose hash has moved on since (look again). See "Trusting a folder's patches" |
 | `actions.run` | `{ threadId, actionId }` | For a prompt action, `{ turnId }`: its prompt was sent as a message (as `threads.send`). For a url action (only an older client calls it for one), `{ ok: true, durationMs }` once the page is opened on the runner's Mac, with nothing in the transcript. For a command action, `{ ok, exitCode?, durationMs, seq }` once the command has finished, with its output in the transcript as the `action.run` event at `seq`. The command runs in the thread's folder through a login shell with the thread's variables (`THREADBEAR_THREAD_ID` and the rest) and is stopped after 10 minutes. `-32602` for an action the thread doesn't have, `-32020` while the same action is still running |
 | `panels.render` | `{ threadId, panelId }` | `{ image?: ImageRef, items?: PanelItem[], note?: string }` draws an `image` panel or fills a `list` panel now. For `xcode.simulator`, a screenshot of the booted simulator (`xcrun simctl io booted screenshot`), written to the same file each time under the thread's `panels/`; with no device booted (or another failure) there's only `note`. For a `list` panel, the rows its patch's `items` function returned (at most 200), or `note` with the error when it threw or took over 20 seconds. Slow: it waits for the screenshot or the function. `-32602` for a panel the thread doesn't have |
+| `panels.toggle` | `{ threadId, panelId, toggleId, on }` | `{ items?: PanelItem[], note?: string }`. A list panel row's switch was pressed: calls the `toggle` function of the panel's patch with `{ id: toggleId, on }` and the same context as `items`, then fills the panel again and answers as `panels.render` does, so the row shows what the patch now says. A throw or a call over 20 seconds is `-32000` with its first line ("Couldn't switch it: ..."). `-32602` for a list panel the thread doesn't have, one whose patch has no `toggle` function, or an `on` that isn't a boolean. The app shows the new state at once, takes no more presses of that switch until the answer, and puts it back if the call fails |
 | `panels.convexDeployments` | `{ threadId, panelId, refresh?: boolean }` | `{ deployments: { deployment, deploymentUrl, label }[], note?: string }`. The configured cloud deployment and the project's Development and Production deployments, resolved through the runner's own Convex CLI, run in the project's folder, with read-only queries of `process.env.CONVEX_CLOUD_URL`. Duplicate names are combined; `note` explains unavailable choices. Cached for one minute; `refresh` bypasses the cache. Makes no deploy keys and changes no project settings. `-32602` for a missing or non-cloud panel |
 | `panels.convexKey` | `{ threadId, panelId, deployment?: string, renew?: boolean }` | `{ deployment, deploymentUrl, adminKey }`, a deploy key for a panel with `convex`, for Convex's embedded dashboard. `deployment` defaults to the panel's configured deployment; any other name must be one returned by `panels.convexDeployments` for this panel's project. The runner makes it the first time (`convex deployment token create` in the project's folder, with the runner's own Convex CLI, so an older `convex` package in the project doesn't matter, on Mike's Convex CLI login) and keeps it in `secrets/convex-panels/<deployment>.json`; `renew` deletes that one from Convex and makes a fresh one. A kept key is first checked with the deployment's `/api/check_admin_key` (only at its own `<name>[.<region>].convex.cloud` address), and one Convex says no to (revoked) is replaced the same way; an unclear answer keeps it. Slow the first time. `-32602` for a panel the thread doesn't have or one without `convex`; `-32040` when the runner's Convex CLI isn't signed in (or its login expired), `-32041` when its login can't reach the deployment, otherwise `-32000` with the CLI's message, each in plain words |
 | `panels.convexLogin` | `{ threadId, panelId, check?: boolean, force?: boolean }` | `{ state: "idle" \| "waiting" \| "done" \| "failed", url?, code?, message? }`. Signs the runner's Convex CLI in (`convex login --no-open --login-flow poll`), for a panel that got `-32040` (or `-32041`, with `force`, to switch accounts). Answers once the CLI prints its device page: `url` to open in the browser on the Mac the person is at (any browser can approve it, so a remote runner's sign-in works from here), `code` what that page shows. A call while one is waiting joins it. `check` only reports: poll it until `done` (then the deployment list is fetched afresh) or `failed` (`message` says why, or that it wasn't approved within the code's five minutes) |
 | `threads.commands` | `{ threadId }` | `{ commands: SlashCommand[] }`: what the composer's picker offers for the thread (see Slash commands) |
 | `threads.contextUsage` | `{ threadId }` | `{ usage?: ContextUsage, live: boolean, note?: string }`: what fills the thread's context, in Claude's own words, for the composer ring's popover (see Context breakdown). Asked of the thread's running CLI; never starts one. Fast (about a second) |
+| `threads.warm` | `{ cwd?, accountId?, poolId?, model?, effort?, permissionMode?, worktree?, projectIds? }` (what the new-thread page's `threads.create` would send, without the words), or `{ cancel: true }` | `{ warmId?: string }`: starts a CLI for the new thread being written, so its first message doesn't wait for one to boot (see Warm start below). No `warmId` when this runner doesn't (the `warmStart` experiment off, a folder that asks for a worktree or isn't there, a project, a provider other than Claude). `cancel` stops this connection's. Refused to a thread's own connection |
 | `folders.commands` | `{ cwd?: string, accountId?: string, permissionMode?: PermissionMode }` | `{ commands: SlashCommand[] }`: the same list for a new thread's box, before the thread exists: the login and folder it would start on, each defaulting as `threads.create` does. `-32010` for an unknown login |
 | `threads.highlights` | `{ threadId }` | `ThreadHighlights` (see Highlights): what the thread has made, shared and pinned, read from its events since the last call and kept with the thread |
 | `threads.explain` | `{ threadId, selection: string, message?: string, question?: string, earlier?: { question?: string, answer: string }[] }` | `{ answer: string, model: string }`. Explains words Mike selected in the transcript, on the small model (see Explain). `message` is the whole message they came from, as the app shows it; `earlier` and `question` are a follow-up. Writes nothing to the thread. `-32000` with the reason when no model answers |
@@ -1469,7 +1650,7 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `schedules.list` | `{ threadId?: string }` | `{ schedules: Schedule[] }`, soonest `nextRunAt` first, then the paused and finished ones. With `threadId`, only the ones that send to that thread or were made by it |
 | `schedules.create` | `{ text: string, title?: string, at?: string, cron?: string, timezone?: string, threadId?: string, cwd?, accountId?, poolId?, model?, effort?, permissionMode?, check?: string, checkTimeoutSecs?: number, paused?: boolean, createdBy?: string, runnerId?: string }` | `{ schedule: Schedule }`. Exactly one of `at` and `cron`. `check` (at most 2,000 characters) and `checkTimeoutSecs` (1 to 300; 60 without): see "Schedule checks" below. `accountId` and `poolId` together, or a `poolId` this runner doesn't have, is `-32602`. An `at` in the past runs straight away. With `threadId` it sends there, otherwise it starts a new thread each time (`cwd` defaults like `threads.create`'s, checked now). A bad cron or zone is `-32602` with a message saying what's wrong. `runnerId` (an id or a name from `runners.list`) puts a new-thread schedule on another runner: its folder and account are checked there when it runs, and an absent `cwd` means that runner's default. Absent, it's this runner. Needs schedules in the backend (see Schedules, "Runners"); otherwise `-32602` |
 | `schedules.update` | `{ scheduleId, title?, text?, at?: string, cron?: string, timezone?: string \| null, paused?: boolean, cwd?, accountId?, poolId?: string \| null, model?: string \| null, effort?: EffortLevel \| null, permissionMode?, check?: string \| null, checkTimeoutSecs?: number \| null }` | `{ schedule: Schedule }`. `check: null` or `""` takes the check off (its `checkTimeoutSecs` stays); `checkTimeoutSecs: null` puts it back to 60. Setting `at` drops `cron` and the other way round; setting `accountId` drops `poolId` and the other way round (`poolId: null` leaves neither). The folder, login and model are only for one that starts a new thread: on one that sends to a thread they're `-32602`. A new time works out `nextRunAt` again; so does unpausing. Setting `at` on a finished one-off makes it run again then. The target thread can't be changed (make a new schedule) |
-| `schedules.delete` | `{ scheduleId }` | `{}` |
+| `schedules.delete` | `{ scheduleId }` | `{}`. From a thread's key not on Full access, refused (`-32060`, pointing at `delete_schedule`, which asks on a card) when the schedule's runs have more access than the thread, it has a check, or it isn't this runner's. On such a schedule `schedules.update` refuses lowering its `permissionMode`, taking its `check` off (`null` or blank), or changing its `timezone`, `accountId`, `poolId`, `model` or `effort` too, and `threads.update` refuses lowering the mode of a thread with more access than the caller's, so none of them can be chained into a delete; pausing it is free |
 | `schedules.run` | `{ scheduleId }` | `{ schedule: Schedule, threadId?: string, turnId?: string, queued?: boolean }` runs it now, as if it were due, even when paused. A repeating schedule keeps its `nextRunAt`; a one-off is finished. For a schedule on another runner it answers at once with `queued: true` and no thread: that runner runs it when it next hears (`runRequestedAt` is set until then) |
 | `runners.list` | `{}` | `{ runners: RunnerInfo[] }`, this runner first, then the rest by name. Without a backend, just this runner |
 | `requests.get` | `{ threadId, approvalId }` | `{ request, target?, runners, fingerprint, missingFolder? }`: another runner's request for a new thread (Asking another runner), exactly as it was filed (`relay:runnerRequest`) but for a folder starting on this Mac, which is the folder it would start in here ("The folder" there), the runner it names if this runner can find it (`{ id, name, self }`), and every runner to pick from instead. `missingFolder` is the folder as filed when it would start here and isn't a folder on this Mac. Main Mac's runner only; `-32602` for no such request on that thread |
@@ -1477,7 +1658,7 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `runners.stats` | `{}` | `{ stats: RunnerMachineStats[] }`: each runner's latest machine figures, `{ runnerId, at, cpuPercent, cores, memUsed, memTotal, diskFree, diskTotal, load1?, uptimeSec, machine?, os? }` (bytes; `uptimeSec` is the machine's). Asking marks them wanted (`sync:watchRunnersFromMac`, at most every 20 s), so every runner reports every 10 s until nobody has asked for 45 s. The Mac app asks only while a runner's details are open in the Runners panel and its window can be seen. Empty with sync off, on an older backend, or on a runner key. A runner older than this answers `-32601`. The app leaves out a row with a figure past `setRunnerStats`'s limits, as one stored before those were checked would be |
 | `remoteThreads.list` | `{ forTools?: boolean }` | `RemoteThreads`: other runners' threads for the sidebar (see "Other runners' threads"). `forTools` is a draining runner's agent tools asking the primary: it answers as for its own tools, waiting up to 3 seconds for the backend's rows (Agent tools). Empty with sync off, or before the backend (API 12) has answered. A runner older than this answers `-32601` |
 | `runners.setOrder` | `{ runnerIds: string[] }` | `{}`. Mike's runner order, every runner's id with this one's: the same order the phone sets (`phone:setRunnerOrder`), which a phone's new thread follows, saved with `sync:setRunnerOrder` (backend API 58, the owner key only). It comes back as `RemoteThreads.order` in `remoteThreads.updated`. `-32602` for a list that isn't one of strings; an error on a runner key or an older backend. A runner older than this answers `-32601` |
-| `files.read` | `{ path: string, maxBytes?: number, known?: { size, modifiedAt } }` | `{ path, size, modifiedAt, mediaType, data, truncated }` (`data` base64, at most `maxBytes`, default 16 MB, never over 48 MB; `truncated` when the file is longer), or `{ path, unchanged: true, size, modifiedAt }` when `known` matches the file. A file on this runner's Mac, for a Mac app showing one of its threads from another Mac (see "Other runners' threads"). `-32602` for a relative path, a missing file or a folder |
+| `files.read` | `{ path: string, maxBytes?: number, known?: { size, modifiedAt } }` | `{ path, size, modifiedAt, mediaType, data, truncated }` (`data` base64, at most `maxBytes`, default 16 MB, never over 48 MB; `truncated` when the file is longer), or `{ path, unchanged: true, size, modifiedAt }` when `known` matches the file. A file on this runner's Mac, for a Mac app showing one of its threads from another Mac (see "Other runners' threads"). `-32602` for a relative path, a missing file or a folder. With `runnerId` (another runner's), only a picture pasted into one of that runner's messages, from the backend (Other runners' threads through the backend, "Pictures in messages") |
 | `files.list` | `{ path: string }` | `{ path, entries: [{ name, isFolder, hidden, size?, modifiedAt? }], truncated }` (`size` for a file only; `isFolder` follows a symlink; `hidden` is a dotfile; at most 5000 entries, in no set order, `truncated` when the folder has more; a `size` that isn't a whole number of bytes is read as none). A folder on this runner's Mac, for the side pane's folder browser on another Mac (see "Other runners' threads"). `-32602` for a relative path, a missing folder or a file |
 | `schedules.preview` | `{ cron?: string, at?: string, timezone?: string, count?: number }` | `{ whenText: string, runs: string[] }`, the next `count` (default 5, at most 20) times it would run, for an editor to show as someone types. `-32602` with the reason for a cron or zone it can't read |
 | `projects.list` | `{ archived?: boolean }` | `{ projects: Project[] }`, newest `lastActivityAt` first. Archived ones only with `archived: true` (then all of them) |
@@ -1490,24 +1671,33 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `projects.delete` | `{ projectId }` | `{}`. Its threads leave it; nothing else is touched |
 | `threads.setProjects` | `{ threadId, add?: string[], remove?: string[] }` | `{ thread: ThreadSummary }`. What Mike does by hand: an added project is pinned (adding one the thread is already in pins it, which is how "keep it here" works), a removed one is remembered so the librarian never puts the thread back in it |
 | `librarian.status` | `{}` | `{ librarian: LibrarianStatus }` |
+| `github.pr` | `{ url, files? }` | `PrView` (see Pull requests). With `files: false`, without its files (`files: []`, `filesLater: true`). `-32602` for a link that isn't a github.com PR; gh's own error (`-32000`) when it can't be read |
+| `github.prFiles` | `{ url }` | `{ files, filesError?, filesCut? }`: a PR's files alone, as in `PrView` |
+| `github.prStates` | `{ urls: string[] }` | `{ states: { [url]: "open" \| "draft" \| "merged" \| "closed" } }`. A link it couldn't place is left out |
+| `github.prAct` | `{ url, action, method?, body? }` | `{}` once GitHub has it, or gh's own error. `action` is `merge` (with `method` `rebase`, `squash` or `merge`), `close`, `reopen`, `comment` (`body`), `approve` (`body?`) or `requestChanges` (`body`) |
 | `connectors.status` | `{ refresh?: boolean }` | `{ connectors: ConnectorsStatus }` (see Connectors). `refresh` asks the gateway's `/health` first, unless it did in the last 10 seconds; the app passes it when the Connectors panel opens. A runner from before Connectors answers `-32601` and the app leaves the panel out |
 | `librarian.run` | `{ threadId?: string }` | `{ librarian: LibrarianStatus }`. Queues a look at the thread now (reason `asked`), or with no `threadId`, at every thread it has never looked at (a backfill, newest first) |
 | `librarian.update` | `{ paused?: boolean, evolvingTitles?: boolean }` | `{ librarian: LibrarianStatus }`. Both settings persist in librarian.json. Evolving titles defaults on; off prevents later librarian renames, including an answer already in flight, without pausing other librarian work or initial naming |
 | `pools.list` | `{}` | `{ pools: Pool[] }` (see Pools) |
 | `pools.save` | `{ pools: Pool[] }` | `{ pools: Pool[] }`. Replaces the whole list in `runner.json` (`builtIn` is dropped; an empty list goes back to the built-in ones). `-32602` for a duplicate id, a blank id or title, an empty `accountIds`, or an account id the runner doesn't know. A blank or non-string `icon` is dropped. Every client gets `pools.updated` |
 | `settings.get` | `{}` | `{ settings: Settings }` |
-| `settings.update` | `{ defaultCwd?, idleMinutes?, maxLiveCLIs?, followMain?, bulletReplies?, oneReply?, labReview?, labReviewers?, keepAwake?, bringIn?, fullSync?, models?: { pool?: string \| null, privateFolders? }, experiments?: { [id]: boolean } }` | `{ settings: Settings }`. Saves what's given to `runner.json` and applies it straight away, except `followMain` and `fullSync` (next restart). `experiments` sets those switches under runner.json's `experiments`, keeping the rest; `Settings.experiments` lists every one as `{ id, name, does, on }`, oldest first. `defaultCwd` must be an existing folder, `idleMinutes` at least 1, `maxLiveCLIs` 1 to 20, `pool` a pool id or `null`, each `experiments` key an experiment's id, `labReviewers` a list of `{ provider, model?, effort? }` with known providers and efforts (a provider listed twice counts once); otherwise `-32602` saying which. Every client gets `settings.updated` |
+| `settings.update` | `{ defaultCwd?, idleMinutes?, maxLiveCLIs?, followMain?, bulletReplies?, oneReply?, labReview?, labReviewers?, labPanel?, keepAwake?, bringIn?, spareWeek?, fullSync?, models?: { pool?: string \| null, privateFolders? }, experiments?: { [id]: boolean } }` | `{ settings: Settings }`. Saves what's given to `runner.json` and applies it straight away, except `followMain` and `fullSync` (next restart). `experiments` sets those switches under runner.json's `experiments`, keeping the rest; `Settings.experiments` lists every one as `{ id, name, does, on }`, oldest first. `defaultCwd` must be an existing folder, `idleMinutes` at least 1, `maxLiveCLIs` 1 to 20, `pool` a pool id or `null`, each `experiments` key an experiment's id, `labReviewers` and `labPanel` each a list of `{ provider, model?, effort? }` with known providers and efforts (the same provider on the same model listed twice in one list counts once; an older app's `panel: true` entries in `labReviewers`, sent without `labPanel`, become the panel and stay in the list); otherwise `-32602` saying which. Every client gets `settings.updated` |
 | `instructions.get` | `{}` | `{ instructions: StandingInstructions }` (see Standing instructions). `-32601` with the experiment off, and from an older runner: the app then shows no box |
 | `instructions.set` | `{ text: string }` | `{ instructions: StandingInstructions }`. Saves and signs the text, trimmed; an empty one clears them and removes both files. `-32602` for a `text` that isn't a string or is over 20,000 characters, `-32601` as for `instructions.get`. Every client gets `instructions.updated` |
 | `devices.list` | `{}` | `{ devices: Device[], site?: string, reason?: string }` (see Devices). `site` is the website's root while sync is on; `reason` says why nothing can pair when it's off |
-| `devices.pair` | `{ kind: "phone" \| "browser", name?: string, days?: number }` | `{ device: Device, pairingLink?: string, signInLink?: string }`. For a phone, a one-use pairing code (see Devices) in the text the app draws as a QR code, `TBPAIR1_<base64url of url=…&code=…&key=<runnerId>:<key>>` (the `key` item is this runner's secret-box public key, see Secrets, "Trusting the key"; absent when the runner has none); no token. For a browser, a phone token and the website's sign-in link (`<site>/#token=…`), for the app to open. `days` is 1 to 365 (default 90). `-32000` while sync is off, or while the backend is older than this |
+| `devices.pair` | `{ kind: "phone" \| "browser", name?: string, days?: number }` | `{ device: Device, pairingLink?: string, signInLink?: string }`. For a phone, a one-use pairing code (see Devices) in the text the app draws as a QR code, `TBPAIR1_<base64url of url=…&code=…&key=<runnerId>:<key>>` (the `key` item is this runner's secret-box public key, see Secrets, "Trusting the key"; absent when the runner has none); no token. For a browser, a one-use sign-in code in the website's sign-in link (`<site>/#code=…`), for the app to open; no token. `days` is 1 to 365 (default 90). `-32000` while sync is off, or while the backend is older than this |
 | `devices.revoke` | `{ deviceId }` | `{ devices: Device[] }`. The phone or browser is signed out at its next request. `-32602` for an id that isn't there |
 | `models.run` | `{ job: "classify" \| "extract" \| "summarize" \| "generate", text: string, labels?: string[], fields?: Record<string, string>, maxWords?: number, system?: string, cwd?: string, maxTokens?: number }` | `{ ok: true, value, model }` or `{ ok: false, reason: "no-pool" \| "off" \| "private" \| "no-room" \| "timeout" \| "provider", message }`. One model call by hand (`tb models try`), on the pool like any other, with `feature: "tb"`. `maxTokens` (generate only, 1 to 8000, default 500) caps the answer, reasoning included; `classify` needs 2 or more `labels` and answers one of them; `extract` needs `fields` (name to a plain description) and answers an object of them, `null` where the text doesn't say |
-| `runner.status` | `{}` | `{ version, release?, branch?, pid, startedAt, home, logFile, liveClis, running: string[], background: { threadId, tasks: string[] }[], busy?: string[], pendingRestart?: { when, reason?, release?, resumeThreadId?, requestedAt, backgroundUntil?, waitingFor: string[] }, rolledBack?: { from, at }, draining?: { pid, version, release?, since, threads: string[] }[], update?: { state, checkout?, reason?, checkedAt?, commit?, release?, logFile?, launcherChanged?, launcherReason?, followsOrigin?, followProblem? }, behindRunners?: { name, problem }[], macScreen?: { fullDiskAccess?, dialogs, dialogsSince? }, clis?: CliStatus[] }`. `running` lists the threads that are starting, running or waiting on an approval or a question; `background` the threads whose CLI is still running background shells or subagents (`tasks` describes each). A restart waits for both. `busy` is every thread a restart would wait for: those, plus a turn-end hook still running or a thread between turns (deploy.mjs `--check-idle` reads it). `branch` is the branch the release was built from. `rolledBack` is set when this release is running because `launch.mjs` went back to it from `from`, which kept crashing at startup (and nobody has activated it on purpose since). `update` is the runner following main by itself (docs/dev-tools.md): `state` is `off` (`reason` says why), `idle`, `checking`, `building`, `waiting` (`release` is built and starts on the pending restart) or `failed` (`reason` is the error; `logFile` has the build's output); `commit` is main's tip at the last check (`checkedAt`). `followsOrigin` is set while `followOrigin` is on in `runner.json` (docs/dev-tools.md); `followProblem` says what's wrong with following GitHub's main, when something is. `behindRunners` is the other runners saying that of themselves, on the main Mac's runner |
+| `runner.status` | `{}` | `{ version, release?, branch?, pid, startedAt, home, logFile, liveClis, running: string[], background: { threadId, tasks: string[] }[], busy?: string[], pendingRestart?: { when, reason?, release?, resumeThreadId?, requestedAt, backgroundUntil?, waitingFor: string[] }, rolledBack?: { from, at }, draining?: { pid, version, release?, since, threads: string[] }[], update?: { state, checkout?, reason?, checkedAt?, commit?, release?, logFile?, launcherChanged?, launcherReason?, followsOrigin?, followProblem? }, behindRunners?: { name, problem }[], macScreen?: { fullDiskAccess?, dialogs, dialogsSince? }, clis?: CliStatus[] }`. `running` lists the threads that are starting, running or waiting on an approval or a question; `background` the threads whose CLI is still running background shells or subagents (`tasks` describes each). A restart waits for both. `busy` is every thread a restart would wait for: those, plus a turn-end hook still running or a thread between turns (deploy.mjs `--check-idle` reads it). `branch` is the branch the release was built from. `rolledBack` is set when this release is running because `launch.mjs` went back to it from `from`, which kept crashing at startup (and nobody has activated it on purpose since). `update` is the runner following main by itself (docs/dev-tools.md): `state` is `off` (`reason` says why), `idle`, `checking`, `building`, `waiting` (`release` is built and starts on the pending restart) or `failed` (`reason` is the error; `logFile` has the build's output); `commit` is main's tip at the last check (`checkedAt`). `followsOrigin` is set while `followOrigin` is on in `runner.json` (docs/dev-tools.md); `followProblem` says what's wrong with following GitHub's main, when something is. `behindRunners` is the other runners saying that of themselves, or that their update to main failed (whose fix thread the main Mac starts, docs/dev-tools.md), on the main Mac's runner |
 | `runner.restart` | `{ when?: "idle" \| "now", resume?: { threadId, text }, reason?: string, release?: string, backgroundWaitMs?: number, cancel?: boolean }` | `{ scheduled: boolean, waitingFor: string[], background?: { threadId, tasks: string[] }[], note?: string, noResume?: string, handover?: { keeps: string[] } }`. See Restarts below; `handover` under Handovers. `scheduled` is true once the restart is saved; an empty `waitingFor` means it is happening now. `background` is the background work among `waitingFor`. `release` is the release the restart should come back on (the deploy script sets it). `backgroundWaitMs` limits how long background shells and subagents hold the restart. `cancel: true` withdraws a pending restart that hasn't begun and returns `scheduled: false` (`-32020` once it has begun), with a `note` when it also put `current` back. `noResume` says why the `resume` won't be sent as things stand (the thread has already been resumed 3 times in the last hour), so whoever asked can say so rather than wait for it. A runner older than this answers `-32601` |
+| `runner.profile` | `{ seconds?: number }` | `{ file, summary: { ms, busyMs, gcMs, self, own, total } }`. `tb profile`: runs V8's CPU profiler on the runner's own main thread in-process (node:inspector, no restart or debug port) for `seconds` (default 10, at most 120), writes a `.cpuprofile` to `<home>/profiles/` (the newest ten kept) and returns where the time went. Each list is `{ name, where, ms, pct }[]`: `self` the leaf frames, `own` the nearest frame of the runner's own code under each sample (so a `readdirSync` is charged to whoever called it), `total` every function on the stack. One at a time; a second gets `-32602`. The runner also logs `event loop stalled` (info, with `ms`) whenever its main thread was held up for a second or more |
 | `runner.reinstall` | `{}` | `{ reinstall: RunnerUpdates["reinstall"] \| null }`. The Updates panel's Update it and Try again: the runner runs `install-runner.sh --stage` as a launchd job of its own (runner/src/reinstall.ts) straight away, stopping nothing, and says how it's going in `runner.updates`. `null` when the LaunchAgent isn't behind main. Refused to a thread's own key (rpc-gate.ts). A runner older than 14 Nov 2026 answers `-32601` |
 | `clis.list` | `{}` | `{ clis: CliStatus[] }` |
 | `clis.check` | `{ provider?: Provider }` | `{ clis: CliStatus[] }`. Starts a version check (both CLIs when `provider` is absent) and returns at once, with the state as it was when the call arrived; the result comes through `clis.updated` |
+| `accounts.useReset` | `{ accountId }` | `{ outcome: "reset" \| "nothingToReset" \| "noCredit" \| "alreadyRedeemed", account?: Account }`. Spends one of a Codex login's usage resets (Pools, "Usage resets"): Mike's click on the limit box, never a thread's (the thread-key gate refuses it). `account` is the login after the reading taken straight after. `-32010` for an unknown login, `-32602` for one whose provider has no resets, `-32020` while a reset for the same login is still on its way, `-32000` with Codex's words when it fails. A runner older than this answers `-32601` |
+| `accounts.findWork` | `{ accountId }` | `{ threadId, started: boolean, thread: ThreadSummary }`. The Usage panel's Find work for it, on a login whose week will go partly unused: starts a thread pinned to that login that suggests 2 to 4 jobs to spend the rest of its week on and asks before starting any (runner/src/spare-week.ts), whatever `Settings.spareWeek` says. While that login's last such thread is still open (not archived) it answers that one, `started: false`, rather than starting another. The app opens the thread either way. `-32010` for an unknown login. The app's, never a thread's (the thread-key gate refuses it). A runner older than this answers `-32601` |
+| `accounts.recheck` | `{ accountId? }` | `{ accounts: Account[] }`. Reads the login list again and asks the Claude CLI about that login's sign-in now (every Claude login without `accountId`), rather than at the next check, up to 10 minutes away. The app calls it every few seconds while a Sign in… it opened is unfinished, so the row stops waiting as soon as Terminal's sign-in is done. `accounts.updated` follows as usual. The app's, never a thread's (the thread-key gate refuses it). A runner older than this answers `-32601` |
+| `accounts.yearToken` | `{ accountId, runnerId?, code?, check?: boolean, cancel?: boolean }` | `{ state: "idle" \| "starting" \| "waiting" \| "checking" \| "done" \| "failed", url?, message?, madeAt? }`. Year-long token… for a Claude login on another runner (Accounts, "Year-long tokens", "On another runner"), with `runnerId` that runner's, through Convex as a `call` (backend API 90); without it this runner's own. With none of `code`, `check` or `cancel` it starts `claude setup-token` for the login, or joins the one already going, and answers within a few seconds: `starting` until setup-token has printed its sign-in page, then `waiting` with `url`, the claude.ai page to approve it on in any browser. `code` is what the page shows after Authorize (`<code>#<state>`, letters, digits, `-` and `_`, its state the url's own): the runner types it in and answers `checking`, then `done` (with `madeAt`) once the token is in the login's `threadbear-token.json`, or `failed` with `message`. `check` only reports (`idle` when nothing has been started, or the last one ended over 10 minutes ago); `cancel` stops it. One not finished within 10 minutes is stopped. The token is never in an answer. `-32010` for an unknown login, `-32602` for one that isn't Claude's or a code of the wrong shape or for another page, `-32020` while a code is being checked. The app's, never a thread's (the thread-key gate refuses it). A runner older than this answers `-32601`, or through Convex an error naming the method |
 | `clis.update` | `{ provider: Provider, version?: string, force?: boolean }` | `{ clis: CliStatus[] }`. Starts an update and returns at once, with `update.state` `running` or `waiting`; progress comes through `clis.updated`. `version` picks a kept Codex version (how "Go back" works). `force: true` installs a held version anyway |
 | `clis.setPolicy` | `{ provider: Provider, policy: "auto" \| "notify" \| "off" }` | `{ clis: CliStatus[] }` |
 | `usage.stats` | `{ days?: number }` | `UsageStats` (see Usage history): each login's tokens by the hour and its limit readings over time, for the Usage panel's charts. `days` is 1 to 14 (default 8). A runner older than this answers `-32601` |
@@ -1516,6 +1706,25 @@ Errors use JSON-RPC error objects: `-32602` bad params, `-32004` thread not
 found, `-32005` schedule not found, `-32006` sub-agent not found, `-32007` project not found, `-32010` account not found, `-32020` busy (e.g. two sends racing), `-32030` a draining runner no longer holds that thread (Handovers), `-32031` the thread isn't on the runner the request named (`threads.send`'s `runnerId`), `-32050` background work would be stopped (`threads.edit`), `-32060` the calling thread doesn't have the access for this (A thread's own key),
 `-32601` a method this runner doesn't have (`clis.*` on a runner older than
 them), `-32000` anything else with a readable `message`.
+
+### Warm start
+
+Claude Code takes about half a second from starting to its first request, and
+a new thread's first message used to wait for it after Send. With the
+`warmStart` experiment on (docs/experiments.md), the app calls `threads.warm`
+when its new-thread page opens (⌘N or the button, not at launch), and again
+when the box's settings change. The runner starts a CLI with the options that
+thread would start with, under an id it keeps for the thread, and answers that
+id. The app sends it back as `threads.create`'s `warmId`: the thread is made
+under that id, and its first start takes the running CLI if every option still
+matches (folder, login, model, effort, mode, instructions), else stops it and
+starts as before.
+
+There is one at a time, for the connection that asked: a new `threads.warm`
+with other settings replaces it, and it's stopped when that connection closes
+(the app quitting leaves no CLI behind), on `{ cancel: true }`, when the runner
+hands over or stops, and after ten minutes unused. A thread's own connection
+can't ask for one or name one.
 
 ### Models and effort across providers
 
@@ -1569,9 +1778,14 @@ where it installs.
   Cursor's by where it really lives (`~/.local/share/cursor-agent/...`), and
   only as Grok's when that's named `grok` or `grok-<version>...`.
 - **Asking.** Every tool comes to the runner first. OpenCode gets `*: ask` as
-  inline config, with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and `--pure`: a
-  folder's `opencode.json` outranks inline config, and its plugins run when a
-  session opens. Each request is answered from the thread's mode when it comes
+  inline config, with `OPENCODE_DISABLE_PROJECT_CONFIG=1` (and 2's
+  `OPENCODE_CONFIG_PROJECT_DISABLE=1`), `OPENCODE_CONFIG` blanked, a config
+  folder of the runner's own (`OPENCODE_CONFIG_DIR`, which on 2 replaces
+  `~/.config/opencode`) and, on 1, `--pure`: a folder's `opencode.json`
+  outranks inline config, and plugins are imported as a session opens, before
+  any rule can turn them off. OpenCode 1 imports a folder's
+  `.opencode/plugins/*.js` whatever it's told, so on 1 an asking thread or a
+  small job doesn't start under a folder that has some. Each request is answered from the thread's mode when it comes
   (Full: allow; otherwise the card). Only the once options are ever chosen, as
   an agent remembers "always" past the thread; "Always allow" is the runner's
   rule (`acp:edit`, or the exact plain command in the folder it runs in: the
@@ -1587,6 +1801,17 @@ where it installs.
   An edit of a file that runs as
   code asks every time, and so does an edit whose arguments aren't the plain file
   tools' (nothing can say where else it writes). Auto acts like Ask.
+- **Questions.** A thread offers forms (`clientCapabilities.elicitation.form`).
+  An `elicitation/create` in form mode becomes question cards, one per field:
+  its description is the question, its title the header, a list a multiple
+  choice. Only the last card takes typed words, so a field with no choices goes
+  last (a form with two can't be shown, and is declined with a note), and
+  words typed in place of a choice go to the field's `<key>_custom`, where it
+  has one. The answer is `accept` with the content, `decline` when the card is
+  dismissed or a required field has no usable answer, and `cancel` when the
+  turn stops; URL mode is declined with a note. OpenCode 2's question tool
+  asks this way, so `question` is allowed in threads. Small jobs offer no
+  forms and deny it.
 - **Cursor** can't be told to always ask (its allow-list and a folder's
   `.cursor/cli.json` can approve things), so Ask, Auto and Plan first run in its
   read-only `ask` and `plan` modes; a thread that can't be put in one doesn't start.
@@ -1638,7 +1863,7 @@ where it installs.
   version feed to compare with: `clis.list` has a row for each, and
   `clis.update` runs the agent's own updater when asked. `clis.setPolicy` does
   nothing for them, and `THREADBEAR_CLI_UPDATES=off` turns updating off.
-- **Not offered:** the sandbox (a confined thread is refused), rewind, steering
+- **Not offered:** rewind, steering
   (a message sent during a turn runs next).
 
 ## Notifications (runner to app)
@@ -1687,8 +1912,8 @@ type RunnerUpdates = {
   checkout?: string
   // What's being done about launcherChanged (runner/src/reinstall.ts). Left
   // out while nothing is: the app offers Update it (runner.reinstall).
-  // waiting: about to start (auto: the runner does it by itself, the
-  // selfReinstall experiment, rather than because it was asked; from a
+  // waiting: about to start (auto: the runner does it by itself, rather
+  // than because Update it was pressed; from a
   // runner of 14 Nov, waiting for busy threads);
   // running: install-runner.sh --stage is going, as a launchd job of its own;
   // staged: in place, but what's running is still behind until launchd next
@@ -1783,15 +2008,35 @@ type UpstreamStatus = {
   release?: {              // the newest signed release, kept through a failed check
     tag: string            // "release/2026-10-30"
     commit: string
-    date?: string          // the tag's, ISO
+    date?: string          // the tag's, ISO. Clients show a release's day from
+                           // this, in their own timezone: the name is the day on
+                           // Mike's runner, a day ahead of America's afternoons
     changes: number        // commits in it main doesn't have, merges left out
     subjects: string[]     // their subject lines, newest first, at most 50
     // Commits in it with an `Important:` trailer (a security or data fix),
     // and the trailer's text; covered by the tag's signature.
     important?: { commit: string; why: string }[]
     // Each signed release main does not have, newest first: plain-words
-    // notes, or its commit subjects when it was tagged without notes
-    notes?: { tag: string; lines: string[] }[]
+    // notes, or its commit subjects when it was tagged without notes.
+    // `date` is that tag's, as the release's own
+    notes?: { tag: string; date?: string; lines: string[] }[]
+    // The What's new page's cards for those releases, when upstream is a
+    // repo with a page (runner/src/changelog.ts: Mike's) and the runner
+    // could read its /changelog.json at this check. Not signed: something
+    // to look at only, so clients fall back on `notes`, and show the notes
+    // of a release missing from `releases` (its entry comes hours after
+    // the tag). `picture` is always an https file on the page's site.
+    changelog?: {
+      page: string                // https://threadbear.mikecann.app/changelog
+      releases: {
+        tag: string
+        link: string              // that release on the page (#2026-11-16)
+        highlights: { kind: "added" | "changed" | "fixed"; title: string; text: string; picture: string; clip?: true }[]
+        added: number             // its plain lines besides the cards
+        changed: number
+        fixed: number
+      }[]
+    }
   }
   // Mike's runner (runner.json releases.publish): the last tag it made.
   published?: { tag: string; at: string }
@@ -1835,7 +2080,9 @@ upstream's (a cherry-pick of Mike's, or a fix of theirs he took). In a copy
 whose `origin` is mikecann/threadbear, or with nothing of upstream's to
 compare with, it's `off` and finds nothing. A change is done once a commit
 on `main` that upstream doesn't have carries a `Ports: <commit>` trailer
-naming it (seven or more hex digits), or once it's dismissed.
+naming it (seven or more hex digits), or once it's dismissed. A commit that
+changed `desktop/` as well as the Swift app was made in both apps at once,
+so it isn't listed.
 
 ```ts
 type SwiftChanges = {
@@ -1965,8 +2212,20 @@ other restarting. The runner keeps the last build it saw of each and the
 threads waiting, in `app-restart.json` in the data dir, so both outlast its
 own restarts.
 
-- `wait_for_app_restart` (`{ text? }`) puts the calling thread on the list,
-  remembering the build running then. Asking again replaces its request.
+- `wait_for_app_restart` (`{ text?, commit? }`) puts the calling thread on
+  the list, remembering the build running then and the commit the new build
+  must contain: `commit` if given, else main's HEAD at that moment. Main
+  is looked up in the Threadbear checkout the apps are built from, then
+  the thread's folder; a `commit` in the thread's folder, then that
+  checkout (so `HEAD` is a worktree's own, and a thread in another repo
+  can name a Threadbear commit). A `commit` found in neither is refused with an error, rather
+  than waiting for any new build, and drops the request it had. Asking
+  again replaces its request.
+- A turn that ends needing nothing (no archive, snooze or waitFor) while
+  its thread is on the list hibernates the thread for a day at most
+  (`system.note` "Hibernating until the Threadbear app restarts onto the
+  new build, a day at most."), as it isn't done: the restart's message
+  wakes it. One that needs Mike stays in the inbox.
 - An `end_turn` with `needs: "you"` whose asks mention "Restart to Update"
   (in `action`, `why` or `where`) does the same, unless the thread is already on
   the list, and its reply says so. So does a completed turn whose
@@ -1979,7 +2238,20 @@ own restarts.
   Threadbear app has restarted onto <short> (<commit>), as you asked to
   hear." and its `text`, or "Check your change in the running app.". Then
   it's off the list. The same build again (the app reconnecting to a
-  restarted runner) changes nothing. A thread that remembered only one app's
+  restarted runner) changes nothing. A new build whose `commit` doesn't
+  contain the thread's commit (`git merge-base --is-ancestor` in the repo it was found in:
+  a build staged before the thread landed) keeps the thread on the list,
+  now from that build, with a `system.note` "<app> restarted onto <short>,
+  which doesn't have <commit> yet. Still waiting." A build whose `tree`
+  is that commit's tree for the app (main moved on with other changes
+  before the thread asked) counts too. When git can't tell (a build commit
+  neither the thread's repo nor the apps' checkout knows) the thread stays
+  on the list from that build too, noted "...and git can't tell whether
+  that has <commit>"; when it's too slow to answer, it stays on the list as
+  it was and the next `hello` asks again. Only a request with no commit at
+  all (none could be resolved) takes any new build. A build a thread on a draining runner was due to hear about is
+  forgotten when the same app comes back on any other build (rolled back,
+  or one without the commit); if that one counts, it hears about that. A thread that remembered only one app's
   build waits for that app: the other's first `build` isn't a restart of it.
   One that remembered neither (no app had said) takes either.
 - An archived thread, or a request more than a day old, gets only the
@@ -2077,7 +2349,7 @@ restart wait for busy threads. It hands over instead:
   thread's project tools read and change them there with
   `drain.projects { op, args }`: `op` is the `Projects` call the tool
   would have made on its own runner (`list`, `get`, `find`, `create`,
-  `update`, `appendNote`, `addLinks`, `removeLinks`, `changeMembership`,
+  `update`, `editNotes`, `appendNote`, `addLinks`, `removeLinks`, `changeMembership`,
   `chooseIcon`), with the same `args` and the agent as the maker, and the
   answer is `{ result }`. A primary older than this answers `-32601`.
   Joining or leaving changes the thread itself, so for a thread the
@@ -2164,16 +2436,48 @@ check it was running (13 Nov: a dozen threads were told theirs looked
 stuck, and nothing landed for 35 minutes). That's asked at every look
 rather than kept: once the landing has gone, what's left is judged as
 usual, and the three hours count from the first landing seen under the
-job. A quiet shell beside one (a loop polling the landing's log) is still
-told, as nothing ties the two together, with a line saying a `tb land`
-in the thread is still going and to leave it running. Codex's background terminals leave no files,
+job. Any other quiet job of the thread's (a loop polling the landing's
+log, a sub-agent waiting on its own `tb land`) is left alone while that
+landing is within its three hours too: nothing ties the two together, and
+the agent was told once per copy of a sub-agent's repeated wait loop, so
+the same notice seemed to come four times (19 Nov). Once the landing has
+gone or run past its time, they're judged as usual. Codex's background terminals leave no files,
 so Codex threads aren't looked at.
 
 The thread gets one message from the runner (origin `runner`) listing
-its stuck jobs, how long each has run and what's running in it, asking
+its stuck jobs, with each one's task id (copies of one job share a
+description), how long it has run and what's running in it, asking
 the agent to stop any that are stuck and to ask Mike if it can't tell.
 Jobs it has been told about are kept in `stuck-jobs.json` in the data
 dir for a day, so a runner restart doesn't tell it again.
+
+### Background wait loops
+
+A thread can't be hibernated while its CLI runs background jobs without
+stopping them, so an agent that waits on something outside its turn (a
+merge to land, CI, another thread, a time) with a background shell that
+sleeps until it's there keeps its thread awake: on 17 Nov a "wait until
+this Mac's main has Ian's commit" loop sat for 40 minutes, and Hibernate
+asked to kill it. The Claude adapter's PreToolUse hook (wait-loops.ts)
+refuses such a call as it's made, in every mode: a Bash call with
+`run_in_background` whose command has a `while`, `until` or `for` loop and a
+`sleep` from there on, a `sleep` of a minute or more by itself, or `gh run
+watch` / `gh pr checks --watch`; and a foreground one whose loop sleeps 30
+seconds or more between looks, or that sleeps a minute or more, as the CLI
+moves a command that hits its timeout to the background (a quick poll there
+is a server coming up, and a CI watch is a turn waiting for its own
+checks). Quoted text and a heredoc's body aren't read as code, except a
+shell's `-c` script (`bash -lc` too), ssh's remote command, a `"$(…)"`
+substitution and a heredoc a shell or ssh reads; a quoted number is kept,
+so `sleep "60"` is still a minute. The text is read in linear
+time, as the hook runs on the runner's event loop. The reason tells the agent to wait
+with `schedule_message` on a cron (a one-off whose check prints nothing is
+done for good, which would drop the wait) and a `check` that prints once
+it's ready, then end its turn with `snooze`, so the thread hibernates and
+the check wakes it. A
+short wait it will use within its turn (a server starting) goes through
+when the command carries `# short wait`. Codex's shell has no hook to
+refuse a call with, so Codex threads are left to the stuck-job check.
 
 ### Frozen CLIs
 
@@ -2368,6 +2672,56 @@ type StandingInstructions = {
   message, not in a fresh session's instructions, can fade in a compaction, as a
   project's joined line can.
 
+## Shared memory
+
+`runner/src/memory-sync.ts`, `convex/memorySync.ts` (API 84). The
+`sharedMemory` experiment, on each runner that takes part. What Claude Code
+loads before the first message (the global `CLAUDE.md`, and the project's
+memory folder with its `MEMORY.md`) is most of what makes a thread know
+Mike, and it lived on the main Mac alone.
+
+- **Paths.** `global/CLAUDE.md`, or `memory/~<rest>/<name>.md`, where
+  `~<rest>` is Claude Code's project slug with the home folder's slug cut off
+  (`-Users-m5-mike-dev-me-misc` is `~-dev-me-misc`, and lands in
+  `-Users-bruce-dev-me-misc` on Bruce). Folders outside home, and under
+  `~/Library`, aren't shared. Files are up to 128 KB; both sides check the
+  same pattern.
+- **The main Mac** (the owner key) scans each Claude login's `CLAUDE.md`
+  (`~/.claude`'s first) and `projects/*/memory/*.md` once a minute, masks
+  secret values it knows of, and sends what changed or went to `putMemory`.
+  Each change takes the next `seq`; a deleted file stays as a `gone` row.
+- **The others** read `memorySince(after)` a page at a time into
+  `memory-cache/` in the data dir, then each pass make every Claude login (and
+  Codex's `AGENTS.md` for the global file, where there's a Codex home) match
+  it, so a login added later, or a file deleted by hand, catches up. Only
+  places whose real path is inside a login's folder, a Codex home or
+  `~/.agents` are written. `memory-sync.json` records, for each file on disk,
+  the hash sync last wrote there:
+  - missing: written; already the main Mac's version: adopted (kept up to
+    date, never deleted);
+  - something else there before sync wrote to it, or a file too big or not a
+    plain file: left alone for good, and offered once;
+  - changed since sync wrote it: offered, and kept until the main Mac has a
+    newer version, which then replaces it;
+  - every write and delete happens after the pass's offers have gone, and
+    only if the file is still as it was read, so an edit landing in between
+    waits for the next pass.
+- **Offers** are a runner key's agents' new or changed files, one row per
+  version (two logins' different edits of one file are two offers), at most
+  200 waiting per runner (`memoryOfferCounts`). Only the owner reads them
+  (`memoryOffers`, 20 at a time), and it writes each to
+  `memory-offers/<runnerId>/<path>/<hash>.md` in its data dir, never into
+  memory, then `takeMemoryOffers`; past 20 MB there it stops taking them, so a
+  runner key can't fill its disk. Folding them in is for Mike or a scheduled
+  job (the nightly retro on Mike's Mac). A runner key can't write
+  `memoryFiles`, so it can't change what the main Mac's agents, or any other
+  runner's, are told.
+- **Sizes.** At most 50 files and 2 MB of text a call (the runner sends up to
+  1 MB). A stopping or handing-over runner stops syncing first.
+- **The limit.** Anything that can write a memory file on the main Mac can
+  brief every runner's agents, as it already briefs every thread in that
+  folder there. Memory goes to the backend in the clear, as transcripts do.
+
 ## Explain
 
 Mike can select words in a thread's transcript and pick Explain from the
@@ -2471,69 +2825,24 @@ type UsageStats = {
 - A draining runner (Handovers) keeps neither file: both are the new
   runner's to write.
 
-## Sandboxed threads
+## Sandboxed threads (taken out)
 
-An experiment (6 Nov 2026, runner/src/sandbox.ts), off unless a runner's
-`runner.json` has `sandbox: { folders: ["~/sandboxed"], image: "threadbear-sandbox",
-docker?: "docker" }`. A Claude thread whose folder is under one of `folders`
-runs its CLI inside `docker run -i --rm --init` from `image`, as the runner's
-own user, with only these mounted in, each at the same path as on the
-machine: the thread's folder and the login's config folder (plus
-`~/.claude.json` for the default login), read-write; the CLI's real file and
-any other path it's handed as an argument, read-only. Nothing else of the
-machine is there (the runner, its data folder and secrets, other repos), so
-an agent with full access can change only its own folder. The runner, its
-transcripts, Convex sync, pools and schedules don't change, and the
-threadbear tools and hooks reach the CLI over its stdin and stdout as
-always. Model and command probes, and Codex threads, run as before. The
-login's config folder is mounted read-write, and the same login's threads
-outside the sandbox read it: give sandboxed threads a login of their own.
-
-Its environment is an allowlist, not the runner's (`sandboxEnvAllowed`):
-the login's config folder, the Claude Code and Agent SDK settings the
-runner and the SDK set, each by name (`CLAUDE_CODE_ENTRYPOINT`,
-`CLAUDE_CODE_TERMINAL_MCP_TOOLS`, `CLAUDE_AGENT_SDK_VERSION`...; never a
-whole prefix, as some `CLAUDE_CODE_*` settings carry secrets), the model
-(`ANTHROPIC_MODEL` and its defaults), the thread's id and the runner's
-version, and the locale and terminal (`LANG`, `LC_*`, `TERM`, `TZ`).
-A name that reads like a credential, a socket, a proxy or an address
-(`TOKEN`, `KEY`, `SECRET`, `PASSWORD`, `AUTH`, `CERT`, `SOCK`, `PROXY`,
-`URL`...) stays out even if listed, so the CLI in the sandbox
-signs in from its login's folder, never from `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN`, and `THREADBEAR_THREAD_KEY` never goes in.
-Cloud, GitHub, signing and API keys, `SSH_AUTH_SOCK` and proxies in the
-runner's environment aren't there. `PATH`, `HOME`, `TMPDIR` and the
-user are the container's own. The container's network is Docker's
-default: open, as Claude itself needs to reach its API. Confinement
-covers the machine's files and secrets, not what the agent sends out.
-
-A thread that starts in a sandbox folder, or that a sandboxed thread's
-agent starts in one, is shut in it (`confined` on its record): it never
-starts outside a sandbox again, so a link put in its folder's place, a
-worktree outside, or a Codex login (Codex doesn't run in it) stop it with a
-note rather than run it on the machine; the `docker run` checks the folder
-it mounts once more. Only a move Mike makes (`threads.update` from the app
-or `tb`) or allows on a card takes it out. A thread started from a confined
-one (its `startedBy.threadId`) is confined too, whoever starts it, unless
-Mike allowed otherwise: a create_thread card he said yes to, or his press of
-a button he allowed (the runner passes `unconfine: true` on
-`threads.create` then; the caller gate takes it out of a thread's own call).
-So it can't start where it couldn't be shut in: a folder outside a sandbox
-or a Codex login is refused. A review by another lab of a confined thread
-runs confined, on a login that can (Claude), or isn't done, with a note
-saying why. Its agent counts as restricted
-for the threadbear tools however its mode is set ("Tools for agents",
-"Raising access"), and what it writes in its folder is never trusted as
-written: its patches and Claude settings wait for Mike in Patches, as the
-runner and the Mac app would run them outside the sandbox.
-
-The container lasts as long as the CLI: when the runner stops a thread's
-CLI (idle, a restart, interrupt), the container is killed with it, and the
-next message starts a new one that resumes the session from the login's
-config folder. Anything outside the mounts doesn't survive that, like an
-installed package or a running server. The image needs the tools agents
-run (git, ripgrep, Node, Python); a worktree whose git folder is elsewhere
-isn't mounted yet.
+An experiment from 6 Nov 2026 ran a thread's Claude Code in a Docker
+container when its folder was under one of `runner.json`'s `sandbox:
+{ folders }`. It was taken out on 16 Nov 2026, unfinished and before
+anyone relied on it. What's left fails closed for a copy that had it on:
+a thread in a folder `sandbox.folders` still names, or one whose record
+says it ran shut in one (`confined`), isn't started (`threads.create`
+refuses, and a message to an old one gets a note saying why) rather than
+running on the machine instead; taking `sandbox` out of runner.json says
+that's fine. Such a thread counts as the least access there is, below
+even Ask, so its title and words reach no other thread without a card
+(a quiet-inbox wait), and it gets no lab review (which would run its
+tests on the machine). `threads.create` with `confined: true` (an older runner
+handing over a sandboxed agent's call) is refused. A thread's move still
+says `unconfine: false` for an agent's to an older runner across a
+handover (the phone's path too), and the runner reads `unconfine: false`
+from one as `byAgent`.
 
 ## Pools
 
@@ -2602,18 +2911,66 @@ thread to another login when the one it's on runs out of room.
   login in that pool (and no `poolId` was given), the first pool that has
   one. The thread's provider is its model's, or the pool's first provider;
   its login is the pool's pick of that provider (below, "Which login"). A dev
-  runner's `keepAccount` pins new threads to its account instead.
+  runner's `keepAccount` pins new threads to its account instead, unless
+  that login's plan has ended (`planEnded`).
   `defaults.poolId` in `hello` is folder-blind: the app applies folders
   itself (`poolForFolder`, with the shared cases in
   `runner/test/fixtures/pool-folder-cases.json`).
+- **Year-long tokens.** A Claude sign-in lasts about 28 days and can't be
+  renewed; `claude setup-token` makes a token that lasts a year. Mike opts
+  a login in with Year-long token… on its Usage row: the app opens
+  Terminal on its own helper (`desktop/core/src/claude_token.py`), which
+  runs `claude setup-token` for that login and writes
+  `threadbear-token.json` in the login's folder (0600: `{ token, madeAt }`).
+  Not settings.json's `env`, which Mike's logins share through symlinks.
+  The runner watches each Claude login's folder for that file, so it
+  sees it as soon as it lands (or at its 10-second rescan where a folder
+  can't be watched), sets `yearToken`, and passes the token to that login's CLI as
+  `CLAUDE_CODE_OAUTH_TOKEN` (cliEnv), where it takes over from the
+  Keychain sign-in; never to another login, a client, Convex or the log,
+  and Claude Code keeps it out of its tools' shells. `claude auth status`
+  calls any token signed in, with no end, so a token login isn't asked:
+  its `loginEndsAt` is `madeAt` plus 365 days, and the usual warning comes
+  three days ahead, with New token…. A refused turn holds it out as for
+  any login, until a new token. A token only runs models: claude.ai's own
+  connectors and Remote Control don't work on it. Usage readings come from
+  turns as before. Deleting the file goes back to the sign-in. When a
+  login's `yearToken` changes, its CLIs let go of their sessions once
+  their turns end, so the next turn runs on the new token, and a refusal
+  on it is taken back. Each token read, whole and without its prefix, is
+  a known value to the secret scrubbing, and the file a secrets file.
+- **Year-long tokens on another runner.** The Usage panel's Terminal
+  helper only reaches this Mac's logins. For another runner's (bruce,
+  Tinker Desk, a Windows PC), the Runners panel's details for that runner
+  list its Claude logins with Year-long token… (`accounts.yearToken`
+  with its `runnerId`). That runner runs `claude setup-token` for the
+  login itself, under a small Python helper in a pseudo-terminal 1000
+  columns wide (`runner/src/year-token-maker.ts`), with the login's own
+  environment and no token in it. The helper picks the claude.ai page
+  (the one whose `redirect_uri` is `platform.claude.com`'s code page) out
+  of what setup-token prints and says only that, `done` or `failed` to
+  the runner, never anything else setup-token printed. The app opens the
+  page in Mike's browser; after Authorize the page shows a code, which he
+  copies and the app takes from the clipboard on Paste code, checking its
+  state is the page's. The runner checks the code's shape and state
+  again, types it in, then Enter on its own half a second later (sent
+  together, setup-token shows the code and never takes it), and the
+  helper writes `threadbear-token.json` (0600) from what setup-token
+  prints, as the Terminal helper does. The runner's watch picks the file
+  up as for any token. The token never leaves that machine: not in an
+  answer, Convex, the relay, the app or the log. The code is single-use
+  and worthless without the verifier only that setup-token holds; the
+  backend keeps a `call`'s args only until it's finished. Through
+  Convex it's the owner key's alone (`relay:queueCommand`), so a runner
+  key can't start one. Needs `python3` and a Mac or Linux runner.
 - **Which login.** Of the pool's logins of a provider that are OK to run
   on, the one whose weekly window resets soonest, since whatever is left
   in it then is lost; the most room breaks a tie. Logins with no weekly
   reset known (or one already past) come after those with one, and a
   login with room unknown after those with room known.
-- **OK to run on.** A login is OK when it isn't blocked and its room (the
-  tighter of the 5-hour and weekly windows) is at least 1%, or its usage
-  isn't known.
+- **OK to run on.** A login is OK when it isn't blocked or signed out and
+  its room (the tighter of the 5-hour and weekly windows) is at least 1%,
+  or its usage isn't known.
 - **Before a turn** (a send, a queued message, a schedule): if the thread's
   login isn't OK, or isn't in its pool any more, it moves first. A thread
   stays on one login as long as it can, since every move costs a cold
@@ -2634,6 +2991,35 @@ thread to another login when the one it's on runs out of room.
   too, it moves on again while another login has room (since 12 Nov 2026;
   it used to wait after one move). It can't loop: each login that runs dry
   stays blocked until its window resets.
+- **Signed out** (since 16 Nov 2026). From Claude Code 2.1.325 a Claude
+  sign-in ends 28 days after it was made, and the CLI can't renew it: every
+  turn fails with `errorKind: "auth"` until someone signs in again through
+  claude.ai's captcha. The runner asks each Claude login's CLI
+  `claude auth status --json` (in that login's environment, never the
+  Keychain) at start, every 10 minutes and after a refused turn. A login is
+  `signedOut` when the CLI says `loggedIn: false`, when its
+  `loginExpiresAt` has passed (the CLI goes on saying `loggedIn` for a few
+  hours after, on an access token it can't renew), or for an hour after a
+  turn on it was refused, unless a new sign-in (another `loginExpiresAt`)
+  or a working turn is seen first. The hour is so a one-off refusal
+  doesn't keep a good login out until its end date. `loginEndsAt` is that `loginExpiresAt`. Pools and
+  new threads skip a signed-out login whatever its room. A pool thread
+  whose turn on a Claude login is refused moves like one at its limit
+  (only Claude: a Codex refusal isn't remembered, so moving on it could
+  bounce a thread between two refused logins), with the
+  runner-origin message "Your last login was signed out, so this thread
+  has moved to another one. Carry on from where you left off." and the
+  note "Moved to <login>: <login> is signed out."; with nowhere to go, or
+  pinned, it stays put with the app's sign-in line, which names the login.
+  A signed-out login brings no wait: nothing says when it's back.
+  A schedule's new thread pinned to a signed-out Claude login starts on a
+  pool holding that login instead (the folder's pool first), on another
+  Claude login there that's OK, with the same note marked `login`. A
+  login alone in its pools has nowhere to go: its run makes its thread as
+  usual, and while that thread is still out, failed, on the same login,
+  later runs skip with the note "<login> is signed out. The last run's
+  thread says so and offers the sign-in." A pinned thread Mike starts
+  himself never stands in.
 - **Waiting.** When nothing in the pool has room the thread gets
   `waitingForRoom: { until, accountId? }`: the earliest time one of the
   pool's logins is back, plus a minute (30 minutes from now if no reset
@@ -2654,6 +3040,29 @@ thread to another login when the one it's on runs out of room.
   `system.note`. At `until` it carries on with the "has room again"
   message if its login has room, and waits again if not. Its login isn't
   marked blocked by this.
+- **Usage resets** (since 16 Nov 2026). Codex hands out free "Full reset"
+  credits (two at a time on Mike's Pro Lite, each expiring a month after
+  it's granted) that restore a login's 5-hour and weekly limits at once.
+  Each Codex read of a login's limits (`account/rateLimits/read`, at every
+  app-server start) brings the count, which goes into `usage.resets`.
+  Threadbear never spends one by itself, as Codex's own setting for its
+  assistant promises for its resets: when a thread's limit box is up (a
+  pool that's all out, or a pinned login at its limit) and a Codex login it
+  would carry on with has resets left, the box offers Use a reset, and
+  `accounts.useReset` spends the one that expires soonest
+  (`account/rateLimitResetCredit/consume`, one idempotency key per click),
+  then reads the login's limits again. That reading lifts the block like
+  any other, so a thread waiting for room carries on by itself.
+- **Rechecking a login that's out** (since 17 Nov 2026). Readings only
+  come from turns, and pools skip a login that reads as out, so a login
+  reset outside Threadbear (a reset used in Codex) read 0% until its old
+  reset time. Every 10 minutes (the first a minute after start) the runner
+  reads each login whose reading says blocked or under 1% again, if that
+  reading is 10 minutes old or more and its provider can read without a
+  turn (Codex: `account/rateLimits/read` in a short-lived app-server;
+  `runner/src/limit-recheck.ts`). The answer goes into the usage store
+  like a turn's, so room lifts the block and threads waiting for room
+  carry on by themselves. Signed-out and plan-ended logins aren't read.
 - **Carrying on by itself is Mike's to turn off**, per thread:
   `threads.update { carryOnAtReset: false }` ends any wait for room (with
   a note) and stops later limits starting one; pool moves to a login with
@@ -2713,7 +3122,9 @@ over the bubble, and drops the runner's "[2 pictures]" line once every
 picture it counts is there (ThreadPictures.words). The runner sends pictures pasted
 into a message to the backend as they're sent, unless `sync.pastedPictures` is
 false in `runner.json`, each with `src` `picture:N`; the website draws them in
-place of the marker, and a chip where one didn't go up. An ask's
+place of the marker, and a chip where one didn't go up, and the main Mac's
+runner gives them to the app for a thread on another Mac (backend API 87,
+Other runners' threads through the backend). An ask's
 Something else box on the Mac takes pictures as chips too (Needs you).
 
 The runner hands the agent the words and pictures in that order: each
@@ -3067,7 +3478,12 @@ An archive can also carry a `verdict` (`worked`, `didntWork`,
 `system.note` ("Archived by you: it worked."). For a day (5 to 6 Nov) the
 done card's Archive opened a menu of these on the Mac, the phone and the
 website; Mike went back to a plain button, so no app sends one now, but the
-API still takes it and threads archived that day keep theirs. A verdict
+API still takes it and threads archived that day keep theirs. Three more,
+`didntNeedToSee`, `gladISaw` and `notSure`, are the `inboxGuess` experiment's (see
+"Inbox guess"): the GPUI app's done card sends one from its Archive menu
+while that experiment is on, for a thread on its own runner. The Convex
+relay and `phone:update` still take only the first three, and drop any
+other from an archive. A verdict
 from anyone but Mike is dropped. Both fields are set afresh by each archive and only reported while
 `archivedAt` is set, so bringing a thread back needn't clear them; threads
 archived before 5 Nov have neither. `read_thread` and `list_threads` say
@@ -3108,7 +3524,7 @@ thread is for and then the bullets from its note on where it stands
 (`brief` in the thread's record), one per line starting `- `. A note from
 before this has only the bullets. It's in the summary only with the
 `recapBox` experiment on, and goes to the phone, the website and other
-runners with the rest of the row (backend API 70).
+runners with the rest of the row (backend API 96 in this fork).
 
 Each app shows it in a box above the message box when all of these hold,
 and they all use the same rule:
@@ -3285,13 +3701,47 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
 - **Trying a step first.** Every form's description tells the agent to try
   a step with its own tools before giving it to the user, and to hand it over
   only when it really needs them or after a real attempt, saying what it
-  tried (`TRY_IT_FIRST`). A card with an answer like "Can you do it?"
-  (`offersToTakeItBack`, by its label) is refused once a turn, with an error
-  result that starts `Not ended: this card offers`, asking for a try if there
-  hasn't been one. Called again, it's taken as it is, button included. Nothing
-  reaches the app. It can't tell whether the turn tried, as turns are busy with
-  other work, so it asks; and it can't see a hand-over written as plain prose
-  or with no such answer on the card.
+  tried (`TRY_IT_FIRST`). A card that hands over a step (`handsOverAStep`:
+  an answer like "Can you do it?" or "Done", or an ask that opens with an
+  instruction rather than a question) is refused once a turn, with an error
+  result that starts `Not ended: this card hands the user a step`, asking for
+  a try if there hasn't been one. A choice, an ask that opens a review, one
+  to delete, remove, buy or pay, and one covering a sign-in the turn needs are
+  left out. Called again, it's taken as it is. Nothing reaches the app. It
+  can't tell whether the turn tried, as turns are busy with other work, so it
+  asks; and it can't see a hand-over written as plain prose off the card.
+- **A card in plain words.** A card with answers to pick from is refused once
+  a turn too, with an error result that starts `Not ended: read this card as
+  the user will` (`plainCardNudge`), asking the agent to reread its question,
+  labels and `does` lines as someone who hasn't seen its working or the files
+  it links, and reword any name it coined. Called again, it's taken as it is.
+  A card that links a show_options review (`review:`) is left alone, as
+  lettered mockups are fine there. Nothing reaches the app. It's a note, not
+  a line in the description: in replays of cards Mike couldn't follow, the
+  line changed nothing and the note rewrote every one.
+- **Done in a project still going.** A Done card (`needs: "nothing"`) in a
+  thread Mike started (no `startedBy`) that's in a project not archived is
+  refused once a turn, with an error result that starts `Not ended: this
+  card says Done, and this thread is part of a project that isn't finished`
+  (`projectStepNudge`). It quotes the project's state (first 400
+  characters) and says Done means the thread can be archived, so a next
+  step that's Mike's goes on the card as an ask. It also lists up to six
+  asks and follow-ups from the cards earlier turns ended with
+  (`turn.completed`, the last ten turns or 10,000 events) that no message
+  from Mike answered since (`unansweredItems`: a card answer naming the
+  ask, a message with its words, or his pick in a show_options review the
+  ask links to; not the runner's, a schedule's or
+  another agent's, and nothing an edit cut out), leaving it to the agent
+  which still matter. A card that archives, snoozes or waits on threads or
+  the app restarting is left alone, and so is a sub-agent's call, as it
+  isn't in the thread's events (a Codex sub-agent's, which runs through the
+  same handler, is capped at one note a turn in memory). Turns an edit cut
+  out don't count towards the ten. A project it can't read within 2 seconds
+  is left out. Called again, it's taken as it is. Since 20 Nov
+  2026: the calendar site's thread said Done twice with its project's state
+  saying "Next is Peter's review of the live site" and three follow-ups
+  never answered, and Mike nearly archived it. He didn't want old questions
+  carried onto cards by rule, as some no longer apply.
 - **Bullet replies off.** `Settings.bulletReplies: false` (runner.json
   only since 2 Nov; Mike, 30 Oct 2026: he liked the folded working but not always
   the bullets in place of the agent's message). `end_turn`'s description
@@ -3404,8 +3854,9 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   opens the turn's working in a sheet instead, and picks the step the same
   way from what it has, a step's one line: a command with a description
   comes as only the description, so a quote of the command finds nothing
-  and the sheet opens with no step lit. A `review:` link says it opens on
-  the Mac. The website has the same one-line steps on the page: a work:
+  and the sheet opens with no step lit. A `review:` link opens the phone's
+  Reviews sheet with backend API 86; older backends say it opens on the
+  Mac. The website has the same one-line steps on the page: a work:
   link scrolls to its step, and is only its words if it finds none; so is
   a `review:` link, and a `thread:` link on a shared page, as whoever it's
   shared with can't open the others.
@@ -3586,8 +4037,7 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   `check` from API 51 and `checkTimeoutSecs` from API 55; the agent
   tools take `check` and `checkTimeoutSecs` only while the experiment
   is on.
-- **Card reviewer** (experiment `cardReviewer`, off unless `runner.json`
-  has `"experiments": { "cardReviewer": true }`;
+- **Card reviewer** (standard since 20 Nov 2026, an experiment before;
   `runner/src/runner/card-review.ts`). In a thread whose `permissionMode`
   is `auto`, a Claude tool approval (`requestApproval`, except
   `ExitPlanMode`; a Codex one isn't reviewed, as its file change card names
@@ -3616,7 +4066,22 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   before he wrote), and deleting the thread
   `expired`, with no card. A thread
   switched out of Auto meanwhile gets the card. Ask, Full access and plans
-  are never reviewed.
+  are never reviewed. An `update_project` card also shows the reviewer
+  what the brief changes (`review` on the agent approval request, never on
+  the card): for each of title, goals, state and notes it changes, the
+  line counts before and after and the changed lines with three lines
+  round them, worked out from the project as it is (notes as they'd be
+  saved, with `editNotes` and `appendNote`, trimmed and with CRLF as LF), and the names of
+  the other fields it changes, which the reviewer judges from the input.
+  A field whose changed lines pass 20,000 characters gets only how many
+  lines go and come, to be judged as a rewrite. Just before the write,
+  if the title, goals, state, notes or folders changed while the card was
+  up (or under review), the call is refused, as a whole new notes or
+  folder list would undo that change; `notes` with `appendNote` is saved
+  in one update. When the reviewer left a card for
+  Mike with a reason and he says no (Deny, or writing instead), the
+  answer carries it as `reviewer`, which the agent is told after the
+  denial, so it can tell him why he was asked.
 - **Review by another lab** (`Settings.labReview`, on unless
   `runner.json` has `"labReview": false`, Settings > General > Code
   review; `runner/src/runner/lab-review.ts`. An experiment from 6 Nov
@@ -3634,11 +4099,32 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   to the first thread in thread.json, and a brief: the latest user
   message, the reply, the files and the diff (up to 40,000 characters),
   each in a fence one backtick longer than any run in it, so nothing in
-  them can close it, and marked as data to review, not instructions.
+  them can close it, and marked as data to review, not instructions. A
+  reviewer billed per token (an OpenCode login: its Zen balance or a
+  Gemini API key) also gets a reading budget: work from the diff, about 8
+  reads or searches, no test suite, since every read is billed again on
+  each later step.
   Its login is the first reviewer's in `Settings.labReviewers` whose
   provider isn't the thread's and that has a login with room
   (`pickInPool` over the pools with no folders, then a login no pool
-  holds), else a fresh session of the thread's own provider. For a folder a
+  holds), else a fresh session of the thread's own provider. A change of
+  `labPanelLines` lines of code or more (runner.json, 150 when unset), or
+  code under a risky path (a path part named auth, oauth, login, password,
+  secret, crypto, encrypt…, payment, billing, stripe, permission or
+  security), goes to the review panel instead: every reviewer in
+  `Settings.labPanel` that has a login with room, the thread's own provider
+  too, each in a review thread of its own at once, with a line in the
+  brief saying others are looking too. With fewer than two of them able
+  to, the one reviewer above reviews. The thread waits on all of them
+  (a `waitingOn` entry each, `review: true`) and wakes once every one has
+  finished or gone, with all their findings numbered together, each with
+  `by` naming the reviewer, and each one's reply cut to fit 12,000
+  characters between them, at most 20 findings in all (the most serious;
+  the message says how many were left out). One that finishes while the
+  rest still work is archived then, its reply and verdict kept in its
+  wait (`done.verdict`). The round passes only when every one reviewed,
+  gave a verdict and found nothing; with none back, it isn't delivered.
+  A panel's `independent` is true when any of it is another lab. For a folder a
   pool is kept for, only that pool's logins are used, and a kept pool's
   logins never review anything outside it. The first thread gets a
   `system.note` saying who reviews and whether it's another lab, then
@@ -3688,9 +4174,11 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
 
   ```ts
   type ReviewFinding = { id: number, round: number, severity: "high" | "medium" | "low",
-    claim: string, where?: string, case?: string, outcome?: "fixed" | "disputed" | "left", note?: string }
-  type LabReviewLedger = { reviewer: string /* "Codex (codex-1)" */, independent: boolean,
-    rounds: number, threadId: string /* the latest round's review thread */, passed: boolean,
+    claim: string, where?: string, case?: string, outcome?: "fixed" | "disputed" | "left", note?: string,
+    by?: string /* which of a panel found it */ }
+  type LabReviewLedger = { reviewer: string /* "Codex (codex-1)"; a panel's names joined with ", " */, independent: boolean,
+    rounds: number, threadId: string /* the latest round's review thread (a panel's first) */, passed: boolean,
+    panel?: { reviewer: string, threadId: string, independent: boolean }[] /* the latest round's, when several reviewed at once */,
     unstructured?: true /* a round gave no verdict: its reply is all there is */,
     unchecked?: true /* fixes in the last round, which no review looked at */,
     findings: ReviewFinding[] }
@@ -3744,11 +4232,11 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   2,000 characters of the reply it finished with. That message (the
   replies, the librarian's reasons and the titles, all the waited-on
   threads' words, and a lab review's findings too) goes only where
-  `send_message` would go without a card: each waited-on thread has no less access (mode, or sandbox) than
+  `send_message` would go without a card: each waited-on thread has no less access (its mode) than
   the waiting thread has now, or the waiting thread's agent asked for the
   wait itself and hasn't been raised since (each entry keeps `by`, the
   waiting thread's access when it said to wait; one with none counts as
-  from Ask in a sandbox). Otherwise it wakes with a `system.note` saying
+  from the least access, below even Ask). Otherwise it wakes with a `system.note` saying
   which had less access and that what they said wasn't passed on, and no
   turn starts: Mike reads them and says what next (Daybreak, 12 Nov
   2026). A message, a wake or
@@ -3805,6 +4293,22 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   A repeat that only adds archive or snooze leaves the check on. An agent
   that needs no answer just stops. Mike chose this over widening the card
   to every offer (13 Nov 2026).
+- **Links to files that aren't there.** With one reply, the same hook sends
+  a turn back once when any block of the reply after `end_turn` has a
+  Markdown link to an absolute, `~/` or `file://` path that isn't on the
+  runner's Mac (`missingFileLinks`; what Markdown draws as code, relative
+  links, addresses with `(` or `<`, and paths on network shares don't
+  count). This comes before the asking
+  check, as only one nudge is sent, and says to put a question on the new
+  card. The `endTurnNudge` output carries `reopen: true` and `rewrite: true`:
+  the next `end_turn` is taken, and asks for a whole new reply even if
+  nothing ran in between (`replyRewrite`), which the apps show in the first
+  one's place as after any later card. Text on the way is dropped; a
+  message sent meanwhile takes the rewrite off. The Mac app draws any such
+  link that gets through, and a path in backticks it would link, as its
+  words alone (`dead_file_links`, after `prepare`). On 16 Nov 2026 a
+  finished clip went out linked at a path missing its project folder, and
+  the click only said "Couldn't find" (thread 4e8b6ac9).
 - **A subagent's card.** A background subagent's approval or question is
   between it and Mike, so it isn't tied to a turn. It opens none (a turn
   would hold Mike's messages back, and ending it would clear the parent's
@@ -3887,9 +4391,10 @@ type OpenAsk = Ask & { ticked?: true }
 
 ## Loose ends
 
-Experiment `looseEnds` (`runner/src/loose-ends.ts`,
-`runner/src/runner/loose-ends.ts`), off unless `runner.json` has
-`"experiments": { "looseEnds": true }`. On 6 Nov 2026 Mike typed some form
+`runner/src/loose-ends.ts`, `runner/src/runner/loose-ends.ts`. Tried as
+the experiment `looseEnds` from 7 Nov 2026, standard since 16 Nov (typed
+asks fell to two in five days, and nine in ten archives came from the done
+card's button). On 6 Nov 2026 Mike typed some form
 of "anything else, or should we archive?" 27 times rather than click the
 done card's Archive, which puts a thread away at once: he wanted to know
 nothing was left first. The runner now checks what it can see for itself
@@ -3925,7 +4430,11 @@ itself), the runner checks:
   start one while another is running. Added 11 Nov 2026, when a thread said Done with three draft
   PRs unmerged;
 - `thread`: a thread it started (`startedBy.threadId`), not archived,
-  that's running or waiting on Mike, with `threadId`;
+  that's running or waiting on Mike, with `threadId`. One with background
+  work going and no card asking Mike anything "is still working", as the
+  sidebar has it under Running (since 20 Nov 2026: one whose turn ended
+  with a review round running in a shell read "is waiting for you"), and
+  its starter's card is checked again when that work starts or ends;
 - `scheduled`: a schedule that sends to it and will run again (`at`:
   `nextRunAt`), at most three. It doesn't stop an archive: an archived
   thread comes back when one runs;
@@ -4033,42 +4542,35 @@ threads as before.
 
 ## A quiet inbox
 
-Experiment `quietInbox` (`runner/src/runner/quiet-inbox.ts`), off unless
-`runner.json` has `"experiments": { "quietInbox": true }`. On 12 Nov 2026
-Mike asked why three threads other threads had started sat in his inbox
-with nothing for him to do, and said of a done card listing threads its
-thread had started: "If that thread is waiting on another thread, then it
-shouldn't be in the inbox."
+`runner/src/runner/quiet-inbox.ts`. On 12 Nov 2026 Mike asked why three
+threads other threads had started sat in his inbox with nothing for him to
+do. Tried as the experiment `quietInbox` until 16 Nov, then made standard.
+The experiment also hibernated a finished thread whose only loose ends were
+threads it started, waking it with their replies; that was taken out, as it
+hid threads Mike wanted to read (a starred coordinator, the daily brief) and
+its wakes rarely had anything to say. A wait the agent asks for itself
+(end_turn's `waitFor`) is unchanged.
 
 When a turn finishes for good (completed, `needs: "nothing"`, nothing
 queued or running, no card waiting, no lab review of it started or owed,
-and not putting itself away with `archive`, `snooze` or `waitFor`), the
-runner gathers the thread's loose ends as the done card does (above),
-whether or not `looseEnds` is on, and then:
+and not putting itself away with `archive`, `snooze` or `waitFor`), and the
+thread's `startedBy.kind` is `thread`, its `next` is empty and Mike has had
+nothing to do with it, the runner gathers its loose ends as the done card
+does (above). If nothing is left at all
+(no `scheduled` either), it's archived (`archivedBy: "threadbear"`) after a
+`system.note`: "Archived: another thread started this one, and it finished
+with nothing left for you." If all that's left is threads it started
+(`thread` ends, working or waiting on Mike), it stays in the inbox, and
+each of them finishing or being archived looks again (`recheckStarter`),
+as long as the thread's done card is still the one it finished with; the
+last one going archives it, with no turn of its own.
 
-- **Waiting on its threads.** If every loose end is a `thread` (one it
-  started that's working or waiting on Mike; `scheduled` ones aside), it
-  hibernates waiting on them exactly as end_turn's `waitFor` would
-  (`waitingOn`, a day at the latest, the same note and the same wake with
-  their replies; each wait is marked `quiet`, so the wake's message says
-  the runner put it away and that there may be nothing more to do). Not
-  if any of them has less access than it (a lower mode, or a sandbox it
-  isn't in): their closing reply would reach its agent without the card
-  `send_message` shows for that, so it stays in the inbox. A `quiet` wait
-  never counts as asked for, so a thread raised, or a helper lowered,
-  while it waits wakes without their replies (Waiting on threads, above).
-  `finished` is dropped, so anything waiting on it in turn
-  doesn't count it as finished until its own wake turn finishes.
-- **A helper archives itself.** If nothing is left at all (no `scheduled`
-  either), the thread's `startedBy.kind` is `thread`, and its `next` is
-  empty, it's archived (`archivedBy: "threadbear"`) after a `system.note`:
-  "Archived: another thread started this one, and it finished with nothing
-  left for you." Not if Mike has had anything to do with it: a message of
-  his after its first (an answer to its card counts), a star, or having
-  been unarchived by hand (`keptOut` on its record, set by any
-  `threads.update` with `archived: false` on an archived thread). Its
-  first message is its starter's brief whatever it looks like, as `tb new`
-  from an agent's shell has no "Sent by the agent" line.
+Mike has had something to do with it if there's a message of his after its
+first (an answer to its card counts), a star, or it's been unarchived by
+hand (`keptOut` on its record, set by any `threads.update` with
+`archived: false` on an archived thread). Its first message is its
+starter's brief whatever it looks like, as `tb new` from an agent's shell
+has no "Sent by the agent" line.
 
 Anything else stays in the inbox: a turn that asks, fails or is stopped,
 one with follow-ups, uncommitted or unlanded work, an open PR. A message, an archive or a hibernate that arrives while git
@@ -4079,6 +4581,61 @@ helper its starter writes to again comes out, runs and goes back the same
 way. The starter hears nothing new from this: it's woken only if it was
 waiting on the helper, and the helper shows as archived under "Threads it
 started" in its Highlights.
+
+## Inbox guess
+
+`runner/src/runner/inbox-guess.ts`, the experiment `inboxGuess` (18 Nov
+2026). About half the threads Mike archives from his inbox are ones he
+didn't need to see: he'd told the agent what to do, it did it, and the
+reply is a receipt he has to load back into his head to put away. A
+helper thread like that archives itself (A quiet inbox); his own don't, as
+a reply is often the thing he asked for and hiding one of those is the
+expensive mistake. This collects what's needed to tell the two apart
+before anything acts on it. It archives nothing and shows nowhere.
+
+**The guess.** When a turn finishes for good as in A quiet inbox, the
+runner makes a guess for its done card (`seq`, the turn's `needs` event,
+as loose ends use): `skip` (it could have gone straight to Archived) or
+not. A turn with `next` follow-ups, or with any loose end (a booked
+check-in counts), is never a skip, by rule, and no model is asked. A
+helper nobody's touched gets only that rule's guess, when it stays in
+the inbox; one that finishes clean archives itself and has none, and nor
+does another lab's review. Otherwise `models.generate` is asked twice, Haiku and (`strong`) Opus, with `GUESS_SYSTEM` and the
+thread's title, who started it, Mike's latest message, any newer message
+that isn't his, and the reply (each clipped, as data between tagged
+lines). A model that can't run (no pool, a private folder, no room) or
+gives no clear answer has no guess. The guesses are kept on the thread's
+record as `inboxGuess: { seq, guesses: [{ by, skip, why }] }` (`by` is the
+model's id, or `"rule"`), which no summary carries.
+
+**A guess lost with its runner.** A guess takes a few seconds, and a
+runner handing over lets a thread go half a second after its turn ends,
+so the guess being made there is dropped (seven of Mike's first sixteen
+answers had none beside them, 19 Nov 2026). The runner that takes the
+thread on makes it instead (`catchUpInboxGuess`): as it adopts a thread
+that is `finished` with a done card and no guess for it, and at start for
+such a thread that finished within the last hour (`GUESS_CATCH_UP_MS`;
+not every finished thread in the inbox, which would be a model call each
+at every start). The follow-ups come from the card's `turn.completed` and
+the reply from the turn's last text. A runner that stopped between
+writing a guess and saving the thread leaves two lines for one card; the
+later one counts.
+
+**The label.** While the experiment is on, the GPUI app's done card
+Archive opens a menu for a thread on its own runner, "Didn't need this"
+(`verdict: "didntNeedToSee"`), "Glad I saw this" (`"gladISaw"`) or "Not
+sure" (`"notSure"`, for the in-between ones); each archives as ever, with the verdict's note. ⌘E, a row's box and a swipe
+archive with no verdict.
+
+**The file.** `<home>/inbox-guess.jsonl`, a line each:
+`{ at, kind: "guess", threadId, seq, guesses }` when a guess is made, and
+`{ at, kind: "archive", threadId, seq, label?: "skip" | "show" | "unsure", guesses? }`
+when Mike (`archivedBy: "mike"`) archives a thread whose last turn left a
+done card, `guesses` being that card's if there were any. An `unsure` label is left out of
+scoring: it's neither a thread to hide nor one a guess got wrong. Agents' and
+Threadbear's archives aren't written. How long he had a thread open
+before a plain archive is in the app's activity log, as a second, rougher
+signal.
 
 ## Secrets
 
@@ -4269,6 +4826,31 @@ project's patch it's one script in the repo and plain words (see
   ],
 ```
 
+**Row toggles.** A list panel can also have `toggle`, a function that
+gets the same context as `items` plus `id` and `on`. A row that `items`
+gives a `toggle` (`{ id, on, icon?, title? }`) gets a switch at the end
+of its title's line: the icon, lit when `on` and faint when not, with
+`title` as its tooltip. A press sends `panels.toggle`, which calls the
+function with the row's `id` and the new `on`, then fills the panel
+again. The patch keeps the state itself (a file it writes, say) and
+`items` reads it back. A row's `toggle` from a panel with no `toggle`
+function is dropped, as pressing it could do nothing. `id` is whatever
+the app sent back, so check it before putting it in a command. Watching a PR for auto-fix, for instance:
+
+```ts
+  panels: [{
+    title: "PRs",
+    items: async ({ sh }) => JSON.parse(await sh("node prs.mjs")).map((p) => ({
+      title: p.title, url: p.url,
+      toggle: { id: p.url, on: p.watched, icon: "wand.and.stars", title: `Auto-fix #${p.number}` },
+    })),
+    toggle: ({ sh, id, on }) => {
+      if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(id)) throw new Error(`not a PR: ${id}`);
+      return sh(`node prs.mjs --watch ${on ? "on" : "off"} ${id}`);
+    },
+  }],
+```
+
 **Live state.** An action or panel can also have `when` and `badge`,
 functions that get the same `{ cwd, threadId, thread, matched, sh }` as `items`.
 `thread` is `{ title, projects }`, each project `{ id, title }` with a
@@ -4363,6 +4945,16 @@ Code and Claude Code ask before running a folder's code. Until then it's
 in `patches` with `untrusted` and `hash`, and gives nothing: no actions,
 panels or hooks, no live functions, and no worktree for new threads.
 
+- On Windows, for now, a trusted patch runs nothing by itself: its
+  actions run when clicked, but its hooks, worktree `setup` and `teardown`
+  are dropped as it loads, and a live function's `sh` refuses every
+  command. The patch's `liveError` says so. Following a script there still
+  has gaps a repo written against it could use (`clicksOnly` in
+  `src/platform.ts`). Home patches and Threadbear's own, which load
+  without a hash, are as on a Mac. A schedule's check in a repo's folder
+  (outside Threadbear's own checkout) doesn't run there either, approved
+  or not: the run goes ahead without it and says why. The rule is read
+  once as the runner starts.
 - Trust is kept per folder (the one holding `.threadbear/`) as the
   SHA-256 hashes of the patch files trusted there, in `patch-trust.json`
   in the data dir. `untrusted` is `"new"` when nothing from that folder
@@ -4927,6 +5519,10 @@ there. Claude Code in a terminal asks before trusting a folder; the SDK
 never does, so the runner asks instead (`src/claude-trust.ts`), with
 patch trust's store and rules.
 
+- On Windows, for now, a folder whose settings have any of those starts
+  Claude without them whatever's been trusted, as one that can't be
+  checked does, with nothing to trust (`clicksOnly` in `src/platform.ts`;
+  "Trusting a folder's patches" says why).
 - A folder whose settings have none of those (a model, plugins switched
   on, deny rules; allow rules in a Full thread) asks nothing, and nothing
   changes. Nor does home, whose `.claude/settings.json` is the user's own;
@@ -5328,7 +5924,9 @@ files do not overlap. See docs/thread-worktrees.md for the command.
 main (a conflict aborts and names the files), runs `check`, then
 `git merge --ff-only` in the main checkout (refused, and nothing changed,
 if main's own uncommitted changes are in the way) and prints what landed.
-It never pushes. `--dry-run` stops before main moves.
+It pushes only in a repo listed in runner.json's `pushAfterLanding`
+(docs/thread-worktrees.md, "Syncing main with GitHub"). `--dry-run` stops
+before main moves.
 
 When the thread is archived or deleted, `teardown` runs first in the
 worktree's root, whether or not the branch landed (an `action.run` with
@@ -5341,7 +5939,10 @@ link to somewhere else. Then a
 worktree whose branch is on main
 (or has nothing of its own) is removed with its branch; otherwise both stay,
 with a `system.note` saying how to land or drop them. A thread whose
-worktree was removed carries on in the main checkout, with a note. One whose
+worktree was removed gets a fresh one with its next message, made from main
+as a new thread's is (same branch name, the patch's setup run), with a note;
+only if none can be made (no patch asks for one, or making it fails, which
+is said) does it carry on in the main checkout. One whose
 worktree stayed carries on in it, and its next turn says (to Mike and the
 agent) that the teardown ran, so what setup made may be gone.
 
@@ -5448,6 +6049,48 @@ browser is `agent-chrome`), as the same tab number can be in two. Replies use
 `{id,ok,result|error}`. No cookies, passwords, OAuth tokens or browser profile
 files are read or imported, and stills stay in memory on this Mac. Both sides
 ignore fields they don't know.
+
+## Pull requests
+
+With the `inlinePrs` experiment, a github.com PR link clicked in a reply or
+in Highlights opens as a tab in the side pane rather than the browser. The
+runner reads it with the gh CLI (`runner/src/github-pr.ts`), signed in as
+whoever `gh auth` is on this Mac: `github.pr` runs `gh pr view`, `gh pr
+diff` and `gh repo view` with `-R owner/repo` from the temp folder, never
+inside a checkout, so no repo's git config or hooks run.
+
+```ts
+type PrView = {
+  url, owner, repo: string; number: number; title, author: string;
+  state: 'open' | 'draft' | 'merged' | 'closed';
+  head, base: string; additions, deletions, changedFiles: number;
+  body: string;            // markdown, as written
+  createdAt: string; mergedAt?: string; closedAt?: string; mergedBy?: string;
+  review: '' | 'approved' | 'changes' | 'required';
+  mergeable: 'yes' | 'conflicts' | 'unknown';
+  canMerge: boolean;       // gh's account has write access and it's open
+  mergeMethods: ('rebase' | 'squash' | 'merge')[];   // what the repo allows
+  checks: { name: string; state: 'passed' | 'failed' | 'running' | 'pending' | 'skipped'; url?: string; seconds?: number }[];  // failed first
+  activity: { kind: 'comment' | 'review'; author, body, at: string; review?: 'approved' | 'changes' | 'commented' }[];  // oldest first
+  files: { path: string; from?: string; additions, deletions: number; hunks: Hunk[]; binary?: boolean }[];
+  filesError?: string;     // the diff couldn't be read
+  filesCut?: number;       // lines left out past 20,000
+  filesLater?: boolean;    // asked for with files: false
+};
+```
+
+A big PR's diff is the slowest read (two seconds for 600 KB), so the app
+asks `github.pr` with `files: false` and `github.prFiles` together, and
+shows the PR while its files are on their way. A runner older than that
+ignores `files` and answers `github.prFiles` with `-32601`, and the app
+keeps the files the first answer brought.
+
+`github.prStates` gives the coloured state of each PR link in a transcript,
+one `gh pr list` per repo (its latest 300), kept a minute; `github.prAct`
+forgets that repo's states so the icons catch up. None of these is in a
+thread key's reads (rpc-gate.ts): a thread can't merge or comment through
+the app's connection. Another runner's thread still opens its PRs through
+this Mac's gh.
 
 ## Connectors
 
@@ -5747,7 +6390,15 @@ never takes one away. Merging two projects keeps both lots.
 **Agents** have tools for projects (see Tools for agents):
 `list_projects`, `read_project`, `create_project`, `update_project`,
 `join_project` and `leave_project` (each for their own thread by default).
-An agent's join is pinned.
+An agent's join is pinned. `update_project` changes notes three ways:
+`editNotes` (a list of `{ old, new }`, like Claude Code's Edit: each `old`
+must be in the notes exactly once, after the edits before it, and an empty
+`new` takes it out; one that doesn't match refuses the whole call),
+`appendNote` (a paragraph on the end, which can follow `editNotes` in the
+same call) and `notes` (all of them, for a restructure; not with
+`editNotes`). The runner that keeps the projects reads, edits and saves
+the notes in one step (`editNotes` on it, a `drain.projects` op too), and
+after a card it refuses the call if the notes aren't the ones judged.
 
 ### Project tasks
 
@@ -5846,13 +6497,25 @@ kept in `schedules.json` in the data dir.
   per schedule, with a durable local note for each superseded delivery so
   retrying a lost reply cannot bring it back. Reminders carrying check output
   are preserved separately: that output may contain items no longer in the
-  check's storage. New queued sends carry `preserveSchedule: boolean` from
+  check's storage, except that the same text queued again from one
+  schedule (a check printing the same thing every tick while the thread is
+  busy) keeps only the newest copy. New queued sends carry `preserveSchedule: boolean` from
   the scheduler, so a quoted check report in the reminder's own text does
   not disable coalescing. Legacy queues infer this from the check suffix,
   conservatively retaining held-check notices too. Repeated Run now requests
   also replace a pending reminder
-  from the same schedule; they cannot hold up ordinary messages. Pausing or
-  deleting a schedule does not retract its already accepted message. A
+  from the same schedule; they cannot hold up ordinary messages. Pausing a
+  schedule does not retract its already accepted message. Deleting one
+  does: its reminders still queued for the thread are dropped, each with
+  the same `supersededReminder` receipt, whether it was deleted here or the
+  backend's rows stop showing it. A draining runner keeping the thread is
+  asked with `drain.dropScheduled { threadId, scheduleId }` → `{ dropped }`
+  (`moved` once the thread has come across, when the primary drops them
+  itself); a draining release without the method keeps its queue. The
+  runner also remembers the schedules deleted while it runs (and any its
+  first backend snapshot leaves out that its saved copy had), and drops
+  their reminders before a turn would start, however they reached the
+  queue: adopted in a handover, a retried send, a receipt that failed. A
   thread kept by a draining runner receives it there through
   `drain.sendScheduled { threadId, text, scheduleId }` → `{ turnId }`,
   with `origin: "schedule"` and `queue: true`, once its turn ends and
@@ -5917,7 +6580,12 @@ kept in `schedules.json` in the data dir.
   as above; before sending it takes the run with `sync:claimSchedule`,
   which says no unless the row is still due at that `nextRunAt` and
   nobody holds it (a claim lasts 2 minutes), so a run is sent once even
-  while two runner processes share a `runnerId` in a handover. What it
+  while two runner processes share a `runnerId` in a handover. The
+  holder takes it again every 45 seconds while it checks, sends and
+  records the run (a check can run 5 minutes), asks once more just before
+  the send and sends nothing if it's no longer its, and keeps it until
+  `sync:scheduleRan` gets through: a lapsed claim let the other process
+  send the same run again. What it
   sends is the claimed schedule as it is once the claim (and its check)
   come back: still there, still this runner's, and the same schedule
   (`createdAt`), or nothing is sent and the claim is let go. The main Mac
@@ -6019,8 +6687,15 @@ other, and the app never connects to another Mac.
 - **The sidebar table.** With a backend of API 12, each runner keeps one
   `threadIndex` row per thread there: `threadId, title, cwd, accountId,
   provider, model?, status, needsYou, unread, preview, createdAt,
-  lastActivityAt, snoozedUntil?, archivedAt?, startedBy?, asked?, keywords?`
-  (`startedBy` from API 23, without its `threadId`; `asked` from API 32; `keywords` from API 74). It writes a row when any
+  lastActivityAt, snoozedUntil?, archivedAt?, startedBy?, asked?, keywords?,
+  permissionMode?`
+  (`startedBy` from API 23, without its `threadId`; `asked` from API 32; `keywords` from API 74;
+  `permissionMode` from API 88, which the backend cuts to 16 bytes for a
+  runner key). Another Mac's composer shows a thread's `permissionMode` as
+  it is, read-only (a mode can't be changed through the backend), and
+  "Access unknown" for a row without one, never Full access. The relay's
+  summary of an open thread always has `permissionMode`: the row's, or
+  `"unknown"`. It writes a row when any
   of those but `preview` and `lastActivityAt` changes (those two go along
   but never cause a write), and on its first write after starting it
   drops rows for threads it no longer has. A deleted thread's row goes.
@@ -6065,10 +6740,43 @@ type RemoteThreads = {
 }
 type RemoteRunner = {
   id: string, name: string, icon?: string  // as RunnerInfo
-  online: boolean      // heard from in the last 3 minutes
+  online: boolean      // heard from in the last 3 minutes, or a box that
+                       // a message reaches (box, below)
   lastSeenAt: string
   followProblem?: string
+  box?: { state: string, waiting?: true, unreachable?: true, unsure?: true,
+          service?: string, token?: "none" | "dead", login?: string } // one thread's box on a virtual
+                       // runner (Virtual runners), as its machine has it:
+                       // creating, starting, awake, saving, asleep, waking,
+                       // retiring, failed, destroying, gone (archived, its save kept)
+                       // or expired (it can't come back). Online in all but
+                       // destroying and expired, as a message starts or
+                       // wakes it. `waiting`: a message wants it woken but
+                       // its virtual runner has maxBoxes up, so it waits
+                       // (with the message) for one to sleep.
+                       // `unreachable`: it hasn't heartbeated for 5
+                       // minutes, but its provider still has it (show it
+                       // as not answering, not as gone). `unsure`: the
+                       // provider made more than one machine for it and
+                       // which holds its work isn't known yet; each message
+                       // tries the next (Box keys). An older runner
+                       // leaves them out. From API 94: `service`, its
+                       // virtual runner's id (`services` below), and
+                       // `needsToken` and `waitingForRoom` (with `waiting`)
+                       // among the states. `token` says its
+                       // login (`login`, an email) has no cloud token
+                       // ("none") or a refused one ("dead"): the thread
+                       // shows the token card until one is set.
+                       // A box's runner is never a machine to pick:
+                       // Runs on, Move to and Settings leave it out.
 }
+// From API 94 with the virtualRunners experiment on, and only on the
+// owner key's runner: the virtual runners (`boxes:runnerServices`), for
+// Runs on's entries after the machines. Left out otherwise. Switching the
+// experiment, or the backend reaching 94, takes effect in the watch at once:
+// they come (or go, with a remoteThreads.updated without them) then.
+type VirtualRunner = { id: string, name: string, provider: string }
+// RemoteThreads gains `services?: VirtualRunner[]`.
 // rpcUrl and tokenFile were the direct link between Macs (step 6 part 2),
 // taken out 13 Nov 2026. An app ignores them if an older runner sends them.
 type RemoteThread = { runnerId: string, threadId: string, title, cwd,
@@ -6101,7 +6809,8 @@ only way the app opens another runner's thread.
 - **Which threads.** A `THREAD_METHODS` request whose `threadId` isn't this
   runner's (nor a draining runner's) but is in its `remoteThreads` list.
   `threads.create` with a `runnerId` that's another runner's, and
-  `files.list` with a `runnerId`, go there too.
+  `files.list` with a `runnerId`, go there too, and so does `files.read`
+  with a `runnerId` (pictures in its messages, below).
 - **Reading.** `threads.events` and `threads.subscribe` answer from the
   thread's `messages` rows (Sync, Messages) and its `threads` row. The rows'
   seqs are the other runner's, with gaps where events weren't mirrored, and
@@ -6148,16 +6857,63 @@ only way the app opens another runner's thread.
   its `tool.result` at 8s+6, and up to two `edit.diff`s at 8s+3 and 8s+4, unless an
   old runner's card has those; any more files are named in the result. The app fills
   the row in by `itemId`. Withheld, the result says why. Otherwise the stub stands.
-  Reasoning, sub-agents and pictures stay on that runner from here. `files.read` with
-  a `runnerId` is `-32000`, and the app doesn't ask: it says the file is kept on that
-  machine.
+  Reasoning, sub-agents and tools' pictures stay on that runner from here.
+- **Answers in messages** (backend API 89). A user's message row from a
+  `user.message` with `answers` carries them (`[{ action, answer }]`, scrubbed
+  as the text is), and `remoteTail` and `remoteMessages` pass them on, so the
+  relay's event has them and another Mac's bubble shows the asks as answers.
+  A runner sends them only to a backend of 89 or later.
+- **Pictures in messages** (backend API 87). From API 87 a user's message
+  row carries `pictures`, how many pictures the message came with (the owning
+  runner's `toMessageDoc`; `remoteTail` and `remoteMessages` pass on a whole
+  number from 1 to 999). Its pictures come from that runner's uploads
+  (`replyImages` rows with `src` `picture:N`, which it writes unless its
+  `sync.pastedPictures` is false), read by `relay:picturesAtSeqs { key,
+  threadId, seqs }` → `[{ seq, n, path, url, mediaType, width?, height? }]`
+  (at most 50 seqs a read and 30 pictures a seq, owner only). With `pictures`,
+  `images` has exactly that many (at most 50): `images[N-1]` is picture N,
+  `{ path, mediaType, width?, height? }`, `path` being the file's path on that
+  runner's Mac, or `threadbear-relay:<threadId>/<seq>/Picture <N>` for one not
+  up yet; and the `[N pictures]` line the owning runner added is taken off
+  `text` (only `[1 picture]`, or `[N pictures]` for N of 2 or more, and only
+  when its number is how many of them no marker places, so a typed one stays). So `text` and the count of `images` are the sender's, which is
+  how the app knows its own sent message, and words that only look like a
+  marker or the line never make a picture. A row without `pictures` (an older
+  runner's) is read only if its words say it came with some (`[Picture N]`
+  markers or the line), never one with `origin` `runner` or `schedule`; it gets
+  only the pictures held (with a place for one missing before the last held),
+  and its line goes only once every picture its words count is held. No
+  message is held back for its pictures: the event goes out in order with a
+  place for each one not up. A new one's (a row that arrived within 20 seconds
+  of being sent, or a live tail brought with a time within 5 minutes of now,
+  counted from then) are watched through the same query for 20 seconds. A row
+  whose pictures aren't all up (an older runner's too, by its words' count)
+  is asked about again by the thread's later reads, at most once a minute,
+  for 10 minutes after its first read. A backend older
+  than 87 is never asked, and messages show as their words. A read that fails
+  is tried again for that thread 30 seconds later. `files.read { path,
+  runnerId, maxBytes? }` answers `{ path, size, modifiedAt, mediaType, data,
+  truncated }` (as `files.read`) for a path held this way for a thread the
+  sidebar lists on that runner, with the bytes from the backend's file storage
+  (25 MB at most, held in memory, never written to disk). A place for one not
+  up waits for its message's first lookup if that's still out, then while
+  it's watched, then is asked of the backend again, and is
+  `-32000` saying it didn't reach Convex if it still isn't there (asking again
+  later can find it). The same path held for two threads answers from the one
+  used last. A path in this runner's own inbox (a picture the app has just
+  sent to that runner, drawn in the bubble it keeps until the message shows)
+  answers with that file. Any other path is `-32000`, `Files on another runner
+  are kept there for now.` Pictures in replies and pinned ones stay as they
+  were: only the phone and the website show them.
 - **Reads.** A thread is watched only while a client is subscribed to it,
   through `relay:remoteTail` (its newest 15 rows) and `relay:remoteThread`
   (its one row); a minute after the last subscriber goes, both stop. Older
   rows are read once by page (`relay:remoteMessages`, 50 at a time) and kept
   in this runner for half an hour. A tail that starts past the newest row
   held (the Mac slept) reads the rows between once, by `afterSeq`, rather
-  than leave a hole. `runner.status` has `relay: { watching, held, reads, bytes }`:
+  than leave a hole. Pictures are read by row seq, only for held messages
+  that have some, 50 messages a read; a new message's are watched live for
+  20 seconds. `runner.status` has `relay: { watching, held, reads, bytes }`:
   threads watched now, rows held, and since start the reads (and live
   updates) and the JSON bytes they brought back, to measure what it costs.
 - **Acting.** `threads.update` takes `archivedBy: "agent"` with an
@@ -6175,7 +6931,7 @@ only way the app opens another runner's thread.
   `snoozedUntil`; or, from backend API 77 and on their own, `accountId`
   and `model`, with `carryOn` beside `accountId`, which go as one `update`
   command that runner applies through its own `threads.update`, with
-  `unconfine` unless `by: "agent"` (an agent's change, `byAgent`), and
+  `byAgent` when `by: "agent"` (an agent's change, which starts no turn), and
   finishes with the login and model it applied as the command's `result`,
   which the answer's `{ thread }` shows; only the main Mac's commands,
   `from: "mac"`, can carry them; an older backend's runner says it works
@@ -6335,7 +7091,12 @@ runner that's this one is the usual create.
   fingerprint and that the asking thread's row still has that card open,
   claims the request (`relay:decideRequest` to `claimed`, owner only,
   naming the row it read by its `docId`, so a retry or second click can't
-  start a second, nor a click delayed past a refile claim the new row),
+  start a second, nor a click delayed past a refile claim the new row;
+  from backend API 85 with a `claim` id of its own, so when the claim went
+  through but its answer was lost, the next Start it asks again with the
+  same id and carries on, where before the request stayed "being started"
+  with nothing started; the id is forgotten as soon as the claim's answer
+  arrives, so nothing can be started twice under it),
   starts the thread from the
   filed request (here, or as a `create` command for another runner), with
   a first line of its own saying which thread on which runner asked and
@@ -6364,6 +7125,11 @@ runner that's this one is the usual create.
 
 What a tampered runner can do with this is put a card in front of Mike:
 the most it can start is what he read and allowed.
+
+In the backend a request is a state machine (`convex/requestMachine.ts`,
+[machines.md](machines.md)) on its own field, `requestState`;
+`relay:decideRequest`'s `state` is that machine's event, and `state`,
+`claim`, `result` and `decidedAt` stay on the row as runners read them.
 
 ## Moving a thread to another runner
 
@@ -6398,36 +7164,131 @@ Any state before `claimed` can go to `failed` (`moves:moveFailed { moveId,
 note }`, by S or T, with what went wrong in a line Mike can read) or
 `cancelled` (`moves:cancelMove`, owner, before `unpacking`). A move frozen
 30 minutes ago and not yet claimed fails by itself, and one still `asking`
-after 10 minutes (T offline). On `failed` or `cancelled` S unfreezes the
+after 10 minutes from its start or S's description (T offline). One `ready` waits for S's thread to finish
+its turn, so it fails only once S hasn't been heard from for 10 minutes,
+or after 12 hours whatever S says, so it can't block the thread's next
+move for good. On `failed` or `cancelled` S unfreezes the
 thread if it froze it and T throws away its staging; the chunks are deleted
 when a move ends, whichever way. A runner that restarts reads its moves
-again and carries on from the state.
+again and carries on from the state. A call refused with "The backend is
+being updated" (a deploy's stepping stone, for a minute) is asked again,
+only that call, rather than failing the move: 20 seconds later, then
+longer each time, up to 5 minutes, for about 20 minutes in all. T's adopt
+and `moveDone` at `claimed`, where there's nothing to fail, are tried again
+the same way whatever went wrong. Older runners failed the move, or left
+it `claimed` until T restarted, so while the stepping stone is up
+`moveDone` and `moveFailed` still go through as they did before the
+machine.
 
-- **Starting.** `moves:startMove { threadId, to, cwd?, accountId? }` (owner
-  only): the thread's row must be another runner's or this one's, `to` a
+In the backend a move is a state machine (`convex/moveMachine.ts`,
+[machines.md](machines.md)) on its own field, `moveState`; `state` stays
+these strings, written from it. Its one state runners don't see is
+`handedOver` (every row gone to T, waiting for T's `moveDone`), shown as
+`claimed`.
+
+- **Starting.** `moves:startMove { threadId, to, cwd?, accountId?, expect? }` (owner
+  only; `expect` from API 83, the preview's binding below): the thread's row must be another runner's or this one's, `to` a
   different runner heard from in the last 3 minutes, and the thread in no
   other move still going. Answers `{ moveId }`.
 - **S's info.** `{ title, cwd, home, provider, accountId, email?, model?,
   effort?, permissionMode, origin?, repoTop?, subdir?, worktree: boolean,
   sessionId?, schedules: number }`: what T needs to choose a folder and a
   login (`home` is S's home folder, for swapping). `origin` never carries
-  a password or token (`withoutCredentials` in move-git.ts: an http(s)
-  address loses its user part, ssh:// its password, the query goes), and
+  a password or token (`withoutCredentials` in move-git.ts: any address
+  loses its whole user part, in the URL and `user@host:path` forms alike
+  (the host ending at the first `:` before any `/`, as git reads it, so an
+  `@` in the path can't hide the user; one with an `@` and then a `:`
+  after that, like `user:token@host:path`, can't be told from a login and
+  is left out altogether), but for ssh's own `git`, and the query and
+  fragment go; `host:path` with no user still clones, ssh's own config
+  giving the user), and
   the backend strips one an older runner sends (`moveInfo`, and a
-  `moves.preview` call's description). The preview sends T only what it
+  `moves.preview` call's description). It's S's word, and S may be an
+  extra Mac: from API 83 the backend's `moveInfo` keeps only these fields,
+  each of its type, strings at most 4096 characters with no control
+  characters (it refuses one that isn't), and T reads it through
+  `moveInfoFrom` again, which also refuses a `subdir` that isn't plain
+  names joined by `/` (no `.`, `..`, empty or %-encoded part, no
+  backslash, never absolute). The preview sends T only what it
   plans from (`previewInfo` in moves.ts: no title, model, session or
   schedule count), scrubbed as sync scrubs, as a relay command isn't
   scrubbed on its way.
 - **T's plan.** `{ cwd, accountId, model?, effort?, worktree?: { repo,
-  subdir }, clone?: string, leftBehind: string[] }`. The folder is Mike's
+  subdir }, clone?: { url, to }, within?: string, leftBehind: string[] }`.
+  The folder is Mike's
   pick if he made one; else, for a thread with a worktree, a new one of
   T's own in its copy of the same repo (found by `origin` URL among the
   folders T knows, or cloned from `origin` to the path S has it at, with
   S's home swapped for T's: `clone` says where); else the same repo by
   `origin` URL at the same subfolder; else the same path with the home
-  swapped. The login is Mike's pick, else T's login with the same email,
+  swapped. T picks the place, never S (Daybreak 136): a path of S's names
+  a place on T only if it's under S's `home` and, swapped, still under
+  T's once normalised, and never a place that isn't plain (`plainPlace`):
+  T's home itself, or a folder with any folder on the way to it hidden or
+  one tools load from (`~/Library`, `node_modules`, `vendor`, `bin`,
+  `site-packages` and the like), as written and links followed. Mike can
+  pick one. The same goes for a repo T finds by `origin`, even one of its
+  own threads' (a dotfiles repo at the home, a checkout inside a
+  `node_modules`), and one found from S's path must be inside T's home,
+  links followed, unless one of T's own threads works in it. A `subdir`
+  in the repo that's a hidden or installed packages' folder (`.git`,
+  `node_modules/x`, as written or through a link) runs the thread at the
+  repo's top instead, with a note in `leftBehind`; in a fresh clone or
+  worktree that's checked as made. A worktree thread's repo needs a
+  worktree patch of its own: one found in a repo around it (a nested
+  checkout) would make the worktree in that other repo, so the preview
+  says so and placing refuses it. A clone is named for the
+  repo (from `origin`, never S's folder name), goes only
+  to a new folder in a plain place beside a repo one of T's own threads
+  works in (its main checkout's folder, links followed), so never
+  somewhere a tool loads from, and isn't
+  made for a worktree thread (clone it by hand first: a worktree patch
+  in a folder above a fresh clone would set it up); and the thread's
+  folder must be inside its repo, Mike's pick, or T's home, links
+  followed (`within`). T doesn't trust the plan the row
+  gives back: placing plans again with the same checks, just before it
+  clones or makes anything, refuses a plan that differs from the row's,
+  and checks the folder as made (after the clone, the new worktree and
+  its git work) before the thread takes it; a folder the git work didn't
+  make runs at the worktree's top, with a note. The login is Mike's pick, else T's login with the same email,
   else T's default. `leftBehind` is what T already knows won't come. T
   answers `moveFailed` when there's no folder or login for it.
+- **Preview binding.** A move does what its preview showed or nothing
+  (Daybreak 142). The main Mac's runner, answering `threads.movePreview`
+  with nothing in `problems` and a folder and login, works out a digest of
+  the thread, `to`, Mike's picks, the planning half of S's description
+  (`cwd`, `home`, `provider`, `email`, `origin` without credentials,
+  `repoTop`, `subdir`, `worktree`, as T will have it: through
+  `previewInfo` and the runner's scrubber) and T's answer (`cwd`,
+  `accountId`, `worktree`, `clone` and where from) (`moveBinding` in
+  moves.ts), keeps it for ten minutes under a random `previewId` it
+  returns, and
+  `threads.move` with that `previewId` (once only, for the same thread,
+  runner and picks) starts the move with it as `expect`. Without one (the
+  Swift app, an older `tb`, `move_thread`) `threads.move` looks itself and
+  binds to that, refusing a move with a problem, or one that would clone
+  (a clone is shown first, in the Move sheet). T works the digest out
+  again from the description on the row and its own plan, at `asking`
+  and again before it downloads anything, and fails the move ("changed
+  since the Move sheet looked") if they differ or the row has none. T
+  says it does this with `checksPreview: true` in its preview answer, and
+  the main Mac's runner gives no `previewId` for a T without it (a runner
+  from before this, which would do what the row says): a problem asks it
+  to update first. The row's `expect` is the backend's word, so on the
+  main Mac's runner, which starts every move, T also takes a move only
+  with a binding its own `threads.move` used in the last day, for that one
+  move (`MovePreviews.vouches`: the move `startMove` answered with, or the
+  first to carry it), so a cancelled move's binding on a new move's row
+  takes nothing; a restart between starting a move and taking it in fails
+  it. Any runner leaves alone a move it has seen end (done, failed,
+  cancelled) whose row comes back in an earlier state. Moves between two other runners are checked against the row alone.
+  The main Mac's runner reads another runner's description through the
+  relay, which scrubs anything shaped like a key, while the move's row
+  keeps folder paths whole, so a thread whose folder name looks like a key
+  fails its move as changed: it fails safe, and is left so. The GPUI app's Move to goes straight away only on a
+  look with a `previewId` and no clone, and its Move sheet's Move with a
+  folder or login changed since the look asks again and shows that
+  first.
 - **Freezing.** From S's first step (`asking`) until the move ends S starts
   no new turn on the thread: messages (the app's, the phone's, agents',
   schedules') go in its queue, which moves with it. A running turn goes on;
@@ -6481,7 +7342,7 @@ again and carries on from the state.
   can't carry (one with `=`) fails the step rather than running git.
   Files cross as the disk has them, so a git-lfs file goes as its content.
   T clones only from an `https`, `ssh` or `user@host:path` origin, into a
-  path named in full.
+  new folder it picks (T's plan above).
 - **The switch.** `moves:moveClaim` is the one mutation where the thread
   changes hands. It sets the thread row's `runnerId` to T (clearing any
   card on it), hands T its Pocket cards on the thread and its share link,
@@ -6564,9 +7425,9 @@ runner:
 
 | method | params | result |
 |---|---|---|
-| `threads.movePreview` | `{ threadId, runnerId, cwd?, accountId? }` | `{ cwd?, accountId?, accounts: { id, provider, title, email? }[], leftBehind, problems, worktree?: true, clone?: string }`: T's guess for the folder and login (or for Mike's `cwd` and `accountId`, to check them), its logins of the thread's provider to pick from, what won't come at either end (`moves.describe` adds the thread's own runner's, and `sourceChecked: true` says it did: without that, an empty `leftBehind` means nothing), and what stops it (empty when it can move: no folder or login for it, the experiment off on a T from before 12 Nov, a worktree thread's repo there with no worktree patch, T not answering). `worktree`: a new worktree of its own in `cwd`'s repo; `clone`: that repo is cloned there first. Nothing is made or started. The thread is described by the runner that has it (here, or a `moves.describe` call to it), then planned by T (here, or a `moves.preview` call with that description). Both calls are on the relay's allow-list from backend API 65, owner only, and checked again on the runner. Failures come back in `problems`, not as an error |
-| `threads.move` | `{ threadId, runnerId, cwd?, accountId? }` | `{ moveId }`. `-32602` with the reason when it can't start (the runner offline, a move already going) |
-| `threads.moveCancel` | `{ threadId }` | `{}`. `-32602` once the move is past `packing` |
+| `threads.movePreview` | `{ threadId, runnerId, cwd?, accountId? }` | `{ cwd?, accountId?, accounts: { id, provider, title, email? }[], leftBehind, problems, worktree?: true, clone?: string, cloneFrom?: string, previewId?: string, checksPreview?: true }`: T's guess for the folder and login (or for Mike's `cwd` and `accountId`, to check them), its logins of the thread's provider to pick from, what won't come at either end (`moves.describe` adds the thread's own runner's, and `sourceChecked: true` says it did: without that, an empty `leftBehind` means nothing), and what stops it (empty when it can move: no folder or login for it, the experiment off on a T from before 12 Nov, a worktree thread's repo there with no worktree patch, T not answering). `worktree`: a new worktree of its own in `cwd`'s repo; `clone`: that repo is cloned there first, from `cloneFrom`. `previewId`: the main Mac's runner's one-use id for this look, when nothing stops the move (Preview binding). Nothing is made or started. The thread is described by the runner that has it (here, or a `moves.describe` call to it), then planned by T (here, or a `moves.preview` call with that description). Both calls are on the relay's allow-list from backend API 65, owner only, and checked again on the runner. Failures come back in `problems`, not as an error |
+| `threads.move` | `{ threadId, runnerId, cwd?, accountId?, previewId? }` | `{ moveId }`. `previewId` is a `threads.movePreview` answer's, asked with the same `cwd` and `accountId`: the move does what it showed or nothing. Without one the runner looks itself first (Preview binding). `-32602` with the reason when it can't start (the runner offline, a move already going, a used or stale `previewId`, a problem, or a clone without one) |
+| `threads.moveCancel` | `{ threadId, moveId? }` | `{}`. `-32602` once the move is past `packing`. `moveId` (a `threads.move` answer's): that move is cancelled by its id, and `-32602` if it's already over, so a cancel that arrives late can't stop a newer one; without it, whichever this runner sees under way. A runner from before 18 Nov ignores `moveId` |
 
 What a tampered runner key can do: as T, it only ever gets threads Mike
 moved to it; as S, only its own. It can't start a move, read another
@@ -6696,10 +7557,18 @@ the mirror back as state. The Mac app doesn't use it.
   changed (checked again as the row goes up, after any value found since),
   an MCP tool with more than one short thing to read, any file edit (it
   shows only its path there, and Allow writes all of it), a threadbear tool's own card, Codex asking for more access) has
-  only its non-allow options there, and its title says it can only be
-  allowed in the Mac app connected straight to its runner; the runner
+  only its non-allow options there, and its title names the runner whose
+  app can allow it ("only the Threadbear app on bruce can allow it"); the runner
   refuses an allow or allowAlways that comes through the backend for one
-  (Daybreak, 7 Nov 2026); a
+  (Daybreak, 7 Nov 2026). Such a card goes up only on a runner with an
+  app of its own: one connected now, or one that was in the last 14 days
+  (`<home>/app-seen.json`, written on an app's hello and as it goes,
+  `runner/src/app-seen.ts`). Elsewhere (a runner nobody runs an app on)
+  it could only be denied, so no card is put up: the call is denied at
+  once (`ToolApprovalAnswer.noApp`), a `system.note` says "Not asked:
+  ...", and the agent is told to do it a way that doesn't need the OK.
+  A plan's card (ExitPlanMode) still goes up, as it's also where a plan
+  is sent back to be revised; a
   `question.requested` puts `{ approvalId, kind: "question", questions }`.
   `approval.resolved`, or the thread no longer waiting, takes it off.
 - **End-of-turn cards** (API 14, 30 Oct 2026). The open card of asks
@@ -6721,7 +7590,9 @@ the mirror back as state. The Mac app doesn't use it.
   symbol?, picture?, by }`, `picture` naming the runner's copy of the
   picture, the file name without its extension; `Schedule` without effort
   and permission mode; `Account` as `id, provider, title, note?, email?,
-  plan?, defaultModel?, usage?`, never `configDir`; from backend API 20
+  plan?, defaultModel?, usage?`, never `configDir`; from backend API 90
+  also `loginEndsAt?`, `signedOut?` and `yearToken?` (`{ madeAt? }`), for
+  the Runners panel's logins; from backend API 20
   also `models?` (each `id, title, effortLevels?, defaultEffort?`) and
   `defaultEffort?`, for the phone's new thread pickers). The same at start,
   and the accounts again once a heartbeat first says the backend is at 20.
@@ -6765,12 +7636,24 @@ the mirror back as state. The Mac app doesn't use it.
 - **Commands.** The phone's mutations (`convex/phone.ts`) add a row to
   `commands` for a runner (`runnerId`, or `"any"`). The runner holds a
   live query on its pending commands over the Convex client's WebSocket
-  (it reconnects by itself), and for each one: takes it
-  (`sync:takeCommand`, which says no if it was already taken), applies
+  (it reconnects by itself; and after a pause the process didn't see, a
+  wall-clock jump of more than 15 s between its 2-second ticks, such as a
+  Mac waking from sleep or a box resumed, the runner drops that client and
+  makes a new one with every live query on it at once, then heartbeats,
+  at most once in 30 s: `runner/src/clock-jump.ts`, `reconnectNow` in
+  `sync.ts`), and for each one: takes it
+  (`sync:takeCommand`, which says no if it was already taken; from
+  backend API 85 the runner passes `attempt`, its own id for the take, and
+  the same attempt asking again after an error gets yes, so a take whose
+  answer was lost runs rather than being dropped), applies
   it through the same methods the app's RPCs use (one about a thread a
   draining runner still has goes to that runner, as the app's would),
   then finishes it with
-  the outcome and, for a `create` or `quickAsk`, the new thread's id. `send` and
+  the outcome and, for a `create` or `quickAsk`, the new thread's id
+  (from API 85 a finish changes only a taken command, so a repeated or
+  late one can't change how it ended, and a command taken 3 hours ago with
+  no finish shows as `failed`, "Its runner never said how it went.", which
+  its runner's late finish still settles; it's never handed out again). `send` and
   `create` give the `user.message` `origin: "phone"`. A `create` can name
   `accountId`, `model` and (backend API 20) `effort`, checked as
   `threads.create` checks them; an effort that isn't a level is dropped. Either can carry
@@ -6845,7 +7728,7 @@ the mirror back as state. The Mac app doesn't use it.
   aren't scrubbed. `src/withhold.ts` says which tool calls' output must never
   upload.
 - **Full sync** (API 52, docs/full-convex.md step 4). `sync.full: true` in
-  `runner.json`, off by default (the main runner offers it once, when a phone or browser is paired or another runner turns up: docs/full-convex.md step 6); off, none of this runs. Each finished tool goes up
+  `runner.json`, off by default and never offered (docs/full-convex.md step 6); off, none of this runs. Each finished tool goes up
   as one `eventBodies` row under its call's seq, the same seq as its `messages` row
   (`sync:appendBodies`, at most 50 rows or about 512 KB a mutation, behind the
   mirror's own writes): `text`, `ok`, `truncated`, `input` and `diffs` as JSON text,
@@ -6912,12 +7795,18 @@ type Device = {
 }
 ```
 
-- `devices.pair` for a browser asks the backend (`sync:issueToken`,
-  with the runner key) for a token of that kind and name, good for
-  `days`, and hands the app the website's sign-in link (the token in the
-  `#fragment`, which never reaches a server; the app opens it in the
-  default browser). For a phone it asks for a pairing code instead
-  (`sync:issuePairingCode`, API 81 in this fork (upstream 80)): one use, good for ten minutes, with
+- `devices.pair` for a browser asks the backend for a one-use sign-in
+  code (`sync:issuePairingCode` with `kind: "browser"`, API 96 in this fork; one use,
+  ten minutes, only its SHA-256 kept) and hands the app the website's
+  sign-in link, `<site>/#code=<tbp_…>`, which the app opens in the default
+  browser. The `#fragment` never reaches a server; the site trades the
+  code for the browser's token with `tokens:claim({ code })` and wipes it
+  from the address bar. The link used to carry the browser's token itself
+  (`#token=`), good for 90 days wherever the link was seen (copied,
+  synced, in history, offered to another app); the site no longer keeps
+  one from a link, and `sync:issueToken` refuses `kind: "browser"` too, so
+  an older runner says to update. For a phone it asks for a pairing code instead
+  (`sync:issuePairingCode`, API 96 in this fork): one use, good for ten minutes, with
   only its SHA-256 kept. `pairingLink` is then the text the app draws as
   a QR code: `TBPAIR1_` and the base64url (no padding) of
   `url=<sync.url>&code=<tbp_…>&key=<runnerId>:<key>`. It's no link, so
@@ -7321,7 +8210,7 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `bye` | its own | `runnerId` |
 | `setPresence` | its own | `runnerId` |
 | `upsertThreads` | its own | each row's `runnerId` is the key's, and so is the row it replaces: no taking or moving another runner's thread, its secret card's key or where its commands go. A new row only under an id that's had nothing but its runner (Thread ids, above) |
-| `removeThreads` | its own | the row's runner; for an id with no row a runner key leaves what's there alone |
+| `removeThreads` | its own | the row's runner; for an id with no row a runner key leaves what's there alone. With `runnerId` (API 92, which the runner sends) only that runner's rows go, whatever the key, so the main Mac can't remove a thread it moved to another runner |
 | `prune` | its own | `runnerId`; each pruned thread's messages and pictures go too, and it gets a tombstone |
 | `sharedThreads` | its own | `runnerId`: the ids of its rows shared by link (API 60) |
 | `threadsOf` | its own | `runnerId` |
@@ -7345,6 +8234,11 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `pools` | any runner | the shared pools, which every runner follows; a runner key gets no member named by another runner's id |
 | `savePools` | owner only | pools reach the main Mac's logins and folders |
 | `adoptPools` | owner only | as `savePools`; a runner key's runner keeps its own until the main Mac sets them |
+| `putMemory` | owner only | shared memory briefs every agent on every runner, so only the main Mac writes it |
+| `memorySince` | any runner | the main Mac's shared memory, which every runner copies down |
+| `offerMemory` | its own | a runner key's own agents' saves, offered to the main Mac as data |
+| `memoryOffers` | owner only | other runners' offers are the main Mac's to read |
+| `takeMemoryOffers` | owner only | as `memoryOffers` |
 | `setSchedules` | owner only | mirrored rows, for a runner on a pre-API 9 schedules.json: no runner key's runner needs it, and it could shadow another runner's ids (its runner stops mirroring, quietly) |
 | `schedules` | its own | lists only its runner's schedules; the owner sees all |
 | `schedulesSince` | its own | as `schedules`, and hears of only its own runner's rows and ids gone |
@@ -7396,6 +8290,7 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `discardPictures` | owner only | deletes pictures uploaded through `pictureUploadUrl` for a command that wasn't queued, only ones nothing names |
 | `remoteAccounts` | owner only | another runner's logins, with their usage from API 77 |
 | `remoteBody` | owner only | one tool's output on another runner's thread (full sync) |
+| `picturesAtSeqs` | owner only | the pictures pasted into the messages at up to 50 seqs of another runner's thread (`replyImages` with `src` `picture:N`), each with its file's URL (API 87) |
 | `fileRequest` | its own | a request for a thread on another runner, from one of its own threads (Asking another runner); never changed after; at most 5 waiting (one over two hours old doesn't count) and 50 kept, oldest going first, for a week at most |
 | `runnerRequest` | its own | a request its runner filed; the owner reads any |
 | `decideRequest` | owner only | claims a pending request, marks a claimed one allowed (with where it started) or hands it back, or denies a pending one |
@@ -7415,12 +8310,580 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `moveDone` | its own | the move's new runner |
 | `moveFailed` | its own | either of the move's runners, before the switch |
 | `moveDropChunks` | owner only | the main Mac's own chunks for a move that ended before it was packed: deletes those no going move names and nothing else uses |
+| `runnerServices` | owner only | the virtual runners (`convex/boxes.ts`, Virtual runners), each with how many boxes are up or starting and asleep |
+| `setRunnerService` | owner only | makes a virtual runner, or changes one's name, image, box size, region and limits; its provider is its own for life |
+| `startThread` | owner only | a thread on a virtual runner: its runner, box and `create` command in one step, refused past `maxBoxes` (Virtual runners) |
+| `wakePastHours` | owner only | wakes a thread's box that's waiting for tomorrow's hours, and lets it run the rest of today (Virtual runners) |
+| `setCloudToken` | owner only | a Claude login's cloud token for boxes, sealed under `BOX_SEAL_KEY` (`convex/boxes.ts`, Box keys) |
+| `cloudTokens` | owner only | which logins have a cloud token, when each was made and set, and whether it's `valid` or `dead` (API 94); never the token |
+| `tokenRefused` | its own | a box's key only: its login's cloud token was refused by a turn (API 94, Box mode) |
+| `boxCloudToken` | its own | a box's key only: its login's cloud token while it's valid, for a box waiting after a refusal (API 94, Box mode) |
+| `mintBootToken` | owner only | a boot token for a thread's booting box: returned once, only its hash kept, 10 minutes |
+| `archiveBox` | owner only | the thread's box goes to `destroying`, and its key stops working |
+| `boxSaved` | its own | a box's key only: its thread's save, a file its runner uploaded and nothing else uses; replaces the last save |
+
+`boxes:exchange` takes no key: a box's boot token, once (Box keys).
+`boxes:startThread`, `setRunnerService` and `runnerServices` are in
+Virtual runners.
 
 `sync:claimUpload` and `sync:finishUpload` are internal, for
 `/runner/upload` (`phone:claimPhoneUpload`/`finishPhoneUpload` and
 `relay:claimRelayUpload`/`finishRelayUpload` the same for the other two
 routes), and `share:shareImageFile` for `/share/image/`; `moves:rehomeRows` (a moved thread's rows to its new
 runner) and `moves:expireMoves` (the cron) are internal too.
+
+### Virtual runners
+
+A virtual runner (docs/virtual-runners.md) is a `runnerServices` row:
+a provider (`fly`, `convex/boxProviders/`), an image, a box size, a
+region and limits. Each thread on it has a **box** of its own, run by
+the service's Convex actions (`convex/boxService.ts`); nothing on a Mac
+has to be on for it.
+
+- **Making one.** `boxes:setRunnerService({ key, serviceId?, name,
+  provider, image?, box: { cpus, memoryMb }, region?, limits? })` makes
+  one, or changes one (its provider can't change), and returns its id;
+  an image left out is as it was, or else `defaultBoxImage`
+  (`registry.fly.io/<FLY_APP>:latest`, the box image below, private to
+  the boxes' Fly app; with no `FLY_APP`, an image must be given), and limits left out are `BOX_LIMITS` (`maxBoxes` 5, `idleSleepMinutes` 10,
+  `maxAwakeHoursPerDay` 8, `deleteAfterDays` 14) or as they were. A Fly
+  box is 2048 MB at most, the most Fly can pause, and every box 1024 MB at
+  least (`MIN_BOX_MB`), so a box can restore any save another took.
+  `boxes:runnerServices({ key })` lists them, with `running` (boxes
+  creating, starting, awake, saving or waking) and `asleep`. Owner key
+  only.
+- **Starting a thread on one.** `boxes:startThread({ key, serviceId,
+  threadId, repo: { origin, subfolder, baseBranch }, login, text, model?,
+  effort?, permissionMode?, plan? })` (an action, owner key) makes, in one
+  mutation, the thread's runner (a `runners` row marked `box: { serviceId
+  }`, with a runner id of its own for life, 12 hex characters, and
+  `lastSeenAt` 0 until its box heartbeats), its `boxes` row and its
+  `create` command for that runner, naming the thread, with what
+  `queueCommand`'s `create` takes and `from: "mac"`; then the service
+  makes its box. It answers `{ runnerId, commandId }`. Past the virtual
+  runner's `maxBoxes` it's refused at once (`kind: "limit"`, saying how
+  many are up), and nothing is written. From API 94 it also takes `cwd`
+  and `accountId` (the folder and login on the Mac it was started from,
+  for show only) and writes the thread's sidebar row (`threadIndex`,
+  under the box's runner id: its first line, scrubbed of secrets as a
+  runner's writes are, as the title and preview,
+  `status: "starting"`), so the thread is listed everywhere at once and
+  stays listed while it waits, before its box has written anything.
+- **Waiting for a cloud token** (API 94). A thread whose login has no
+  cloud token, or only a refused one (`cloudToken`'s `dead`, below), starts
+  in the box state `needsToken`: nothing is asked of the provider, its
+  `create` waits in the queue, and it counts toward nothing. Setting a
+  valid token for that login (`setCloudToken`) releases the boxes waiting
+  on it (`TOKEN_SET`) into their virtual runner's queue for room
+  (`waitingForRoom`: no box, nothing billed, shown `waiting`), which starts
+  them by when each thread started, oldest first, whatever released them,
+  so a token never passes a thread already waiting: at once while there's
+  room under `maxBoxes`, else as room frees (a box sleeps, fails or is
+  archived, or at the idle check: `wakeWaiting`, `ROOM`). One whose login's
+  token was refused while it waited goes back to `needsToken` when its turn
+  comes, using none of the room. Archiving one that hasn't started
+  (`needsToken` or `waitingForRoom`) ends it (`expired`: it never ran, so
+  nothing's kept): the archive command is done at once by the backend
+  (`boxes:archiveUnstarted`), the thread's sidebar row gets `archivedAt`,
+  and its other waiting commands (its `create`) fail, saying it can't come
+  back. Deleting another runner's thread from the Mac isn't a command
+  (`threads.delete` on one is refused), so there's no delete to handle.
+- **Cloud tokens' lifecycle** (API 94). A `cloudTokens` row is a state
+  machine (`convex/cloudTokenMachine.ts`, `tokenState`): `valid` once set,
+  `dead` once a box's turn on it was refused (a 401), `valid` again when a
+  new one is set. No row is a login with none. `setCloudToken` sends `SET`
+  (and releases the boxes waiting on the login); a box's
+  `boxes:tokenRefused({ key, setAt })` sends `REFUSED`, which only kills
+  the token it was given (`setAt` the row's own), so a token set since is
+  never marked dead by an older one's refusal. `boxes:cloudTokens` adds
+  each one's `state`.
+- **Cloud tokens on the Mac.** The app asks its own runner (owner key):
+  `cloudTokens.make { login }` runs `claude setup-token` for this Mac's
+  login with that email, in a pseudo-terminal with no window, as that
+  login (`CLAUDE_CONFIG_DIR` for any but claude-main). It opens claude.ai
+  in the browser; once Mike approves, the CLI gets its code on a localhost
+  callback and prints the token, which the runner takes from its output
+  (escapes and whitespace stripped, as it wraps) and sends to
+  `setCloudToken` with `madeAt` now. It answers `{}` once the token is
+  set, or an error, and gives up after 10 minutes (the CLI is stopped).
+  `cloudTokens.set { login, token }` sets one Mike pasted, and
+  `cloudTokens.useMac { login }` sets the login's year-long token on this
+  Mac (Accounts, "Year-long tokens") with its `madeAt`, when Mike picks
+  it on the card: the one place that token leaves the login's CLI. A
+  token is never logged, written to disk, put in an event or sent
+  anywhere but `setCloudToken`; the runner's scrubber knows it from the
+  moment it's read. `cloudTokens.list {}` answers `{ tokens: { login,
+  madeAt, setAt, state }[] }`. Each needs the `virtualRunners`
+  experiment and a backend of 94; otherwise `-32602`.
+- **Starting from the Mac.** `threads.create` with `serviceId` (a virtual
+  runner's id from `RemoteThreads.services`) starts the thread on it:
+  the runner reads the repo from `cwd` on this Mac (`origin` without
+  credentials, which it must have, and which a box must be able to clone:
+  a box clones over https with no ssh key, so an https address, or GitHub's
+  ssh forms sent as their https address; a folder, `file://`, http, git://
+  or another host's ssh is refused, `-32602`, before anything is started,
+  and the app keeps the draft; the subfolder from the repo's top; the
+  base branch the current branch's upstream on `origin`, else `origin`'s
+  default branch, else `main`), takes the login's email from `accountId`
+  (a Claude login on this Mac; a pool's pick when only `poolId` is
+  given), makes the thread's id and calls `boxes:startThread`. It answers
+  as a create on another runner does (`thread.runnerId` the box's runner,
+  `status: "starting"`). Pictures aren't taken yet (`-32602`, saying so).
+  The thread then waits on its box, and on a cloud token if its login has
+  none, which the app shows from `RemoteRunner.box`. Commands for it
+  (`queueCommand`) reach its box's runner before the box has written the
+  thread's row, by its `boxes` row; an archive of one waiting for a token
+  ends it. Neither this nor `cloudTokens.*` is taken from a thread's own
+  key, whatever its access (rpc-gate.ts): they're the user's, from the app.
+- **The box.** The provider starts it from the image with only
+  `THREADBEAR_SYNC_URL` (the deployment's address),
+  `THREADBEAR_BOX_BOOT` (its boot token, Box keys) and, for a provider that
+  declares one, `THREADBEAR_MACHINE_ID_ENV` (the name of the variable that
+  holds the machine's own id, `BoxProvider.machineIdEnv`) in its environment,
+  tagged `tb_box` (its `boxes` row), `tb_attempt` and `tb_service`. Each
+  create is one attempt, made once however often it's tried. Its state
+  is its machine's (docs/machines.md, `box`).
+- **Sleeping and saving.** A box whose thread has been idle
+  `idleSleepMinutes` with no command waiting for it, or that has been up
+  `maxAwakeHoursPerDay` today whatever's waiting, is sent a `save` command
+  for its thread (never by a client); a thread that's moving is neither.
+  Its runner saves the thread and calls `boxSaved`;
+  the box is then paused if it can be (Fly up to 2 GB, by the size it was
+  made at, not the virtual runner's size now), else deleted. One past its
+  day's hours that hasn't saved in 10 minutes sleeps anyway, paused with
+  its memory; a message meanwhile doesn't stop that (it waits, as for an
+  asleep box past its hours). A box is never deleted with work newer than
+  its save in it, unless its days run out or the thread is deleted: one
+  that can't pause (or whose pause is refused) with unsaved work is kept
+  running, its time counting toward its day's hours and its runner toward
+  `maxBoxes`, and asked to save
+  again on a backoff (10 minutes, doubling, 6 hours at most) until it
+  does. Waking it takes it up as it is.
+- **Waking.** Any command queued for a box's runner (`queueCommand`, or
+  any of the phone's), or a move to or from it (`startMove`), while its
+  box is asleep, saving or failed wakes it: the same box resumed if it
+  was paused, else a new box that restores the last save. Two quick
+  messages make one wake. The command waits in the queue meanwhile. A
+  wake past its day's hours waits for the next UTC day, and one that
+  would take its virtual runner past `maxBoxes` waits for room
+  (`RemoteRunner.box.waiting` for either; they're kept apart, so one
+  waiting for room is never stuck behind those waiting for tomorrow): the
+  oldest waiting for room wakes when a box sleeps, fails or is archived,
+  or at an idle check.
+  `boxes:wakePastHours({ key, threadId })` (owner) wakes one past its
+  hours now, for the rest of the day. A thread that's moving wakes past
+  its hours, and each step of a move wakes a sleeping box on either side;
+  a move with no step for an hour no longer counts as moving.
+  A box that goes asleep, gone or shelved with a waking command already
+  waiting (one sent while it was being deleted) wakes then.
+- **Archived threads.** Archiving a box that's up, or a kept box that's
+  waking, asks it to save first (`archiving`, with a `save` command, 10
+  minutes), so unarchiving comes back to where it was; the box is then
+  deleted and the thread is `gone`, its save kept for `deleteAfterDays`.
+  If the save doesn't come (or the box stops heartbeating), the box is
+  kept (`shelved`: paused, or kept running if it can't pause) until then. One
+  that slept unsaved at its day's hours is shelved the same way.
+  Unarchiving it (an `update` with `unarchive`), a message, a reply to a
+  card or a move brings it back: a shelved box resumed, else a new box
+  from the save; marking it seen or renaming it doesn't. Once its days
+  are up (or if it never saved), it's `expired`: everything waiting for
+  its runner, and anything sent after, fails at once with a note that the
+  thread can't come back.
+- **Given up only on the provider's word.** A box is treated as lost
+  (its key revoked, a new box made from the save) only when the provider
+  says it no longer has it, or that it has lost its disk (a stopped Fly
+  Machine). Not for errors, timeouts or missed heartbeats: a box that
+  stops heartbeating is marked unreachable (`RemoteRunner.box.unreachable`)
+  and keeps its key and its awake time while the provider is asked
+  (`checkBox`: a paused one is resumed); a resume that fails is tried
+  again a minute later, and the boot timer doesn't give up a kept box. A
+  box that may hold work newer than the save (one that has run since)
+  isn't deleted, by the reaper or an archive, until a save covers it, the
+  provider says it's gone, or its thread's days run out.
+- **One provider call at a time.** Each of the service's actions holds
+  the box row's `op` lease (3 minutes) while it calls the provider for
+  that box, so a sleep's suspend and a wake's start never overlap; another
+  waits 5 seconds and tries again. Every provider call checks and renews
+  the lease before and after it and is given up after 40 seconds, and
+  every report it makes is refused once it has lost the lease, so a run
+  that lost it does nothing more. After its calls it reads the row and
+  the provider again, putting the machine right (a box woken while it
+  paused is resumed), until they match or the lease goes.
+- **Reachable.** A box's runner counts as online wherever that's checked
+  (`startMove`, and a runner's `RemoteRunner.online`, Other runners'
+  threads) in every state but `destroying` and `expired`, as a message
+  starts or wakes it; `otherRunnersList` gives its `box: { state }`. A box
+  takes only its own thread: `queueCommand` and `phone:create` refuse a
+  `create` for its runner (`kind: "badArgs"`), the phone never picks one
+  for a new thread, and `startMove` moves only its own thread to it.
+- **Archiving.** A thread with a box that goes to the den or is
+  removed has its box deleted a minute later (unless it's back out of the
+  den), every box the provider has for it, older attempts' too.
+  `archiveBox` does it at once.
+- **The billing guard** (invariant M, docs/virtual-runners.md "The two
+  invariants"): every 5 minutes the reaper pauses any machine the provider
+  shows running that isn't entitled to run (not the current attempt, not
+  in a running state, silent 15 minutes, waking past 15 minutes, or past
+  its day's hours), counts and charges any machine it sees running while
+  its row isn't up, and the thread of a paused box sleeps as it was.
+  Retention ends an asleep thread's box too, `deleteAfterDays` after it
+  slept: the thread is `retiring` (a message waits) until the provider
+  confirms its boxes gone, then comes back from its last save.
+- **The crons** (`convex/crons.ts`): sleep idle boxes every 2 minutes;
+  every 5, guard and reap what the provider has that nobody wants (no row, an older
+  attempt than the row's, an archived, expired or failed thread's), take
+  in a box whose create never reported, sleep an asleep box still running,
+  lose one that stopped (under its op lease, asking the provider again),
+  and delete again one stuck being deleted; every 6 hours, delete archived
+  threads' saves past `deleteAfterDays`. Each goes through its rows or
+  the provider's boxes a page at a time, carrying on in a run of its own
+  from where it stopped. A reaper step is checked again against its row
+  as it is when it runs, and dropped if the row has moved on.
+- **Internal.** `boxService:createBox`, `wakeBox`, `sleepBox`,
+  `destroyBox` (the actions; each reads the row again and acts on its
+  newest attempt only), `claimOp`, `holdOp`, `releaseOp`, `claimAttempt`,
+  `boxFor`, `sleepIdleBoxes`, `reapBoxes`, `reapService`, `reapPlan`,
+  `reapStep`, `observe`, `driftPage`, `driftLost`, `servicesToReap`,
+  `serviceProvider`, `retryDestroying`, `reapOne`, `driftOne`, `deleteFailed`, `deleteDone`, `backedOff`, `queueReaps`, `reapDone`, `pruneSaves`, `retireBox`,
+  `retireFence`, `retryRetiring`, `deleteFence`, `mayRunNow`, `checkBox`, `retryKeptSaves`,
+  `markKept`, `suspendFailed`; `boxes:beginThread`, `wakeFor`, `wakeWaiting`,
+  `wakeAllWaiting`, `failExpired`, `archiveIfStill`. `report` takes the
+  reporting run's `op`.
+- **Its first command.** The `create` that `startThread` queues names its
+  thread, which has no row until the box's runner writes it: the box's
+  key, and only for its own thread's `create`, takes it all the same.
+
+### Box keys
+
+A box on a virtual runner (docs/virtual-runners.md, `convex/boxes.ts`) runs
+one thread as an ordinary runner, on a **box key** (`tbb_` and 64 hex
+characters): a third kind of key, beside the owner key and runner keys,
+for one `runnerId` *and* one thread. It isn't a `runnerKeys` row and
+doesn't count toward their three: the thread's `boxes` row keeps its
+SHA-256 (`boxKeyHash`).
+
+- **Getting one.** The provider starts the box with a boot token (`tbt_`
+  and 64 hex characters) in its environment and nothing else reusable.
+  `boxes:exchange({ bootToken, machineId?, boxKeyHash? })` trades it, once and within
+  10 minutes of its minting, for `{ boxKey, runnerId, threadId, claudeToken, threadKey,
+  repo, save, login }`: the box key, the login's cloud token, the thread's key
+  for sealing its saves (base64, 32 bytes), the repo the owner fixed
+  (`origin` without credentials, `subfolder`, `baseBranch`), the last
+  save's URL, or null, and the login the box runs on (as its cloud token
+  is kept, an email), which a token login can't read from `.claude.json`.
+  With `boxKeyHash` (the SHA-256, in hex, of a box key the box made itself,
+  as the runner's box mode does) that hash is the box's key and no `boxKey`
+  comes back, so the key never crosses the network. The exchange then
+  records the token's hash and when it would have expired
+  (`boxes.exchanged`), and the same `bootToken`, `machineId` and
+  `boxKeyHash` asked again, while that key is still the thread's (not
+  replaced, revoked or dead) and within the token's 10 minutes, get the
+  same answer and change nothing: a box whose answer was lost tries again.
+  Anything else with a spent token (another machine, another hash, no
+  machine or no hash) is refused (`auth`). It unseals first, from a read that uses nothing
+  up, so a deployment that can't unseal (`kind: "config"`) leaves the
+  boot token and the box as they were. Then, in one mutation that checks
+  the token again, it's used up, the box's machine goes to `awake`
+  (`READY`), and the new key's hash replaces the last box's, so the last
+  box's key is refused from that moment. A login with no cloud token
+  refuses with `kind: "noCloudToken"` and leaves the boot token as it was.
+  `machineId` is the provider's id for the machine the box runs on, which
+  each provider says how a box learns (`BoxProvider.machineIdEnv`: Fly's
+  `FLY_MACHINE_ID`); letters, digits, `_` and `-`, at most 64. The
+  exchange records it as the key holder's machine (`boxes.keyMachineId`),
+  so where a provider made two machines for one attempt, only that one is
+  the row's: the reaper takes it in and deletes the other, and a
+  `CREATED`, `LOST` or `PAUSED` naming the other changes nothing. The box
+  runner sends it from slice 3; an exchange without it is taken, its
+  machine unknown, and then no machine of that attempt is reported lost,
+  taken in or deleted for the key while another of it is listed. A box's
+  heartbeat may send it too (`runner.machineId`, kept on the box row,
+  never the runner's): it names the key holder's machine if nothing has
+  yet, and changes nothing once one is known. Before a wake, a lease
+  check or the reconciler decides anything, the service makes sure of the
+  key holder's machine: one the row never took in is taken in, or, once
+  the provider confirms it gone (asked by its id), reported lost, which
+  ends its key and its attempt's protection together. Not known: the row's
+  machine gone with one of its attempt left, that one is taken in as a
+  guess (it deletes nothing and refuses no report, and a box's own word
+  replaces it); several left, each is tried in turn. A machine resumed
+  while it's unsure is a trial: the thread stays `waking` (no `RESUMED`)
+  until a key heartbeat 30 seconds or more after that resume names it,
+  and one that stops, or sends none within 3 minutes, is paused and the
+  next tried. A failed trial, or a wake that gives up with it still unsure,
+  is shown on the thread (`RemoteRunner.box.unsure`). A create's late
+  `FAILED` for an attempt that has traded its token (or may hold work)
+  changes nothing, nor does a late `CREATED` naming another machine for an
+  attempt the row already names one for, unless it names the key holder's
+  machine, which the row then takes as its own. A refused `CREATED` deletes
+  its machine only if the reaper's plan and fence would delete it then.
+  A machine a delete fence decides to delete is condemned in that same step
+  (a `boxCondemned` row, with when, no cap) until its delete succeeds or a
+  listing asked for after that no longer has it: an exchange naming
+  it is refused, as is one naming no machine while any of its attempt is
+  condemned (the boot token stays for the kept machine), and a heartbeat
+  naming it never makes it the key holder's.
+  A newer boot token for the thread replaces an older one. Each is for one
+  attempt at a box (`mintBootToken` returns its `attempt`, numbered from
+  1), which the service's `CREATED` and `LOST` name: a loss ends the key,
+  unused boot token and provider id of that attempt and older ones, and
+  leaves a newer attempt's alone (a `LOST` naming none ends them all). An
+  event naming an older attempt than the newest the thread has changes
+  neither its state nor its provider box: a late `CREATED` is refused
+  (`boxMachine.ts` `stale`, one rule for every event). `CREATED`, `IDLE`,
+  `RESUMED` and `LOST` each name their attempt. The newest attempt's
+  `CREATED` records its provider id in any state, and only starts a box
+  that hasn't traded its token yet; `RESUMED` is only the key holder's,
+  while no newer attempt has been minted. Box keys and
+  boot tokens (`tbb_`, `tbt_`) are redacted from transcripts like runner
+  keys, and so is a value under a name like `threadKey`, `boxKey` or
+  `sealed`; a message's `turn` (or a picture's name, a claim's holder, a
+  move's digest) with a credential's prefix is stored as `[REDACTED]`. A
+  message's `turn` must be a turn id's first characters (1 to 8 letters,
+  digits, `-` or `_`, from any key) and a runner or box key's `at` an ISO
+  time, as `share:view` hands both out unscrubbed; anything else is dropped
+  (`turn`) or made now (`at`). A box can't put a share link another thread
+  had under its runner id on its own thread.
+- **What it reaches.** Only what running its one thread needs (the list
+  below, `BOX_CALLS` in `convex/runnerAccess.ts`), each for its own
+  runner as a runner key's is, and each row checked against its thread
+  too (`ownThreadOnly`): a thread row only under its own thread id, never a
+  new thread. Every list and write by runner id (`threadsOf`,
+  `sharedThreads`, `messageHeads`, `setThreadIndex`'s `removed` and `keep`,
+  its requests, making room under its caps, removing its thread) leaves
+  out any other thread the owner key put under its runner id. Messages, tool output and pictures of that thread; its
+  runner's commands for that thread or for no thread (another thread's are
+  hidden from `pendingCommands` and refused); its thread's moves only.
+  Everything else is refused as `forbidden`: everything owner-only,
+  schedules, Pocket, projects, logins and usage readings (the service sets
+  a box's login), pools, shared memory, presence, `prune` and machine
+  figures. A new thread from a box goes through `fileRequest`, which asks
+  Mike with a card, as from any runner key. An upload URL it asks for
+  dies when its key is replaced.
+- **When it stops working.** The box's state machine (`convex/boxMachine.ts`)
+  clears the hash when the box is lost (no heartbeat for 5 minutes, or the
+  provider says so, in any state, waking included), when the provider
+  makes a new box for the thread, and when it fails, is archived or
+  deleted; a key whose row is
+  `destroying`, `gone` or `failed` is refused whatever the row holds. A
+  box that sleeps on a paused machine keeps its key, so it can resume.
+- **Heartbeats.** A box's `heartbeat` marks its `runners` row `box: {
+  serviceId }`, renews the box's lease (`boxes.lastHeartbeatAt`) and
+  drops any `rpcUrl`: no Mac app dials a box. Its answer carries `box: {
+  state }`, the box's state as the heartbeat found it (a box stopped by its
+  save runs again on `awake`, Box mode).
+- **The Machines page** (`convex/viewer.ts`) leaves out a box's
+  `bootTokenHash`, `boxKeyHash` and `sealedThreadKey`, and any `sealed`.
+- **Internal.** `boxes:authorize` (an action's gate), `storeCloudToken`,
+  `newBox` and `insertBox` (a thread's box row), `storeBootToken`,
+  `peekBoot` (the exchange's read), `claimBoot` (its one step) and `report` (what the service saw
+  of the provider, as the machine's `server` events; `FAILED` names its
+  attempt too, and one for an older attempt changes nothing).
+
+A box key may call:
+
+<!-- box-calls -->
+`heartbeat`, `bye`, `upsertThreads`, `removeThreads`, `threadsOf`,
+`sharedThreads`, `appendMessages`, `messageHeads`, `appendBodies`,
+`replyImages`, `addReplyImage`, `shareImages`, `addShareImage`,
+`dropShareImages`, `addHeldPicture`, `iconUploadUrl`, `setThreadIndex`,
+`pendingCommands`, `takeCommand`, `finishCommand`, `fileRequest`,
+`runnerRequest`, `closeRequest`, `moves`, `moveInfo`, `moveReady`,
+`moveFrozen`, `moveChunkUrl`, `movePacked`, `moveChunks`, `moveClaim`,
+`moveDone`, `moveFailed`, `boxSaved`, `tokenRefused`, `boxCloudToken`
+<!-- /box-calls -->
+
+### Box mode
+
+The runner in a box (`runner/src/box-mode.ts`, `box-save.ts`): an ordinary
+runner for one thread, started by the image with `THREADBEAR_BOX_BOOT` set.
+The box image (`runner/box/Dockerfile`) is Node 24 on Debian with git,
+Claude Code at a pinned version (`~/.local/bin/claude`) and the runner from
+the commit it was built from. Its entrypoint (`runner/box/entrypoint.sh`)
+runs the runner as root, in box mode, with `IS_SANDBOX=1`,
+`DISABLE_AUTOUPDATER=1`, `THREADBEAR_BOX_WORK=/work` and the runner's log on
+stderr as well (`THREADBEAR_LOG_STDERR=1`); with no `THREADBEAR_BOX_BOOT`, or
+no `THREADBEAR_SYNC_URL`, it exits 64 at once, saying why, rather than start
+an ordinary runner. Nothing restarts the runner in the box: when it exits,
+the machine stops.
+
+- **Starting.** Before anything else it reads the boot token and takes it
+  out of its own environment, so nothing it starts (Claude Code, its
+  shells, a worktree's setup) inherits it. It makes its own box key and
+  sends only its hash (`boxKeyHash`). Then `boxes:exchange` at
+  `THREADBEAR_SYNC_URL`, with `machineId` from the variable
+  `THREADBEAR_MACHINE_ID_ENV` names (`FLY_MACHINE_ID` when it names none;
+  left out if it isn't an id the backend takes). A network failure, or
+  `config`, `noCloudToken` or `conflict` (each leaves the token as it was),
+  is tried again, 2 s doubling to 15 s, for up to the token's 10 minutes,
+  with the same key hash (so an answer lost after the backend took the
+  token comes back as a replay);
+  `auth` (used, expired, unknown) stops the box at once, as does an answer
+  it can't use. What it got is kept in the data dir's secrets, 0600:
+  `box.json` (the box key, runner id, thread id, thread key, repo, login,
+  machine id, the save's URL and the boot token's SHA-256, never the token)
+  and `convex-key` (the box key, the sync key as any runner's is); the
+  login's token goes to claude-main's `threadbear-token.json` (0600), which
+  the runner already passes to that login's CLI as a year-long token. A
+  runner that starts again on the same machine under the same boot token
+  uses `box.json` rather than exchange again.
+- **The thread's folder.** The repo is cloned (`origin`, https or ssh
+  only) into `THREADBEAR_BOX_WORK` (default `~/work`) under its own name,
+  on `baseBranch`. With no save, that's all: the thread's `create` command
+  makes the thread under the id the backend named, in `subfolder`, on
+  claude-main, and its first turn makes a worktree as a new thread in that
+  repo would, its patch trusted as the runner's own checkout is. With a
+  save, it's restored on top of the clone (below), and the thread's next
+  turn resumes the same Claude session. Done once per box (`box.json`'s
+  `prepared`), only by the start that traded the token and only into an
+  empty place; nothing is ever deleted to make room. A box whose folder
+  has gone, or whose first start died before its folder was made, stops
+  and says so rather than clone or restore over what's there (the
+  exchange's save may be older than its work). It doesn't exit, either:
+  on Fly an exited machine's disk is reset. It stays up **degraded**,
+  heartbeating on its key, running nothing (no turn, no `create`, no
+  `save`), with a note on its thread saying what's wrong and what of the
+  thread it found, so the billing guard pauses it with its disk and a
+  person can see to it. The same goes for any failure at the start of a
+  box that has run. Only a fresh box with nothing to lose exits. Only the box's own thread
+  is loaded from the data dir: any other record there is left alone and
+  logged, and none is taken in by a handover or a move.
+- **What box mode turns off** (decision 1): self-update and following
+  main, CLI updates, keep-awake, `followOrigin`, the reinstaller and
+  upstream releases, Sentry, the Mac screen watch, schedules, the
+  librarian, spare-week threads and the borrow sweep; the sync sends no
+  presence, logins, projects or their pictures, schedules, pools, shared
+  memory or machine figures, and never calls `prune` (its key can't do
+  any of them; a fresh box's first full write goes without it). It keeps
+  no schedules: `schedule_message`, `tb schedule` and the backend's
+  `schedule` command are refused with a note that the Mac schedules it
+  (a schedule there sends to the thread and wakes it), and nothing in the
+  box arms a schedule's timer, runs its check or reads `schedules.json`.
+  Its key isn't the owner's (`ownerKey()` is false for `tbb_`, as for
+  `tbr_`), so `create_thread` naming another runner files a request the
+  main Mac asks the user about. A repo's patch code never runs in the
+  box's runner process: each patch file is imported in a short-lived child
+  process (`runner/src/patch-child.ts`) that sends back what's static in it
+  as one line of JSON on a channel of its own (fd 3; what the patch prints
+  on stdout or stderr is thrown away) and exits. The loader runs in a
+  process group of its own: the read ends on that line, the loader's exit
+  or 30 seconds, never on its pipes closing, and then the whole group is
+  killed, so nothing the patch starts holds the read up. A process the patch
+  starts in a group of its own (detached, setsid) can outlive the read, but it
+  stays in the box, and a stopping save's sweep kills it. Its functions
+  aren't run at all: an action or panel with a `when`, `badge`, `label` or
+  `summary`, and a list panel (`items`), aren't shown on a box's thread;
+  its static actions, panels, hooks (commands, gated like any process) and
+  `worktree` setup are. It runs one thread: any other `create`, from
+  anywhere, is refused (`create_thread` asks the main Mac, as from any
+  runner key). Claude Code runs as root there, so `IS_SANDBOX=1` is set
+  for everything the runner starts. The app port listens on 127.0.0.1
+  only, as every runner's does; nothing dials a box.
+- **Heartbeats** carry `runner.machineId`, the same id as the exchange.
+- **A refused token** (API 94). The exchange also gives `tokenSetAt`, when
+  the login's token was set, kept in `box.json`. `claude auth status`
+  calls any token signed in, so a dead one only shows when a turn is
+  refused (errorKind `auth`). In box mode that turn sends
+  `boxes:tokenRefused({ key, setAt })`, says so once in the thread
+  (`system.note`), and the thread waits (`waitingForToken` on its record,
+  kept across restarts, with `refusedSetAt`, the version refused, and
+  `reported` once the backend has heard; no pool move, as a box has one
+  login). A refusal not yet heard is sent again on the next start or
+  poll, always with `refusedSetAt`, never a version installed since. While
+  it waits the runner asks `boxes:boxCloudToken({ key })` (an action, box key
+  only: the login's token and `setAt` while it's `valid`, else null) every
+  30 seconds. Any token newer than the refused one lifts the hold: one the
+  box already has (a box restored from a save whose exchange installed a
+  newer token goes at once, telling nobody), or one set later, which is written over
+  claude-main's `threadbear-token.json` (0600) and into `box.json`, the
+  thread's CLI is closed so the next turn starts on it, and the thread
+  carries on by itself with the runner's carry-on message, as after a
+  sign-in. A message from Mike meanwhile waits behind it.
+- **Superseded.** Any call refused with `kind: "auth"` (the box key
+  unknown: a newer box for the thread has traded its boot token, or the
+  box was lost, failed or archived) means this box no longer has the
+  thread. It sends nothing more, stops its CLIs and exits with no `bye`,
+  so the provider's machine stops for the service to clean up.
+- **The `save` command** (only the backend sends it, for the box's own
+  thread). Every save the backend asks for is a stopping one (to sleep, at
+  its day's hours, or to be archived), and once it's acknowledged the box
+  may be deleted, so the box stops first, categorically: turns are held, a
+  running turn is interrupted (30 s to end) and the CLI closed, then every
+  other process in the box is killed (all but the runner, its ancestors,
+  PID 1 and the provider's own: `runner/src/box-procs.ts`, from `/proc`).
+  The provider's are a baseline the first start after the exchange takes,
+  before anything of the thread runs, kept in `box.json` (`baseline`: pid,
+  start time, command) and used by every start after, so an agent's
+  process that outlived a restart of the runner is never spared. A process
+  is alive while any of its threads is (a zombie leader can have live
+  ones), and its whole thread group is killed. The runner's own work waited
+  for (a minute at most, or the command fails), and it looks again that
+  nothing new started. A worktree cleanup or teardown an archive would
+  start meanwhile is owed instead (`cleanupOwed`). And from the save's
+  start, no process starts in the runner at all: in box mode,
+  `node:child_process` is gated (`runner/src/spawn-gate.ts`: every function
+  of it that starts a process, and `ChildProcess.prototype.spawn`, for the
+  runner and its libraries alike), and only the save's own git and packing
+  are let by. A patch's live functions aren't read while it's held, and a
+  read already going is waited for. From the moment a save starts, the thread
+  runs nothing until the backend says it may: a command other than `save`
+  taken after the save's outcome is known, or a heartbeat sent after that
+  whose answer finds the box `awake`. Nothing in the box lets it go: not a
+  clock jump, a timeout or an error, nor a restart: the hold is written to
+  `box.json` (`saveHold`) before the thread is touched, and a start that
+  finds it holds the thread before loading it. While it's held, the box's
+  heartbeats and its save's `finishCommand` send `held: true`, and
+  don't mark the box as holding work (`runnerAuth`'s housekeeping; only a
+  `save` command's finish counts), and a finish of any other command taken
+  while the save goes waits until its outcome is known. A command's finish
+  goes once at a time (a retry waits for one on its way), and the backend
+  takes a finish that changes nothing (its command already ended) as
+  housekeeping too. Then it's packed: the thread's folder in the data dir (its record and events,
+  not `panels`), its Claude session's transcript and the folder beside
+  it, and its git work as a move packs it (`move-git.ts packGit`: the
+  commits origin doesn't have and one more of every uncommitted and
+  untracked file, in a git bundle; ignored files stay behind, and so do
+  files under a `node_modules` folder that the checkout's own index doesn't
+  have, which a restore refuses: the worktree's setup makes them again; a
+  change there to a tracked or staged file fails the command, saying so.
+  Its index is built from HEAD, with no stat data to trust, and every file
+  hashed afresh (`core.checkStat` default, `core.trustctime` on, whatever
+  the repo says), plus the paths the checkout's own index has staged that
+  HEAD hasn't (force-added, so an ignored one comes too): what's saved is
+  the files as they really are), in a move's
+  archive (`move-pack.ts`) with a `box.json` naming the thread. At most
+  100,000 files and 128 MB unpacked, the limits a restore holds it to,
+  checked from the sizes on disk before anything is read, and
+  it's read back as a restore will read it before anything is uploaded:
+  over a limit or unreadable, the command fails and the thread carries on. Sealed
+  AES-256-GCM under the thread key: a 12-byte IV, the ciphertext, the
+  16-byte tag, bound to `threadbear box save v1 <threadId>` as associated
+  data. Uploaded to the URL `sync:iconUploadUrl` gives the box key, then
+  `boxes:boxSaved({ key, storageId, bytes })`, but only once every change
+  of the runner's has gone up (the mirror's flush waited for, then one run
+  to the end with nothing left, the sidebar index's writer the same, and
+  any command's finish still to send from before the save; if
+  it can't, the command fails and the box
+  stays held), so no write after the save marks the box as working; the command finishes
+  with `{ bytes }` (and `leftOut`, up to 20 paths left out). A sealed save
+  over 10 MB (one upload) fails the command saying so; saves in parts are
+  a TODO. A `boxSaved` whose answer is lost (not a refusal) is sent again
+  with the same file, which the backend takes as the same save, for up to
+  10 minutes; past that its outcome is unknown, and the thread stays held
+  until the backend asks for another save. Messages wait in the queue
+  while it's held.
+- **Restoring.** The save is downloaded (https, no redirects, 10 MB at
+  most), gunzipped to 128 MB at most, opened (one that doesn't open with the thread's key, or isn't
+  that thread's, stops the box), the thread's folder written into the data
+  dir, its git work put back on the clone (`unpackGit`), in a worktree at
+  `<clone>-threads/<the folder name it had>` on `thread/<id8>` if it had
+  one, and its transcript put where Claude Code looks for the folder it
+  now runs in. Once the runner is up, the worktree's setup runs again
+  (installed packages weren't saved), and no turn starts in the thread
+  (recovery, a carry-on or a message) until it's done; one that fails
+  says so in the thread, and the turns go ahead. That it has run is kept
+  apart (`box.json`'s `setUp`): a runner that stops before it has runs it
+  again, holding the turns again, on its next start.
 
 ## Sharing
 
@@ -7457,7 +8920,13 @@ type ThreadShare = {
   answers only while the thread is shared under that link (checked at
   every request, `no-store`), so stopping sharing or Share again with a
   new link stops the old URLs at once, before the runner has dropped the
-  files. Mike's own token gets the files' storage URLs.
+  files. Mike's own token gets the files' storage URLs. The storage URLs
+  pages handed out before (until 15 Nov 2026) were ended once, by copying
+  every shared picture to a new file and deleting the old one
+  (`shareRekey:rekeyShareImages`, from the first heartbeat after the deploy
+  once the 7 Nov limits migration is done; a run that stops goes on from
+  where it got to). A reply, icon or held picture on the same file moves
+  to the copy with it.
 - As the page is public and a path is only what the agent wrote, a file
   goes up only if it's really a PNG, JPEG, GIF or WebP by its bytes (the
   type sent is the one its bytes say, not its name's), isn't itself a
@@ -7534,8 +9003,7 @@ commands), and the ones that only read or end the turn
 or archive the thread that's calling it; `tb` inside a thread refuses the
 same.
 
-Raising access. From a thread whose mode isn't `full`, or whose CLI runs in a
-sandbox (see "Sandboxed threads"), a call that would let
+Raising access. From a thread whose mode isn't `full`, a call that would let
 something run with more access than the caller has puts up its own
 `approval.requested` (options `["allow", "deny"]`, the title saying what it
 would do) and waits for it, whatever the CLI's rules or Auto's classifier
@@ -7544,24 +9012,20 @@ above the target's (`ask` < `auto` < `full`), `create_thread` or a
 `new_thread` `schedule_message` with a mode above the caller's,
 `send_message`, `move_thread`, `schedule_message` or `update_thread`'s
 `title` to a thread with more access than the caller (a title reaches its
-agent and others', as in a new thread's same-work note; `tb` refuses the
+agent and others', as in list_threads; `tb` refuses the
 same rename), `join_project` putting such a thread in a project,
 `update_project` changing the title, goals, state, notes or folders of a
 project such a thread is in (by the project's list or the thread's own), `move_thread` of a thread a schedule's check runs for
 (the check runs in its folder), `update_schedule` changing the text, title, time,
 folder or paused state of a schedule whose runs are above the caller or that
-has a check, and any `check`. A thread's access there is the most its agent
+has a check, and any `check`. A project-update approval names the current
+project as `{ title, id }` in its input, separately from any proposed new
+`title`. A thread's access there is the most its agent
 has now (`Runner.accessOf`): its mode, or more while a turn that had more is
 still running, as a Codex turn keeps the mode it started with. Setting the
 mode a thread or schedule already has is left out of the write, so it can't
 raise it back if it lands after the mode was lowered. Without a `permissionMode`, a thread such a
-caller starts or schedules gets the caller's mode, not `full`. For a
-sandboxed caller, outside its sandbox is more access whatever the mode: a
-thread in a folder that isn't in one, on a Codex login or on another
-runner, a message to such a thread, a new-thread schedule (the runner
-starts those), a check, moving a thread out of a sandbox, and `pin`,
-`show_options` and `show_panel` (the Mac app opens what they name). The
-card's title says "outside the sandbox". A folder on a card is where it
+caller starts or schedules gets the caller's mode, not `full`. A folder on a card is where it
 really leads, links followed, and that's the folder used; one that leads
 elsewhere by the time Mike answers is refused (full access callers keep
 the path as written). `join_project`'s card shows the project's whole
@@ -7570,13 +9034,11 @@ that changed while the card was up is refused; `update_project` asks for
 the Notion board and links too. A project with a folder that's a link can't
 be joined to such a thread this way at all, as the link can be pointed
 elsewhere after the card; Mike can do it himself. A message's sender line is
-on its card, one line, and goes as shown. From a sandboxed caller, changing the
-login or pool of a thread or schedule outside its sandbox asks as well
-(the login's config folder is mounted in the sandbox). A card shows every argument of the call whole, never a
+on its card, one line, and goes as shown. A card shows every argument of the call whole, never a
 first part of one: a string longer than an event takes (16 KB) is refused
 with no card. Denied or
 expired, nothing changes and the tool says so; a message from Mike declines
-it. Lowering a mode never asks, and a `full` thread is never asked. There's no tool for restarting the runner: that's `runner.restart`.
+it. Lowering a mode never asks, except another thread's that has more access than the caller (it would let its schedules be deleted), and a `full` thread is never asked. There's no tool for restarting the runner: that's `runner.restart`.
 
 Other runners' threads, as the Mac's sidebar has them (`remoteThreads.list`),
 reach the tools through the relay (see "Other runners' threads through the
@@ -7654,14 +9116,15 @@ Either side may be upgraded first, so each tolerates the other:
   runner older than Devices gets `-32601` from `devices.*` and says the
   Phone & browser tab needs a newer runner.
 
-### Fork integration behaviour (release 2026-11-12)
+### Fork integration behaviour (release 2026-11-20)
 
-The combined backend is API 77. Backlog, external intake consumption,
-attachment transfer and deferred conversations require 72. Plans require 77,
-because this fork’s existing API 72 backend has no plan fields. Upstream 64–71
-and this fork's former 64–67 describe different capabilities; do not infer
-fork capabilities from those numbers. Option notes and relay pictures keep
-the fork's existing minimum of 64.
+The combined backend is API 96, with upstream capabilities through 95.
+Backlog, external intake consumption, attachment transfer, deferred conversations
+and recaps require 96: upstream versions through 95 do not imply those fork
+capabilities. Plans retain their minimum of 77. Phone pairing requires 81
+in this fork; browser sign-in codes require 96 because the former fork API 81
+only supported phone codes. Option notes and relay pictures retain their
+existing minimum of 64. The backend deploys before the runner uses new fields.
 The unified composer palette keeps skill title ranking, multiword search and
 Codex `$` mentions at the cursor. Choosing a skill inserts it without sending;
 commands can run immediately. Pi exposes only implemented controls and keeps

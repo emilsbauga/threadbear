@@ -8,6 +8,7 @@ import path from 'node:path';
 import type { PersistedEvent } from './protocol.ts';
 import { absolute } from './highlights.ts';
 import { sniffImage, sniffVideo } from './media.ts';
+import { IS_WINDOWS, isLocalPath, realPath } from './platform.ts';
 import { isSpace, seeker } from './linear-text.ts';
 
 // A picture bigger than this stays on the Mac.
@@ -42,6 +43,16 @@ function replyMediaType(file: string): string | undefined {
   return imageType(file) ?? (/\.(mp4|m4v|mov)$/i.test(file) ? 'video/mp4' : undefined);
 }
 
+// A live page (the livePages experiment, docs/live-pages-design): one
+// self-contained HTML file an agent shows in its reply, which the phone runs
+// sealed. Recorded as this type, uploaded as plain bytes (sync.ts), so its
+// storage URL opened in a browser never runs it on the backend's origin.
+export const PAGE_TYPE = 'text/html';
+const isPageName = (file: string) => /\.html?$/i.test(file);
+function replyOrPageType(file: string): string | undefined {
+  return replyMediaType(file) ?? (isPageName(file) ? PAGE_TYPE : undefined);
+}
+
 // A Markdown image's address as a file on this Mac: an absolute path, a
 // file:// URL or a ~ path. Undefined for a web address or anything else.
 export function localImagePath(src: string, home = os.homedir(), typeOf = imageType): string | undefined {
@@ -53,7 +64,9 @@ export function localImagePath(src: string, home = os.homedir(), typeOf = imageT
       return undefined;
     }
   } else if (p.startsWith('~/')) p = home + p.slice(1);
-  if (!p.startsWith('/') || p.includes('\0')) return undefined;
+  // Not, on Windows, a //host/share one (platform.ts's isLocalPath): it
+  // would have the runner open a network connection to a host the text picked.
+  if (!path.isAbsolute(p) || p.includes('\0') || !isLocalPath(p)) return undefined;
   return typeOf(p) ? p : undefined;
 }
 
@@ -167,16 +180,34 @@ export function imagesInEvent(e: PersistedEvent, home = os.homedir()): ShareImag
   return [];
 }
 
-// A file's bytes, at most SHARE_IMAGE_BYTES, or why not.
+// A file's bytes, at most SHARE_IMAGE_BYTES, or why not. Opened without
+// waiting (a FIFO named .png or .html would hold the runner up for good),
+// checked to be a regular file on the open descriptor (a link to /dev/zero
+// would read forever), and read no further than the cap whatever its size
+// said a moment before.
 function readCapped(file: string): { bytes: Uint8Array } | { skip: string } {
-  let size: number;
+  let fd: number;
   try {
-    size = fs.statSync(file).size;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   } catch {
     return { skip: 'the file is gone' };
   }
-  if (size > SHARE_IMAGE_BYTES) return { skip: `it's ${Math.round(size / 1024 / 1024)} MB` };
-  return { bytes: new Uint8Array(fs.readFileSync(file)) };
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { skip: "it can't be read" };
+    if (st.size > SHARE_IMAGE_BYTES) return { skip: `it's ${Math.round(st.size / 1024 / 1024)} MB` };
+    const bytes = Buffer.alloc(Math.min(st.size, SHARE_IMAGE_BYTES) + 1);
+    let got = 0;
+    while (got < bytes.length) {
+      const n = fs.readSync(fd, bytes, got, bytes.length - got, got);
+      if (n === 0) break;
+      got += n;
+    }
+    if (got > SHARE_IMAGE_BYTES) return { skip: 'it grew past 10 MB' };
+    return { bytes: new Uint8Array(bytes.subarray(0, got)) };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // A shared thread's pictures come only from its media folder in the data
@@ -194,15 +225,21 @@ function under(file: string, dir: string): boolean {
   return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
 }
 
+// The real form of a path (platform.ts: on Windows the long names, so the
+// media folder and a file in it agree however either was spelt).
 function realOr(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
+  return realPath(p);
 }
 
 const OUTSIDE = "it isn't in the thread's media folder";
+const NOT_A_PICTURE = "it isn't a picture";
+
+// Whether a readShareImage skip is only about the file's size or format, so a
+// shrunk JPEG of it could go instead (a design review's stills on the phone,
+// phone-reviews.ts). Not one outside the folder, a link or gone.
+export function shrinkWouldDo(skip: string): boolean {
+  return skip === NOT_A_PICTURE || / MB$/.test(skip);
+}
 
 // The bytes of a shared thread's picture and what they really are, or why
 // not. It goes to a public page, so: a file in `mediaDir` (by its real path
@@ -213,7 +250,9 @@ const OUTSIDE = "it isn't in the thread's media folder";
 export function readShareImage(file: string, mediaDir: string | undefined): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {
   if (!mediaDir) return { skip: OUTSIDE };
   const abs = path.resolve(file);
-  if (!under(abs, mediaDir) && !under(abs, realOr(mediaDir))) return { skip: OUTSIDE };
+  // (On Windows also by the file's real name: it may be given by its 8.3 short
+  // one, which is the same file the media folder's long name holds.)
+  if (!under(abs, mediaDir) && !under(abs, realOr(mediaDir)) && !(IS_WINDOWS && under(realOr(abs), realOr(mediaDir)))) return { skip: OUTSIDE };
   let st: fs.Stats;
   try {
     st = fs.lstatSync(abs);
@@ -251,7 +290,7 @@ export function readShareImage(file: string, mediaDir: string | undefined): { by
     }
     // Pictures only: the page draws them with <img>.
     const info = sniffImage(bytes.subarray(0, got));
-    if (!info) return { skip: "it isn't a picture" };
+    if (!info) return { skip: NOT_A_PICTURE };
     return { bytes: new Uint8Array(bytes.subarray(0, got)), mediaType: info.mediaType, ...(info.width ? { width: info.width } : {}), ...(info.height ? { height: info.height } : {}) };
   } catch {
     return { skip: "it can't be read" };
@@ -274,12 +313,16 @@ export type ReplyImage = {
 
 export const PIN_TOOL = 'mcp__threadbear__pin';
 
-export function replyImagesInEvent(e: PersistedEvent, cwd: string | undefined, home = os.homedir()): ReplyImage[] {
-  if (e.type === 'assistant.text') return markdownImages(e.text, home, replyMediaType).map(({ src, path }) => ({ seq: e.seq, path, src }));
+// `pages`: live pages too, from a reply only. A pinned page (a mockup, a
+// report) stays on the Mac: agents pin many, and none asked to go anywhere.
+export function replyImagesInEvent(e: PersistedEvent, cwd: string | undefined, home = os.homedir(), pages = false): ReplyImage[] {
+  if (e.type === 'assistant.text') return markdownImages(e.text, home, pages ? replyOrPageType : replyMediaType).map(({ src, path }) => ({ seq: e.seq, path, src }));
   if (e.type !== 'tool.call' || e.name !== PIN_TOOL || typeof e.input.path !== 'string') return [];
   // The pin tool takes a path relative to the thread's folder.
   const raw = e.input.path.trim();
-  if (!raw || (!raw.startsWith('/') && !raw.startsWith('~') && !cwd)) return [];
+  if (!raw || (!path.isAbsolute(raw) && !raw.startsWith('~') && !cwd)) return [];
+  // A network path the agent names isn't opened; a relative one is in the thread's folder.
+  if (path.isAbsolute(raw) && !isLocalPath(raw)) return [];
   const file = absolute(raw, cwd ?? '/', home);
   return replyMediaType(file) ? [{ seq: e.seq, path: file, pinned: true }] : [];
 }
@@ -294,10 +337,27 @@ export function pastedImagesInEvent(e: PersistedEvent): ReplyImage[] {
   return (e.images ?? []).map((image, i) => ({ seq: e.seq, path: image.path, src: `picture:${i + 1}` }));
 }
 
+// Whether bytes are an HTML page: UTF-8 with no NULs, starting (past a BOM
+// and spaces) with markup, and a tag a page has near the top. An agent can
+// name any file .html, so this keeps a key or a binary from going up as one.
+const PAGE_TAGS = /<(!doctype\s+html|html|head|body|meta|title|style|script|canvas|svg|div|main|link)[\s>/]/i;
+export function sniffPage(bytes: Uint8Array): boolean {
+  if (bytes.includes(0)) return false;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  const start = text.replace(/^\uFEFF/, '').trimStart();
+  return start.startsWith('<') && PAGE_TAGS.test(start.slice(0, 4096));
+}
+
 // The bytes to upload and what they really are, or why not. An agent can
 // write any path with a .png on the end, so the file has to be a picture or
-// a video.
+// a video, or, named .html, a page.
 export function readReplyImage(file: string): { bytes: Uint8Array; mediaType: string; width?: number; height?: number } | { skip: string } {
+  if (!isLocalPath(file)) return { skip: "it's a network or device path" };
   let read: ReturnType<typeof readCapped>;
   try {
     read = readCapped(file);
@@ -306,6 +366,17 @@ export function readReplyImage(file: string): { bytes: Uint8Array; mediaType: st
   }
   if ('skip' in read) return read;
   const buf = Buffer.from(read.bytes);
+  if (isPageName(file)) {
+    // By its real name too: x.html linked to a .xml or .plist isn't a page
+    // (Gemini's second review), as the Mac's open gate has it.
+    let real: string;
+    try {
+      real = fs.realpathSync(file);
+    } catch {
+      return { skip: 'the file is gone' };
+    }
+    return isPageName(real) && sniffPage(read.bytes) ? { bytes: read.bytes, mediaType: PAGE_TYPE } : { skip: "it isn't a page" };
+  }
   const info = sniffImage(buf) ?? sniffVideo(buf);
   if (!info) return { skip: "it isn't a picture" };
   return { bytes: read.bytes, mediaType: info.mediaType, ...(info.width ? { width: info.width } : {}), ...(info.height ? { height: info.height } : {}) };

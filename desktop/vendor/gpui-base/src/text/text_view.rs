@@ -3739,6 +3739,219 @@ mod tests {
         );
     }
 
+    /// Threadbear's: a button whose click stops the release from going on
+    /// (a tab's close) mustn't leave the window's selection thinking the
+    /// press is still down, or the next click on a link is taken for that
+    /// press ending and does nothing (19 Nov 2026).
+    #[gpui::test]
+    fn a_link_clicks_first_time_after_a_button_stopped_its_release(cx: &mut TestAppContext) {
+        use std::sync::{Arc, Mutex};
+
+        struct Root {
+            text_view: Entity<TextViewState>,
+            clicks: Arc<Mutex<Vec<SharedString>>>,
+        }
+
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                div()
+                    .w(px(300.))
+                    .child(crate::TextSelectionLayer)
+                    .child(div().id("close").h(px(20.)).w(px(40.)).on_click(|_, _, cx| cx.stop_propagation()))
+                    .child(TextView::new(&self.text_view).selectable(true).on_link_click(move |url, _, _, _| clicks.lock().unwrap().push(url.clone())))
+            }
+        }
+
+        cx.update(crate::init);
+        let clicks = Arc::new(Mutex::new(Vec::new()));
+        let (_view, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, cx| Root { text_view: cx.new(|cx| TextViewState::markdown("[the PR](https://example.com/pull/1) and words after", cx)), clicks }
+        });
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| { let _ = window.draw(cx); });
+        draw(cx);
+        let click = |cx: &mut VisualTestContext, position| {
+            cx.simulate_event(MouseDownEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+            cx.simulate_event(MouseUpEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1 });
+        };
+        let (on_close, on_link) = (point(px(10.), px(10.)), point(px(10.), px(30.)));
+        click(cx, on_link);
+        assert_eq!(clicks.lock().unwrap().len(), 1, "a first click on the link follows it");
+        click(cx, on_close);
+        draw(cx);
+        // The pointer goes over to the link with no button down, as a
+        // person's does.
+        cx.simulate_event(gpui::MouseMoveEvent { position: on_link, pressed_button: None, modifiers: Modifiers::default() });
+        draw(cx);
+        assert!(!cx.update(|window, cx| crate::TextSelection::has_selection(window, cx)), "moving over the words selects nothing");
+        click(cx, on_link);
+        assert_eq!(clicks.lock().unwrap().len(), 2, "so does the first one after the button");
+
+        // Let go with Control held, a left press can come back as a right
+        // release; that one's seen too.
+        cx.simulate_event(MouseDownEvent { position: on_close, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+        cx.simulate_event(MouseUpEvent { position: on_close, modifiers: Modifiers::control(), button: MouseButton::Right, click_count: 1 });
+        draw(cx);
+        cx.simulate_event(gpui::MouseMoveEvent { position: on_link, pressed_button: None, modifiers: Modifiers::default() });
+        draw(cx);
+        assert!(!cx.update(|window, cx| crate::TextSelection::has_selection(window, cx)), "nor after a Control release");
+        click(cx, on_link);
+        assert_eq!(clicks.lock().unwrap().len(), 3, "and the link still clicks first time");
+    }
+
+    /// Threadbear's: a press on a link is noted for a handler further out,
+    /// which can keep the words from being selected and drag the link out
+    /// (`GlobalState::take_pressed_link`, `App::start_drag`). A press that
+    /// became a drag isn't the link's click; one let go where it went down is.
+    #[gpui::test]
+    fn pressed_link_is_noted_and_a_drag_is_not_a_click(cx: &mut TestAppContext) {
+        use crate::GlobalState;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::sync::{Arc, Mutex};
+
+        struct DragRoot {
+            text_view: Entity<TextViewState>,
+            clicks: Arc<Mutex<Vec<SharedString>>>,
+            pressed: Rc<RefCell<Vec<SharedString>>>,
+        }
+
+        impl Render for DragRoot {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                let pressed = self.pressed.clone();
+                let dragged = self.pressed.clone();
+                let blank = cx.new(|_| gpui::EmptyView);
+                div()
+                    .w(px(300.))
+                    .child(crate::TextSelectionLayer)
+                    .child(
+                        div()
+                            .id("around")
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                if let Some(url) = GlobalState::take_pressed_link(cx) {
+                                    GlobalState::suppress_text_selection(cx);
+                                    pressed.borrow_mut().push(url);
+                                }
+                            })
+                            .on_mouse_move(move |event: &gpui::MouseMoveEvent, window, cx| {
+                                if event.pressed_button == Some(MouseButton::Left)
+                                    && !dragged.borrow().is_empty()
+                                {
+                                    cx.start_drag(
+                                        gpui::AnyDrag {
+                                            view: blank.clone().into(),
+                                            value: std::sync::Arc::new(()),
+                                            cursor_offset: point(px(0.), px(0.)),
+                                            cursor_style: None,
+                                            external_payload_source: None,
+                                        },
+                                        window,
+                                    );
+                                }
+                            })
+                            .child(TextView::new(&self.text_view).selectable(true).on_link_click(
+                                move |url, _, _, _| clicks.lock().unwrap().push(url.clone()),
+                            )),
+                    )
+            }
+        }
+
+        cx.update(crate::init);
+        let clicks = Arc::new(Mutex::new(Vec::new()));
+        let pressed = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view({
+            let (clicks, pressed) = (clicks.clone(), pressed.clone());
+            move |_, cx| DragRoot {
+                text_view: cx.new(|cx| TextViewState::markdown("[clip file](/tmp/clip.mp4) and words after", cx)),
+                clicks,
+                pressed,
+            }
+        });
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| { let _ = window.draw(cx); });
+        draw(cx);
+        let on_link = point(px(10.), px(10.));
+        let down = |cx: &mut VisualTestContext, position| {
+            cx.simulate_event(MouseDownEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+        };
+        let up = |cx: &mut VisualTestContext, position| {
+            cx.simulate_event(MouseUpEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1 });
+        };
+
+        // Pressed and let go on the link: noted, and clicked.
+        down(cx, on_link);
+        up(cx, on_link);
+        assert_eq!(pressed.borrow().as_slice(), [SharedString::from("/tmp/clip.mp4")]);
+        assert_eq!(clicks.lock().unwrap().as_slice(), [SharedString::from("/tmp/clip.mp4")]);
+
+        // Pressed, dragged across the words and let go on the link: a drag,
+        // no click, and nothing selected.
+        pressed.borrow_mut().clear();
+        clicks.lock().unwrap().clear();
+        draw(cx);
+        down(cx, on_link);
+        cx.simulate_event(gpui::MouseMoveEvent { position: point(px(200.), px(10.)), modifiers: Modifiers::default(), pressed_button: Some(MouseButton::Left) });
+        assert!(cx.update(|_, cx| cx.has_active_drag()), "the move didn't start a drag");
+        cx.simulate_event(gpui::MouseMoveEvent { position: on_link, modifiers: Modifiers::default(), pressed_button: Some(MouseButton::Left) });
+        up(cx, on_link);
+        draw(cx);
+        assert_eq!(pressed.borrow().len(), 1);
+        assert!(clicks.lock().unwrap().is_empty(), "a drag clicked the link: {:?}", clicks.lock().unwrap());
+        let selected = view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+        assert!(selected.trim().is_empty(), "a drag from a link selected {selected:?}");
+
+        // A press off the link notes nothing, even after one on it.
+        pressed.borrow_mut().clear();
+        down(cx, point(px(280.), px(10.)));
+        up(cx, point(px(280.), px(10.)));
+        assert!(pressed.borrow().is_empty());
+    }
+
+    /// Threadbear's: a press on a link sends a sheen across its words
+    /// (`link_glint`), painted over them while it plays; a press on plain
+    /// words doesn't, and nor does any press with Reduce Motion on.
+    #[gpui::test]
+    fn a_press_on_a_link_glints_it(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("[link](https://a.b) and words after", cx));
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| { let _ = window.draw(cx); });
+        let press = |cx: &mut VisualTestContext, x: f32| {
+            let position = point(px(x), px(10.));
+            cx.simulate_event(MouseDownEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+            cx.simulate_event(MouseUpEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1 });
+        };
+        draw(cx);
+
+        press(cx, 200.);
+        assert_eq!(cx.update(|_, cx| super::super::link_glint::active(cx)), None, "plain words glinted");
+
+        press(cx, 10.);
+        assert_eq!(cx.update(|_, cx| super::super::link_glint::active(cx)), Some(0..4));
+        // Painting with it playing draws the sheen and asks for another frame.
+        draw(cx);
+        assert!(cx.update(|window, cx| window.simulate_next_frame(cx)) > 0, "no next frame asked for");
+    }
+
+    #[gpui::test]
+    fn reduce_motion_keeps_links_still(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (_view, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("[link](https://a.b) and words after", cx));
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| { let _ = window.draw(cx); });
+        let position = point(px(10.), px(10.));
+        cx.simulate_event(MouseDownEvent { position, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+        assert_eq!(cx.update(|_, cx| super::super::link_glint::active(cx)), None);
+    }
+
     #[gpui::test]
     fn double_click_selects_word(cx: &mut TestAppContext) {
         cx.update(crate::init);

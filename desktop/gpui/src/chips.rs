@@ -12,7 +12,6 @@ use crate::style::{self, size};
 use crate::thread::ThreadPane;
 use crate::tips::Tip as _;
 use gpui_kit::base::text::{InlineElement, InlineRenderContext, MarkdownNode, MarkdownParseContext, MarkdownPlugin};
-use gpui_kit::base::SelectableText;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -159,6 +158,8 @@ enum ChipKind {
     Picture(usize),
     Card { title: String, url: String },
     Thread { title: String, id: String },
+    /// A file on the Mac that isn't uploaded, by its path (`find_files`).
+    File { name: String, path: String },
 }
 
 impl ChipKind {
@@ -166,6 +167,7 @@ impl ChipKind {
         match self {
             ChipKind::Picture(index) => format!("Picture {}", index + 1),
             ChipKind::Card { title, .. } | ChipKind::Thread { title, .. } => title.clone(),
+            ChipKind::File { name, .. } => name.clone(),
         }
     }
 
@@ -176,6 +178,7 @@ impl ChipKind {
             ChipKind::Picture(_) => "photo",
             ChipKind::Card { .. } => "square.text.square",
             ChipKind::Thread { .. } => "bubble.left",
+            ChipKind::File { name, .. } => crate::composer_inline::file_symbol(name),
         }
     }
 
@@ -186,6 +189,7 @@ impl ChipKind {
             ChipKind::Picture(_) => "picture",
             ChipKind::Card { .. } => "card",
             ChipKind::Thread { .. } => "thread",
+            ChipKind::File { .. } => "file",
         };
         format!("{kind}: {}", self.label())
     }
@@ -200,6 +204,7 @@ enum Token {
 fn chip_kind(mention: &Mention) -> ChipKind {
     match (mention.kind, mention.thread_id()) {
         (MentionKind::Thread, Some(id)) => ChipKind::Thread { title: mention.title.clone(), id: id.to_owned() },
+        (MentionKind::File, _) => ChipKind::File { name: mention.title.clone(), path: mention.url.clone() },
         _ => ChipKind::Card { title: mention.title.clone(), url: mention.url.clone() },
     }
 }
@@ -234,7 +239,9 @@ fn chip_width(kind: &ChipKind, window: &Window) -> Pixels {
     if !matches!(kind, ChipKind::Picture(_)) {
         label = label.min(px(CARD_LABEL_MAX));
     }
-    px(CHIP_INSET + CHIP_ICON + CHIP_GAP + CHIP_TRAILING) + label
+    // A file's dot, after the same gap.
+    let dot = if matches!(kind, ChipKind::File { .. }) { CHIP_GAP + crate::composer_inline::FILE_DOT } else { 0. };
+    px(CHIP_INSET + CHIP_ICON + CHIP_GAP + CHIP_TRAILING + dot) + label
 }
 
 /// The bubble's lines, broken where the words would wrap at `max` with each
@@ -311,7 +318,7 @@ impl ThreadPane {
     /// The bubble's words with its chips among them, laid out line by line,
     /// and how wide its widest line is; None for a message with no chips,
     /// which stays one piece of selectable text.
-    pub(crate) fn chip_lines(&mut self, ix: usize, message: &UserMessage, max: Pixels, window: &Window, cx: &mut Context<Self>) -> Option<(Pixels, AnyElement)> {
+    pub(crate) fn chip_lines(&mut self, ix: usize, row_id: &str, message: &UserMessage, max: Pixels, window: &Window, cx: &mut Context<Self>) -> Option<(Pixels, AnyElement)> {
         let pieces = found::message_pieces(&message.text, message.images.len());
         if pieces.iter().all(|p| matches!(p, Piece::Words(_))) {
             return None;
@@ -321,28 +328,29 @@ impl ThreadPane {
         let mut body = v_flex();
         for (n, tokens) in lines.into_iter().enumerate() {
             let mut line = h_flex().min_h(px(size::BODY_LINE)).items_center();
-            // Words between chips as one run of selectable text each.
+            // Words between chips as one run of selectable text each, its
+            // web addresses links (`bubble_words`).
             let mut words = String::new();
             let (mut runs, mut chips) = (0, 0);
-            let flush = |line: Div, words: &mut String, runs: &mut usize| -> Div {
+            let flush = |this: &Self, line: Div, words: &mut String, runs: &mut usize, cx: &mut Context<Self>| -> Div {
                 if words.is_empty() {
                     return line;
                 }
                 *runs += 1;
                 let id = ("user-chip-text", ix * 100_000 + n * 100 + *runs);
-                line.child(div().flex_none().child(SelectableText::new(id, std::mem::take(words))))
+                line.child(div().flex_none().child(this.bubble_words(id, std::mem::take(words), row_id, cx)))
             };
             for token in tokens {
                 match token {
                     Token::Words(text) => words.push_str(&text),
                     Token::Chip(kind) => {
-                        line = flush(line, &mut words, &mut runs);
+                        line = flush(self, line, &mut words, &mut runs, cx);
                         chips += 1;
                         line = line.child(self.bubble_chip(ix, n, chips, kind, &message.images, window.scale_factor() >= 2., cx));
                     }
                 }
             }
-            line = flush(line, &mut words, &mut runs);
+            line = flush(self, line, &mut words, &mut runs, cx);
             body = body.child(line);
         }
         Some((widest, body.into_any_element()))
@@ -378,20 +386,21 @@ impl ThreadPane {
             .cursor_pointer()
             .child(symbol)
             .child(label)
+            .when(matches!(kind, ChipKind::File { .. }), |d| d.child(crate::composer_inline::file_dot(cx)))
             // Not the start of a selection in the words round it.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         let origin = self.origin();
         let name = kind.label();
         let chip = match kind {
             // Another Mac's picture: its path names a file on that Mac, and
-            // read here it's whatever this Mac has at that path, so it opens
-            // no card and no viewer (Codex's review of the drags, 12 Nov). The
-            // picture itself is in the tile over the words, which the runner
-            // sends (remote_pictures.rs); the chip says where it is.
-            ChipKind::Picture(_) if origin != Origin::ThisMac => {
-                let runner = self.summary.runner_id.clone().unwrap_or_default();
-                let mac = self.composer.read(cx).app.upgrade().map_or_else(|| "another Mac".to_owned(), |app| app.read(cx).runner_name_of(&runner));
-                chip.cursor_default().tip(format!("This picture is on {mac}: it shows above"))
+            // read here it's whatever this Mac has at that path (Codex's review
+            // of the drags, 12 Nov), so it opens no card. The viewer asks that
+            // Mac for it through the runner, as the tile over the words does
+            // (remote_pictures.rs), so a click opens that (Mike, 18 Nov).
+            ChipKind::Picture(index) if origin != Origin::ThisMac => {
+                let runner = self.summary.runner_id.clone();
+                let images = images.to_vec();
+                chip.tip(crate::viewer::TILE_TIP).on_click(move |_, window, cx| crate::viewer::open_from_tile(&images, index, runner.as_deref(), window, cx))
             }
             ChipKind::Picture(index) => {
                 let picture = images.get(index);
@@ -400,7 +409,7 @@ impl ThreadPane {
                 let hover_key = key.clone();
                 chip.on_hover(move |on, window, cx| hover(&hover_key, *on, QUICK, window, cx))
                     // The in-app viewer, as a click on the picture over the words does.
-                    .on_click(move |_, window, cx| crate::viewer::open_from_tile(&images, index, window, cx))
+                    .on_click(move |_, window, cx| crate::viewer::open_from_tile(&images, index, None, window, cx))
                     .children(shown)
             }
             ChipKind::Card { title, url } => {
@@ -410,6 +419,20 @@ impl ThreadPane {
                 chip.on_hover(move |on, window, cx| hover(&hover_key, *on, SLOWER, window, cx))
                     // Through the open gate, as the reply's links go.
                     .on_click(move |_, _, cx| open_gate::open_link(&url, origin, &cwd, cx))
+                    .children(shown)
+            }
+            // Another Mac's file is on that Mac, so it opens nothing here.
+            ChipKind::File { .. } if origin != Origin::ThisMac => {
+                let runner = self.summary.runner_id.clone().unwrap_or_default();
+                let mac = self.composer.read(cx).app.upgrade().map_or_else(|| "another Mac".to_owned(), |app| app.read(cx).runner_name_of(&runner));
+                chip.cursor_default().tip(format!("Not uploaded: this file is on {mac}"))
+            }
+            ChipKind::File { path, .. } => {
+                let path = threadbear_core::reducer::text::expanding_tilde(&path);
+                let shown = card_shown(&key, SLOWER).then(|| under_chip(words_card(&name, &crate::composer_inline::short_path(&path), cx)));
+                let hover_key = key.clone();
+                chip.on_hover(move |on, window, cx| hover(&hover_key, *on, SLOWER, window, cx))
+                    .on_click(move |_, _, cx| open_gate::open_file(&path, origin, cx))
                     .children(shown)
             }
             ChipKind::Thread { id, .. } => {
@@ -443,6 +466,20 @@ fn page_title(words: &str, url: &str) -> String {
 }
 
 // ---------------------------------------------------------------- scripts
+
+/// The web addresses among a bubble's words, which it draws as links: the
+/// words between its chips, as `chip_lines` hands them to `bubble_words`.
+#[cfg(feature = "automation")]
+pub(crate) fn bubble_links(message: &UserMessage) -> Vec<String> {
+    found::message_pieces(&message.text, message.images.len())
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Words(words) => Some(found::web_links(&words).into_iter().map(|r| words[r].to_owned()).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
 
 /// `peek`, as the Swift app's: `{"row": id}` lists a message's chips with a
 /// card ("Picture 1=/path | Fix the button=https://…"); with `words` (a
@@ -486,6 +523,7 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
             .filter_map(|kind| match kind {
                 ChipKind::Picture(i) => message.images.get(*i).map(|image| format!("{}={}", kind.label(), image.path)),
                 ChipKind::Card { url, .. } => Some(format!("{}={url}", kind.label())),
+                ChipKind::File { path, .. } => Some(format!("{}={path}", kind.label())),
                 ChipKind::Thread { .. } => None,
             })
             .collect();
@@ -741,6 +779,30 @@ impl ThreadPane {
         }
     }
 
+    /// A reply's markdown with a live mark's link before each link to a
+    /// thread the app has (threadbear_core::link_marks, thread_link_marks.rs).
+    /// With the inlinePrs experiment, a PR's state mark before each link to
+    /// a PR too (pr_view.rs's `PrMarks`), its state asked of the runner the
+    /// first time.
+    pub(crate) fn with_link_marks(&self, text: String, cx: &mut App) -> String {
+        let Some(app) = self.composer.read(cx).app.upgrade() else { return text };
+        let threads = &app.read(cx).threads;
+        let text = match threadbear_core::link_marks::with_marks(&text, &|id| threadbear_core::link_marks::resolve_in(id, threads.keys())) {
+            std::borrow::Cow::Owned(marked) => marked,
+            std::borrow::Cow::Borrowed(_) => text,
+        };
+        if !crate::pr_view::on(app.read(cx)) {
+            return text;
+        }
+        let prs = threadbear_core::pull_requests::pr_links(&text);
+        if prs.is_empty() {
+            return text;
+        }
+        let side = app.read(cx).side.clone();
+        side.update(cx, |side, cx| side.ask_pr_states(&prs, cx));
+        threadbear_core::pull_requests::with_pr_marks(&text).into_owned()
+    }
+
     /// `agentMessageText`'s first line: where the message came from, small
     /// and faint, the sending thread as a chip that opens it while it's
     /// still there (a move's note names the folder instead).
@@ -784,8 +846,9 @@ impl ThreadPane {
         // The text as the row draws it (rows.rs).
         match &row.content {
             RowContent::Assistant(item) => {
-                use crate::rows::markdown::{pictures, prepare};
-                link_thread_ids(&prepare(&pictures(&item.text, self.summary.runner_id.is_none()), &self.summary.id), &resolve).1
+                use crate::rows::markdown::{dead_file_links, pictures, prepare};
+                let local = self.summary.runner_id.is_none();
+                link_thread_ids(&dead_file_links(&prepare(&pictures(&item.text, local), &self.summary.id), local), &resolve).1
             }
             RowContent::User(message) => match message.agent_header() {
                 Some(header) => {

@@ -9,6 +9,10 @@
 static NSArray<NSString *> *attachmentExtensions(void) {
   return @[@"png", @"jpg", @"jpeg", @"gif", @"webp", @"heic", @"heif", @"tif", @"tiff", @"bmp"];
 }
+// Markdown goes in as its path, as a dropped file does (composer::is_markdown).
+static NSArray<NSString *> *markdownExtensions(void) {
+  return @[@"md", @"markdown"];
+}
 
 // A UTType can include more suffixes than media.import accepts. Disable
 // those too, so every selectable file is one the composer can attach.
@@ -18,13 +22,14 @@ static NSArray<NSString *> *attachmentExtensions(void) {
 - (BOOL)panel:(id)sender shouldEnableURL:(NSURL *)url {
   NSNumber *directory;
   [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
-  return directory.boolValue || [attachmentExtensions() containsObject:url.pathExtension.lowercaseString];
+  NSString *extension = url.pathExtension.lowercaseString;
+  return directory.boolValue || [attachmentExtensions() containsObject:extension] || [markdownExtensions() containsObject:extension];
 }
 @end
 static char imagePanelDelegateKey;
 
 // This sheet belongs to the composer window, and completes once on Add or
-// Cancel. It never accepts a document that would become a generic file chip.
+// Cancel. Besides pictures it takes only Markdown, which goes in as a path.
 void tb_composer_choose_images(void *view, void (*finished)(void *, const char *const *, size_t), void *context) {
   NSOpenPanel *panel = [NSOpenPanel openPanel];
   panel.canChooseFiles = YES;
@@ -35,6 +40,10 @@ void tb_composer_choose_images(void *view, void (*finished)(void *, const char *
   for (NSString *extension in attachmentExtensions()) {
     UTType *type = [UTType typeWithFilenameExtension:extension];
     if (type && [type conformsToType:UTTypeImage]) [types addObject:type];
+  }
+  for (NSString *extension in markdownExtensions()) {
+    UTType *type = [UTType typeWithFilenameExtension:extension];
+    if (type && ![types containsObject:type]) [types addObject:type];
   }
   TBImagePanelDelegate *delegate = [TBImagePanelDelegate new];
   panel.delegate = delegate;

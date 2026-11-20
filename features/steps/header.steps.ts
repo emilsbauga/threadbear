@@ -60,6 +60,29 @@ Then('the share popover says the thread is shared with a link', async function (
   assert.match(out, /link http/, out);
 });
 
+// A real click on the bar's share icon, by its tooltip.
+When('I click the share button', async function (this: ThreadbearWorld) {
+  await this.until('the share button', (d) => d.selection != null);
+  for (let n = 0; ; n += 1) {
+    try { await this.app.do({ cmd: 'click', title: 'Share this thread on the web' }); break; }
+    catch (e) { if (n >= 20) throw e; await new Promise((r) => setTimeout(r, 150)); }
+  }
+});
+
+Then('the share popover is open', async function (this: ThreadbearWorld) {
+  assert.match(await this.app.do({ cmd: 'share' }), /popover shown/);
+});
+
+Then('the share popover is closed', async function (this: ThreadbearWorld) {
+  let out = '';
+  for (let n = 0; n < 20; n += 1) {
+    out = await this.app.do({ cmd: 'share' });
+    if (/popover closed/.test(out)) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.fail(`the share popover is still up: ${out}`);
+});
+
 When('an error {string} happens', async function (this: ThreadbearWorld, text: string) {
   await this.app.do({ cmd: 'error', text });
 });
@@ -104,6 +127,16 @@ Then("there's no Archived note", async function (this: ThreadbearWorld) {
 
 When('I click the Archived note', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'open-archived' });
+});
+
+When('I dismiss the Archived note', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'click', tipPrefix: 'Dismiss' });
+});
+
+// ⌘ on a Mac, Control elsewhere (`menu-key`'s `cmd`), through the keymap as
+// a real key press goes.
+When('I press ⌘Z', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'menu-key', key: 'z', modifiers: ['cmd'] });
 });
 
 When('I open the last thread in the Inbox', async function (this: ThreadbearWorld) {

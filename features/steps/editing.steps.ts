@@ -79,3 +79,11 @@ Then('my answer to {string} shows {string} and {string}', async function (this: 
   const drawn = await this.app.do({ cmd: 'message-words', row: d.id });
   for (const want of [question, pick, words]) assert.ok(drawn.includes(want), `the bubble shows ${drawn}, without "${want}"`);
 });
+
+// Real keys, so the clearing is an edit Undo can take back (`type` with
+// `replace` empties the box with no history).
+When('I select everything in the composer and delete it', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'type', text: '' });
+  await this.app.do({ cmd: 'menu-key', key: 'a', modifiers: ['cmd'] });
+  await this.app.do({ cmd: 'menu-key', key: 'backspace' });
+});

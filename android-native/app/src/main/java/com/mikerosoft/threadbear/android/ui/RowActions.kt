@@ -13,8 +13,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -60,13 +64,36 @@ fun HibernateDialog(thread: PhoneThread, dismiss: () -> Unit) {
 }
 
 /**
+ * Asks for a thread's new title, filled in with its current one (the
+ * iPhone's renameDialog). The new title shows as soon as it's sent.
+ */
+@Composable
+fun RenameDialog(thread: PhoneThread, dismiss: () -> Unit) {
+    val model = LocalModel.current
+    var text by remember { mutableStateOf(model.renamed.value[thread.threadId] ?: thread.title) }
+    AlertDialog(
+        onDismissRequest = dismiss,
+        title = { Text("Rename thread") },
+        text = { OutlinedTextField(text, { text = it }, singleLine = true, label = { Text("Title") }, modifier = Modifier.fillMaxWidth()) },
+        confirmButton = {
+            TextButton(onClick = { dismiss(); model.change(thread.threadId, ThreadChange.Rename(text)) }, enabled = text.isNotBlank()) {
+                Text("Rename")
+            }
+        },
+        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
+    )
+}
+
+/**
  * A row's long-press menu, as the iPhone's contextMenu: Star, Hibernate (or
- * Wake), Archive, Mark as read while it's unread, Copy Thread ID.
+ * Wake), Archive, Rename, Mark as read while it's unread, Copy Thread ID.
  */
 @Composable
 fun RowMenu(thread: PhoneThread, asleep: Boolean, expanded: Boolean, dismiss: () -> Unit, hibernate: () -> Unit) {
     val model = LocalModel.current
     val context = LocalContext.current
+    var renaming by remember { mutableStateOf(false) }
+    if (renaming) RenameDialog(thread) { renaming = false }
     DropdownMenu(expanded = expanded, onDismissRequest = dismiss) {
         if (model.apiVersion >= BackendApi.STARS) {
             val starred = thread.starredAt != null
@@ -80,6 +107,7 @@ fun RowMenu(thread: PhoneThread, asleep: Boolean, expanded: Boolean, dismiss: ()
             ActionItem("Hibernate…", Line.Moon) { dismiss(); hibernate() }
         }
         ActionItem("Archive", Line.Archive) { dismiss(); model.change(thread.threadId, ThreadChange.Archive) }
+        ActionItem("Rename…", Line.Pencil) { dismiss(); renaming = true }
         if (thread.unread || thread.needsYou) {
             ActionItem("Mark as read", Line.MailOpen) { dismiss(); model.change(thread.threadId, ThreadChange.MarkSeen) }
         }

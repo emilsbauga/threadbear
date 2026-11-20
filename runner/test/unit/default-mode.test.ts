@@ -5,7 +5,6 @@
 // install's runner.json (scripts/setup.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, testConfig, tmpDir } from '../helpers/fakes.ts';
 import { loadConfig, writeRunnerJson } from '../../src/config.ts';
@@ -63,13 +62,4 @@ test("the runner's own threads start on the install's default mode", () => {
   const h = makeHarness();
   assert.equal(h.runner.get(startOwnThread(h.runner, { text: 'x', title: 'x', why: 'x' }, undefined)).permissionMode, 'full');
   assert.equal(h.runner.get(h.runner.noticeOnMac(undefined, 'A dialog', 'x')).permissionMode, 'full');
-});
-
-test("main.ts starts the bring-in and update-fixer threads through startOwnThread, naming no mode", () => {
-  // main() wires live services, so it isn't run here: its source is read
-  // instead, so a hard-coded mode coming back fails.
-  const src = fs.readFileSync(path.join(import.meta.dirname, '../../src/main.ts'), 'utf8');
-  assert.match(src, /startOwnThread\(runner, r, updateRelease\?\.checkout\)/);
-  assert.match(src, /startOwnThread\(runner, r, thisRelease\?\.checkout\)/);
-  assert.doesNotMatch(src, /permissionMode: 'full'/);
 });

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
+import { escapeRegExp, skipOnWindows } from '../helpers/platform.ts';
 import { checkSummary } from '../helpers/protocol-check.ts';
 import { claudeCommands, claudeSettingsWithoutCommands, CLAUDE_PATCH_ID, setMaxWalkForTests } from '../../src/claude-trust.ts';
 import { PatchTrust } from '../../src/patch-trust.ts';
@@ -155,6 +156,8 @@ test('trust is per folder in the patch trust file, a worktree counts as its main
   const main = path.join(root, 'app');
   fs.mkdirSync(main);
   git(main, 'init', '-q', '-b', 'main');
+  // The checkout in the worktree must read the same bytes as main, whatever git's system settings say about line endings.
+  git(main, 'config', 'core.autocrlf', 'false');
   const { script } = hooked(main);
   git(main, 'add', '-A');
   git(main, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'first');
@@ -218,7 +221,9 @@ test("runner: a Claude thread in a folder with untrusted hooks starts without th
   const s = h.adapter.last;
   // The repo's allow rule is held back with its hooks.
   assert.deepEqual(s.opts.untrustedProjectSettings, {});
-  assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && /Skipped this folder's Claude Code hooks, commands, permissions and environment settings \(\.claude\/settings\.json\): you haven't trusted them yet/.test(e.text)));
+  // The file as the platform writes it: .claude/settings.json, and .claude\settings.json on Windows only.
+  const skipped = new RegExp(`Skipped this folder's Claude Code hooks, commands, permissions and environment settings \\(${escapeRegExp(path.join('.claude', 'settings.json'))}\\): you haven't trusted them yet`);
+  assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && skipped.test(e.text)));
   let t = h.runner.get(thread.id);
   assert.deepEqual(checkSummary(t), []);
   const waiting = t.patches?.find((p) => p.id === CLAUDE_PATCH_ID);
@@ -1047,7 +1052,7 @@ test('review 7: plain frontmatter hooks, as Claude\'s docs write them, still can
 
 // ---- The review's eighth round ----
 
-test('review 8: a submodule with a newline in its name, BASH_ENV by a bare name, --preserve-symlinks in NODE_OPTIONS, a subshell function, escaped JavaScript names', () => {
+test('review 8: a submodule with a newline in its name, BASH_ENV by a bare name, --preserve-symlinks in NODE_OPTIONS, a subshell function, escaped JavaScript names', skipOnWindows('Windows cannot have a newline in a folder name, which this test makes'), () => {
   const home = tmpDir();
   const repo = path.join(home, 'cloned');
   fs.mkdirSync(repo, { recursive: true });

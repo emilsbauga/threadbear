@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { IS_WINDOWS } from './platform.ts';
 
 // Said on the approval card, after the edit's own title.
 export const RUNS_AS_CODE = 'Threadbear runs this file as code';
@@ -45,7 +46,14 @@ export function runsAsCodeByName(file: string, home: string = os.homedir()): boo
   // The runner adds what such a link points at (writeRunsAsCode).
   const homeDir = path.join(path.resolve(home), '.threadbear');
   const homes = [homeDir.toLowerCase(), canonicalPath(homeDir).toLowerCase()];
-  return [path.resolve(file), canonicalPath(file)].some((p) => {
+  // A named stream (x.dat:task.js) on Windows: a patch can run one, and the
+  // name it's checked by below drops the stream, so a write to one asks
+  // whatever it's called (Codex's review, 18 Nov 2026). The default stream
+  // (x.ts::$DATA) is the file itself, and is checked as that.
+  if (IS_WINDOWS && hasNamedStream(file)) return true;
+  // On Windows also the name as the file system reads it (windowsFileName).
+  const asked = IS_WINDOWS ? [file, windowsFileName(file)] : [file];
+  return asked.flatMap((f) => [path.resolve(f), canonicalPath(f)]).some((p) => {
     const abs = p.toLowerCase();
     const dir = path.dirname(abs);
     if (path.basename(dir) === 'patches' && path.basename(path.dirname(dir)) === '.threadbear' && ['.ts', '.js', '.mjs'].includes(path.extname(abs))) return true;
@@ -56,12 +64,42 @@ export function runsAsCodeByName(file: string, home: string = os.homedir()): boo
   });
 }
 
+// A path as NTFS reads each name in it, for the names a write can be spelt
+// in that the disk doesn't keep. `evil.ts::$DATA` is evil.ts (the default
+// stream: a write through it makes the real file, which a plain-name check
+// let past as new), a name's trailing dots and spaces are dropped (`evil.ts.`
+// is evil.ts), and `x:stream` is x with a stream, so from the first colon of a
+// name on goes, except in a drive letter (C: alone, also after \\?\). Pure,
+// so it runs everywhere; it only matters on Windows, where runsAsCodeByName
+// uses it.
+export function windowsFileName(file: string): string {
+  return file
+    .split(/[\\/]/)
+    .map((part, i) => {
+      const drive = i === 0 ? (/^[A-Za-z]:/.exec(part)?.[0] ?? '') : /^[A-Za-z]:$/.test(part) ? part : '';
+      const name = part.slice(drive.length).replace(/:.*$/s, '');
+      return drive + (name === '.' || name === '..' ? name : name.replace(/[. ]+$/, ''));
+    })
+    .join('\\');
+}
+
+// Whether a Windows path names a stream other than a file's own data: a
+// colon in a name after the drive, other than ::$DATA at the end. Pure.
+export function hasNamedStream(file: string): boolean {
+  return file.split(/[\\/]/).some((part, i) => {
+    const name = i === 0 || /^[A-Za-z]:$/.test(part) ? part.replace(/^[A-Za-z]:/, '') : part;
+    return name.includes(':') && !/^[^:]*::\$DATA$/i.test(name);
+  });
+}
+
 // `file` with the symlinks on its way resolved and each name as the disk
 // spells it, as far as it exists; the rest as given. A link to something
 // not there yet is followed too: a Write through it makes its target, so
 // `notes.txt -> ~/.threadbear/patches/p.ts` is a patch (Codex review).
 export function canonicalPath(file: string, depth = 0): string {
-  const abs = path.resolve(file);
+  // On Windows by the names NTFS reads (windowsFileName), also for a file not
+  // there yet: `new.sh::$DATA` is the new.sh a patch names.
+  const abs = path.resolve(IS_WINDOWS ? windowsFileName(file) : file);
   try {
     return fs.realpathSync.native(abs);
   } catch {

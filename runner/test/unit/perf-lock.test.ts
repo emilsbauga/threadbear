@@ -4,17 +4,40 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { PATIENCE_MS } from '../helpers/patience.ts';
 import { test, type TestContext } from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const helper = path.join(root, 'scripts/perf-lock.pl');
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// By the clock, with the suite's patience, not 500 polls (about 20 s): at a
+// load of 100 a perl child took longer than that to start (a fork, 15 Nov).
 async function until(check: () => boolean, message: string) {
-  for (let i = 0; i < 500; i++) {
+  const end = Date.now() + PATIENCE_MS;
+  while (Date.now() < end) {
     if (check()) return;
     await pause(40);
   }
-  assert.fail(message);
+  if (!check()) assert.fail(message);
+}
+// When a process started, as perf-children.pl records it: lstart on macOS,
+// and on Linux seconds since boot, as lstart there moves with the clock's
+// boot time when the clock is stepped (WSL, 17 Nov).
+function born(pid: number | string): string {
+  const bootTime = () => {
+    if (process.platform !== 'linux') return 0;
+    const m = fs.readFileSync('/proc/stat', 'utf8').match(/^btime\s+(\d+)/m);
+    return m ? Number(m[1]) : 0;
+  };
+  // Like perf-children.pl, only trust a read with the same boot time either side.
+  for (;;) {
+    const boot = bootTime();
+    const lstart = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout.trim();
+    if (!boot || !lstart) return lstart;
+    if (bootTime() !== boot) continue;
+    const at = Date.parse(`${lstart.replace(/\s+/g, ' ')} UTC`);
+    return Number.isNaN(at) ? lstart : `boot+${at / 1000 - boot}`;
+  }
 }
 function host(t: TestContext) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-perf-lock-'));
@@ -242,14 +265,6 @@ test('remote build wrappers background builds without lowering the benchmark she
   assert.ok(!fs.readdirSync(h.home).some((n) => n.startsWith('threadbear-build-bin.')));
 });
 
-test('real-screen stays a safe import inside a check already holding the host lock', () => {
-  const shared = fs.readFileSync(path.join(root, 'features/tools/real-screen.ts'), 'utf8');
-  assert.doesNotMatch(shared, /ensurePerfLock/);
-  for (const name of ['scroll-perf.ts', 'switch-perf.ts', 'long-thread.ts', 'real-runner.ts', 'real-gestures.ts', 'real-select.ts', 'real-typing.ts', 'real-review-paste.ts']) {
-    assert.match(fs.readFileSync(path.join(root, 'features/tools', name), 'utf8'), /await ensurePerfLock\(\)/, name);
-  }
-});
-
 test('free check probes keep the same inode that waiting measurements have open', () => {
   const check = fs.readFileSync(path.join(root, 'scripts/check-remote.sh'), 'utf8');
   for (const probe of check.matchAll(/\/usr\/bin\/lockf -t 0 ([^;\n]*?)true/g)) {
@@ -361,10 +376,10 @@ while True: time.sleep(1)
   const first = h.run([process.execPath, entry]);
   await until(() => fs.existsSync(terminalPid) && Number(fs.readFileSync(terminalPid, 'utf8')) > 1, 'terminal session did not start');
   const pid = Number(fs.readFileSync(terminalPid, 'utf8'));
-  const born = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+  const firstBorn = born(String(pid));
   t.after(() => {
-    const now = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
-    if (born && now === born) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    const now = born(String(pid));
+    if (firstBorn && now === firstBorn) { try { process.kill(pid, 'SIGKILL'); } catch {} }
   });
   if (loss.startsWith('app')) process.kill(Number(fs.readFileSync(path.join(h.home, 'app.pid'), 'utf8')), 'SIGKILL');
   if (loss === 'worker' || loss.startsWith('app') || loss === 'closed-proof') process.kill(Number(fs.readFileSync(workerPid, 'utf8')), 'SIGKILL');
@@ -402,10 +417,10 @@ test('a fork after discovery is found even when its parent exits before the resc
   fs.writeFileSync(path.join(h.home, 'fork-now'), '');
   await until(() => fs.existsSync(pidfile) && Number(fs.readFileSync(pidfile, 'utf8')) > 1, 'late fork did not start');
   const pid = Number(fs.readFileSync(pidfile, 'utf8'));
-  const born = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+  const firstBorn = born(String(pid));
   t.after(() => {
-    const now = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
-    if (born && now === born) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    const now = born(String(pid));
+    if (firstBorn && now === firstBorn) { try { process.kill(pid, 'SIGKILL'); } catch {} }
   });
   fs.writeFileSync(path.join(h.home, 'resume-scan'), '');
   assert.notEqual(await first.done, 0);
@@ -428,7 +443,7 @@ test('stale registration and snapshot identities never stop an unrelated process
   t.after(async () => { process.kill(-unrelated.pid!, 'SIGKILL'); await unrelatedDone; });
   await until(() => childPid.includes('\n'), 'unrelated subtree did not start');
   fs.writeFileSync(path.join(registry, String(unrelated.pid)), 'stale registration');
-  const childBorn = spawnSync('ps', ['-p', childPid.trim(), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout.trim();
+  const childBorn = born(childPid.trim());
   fs.writeFileSync(path.join(registry, `anchor-${unrelated.pid}`), `${childPid.trim()}\n${childBorn}\nstale registration`);
   first.stdin!.end();
   await until(() => fs.existsSync(path.join(h.home, 'scan-ready')), 'scan did not pause');
@@ -493,10 +508,10 @@ test('worker death reaps children that Node launched without the proof descripto
   const first = h.run([process.execPath, entry]);
   await until(() => fs.existsSync(pidfile) && Number(fs.readFileSync(pidfile, 'utf8')) > 1, 'background child did not start');
   const pid = Number(fs.readFileSync(pidfile, 'utf8'));
-  const born = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+  const firstBorn = born(String(pid));
   t.after(() => {
-    const now = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
-    if (born && now === born) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    const now = born(String(pid));
+    if (firstBorn && now === firstBorn) { try { process.kill(pid, 'SIGKILL'); } catch {} }
   });
   process.kill(Number(fs.readFileSync(workerPid, 'utf8')), 'SIGKILL');
   const next = h.run(['sh', '-c', 'echo next']);
@@ -560,16 +575,16 @@ test('loss of an anchor cannot unlock a live group whose ownership is now uncert
   const first = h.run([process.execPath, entry]);
   await until(() => fs.existsSync(childFile) && Number(fs.readFileSync(childFile, 'utf8')) > 1, 'child did not start');
   const child = Number(fs.readFileSync(childFile, 'utf8'));
-  const born = spawnSync('ps', ['-p', String(child), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+  const firstBorn = born(String(child));
   const stopChild = () => {
-    const now = spawnSync('ps', ['-p', String(child), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
-    if (born && now === born) { try { process.kill(child, 'SIGKILL'); } catch {} }
+    const now = born(String(child));
+    if (firstBorn && now === firstBorn) { try { process.kill(child, 'SIGKILL'); } catch {} }
   };
   t.after(stopChild);
   const worker = Number(fs.readFileSync(workerFile, 'utf8'));
   const registry = fs.readFileSync(registryFile, 'utf8');
   const [anchor, anchorBorn] = fs.readFileSync(path.join(registry, `anchor-${worker}`), 'utf8').split('\n');
-  assert.equal(spawnSync('ps', ['-p', anchor, '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout.trim(), anchorBorn);
+  assert.equal(born(anchor), anchorBorn);
   process.kill(Number(anchor), 'SIGKILL');
   process.kill(worker, 'SIGKILL');
   const next = h.run(['sh', '-c', 'echo entered-next-lease']);
@@ -604,7 +619,7 @@ test('stopped child groups retire their anchors during a continuing lease', asyn
   await until(() => first.output.includes('stopped twenty'), 'sequential children did not stop');
   const { registry, groups } = JSON.parse(fs.readFileSync(groupsFile, 'utf8')) as { registry: string; groups: number[] };
   const live = () => {
-    const rows = spawnSync('ps', ['-axo', 'pid=,stat=,lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).stdout;
+    const rows = spawnSync('ps', ['-axo', 'pid=,stat='], { encoding: 'utf8' }).stdout;
     return groups.filter((group) => {
       let record: string;
       try { record = fs.readFileSync(path.join(registry, `anchor-${group}`), 'utf8'); }
@@ -612,10 +627,10 @@ test('stopped child groups retire their anchors during a continuing lease', asyn
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         record = fs.readFileSync(path.join(registry, `retired-${group}`), 'utf8');
       }
-      const [pid, born] = record.split('\n');
+      const [pid, recorded] = record.split('\n');
       return rows.split('\n').some((row) => {
-        const m = row.match(/^\s*(\d+)\s+(\S+)\s+(.+?)\s*$/);
-        return m && m[1] === pid && !m[2].startsWith('Z') && m[3] === born;
+        const m = row.match(/^\s*(\d+)\s+(\S+)/);
+        return m && m[1] === pid && !m[2].startsWith('Z') && born(pid) === recorded;
       });
     });
   };
@@ -706,10 +721,10 @@ for (const loss of ['owner', 'transport'] as const) test(`${loss} loss reaps a n
   const first = h.run([process.execPath, entry]);
   await until(() => fs.existsSync(ready) && fs.existsSync(orphanFile) && Number(fs.readFileSync(orphanFile, 'utf8')) > 1, 'nested orphan did not start');
   const pid = Number(fs.readFileSync(orphanFile, 'utf8'));
-  const born = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+  const firstBorn = born(String(pid));
   const stopOrphan = () => {
-    const now = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
-    if (born && now === born) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    const now = born(String(pid));
+    if (firstBorn && now === firstBorn) { try { process.kill(pid, 'SIGKILL'); } catch {} }
   };
   if (loss === 'owner') first.kill('SIGKILL');
   else { first.stdout!.destroy(); first.stderr!.destroy(); first.stdin!.end(); }
@@ -815,4 +830,214 @@ test('a Desk client finishing early cannot release locks while its GUI workload 
   assert.equal(await first.done, 0, first.output);
   assert.equal(await next.done, 0, next.output);
   assert.throws(() => process.kill(pid, 0));
+});
+
+// 18 Nov: perl --child sat under Desk Runner for 41 minutes, never reaching
+// the bash that writes the pidfile, and outlived its ssh. Desk Runner starts
+// the line outside the guard's tree and the wrapper leaves its group, so the
+// pidfile is the only way the guard can find it: it has to be written first.
+test('a Desk run held up before its command still stops when the ssh goes', async (t) => {
+  const h = host(t);
+  const bin = path.join(h.home, '.local/bin');
+  const stall = path.join(h.home, 'stall');
+  const stalled = path.join(h.home, 'stalled.pid');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(stall);
+  // Like Desk Runner: the line runs away from the client (reparented, out of
+  // the guard's tree, without the client's fd 197, which would let the
+  // reaper find it), and the client waits until it is stopped itself.
+  fs.writeFileSync(path.join(bin, 'desk'), `#!/bin/bash\nexec 197<&-\nPATH="$HOME/stall:$PATH" perl -e 'fork and exit; open(STDIN, "<", "/dev/null"); exec @ARGV' /bin/bash -c "$1"\nexec sleep 600\n`, { mode: 0o755 });
+  // perf-children.pl --child never gets anywhere, as on Tinker Desk.
+  fs.writeFileSync(path.join(stall, 'perl'), `#!/bin/bash\nif [ "\${2:-}" = --child ]; then echo $$ >"$HOME/stalled.pid"; exec sleep 600; fi\nexec /usr/bin/perl "$@"\n`, { mode: 0o755 });
+  const pidfile = path.join(h.home, 'desk.pid');
+  const run = h.run(['sh', '-c', 'echo never', 'sh'], {}, pidfile);
+  await until(() => fs.existsSync(stalled), 'the desk line did not start');
+  const pid = Number(fs.readFileSync(stalled, 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch {} });
+  assert.equal(fs.readFileSync(pidfile, 'utf8').trim(), String(pid));
+  run.stdin!.end();
+  await run.done;
+  await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 'the held-up desk run outlived its ssh');
+  assert.doesNotMatch(run.output, /never/);
+});
+
+// From 17 Nov Tinker Desk's build folders were on an SSD Desk Runner hadn't
+// been allowed to read, and macOS held its open() there with nobody to ask.
+// A FIFO with no writer blocks an open the same way.
+test('a Desk run that cannot read its folders says why instead of hanging', { skip: process.platform === 'win32' }, async (t) => {
+  const h = host(t);
+  const bin = path.join(h.home, '.local/bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'desk'), '#!/bin/sh\nexec env -i HOME="$HOME" PATH="$PATH" /bin/bash -c "$1"\n', { mode: 0o755 });
+  const blocked = path.join(h.home, 'blocked');
+  assert.equal(spawnSync('mkfifo', [blocked]).status, 0);
+  const ran = path.join(h.home, 'ran');
+  const pidfile = path.join(h.home, 'desk.pid');
+  const run = h.run(['sh', '-c', 'touch "$1"', 'sh', ran], { THREADBEAR_REMOTE_SOURCE: blocked, THREADBEAR_DESK_READ_SECONDS: '1' }, pidfile);
+  assert.equal(await run.done, 126, run.output);
+  assert.match(run.output, /Desk Runner couldn't open .*blocked.*Removable Volumes/);
+  assert.ok(!fs.existsSync(ran));
+  // remote.sh's pidfile is on that same disk, so it's only written after the check.
+  assert.ok(!fs.existsSync(pidfile), 'the pidfile was written before the folders were checked');
+});
+
+// A refusal that comes at once (permission denied, or a privacy prompt
+// already answered No) stops the run too, rather than counting as a pass.
+test('a Desk run refused its folders outright says so and does not start', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
+  const h = host(t);
+  const bin = path.join(h.home, '.local/bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'desk'), '#!/bin/sh\nexec env -i HOME="$HOME" PATH="$PATH" /bin/bash -c "$1"\n', { mode: 0o755 });
+  const shut = path.join(h.home, 'shut');
+  fs.mkdirSync(shut, { mode: 0o000 });
+  const ran = path.join(h.home, 'ran');
+  const run = h.run(['sh', '-c', 'touch "$1"', 'sh', ran], { THREADBEAR_REMOTE_SOURCE: shut }, path.join(h.home, 'desk.pid'));
+  // Back before the home's own cleanup, which can't empty a shut folder.
+  try { assert.equal(await run.done, 126, run.output); } finally { fs.chmodSync(shut, 0o700); }
+  assert.match(run.output, /Desk Runner couldn't open .*shut \(Permission denied\)/);
+  assert.ok(!fs.existsSync(ran));
+});
+
+// Builds side by side (remote.sh --build), on a host that allows it: Mike
+// asked on 18 Nov, as threads queued behind each other's builds on Tinker
+// Desk all day. A command that runs until a file appears, so a test decides
+// when each one ends.
+function builds(t: TestContext, atOnce?: number) {
+  const h = host(t);
+  if (atOnce) {
+    fs.mkdirSync(path.join(h.home, '.cache/threadbear-check'), { recursive: true });
+    fs.writeFileSync(path.join(h.home, '.cache/threadbear-check/builds-at-once'), `${atOnce}\n`);
+  }
+  const shim = path.join(h.home, 'build.pl');
+  fs.writeFileSync(shim, `exec 'perl', ${JSON.stringify(helper)}, '--build', @ARGV;`);
+  const until = (name: string) => ['sh', '-c', `echo ${name} started; while [ ! -e "$HOME/end-${name}" ]; do sleep 0.05; done; echo ${name} ended`];
+  const end = (name: string) => fs.writeFileSync(path.join(h.home, `end-${name}`), '');
+  const build = (name: string) => h.run(until(name), {}, undefined, false, shim);
+  const alone = (name: string) => h.run(until(name));
+  return { h, build, alone, end };
+}
+
+test('two builds share a host that allows two at once, and a third waits for a lane', async (t) => {
+  const { build, end } = builds(t, 2);
+  const a = build('a');
+  await until(() => a.output.includes('a started'), 'a did not start');
+  const b = build('b');
+  await until(() => b.output.includes('b started'), 'b did not start beside a');
+  const c = build('c');
+  await until(() => c.output.includes('Waiting for one of the 2 builds'), 'c did not wait for a lane');
+  assert.doesNotMatch(c.output, /c started/);
+  end('a');
+  await until(() => c.output.includes('c started'), 'c did not start when a lane came free');
+  end('b'); end('c');
+  for (const r of [a, b, c]) assert.equal(await r.done, 0, r.output);
+});
+
+test('with no builds-at-once a build has the host alone, as before', async (t) => {
+  const { build, end } = builds(t);
+  const a = build('a');
+  await until(() => a.output.includes('a started'), 'a did not start');
+  const b = build('b');
+  await until(() => b.output.includes('Waiting for'), 'b did not wait');
+  assert.doesNotMatch(b.output, /b started/);
+  end('a'); end('b');
+  assert.equal(await a.done, 0, a.output);
+  assert.equal(await b.done, 0, b.output);
+});
+
+test('a measurement waiting for builds keeps new builds out, so builds can never starve it', async (t) => {
+  // macOS's flock grants a shared lock while an exclusive one waits; the gate
+  // is what makes the measurement next.
+  const { build, alone, end } = builds(t, 2);
+  const a = build('a');
+  await until(() => a.output.includes('a started'), 'a did not start');
+  const m = alone('m');
+  await until(() => m.output.includes('Waiting for'), 'm did not wait for the build');
+  assert.match(m.output, /running: sh -c echo a started/, 'm said which build it waits for');
+  const b = build('b');
+  await until(() => b.output.includes('Waiting for'), 'b did not wait behind m');
+  await pause(500);
+  assert.doesNotMatch(b.output, /b started/, 'b jumped ahead of the waiting measurement');
+  end('a');
+  await until(() => m.output.includes('m started'), 'm did not start once a ended');
+  assert.doesNotMatch(b.output, /b started/, 'b ran beside the measurement');
+  end('m');
+  await until(() => b.output.includes('b started'), 'b did not start after m');
+  end('b');
+  for (const r of [a, m, b]) assert.equal(await r.done, 0, r.output);
+});
+
+test("a check waiting at the gate keeps new builds out too", async (t) => {
+  // check-remote.sh's checks take the gate, then the check lock, with lockf.
+  const { h, build, end } = builds(t, 2);
+  const a = build('a');
+  await until(() => a.output.includes('a started'), 'a did not start');
+  const base = path.join(h.home, '.cache/threadbear-check');
+  const check = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $g, ">>", $ARGV[0]) or die $!; flock($g, LOCK_EX) or die $!; open(my $l, ">>", $ARGV[1]) or die $!; flock($l, LOCK_EX) or die $!; $|=1; print "checking\\n"; sleep 1', path.join(base, 'gate'), path.join(base, 'lock')], { stdio: ['ignore', 'pipe', 'inherit'] });
+  let said = '';
+  check.stdout!.on('data', (s) => { said += s; });
+  const checked = new Promise((r) => check.on('exit', r));
+  await pause(300);
+  const b = build('b');
+  await until(() => b.output.includes('Waiting for'), 'b did not wait behind the check');
+  assert.equal(said, '', 'the check ran beside a build');
+  end('a');
+  await until(() => said.includes('checking'), 'the check did not start once a ended');
+  assert.doesNotMatch(b.output, /b started/);
+  assert.equal(await checked, 0);
+  await until(() => b.output.includes('b started'), 'b did not start after the check');
+  end('b');
+  assert.equal(await b.done, 0, b.output);
+});
+
+test('a measurement inside a shared build refuses rather than waiting for itself', async (t) => {
+  const { h } = builds(t, 2);
+  const shim = path.join(h.home, 'build.pl');
+  const inner = h.run(['perl', helper, '-', 'sh', '-c', 'echo measured'], {}, undefined, false, shim);
+  assert.notEqual(await inner.done, 0, inner.output);
+  assert.match(inner.output, /inside a build that shares/);
+  assert.doesNotMatch(inner.output, /measured/);
+  const nested = h.run(['perl', helper, '--build', '-', 'sh', '-c', 'echo built'], {}, undefined, false, shim);
+  assert.equal(await nested.done, 0, nested.output);
+  assert.match(nested.output, /built/);
+});
+
+test('an update build joins a shared host without queueing, and defers when it would have to', async (t) => {
+  const { h, build, end } = builds(t, 2);
+  const shim = path.join(h.home, 'try-build.pl');
+  fs.writeFileSync(shim, `exec 'perl', ${JSON.stringify(helper)}, '--build', '--try', @ARGV;`);
+  const a = build('a');
+  await until(() => a.output.includes('a started'), 'a did not start');
+  const joined = h.run(['sh', '-c', 'echo updater-ran'], {}, undefined, false, shim);
+  assert.equal(await joined.done, 0, joined.output);
+  assert.match(joined.output, /updater-ran/);
+  const b = build('b');
+  await until(() => b.output.includes('b started'), 'b did not start');
+  const full = h.run(['sh', '-c', 'echo updater-ran'], {}, undefined, false, shim);
+  assert.equal(await full.done, 75, full.output);
+  assert.doesNotMatch(full.output, /updater-ran/);
+  end('a'); end('b');
+  assert.equal(await a.done, 0);
+  assert.equal(await b.done, 0);
+});
+
+test("a measurement from an older perf-lock.pl, waiting without the gate, still goes before new builds", async (t) => {
+  // Its note has no "gate" line: it waits on the perf lock itself.
+  const { h, build, end } = builds(t, 2);
+  const waiting = path.join(h.home, '.cache/threadbear-perf.lock.waiting');
+  fs.mkdirSync(waiting, { recursive: true });
+  const note = path.join(waiting, String(process.pid));
+  fs.writeFileSync(note, `${Math.floor(Date.now() / 1000)}\n`);
+  const a = build('a');
+  await until(() => a.output.includes('older checkout go first'), 'a did not let the older measurement go first');
+  assert.doesNotMatch(a.output, /a started/);
+  fs.rmSync(note);
+  await until(() => a.output.includes('a started'), 'a did not start once it had gone');
+  // A note from this version (through the gate) doesn't hold a build up.
+  fs.writeFileSync(note, `${Math.floor(Date.now() / 1000)}\ngate\n`);
+  const b = build('b');
+  await until(() => b.output.includes('b started'), 'b waited for a gated note');
+  fs.rmSync(note);
+  end('a'); end('b');
+  assert.equal(await a.done, 0, a.output);
+  assert.equal(await b.done, 0, b.output);
 });

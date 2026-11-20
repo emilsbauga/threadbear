@@ -1,4 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
+import { noHooksPath } from './platform.ts';
 
 // git in a folder Threadbear hasn't trusted, or whose .git it didn't make.
 // A folder from a zip, a tarball or a shared drive can carry its own
@@ -41,7 +42,7 @@ function protocols(allowed: readonly string[]): string[] {
 }
 const NO_FETCH: readonly string[] = protocols([]);
 const LISTINGS = new Set(['ls-files', 'rev-parse']);
-export const LISTING_GIT_CONFIG: readonly string[] = [...UNTRUSTED_GIT_CONFIG, ...NO_FETCH, '-c', 'core.hooksPath=/dev/null'];
+export const LISTING_GIT_CONFIG: readonly string[] = [...UNTRUSTED_GIT_CONFIG, ...NO_FETCH, '-c', `core.hooksPath=${noHooksPath()}`];
 
 // A git listing in `dir`, read whole: what claude-trust and tracked-packages
 // use to see what a folder holds before it's trusted. Throws as
@@ -134,8 +135,9 @@ function settable(key: string): string {
 
 // The -c settings for `entries` (a repo's config as git reads it): see above.
 export function repoProofConfig(entries: readonly ConfigEntry[], network?: 'bundle' | 'remote'): string[] {
-  const out: string[] = [...UNTRUSTED_GIT_CONFIG, '-c', 'core.hooksPath=/dev/null', ...ALWAYS, ...protocols(network === 'remote' ? ['https', 'ssh', 'file'] : network === 'bundle' ? ['file'] : [])];
+  const out: string[] = [...UNTRUSTED_GIT_CONFIG, '-c', `core.hooksPath=${noHooksPath()}`, ...ALWAYS, ...protocols(network === 'remote' ? ['https', 'ssh', 'file'] : network === 'bundle' ? ['file'] : [])];
   const drivers = new Set<string>();
+  const hooks = new Set<string>();
   const allowed = network === 'remote' ? ['https', 'ssh', 'file'] : network === 'bundle' ? ['file'] : [];
   for (const e of entries) {
     // A protocol the repo names beats protocol.allow too (ftp, a helper's
@@ -146,7 +148,15 @@ export function repoProofConfig(entries: readonly ConfigEntry[], network?: 'bund
     if (f) drivers.add(`filter.${f[1]}`);
     const d = /^diff\.(.+)\.(command|textconv)$/.exec(e.key);
     if (d) out.push('-c', `${settable(`diff.${d[1]}.${d[2]}`)}=`);
+    // A hook named in config (git 2.54's hook.<name>.command and .event)
+    // runs whatever core.hooksPath says: update-ref ran a repo's
+    // reference-transaction one (Codex's review, 18 Nov 2026).
+    // Any name: empty ([hook ""]) and with line separators too, which `.`
+    // skips (Codex's third review). One -c can't carry fails closed (settable).
+    const h = /^hook\.([\s\S]*)\.[^.]+$/.exec(e.key);
+    if (h) hooks.add(h[1]!);
   }
+  for (const h of hooks) out.push('-c', `${settable(`hook.${h}.enabled`)}=false`);
   for (const d of drivers) out.push('-c', `${settable(`${d}.clean`)}=`, '-c', `${d}.smudge=`, '-c', `${d}.process=`, '-c', `${d}.required=false`);
   if (network === 'remote') {
     const fromRepo = (match: (k: string) => boolean) => entries.some((e) => match(e.key) && !TRUSTED_SCOPES.has(e.scope));

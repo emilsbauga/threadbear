@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import { isCliFor } from './stuck-jobs.ts';
+import { IS_WINDOWS } from './platform.ts';
 
 // A CLI frozen on something only a person can answer (docs/protocol.md,
 // "Frozen CLIs"). On 31 Oct 2026 a phone thread went to Bruce, its command
@@ -69,13 +70,18 @@ export class FrozenClis {
   private sweeping = false;
   private watches = new Map<string, Watch>();
 
+  // Windows has no ps, sandbox-exec or sample to look at a CLI with, so
+  // without a probe of its own there is nothing to do there: it never arms.
+  private readonly off: boolean;
+
   constructor(deps: Deps) {
     this.deps = deps;
+    this.off = IS_WINDOWS && !deps.probe;
     this.probe = deps.probe ?? realProbe();
   }
 
   start(): void {
-    this.arm();
+    if (!this.off) this.arm();
   }
 
   stop(): void {
@@ -90,7 +96,7 @@ export class FrozenClis {
   }
 
   async sweep(): Promise<void> {
-    if (this.sweeping) return;
+    if (this.off || this.sweeping) return;
     this.sweeping = true;
     try {
       await this.look();

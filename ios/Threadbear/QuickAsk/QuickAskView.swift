@@ -308,6 +308,15 @@ struct QuickAskSettingsSection: View {
     @Environment(QuickAskModel.self) private var quick
     @State private var tokenDraft = ""
     @State private var showingAbout = false
+    @State private var scanning = false
+    /// What the scanner read, looked at once its sheet has gone, so the alert
+    /// isn't put up while the sheet is still leaving.
+    @State private var scanned: String?
+    /// A setup code waiting for a yes: every one is asked about, the first included.
+    @State private var confirming: QuickAskSetup?
+    /// Trading the code for a token: the buttons wait, with a spinner.
+    @State private var claiming = false
+    @State private var problem: (title: String, message: String)?
 
     var body: some View {
         @Bindable var settings = quick.settings
@@ -318,6 +327,26 @@ struct QuickAskSettingsSection: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onSubmit { quick.settingsChanged() }
+            // The server's setup code (`npm run phone-token -- issue --bruce --qr` for
+            // Agent Archive): read by this scanner only, never the Camera, and traded
+            // once for the token (QuickAskSetup).
+            Button {
+                scanning = true
+            } label: {
+                if claiming {
+                    HStack { ProgressView(); Text("Setting up Ask…") }
+                } else {
+                    Label("Scan the code", systemImage: "qrcode.viewfinder")
+                }
+            }
+            .disabled(claiming)
+            Button("Paste a setup code") {
+                let pasted = UIPasteboard.general.string ?? ""
+                // Taken off the clipboard once read, where any app could read it too.
+                if pasted.contains(QuickAskSetup.textPrefix) { UIPasteboard.general.items = [] }
+                take(pasted)
+            }
+            .disabled(claiming)
             SecureField(settings.hasToken ? "Token saved" : "Token", text: $tokenDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -347,6 +376,32 @@ struct QuickAskSettingsSection: View {
                     .accessibilityLabel("About Ask")
             }
         }
+        .fullScreenCover(isPresented: $scanning, onDismiss: {
+            if let code = scanned { take(code) }
+            scanned = nil
+        }) {
+            // A setup code ends the scan, and so does an old Quick Ask link, to say
+            // why it isn't taken; any other code in view is ignored.
+            ScanSheet(accept: { $0.hasPrefix(QuickAskSetup.textPrefix) || $0.lowercased().hasPrefix("threadbear://quickask") }) { code in
+                scanned = code
+            }
+        }
+        .alert(confirming.map { "Use Quick Ask on \($0.hostName)?" } ?? "",
+               isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+               presenting: confirming) { setup in
+            Button("Use \(setup.hostName)") {
+                confirming = nil
+                claim(setup)
+            }
+            Button("Cancel", role: .cancel) { confirming = nil }
+        } message: { setup in
+            Text(setup.confirmMessage(current: settings.baseURL))
+        }
+        .alert(problem?.title ?? "", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+            Button("OK", role: .cancel) { problem = nil }
+        } message: {
+            Text(problem?.message ?? "")
+        }
         .alert("Ask", isPresented: $showingAbout) {
             // There's no public server yet (Mike's is Agent Archive), so this is how anyone else gets one.
             Button("How to set one up") {
@@ -356,5 +411,51 @@ struct QuickAskSettingsSection: View {
         } message: {
             Text("Press the Action button (set it to Threadbear's Ask shortcut), say a question, and hear the answer from your own Ask server. Each answer is kept as a thread on your Mac, so you can carry on there.")
         }
+    }
+
+    /// A scanned or pasted code: a setup code is asked about, anything else says why not.
+    private func take(_ raw: String) {
+        switch QuickAskSetup.parse(raw) {
+        case .success(let setup): confirming = setup
+        case .failure(.link): problem = ("Threadbear doesn't take Quick Ask links", QuickAskSetup.linkRefusal)
+        case .failure(.unusable): problem = ("This code can't be used", "It isn't a whole Quick Ask setup code, or its server isn't a secure (https) address. Nothing was changed.")
+        case .failure(.notQuickAsk): problem = ("That isn't a Quick Ask setup code", "Make one on your Ask server and scan it here. Nothing was changed.")
+        }
+    }
+
+    /// Trades the code for the token, once, then keeps both. Nothing on the phone changes
+    /// on a failure, but the server may have taken the code (and retired the old token)
+    /// before the answer was lost, so a failure says to make a new code.
+    private func claim(_ setup: QuickAskSetup) {
+        guard let request = setup.claimRequest() else { return }
+        claiming = true
+        Task {
+            defer { claiming = false }
+            let session = URLSession(configuration: .ephemeral, delegate: NoRedirects(), delegateQueue: nil)
+            defer { session.finishTasksAndInvalidate() }
+            do {
+                let (data, response) = try await session.data(for: request)
+                let http = response as? HTTPURLResponse
+                switch setup.token(status: http?.statusCode ?? 0, body: data, answeredFrom: http?.url) {
+                case .success(let token):
+                    quick.settings.apply(setup, token: token)
+                    quick.settingsChanged()
+                case .failure(let failure):
+                    problem = ("Ask wasn't set up", "\(failure.message) Nothing on this phone was changed.")
+                }
+            } catch {
+                problem = ("Ask wasn't set up", "Couldn't hear back from \(setup.hostName) (\(error.localizedDescription)). Nothing on this phone was changed, but the server may have taken the code: if Ask stops working, make a new code and scan it.")
+            }
+        }
+    }
+}
+
+/// The claim goes to the code's own server and nowhere else: a redirect isn't followed.
+/// The completion-handler form, off the main actor: Swift 6.4's compiler crashes lowering
+/// the async form in this main-actor-by-default target.
+private nonisolated final class NoRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }

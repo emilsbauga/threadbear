@@ -14,6 +14,14 @@
 // reply, and a selection across the reply still takes the draft in, as its
 // plain text. The box's own words can be selected too (`DraftText`), with
 // the bar over them and ⌘C, as the Swift box's lines are the reply's text.
+//
+// Edit, beside Copy, turns the box's words into a text box (Mike, 18 Nov:
+// "could we make these boxes editable, and if I click Post and close it uses
+// what's in the box?"). What he changes stays on the box and goes on the end
+// of his next message to that thread, from its own box or a project page's
+// decision card, as a block of the same kind with a line asking the agent to
+// use his version (`unsent_edits`). The agent's words are never rewritten:
+// the change lives here, on this Mac, and Undo puts the agent's back.
 use crate::open_gate::{self, Origin};
 use crate::rows::metrics::CODE_PAD;
 use crate::style::{self, size};
@@ -24,15 +32,22 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use threadbear_core::draft_block::{self, DraftBlock, Line};
+use threadbear_core::draft_block::{self, DraftBlock, DraftKind, Line};
 
 /// The Copy button's tip (DraftBlockCell.tip), which scripts find it by.
 pub(crate) const COPY_TIP: &str = "Copy the draft, with its links and formatting";
+
+/// Edit's tip, and Done's and Undo's, which scripts find them by too.
+pub(crate) const EDIT_TIP: &str = "Change the draft. Your version goes with your next message, for the agent to use";
+pub(crate) const DONE_TIP: &str = "Finish changing the draft (⌘Return)";
+pub(crate) const UNDO_TIP: &str = "Put the agent's draft back";
 
 /// What the kit calls the box's nodes.
 const NODE: &str = "draft-box";
@@ -53,6 +68,8 @@ const BUBBLE_FOR: Duration = Duration::from_millis(1100);
 pub(crate) struct DraftBoxes {
     /// Whose thread it is, which decides where its links may open.
     pub(crate) origin: Origin,
+    /// The thread's id, which its changed drafts are kept under.
+    pub(crate) thread: String,
     pub(crate) cwd: String,
     /// The row it's in, so a script can find a box's Copy.
     pub(crate) row: String,
@@ -168,6 +185,155 @@ fn copy(draft: &DraftBlock, window: &mut Window, cx: &mut App) {
     .detach();
 }
 
+// ---------------------------------------------------------------- Edit
+
+/// A draft Mike has opened to change. Its text box is where his version
+/// lives, kept while it's closed too, so an update's restart waits for a
+/// change not yet sent (unsent.rs).
+struct Edit {
+    thread: String,
+    kind: DraftKind,
+    /// The agent's words, to tell a change from none and to put back.
+    original: String,
+    editor: Entity<TextareaState>,
+    /// The text box is showing (Edit pressed, Done not yet).
+    editing: bool,
+    /// What last went with a message, so the same change isn't sent twice.
+    sent: Option<String>,
+    _keys: Subscription,
+}
+
+impl Edit {
+    fn text(&self, cx: &App) -> String {
+        self.editor.read(cx).value().trim_end().to_owned()
+    }
+
+    /// His version, when it differs from the agent's and isn't empty.
+    fn changed(&self, cx: &App) -> Option<String> {
+        let text = self.text(cx);
+        (!text.trim().is_empty() && text != self.original).then_some(text)
+    }
+}
+
+thread_local! {
+    /// Changed drafts by "<thread>/<row>-<where in the reply>". GPUI draws
+    /// on the main thread only, so they're kept there.
+    static EDITS: RefCell<HashMap<String, Edit>> = RefCell::new(HashMap::new());
+}
+
+fn edit_key(thread: &str, base: &str) -> String {
+    format!("{thread}/{base}")
+}
+
+/// Edit: the box's words become a text box with the agent's draft (or his
+/// version from before) in it, the cursor at the end.
+fn start_edit(key: String, thread: String, draft: &DraftBlock, window: &mut Window, cx: &mut App) {
+    let open = EDITS.with(|e| {
+        let mut edits = e.borrow_mut();
+        edits.get_mut(&key).map(|edit| {
+            edit.editing = true;
+            edit.editor.clone()
+        })
+    });
+    let editor = match open {
+        Some(editor) => editor,
+        None => {
+            let source = draft.source.clone();
+            let editor = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 30).default_value(source));
+            crate::unsent::watch_in(&editor, "a reply's draft box", Some(thread.clone()), cx);
+            // ⌘Return is Done, as it saves a project's notes. Return is a new line.
+            let done_key = key.clone();
+            let keys = cx.subscribe(&editor, move |_, event: &InputEvent, cx| {
+                if let InputEvent::PressEnter { secondary: true, .. } = event {
+                    finish_edit(&done_key, cx);
+                }
+            });
+            let edit = Edit { thread, kind: draft.kind, original: draft.source.clone(), editor: editor.clone(), editing: true, sent: None, _keys: keys };
+            EDITS.with(|e| e.borrow_mut().insert(key, edit));
+            editor
+        }
+    };
+    editor.update(cx, |s, cx| s.focus(window, cx));
+    crate::web_panels::keyboard_to_app(window);
+    window.refresh();
+}
+
+/// Done: back to the box's words, his version drawn as it'll go out. A
+/// change that came to nothing (the agent's words again, or none) is
+/// dropped, so the box is the agent's again.
+fn finish_edit(key: &str, cx: &mut App) {
+    let dropped = EDITS.with(|e| {
+        let mut edits = e.borrow_mut();
+        let Some(edit) = edits.get_mut(key) else { return None };
+        edit.editing = false;
+        if edit.changed(cx).is_none() {
+            return edits.remove(key);
+        }
+        None
+    });
+    drop(dropped);
+    cx.refresh_windows();
+}
+
+/// Undo: the agent's draft back, his version gone.
+fn undo_edit(key: &str, cx: &mut App) {
+    let dropped = EDITS.with(|e| e.borrow_mut().remove(key));
+    drop(dropped);
+    cx.refresh_windows();
+}
+
+/// What goes on the end of Mike's next message to `thread`: his changed
+/// drafts not sent yet, each as a block of its kind after a line asking the
+/// agent to use them (draft_block::edited_message). Empty when there are
+/// none. One still open in its text box counts: what's typed is what he
+/// sees.
+pub(crate) fn unsent_edits(thread: &str, cx: &App) -> String {
+    let edits = EDITS.with(|e| {
+        let edits = e.borrow();
+        let mut mine: Vec<(&String, &Edit)> = edits.iter().filter(|(_, edit)| edit.thread == thread).collect();
+        mine.sort_by(|a, b| a.0.cmp(b.0));
+        mine.into_iter()
+            .filter_map(|(_, edit)| edit.changed(cx).filter(|text| edit.sent.as_ref() != Some(text)).map(|text| (edit.kind, text)))
+            .collect::<Vec<_>>()
+    });
+    draft_block::edited_message(&edits)
+}
+
+/// The message with `thread`'s changed drafts has gone: each is marked as
+/// sent (it stays on its box, as what the agent was given) and its text box
+/// closes.
+pub(crate) fn note_edits_sent(thread: &str, cx: &mut App) {
+    let editors = EDITS.with(|e| {
+        let mut edits = e.borrow_mut();
+        let mut editors = Vec::new();
+        for edit in edits.values_mut().filter(|edit| edit.thread == thread) {
+            if let Some(text) = edit.changed(cx) {
+                edit.sent = Some(text);
+                edit.editing = false;
+                editors.push(edit.editor.clone());
+            }
+        }
+        editors
+    });
+    // Sent, so an update's restart needn't wait for them now.
+    for editor in &editors {
+        crate::unsent::saved(editor, cx);
+    }
+    if !editors.is_empty() {
+        cx.refresh_windows();
+    }
+}
+
+/// How a box stands: its text box when it's open, and his version when
+/// it's changed.
+fn edit_state(key: &str, cx: &App) -> (Option<Entity<TextareaState>>, Option<String>) {
+    EDITS.with(|e| {
+        let edits = e.borrow();
+        let Some(edit) = edits.get(key) else { return (None, None) };
+        (edit.editing.then(|| edit.editor.clone()), edit.changed(cx))
+    })
+}
+
 // ---------------------------------------------------------------- the box
 
 /// NSColor.systemGreen, for Copied and the bubble's tick.
@@ -181,15 +347,28 @@ fn system_green(cx: &App) -> Hsla {
 
 /// The box (MarkdownRenderer.draftBlock): its label and Copy, a line across
 /// it, then the draft's lines, in a rounded box like a code block's.
-fn draft_box(draft: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut Window, cx: &mut App) -> AnyElement {
+fn draft_box(original: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut Window, cx: &mut App) -> AnyElement {
     let (fill, edge, secondary) = (style::code_background(cx), style::card_border(cx), style::secondary_label(cx));
     let base = format!("{}-{at}", plugin.row);
+    let key = edit_key(&plugin.thread, &base);
+    let (editor, changed) = edit_state(&key, cx);
+    // His version when he's changed it: drawn, copied and selected as the
+    // agent's would be.
+    let shown = changed.as_ref().map_or_else(|| original.clone(), |text| DraftBlock { kind: original.kind, source: text.clone() });
+    let draft = &shown;
+    let label = if changed.is_some() { format!("{} · edited", draft.label()) } else { draft.label().to_owned() };
+    let buttons = h_flex()
+        .items_center()
+        .gap(px(10.))
+        .when(changed.is_some() && editor.is_none(), |row| row.child(undo_button(&key, &base, cx)))
+        .child(edit_button(&key, &plugin.thread, original, editor.is_some(), &base, cx))
+        .child(copy_button(draft, &base, window, cx));
     let header = h_flex()
         .h(px(HEADER))
         .items_center()
         .justify_between()
-        .child(div().text_size(px(size::DETAIL)).line_height(px(HEADER)).font_weight(FontWeight::MEDIUM).text_color(secondary).child(draft.label()))
-        .child(copy_button(draft, &base, window, cx));
+        .child(div().text_size(px(size::DETAIL)).line_height(px(HEADER)).font_weight(FontWeight::MEDIUM).text_color(secondary).child(label))
+        .child(buttons);
     let lines = draft.drawn_lines();
     // The line under the header, across the box: half a point, one pixel on
     // a Retina screen; on a 1x one, where half a pixel comes to nothing, a
@@ -199,8 +378,9 @@ fn draft_box(draft: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut Wi
     let rule_color = if retina { edge } else { edge.opacity(0.5) };
     // Its own selection, and somewhere for the keys to go once a drag starts
     // in its words, so ⌘C copies them (the thread pane's copy, selection_bar.rs).
+    // Keyed by the words too, so his version gets a selection of its own.
     let selection = window
-        .use_keyed_state(ElementId::Name(format!("draft-selection-{base}").into()), cx, |_, cx| {
+        .use_keyed_state(ElementId::Name(format!("draft-selection-{base}-{}", self::key(&draft.source)).into()), cx, |_, cx| {
             let handle = TextSelectionHandle::new(draft.plain_text(), cx);
             let focus = cx.focus_handle();
             let keys = focus.clone();
@@ -221,8 +401,18 @@ fn draft_box(draft: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut Wi
         .pt(px(OVER_LINES) - rule)
         .pb(px(CODE_PAD))
         .text_size(px(size::BODY))
-        .line_height(px(size::BODY_LINE))
-        .child(DraftText::new(format!("draft-text-{base}"), &lines, plugin, selection.handle.clone(), cx));
+        .line_height(px(size::BODY_LINE));
+    let body = match editor {
+        // The draft as it's written (Slack's *bold*, <url|label>), to change.
+        Some(editor) => body.child(
+            div()
+                .id(ElementId::Name(format!("draft-editor-{base}").into()))
+                // A press here is the text box's, not a selection in the reply.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(crate::composer::bare_textarea(Textarea::new(&editor)).text_size(px(size::BODY)).line_height(px(size::BODY_LINE))),
+        ),
+        None => body.child(DraftText::new(format!("draft-text-{base}"), &lines, plugin, selection.handle.clone(), cx)),
+    };
     div()
         .track_focus(&selection.focus)
         .w_full()
@@ -501,6 +691,43 @@ fn copy_button(draft: &DraftBlock, base: &str, window: &mut Window, cx: &App) ->
     crate::highlights::tipped(button, COPY_TIP).into_any_element()
 }
 
+/// A word button in the header (Edit, Done, Undo), its icon then its word,
+/// as Copy is.
+fn header_button(id: String, icon: &str, word: &'static str, color: Hsla) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .role(Role::Button)
+        .flex_none()
+        .h(px(20.))
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .child(div().w(px(14.)).flex().justify_center().child(crate::icons::symbol(icon).size(px(11.)).text_color(color)))
+        .child(div().ml(px(4.)).text_size(px(size::DETAIL)).line_height(px(20.)).text_color(color).child(word))
+        // Not the start of a selection in the reply around it.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// Edit, or Done while the text box is open (in the accent colour, as the
+/// thing to press next).
+fn edit_button(key: &str, thread: &str, original: &DraftBlock, editing: bool, base: &str, cx: &App) -> AnyElement {
+    let key = key.to_owned();
+    if editing {
+        let button = header_button(format!("draft-done-{base}"), "checkmark", "Done", style::accent(cx)).on_click(move |_, _, cx| finish_edit(&key, cx));
+        return crate::highlights::tipped(button, DONE_TIP).into_any_element();
+    }
+    let (thread, original) = (thread.to_owned(), original.clone());
+    let button = header_button(format!("draft-edit-{base}"), "pencil", "Edit", style::secondary_label(cx)).on_click(move |_, window, cx| start_edit(key.clone(), thread.clone(), &original, window, cx));
+    crate::highlights::tipped(button, EDIT_TIP).into_any_element()
+}
+
+/// Undo, on a changed draft: the agent's words back.
+fn undo_button(key: &str, base: &str, cx: &App) -> AnyElement {
+    let key = key.to_owned();
+    let button = header_button(format!("draft-undo-{base}"), "arrow.uturn.backward", "Undo", style::secondary_label(cx)).on_click(move |_, _, cx| undo_edit(&key, cx));
+    crate::highlights::tipped(button, UNDO_TIP).into_any_element()
+}
+
 /// The little "Copied to clipboard" bubble with a green tick that pops up
 /// over Copy (CopiedBubble.swift): the button changing alone was easy to
 /// miss (Mike, 7 Nov). It rises a little as it appears, waits and fades.
@@ -551,7 +778,7 @@ fn ease_out_cubic(t: f32) -> f32 {
 /// label, its lines as drawn, its formatted pieces, and what Copy says. Found
 /// with the same parser and the same check the box is drawn by.
 #[cfg(feature = "automation")]
-pub(crate) fn dump(text: &str, thread: &str) -> Option<serde_json::Value> {
+pub(crate) fn dump(text: &str, thread: &str, row: &str, cx: &App) -> Option<serde_json::Value> {
     use serde_json::json;
     if !DraftBlock::may_hold(text) {
         return None;
@@ -560,9 +787,16 @@ pub(crate) fn dump(text: &str, thread: &str) -> Option<serde_json::Value> {
     let root = markdown::to_mdast(&source, &markdown::ParseOptions::gfm()).ok()?;
     let mut drafts = Vec::new();
     collect(&root, &source, &mut drafts);
+    // A changed draft shows his version, found by its row and the agent's words.
+    let prefix = edit_key(thread, &format!("{row}-"));
     let shown: Vec<serde_json::Value> = drafts
         .iter()
-        .map(|draft| {
+        .map(|original| {
+            let (changed, editing) = EDITS.with(|e| {
+                let edits = e.borrow();
+                edits.iter().find(|(k, edit)| k.starts_with(&prefix) && edit.original == original.source).map_or((None, false), |(_, edit)| (edit.changed(cx), edit.editing))
+            });
+            let draft = changed.as_ref().map_or_else(|| original.clone(), |text| DraftBlock { kind: original.kind, source: text.clone() });
             let lines = draft.drawn_lines();
             let copy = if copied(&draft.source).is_some_and(|(since, _)| since < COPIED_FOR) { "Copied" } else { "Copy" };
             json!({
@@ -570,6 +804,8 @@ pub(crate) fn dump(text: &str, thread: &str) -> Option<serde_json::Value> {
                 "lines": lines.iter().map(Line::shown).collect::<Vec<_>>(),
                 "styled": lines.iter().flat_map(|l| l.spans.iter().filter_map(draft_block::Span::described)).collect::<Vec<_>>(),
                 "copy": copy,
+                "edited": changed.is_some(),
+                "editing": editing,
             })
         })
         .collect();
@@ -590,13 +826,16 @@ fn collect(node: &markdown::mdast::Node, source: &str, out: &mut Vec<DraftBlock>
 /// `{"cmd":"draft","row":<id>,"index":0,"copy":true}`: presses the row's
 /// `index`-th draft's Copy as a click on it would, through real pointer
 /// events and hit testing; without `copy`, how many drafts the row shows.
-/// With no `row`, the newest reply with a draft.
+/// With no `row`, the newest reply with a draft. `"edit":"<words>"` presses
+/// its Edit, puts the words in the text box as typing would leave them, and
+/// presses Done (not with `"done":false`); `"undo":true` presses its Undo.
 #[cfg(feature = "automation")]
 pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     use serde_json::json;
     use threadbear_core::reducer::RowContent;
     let prefix = cmd["row"].as_str().map(str::to_owned);
+    let thread_id = app.read(cx).pane.as_ref().map(|p| p.read(cx).summary.id.clone()).unwrap_or_default();
     let row = app
         .read(cx)
         .pane
@@ -605,7 +844,7 @@ pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json:
             let (rows, thread) = (p.read(cx).feed.model().rows(), &p.read(cx).summary.id);
             match &prefix {
                 Some(prefix) => rows.iter().find(|r| r.id.starts_with(prefix)),
-                None => rows.iter().rev().find(|r| matches!(&r.content, RowContent::Assistant(item) if dump(&item.text, thread).is_some())),
+                None => rows.iter().rev().find(|r| matches!(&r.content, RowContent::Assistant(item) if DraftBlock::may_hold(&item.text) && dump(&item.text, thread, &r.id, cx).is_some())),
             }
             .map(|r| r.id.clone())
         })
@@ -613,21 +852,51 @@ pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json:
     // On screen first, as a person would see it before pressing.
     app.update(cx, |t, cx| t.update_pane(cx, |p, cx| p.scroll_command(None, Some(&row), 40., cx)))??;
     window.render_frame(cx);
-    let mine = format!("draft-copy-{row}-");
-    let buttons: Vec<_> = window
-        .find_all_by_label(COPY_TIP)
-        .into_iter()
-        .filter(|e| e.visible() && e.path().iter().any(|id| matches!(id, ElementId::Name(name) if name.starts_with(&mine))))
-        .collect();
-    if cmd["copy"].as_bool() != Some(true) {
-        return Ok(json!(format!("ok {}", buttons.len())));
-    }
     let index = cmd["index"].as_u64().unwrap_or(0) as usize;
-    let Some(button) = buttons.get(index) else { return Err(format!("no draft {index} in {row}: it has {}", buttons.len())) };
-    let at = button.visible_bounds().center();
-    window.pointer_move(at, None, cx);
-    window.pointer_down(at, MouseButton::Left, cx);
-    window.pointer_up(at, MouseButton::Left, cx);
+    // The row's `index`-th button with this tip, pressed as a click would.
+    let press = |tip: &str, name: &str, window: &mut Window, cx: &mut App| -> Result<(), String> {
+        window.render_frame(cx);
+        let mine = format!("draft-{name}-{row}-");
+        let buttons: Vec<_> = window
+            .find_all_by_label(tip)
+            .into_iter()
+            .filter(|e| e.visible() && e.path().iter().any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine))))
+            .collect();
+        // Done and Undo show on one box at a time, so the first is the one.
+        let Some(button) = buttons.get(if name == "copy" || name == "edit" { index } else { 0 }) else { return Err(format!("no {name} on draft {index} in {row}: {} found", buttons.len())) };
+        let at = button.visible_bounds().center();
+        window.pointer_move(at, None, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+        window.render_frame(cx);
+        Ok(())
+    };
+    if let Some(words) = cmd["edit"].as_str() {
+        press(EDIT_TIP, "edit", window, cx)?;
+        let key_prefix = edit_key(&thread_id, &format!("{row}-"));
+        let editor = EDITS.with(|e| e.borrow().iter().find(|(k, edit)| k.starts_with(&key_prefix) && edit.editing).map(|(_, edit)| edit.editor.clone()));
+        let editor = editor.ok_or("Edit didn't open a text box")?;
+        // Focused by the press, as a person would find it.
+        if !editor.read(cx).focus_handle(cx).is_focused(window) {
+            return Err("the text box isn't focused after Edit".to_owned());
+        }
+        let words = words.to_owned();
+        editor.update(cx, |s, cx| s.set_value(words, window, cx));
+        if cmd["done"].as_bool() != Some(false) {
+            press(DONE_TIP, "done", window, cx)?;
+        }
+        return Ok(json!("ok edited"));
+    }
+    if cmd["undo"].as_bool() == Some(true) {
+        press(UNDO_TIP, "undo", window, cx)?;
+        return Ok(json!("ok undone"));
+    }
+    if cmd["copy"].as_bool() != Some(true) {
+        let mine = format!("draft-copy-{row}-");
+        let count = window.find_all_by_label(COPY_TIP).into_iter().filter(|e| e.visible() && e.path().iter().any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine)))).count();
+        return Ok(json!(format!("ok {count}")));
+    }
+    press(COPY_TIP, "copy", window, cx)?;
     Ok(json!("ok copied"))
 }
 

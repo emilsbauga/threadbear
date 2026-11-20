@@ -67,6 +67,8 @@ const MIKE_MEANT = [
   /only Mike can fix/,
   /Made in Busselton by Mike/,
   /upstream remote \(Mike's repo\)/,
+  // The check-ups a fork offers to send him (checkup.ts).
+  /\bcheck-ups?\b/,
 ];
 
 function sourceFiles(dir: string, ext: string[]): string[] {
@@ -81,7 +83,7 @@ function sourceFiles(dir: string, ext: string[]): string[] {
 }
 
 test('strings shown or sent in a fork only name Mike where he is meant', () => {
-  const files = [...sourceFiles(path.join(REPO, 'runner/src'), ['.ts']), ...sourceFiles(path.join(REPO, 'app/Sources'), ['.swift'])].filter((f) => !/\/Automation[^/]*\.swift$/.test(f));
+  const files = [...sourceFiles(path.join(REPO, 'runner/src'), ['.ts']), ...sourceFiles(path.join(REPO, 'app/Sources'), ['.swift'])].filter((f) => !/\/Automation[^/]*\.swift$/.test(f.replace(/\\/g, '/')));
   const found: string[] = [];
   for (const file of files) {
     fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {

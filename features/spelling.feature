@@ -30,6 +30,41 @@ Feature: Spelling in the message box
     And I type " " in the composer
     Then the composer says "I saw the "
 
+  # Wayne's recording (17 Nov): the Mac's checker turned "threadbear" into
+  # "threadbare" every time it was typed.
+  @composer.spelling @swift-pending @windows-pending @linux-pending
+  Scenario: The app's own name is never corrected or marked
+    Given "Spelling and Grammar › Correct Spelling Automatically" is ticked in the composer's right-click menu
+    When I type "I use threadbear" in the composer
+    And I type " " in the composer
+    Then the composer says "I use threadbear "
+    And the composer marks nothing as misspelled
+
+  @composer.spelling @swift-pending @windows-pending @linux-pending
+  Scenario: A correction put back with Undo isn't made again
+    Given "Spelling and Grammar › Correct Spelling Automatically" is ticked in the composer's right-click menu
+    When I type "I saw teh" in the composer
+    And I type " " in the composer
+    Then the composer says "I saw the "
+    When I undo in the composer
+    Then the composer says "I saw teh "
+    When I type "teh" in the composer, replacing what's there
+    And I type " " in the composer
+    Then the composer says "teh "
+
+  # Its own word: one put back stays put back while the app runs, and the
+  # scenario before this one puts back "teh" in the same app.
+  @composer.spelling @swift-pending @windows-pending @linux-pending
+  Scenario: A correction typed back over isn't made again
+    Given "Spelling and Grammar › Correct Spelling Automatically" is ticked in the composer's right-click menu
+    When I type "we recieve" in the composer
+    And I type " " in the composer
+    Then the composer says "we receive "
+    When I press Backspace 5 times on the keyboard
+    And I type "ieve" in the composer
+    And I type " " in the composer
+    Then the composer says "we recieve "
+
   @composer.spelling @swift-pending @windows-pending @linux-pending
   Scenario: Transformations change the word the cursor is in
     When I type "make it loud" in the composer

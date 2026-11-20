@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { RunnerClient } from '../../src/client.ts';
+import { testLogin } from '../../src/test-login.ts';
 import { AppServerProcess, fallbackCodexPath } from '../../src/adapters/codex/appserver.ts';
 import { ProcessRegistry } from '../../src/proc.ts';
 import { nullLogger } from '../../src/log.ts';
@@ -453,7 +454,7 @@ describe('Codex threads end to end (real codex app-server)', { concurrency: fals
     await waitFor('the sleep starts', () => turnEvents(t.id, t.turnId).find((e) => e.type === 'tool.call' && /sleep 25/.test(e.title)));
     const codexId = summaries.get(t.id)?.nativeSessionId;
     if (codexId) codexIdsMovedAway.push(codexId);
-    await client.call('threads.update', { threadId: t.id, accountId: process.env.TB_E2E_ACCOUNT ?? 'claude-main', model: 'claude-haiku-5-5' });
+    await client.call('threads.update', { threadId: t.id, accountId: testLogin(), model: 'claude-haiku-5-5' });
     await waitFor('the switch note', () => turnEvents(t.id, t.turnId).find((e) => e.type === 'system.note' && /takes over from your next message/.test(e.text)), 10_000);
     const next = await send(t.id, 'Which shell command were you running just now? Reply with only the command.');
     assert.notEqual(next, t.turnId, 'not steered into the Codex turn');

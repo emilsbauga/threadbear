@@ -43,7 +43,7 @@ export const provision = internalMutation({
     const used = await ctx.db.query('intakeClients').withIndex('by_hash', q => q.eq('keyHash', keyHash)).unique();
     if (used && used.clientId !== clientId) throw new Error('Key hash already used by another client');
     const existing = await ctx.db.query('intakeClients').withIndex('by_client', q => q.eq('clientId', clientId)).unique();
-    if (existing) await ctx.db.patch(existing._id, { keyHash, revokedAt: undefined });
+    if (existing) await ctx.db.patch("intakeClients", existing._id, { keyHash, revokedAt: undefined });
     else await ctx.db.insert('intakeClients', { clientId, keyHash, createdAt: Date.now() });
     return null;
   },
@@ -53,7 +53,7 @@ export const revoke = internalMutation({
   args: { clientId: v.string() }, returns: v.null(),
   handler: async (ctx, { clientId }) => {
     const row = await ctx.db.query('intakeClients').withIndex('by_client', q => q.eq('clientId', clientId)).unique();
-    if (row) await ctx.db.patch(row._id, { revokedAt: Date.now() });
+    if (row) await ctx.db.patch("intakeClients", row._id, { revokedAt: Date.now() });
     return null;
   },
 });
@@ -88,7 +88,7 @@ export const accept = internalMutation({
     const count = c.hourStart === hourStart ? c.hourCount ?? 0 : 0;
     if (count >= 120) return failure(429, 'New-message allowance reached; retry next UTC hour');
     const id = await ctx.db.insert('intakeMessages', { clientId: c.clientId, messageId: m.messageId, message: m, state: 'received', receivedAt: now });
-    await ctx.db.patch(c._id, { hourStart, hourCount: count + 1 });
+    await ctx.db.patch("intakeClients", c._id, { hourStart, hourCount: count + 1 });
     return { status: 201, receipt: { receiptId: id, messageId: m.messageId, state: 'received', receivedAt: now } };
   },
 });

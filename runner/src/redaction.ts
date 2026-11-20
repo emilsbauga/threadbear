@@ -34,6 +34,9 @@ const SECRET_LAST_WORDS = new Set([
   "token",
   "dsn",
   "apikey",
+  // A virtual runner's sealed values (convex/boxes.ts): ciphertext, but only
+  // ever the backend's to hold.
+  "sealed",
 ]);
 const SECRET_KEY_QUALIFIERS = new Set([
   "private",
@@ -42,6 +45,10 @@ const SECRET_KEY_QUALIFIERS = new Set([
   "signing",
   "access",
   "encryption",
+  // threadKey (a thread's sealing key, or the runner's per-thread RPC key)
+  // and boxKey (a virtual runner's box key, convex/boxes.ts).
+  "thread",
+  "box",
 ]);
 
 export function nameHoldsSecret(name: string): boolean {
@@ -179,8 +186,12 @@ const secretRules: SecretRule[] = [
     ),
     replace: () => "[REDACTED PRIVATE KEY]",
   },
-  // Threadbear's own phone and browser tokens (convex/tokens.ts).
-  /(?<![A-Za-z0-9_])tbr?_[0-9a-f]{32,}(?![0-9a-f])/g,
+  // Threadbear's own phone and browser tokens, runner keys, box keys and
+  // boot tokens (convex/boxes.ts), one-use pairing and sign-in codes
+  // (convex/tokens.ts), and the pairing text the Mac's QR code holds, which
+  // has a code inside.
+  /(?<![A-Za-z0-9_])tb[rpbt]?_[0-9a-f]{32,}(?![0-9a-f])/g,
+  /(?<![A-Za-z0-9_])TB(?:PAIR|ASK)1_[A-Za-z0-9_-]{16,}/g,
   // Agent Archive device tokens.
   /(?<![A-Za-z0-9_])aa_[a-f0-9]{16}_[A-Za-z0-9_-]{32,}/g,
   // Convex deploy keys such as prod:name|token or preview:team:project|token.
@@ -260,32 +271,33 @@ const secretRules: SecretRule[] = [
 // a long text costs nothing, with a prefix that's clearly a credential's. Ones
 // that can start an ordinary name (hf_transfer, npm_registry) need a digit or
 // a length no name has.
+const CREDENTIAL_PREFIXES = [
+  String.raw`(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}`,
+  String.raw`(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{4,}`,
+  String.raw`gh[pousr]_[A-Za-z0-9]{8,}`,
+  String.raw`github_pat_[A-Za-z0-9_]{8,}`,
+  String.raw`xox[baprs]-[A-Za-z0-9-]{8,}`,
+  String.raw`xapp-[A-Za-z0-9-]{8,}`,
+  String.raw`AKIA[0-9A-Z]{8,}`,
+  String.raw`AIza[0-9A-Za-z_-]{8,}`,
+  String.raw`GOCSPX-[A-Za-z0-9_-]{8,}`,
+  String.raw`whsec_[A-Za-z0-9+/=]{8,}`,
+  String.raw`(?:npm|hf|secret|ntn)_(?:(?=[A-Za-z]*\d)[A-Za-z0-9]{8,}|[A-Za-z0-9]{20,})`,
+  String.raw`glpat-[A-Za-z0-9_-]{8,}`,
+  String.raw`lin_(?:api|oauth)_[A-Za-z0-9]{8,}`,
+  String.raw`sbp_[a-f0-9]{8,}`,
+  String.raw`dop_v1_[a-f0-9]{8,}`,
+  String.raw`shp(?:at|ss|ca|pa)_[a-fA-F0-9]{8,}`,
+  String.raw`pypi-[A-Za-z0-9_-]{8,}`,
+  String.raw`tb[rpbt]?_[0-9a-f]{8,}`,
+  String.raw`aa_[a-f0-9]{8,}(?:_[A-Za-z0-9_-]*)?`,
+  String.raw`\d{8,10}:AA[A-Za-z0-9_-]{4,}`,
+  String.raw`eyJ[A-Za-z0-9_.-]{8,}`,
+  String.raw`Bearer\s+[A-Za-z0-9._~+/=-]{8,}`,
+];
 const CUT_SHORT = new RegExp(
   String.raw`(?<![A-Za-z0-9_])(?:` +
-    [
-      String.raw`(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}`,
-      String.raw`(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{4,}`,
-      String.raw`gh[pousr]_[A-Za-z0-9]{8,}`,
-      String.raw`github_pat_[A-Za-z0-9_]{8,}`,
-      String.raw`xox[baprs]-[A-Za-z0-9-]{8,}`,
-      String.raw`xapp-[A-Za-z0-9-]{8,}`,
-      String.raw`AKIA[0-9A-Z]{8,}`,
-      String.raw`AIza[0-9A-Za-z_-]{8,}`,
-      String.raw`GOCSPX-[A-Za-z0-9_-]{8,}`,
-      String.raw`whsec_[A-Za-z0-9+/=]{8,}`,
-      String.raw`(?:npm|hf|secret|ntn)_(?:(?=[A-Za-z]*\d)[A-Za-z0-9]{8,}|[A-Za-z0-9]{20,})`,
-      String.raw`glpat-[A-Za-z0-9_-]{8,}`,
-      String.raw`lin_(?:api|oauth)_[A-Za-z0-9]{8,}`,
-      String.raw`sbp_[a-f0-9]{8,}`,
-      String.raw`dop_v1_[a-f0-9]{8,}`,
-      String.raw`shp(?:at|ss|ca|pa)_[a-fA-F0-9]{8,}`,
-      String.raw`pypi-[A-Za-z0-9_-]{8,}`,
-      String.raw`tbr?_[0-9a-f]{8,}`,
-      String.raw`aa_[a-f0-9]{8,}(?:_[A-Za-z0-9_-]*)?`,
-      String.raw`\d{8,10}:AA[A-Za-z0-9_-]{4,}`,
-      String.raw`eyJ[A-Za-z0-9_.-]{8,}`,
-      String.raw`Bearer\s+[A-Za-z0-9._~+/=-]{8,}`,
-    ].join("|") +
+    CREDENTIAL_PREFIXES.join("|") +
     // What a cut leaves after it: an ellipsis, or the mark on a long message.
     String.raw`)((?:…|\.\.\.|\n\n\[cut: [^\]\n]*\](?:\n\n\[\d+ pictures?\])?)?\s*)$`,
 );
@@ -351,6 +363,15 @@ const NOT_TEXT = new Set([
   "access",
 ]);
 
+// NOT_TEXT's fields are left as they are. Those that only tag a row (a
+// message's `turn`, which share:view hands to anyone with the link, a
+// picture's name, a claim's holder, a move's digest) and so name nothing
+// that's looked up, go whole if they hold something with a credential's
+// prefix: no real tag starts like one. The ids, folders and `key` a row is
+// found by stay, as changing them would lose the row.
+const CREDENTIAL_SHAPED = new RegExp(String.raw`(?<![A-Za-z0-9_])(?:` + CREDENTIAL_PREFIXES.join("|") + ")");
+const TAGS = new Set(["turn", "picture", "holder", "expect"]);
+
 // Nothing the rules or a known value could match is shorter than this.
 const SHORTEST = 8;
 
@@ -406,7 +427,10 @@ export function scrubDoc<T>(
         }
         continue;
       }
-      if (NOT_TEXT.has(k) || k.endsWith("At")) continue;
+      if (NOT_TEXT.has(k) || k.endsWith("At")) {
+        if (typeof item === "string" && item.length >= SHORTEST && TAGS.has(k) && CREDENTIAL_SHAPED.test(item)) (out ??= { ...(v as Record<string, unknown>) })[k] = REDACTED;
+        continue;
+      }
       const next = walk(item);
       if (next !== item) (out ??= { ...(v as Record<string, unknown>) })[k] = next;
     }

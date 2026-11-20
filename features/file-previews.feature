@@ -14,6 +14,23 @@ Feature: Files opened in the side pane
     When I press Back in the pane
     Then the pane shows Highlights
 
+  # The runner restarts onto main several times a day, and the pane reads
+  # every file through it. A link Mike clicked on an ask's card during one
+  # (17 Nov) left the pane saying "Not connected" for good, which looked like
+  # the link doing nothing. GPUI's only, as the Swift app is frozen. On
+  # Windows the app reads this machine's files itself (main.rs `call`), not
+  # through the runner, so nothing waits there and the picture just opens:
+  # its failure picture on CI showed it open. Gone for 10 seconds, so a
+  # slow machine still clicks before the runner's back.
+  @file.host @swift-pending
+  Scenario: A file clicked while the runner restarts opens once it's back
+    When I open the thread "Rebuild the three landing pages"
+    And the runner restarts and is gone for 10 seconds
+    And the app has lost the runner
+    And I click the highlight "pricing-before.png"
+    Then the pane's note reads "Waiting for the runner. This opens once it's back." on a Mac or Linux
+    And the pane shows a picture
+
   # The Swift app is frozen (AGENTS.md, "The GPUI port"), so this is GPUI's only.
   @file.restore @swift-pending
   Scenario: A file open in the pane is open again after a relaunch, until Back closes it

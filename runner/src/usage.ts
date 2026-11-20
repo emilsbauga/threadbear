@@ -6,16 +6,17 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Account, AccountUsage, Provider, UsageWindow, UsageWindowKind } from './protocol.ts';
+import type { Account, AccountUsage, Provider, UsageResets, UsageWindow, UsageWindowKind } from './protocol.ts';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
+import { realPathSync } from './platform.ts';
 import type { UsageHistory } from './usage-history.ts';
 
 // blockedUntil (ms) says when a block ends when no window does: the runner
 // marks a login blocked when a turn hits its limit (pools, runner.ts) and
 // the reading didn't already say so.
-export type UsageReading = { windows: UsageWindow[]; blocked?: boolean; blockedUntil?: number; email?: string; plan?: string };
+export type UsageReading = { windows: UsageWindow[]; blocked?: boolean; blockedUntil?: number; email?: string; plan?: string; resets?: UsageResets };
 
 // Another runner's reading of one of its logins, from the backend's
 // accounts table (sync.ts). A subscription is one limit wherever it's
@@ -79,7 +80,7 @@ export function samePathKey(p: string): string {
   const known = realpaths.get(abs);
   if (known) return known;
   try {
-    const real = fs.realpathSync(abs);
+    const real = realPathSync(abs);
     if (realpaths.size > 200) realpaths.clear();
     realpaths.set(abs, real);
     return real;
@@ -150,6 +151,7 @@ type LiveAccount = {
   blockedUntil?: number; // a block ends when the windows that caused it reset
   email?: string;
   plan?: string;
+  resets?: UsageResets; // Codex: the resets its latest read said were left
 };
 type UsageFile = { version: 1; accounts: Record<string, LiveAccount> };
 
@@ -255,6 +257,7 @@ export class UsageStore {
     }
     if (reading.email) next.email = reading.email;
     if (reading.plan) next.plan = reading.plan;
+    if (reading.resets) next.resets = reading.resets;
     this.live.set(accountId, next);
     this.persist();
     this.changed(false, [accountId]);
@@ -355,6 +358,10 @@ export class UsageStore {
     if (base && this.baseline && now - this.baseline.generatedAt > STALE_MS && !(live && now - live.at <= STALE_MS) && !(shared && now - shared.at <= STALE_MS)) usage.stale = true;
     if (blocked) usage.blocked = true;
     if (base?.notice) usage.notice = base.notice;
+    // A reset that has expired since the read can't be counted on: the
+    // count is left out until the next read rather than offered wrongly.
+    const resets = live?.resets;
+    if (resets && !(resets.nextExpiresAt && Date.parse(resets.nextExpiresAt) <= now)) usage.resets = resets;
     return usage;
   }
 
@@ -491,6 +498,7 @@ function afterReset(w: UsageWindow, now: number): UsageWindow {
 function sameUsage(a: AccountUsage | undefined, b: AccountUsage | undefined, exact: boolean): boolean {
   if (!a || !b) return a === b;
   if (!!a.blocked !== !!b.blocked || !!a.stale !== !!b.stale || a.notice !== b.notice) return false;
+  if (a.resets?.available !== b.resets?.available || a.resets?.nextExpiresAt !== b.resets?.nextExpiresAt) return false;
   if (a.windows.length !== b.windows.length) return false;
   return a.windows.every((w, i) => {
     const v = b.windows[i];
@@ -564,7 +572,7 @@ export function accountRoom(account: Account): number | undefined {
 
 // Which account a new thread starts on when none is named: the one with the
 // most room, among the last-used account's provider so a Claude habit stays
-// on Claude. Skips blocked accounts, ones under MIN_ROOM_PERCENT, and ones with a note
+// on Claude. Skips blocked, signed-out and plan-ended accounts, ones under MIN_ROOM_PERCENT, and ones with a note
 // (a login noted "Work only" is kept for that work).
 // A tie, or a last-used account with no usage known, stays on the last-used
 // one; so does a list where every candidate is skipped. The app's
@@ -573,7 +581,7 @@ export function accountRoom(account: Account): number | undefined {
 export function pickAccount(accounts: Account[], lastUsedId: string | undefined): string | undefined {
   const last = accounts.find((a) => a.id === lastUsedId);
   const provider = last?.provider ?? accounts[0]?.provider;
-  const eligible = accounts.filter((a) => a.provider === provider && !a.note && !a.usage?.blocked);
+  const eligible = accounts.filter((a) => a.provider === provider && !a.note && !a.usage?.blocked && !a.signedOut && !a.planEnded);
   // Nothing is known about the last-used account, so nothing says another
   // has more room.
   if (last && eligible.includes(last) && accountRoom(last) === undefined) return last.id;
@@ -583,5 +591,9 @@ export function pickAccount(accounts: Account[], lastUsedId: string | undefined)
     if (room === undefined || room < MIN_ROOM_PERCENT) continue;
     if (!best || room > best.room || (room === best.room && a.id === last?.id)) best = { id: a.id, room };
   }
-  return best?.id ?? last?.id;
+  if (best) return best.id;
+  // A last-used login whose plan has ended never comes back by waiting, so
+  // any other candidate beats it (Grok's review, 16 Nov).
+  if (last?.planEnded) return eligible[0]?.id ?? last.id;
+  return last?.id;
 }

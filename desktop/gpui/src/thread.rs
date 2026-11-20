@@ -50,6 +50,13 @@ pub(crate) struct LoadTiming {
     /// one, unless a reconnect or Try again read it again. Switching back to a
     /// kept thread makes none (app.rs, `kept`).
     reads: u32,
+    /// No transcript was showing when this read started, so Mike was looking
+    /// at the spinner for it, rather than at rows a reload replaces.
+    cold: bool,
+    /// Why opening the thread had to read it (app.rs `open`): `new`, not
+    /// opened since the app started, or `evicted`, pushed out of the kept
+    /// ones (pane_cache.rs); and how many were kept then.
+    pub(crate) why: Option<(&'static str, usize)>,
 }
 
 impl LoadTiming {
@@ -168,7 +175,146 @@ fn outbox(thread_id: &str) -> Vec<PendingMessage> {
     OUTBOX.with(|o| o.borrow().get(thread_id).cloned().unwrap_or_default())
 }
 
+thread_local! {
+    /// Goes up whenever any thread's outbox changes, so the sidebar's
+    /// sections, which sort a thread with a message on its way under Running
+    /// (`sending`), are worked out again.
+    static OUTBOX_CHANGES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times the outbox has changed, for the sidebar's cache.
+pub(crate) fn outbox_changes() -> u64 {
+    OUTBOX_CHANGES.with(|c| c.get())
+}
+
+/// The threads with a message the runner hasn't taken yet (the spinner by
+/// its bubble), or has taken without a summary since (`AWAITING`): the
+/// sidebar has them under Running rather than in the Inbox
+/// (`inbox::as_sending`). A queued one is left out: the runner has it, and
+/// its summary says what the thread is doing. That also bounds the guess to
+/// the send's own call, whose task marks it queued or takes it out whether
+/// or not a pane is open, so no bubble left behind keeps a thread in Running.
+pub(crate) fn sending() -> Vec<String> {
+    let mut ids: Vec<String> = OUTBOX.with(|o| o.borrow().iter().filter(|(_, list)| list.iter().any(|m| !m.queued)).map(|(id, _)| id.clone()).collect());
+    AWAITING.with(|a| ids.extend(a.borrow().keys().filter(|id| !ids.contains(id)).cloned().collect::<Vec<_>>()));
+    ids
+}
+
+thread_local! {
+    /// Threads the runner has just taken a message for, by the hold's own
+    /// number, until its next summary of them (`summary_arrived`). The
+    /// runner sends the message's `user.message` first and the summary
+    /// saying its turn has started just after, later on a busy Mac or from
+    /// another runner; until then its summary still has the last turn's
+    /// "needs you". Ending the guess as the bubble went put the thread back
+    /// in the Inbox for that moment, and out again a second later (18 Nov).
+    /// Any summary after the message is the runner's word, whatever it
+    /// says: one that failed at once goes straight back to the Inbox.
+    static AWAITING: std::cell::RefCell<HashMap<String, u64>> = std::cell::RefCell::new(HashMap::new());
+    /// Numbers each hold, so a hold's grace only ends that one.
+    static HOLDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many summaries of each thread have come, so a send can tell
+    /// whether one has since its click (`taken`).
+    static SUMMARIES: std::cell::RefCell<HashMap<String, u64>> = std::cell::RefCell::new(HashMap::new());
+    /// Each message on its way, by its pending id: `SUMMARIES` for its
+    /// thread when it was sent.
+    static SENT_AT: std::cell::RefCell<HashMap<String, u64>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Notes a message as sent now, for `taken`.
+fn note_sent(thread_id: &str, pending_id: &str) {
+    let at = summaries_of(thread_id);
+    SENT_AT.with(|s| s.borrow_mut().insert(pending_id.to_owned(), at));
+}
+
+/// This Mac's runner has shown a message on its way: it sends the summary
+/// that goes with it after the event, so only one from now on counts as its
+/// word on the send. One between the click and here (opening the thread
+/// marked it seen, say) is older news (Codex's review, 18 Nov). Another
+/// runner's summary can beat its transcript here, so theirs keep the click.
+fn shown_here(thread_id: &str, pending_id: &str) {
+    let now = summaries_of(thread_id);
+    SENT_AT.with(|s| {
+        if let Some(at) = s.borrow_mut().get_mut(pending_id) {
+            *at = now;
+        }
+    });
+}
+
+/// The runner has taken a message on its way (shown, by any path, or
+/// queued): whether the thread should stay under Running until its next
+/// summary. Only if none has come since the click: one that has is the
+/// runner's word already (a turn that failed at once, or asked something,
+/// from another runner whose summary can beat its transcript here), and
+/// holding past it would hide a thread that needs Mike.
+fn taken(thread_id: &str, pending_id: &str) -> bool {
+    SENT_AT.with(|s| s.borrow_mut().remove(pending_id)).is_some_and(|at| at == summaries_of(thread_id))
+}
+
+/// How long a taken message holds its thread under Running if no summary
+/// comes (a dropped connection, another runner that's gone quiet): the
+/// guess never outlives this.
+const HOLD_GRACE: Duration = Duration::from_secs(5);
+
+/// The runner said something new about a thread (`thread.updated`, or a
+/// changed row in this Mac's list or another runner's): what it says now
+/// goes, and a message it took no longer holds the thread under Running.
+pub(crate) fn summary_arrived(thread_id: &str) {
+    SUMMARIES.with(|s| *s.borrow_mut().entry(thread_id.to_owned()).or_default() += 1);
+    if AWAITING.with(|a| a.borrow_mut().remove(thread_id).is_some()) {
+        OUTBOX_CHANGES.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// How many summaries of a thread have come so far.
+fn summaries_of(thread_id: &str) -> u64 {
+    SUMMARIES.with(|s| s.borrow().get(thread_id).copied().unwrap_or(0))
+}
+
+/// Holds a thread under Running until the runner's next summary of it, or
+/// `HOLD_GRACE`, whichever comes first. Returns the hold's number.
+fn hold(thread_id: &str) -> u64 {
+    let n = HOLDS.with(|h| {
+        h.set(h.get() + 1);
+        h.get()
+    });
+    AWAITING.with(|a| a.borrow_mut().insert(thread_id.to_owned(), n));
+    OUTBOX_CHANGES.with(|c| c.set(c.get() + 1));
+    n
+}
+
+/// Ends hold `n` on a thread if it's still that one: true if it did.
+fn let_go(thread_id: &str, n: u64) -> bool {
+    let gone = AWAITING.with(|a| {
+        let mut a = a.borrow_mut();
+        let ours = a.get(thread_id) == Some(&n);
+        if ours {
+            a.remove(thread_id);
+        }
+        ours
+    });
+    if gone {
+        OUTBOX_CHANGES.with(|c| c.set(c.get() + 1));
+    }
+    gone
+}
+
+/// `hold`, with its grace run out by a task of the app's own, so a pane
+/// closed meanwhile doesn't leave the thread under Running.
+fn hold_for_summary(thread_id: &str, app: WeakEntity<crate::app::Threadbear>, cx: &App) {
+    let n = hold(thread_id);
+    let id = thread_id.to_owned();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(HOLD_GRACE).await;
+        if let_go(&id, n) {
+            app.update(cx, |_, cx| cx.notify()).ok();
+        }
+    })
+    .detach();
+}
+
 fn set_outbox(thread_id: &str, list: Vec<PendingMessage>) {
+    OUTBOX_CHANGES.with(|c| c.set(c.get() + 1));
     OUTBOX.with(|o| {
         let mut o = o.borrow_mut();
         if list.is_empty() {
@@ -203,6 +349,13 @@ pub(crate) fn held_drafts(thread_id: &str) -> Vec<crate::composer::RestoreDraft>
             crate::composer::RestoreDraft::plain(text, images)
         })
         .collect()
+}
+
+/// A message of the thread's on its way to the runner and not answered yet:
+/// a refusal would put its words back in a box a restart had already saved.
+pub(crate) fn sending_now(thread_id: &str) -> bool {
+    use std::sync::atomic::Ordering;
+    OUTBOX_DRAFTS.with(|d| d.borrow().values().any(|(t, _, held)| t == thread_id && !held.load(Ordering::SeqCst)))
 }
 
 /// How a send got on, as the connection's task reports it.
@@ -262,7 +415,10 @@ pub struct ThreadPane {
     /// when it's next shown (`shown_again`).
     stale: bool,
     /// The zoom when it was kept (`set_kept`).
-    kept_zoom: Option<u32>,
+    kept_zoom: Option<u64>,
+    /// Its last messages' PRs are still to be read ahead, waiting for the
+    /// reply streaming in to be whole (`preload_recent_prs`).
+    prs_to_preload: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -300,6 +456,7 @@ impl ThreadPane {
             timing: LoadTiming::default(),
             stale: false,
             kept_zoom: None,
+            prs_to_preload: false,
             entering: Default::default(),
             _subs: vec![scrolled],
         };
@@ -345,6 +502,7 @@ impl ThreadPane {
             timing: LoadTiming::default(),
             stale: false,
             kept_zoom: None,
+            prs_to_preload: false,
             entering: Default::default(),
             _subs: vec![],
         };
@@ -558,7 +716,7 @@ impl ThreadPane {
         let client = self.client.clone();
         let id = self.summary.id.clone();
         let root = self.summary.cwd.clone();
-        self.timing = LoadTiming { started: Some(std::time::Instant::now()), reads: self.timing.reads + 1, ..Default::default() };
+        self.timing = LoadTiming { started: Some(std::time::Instant::now()), reads: self.timing.reads + 1, cold: !self.loaded, ..Default::default() };
         cx.spawn(async move |this, cx| {
             let v = match call(client.clone(), "threads.events", json!({ "threadId": id, "limit": EVENTS_PAGE })).await {
                 Ok(v) => v,
@@ -574,6 +732,7 @@ impl ThreadPane {
                         } else {
                             this.load_failed = Some(e.message);
                         }
+                        threadbear_client::log::write("switch", &format!("id={} from=read failed after_ms={:.0} up_s={}", short_id(&this.summary.id), this.timing.since(), crate::app_log::uptime_s()));
                         cx.notify();
                     })
                     .ok();
@@ -607,18 +766,21 @@ impl ThreadPane {
                     // What's still on its way stays at the end, less what this
                     // page shows arrived (a reload after a restart brings them).
                     let _ = this.feed.set_pending(outbox(&this.summary.id));
-                    this.keep_outbox();
+                    this.keep_outbox(cx);
                     // Another runner's thread through this Mac's runner has
                     // gaps in its seqs (`feed.sparse = viaRelay`).
                     this.feed.set_sparse(this.summary.runner_id.is_some());
                     this.feed.begin_subscribe();
                     this.loaded = true;
                     this.load_failed = None;
+                    // A reload that worked puts right the one that didn't.
+                    this.error = None;
                     this.loading_older = false;
                     this.older_skip = None;
                     this.scroller.update(cx, |s, cx| s.reset(this.feed.model().rows().len(), cx));
                     this.restore_memory(memory, cx);
                     this.mark_seen();
+                    this.prs_to_preload = !this.preload_recent_prs(cx);
                     // Paging older rows in is driven by the view reaching the
                     // top, and a first page shorter than the view can't.
                     this.load_older_if_near_top(cx);
@@ -641,6 +803,9 @@ impl ThreadPane {
             let sub = call(client, "threads.subscribe", params).await;
             this.update(cx, |this, cx| match sub.ok().and_then(|v| EventsPage::decode(&v)) {
                 Some(page) => {
+                    // Read and subscribed again: up to date, whatever an
+                    // earlier try left (`shows_old_turn`).
+                    this.stale = false;
                     let action = this.feed.finish_subscribe(page.events, &page.in_progress);
                     this.handle(action, cx);
                 }
@@ -661,7 +826,7 @@ impl ThreadPane {
     /// measured at, so its rows are measured again if that's changed.
     pub(crate) fn set_kept(&mut self, cx: &mut Context<Self>) {
         self.behind = true;
-        self.kept_zoom = Some(crate::style::zoom_percent());
+        self.kept_zoom = Some(crate::style::layout_key());
         // Older pages paged in while it was read go, as Swift's sessions
         // do once hidden: it's kept for coming back to the end of it, and
         // they're read again if it's scrolled up to them.
@@ -685,6 +850,18 @@ impl ThreadPane {
         trim
     }
 
+    /// Its transcript is from before the connection last went, and the
+    /// thread's summary says the turn it shows running has ended: what it
+    /// shows is old, so its working line says it's catching up rather than
+    /// counting on. A kept thread opened while the runner was restarting
+    /// still showed "Bear with me" ticking from a transcript 30 minutes old,
+    /// a turn that had ended 2 minutes before, while the sidebar rightly had
+    /// it in the Inbox (19 Nov).
+    /// Catching up counts too: what it shows is old till that lands.
+    pub(crate) fn shows_old_turn(&self) -> bool {
+        (self.stale || self.feed.is_catching_up()) && !self.summary.busy()
+    }
+
     /// The connection's back while this pane is kept and not shown: it
     /// catches up when it's next shown, rather than every kept thread asking
     /// at once while a restarted runner is busiest.
@@ -699,7 +876,7 @@ impl ThreadPane {
         self.behind = false;
         // Rows are measured in points: a zoom since it was last shown
         // (shell.rs only remeasures the panes on show).
-        if self.kept_zoom.take().is_some_and(|z| z != crate::style::zoom_percent()) {
+        if self.kept_zoom.take().is_some_and(|z| z != crate::style::layout_key()) {
             self.remeasure_rows(cx);
         }
         // Behind since the connection came back, or its first read failed
@@ -710,6 +887,56 @@ impl ThreadPane {
         self.mark_seen();
         // What's on its way to it as the outbox has it now.
         self.show_outbox(cx);
+        if self.loaded {
+            self.prs_to_preload = !self.preload_recent_prs(cx);
+        }
+    }
+
+    /// With the inlinePrs experiment, reads ahead the PRs its last few
+    /// messages link to, as the thread shows and as a turn ends: those are
+    /// the ones likely to be clicked, and a read takes a second or more
+    /// (Mike, 19 Nov). Each is read once while the app runs, from the
+    /// cache's copy if an earlier run kept one (pr_view.rs `preload_pr`).
+    /// A reply still streaming in could hold half a link, so nothing is
+    /// read while one is (false: `apply` tries again until it's whole).
+    /// After the update it's
+    /// called in: showing a kept pane again is inside the app's own, and
+    /// reading the app there panics.
+    fn preload_recent_prs(&self, cx: &mut Context<Self>) -> bool {
+        use threadbear_core::pull_requests as prs;
+        if self.subagent_id.is_some() {
+            return true;
+        }
+        let recent: Vec<(&str, bool)> = self
+            .feed
+            .model()
+            .rows()
+            .iter()
+            .rev()
+            .filter_map(|row| match &row.content {
+                RowContent::Assistant(item) => Some((item.text.as_str(), item.is_streaming)),
+                RowContent::User(message) => Some((message.text.as_str(), false)),
+                _ => None,
+            })
+            .take(prs::RECENT_MESSAGES)
+            .collect();
+        if recent.iter().any(|(_, streaming)| *streaming) {
+            return false;
+        }
+        let urls = prs::recent_pr_links(recent.into_iter().map(|(text, _)| text), prs::RECENT_PRS);
+        if urls.is_empty() {
+            return true;
+        }
+        let app = self.app.clone();
+        cx.defer(move |cx| {
+            let Some(app) = app.upgrade() else { return };
+            if !crate::pr_view::on(app.read(cx)) {
+                return;
+            }
+            let side = app.read(cx).side.clone();
+            side.update(cx, |side, cx| urls.iter().for_each(|url| side.preload_pr(url, cx)));
+        });
+        true
     }
 
     /// What happened while it wasn't subscribed, from the last seq it has
@@ -747,6 +974,7 @@ impl ThreadPane {
             let sub = call(client, "threads.subscribe", params).await;
             this.update(cx, |this, cx| match sub.ok().and_then(|v| EventsPage::decode(&v)) {
                 Some(page) => {
+                    this.stale = false;
                     crate::reply_buttons::fold(&page.events, &this.summary.id);
                     let action = this.feed.finish_subscribe(page.events, &page.in_progress);
                     this.handle(action, cx);
@@ -859,6 +1087,11 @@ impl ThreadPane {
             if crate::reply_buttons::fold(std::slice::from_ref(&event), &self.summary.id) {
                 cx.notify();
             }
+            if self.subagent_id.is_none() && self.summary.runner_id.is_none() {
+                for m in outbox(&self.summary.id).iter().filter(|m| !m.queued && m.is_landed_by(&event)) {
+                    shown_here(&self.summary.id, &m.id);
+                }
+            }
             let action = self.feed.receive(event);
             self.handle(action, cx);
         }
@@ -925,9 +1158,16 @@ impl ThreadPane {
     /// list holds the view on the row at its top (or follows the tail) across
     /// all of it, which is what `apply` in TranscriptController did by hand.
     pub(crate) fn apply(&mut self, change: TranscriptChange, cx: &mut Context<Self>) {
-        self.keep_outbox();
+        self.keep_outbox(cx);
         if change.is_empty() {
             return;
+        }
+        // A turn's footer: it's over, its reply whole. The runner's word
+        // that it's idle can come before the reply's row, so not that.
+        // Only the thread on show: a kept one's turns end unwatched.
+        let turn_ended = self.kept_zoom.is_none() && change.inserted.iter().any(|&i| matches!(self.feed.model().rows().get(i).map(|r| &r.content), Some(RowContent::Footer(_))));
+        if self.prs_to_preload || turn_ended {
+            self.prs_to_preload = !self.preload_recent_prs(cx);
         }
         // Kept and not shown (`set_kept`): a busy thread's events don't
         // pile up in it while nobody's looking.
@@ -954,10 +1194,20 @@ impl ThreadPane {
 
     /// What the model shows as on its way, kept in the outbox, so it
     /// outlives this pane. A sub-agent's pane never sends.
-    fn keep_outbox(&self) {
-        if self.subagent_id.is_none() {
-            set_outbox(&self.summary.id, self.feed.model().pending().to_vec());
+    fn keep_outbox(&self, cx: &mut Context<Self>) {
+        if self.subagent_id.is_some() {
+            return;
         }
+        let id = &self.summary.id;
+        let list = self.feed.model().pending().to_vec();
+        // Gone from the model's list: shown, whether live, in a catch-up or
+        // in a reload (a failed send leaves the outbox before the pane hears).
+        let shown: Vec<String> = outbox(id).into_iter().filter(|m| !m.queued && !list.iter().any(|n| n.id == m.id)).map(|m| m.id).collect();
+        let hold = shown.iter().fold(false, |hold, pending_id| taken(id, pending_id) || hold);
+        if hold {
+            hold_for_summary(id, self.app.clone(), cx);
+        }
+        set_outbox(id, list);
     }
 
     /// The outbox's messages for this thread on show again, after a send's
@@ -986,6 +1236,9 @@ impl ThreadPane {
     /// restarts, it waits in the transcript for the new one ("Runner
     /// restarting. Sends when it's back."). `draft` is what to give back.
     pub(crate) fn send_message(&mut self, text: String, images: Vec<ImageRef>, answers: Value, draft: Option<crate::composer::RestoreDraft>, composer: WeakEntity<Composer>, cx: &mut Context<Self>) {
+        // Sending moves on from whatever went wrong before; a send that
+        // fails says so again.
+        self.error = None;
         // By count, never its words (activity.rs).
         crate::activity::sent(Some(&self.summary.id), images.len(), answers.as_object().map(|a| a.len()).or_else(|| answers.as_array().map(Vec::len)).unwrap_or(0), false);
         let thread_id = self.summary.id.clone();
@@ -1028,6 +1281,9 @@ impl ThreadPane {
             OUTBOX_DRAFTS.with(|d| d.borrow_mut().insert(pending_id.clone(), (thread_id.clone(), draft.clone(), held.clone())));
         }
         self.show_outbox(cx);
+        // The sidebar watches the app, not this pane: it moves the thread out
+        // of the Inbox now (`thread::sending`).
+        self.app.update(cx, |_, cx| cx.notify()).ok();
         self.scroller.update(cx, |s, cx| s.scroll_to_end(cx));
 
         // The runner it's shown on (null for this Mac's), so this Mac's
@@ -1048,6 +1304,9 @@ impl ThreadPane {
             let _ = told.unbounded_send(SendStep::Progress(p));
         });
         let probe = message.clone();
+        // Whether the runner says anything about the thread before it takes
+        // the message (`taken`).
+        note_sent(&thread_id, &pending_id);
         let resend = Resend { thread_id: thread_id.clone(), after_seq: message.after_seq, was_idle, landed: Arc::new(move |v: &Value| Event::decode(v).is_some_and(|e| probe.is_landed_by(&e))) };
         let client = self.client.clone();
         // Its place among this runner's requests, from the click (`Place`).
@@ -1082,7 +1341,17 @@ impl ThreadPane {
             }
             // Gone or taken: no longer one to keep through a quit.
             OUTBOX_DRAFTS.with(|d| d.borrow_mut().remove(&pending_id));
+            // Already shown in the transcript, as the runner echoed it: it
+            // went, whatever became of the answer (a stalled runner's that
+            // came too late, a lookup that failed after it, a connection
+            // that closed after it arrived).
+            let shown = !outbox(&thread_id).iter().any(|m| m.id == pending_id);
+            if shown && res.as_ref().is_err_and(|e| matches!(e.code, threadbear_client::runner::TIMED_OUT | threadbear_client::runner::CLOSED)) {
+                SENT_AT.with(|s| s.borrow_mut().remove(&pending_id));
+                return;
+            }
             if let Err(e) = res {
+                SENT_AT.with(|s| s.borrow_mut().remove(&pending_id));
                 // Off the end of the transcript and back in the box, and the
                 // error bar says so, naming the thread, until it's dismissed.
                 let id = pending_id.clone();
@@ -1098,6 +1367,15 @@ impl ThreadPane {
             // user.message usually comes just before this answer, so wait a
             // moment rather than flash the clock on every send (`markQueued`).
             cx.background_executor().timer(Duration::from_millis(600)).await;
+            // Taken with no word from the runner since the click (another
+            // runner's mirror can lag): it's queued now, which ends the
+            // guess, so it holds the thread under Running until the summary
+            // comes, as a shown one does (`AWAITING`).
+            let unshown = outbox(&thread_id).iter().any(|m| m.id == pending_id && !m.queued);
+            if unshown && taken(&thread_id, &pending_id) {
+                let app = app.clone();
+                cx.update(|cx| hold_for_summary(&thread_id, app, cx));
+            }
             change_outbox(&app, &thread_id, cx, move |list| {
                 if let Some(m) = list.iter_mut().find(|m| m.id == pending_id) {
                     m.queued = true;
@@ -1171,6 +1449,32 @@ impl ThreadPane {
     pub(crate) fn show_error(&mut self, message: String, cx: &mut Context<Self>) {
         self.error = Some(message);
         cx.notify();
+    }
+
+    /// The error line over the transcript, with a Dismiss. It used to be
+    /// bare words that only went when some later card button's request
+    /// happened to work, so a failed picture ("Couldn't add that picture:
+    /// Not connected to the runner", 17 Nov) sat there for good.
+    fn render_error_line(&self, error: String, danger: Hsla, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+        use crate::sidebar::tipped;
+        use gpui_kit::base::TestSupportExt as _;
+        gpui_kit::component::h_flex()
+            .flex_none()
+            .px_7()
+            .py_1()
+            .gap(px(8.))
+            .items_center()
+            .text_sm()
+            .child(div().flex_1().min_w_0().text_color(danger).child(error))
+            .child(
+                tipped!(div().flex_none().cursor_pointer().px(px(6.)).py(px(2.)).rounded(px(5.)).text_color(muted).hover(|s| s.underline()), "thread-error-dismiss", "Hide this message")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.error = None;
+                        cx.notify();
+                    }))
+                    .child("Dismiss"),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn request(&mut self, method: &'static str, params: Value, cx: &mut Context<Self>) {
@@ -1418,7 +1722,7 @@ impl ThreadPane {
                 self.scroller.update(cx, |s, cx| s.scroll_to_row(index, px(offset), cx));
             }
         }
-        self.keep_outbox();
+        self.keep_outbox(cx);
         self.loading_older = false;
         cx.notify();
         if let Some(memory) = self.rows.pending_restore.take() {
@@ -1545,6 +1849,34 @@ impl ThreadPane {
     }
 }
 
+impl ThreadPane {
+    /// One line in the app's log per read, once its rows are on screen:
+    /// how long it kept Mike waiting and where the time went, which
+    /// desktop/scripts/switch-stats.mjs adds up. Only the installed app writes
+    /// the file (app_log.rs). Mike, 16 Nov, seeing more spinners switching
+    /// threads, and nothing had recorded how long they lasted.
+    fn log_read(&self) {
+        let t = &self.timing;
+        let from = if t.cold { "read" } else { "refresh" };
+        let why = t.why.map_or(String::new(), |(why, kept)| format!(" why={why} kept={kept}"));
+        let remote = if self.summary.runner_id.is_some() { " remote" } else { "" };
+        threadbear_client::log::write(
+            "switch",
+            &format!(
+                "id={} from={from}{why}{remote} waited_ms={:.0} request_ms={:.0} kb={} decode_ms={:.0} fold_ms={:.0} rows={} up_s={}",
+                short_id(&self.summary.id),
+                t.painted_ms.unwrap_or(0.),
+                t.request_ms,
+                t.bytes / 1024,
+                t.decode_ms,
+                t.fold_ms,
+                self.feed.model().rows().len(),
+                crate::app_log::uptime_s(),
+            ),
+        );
+    }
+}
+
 #[cfg(feature = "automation")]
 impl ThreadPane {
     /// The rows as the Swift app's dump gives them, with their heights once
@@ -1578,12 +1910,18 @@ impl ThreadPane {
                 if matches!(row.content, RowContent::Group(_) | RowContent::Tool(_) | RowContent::Reasoning(_)) || row.kind() == threadbear_core::reducer::RowKind::Diff {
                     out["expanded"] = json!(self.row_open(row));
                 }
+                // A review folds only with answered findings to tuck away.
+                if let RowContent::LabReview(review) = &row.content {
+                    if review.folds() {
+                        out["expanded"] = json!(self.row_open(row));
+                    }
+                }
                 #[cfg(feature = "automation")]
                 if let RowContent::Assistant(item) = &row.content {
                     if let Some(labels) = crate::reply_buttons::dump_labels(&item.text, &self.summary.id) {
                         out["buttons"] = json!(labels);
                     }
-                    if let Some(drafts) = crate::draft_boxes::dump(&item.text, &self.summary.id) {
+                    if let Some(drafts) = crate::draft_boxes::dump(&item.text, &self.summary.id, &row.id, cx) {
                         out["drafts"] = drafts;
                     }
                     // Its ```mermaid and ```html boxes (rich_boxes.rs).
@@ -1593,9 +1931,29 @@ impl ThreadPane {
                     if let Some(blocks) = crate::shell_blocks::dump_lines(&item.text, &self.summary.id, cx) {
                         out["shellBlocks"] = json!(blocks);
                     }
+                    // The live marks before its links to other threads.
+                    if let Some(app) = self.composer.read(cx).app.upgrade() {
+                        if let Some(marks) = crate::thread_link_marks::dump(&item.text, app.read(cx)) {
+                            out["linkMarks"] = json!(marks);
+                        }
+                        // And the state marks before its links to PRs (pr_view.rs).
+                        if let Some(marks) = crate::pr_view::dump_marks(&item.text, app.read(cx), cx) {
+                            out["prMarks"] = json!(marks);
+                        }
+                        if let Some(read) = crate::pr_view::dump_read(&item.text, app.read(cx), cx) {
+                            out["prsRead"] = json!(read);
+                        }
+                    }
                 }
                 if let Some(chips) = crate::chips::row_chips(self, row, cx) {
                     out["chips"] = json!(chips);
+                }
+                // The web addresses Mike's bubble draws as links (`bubble_words`).
+                if let RowContent::User(message) = &row.content {
+                    let links = crate::chips::bubble_links(message);
+                    if !links.is_empty() {
+                        out["links"] = json!(links);
+                    }
                 }
                 out
             })
@@ -1722,11 +2080,17 @@ impl Render for ThreadPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The first frame drawn with its rows, for the read's timings: once
         // this frame is on screen.
-        if self.loaded && self.timing.started.is_some() && self.timing.painted_ms.is_none() {
+        // Its read done, not only rows showing: a reload under rows already
+        // shown would otherwise count the frame drawn as it started.
+        if self.loaded && self.timing.ready_ms.is_some() && self.timing.painted_ms.is_none() {
             self.timing.painted_ms = Some(-1.);
             let me = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
-                me.update(cx, |this, _| this.timing.painted_ms = Some(this.timing.since())).ok();
+                me.update(cx, |this, _| {
+                    this.timing.painted_ms = Some(this.timing.since());
+                    this.log_read();
+                })
+                .ok();
             });
         }
         let loading = !self.loaded && self.error.is_none() && self.load_failed.is_none();
@@ -1836,7 +2200,7 @@ impl Render for ThreadPane {
             // Whether the left button's down, so asking which link is under
             // the pointer never lands in a click (reply_links.rs).
             .child(crate::reply_links::watch())
-            .when_some(self.error.clone(), |s, e| s.child(div().px_7().py_1().text_sm().text_color(danger).child(e)))
+            .when_some(self.error.clone(), |s, e| s.child(self.render_error_line(e, danger, muted, cx)))
             // Which thread started it, above the transcript (nested threads).
             .children(self.render_started_strip(cx))
             .map(|s| match self.load_failed.clone() {
@@ -1886,6 +2250,67 @@ fn change_outbox(app: &WeakEntity<crate::app::Threadbear>, thread_id: &str, cx: 
         pane.update(cx, |p, cx| p.show_outbox(cx));
     }
     // A held message is in the drafts file while it's held, and out of it
-    // once it's gone or come back to the box (`held_drafts`).
-    app.update(cx, |app, cx| app.drafts_changed(cx)).ok();
+    // once it's gone or come back to the box (`held_drafts`). The sidebar
+    // redraws too: a thread whose send failed goes back to the Inbox.
+    app.update(cx, |app, cx| {
+        app.drafts_changed(cx);
+        cx.notify();
+    })
+    .ok();
+}
+
+/// A thread's id as the log names it: the first eight characters, as a
+/// `thread:` link or `tb show` takes it.
+pub(crate) fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::{hold, let_go, note_sent, sending, shown_here, summaries_of, summary_arrived, taken};
+
+    #[test]
+    fn on_this_macs_runner_only_a_summary_after_the_message_counts() {
+        // Opening the thread marked it seen, and that summary came after
+        // the click: older news than the message, which this runner shows
+        // before its own summary.
+        note_sent("t3", "p1");
+        summary_arrived("t3");
+        shown_here("t3", "p1");
+        assert!(taken("t3", "p1"));
+        // Nothing to move for a message that isn't on its way.
+        shown_here("t3", "p9");
+        assert!(!taken("t3", "p9"));
+    }
+
+    #[test]
+    fn a_message_taken_holds_only_if_the_runner_said_nothing_since_the_click() {
+        note_sent("t2", "p1");
+        assert!(taken("t2", "p1"));
+        // Once only: it's spoken for.
+        assert!(!taken("t2", "p1"));
+        // Another runner's "needs you" beat the message's own echo here:
+        // that's its word already, so no hold hides it.
+        note_sent("t2", "p2");
+        summary_arrived("t2");
+        assert!(!taken("t2", "p2"));
+        assert!(!taken("t2", "never-sent"));
+    }
+
+    #[test]
+    fn a_taken_message_holds_its_thread_until_the_next_summary() {
+        let n = hold("t1");
+        assert!(sending().contains(&"t1".to_string()));
+        // The runner's next word ends it, whatever it says.
+        let before = summaries_of("t1");
+        summary_arrived("t1");
+        assert_eq!(summaries_of("t1"), before + 1);
+        assert!(!sending().contains(&"t1".to_string()));
+        // An old hold's grace running out leaves a newer one be.
+        assert!(!let_go("t1", n));
+        let newer = hold("t1");
+        assert!(!let_go("t1", n));
+        assert!(let_go("t1", newer));
+        assert!(sending().is_empty());
+    }
 }

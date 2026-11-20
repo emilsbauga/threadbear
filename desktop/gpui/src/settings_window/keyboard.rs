@@ -199,11 +199,6 @@ impl SettingsWindow {
         problem
     }
 
-    /// A command whose experiment is off isn't listed (`ShortcutCommand::experiment`).
-    fn listed(&self, command: ShortcutCommand, cx: &App) -> bool {
-        command.experiment().is_none() || self.app.upgrade().is_some_and(|a| a.read(cx).open_anything_on())
-    }
-
     /// The whole page (`KeyboardSettings`): the search at the top, the
     /// groups scrolling under it, and the file's line and Reset All at the
     /// foot, which stay put.
@@ -213,7 +208,7 @@ impl SettingsWindow {
         let bindings = self.bindings(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
         for group in Group::ALL {
-            let commands: Vec<ShortcutCommand> = group.commands().into_iter().filter(|c| self.listed(*c, cx) && rules::matches(*c, &words, &bindings)).collect();
+            let commands: Vec<ShortcutCommand> = group.commands().into_iter().filter(|c| rules::matches(*c, &words, &bindings)).collect();
             if commands.is_empty() {
                 continue;
             }
@@ -409,7 +404,7 @@ impl SettingsWindow {
     pub(super) fn keyboard_dump(&self, cx: &App) -> Value {
         let bindings = self.bindings(cx);
         let words = self.search_text(cx);
-        let rows: Vec<String> = Group::ALL.iter().flat_map(|g| g.commands()).filter(|c| self.listed(*c, cx) && rules::matches(*c, &words, &bindings)).map(|c| rules::line(c, &bindings)).collect();
+        let rows: Vec<String> = Group::ALL.iter().flat_map(|g| g.commands()).filter(|c| rules::matches(*c, &words, &bindings)).map(|c| rules::line(c, &bindings)).collect();
         let recorder = &self.keyboard.recorder;
         let question = rules::question(&recorder.outcome).filter(|_| recorder.command.is_some());
         json!({

@@ -8,6 +8,16 @@ import { CrossRunner, askedHeader, fingerprint, folderHere, type CrossRunnerDeps
 import type { RunnerRequestRow } from '../../src/sync.ts';
 import { ErrorCode, RpcError } from '../../src/protocol.ts';
 import { notSent } from '../../src/relay.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { onlyOnWindows, skipOnWindows } from '../helpers/platform.ts';
+import { realPathSync } from '../../src/platform.ts';
+import { tmpDir } from '../helpers/fakes.ts';
+
+// These fake a Mac's disk as a set of POSIX path strings (/Users/m5-mike/...),
+// which path.resolve turns into drive-letter paths on Windows, where the same
+// mapping is tried against a real folder in the test below.
+const MAC_FOLDERS = skipOnWindows("They fake a Mac's folders as POSIX path strings; see the Windows test of folderHere below");
 
 const RUNNERS: RunnerRef[] = [
   { id: 'laptop', name: 'Laptop', self: true },
@@ -30,7 +40,7 @@ function realDirIn(dirs: Set<string>) {
 }
 const realDir = realDirIn(DIRS);
 
-function fake(opts: { owner: boolean; self?: { id: string; name: string }; failCreate?: Error; failThere?: unknown; failRespond?: Error; runners?: RunnerRef[]; beforeOpen?: () => void }) {
+function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: string; name: string }; failCreate?: Error; failThere?: unknown; failRespond?: Error; runners?: RunnerRef[]; beforeOpen?: () => void }) {
   const log: string[] = [];
   // This fake's own disk, so a test can make a folder appear.
   const dirs = new Set(DIRS);
@@ -59,7 +69,13 @@ function fake(opts: { owner: boolean; self?: { id: string; name: string }; failC
         const r = rows.get(p.requestId)!;
         // The claim names the row it read: one filed again under the id isn't it.
         if (r.docId !== p.docId) throw new Error('no such request');
-        rows.set(p.requestId, { ...r, state: p.state, ...(p.result ? { result: p.result } : {}) });
+        // As relay:decideRequest: the same claim asked again is told yes, any other move is checked.
+        if (p.state === 'claimed' && r.state === 'claimed' && p.claim !== undefined && r.claim === p.claim) return;
+        const from: Record<string, string[]> = { claimed: ['pending'], allowed: ['claimed'], pending: ['claimed'], denied: ['pending'] };
+        if (!from[p.state]!.includes(r.state)) throw Object.assign(new Error(`that request is ${r.state}`), { data: { kind: 'badArgs' } });
+        rows.set(p.requestId, { ...r, state: p.state, ...(p.result ? { result: p.result } : {}), claim: p.state === 'claimed' ? p.claim : undefined });
+        // The claim went through, but its answer never came back.
+        if (p.state === 'claimed' && opts.loseClaimAnswer && opts.loseClaimAnswer-- > 0) throw new Error('fetch failed');
         if (opts.failCreate && p.state === 'claimed') return;
       },
     }),
@@ -178,7 +194,7 @@ test("the first line the main Mac writes can't be broken out of by the asking ru
   assert.ok(!h.includes('/tmp/x'));
 });
 
-test('answering on the main Mac: starts exactly what was filed, with a header saying where it came from, then marks it and answers', async () => {
+test('answering on the main Mac: starts exactly what was filed, with a header saying where it came from, then marks it and answers', MAC_FOLDERS, async () => {
   const f = fake({ owner: true });
   f.rows.set('req-1', { docId: 'doc1', requestId: 'req-1', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'cloud-thread', target: 'main', text: 'Open both apps.', cwd: '~/code/threadbear', permissionMode: 'full', why: 'see both builds', createdAt: 1, state: 'pending' });
   f.setOpen('req-1');
@@ -265,7 +281,7 @@ test('on a runner key: Plan first is filed as Ask', async () => {
 // guess at the main Mac's home, which is /Users/m5-mike. Start it failed
 // with "Folder not found" and left the card open, with nothing Mike or the
 // agent could do about the folder.
-test("a request's folder: one guessed from another machine's home is read from this Mac's", () => {
+test("a request's folder: one guessed from another machine's home is read from this Mac's", MAC_FOLDERS, () => {
   const isDir = realDir;
   assert.equal(folderHere('/Users/alex/code/threadbear', HOME, isDir), `${HOME}/code/threadbear`);
   assert.equal(folderHere('/home/alex/code/threadbear', HOME, isDir), `${HOME}/code/threadbear`);
@@ -286,7 +302,7 @@ test("a request's folder: one guessed from another machine's home is read from t
   assert.equal(folderHere('relative/path', HOME, isDir), undefined);
 });
 
-test('answering on the main Mac: a folder guessed from another home shows and starts as the one here', async () => {
+test('answering on the main Mac: a folder guessed from another home shows and starts as the one here', MAC_FOLDERS, async () => {
   const f = fake({ owner: true });
   const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-10', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', cwd: '/Users/alex/code/threadbear', createdAt: 1, state: 'pending' };
   f.rows.set('req-10', row);
@@ -337,7 +353,7 @@ test("on a runner key: a no with a reason tells the agent why, not to stop askin
 
 // Codex review, 8 Nov 2026: what Start it uses is what the card showed. A
 // folder appearing between the two changes where it would start.
-test('answering on the main Mac: the folder the card showed is the one that starts, or nothing does', async () => {
+test('answering on the main Mac: the folder the card showed is the one that starts, or nothing does', MAC_FOLDERS, async () => {
   const f = fake({ owner: true });
   const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-13', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', cwd: '/Users/alex/code/threadbear', createdAt: 1, state: 'pending' };
   f.rows.set('req-13', row);
@@ -372,7 +388,7 @@ test("answering on the main Mac: a missing folder's reason that can't be sent le
 });
 
 // Codex's second round, 8 Nov 2026.
-test('answering on the main Mac: a link in a folder named exactly that moves after the card is read starts nothing', async () => {
+test('answering on the main Mac: a link in a folder named exactly that moves after the card is read starts nothing', MAC_FOLDERS, async () => {
   const links = LINKS.slice();
   const f = fake({ owner: true });
   const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-16', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', cwd: `${HOME}/alias/project`, createdAt: 1, state: 'pending' };
@@ -388,7 +404,7 @@ test('answering on the main Mac: a link in a folder named exactly that moves aft
   }
 });
 
-test("answering on the main Mac: Start it on another machine than the card's isn't refused for its folder", async () => {
+test("answering on the main Mac: Start it on another machine than the card's isn't refused for its folder", MAC_FOLDERS, async () => {
   const f = fake({ owner: true });
   const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-17', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'mac-mini', text: 'x', cwd: '/opt/work', createdAt: 1, state: 'pending' };
   f.rows.set('req-17', row);
@@ -397,4 +413,81 @@ test("answering on the main Mac: Start it on another machine than the card's isn
   assert.equal(got.target?.id, 'mini1');
   await f.cross.answer('c', 'req-17', true, 'laptop', got.fingerprint);
   assert.equal(JSON.parse(f.log[1]!.slice('here '.length)).cwd, '/opt/work');
+});
+
+test("on Windows a request's folder is read under this PC's home: a Mac's or Linux home guessed, and ~", onlyOnWindows('The tests above run the same mapping on POSIX path strings'), () => {
+  const home = realPathSync(tmpDir());
+  const project = path.join(home, 'dev', 'me', 'threadbear');
+  fs.mkdirSync(project, { recursive: true });
+  const isDir = (p: string): string | undefined => {
+    try {
+      return fs.statSync(p).isDirectory() ? realPathSync(p) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  assert.equal(folderHere('~/dev/me/threadbear', home, isDir), project);
+  assert.equal(folderHere('/Users/mike/dev/me/threadbear', home, isDir), project);
+  assert.equal(folderHere('/home/mike/dev/me/threadbear', home, isDir), project);
+  assert.equal(folderHere('~', home, isDir), home);
+  assert.equal(folderHere(project, home, isDir), project, 'one that is here is left as named');
+  assert.equal(folderHere('/Users/mike/dev/elsewhere', home, isDir), undefined, 'not here');
+  assert.equal(folderHere('/Users/mike/../../x', home, isDir), undefined, 'climbing out of the home');
+  assert.equal(folderHere('relative/path', home, isDir), undefined);
+});
+
+// A claim that went through but whose answer was lost left the request
+// "being started" for good, with nothing started (the state machines
+// survey, 17 Nov 2026). Start it again now carries on under the same claim.
+test('answering on the main Mac: a claim whose answer was lost starts on the next Start it, once', async () => {
+  const f = fake({ owner: true, loseClaimAnswer: 1 });
+  const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-lost', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
+  f.rows.set('req-lost', row);
+  f.setOpen('req-lost');
+  await assert.rejects(f.cross.answer('c', 'req-lost', true, undefined, fingerprint(row)), /fetch failed/);
+  assert.equal(f.rows.get('req-lost')!.state, 'claimed');
+  assert.ok(!f.log.some((l) => l.startsWith('here')), 'nothing started under the lost claim');
+  const claim = f.rows.get('req-lost')!.claim;
+  assert.ok(claim);
+  const out = await f.cross.answer('c', 'req-lost', true, undefined, fingerprint({ ...row, state: 'claimed', claim }));
+  assert.equal(out.thread?.id, 'new-here');
+  assert.equal(f.log.filter((l) => l.startsWith('here')).length, 1);
+  assert.equal(f.rows.get('req-lost')!.state, 'allowed');
+  // Once it went through, the claim isn't kept: a later click is refused, never a second start.
+  await assert.rejects(f.cross.answer('c', 'req-lost', true, undefined, fingerprint(row)), /already allowed/);
+  assert.equal(f.log.filter((l) => l.startsWith('here')).length, 1);
+});
+
+test("answering on the main Mac: a lost claim can still be declined, and another runner's claim can't be taken", async () => {
+  const f = fake({ owner: true, loseClaimAnswer: 1 });
+  const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-no', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
+  f.rows.set('req-no', row);
+  f.setOpen('req-no');
+  await assert.rejects(f.cross.answer('c', 'req-no', true, undefined, fingerprint(row)), /fetch failed/);
+  await f.cross.answer('c', 'req-no', false);
+  assert.equal(f.rows.get('req-no')!.state, 'denied');
+  // A claim this runner never made (another process, before a restart) is still "being started".
+  const g = fake({ owner: true });
+  g.rows.set('req-x', { ...row, requestId: 'req-x', state: 'claimed', claim: 'someone-elses-claim' });
+  g.setOpen('req-x');
+  await assert.rejects(g.cross.answer('c', 'req-x', true, undefined, fingerprint(row)), /being started/);
+});
+
+// Codex's review: two overlapping answers could each take a lost claim as
+// theirs (two threads), or a Don't hand back a claim a Start was using.
+test('answering on the main Mac: one answer to a request at a time, Start it or Don’t', async () => {
+  const f = fake({ owner: true, loseClaimAnswer: 1 });
+  const row: RunnerRequestRow = { docId: 'doc1', requestId: 'req-two', runnerId: 'cloud1', runnerName: 'Cloud box', threadId: 'c', target: 'main', text: 'x', createdAt: 1, state: 'pending' };
+  f.rows.set('req-two', row);
+  f.setOpen('req-two');
+  await assert.rejects(f.cross.answer('c', 'req-two', true, undefined, fingerprint(row)), /fetch failed/);
+  // A retry under way (it hasn't read the request yet), and another Start it and a Don't meanwhile.
+  const first = f.cross.answer('c', 'req-two', true, undefined, fingerprint(row));
+  await assert.rejects(f.cross.answer('c', 'req-two', true, undefined, fingerprint(row)), /already being answered/);
+  await assert.rejects(f.cross.answer('c', 'req-two', false), /already being answered/);
+  await first;
+  assert.equal(f.log.filter((l) => l.startsWith('here')).length, 1);
+  assert.equal(f.rows.get('req-two')!.state, 'allowed');
+  // Answered, it's free again: a later click is told it's allowed, not busy.
+  await assert.rejects(f.cross.answer('c', 'req-two', false), /already allowed/);
 });

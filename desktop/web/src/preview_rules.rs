@@ -31,6 +31,12 @@ pub const PREVIEW_DOMAIN: &str = "preview.threadbear.invalid";
 pub struct PreviewSite {
     pub site: Arc<Site>,
     pub scripts: bool,
+    /// A live page in the transcript (live_pages.rs, the livePages
+    /// experiment): its scripts run, and may start workers the page makes
+    /// itself (blob:), as three.js does to decode a model. A dedicated worker
+    /// has no DOM, clipboard or WebRTC, and its requests are the view's,
+    /// held to `connect-src 'self'` and `may_request` like the page's.
+    pub workers: bool,
     /// The view's own origin, `https://<token>.preview.threadbear.invalid`.
     pub origin: String,
 }
@@ -38,7 +44,12 @@ pub struct PreviewSite {
 impl PreviewSite {
     /// A fresh origin for `site`: each view gets its own.
     pub fn new(site: Arc<Site>, scripts: bool) -> PreviewSite {
-        PreviewSite { site, scripts, origin: format!("https://{}.{PREVIEW_DOMAIN}", token()) }
+        PreviewSite { site, scripts, workers: false, origin: format!("https://{}.{PREVIEW_DOMAIN}", token()) }
+    }
+
+    /// A live page: scripts on, with workers of its own making.
+    pub fn live(site: Arc<Site>) -> PreviewSite {
+        PreviewSite { workers: true, ..PreviewSite::new(site, true) }
     }
 
     /// The page's address.
@@ -49,13 +60,13 @@ impl PreviewSite {
 
 impl std::fmt::Debug for PreviewSite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreviewSite").field("page", &self.site.page).field("scripts", &self.scripts).field("origin", &self.origin).finish()
+        f.debug_struct("PreviewSite").field("page", &self.site.page).field("scripts", &self.scripts).field("workers", &self.workers).field("origin", &self.origin).finish()
     }
 }
 
 impl PartialEq for PreviewSite {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.site, &other.site) && self.scripts == other.scripts && self.origin == other.origin
+        Arc::ptr_eq(&self.site, &other.site) && self.scripts == other.scripts && self.workers == other.workers && self.origin == other.origin
     }
 }
 
@@ -95,10 +106,12 @@ pub fn encode_path(path: &str) -> String {
 /// mockups; everything else is the view's own origin, or data: and blob: made
 /// on the page. A page running its scripts gets frames of its own origin
 /// only, so a script can't make a data: or blob: frame to run in where the
-/// guards might not be.
-pub fn policy(scripts: bool) -> String {
+/// guards might not be. Workers only for a live page (`PreviewSite::workers`),
+/// and only ones it makes itself.
+pub fn policy(scripts: bool, workers: bool) -> String {
     let frames = if scripts { "frame-src 'self'" } else { "frame-src 'self' data: blob:" };
-    ["default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:", "connect-src 'self'", "form-action 'none'", frames, "base-uri 'none'", "object-src 'none'", "worker-src 'none'"].join("; ")
+    let workers = if scripts && workers { "worker-src blob:" } else { "worker-src 'none'" };
+    ["default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:", "connect-src 'self'", "form-action 'none'", frames, "base-uri 'none'", "object-src 'none'", workers].join("; ")
 }
 
 /// The Permissions-Policy every answer carries: no clipboard, camera,
@@ -158,6 +171,8 @@ pub const CLIPBOARD_GUARD: &str = r#"(() => {
     try { delete globalThis[name]; } catch (_) {}
     try { Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false }); } catch (_) {}
   }
+  // No print dialog over the app (the second review of live pages, 19 Nov).
+  try { Object.defineProperty(globalThis, 'print', { value: () => {}, writable: false, configurable: false }); } catch (_) {}
   const exec = Document.prototype.execCommand;
   const apply = Reflect.apply, toString = String, lower = String.prototype.toLowerCase;
   Object.defineProperty(Document.prototype, 'execCommand', {
@@ -259,10 +274,14 @@ mod tests {
 
     #[test]
     fn the_policy_keeps_frames_of_its_own_while_scripts_run() {
-        assert!(policy(true).contains("frame-src 'self';") || policy(true).contains("frame-src 'self'"));
-        assert!(!policy(true).contains("frame-src 'self' data:"));
-        assert!(policy(false).contains("frame-src 'self' data: blob:"));
-        for both in [policy(true), policy(false)] {
+        assert!(policy(true, false).contains("frame-src 'self';") || policy(true, false).contains("frame-src 'self'"));
+        assert!(!policy(true, false).contains("frame-src 'self' data:"));
+        assert!(policy(false, false).contains("frame-src 'self' data: blob:"));
+        // Workers only for a live page running its scripts, and only blob: ones.
+        assert!(policy(true, false).contains("worker-src 'none'"));
+        assert!(policy(false, true).contains("worker-src 'none'"));
+        assert!(policy(true, true).contains("worker-src blob:") && !policy(true, true).contains("worker-src 'self'"));
+        for both in [policy(true, false), policy(false, false)] {
             assert!(both.contains("connect-src 'self'") && both.contains("form-action 'none'") && both.contains("base-uri 'none'"));
         }
     }

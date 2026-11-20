@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep, type Driver, type Dump } from './driver.ts';
+import { ownFolder } from '../../desktop/scripts/own-folder.ts';
+import { runtimeParent } from './web-runtime.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const exe = process.platform === 'win32' ? 'threadbear-gpui.exe' : 'threadbear-gpui';
@@ -25,6 +27,10 @@ const binary = process.env.TB_GPUI_BIN ?? path.join(process.env.CARGO_TARGET_DIR
 // command fits on its line beside it, and no first-run questions.
 let zdotdir: string | undefined;
 function specShell(): NodeJS.ProcessEnv {
+  // The fuzzer (tools/fuzz-monkey.ts) clicks and types at random, so its
+  // Terminal panel gets a shell that runs nothing: random keys and a Return
+  // must never become a command on the machine running it.
+  if (process.env.TB_SPEC_SHELL) return { SHELL: process.env.TB_SPEC_SHELL };
   if (process.platform !== 'darwin' || !fs.existsSync('/bin/zsh')) return {};
   if (!zdotdir) {
     const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tb-spec-zsh-'));
@@ -36,6 +42,18 @@ function specShell(): NodeJS.ProcessEnv {
 }
 
 /** The folders `keepEvidence` makes: its ISO time, then mkdtemp's six characters. */
+/**
+ * Whether a command clicks through the pointer, aiming where its target was
+ * drawn a frame before: `click` and `label-point`, a `chip` or `peek` with
+ * `click` or `press`, a `composer-menu` it opens. A thread arrowed to comes
+ * in 10 points off once its read lands, so on a runner slow to read, a chip
+ * pressed as it landed was missed by that much (stress run, 18 Nov).
+ */
+function clicks(cmd: Record<string, unknown>): boolean {
+  const on = (v: unknown) => v !== undefined && v !== false;
+  return cmd.cmd === 'click' || cmd.cmd === 'label-point' || on(cmd.click) || on(cmd.press) || (cmd.cmd === 'composer-menu' && on(cmd.show));
+}
+
 const KEPT_NAME = /^\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z-[A-Za-z0-9]{6}$/;
 
 /**
@@ -71,6 +89,8 @@ export class GpuiDriver implements Driver {
 
   private appProcess?: ChildProcess;
   private display?: string;
+  /** This driver's folder on the home disk, on a remote.sh run (launchApp). */
+  private homeDisk?: string;
 
   private child(cmd: string, args: string[], env: NodeJS.ProcessEnv): ChildProcess {
     // A process group of its own: `dbus-run-session`'s bus and the portals it
@@ -128,6 +148,19 @@ export class GpuiDriver implements Driver {
       THREADBEAR_REDUCE_MOTION: process.env.TB_REDUCE_MOTION ?? 'off',
       ...specShell(),
     };
+    // On a remote.sh run, the app's temp folder and (unless the run chose
+    // one) web runtime go on the home disk: the Chromium helpers it starts
+    // run from the runtime and inherit the temp folder, and on Tinker Desk
+    // remote.sh's are on an external SSD that every new build's helpers asked
+    // macOS for, with nobody at the screen to answer (19 Nov; web-runtime.ts).
+    // One of each per driver, kept across its relaunches: two apps can't
+    // share a Chromium profile.
+    if (process.env.THREADBEAR_WEB_RUNTIME_PARENT) {
+      this.homeDisk ??= fs.mkdtempSync(path.join(runtimeParent(), 'tb-driver-'));
+      env.TMPDIR = path.join(this.homeDisk, 'tmp');
+      fs.mkdirSync(env.TMPDIR, { recursive: true });
+      if (!process.env.THREADBEAR_WEB_RUNTIME_DIR) env.THREADBEAR_WEB_RUNTIME_DIR = path.join(this.homeDisk, 'web-runtime');
+    }
     if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
       // A server: a virtual screen, and a session bus of its own for the
       // desktop settings and portals the app asks for.
@@ -206,6 +239,7 @@ export class GpuiDriver implements Driver {
     if (!fs.existsSync(binary)) throw new Error(`No GPUI app at ${binary}: cargo build -p threadbear-gpui --features automation`);
     // TB_RUNNER_HOME points at a real runner's data folder (a dev runner's), for
     // a one-off check that the app works with the real thing and not just the mock.
+    this.homeDisk = undefined;
     this.home = process.env.TB_RUNNER_HOME ?? fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tb-spec-'));
     const ready = path.join(this.home, 'mock-ready');
     // TB_MOCK_FIXTURES swaps the demo threads for that folder's, for one-off checks.
@@ -250,7 +284,7 @@ export class GpuiDriver implements Driver {
   }
 
   async do(cmd: Record<string, unknown>, timeoutSeconds = 30): Promise<string> {
-    if (cmd.cmd === 'click' || cmd.cmd === 'label-point') await this.settle();
+    if (clicks(cmd)) await this.settle();
     const r = await this.ask(cmd, timeoutSeconds);
     if (r.error) throw new Error(`${cmd.cmd}: ${r.error as string}${await this.evidenceFor(r)}`);
     return typeof r.result === 'string' ? r.result : JSON.stringify(r.result ?? '');
@@ -284,7 +318,8 @@ export class GpuiDriver implements Driver {
    * text, crash_report.rs), the end of its log (command names, never their
    * words) and of what it printed. The spec's temp folder goes at teardown,
    * panics and log with it, so `keep` copies them to a private folder first
-   * and names it (TB_SPEC_EVIDENCE, or tb-spec-evidence in the temp folder).
+   * and names it (TB_SPEC_EVIDENCE, or tb-spec-evidence in the temp folder,
+   * with the uid on a temp folder others share), or says why it couldn't.
    * A terminal test on the cloud box once got only "the app stopped" (13 Nov).
    */
   async evidence(keep: boolean): Promise<string> {
@@ -310,30 +345,45 @@ export class GpuiDriver implements Driver {
     const said = printed(this.log).trimEnd().slice(-2500);
     if (said) parts.push(`The end of what it printed:\n${said}`);
     if (keep && this.home) {
-      const dir = this.keepEvidence(panics);
-      if (dir) parts.push(`Kept in ${dir}`);
+      parts.push(this.keepEvidence(panics));
     }
     return parts.join('\n\n');
   }
 
-  /** Copies the panics, app log and output out of the temp folder that teardown removes. Keeps the newest 20 runs' worth. */
-  private keepEvidence(panics: string[]): string | undefined {
+  /**
+   * Copies the panics, app log and output out of the temp folder that teardown removes. Keeps the
+   * newest 20 runs' worth. Says where, or why nothing was kept.
+   *
+   * The folder they go in is this account's own or refused (`ownFolder`): on Linux the temp folder
+   * is everyone's, and another account could make tb-spec-evidence first, rename a run's folder
+   * away and put one in its place with output.txt a symlink to a file of ours, which the write
+   * followed (Daybreak 149, 17 Nov). In a folder only we can change, nobody can. The copies are
+   * made with O_EXCL too, so even then nothing already there is written through.
+   */
+  private keepEvidence(panics: string[]): string {
+    let root: string;
     try {
-      const root = process.env.TB_SPEC_EVIDENCE ?? path.join(fs.realpathSync(os.tmpdir()), 'tb-spec-evidence');
-      fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+      const named = process.env.TB_SPEC_EVIDENCE;
+      root = named
+        ? ownFolder(path.dirname(path.resolve(named)), path.basename(path.resolve(named)), { hint: 'TB_SPEC_EVIDENCE', othersMayRead: true, makeParent: true })
+        : ownFolder(os.tmpdir(), 'tb-spec-evidence', { hint: 'TB_SPEC_EVIDENCE', uidSuffix: true });
+    } catch (e) {
+      return `Not kept: ${(e as Error).message}`;
+    }
+    try {
       const dir = fs.mkdtempSync(path.join(root, `${new Date().toISOString().replace(/[:.]/g, '-')}-`));
       if (panics.length) fs.mkdirSync(path.join(dir, 'crashes'), { mode: 0o700 });
-      for (const file of panics) fs.copyFileSync(file, path.join(dir, 'crashes', path.basename(file)));
+      for (const file of panics) fs.copyFileSync(file, path.join(dir, 'crashes', path.basename(file)), fs.constants.COPYFILE_EXCL);
       const log = path.join(this.home, 'app.log');
-      if (fs.existsSync(log)) fs.copyFileSync(log, path.join(dir, 'app.log'));
-      fs.writeFileSync(path.join(dir, 'output.txt'), printed(this.log).slice(-64_000), { mode: 0o600 });
+      if (fs.existsSync(log)) fs.copyFileSync(log, path.join(dir, 'app.log'), fs.constants.COPYFILE_EXCL);
+      fs.writeFileSync(path.join(dir, 'output.txt'), printed(this.log).slice(-64_000), { mode: 0o600, flag: 'wx' });
       this.keptEvidence.push(dir);
       // Only this driver's folders: TB_SPEC_EVIDENCE may be a folder with other things in it.
       const runs = fs.readdirSync(root).filter((n) => KEPT_NAME.test(n)).sort();
       for (const old of runs.slice(0, Math.max(0, runs.length - 20))) fs.rmSync(path.join(root, old), { recursive: true, force: true });
-      return dir;
-    } catch {
-      return undefined;
+      return `Kept in ${dir}`;
+    } catch (e) {
+      return `Not kept: ${(e as Error).message}`;
     }
   }
 
@@ -384,5 +434,7 @@ export class GpuiDriver implements Driver {
     }
     await sleep(100);
     if (this.home && !process.env.TB_RUNNER_HOME) await fs.promises.rm(this.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    if (this.homeDisk) await fs.promises.rm(this.homeDisk, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    this.homeDisk = undefined;
   }
 }

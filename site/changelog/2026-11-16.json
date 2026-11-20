@@ -1,0 +1,33 @@
+{
+  "release": "2026-11-16",
+  "highlights": [
+    {
+      "kind": "changed",
+      "title": "Pick who reviews code",
+      "text": "Settings > General > Code review now lists who reviews a thread's code changes, in order, each with its own model and effort. Drag them to change the order, or take one off. When one runs out, the next takes over.",
+      "media": {
+        "type": "image",
+        "src": "code-reviewers.webp",
+        "width": 1290,
+        "height": 320,
+        "alt": "The Code review section of Settings with its switch on and two reviewers listed in order: Codex on GPT-6.1-Sol at High effort, then Claude on its default model at Extra high, each with a drag handle and a button to take it off."
+      }
+    }
+  ],
+  "added": [
+    "Grok logins can run threads now, code reviews included, and every action Grok takes asks you first"
+  ],
+  "changed": [
+    "A new version of the runner's own app now takes over the next time you log in, rather than waiting for a moment when no thread is busy, which on a busy Mac never came",
+    "Switching to the new app checks there's enough disk space before it starts, and says the first build takes 20 to 40 minutes",
+    "Pictures in replies on the iPhone, Android and the website only load when they're pictures the thread itself stored; any other web picture shows as a link you can tap"
+  ],
+  "fixed": [
+    "Pairing your phone uses a code that works once, for ten minutes, instead of putting a long-lived token in the QR code where another app could catch it",
+    "Sandboxed threads no longer see the runner's own keys and logins",
+    "When the new app checks a file before opening it, it now opens that exact file with the app it checked, so a file swapped in between can't launch something else",
+    "A long question in an answer bubble wraps inside the bubble instead of running off its edge",
+    "A scheduled reminder no longer holds up messages waiting for a thread",
+    "A done card from another Mac's thread no longer loses its loose ends when this Mac's own thread list comes in"
+  ]
+}

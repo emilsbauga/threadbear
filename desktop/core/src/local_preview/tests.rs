@@ -407,8 +407,10 @@ fn the_amplifying_page_is_served_with_bounded_names() {
     let spent = cpu_seconds() - started;
     assert!(refs.is_empty(), "one value, longer than any name: {}", refs.len());
     // Linear work over 4 MiB in a debug build: well under the seconds the
-    // old scan took before it ran out of memory.
-    assert!(spent < 0.5, "reading the page's names took {spent}s");
+    // old scan took before it ran out of memory. 0.5 s was too tight for
+    // the cloud check host, which took 0.52 s on 18 Nov and failed a
+    // landing that didn't touch this code.
+    assert!(spent < 2.0, "reading the page's names took {spent}s");
     f.write("index.html", &page);
     let site = f.site();
     assert_eq!(site.allowed_count(), 1, "the page alone");
@@ -455,4 +457,21 @@ fn an_encoded_name_is_limited_by_the_path_it_names() {
     assert!(html_references(&too_long, 10).len() == 1 && resolve(&html_references(&too_long, 10)[0], "").is_some_and(|p| p.len() > MAX_REFERENCE_BYTES));
     f.write("index.html", &too_long);
     assert_eq!(f.site().allowed_count(), 1, "a decoded path past MAX_REFERENCE_BYTES isn't kept");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_live_page_reads_only_itself() {
+    let f = Folder::new();
+    let page = std::fs::read(f.dir.join("index.html")).unwrap();
+    let site = Site::page_only(&f.dir.join("index.html"), digest(&page)).unwrap();
+    assert!(site.serve("index.html").is_some());
+    // Named in its markup, and served to the side pane's preview, but not here.
+    for named in ["style.css", "pic.png", "assets/pic@2x.png", "assets/styled.png", "logo.png"] {
+        assert!(site.serve(named).is_none(), "{named}");
+    }
+    assert_eq!(site.allowed_count(), 1);
+    // Rewritten after Run: nothing.
+    f.write("index.html", "<p>changed</p>");
+    assert!(site.serve("index.html").is_none());
 }

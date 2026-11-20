@@ -87,15 +87,15 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), Loaded.Loading)
 
     /** API 2: the newest messages and tool lines, live from Convex. */
-    val page: StateFlow<MessagePage?> = model.backend.flatMapLatest { b ->
-        if (b == null || model.apiVersion in 1 until BackendApi.MESSAGE_PAGES) flowOf(null)
+    val page: StateFlow<MessagePage?> = model.backendAnd { it in 1 until BackendApi.MESSAGE_PAGES }.flatMapLatest { (b, older) ->
+        if (b == null || older) flowOf(null)
         else b.messages(threadId, FIRST_PAGE).retryWhen { cause, _ -> cause !is TransportError.Unauthorized && run { delay(2000); true } }
             .catch { model.report(it) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     /** API 57: this thread's messages from the phone the runner hasn't taken. */
-    val waiting: StateFlow<List<WaitingSend>> = model.backend.flatMapLatest { b ->
-        if (b == null || model.apiVersion in 1 until BackendApi.WAITING_SENDS) flowOf(emptyList())
+    val waiting: StateFlow<List<WaitingSend>> = model.backendAnd { it in 1 until BackendApi.WAITING_SENDS }.flatMapLatest { (b, older) ->
+        if (b == null || older) flowOf(emptyList())
         else b.waiting(threadId).retryWhen { cause, _ -> cause !is TransportError.Unauthorized && run { delay(2000); true } }
             .catch { emit(emptyList()) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -124,9 +124,9 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
      * after its row went into a chunk or slid off the live page, and neither
      * is read again. This follows only from the first row read once.
      */
-    val lateImages: StateFlow<List<MessageImage>> = combine(model.backend, history.map { it?.lateImagesFrom }.distinctUntilChanged()) { b, from -> b to from }
-        .flatMapLatest { (b, from) ->
-            if (b == null || from == null || model.apiVersion in 1 until BackendApi.IMAGES) flowOf(emptyList())
+    val lateImages: StateFlow<List<MessageImage>> = combine(model.backendAnd { it in 1 until BackendApi.IMAGES }, history.map { it?.lateImagesFrom }.distinctUntilChanged()) { (b, older), from -> Triple(b, older, from) }
+        .flatMapLatest { (b, older, from) ->
+            if (b == null || from == null || older) flowOf(emptyList())
             else b.images(threadId, from).retryWhen { cause, _ -> cause !is TransportError.Unauthorized && run { delay(2000); true } }
                 .catch { emit(emptyList()) }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

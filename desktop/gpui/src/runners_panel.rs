@@ -10,7 +10,7 @@
 // the window can be seen: asking has every runner report every 10 s, a write
 // each in the backend, and the panel stays docked all day (the Convex I/O
 // work, 5 Nov).
-use crate::activity_panels::{about_button, dot, icon_button, panel_column, small_heading, system_green, system_orange, text_line};
+use crate::activity_panels::{about_button, button_row, dot, icon_button, panel_column, push_button, small_heading, system_green, system_orange, text_button, text_line};
 use crate::app::Threadbear;
 use crate::highlights::{tipped, tipped_as};
 use crate::{call, icons, now_ms, shell, style};
@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use threadbear_core::inbox::{self, ThreadSummary};
 use threadbear_core::remote::{self, RunnerInfo};
+use threadbear_core::remote_tokens::{self as tokens, Step};
 use threadbear_core::runners::{self as rules, MachineStats, State};
 
 /// Past this many a runner's running threads are a count: the panel is a
@@ -53,6 +54,13 @@ pub(crate) struct RunnersPanelState {
     ticking: bool,
     /// The window it's drawn in, for whether it can be seen.
     window: Option<AnyWindowHandle>,
+    /// Year-long token… for another runner's Claude login, by (runner,
+    /// login): where it's got to (remote_tokens.rs).
+    pub(crate) tokens: HashMap<(String, String), Step>,
+    /// Each one's asking and polling; dropped, it stops.
+    token_tasks: HashMap<(String, String), Task<()>>,
+    /// The sign-in pages already opened, so a poll doesn't open one twice.
+    token_pages: HashSet<String>,
 }
 
 /// A runner's card being dragged, and what it's called on the way.
@@ -109,7 +117,10 @@ impl Threadbear {
                     t.runners_panel.refreshing = false;
                 }
                 match res {
-                    Ok(v) => t.remote.all_runners = remote::decode_runners(&v),
+                    Ok(v) => {
+                        t.remote.all_runners = remote::decode_runners(&v);
+                        t.remote.keep_machines();
+                    }
                     Err(e) if shown => t.show_error(e.message, cx),
                     Err(_) => {}
                 }
@@ -156,6 +167,7 @@ impl Threadbear {
         self.load_runners_list(false, cx);
         if !self.runners_open().is_empty() {
             self.load_runner_stats(cx);
+            self.load_open_runners_logins(cx);
         }
         if self.runners_panel.ticking {
             return;
@@ -187,11 +199,23 @@ impl Threadbear {
         }
         if tick % 3 == 0 {
             self.load_runners_list(false, cx);
+            self.load_open_runners_logins(cx);
         }
         if visible && !self.runners_open().is_empty() {
             self.load_runner_stats(cx);
         }
         true
+    }
+
+    /// The logins of the other runners whose details are open, for their
+    /// Claude logins section: not from drawing, which an answer that fails
+    /// would set going again at once.
+    fn load_open_runners_logins(&mut self, cx: &mut Context<Self>) {
+        let open = self.runners_open();
+        let ids: Vec<String> = self.remote.all_runners.iter().filter(|r| !r.is_self && open.contains(&r.id)).map(|r| r.id.clone()).collect();
+        for id in ids {
+            self.load_remote_logins(id, cx);
+        }
     }
 
     /// The runners whose details are open, kept across launches
@@ -215,6 +239,9 @@ impl Threadbear {
         self.save_settings_soon(cx);
         if opened {
             self.load_runner_stats(cx);
+            if self.remote.all_runners.iter().any(|r| r.id == id && !r.is_self) {
+                self.load_remote_logins(id.to_owned(), cx);
+            }
         }
         cx.notify();
         opened
@@ -231,7 +258,7 @@ impl Threadbear {
     /// runner is known: without it a drop would save an order that leaves
     /// this Mac out (`canOrderRunners`).
     fn can_order_runners(&self) -> bool {
-        self.runners_panel.order.is_some() && !self.remote.runners.is_empty() && self.remote.all_runners.iter().any(|r| r.is_self)
+        self.runners_panel.order.is_some() && !self.remote.machines().is_empty() && self.remote.all_runners.iter().any(|r| r.is_self)
     }
 
     /// `receive(remote:)`'s part: the backend's order, unless a drop of
@@ -255,7 +282,7 @@ impl Threadbear {
         }
         let part = rules::moving(&shown, from, to);
         let self_id = self.remote.all_runners.iter().find(|r| r.is_self).map(|r| r.id.clone());
-        let others: Vec<String> = self.remote.runners.iter().map(|r| r.id.clone()).collect();
+        let others: Vec<String> = self.remote.machines().into_iter().map(|r| r.id).collect();
         let order = rules::order_after_drop(&part, self_id.as_deref(), &others, self.runners_panel.order.as_deref());
         self.set_runner_order(order, cx);
     }
@@ -347,6 +374,9 @@ impl Threadbear {
         let mut column = v_flex().flex_1().min_w_0().gap(px(3.)).child(header);
         if open {
             column = column.child(div().pt(px(5.)).pb(px(2.)).child(self.render_runner_details(r, now, cx)));
+            if !r.is_self {
+                column = column.child(self.render_runner_logins(r, now, cx));
+            }
         }
         if !running.is_empty() {
             let mut list = v_flex().pt(px(3.)).gap(px(1.));
@@ -464,6 +494,173 @@ impl Threadbear {
         .into_any_element()
     }
 
+    // Year-long tokens for another runner's Claude logins
+    // (remote_tokens.rs, docs/protocol.md `accounts.yearToken`).
+
+    /// "Claude logins", then each with its line and Year-long token….
+    fn render_runner_logins(&mut self, r: &RunnerInfo, now: i64, cx: &mut Context<Self>) -> AnyElement {
+        let (fg, secondary, tertiary) = (style::label_text(cx), style::secondary_text(cx), style::tertiary_label(cx));
+        let mut list = v_flex().pt(px(8.)).gap(px(6.)).child(small_heading(tokens::HEADING, cx));
+        let Some(logins) = self.remote.logins.get(&r.id) else {
+            return list.child(text_line(tokens::LOADING, 11., tertiary)).into_any_element();
+        };
+        let accounts: Vec<_> = tokens::claude_logins(logins).into_iter().cloned().collect();
+        if accounts.is_empty() {
+            return list.child(text_line(tokens::NO_LOGINS, 11., tertiary)).into_any_element();
+        }
+        let zone = threadbear_core::chrono::Local;
+        for a in accounts {
+            let key = (r.id.clone(), a.id.clone());
+            let step = self.runners_panel.tokens.get(&key).cloned();
+            let busy = step.as_ref().is_some_and(Step::busy);
+            let (runner, account) = key.clone();
+            let mut head = h_flex().gap(px(8.)).items_center().child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(1.))
+                    .child(text_line(a.name(), 11., fg).truncate())
+                    .children(tokens::status(&a, now, &zone).map(|w| text_line(w, 10.5, tertiary).truncate())),
+            );
+            if tokens::can_token(&a) && !matches!(step, Some(Step::Waiting { .. })) {
+                head = head.child(push_button(
+                    SharedString::from(format!("runner-token-{}-{}", r.id, a.id)),
+                    tokens::button_label(&a),
+                    tokens::button_tip(&a, &r.name),
+                    true,
+                    busy,
+                    cx,
+                    move |t, _, cx| t.start_year_token(runner.clone(), account.clone(), cx),
+                ));
+            }
+            let mut row = v_flex().gap(px(4.)).child(head);
+            if let Some(step) = step {
+                row = row.child(text_line(step.words(), 11., if matches!(step, Step::Failed(_)) { system_orange(cx) } else { secondary }).line_clamp(4));
+                if let Step::Waiting { url, .. } = &step {
+                    let id = |what: &str| SharedString::from(format!("runner-token-{what}-{}-{}", r.id, a.id));
+                    let (k1, k2, page) = (key.clone(), key.clone(), url.clone());
+                    row = row.child(button_row(
+                        vec![
+                            push_button(id("paste"), "Paste code", "Send the code you copied from the page to that runner", true, false, cx, move |t, _, cx| t.paste_year_token_code(k1.clone(), cx)),
+                            text_button(id("page"), "Open the page again", "Open the claude.ai page to approve the token again", 11., true, false, cx, move |_, _, cx| crate::files::open_web(&page, cx)),
+                            text_button(id("cancel"), "Cancel", "Stop making this token", 11., false, false, cx, move |t, _, cx| t.cancel_year_token(k2.clone(), cx)),
+                        ],
+                        false,
+                        cx,
+                    ));
+                }
+            }
+            list = list.child(row);
+        }
+        list.into_any_element()
+    }
+
+    /// The section's lines for the dump.
+    fn runner_login_lines(&self, r: &RunnerInfo, now: i64) -> Vec<String> {
+        let Some(logins) = self.remote.logins.get(&r.id) else { return vec![tokens::LOADING.to_owned()] };
+        let accounts = tokens::claude_logins(logins);
+        if accounts.is_empty() {
+            return vec![tokens::NO_LOGINS.to_owned()];
+        }
+        let mut lines = vec![tokens::HEADING.to_owned()];
+        for a in accounts {
+            let status = tokens::status(a, now, &threadbear_core::chrono::Local).map_or_else(String::new, |s| format!(", {s}"));
+            let button = if tokens::can_token(a) { format!(" [{}]", tokens::button_label(a)) } else { String::new() };
+            lines.push(format!("{}{status}{button}", a.name()));
+            if let Some(step) = self.runners_panel.tokens.get(&(r.id.clone(), a.id.clone())) {
+                lines.push(format!("  {}", step.words()));
+            }
+        }
+        lines
+    }
+
+    /// Year-long token… on another runner's login: starts setup-token
+    /// there, and follows it until its page is ready to open.
+    pub(crate) fn start_year_token(&mut self, runner: String, account: String, cx: &mut Context<Self>) {
+        let key = (runner.clone(), account.clone());
+        if self.runners_panel.tokens.get(&key).is_some_and(Step::busy) {
+            return;
+        }
+        self.runners_panel.tokens.insert(key.clone(), Step::Starting);
+        self.follow_year_token(key, json!({ "runnerId": runner, "accountId": account }), cx);
+    }
+
+    /// Paste code: the clipboard's code, if it's this page's, to the runner.
+    pub(crate) fn paste_year_token_code(&mut self, key: (String, String), cx: &mut Context<Self>) {
+        let Some(Step::Waiting { url, .. }) = self.runners_panel.tokens.get(&key).cloned() else { return };
+        let clipboard = cx.read_from_clipboard().and_then(|item| item.text());
+        match tokens::code_for(clipboard.as_deref(), &url) {
+            Err(why) => {
+                self.runners_panel.tokens.insert(key, Step::Waiting { url, notice: Some(why.to_owned()) });
+                cx.notify();
+            }
+            Ok(code) => {
+                self.runners_panel.tokens.insert(key.clone(), Step::Checking { url });
+                let params = json!({ "runnerId": key.0, "accountId": key.1, "code": code });
+                self.follow_year_token(key, params, cx);
+            }
+        }
+    }
+
+    /// Cancel: gone from the panel at once, and stopped on the runner.
+    pub(crate) fn cancel_year_token(&mut self, key: (String, String), cx: &mut Context<Self>) {
+        self.runners_panel.tokens.remove(&key);
+        self.runners_panel.token_tasks.remove(&key);
+        let client = self.client.clone();
+        let params = json!({ "runnerId": key.0, "accountId": key.1, "cancel": true });
+        cx.spawn(async move |_, _| {
+            let _ = call(client, "accounts.yearToken", params).await;
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Asks once with `params`, then every 2 s while there's more to come;
+    /// opens the sign-in page the first time it's there, and reads the
+    /// runner's logins again once the token's made.
+    fn follow_year_token(&mut self, key: (String, String), params: Value, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let check = json!({ "runnerId": key.0, "accountId": key.1, "check": true });
+        let k = key.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let mut params = params;
+            loop {
+                let res = call(client.clone(), "accounts.yearToken", params).await;
+                let step = match res {
+                    Ok(v) => tokens::step_from(&serde_json::from_value::<tokens::Answer>(v).unwrap_or_default()),
+                    Err(e) => Step::Failed(e.message),
+                };
+                let go = this
+                    .update(cx, |t, cx| {
+                        if let Some(url) = step.url().filter(|_| matches!(step, Step::Waiting { .. })) {
+                            if t.runners_panel.token_pages.insert(url.to_owned()) {
+                                crate::files::open_web(url, cx);
+                            }
+                        }
+                        if step == Step::Done {
+                            t.remote.logins_at.remove(&k.0);
+                            t.load_remote_logins(k.0.clone(), cx);
+                        }
+                        let go = step.polls();
+                        t.runners_panel.tokens.insert(k.clone(), step);
+                        if !go {
+                            t.runners_panel.token_tasks.remove(&k);
+                        }
+                        cx.notify();
+                        go
+                    })
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                params = check.clone();
+            }
+        });
+        self.runners_panel.token_tasks.insert(key, task);
+        cx.notify();
+    }
+
     // For scripts and the specs.
 
     /// What the panel says, a line each, in the Swift app's dump shape.
@@ -483,6 +680,9 @@ impl Threadbear {
                         lines.extend(rules::machine_lines(s).into_iter().chain(rules::stale_line(s, now)).map(|l| format!("  {l}")));
                     }
                     None => lines.push(format!("  {}", rules::empty_line(&r, self.runners_panel.stats_asked))),
+                }
+                if !r.is_self {
+                    lines.extend(self.runner_login_lines(&r, now).into_iter().map(|l| format!("  {l}")));
                 }
             }
             let on_it = rules::running(&r, &running);

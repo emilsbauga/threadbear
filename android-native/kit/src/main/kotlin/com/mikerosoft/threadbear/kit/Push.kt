@@ -33,3 +33,38 @@ object PushSeal {
         null
     }
 }
+
+/**
+ * Web Push (backend API 93), the fdroid build's notifications: the phone's
+ * UnifiedPush distributor gives it an endpoint URL and Web Push keys, the
+ * backend sends each notification there (RFC 8291 aes128gcm, with VAPID),
+ * and the connector hands the app the decrypted body: JSON
+ * `{"threadId": "...", "e": "<sealed, as FCM's data.e>"}`.
+ */
+object WebPush {
+    /** The backend's limit on an endpoint (phone:registerDevice's apnsToken). */
+    const val MAX_ENDPOINT = 2048
+
+    /** The phone's UnifiedPush keys, as phone:registerDevice's `webPush` (base64url, no padding). */
+    data class Keys(val p256dh: String, val auth: String) {
+        val valid: Boolean get() = B64URL.matches(p256dh) && B64URL.matches(auth)
+    }
+
+    /** An endpoint the backend takes: https, and not past its length limit. */
+    fun validEndpoint(url: String): Boolean =
+        url.length <= MAX_ENDPOINT && runCatching { java.net.URI(url) }.getOrNull()?.let { it.scheme == "https" && !it.host.isNullOrEmpty() } == true
+
+    data class Message(val threadId: String, val sealed: String?)
+
+    /** A decrypted message's body: its thread and sealed text, or null for anything else. */
+    fun message(body: ByteArray): Message? = try {
+        val o = Json.parseToJsonElement(String(body, Charsets.UTF_8)) as? JsonObject
+        val threadId = o?.get("threadId")?.jsonPrimitive?.takeIf { it.isString }?.content
+        val sealed = o?.get("e")?.jsonPrimitive?.takeIf { it.isString }?.content
+        threadId?.let { Message(it, sealed) }
+    } catch (_: Exception) {
+        null
+    }
+
+    private val B64URL = Regex("^[A-Za-z0-9_-]+$")
+}

@@ -23,6 +23,7 @@ import type {
   ToolRequestUserInputParams,
 } from './types.ts';
 import { firstLineSafely } from '../../safe-cut.ts';
+import { choicesFor, elicitedValue } from '../elicitation.ts';
 
 // ---- Refusals, for a request no session is there to answer
 
@@ -669,22 +670,3 @@ function quoteWord(w: string): string {
   return /^[A-Za-z0-9_./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`;
 }
 
-type Choice = { label: string; value: unknown };
-
-function choicesFor(prop: ElicitationProperty): Choice[] {
-  if (Array.isArray(prop.oneOf) && prop.oneOf.length) return prop.oneOf.map((o) => ({ label: o.title || String(o.const), value: o.const }));
-  if (Array.isArray(prop.enum) && prop.enum.length) return prop.enum.map((v, i) => ({ label: prop.enumNames?.[i] || String(v), value: v }));
-  if (prop.type === 'boolean') return [{ label: 'Yes', value: true }, { label: 'No', value: false }];
-  return [];
-}
-
-function elicitedValue(answer: string, prop: ElicitationProperty, choices: Choice[]): unknown {
-  const choice = choices.find((c) => c.label === answer);
-  if (choice) return choice.value;
-  if (prop.type === 'number' || prop.type === 'integer') {
-    const n = Number(answer);
-    return Number.isFinite(n) ? (prop.type === 'integer' ? Math.trunc(n) : n) : answer;
-  }
-  if (prop.type === 'boolean') return /^(y|yes|true|1)$/i.test(answer.trim());
-  return answer;
-}

@@ -57,6 +57,15 @@ Feature: Acting on a thread from its sidebar row
     When I right-click the row "Morning brief"
     Then the row's menu offers "Rename | Star | Hibernate | Archive | Copy thread id"
 
+  # The Swift app's is AppKit's own menu, which takes Escape by itself; its
+  # script can't press a key into one.
+  @sidebar.row.menu @swift-pending
+  Scenario: Escape closes a row's right-click menu
+    When I right-click the row "Morning brief" and leave its menu open
+    Then a right-click menu is open
+    When I press Escape
+    Then no right-click menu is open
+
   @sidebar.hibernate.presets
   Scenario: The Hibernate menu lists when to bring it back
     When I open the Hibernate menu for "Morning brief"

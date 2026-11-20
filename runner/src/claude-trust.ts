@@ -25,6 +25,7 @@ import type { PermissionMode } from './protocol.ts';
 import { untrustedGitSync } from './safe-git.ts';
 import { looksRunnable, reachOf, reachOfCommand, Reads } from './script-trust.ts';
 import { allowCommand } from './shell-allowlist.ts';
+import { realPath } from './platform.ts';
 
 // The id the folder's entry has in a thread's `patches`.
 export const CLAUDE_PATCH_ID = 'claude-settings';
@@ -302,10 +303,13 @@ function mcpFiles(dir: string, home: string): string[] {
 
 // The folder and each one above it, below home (or up to the root, for a
 // folder outside home), as Claude looks for a project's files.
+// Home is compared by its real path, as the folder can be written another
+// way (on Windows C:\Users\RUNNER~1 is C:\Users\runneradmin, in any case).
 function upToHome(dir: string, home: string): string[] {
-  const stop = path.resolve(home);
+  const key = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const stop = key(realPath(path.resolve(home)));
   const out: string[] = [];
-  for (let d = dir; d !== stop && d !== path.dirname(d); d = path.dirname(d)) out.push(d);
+  for (let d = dir; d !== path.dirname(d) && d !== path.resolve(home) && key(realPath(d)) !== stop; d = path.dirname(d)) out.push(d);
   return out;
 }
 
@@ -1055,11 +1059,7 @@ function isInside(p: string, dir: string): boolean {
 }
 
 function realpath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
+  return realPath(p);
 }
 
 function readOr(file: string): Buffer {

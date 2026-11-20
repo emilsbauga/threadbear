@@ -40,3 +40,15 @@ Feature: Dragging pictures and files out
     And the pane shows a picture
     And I drag the picture in the pane onto the message box
     Then the composer holds 1 picture
+
+  # A link is a run of the reply's words, so a press on one that moves is a
+  # drag of its file rather than a selection, as the Swift app's was; let go
+  # first and it's the link's click (reply-links.feature). Mike dragged clips
+  # out of replies in the Swift app and lost it in the GPUI one (16 Nov).
+  @drag.fileout @swift-pending
+  Scenario: A file link in a reply dragged onto the message box goes into the message
+    Given a picture "shot.png" in a folder of its own
+    When I open the thread "Morning brief"
+    And a reply linking "the screenshot" to that file streams in
+    And I drag the link "the screenshot" onto the message box
+    Then the composer holds 1 picture

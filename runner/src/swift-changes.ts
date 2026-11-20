@@ -22,7 +22,8 @@
 // Mike's). In Mike's own copy (origin is mikecann/threadbear) it's off.
 //
 // Done means a commit on main has a `Ports: <commit>` trailer naming it
-// (the porting thread is told to add one), or they dismissed it here.
+// (the porting thread is told to add one), the commit changed desktop/ as
+// well (made in both apps at once), or they dismissed it here.
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -98,7 +99,10 @@ export async function scanSwiftChanges(checkout: string | undefined, run: Git = 
   if (!refs.length) return { state: 'off', reason: 'nothing of upstream\'s to compare with yet', checkout, changes: [], ported };
   const main = (await run(checkout, ['rev-parse', '--verify', '-q', 'refs/heads/main']).catch(() => '')).trim() ? 'refs/heads/main' : 'HEAD';
   const not = refs.map((r) => `^${r}`);
-  const out = await run(checkout, ['log', '--no-merges', '--name-only', '-z', '--format=%x1e%H%x1f%h%x1f%cI%x1f%s', main, ...not, ...PATHS]);
+  // --full-diff: every file of a commit that touched the Swift app, so one
+  // that changed desktop/ too (made in both apps before the freeze) is seen
+  // as already in the new app rather than listed as one to rebuild.
+  const out = await run(checkout, ['log', '--no-merges', '--full-diff', '--name-only', '-z', '--format=%x1e%H%x1f%h%x1f%cI%x1f%s', main, ...not, ...PATHS]);
   const found: SwiftChange[] = [];
   for (const rec of out.split('\x1e').slice(1)) {
     const [head, ...rest] = rec.split('\0');
@@ -107,7 +111,7 @@ export async function scanSwiftChanges(checkout: string | undefined, run: Git = 
     // one after a newline).
     const names = [head.split('\n').slice(1).join('\n'), ...rest].map((n) => n.replace(/^\n/, '')).filter(Boolean);
     const files = names.filter((f) => /^(app|dock)\//.test(f) && !GPUI_SHARED.test(f));
-    if (!commit || !files.length) continue;
+    if (!commit || !files.length || names.some((f) => f.startsWith('desktop/'))) continue;
     found.push({ commit, short, subject: subject.split('\n')[0], date: date.trim(), files: files.slice(0, MAX_FILES), ...(files.length > MAX_FILES ? { moreFiles: files.length - MAX_FILES } : {}) });
   }
   // The same change as one upstream has: a cherry-pick of Mike's, or a fix

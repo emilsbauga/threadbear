@@ -24,8 +24,6 @@ test('names stay as they were before the table', () => {
 });
 
 test('what Claude and Codex can each do', () => {
-  assert.equal(PROVIDER_INFO.claude.sandbox, true, 'only Claude runs in the sandbox');
-  assert.equal(PROVIDER_INFO.codex.sandbox, false);
   assert.equal(PROVIDER_INFO.claude.autoMode, 'classifier');
   assert.equal(PROVIDER_INFO.codex.autoMode, 'asks');
   assert.equal(PROVIDER_INFO.claude.smallJobs, true);
@@ -40,12 +38,12 @@ test("a provider the table doesn't know can do nothing, and never reads as Claud
   assert.equal(info.name, 'mystery');
   assert.equal(info.effort, 'none');
   assert.equal(info.autoMode, 'asks');
-  for (const can of [info.sandbox, info.rewind, info.smallJobs, info.usageReadings]) assert.equal(can, false);
+  for (const can of [info.rewind, info.smallJobs, info.usageReadings]) assert.equal(can, false);
 });
 
 test("names from Object.prototype aren't providers", () => {
-  // A plain lookup would hand back the function and read its `sandbox`.
-  assert.equal(providerInfo('constructor').sandbox, false);
+  // A plain lookup would hand back the function and read its `rewind`.
+  assert.equal(providerInfo('constructor').rewind, false);
   assert.equal(providerInfo('constructor').name, 'constructor');
 });
 
@@ -93,7 +91,7 @@ test('what Grok can do', () => {
   assert.equal(g.effort, 'codex');
   assert.equal(g.autoMode, 'asks');
   assert.equal(g.smallJobs, true, 'its hook denies every tool for one');
-  for (const can of [g.sandbox, g.rewind, g.usageReadings]) assert.equal(can, false);
+  for (const can of [g.rewind, g.usageReadings]) assert.equal(can, false);
 });
 
 test('a Grok thread takes an effort its model lists, and not one it does not', () => {

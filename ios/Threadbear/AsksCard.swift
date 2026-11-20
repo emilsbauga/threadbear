@@ -16,6 +16,9 @@ struct AsksCard: View {
     /// new card clears.
     @State private var pickTaps = 0
     @State private var sendTaps = 0
+    /// The thread's own link handling, so a `thread:<id>` link (an ask whose
+    /// step is in another thread) opens that thread rather than nothing.
+    @Environment(\.threadLink) private var threadLink
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -59,11 +62,17 @@ struct AsksCard: View {
                 if !(ask.links ?? []).isEmpty {
                     FlowLayout(spacing: 8) { links(ask) }.controlSize(.small)
                 }
-                VStack(spacing: 6) {
+                // One grouped block, as a Settings list: hairlines between
+                // rows rather than a capsule each. Capsules on two-line rows
+                // came out as fat grey pills (Mike, 16 Nov, picked this one).
+                VStack(spacing: 0) {
                     ForEach(Array(ask.choices.enumerated()), id: \.offset) { choice, label in
-                        choiceButton(label, note: ask.note(choice), index: index, choice: choice, suggested: ask.suggestedIndex == choice)
+                        if choice > 0 { Divider().padding(.leading, 14) }
+                        choiceRow(label, note: ask.note(choice) ?? "", index: index, choice: choice, suggested: ask.suggestedIndex == choice)
                     }
                 }
+                .background(Color(.tertiarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else if !ticked, !(ask.links ?? []).isEmpty || !ask.choices.isEmpty {
                 FlowLayout(spacing: 8) {
                     links(ask)
@@ -79,11 +88,13 @@ struct AsksCard: View {
     @ViewBuilder private func links(_ ask: PhoneAsk) -> some View {
         ForEach(ask.links ?? [], id: \.url) { link in
             if let url = URL(string: link.url) {
+                // Plain accent text, so it doesn't read as one of the answers.
                 Link(destination: url) {
-                    Label(link.title, systemImage: "arrow.up.right.square")
+                    Label(link.title, systemImage: "arrow.up.right")
                 }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .environment(\.openURL, OpenURLAction { threadLink($0, nil) })
             }
         }
     }
@@ -91,28 +102,35 @@ struct AsksCard: View {
     /// The muted gold of the Mac's "Recommended" star.
     static let recommendedStar = Color(red: 0.86, green: 0.70, blue: 0.33)
 
-    private func choiceButton(_ label: String, note: String? = nil, index: Int, choice: Int, suggested: Bool) -> some View {
+    private func tap(index: Int, choice: Int) {
+        guard !busy else { return }
+        if asks.count == 1 {
+            // The only one, so the tap sends it: it goes blue and spins.
+            sendTaps += 1
+            picks = [index: choice]
+            send()
+        } else {
+            pickTaps += 1
+            picks[index] = picks[index] == choice ? nil : choice
+        }
+    }
+
+    /// A row of the grouped list: the answer, then what it does, and a
+    /// chevron (a spinner while it's on its way). Picked, it fills blue.
+    private func choiceRow(_ label: String, note: String, index: Int, choice: Int, suggested: Bool) -> some View {
         let picked = picks[index] == choice
+        let sending = picked && busy && asks.count == 1
         return Button {
-            guard !busy else { return }
-            if asks.count == 1 {
-                // The only one, so the tap sends it: it goes prominent and spins.
-                sendTaps += 1
-                picks = [index: choice]
-                send()
-            } else {
-                pickTaps += 1
-                picks[index] = picked ? nil : choice
-            }
+            tap(index: index, choice: choice)
         } label: {
-            if let note {
-                // A row: the answer, then what it does, full width.
+            HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 4) {
-                        Text(label).fontWeight(.medium).spinning(picked && busy && asks.count == 1, tint: .white)
+                        Text(label).fontWeight(.semibold)
                         // The agent's pick: a small gold star and "Recommended", as on the Mac.
                         if suggested && !picked {
                             Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(Self.recommendedStar)
+                                .padding(.leading, 2)
                             Text("Recommended").font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -120,12 +138,41 @@ struct AsksCard: View {
                         .multilineTextAlignment(.leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(spacing: 4) {
-                    // The agent's own pick, as the Mac marks it.
-                    if suggested && !picked { Image(systemName: "star.fill").imageScale(.small).foregroundStyle(Self.recommendedStar).accessibilityLabel("Recommended") }
-                    Text(label).spinning(picked && busy && asks.count == 1, tint: .white)
+                Group {
+                    if sending {
+                        ProgressView().controlSize(.small).tint(.white)
+                    } else if picked {
+                        Image(systemName: "checkmark").fontWeight(.semibold)
+                    } else {
+                        Image(systemName: "chevron.forward").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
                 }
+                .frame(width: 18)
+            }
+            .foregroundStyle(picked ? Color.white : Color.primary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(picked ? Color.accentColor : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(RowPressStyle())
+        // A picked one keeps its colour, so it's clear which is on its way;
+        // the rest fade.
+        .opacity(busy && !picked ? 0.4 : 1)
+        .allowsHitTesting(!busy)
+        .accessibilityAddTraits(picked ? .isSelected : [])
+    }
+
+    /// The short answers (no notes): small chips that wrap.
+    private func choiceButton(_ label: String, index: Int, choice: Int, suggested: Bool) -> some View {
+        let picked = picks[index] == choice
+        return Button {
+            tap(index: index, choice: choice)
+        } label: {
+            HStack(spacing: 4) {
+                // The agent's own pick, as the Mac marks it.
+                if suggested && !picked { Image(systemName: "star.fill").imageScale(.small).foregroundStyle(Self.recommendedStar).accessibilityLabel("Recommended") }
+                Text(label).spinning(picked && busy && asks.count == 1, tint: .white)
             }
         }
         .buttonStyle(picked ? AnyButtonStyle(.borderedProminent) : AnyButtonStyle(.bordered))
@@ -133,6 +180,15 @@ struct AsksCard: View {
         // A picked one keeps its colour, so it's clear which is on its way.
         .disabled(busy && !picked)
         .allowsHitTesting(!busy)
+    }
+}
+
+/// A list row's press: a grey wash while the finger's down, as a Settings
+/// row does, instead of the bordered button's dimming.
+private struct RowPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .overlay(Color.primary.opacity(configuration.isPressed ? 0.08 : 0))
     }
 }
 

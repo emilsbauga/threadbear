@@ -37,6 +37,38 @@ Feature: What a folder's patches give a thread
     And the list panel has the heading "Elsewhere" with the rows "Local | Production"
     And the list row "Pricing" says "12m" and "Waiting on the plan prices"
 
+  # Issue #67: a red-green colour-blind eye can't tell orange from red, so
+  # each tone has a shape of its own as well as its colour. The Swift app
+  # is frozen and keeps its circles.
+  @panel.list @swift-pending
+  Scenario: Each tone in a list panel has a mark of its own
+    When I open the thread "Rebuild the three landing pages"
+    And I show the "deploys.previews" section of the pane
+    Then the list panel has the heading "Checks" with the rows "Preview sign-in | Lint | Bundle size | Typecheck | Deploy"
+    And the list rows "Preview sign-in | Lint | Bundle size | Typecheck | Deploy" have the marks "exclamationmark.circle.fill | xmark.diamond.fill | exclamationmark.triangle.fill | circle.dashed | checkmark"
+    And the list row "Docs" has its globe and the mark "xmark.diamond.fill" beside its title
+
+  # A row's switch (`toggle`, panels.toggle): it flips at once and takes no
+  # more presses until the runner answers. The Swift app is frozen and has
+  # none.
+  @panel.list @swift-pending
+  Scenario: A list row's switch flips at once, then stays as the patch says
+    When I open the thread "Rebuild the three landing pages"
+    And I show the "deploys.previews" section of the pane
+    Then the switch on the list row "Pricing" is off
+    When I press the switch on the list row "Pricing"
+    Then the switch on the list row "Pricing" is on, waiting for the runner
+    And the switch on the list row "Pricing" is on
+
+  @panel.list @swift-pending
+  Scenario: A list row's switch goes back when its patch fails
+    When I open the thread "Rebuild the three landing pages"
+    And I show the "deploys.previews" section of the pane
+    When I press the switch on the list row "Docs"
+    Then the switch on the list row "Docs" is on, waiting for the runner
+    And the error bar says "Couldn't switch it: the Docs build has no preview to watch"
+    And the switch on the list row "Docs" is off
+
   @panel.image
   Scenario: An image panel draws its picture
     When I open the thread "Pick a colour for the new Share button"

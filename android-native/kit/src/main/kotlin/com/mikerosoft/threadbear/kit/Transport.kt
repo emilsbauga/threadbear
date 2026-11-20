@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonElement
 interface ConvexTransport {
     suspend fun query(name: String, args: Map<String, JsonElement>): String
     suspend fun mutation(name: String, args: Map<String, JsonElement>): String
+    suspend fun action(name: String, args: Map<String, JsonElement>): String
 
     /** A live query: every new result, ending with a [TransportError] if the function throws. */
     fun subscribe(name: String, args: Map<String, JsonElement>): Flow<String>

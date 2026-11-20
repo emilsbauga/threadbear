@@ -19,6 +19,8 @@ const SECRET_FILE = new RegExp(
     String.raw`(?:^|[/\\])(?:\.npmrc|\.netrc|\.pypirc|\.pgpass|\.git-credentials|\.htpasswd|\.boto)$`,
     // Agents' and CLIs' own logins: Codex's auth.json, Claude's .credentials.json, tokens.json.
     String.raw`(?:^|[/\\])(?:\.?credentials|auth|tokens?)\.json$`,
+    // A login's year-long token (year-token.ts).
+    String.raw`(?:^|[/\\])threadbear-token\.json$`,
     String.raw`(?:^|[/\\])(?:credentials?|secrets?|service[-_]?account[\w.-]*|client_secret[\w.-]*)(?:\.(?:json|ya?ml|toml|txt|ini|csv))?$`,
     // Any file in a folder that's for secrets.
     String.raw`(?:^|[/\\])(?:secrets|\.ssh|\.aws|\.gnupg|\.kube|\.azure|\.docker|keychains)[/\\]`,
@@ -65,7 +67,7 @@ const SECRET_COMMAND = new RegExp(
     String.raw`\b(?:openssl\s+(?:genrsa|genpkey|rsa|ec|pkcs8|pkcs12)|ssh-keygen\s+[^|;&\n]*-y)\b`,
     String.raw`\b(?:npm\s+token|docker\s+login\b[^|;&\n]*--password|pass\s+show)\b`,
     String.raw`\bgit\s+credential\s+fill\b`,
-    String.raw`\btb\s+(?:phone-token|pair)\b|\btokens:issue\b|\bdeployment\s+token\s+create\b`,
+    String.raw`\btb\s+(?:phone-token|pair)\b|\btokens:issue(?:Code)?\b|\bdeployment\s+token\s+create\b`,
   ].join('|'),
   'i',
 );

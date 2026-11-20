@@ -70,12 +70,26 @@ export async function takeUpload(ctx: UploadCtx, request: Request, route: Upload
 }
 
 /**
+ * The type a file is kept as, which its storage URL is then served with:
+ * a picture's or a video's as sent, anything else plain bytes. A file's URL
+ * opens on the deployment's own origin, so an upload that said text/html or
+ * image/svg+xml would be a page running there for whoever clicks it (the
+ * website links each picture to its file). Live pages (API 95) go up as
+ * plain bytes for that reason; this holds for a key that sends otherwise.
+ */
+const STORED_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/heic', 'image/heif', 'video/mp4', 'video/quicktime']);
+export function storedType(said: string | null): string {
+  const type = (said ?? '').split(';')[0]!.trim().toLowerCase();
+  return STORED_TYPES.has(type) ? type : 'application/octet-stream';
+}
+
+/**
  * The body, read no further than `max` bytes: "tooBig" once it goes past,
  * "broken" if it fails partway. Never holds more than `max` (plus the chunk
  * that went over) in memory.
  */
 export async function readCapped(request: Request, max: number): Promise<Blob | 'tooBig' | 'broken'> {
-  const type = request.headers.get('content-type') ?? '';
+  const type = storedType(request.headers.get('content-type'));
   if (!request.body) return new Blob([], { type });
   const reader = request.body.getReader();
   const parts: Uint8Array[] = [];
@@ -94,7 +108,7 @@ export async function readCapped(request: Request, max: number): Promise<Blob | 
   } catch {
     return 'broken';
   }
-  return new Blob(parts as BlobPart[], { type });
+  return new Blob(parts as unknown as ConstructorParameters<typeof Blob>[0], { type });
 }
 
 /** A fresh claim: 16 random bytes, hex. */

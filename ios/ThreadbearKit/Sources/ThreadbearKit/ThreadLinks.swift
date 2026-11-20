@@ -3,13 +3,13 @@ import Foundation
 /// Links from a message back into the thread (docs/protocol.md, "Links into
 /// the thread"), as the Mac's WorkLinks reads them: `work:<words>` quotes a
 /// step in the turn's working, `thread:<id>` is another thread and
-/// `review:<id>` a design review, which only the Mac can open.
+/// `review:<id>` a design review.
 /// `button:<id>` is a reply button (ReplyButtons.swift).
 public enum ThreadLinks {
     public enum Target: Equatable, Sendable {
         case step(quote: String)
         case thread(String)
-        case review
+        case review(String)
         case button(String)
     }
 
@@ -57,7 +57,7 @@ public enum ThreadLinks {
         switch scheme {
         case "work": return words.isEmpty ? nil : .step(quote: words)
         case "thread": return words.isEmpty ? nil : .thread(words)
-        case "review": return .review
+        case "review": return words.isEmpty ? nil : .review(words)
         case "button": return words.isEmpty ? nil : .button(words)
         default: return nil
         }

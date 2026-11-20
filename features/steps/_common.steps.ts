@@ -89,3 +89,8 @@ When("the runner says Threadbear Runner.app is behind main", async function (thi
 When('the runner says it is updating Threadbear Runner by itself', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'mock', method: 'updates', params: { state: 'idle', launcherChanged: true, reinstall: { state: 'waiting', auto: true } } });
 });
+
+// The keyboard to the message box, typing nothing.
+When('I put the cursor in the composer', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'type', text: '' });
+});

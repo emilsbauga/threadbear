@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { FCM_TOKEN, fcmGone, fcmMessage, fcmPick, fcmReason, fcmSettled } from '../../../relay/convex/fcmMessage.ts';
+import { FCM_TOKEN, androidSealedOk, ANDROID_SEALED_MAX, fcmGone, fcmMessage, fcmPick, fcmReason, fcmSettled } from '../../../relay/convex/fcmMessage.ts';
 import { seal } from '../../../convex/pushSeal.ts';
 
 test('the message is data only, with high priority and a short life', () => {
@@ -120,4 +120,15 @@ test("a key's own sign-in failing never settles a send, and an unclaimed 404 doe
   assert.equal(fcmGone(picked.status, picked.reason), false);
   // A malformed token is the same verdict from either project
   assert.equal(fcmSettled({ status: 400, reason: 'INVALID_ARGUMENT' }), true);
+});
+
+// Codex's third review of the Daybreak 144 fix: an Android sealed text that
+// isn't base64 (a multi-byte character is 3 bytes) or is too long fails at
+// Firebase as INVALID_ARGUMENT, which the relay counts as a bad token. /send
+// sends those without it (the phone's stand-in), as it always did past 4,000.
+test("an Android sealed text goes only if it's base64 that fits Firebase's 4 KB", () => {
+  const key = crypto.randomBytes(32).toString('base64');
+  assert.ok(androidSealedOk(seal(key, JSON.stringify({ title: 'Fix the dock badge', body: 'x'.repeat(1000) }))));
+  assert.ok(Buffer.byteLength(JSON.stringify(fcmMessage({ deviceToken: 'x'.repeat(200), threadId: 't'.repeat(100), encrypted: 'A'.repeat(ANDROID_SEALED_MAX) }).message.data)) < 4096);
+  for (const bad of ['界'.repeat(1500), 'A'.repeat(ANDROID_SEALED_MAX + 1), 'not base64!', '', 42, null, undefined]) assert.equal(androidSealedOk(bad), false, String(bad).slice(0, 20));
 });

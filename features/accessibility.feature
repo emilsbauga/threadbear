@@ -23,6 +23,18 @@ Feature: Screen readers
     Then the row of "Morning brief" is a list item to a screen reader
     And the row of "Morning brief" is selected to a screen reader
 
+  @foundation.accessibility @header.share @swift-pending
+  Scenario: The share popover's choices say who can read it, and which is chosen
+    When I open the thread "Morning brief"
+    And I click the share button
+    Then "Only you" is a radio button to a screen reader
+    And "Only you" is chosen to a screen reader
+    And "Anyone with the link" is a radio button to a screen reader
+    And "Anyone with the link" isn't chosen to a screen reader
+    When I make a share link for the open thread
+    Then "Anyone with the link" is chosen to a screen reader
+    And "Only you" isn't chosen to a screen reader
+
   @manual @foundation.theme
   Scenario: Increase Contrast follows the Mac's display preference
     When I turn on Increase Contrast in macOS and return to Threadbear

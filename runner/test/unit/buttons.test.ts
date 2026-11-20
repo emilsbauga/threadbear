@@ -62,8 +62,8 @@ test('buttons are checked when made', () => {
   assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', start: { text: 'x', cwd: folder, poolId: 'nopool' } }), /No pool/);
   assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', send: { threadId: 'missing', text: 'x' } }), /No thread/);
   assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', send: { threadId: thread.id, text: 'x' } }), /own thread/);
-  assert.throws(() => h.runner.createButton(thread.id, { title: 'Go' }), /either start/);
-  assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', start: { text: 'x', cwd: folder }, send: { threadId: thread.id, text: 'x' } }), /not both/);
+  assert.throws(() => h.runner.createButton(thread.id, { title: 'Go' }), /one of start/);
+  assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', start: { text: 'x', cwd: folder }, send: { threadId: thread.id, text: 'x' } }), /one of start/);
   assert.equal(h.runner.events(thread.id).events.length, n, 'nothing saved');
   assert.throws(() => h.runner.pressButton(thread.id, 'zzzzzzzz'), /not found/);
 });

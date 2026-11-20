@@ -4,15 +4,18 @@
 // which the owning runner applies (step 3 of docs/convex-backend.md) and
 // marks done or failed. Nothing here touches a runner directly.
 import { ConvexError, v, type Infer } from 'convex/values';
-import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
+import { action, internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
+import { internal } from './_generated/api';
+import { AUTH_SECRET, P256DH, endpointProblem } from './webPushEndpoint';
 import type { Doc, Id } from './_generated/dataModel';
+import { command as commandMachine, queued } from './machines';
 import { messageButton, threadFields, views } from './schema';
 import { checkPhoneToken, hasLiveKey, pageLimit, readRunnerOrder, runnerStatsRows, saveRunnerOrder, sha256, watchRunnersFor } from './lib';
 import { API_VERSION } from './version';
 import { pushOff } from './pushHealth';
 import { imagesFrom, phoneImage, replyImagesFrom } from './share';
 import { deleteIfUnused, endCommandFiles, eventBodyAnswer, finishedArgs, readEventBody, runnerName } from './sync';
-import { docBytes, holdReviewNumbers, holdThreadTimes, isReadableTime } from './runnerAccess';
+import { webLinksOnly, docBytes, holdReviewNumbers, holdThreadTimes, isReadableTime } from './runnerAccess';
 import { HEADS_MARK } from './projectHeads';
 import { notesOf } from './projectNotes';
 import { UPLOAD_CLAIM_MS, newClaim } from './uploads';
@@ -33,7 +36,7 @@ const WAITING_LIMIT = 50;
 
 const row = v.object({ ...threadFields, view: v.union(...views.map((x) => v.literal(x))) });
 const message = v.object({ seq: v.number(), role: v.union(v.literal('user'), v.literal('assistant')), text: v.string(), origin: v.optional(v.string()), at: v.string() });
-const pageMessage = v.object({ seq: v.number(), role: v.union(v.literal('user'), v.literal('assistant'), v.literal('tool'), v.literal('note')), text: v.string(), origin: v.optional(v.string()), toolKind: v.optional(v.string()), summary: v.optional(v.boolean()), plan: v.optional(v.boolean()), turn: v.optional(v.string()), wokeBy: v.optional(v.array(v.object({ kind: v.string(), description: v.string() }))), buttons: v.optional(v.array(messageButton)), at: v.string() });
+const pageMessage = v.object({ seq: v.number(), role: v.union(v.literal('user'), v.literal('assistant'), v.literal('tool'), v.literal('note')), text: v.string(), origin: v.optional(v.string()), toolKind: v.optional(v.string()), summary: v.optional(v.boolean()), plan: v.optional(v.boolean()), turn: v.optional(v.string()), wokeBy: v.optional(v.array(v.object({ kind: v.string(), description: v.string() }))), buttons: v.optional(v.array(messageButton)), answers: v.optional(v.array(v.object({ action: v.string(), answer: v.string() }))), at: v.string() });
 // phone:thread's newest text messages for an old phone, and how far back it
 // looks past tool rows for them.
 const MESSAGES_SHOWN = 20;
@@ -69,7 +72,69 @@ function strip<T extends { _id: unknown; _creationTime: unknown }>(doc: T): Omit
 // stripped of the ones known today.
 const PHONE_THREAD_KEYS = new Set([...Object.keys(threadFields), 'view']);
 type PhoneThread = Infer<typeof row>;
-function stripThread(doc: Doc<'threads'>): PhoneThread {
+// Which runner a project id is, for apps that look a project up by its id
+// alone: the iPhone and Android apps from before API 82 (and any still in
+// people's hands), and an open page from before. Ids are each runner's own
+// random ones and two runners never share one honestly, so when two do, one
+// is copying the other's to dress its threads as that project: the main
+// Mac's (its runner row says its heartbeats come with the main key, which
+// issuing a runner a key clears, so revoking a key never makes its runner
+// the main Mac) is the id's, else the first written. A thread's project is
+// shown only when the id is its own runner's, and the list has only the
+// id's runner's project, so no order of writes, row from before, or moved
+// thread puts another Mac's thread under it (Daybreak 141, cross-lab
+// review, 17 Nov 2026). Asked once per id in a query, on small rows
+// (projectHeads) once they exist; past OWNER_LOOKUPS ids in one query (a
+// runner's threads naming thousands of made-up ids, to take a list past
+// Convex's index reads) a ref is dropped, not looked up.
+type ProjectOwners = (id: string) => Promise<string | undefined | null>;
+const OWNER_LOOKUPS = 1000;
+
+function projectOwners(ctx: QueryCtx): ProjectOwners {
+  const seen = new Map<string, Promise<string | undefined | null>>();
+  let heads: Promise<boolean> | undefined;
+  const owner = async (id: string) => {
+    heads ??= ctx.db
+      .query('backendMarks')
+      .withIndex('by_name', (q) => q.eq('name', HEADS_MARK))
+      .first()
+      .then((m) => m !== null);
+    // One row per runner with the id: as many as there are runners.
+    const rows = await ((await heads) ? ctx.db.query('projectHeads').withIndex('by_project_id', (q) => q.eq('id', id)) : ctx.db.query('projects').withIndex('by_project_id', (q) => q.eq('id', id))).collect();
+    if (rows.length <= 1) return rows[0]?.runnerId;
+    const main = [];
+    for (const r of rows) {
+      const runner = await ctx.db.query('runners').withIndex('by_runnerId', (q) => q.eq('runnerId', r.runnerId)).unique();
+      // The main Mac as mainOwnerRunner reads it.
+      if (runner?.byOwner && !(await hasLiveKey(ctx, r.runnerId))) main.push(r);
+    }
+    return (main.length ? main : rows).sort((a, b) => a._creationTime - b._creationTime)[0]!.runnerId;
+  };
+  return (id) => {
+    let hit = seen.get(id);
+    if (!hit) seen.set(id, (hit = seen.size >= OWNER_LOOKUPS ? Promise.resolve(null) : owner(id)));
+    return hit;
+  };
+}
+
+// A thread's projects, only those whose id is its own runner's (projectOwners).
+async function ownProjectRefs(out: Record<string, unknown>, runnerId: string, owners: ProjectOwners): Promise<void> {
+  const refs = out.projects as { id: string }[] | undefined;
+  if (!refs?.length) return;
+  const kept = [];
+  for (const r of refs) {
+    // undefined: no runner has the id, so no app finds a project for it.
+    // null: past the lookups a query makes, so it isn't shown.
+    const who = await owners(r.id);
+    if (who === undefined || who === runnerId) kept.push(r);
+  }
+  if (kept.length !== refs.length) {
+    if (kept.length) out.projects = kept;
+    else delete out.projects;
+  }
+}
+
+async function stripThread(doc: Doc<'threads'>, owners: ProjectOwners): Promise<PhoneThread> {
   const out: Record<string, unknown> = {};
   for (const [k, value] of Object.entries(doc)) if (PHONE_THREAD_KEYS.has(k) && value !== undefined) out[k] = value;
   // Out of its list for a runner key's cap (sync.ts upsertThreads): shown where it belongs.
@@ -78,7 +143,10 @@ function stripThread(doc: Doc<'threads'>): PhoneThread {
   holdThreadTimes(out, isReadableTime);
   // Counts a phone turns into an Int, however old the row (Daybreak 109).
   holdReviewNumbers(out);
-  return out as PhoneThread;
+  await ownProjectRefs(out, doc.runnerId, owners);
+  // Web links only, for a row written before upsertThreads dropped the rest
+  // (API 82, Daybreak 139), so an older app or an open old page gets none.
+  return webLinksOnly(out) as PhoneThread;
 }
 
 // apiVersion is the backend's (version.ts), so the app can say "update
@@ -154,7 +222,8 @@ export const threads = query({
       .withIndex('by_view_activity', (x) => x.eq('view', view))
       .order('desc');
     const rows = view === 'den' ? await q.take(DEN_LIMIT) : await q.collect();
-    return rows.map(stripThread);
+    const owners = projectOwners(ctx);
+    return Promise.all(rows.map((t) => stripThread(t, owners)));
   },
 });
 
@@ -168,7 +237,8 @@ export const threadsAt = query({
     await checkPhoneToken(ctx, token);
     const q = ctx.db.query('threads').withIndex('by_view_activity', (x) => x.eq('view', view)).order('desc');
     const rows = view === 'den' ? await q.take(DEN_LIMIT) : await q.collect();
-    return { rows: rows.map(stripThread), at: Date.now() };
+    const owners = projectOwners(ctx);
+    return { rows: await Promise.all(rows.map((t) => stripThread(t, owners))), at: Date.now() };
   },
 });
 
@@ -186,6 +256,7 @@ export const threadsSince = query({
   returns: v.object({ rows: v.array(v.object({ ...row.fields, updatedMs: v.number() })), gone: v.array(v.string()), more: v.optional(v.boolean()) }),
   handler: async (ctx, { token, since }) => {
     await checkPhoneToken(ctx, token);
+    const owners = projectOwners(ctx);
     if (since < Date.now() - SINCE_OLDEST_MS) return { rows: [], gone: [], more: true };
     const docs = await ctx.db.query('threads').withIndex('by_updated', (x) => x.gte('updatedMs', since)).take(SINCE_CAP + 1);
     const goneRows = await ctx.db.query('threadGone').withIndex('by_at', (x) => x.gte('at', since)).take(SINCE_CAP + 1);
@@ -197,7 +268,7 @@ export const threadsSince = query({
     for (const d of docs) {
       // Out of its list for a runner key's cap: threads doesn't show it either.
       if (d.view === 'overflow') gone.push(d.threadId);
-      else rows.push({ ...stripThread(d), updatedMs: d.updatedMs ?? since });
+      else rows.push({ ...(await stripThread(d, owners)), updatedMs: d.updatedMs ?? since });
     }
     return { rows, gone };
   },
@@ -221,6 +292,7 @@ export const search = query({
   returns: v.array(row),
   handler: async (ctx, { token, text, everywhere }) => {
     await checkPhoneToken(ctx, token);
+    const owners = projectOwners(ctx);
     const words = text.trim();
     if (!words) return [];
     const byField = (index: 'search_title' | 'search_keywords' | 'search_preview', field: 'title' | 'keywords' | 'preview') =>
@@ -234,7 +306,7 @@ export const search = query({
     for (const t of found) {
       if (seen.has(t.threadId) || out.length >= SEARCH_LIMIT) continue;
       seen.add(t.threadId);
-      out.push(stripThread(t));
+      out.push(await stripThread(t, owners));
     }
     if (everywhere && out.length < SEARCH_LIMIT) {
       const said = await ctx.db
@@ -251,7 +323,7 @@ export const search = query({
           .query('threads')
           .withIndex('by_threadId', (q) => q.eq('threadId', m.threadId))
           .first();
-        if (t) out.push(stripThread(t));
+        if (t) out.push(await stripThread(t, owners));
       }
     }
     return out;
@@ -317,7 +389,7 @@ export const thread = query({
       add(m);
     }
     const messages = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
-    return { thread: stripThread(t), messages };
+    return { thread: await stripThread(t, projectOwners(ctx)), messages };
   },
 });
 
@@ -329,7 +401,7 @@ export const threadRow = query({
   returns: row,
   handler: async (ctx, { token, threadId }) => {
     await checkPhoneToken(ctx, token);
-    return stripThread(await findThread(ctx, threadId));
+    return await stripThread(await findThread(ctx, threadId), projectOwners(ctx));
   },
 });
 
@@ -391,7 +463,7 @@ export const messages = query({
   handler: async (ctx, { token, threadId, beforeSeq, limit, tools, noImages, notes: withNotes }) => {
     await checkPhoneToken(ctx, token);
     const want = pageLimit(limit, PAGE_DEFAULT, PAGE_MAX);
-    const out: { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; turn?: string; buttons?: Doc<'messages'>['buttons']; at: string }[] = [];
+    const out: { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; turn?: string; buttons?: Doc<'messages'>['buttons']; answers?: Doc<'messages'>['answers']; at: string }[] = [];
     const q = ctx.db
       .query('messages')
       .withIndex('by_thread_seq', (x) => (beforeSeq === undefined ? x.eq('threadId', threadId) : x.eq('threadId', threadId).lt('seq', beforeSeq)))
@@ -426,7 +498,7 @@ export const messages = query({
         hasMore = true;
         break;
       }
-      out.push({ seq: m.seq, role: m.role, text: m.text, ...(m.origin ? { origin: m.origin } : {}), ...(m.toolKind ? { toolKind: m.toolKind } : {}), ...(m.summary ? { summary: true } : {}), ...(m.plan ? { plan: true } : {}), ...(m.turn ? { turn: m.turn } : {}), ...(m.wokeBy ? { wokeBy: m.wokeBy } : {}), ...(m.buttons?.length ? { buttons: m.buttons } : {}), at: m.at });
+      out.push({ seq: m.seq, role: m.role, text: m.text, ...(m.origin ? { origin: m.origin } : {}), ...(m.toolKind ? { toolKind: m.toolKind } : {}), ...(m.summary ? { summary: true } : {}), ...(m.plan ? { plan: true } : {}), ...(m.turn ? { turn: m.turn } : {}), ...(m.wokeBy ? { wokeBy: m.wokeBy } : {}), ...(m.buttons?.length ? { buttons: m.buttons } : {}), ...(m.answers?.length ? { answers: m.answers } : {}), at: m.at });
     }
     out.reverse();
     const from = hasMore || beforeSeq !== undefined ? out[0]?.seq ?? 0 : 0;
@@ -451,14 +523,19 @@ export const images = query({
 
 export const command = query({
   args: { token: v.string(), commandId: v.id('commands') },
-  // result (API 62): a slashCommands command's answer, the thread's list.
+  // result (API 62): a slashCommands command's answer, the thread's list;
+  // (API 86) a designReviews command's, as JSON text.
   returns: v.object({ state: v.union(v.literal('pending'), v.literal('taken'), v.literal('done'), v.literal('failed')), note: v.optional(v.string()), threadId: v.optional(v.string()), result: v.optional(v.any()) }),
   handler: async (ctx, { token, commandId }) => {
     await checkPhoneToken(ctx, token);
     const c = await ctx.db.get(commandId);
     if (!c) throw new ConvexError({ kind: 'notFound', message: 'no such command' });
     let result: unknown;
-    if (c.kind === 'slashCommands' && c.result) {
+    // A design review (API 86) goes as the runner's JSON text, for the phone
+    // to parse: its notes are keyed by option id, which can be any text, and
+    // Convex refuses an object key that isn't plain ASCII or starts with "$".
+    if (c.kind === 'designReviews' && c.result) result = c.result;
+    else if (c.kind === 'slashCommands' && c.result) {
       try {
         result = JSON.parse(c.result);
       } catch {
@@ -516,12 +593,20 @@ export const projects = query({
     const out = [];
     // `projects` only until the first heartbeat on this backend has copied them.
     const ready = await ctx.db.query('backendMarks').withIndex('by_name', (q) => q.eq('name', HEADS_MARK)).first();
+    // An id two runners have: only its own runner's (projectOwners), counted
+    // archived ones too, so hiding the main Mac's archived one doesn't leave
+    // the other runner's looking like the only one.
+    const count = new Map<string, number>();
     for await (const p of ready ? ctx.db.query('projectHeads') : ctx.db.query('projects')) {
+      count.set(p.id, (count.get(p.id) ?? 0) + 1);
       if (p.archived && !archived) continue;
       const { runnerId, id, title, createdBy, createdAt, updatedAt, threadCount, lastActivityAt } = p;
       out.push({ runnerId, id, title, createdBy, archived: p.archived, createdAt, updatedAt, threadCount, ...(lastActivityAt !== undefined ? { lastActivityAt } : {}), folders: [], goals: '', state: '', notes: '', ...(await iconOf(ctx, p)) });
     }
-    return out.sort((a, b) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt));
+    const owners = projectOwners(ctx);
+    const kept = [];
+    for (const p of out) if (count.get(p.id) === 1 || (await owners(p.id)) === p.runnerId) kept.push(p);
+    return kept.sort((a, b) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt));
   },
 });
 
@@ -563,15 +648,20 @@ export const project = query({
 // activity (links don't carry it; schema.ts). The website asks for more by
 // raising limit, as phone:messages.
 const PROJECT_THREADS_MAX = 1000;
+// A project is its runner's: (runnerId, projectId), never the bare id, which
+// another runner could use for its own (Daybreak finding 141). A page from
+// before API 82 asks without runnerId and gets nothing, not every runner's.
 export const projectThreads = query({
-  args: { token: v.string(), projectId: v.string(), limit: v.optional(v.number()) },
+  args: { token: v.string(), runnerId: v.optional(v.string()), projectId: v.string(), limit: v.optional(v.number()) },
   returns: v.array(row),
-  handler: async (ctx, { token, projectId, limit }) => {
+  handler: async (ctx, { token, runnerId, projectId, limit }) => {
     await checkPhoneToken(ctx, token);
+    const owners = projectOwners(ctx);
     const n = pageLimit(limit, PAGE_DEFAULT, PROJECT_THREADS_MAX);
+    if (runnerId === undefined) return [];
     const links = await ctx.db
       .query('projectThreads')
-      .withIndex('by_project', (q) => q.eq('projectId', projectId))
+      .withIndex('by_runner_project', (q) => q.eq('runnerId', runnerId).eq('projectId', projectId))
       .order('desc')
       .take(n);
     const out = [];
@@ -580,7 +670,9 @@ export const projectThreads = query({
         .query('threads')
         .withIndex('by_threadId', (q) => q.eq('threadId', l.threadId))
         .unique();
-      if (t) out.push(stripThread(t));
+      // Only while the thread is still that runner's: a thread moved to
+      // another Mac isn't in its old Mac's project (moves.ts moveClaim).
+      if (t && t.runnerId === runnerId) out.push(await stripThread(t, owners));
     }
     return out.sort((a, b) => b.lastActivityMs - a.lastActivityMs);
   },
@@ -741,7 +833,8 @@ export const cancel = mutation({
     await checkPhoneToken(ctx, token);
     const c = await ctx.db.get(commandId);
     if (!c || c.kind !== 'send' || c.args?.from === 'mac' || c.state !== 'pending') return false;
-    await ctx.db.patch(commandId, { state: 'failed', note: 'Cancelled', doneAt: Date.now(), args: finishedArgs(c.args) });
+    if ((await commandMachine.send(ctx, commandId, { type: 'CANCEL' })).status !== 'done') return false;
+    await ctx.db.patch(commandId, { note: 'Cancelled', args: finishedArgs(c.args) });
     await endCommandFiles(ctx, commandId);
     for (const image of Array.isArray(c.args?.images) ? c.args.images : []) await deleteIfUnused(ctx, image.storageId);
     return true;
@@ -772,6 +865,71 @@ export const slashCommands = mutation({
     await checkPhoneToken(ctx, token);
     const t = await findThread(ctx, threadId);
     return queue(ctx, t.runnerId, 'slashCommands', threadId, {});
+  },
+});
+
+// Design reviews (API 86; docs/protocol.md, "Reviews on the phone"). Each is
+// a command the thread's runner answers from its own reviews.list, get and
+// respond, so the Mac's revision checks and retry rules hold as they are.
+// reviewImages follows a review's stills, which its runner puts up only once
+// the phone has asked for that review (designReviews with its id). Its
+// sources are opaque (review:<id>:<sha256>), never a path on the Mac.
+export const reviewImages = query({
+  args: { token: v.string(), threadId: v.string(), sources: v.array(v.string()) },
+  returns: v.array(phoneImage),
+  handler: async (ctx, { token, threadId, sources }) => {
+    await checkPhoneToken(ctx, token);
+    await findThread(ctx, threadId);
+    if (sources.length > 40 || sources.some((src) => !/^review:[a-zA-Z0-9-]{1,200}:[a-f0-9]{64}$/.test(src))) throw new ConvexError('Invalid review pictures.');
+    const out = [];
+    for (const src of new Set(sources)) {
+      const img = await ctx.db.query('replyImages').withIndex('by_thread_src', (q) => q.eq('threadId', threadId).eq('src', src)).order('desc').first();
+      if (!img) continue;
+      const url = await ctx.storage.getUrl(img.storageId);
+      if (url) out.push({ seq: img.seq, src, url, ...(img.width ? { width: img.width } : {}), ...(img.height ? { height: img.height } : {}) });
+    }
+    return out;
+  },
+});
+
+export const designReviews = mutation({
+  args: { token: v.string(), threadId: v.string(), reviewId: v.optional(v.string()) },
+  returns: v.id('commands'),
+  handler: async (ctx, { token, threadId, reviewId }) => {
+    await checkPhoneToken(ctx, token);
+    if (reviewId !== undefined && !/^[a-zA-Z0-9-]{1,200}$/.test(reviewId)) throw new ConvexError('Invalid review id.');
+    const t = await findThread(ctx, threadId);
+    return queue(ctx, t.runnerId, 'designReviews', threadId, reviewId ? { reviewId } : {});
+  },
+});
+
+// Notes are a list, not an object keyed by option id: an option's id can be
+// any text, and Convex refuses an object key that isn't plain ASCII or
+// starts with "$". No pictures: a draft's are paths on the Mac, and the
+// runner keeps the ones saved there.
+export const respondReview = mutation({
+  args: {
+    token: v.string(),
+    threadId: v.string(),
+    reviewId: v.string(),
+    revision: v.number(),
+    draft: v.object({
+      pickedId: v.optional(v.string()),
+      pickedIds: v.optional(v.array(v.string())),
+      notes: v.array(v.object({ id: v.string(), text: v.string() })),
+      reply: v.optional(v.string()),
+      none: v.optional(v.boolean()),
+    }),
+  },
+  returns: v.id('commands'),
+  handler: async (ctx, { token, threadId, reviewId, revision, draft }) => {
+    await checkPhoneToken(ctx, token);
+    if (!/^[a-zA-Z0-9-]{1,200}$/.test(reviewId) || !Number.isSafeInteger(revision) || revision < 0) throw new ConvexError('Invalid review or revision.');
+    if ((draft.pickedIds?.length ?? 0) > 12 || draft.notes.length > 12 || (draft.reply?.length ?? 0) > 8000 ||
+        draft.notes.some((n) => n.text.length > 4000 || n.id.length > 200) || (draft.pickedId?.length ?? 0) > 200 ||
+        (draft.pickedIds ?? []).some((id) => id.length > 200)) throw new ConvexError('The review answer is too long.');
+    const t = await findThread(ctx, threadId);
+    return queue(ctx, t.runnerId, 'respondReview', threadId, { reviewId, revision, draft });
   },
 });
 
@@ -1043,10 +1201,13 @@ export const quickAsk = mutation({
 // another, by name or by putting it in his order.
 // (Going by the latest heartbeat once sent half of them to Bruce; going by
 // most threads alone let a runner key claim a million threads to get them.)
+// A thread's box on a virtual runner (runners.box) is never one: it runs
+// its one thread, reachable or not (lib.ts boxStateReachable), and a new
+// thread on a virtual runner is boxes:startThread's.
 async function mainRunner(ctx: QueryCtx): Promise<string> {
   const all: Doc<'runners'>[] = [];
   for await (const r of ctx.db.query('runners')) all.push(r);
-  const online = (r: Doc<'runners'>) => !r.draining && Date.now() - r.lastSeenAt <= ONLINE_MS;
+  const online = (r: Doc<'runners'>) => !r.box && !r.draining && Date.now() - r.lastSeenAt <= ONLINE_MS;
   for (const id of await readRunnerOrder(ctx)) {
     const r = all.find((x) => x.runnerId === id);
     if (r && online(r)) return r.runnerId;
@@ -1062,7 +1223,7 @@ async function mainRunner(ctx: QueryCtx): Promise<string> {
 async function mainOwnerRunner(ctx: QueryCtx, runners: Doc<'runners'>[], onlineOnly: boolean): Promise<string | undefined> {
   let best: Doc<'runners'> | undefined;
   for (const r of runners) {
-    if (!r.byOwner || (onlineOnly && (r.draining || Date.now() - r.lastSeenAt > ONLINE_MS)) || (await hasLiveKey(ctx, r.runnerId))) continue;
+    if (!r.byOwner || r.box || (onlineOnly && (r.draining || Date.now() - r.lastSeenAt > ONLINE_MS)) || (await hasLiveKey(ctx, r.runnerId))) continue;
     if (!best || r.threadCount > best.threadCount || (r.threadCount === best.threadCount && r.lastSeenAt > best.lastSeenAt)) best = r;
   }
   return best?.runnerId;
@@ -1096,11 +1257,20 @@ export const registerDevice = mutation({
   // platform (API 66): "android" when apnsToken is the phone's Firebase token,
   // not an Apple one (the field keeps its name; the table is indexed by it).
   // Left out, as every iPhone does, it is an Apple token.
-  args: { token: v.string(), apnsToken: v.string(), environment: v.union(v.literal('sandbox'), v.literal('production')), pushKey: v.optional(v.string()), platform: v.optional(v.literal('android')) },
+  // platform "webpush" (API 93, the Android app's F-Droid build): apnsToken is
+  // its UnifiedPush endpoint, a public https address (webPushEndpoint.ts),
+  // and webPush has the subscription's p256dh and auth, base64url.
+  args: { token: v.string(), apnsToken: v.string(), environment: v.union(v.literal('sandbox'), v.literal('production')), pushKey: v.optional(v.string()), platform: v.optional(v.union(v.literal('android'), v.literal('webpush'))), webPush: v.optional(v.object({ p256dh: v.string(), auth: v.string() })) },
   returns: v.null(),
-  handler: async (ctx, { token, apnsToken, environment, pushKey, platform }) => {
+  handler: async (ctx, { token, apnsToken, environment, pushKey, platform, webPush }) => {
     if (pushKey !== undefined && !/^[A-Za-z0-9+/]{43}=$/.test(pushKey)) throw new ConvexError({ kind: 'invalid', message: 'pushKey must be base64 of 32 bytes' });
-    if (platform === 'android') {
+    if (platform === 'webpush') {
+      const problem = endpointProblem(apnsToken);
+      if (problem) throw new ConvexError({ kind: 'invalid', message: `apnsToken must be a public https UnifiedPush endpoint (it's ${problem})` });
+      if (!webPush || !P256DH.test(webPush.p256dh) || !AUTH_SECRET.test(webPush.auth)) throw new ConvexError({ kind: 'invalid', message: 'webPush needs p256dh (65 bytes) and auth (16 bytes), base64url' });
+    } else if (webPush) {
+      throw new ConvexError({ kind: 'invalid', message: 'webPush is only for platform "webpush"' });
+    } else if (platform === 'android') {
       if (!FCM_TOKEN.test(apnsToken)) throw new ConvexError({ kind: 'invalid', message: 'apnsToken must be the phone\'s Firebase token' });
     } else if (!APNS_TOKEN.test(apnsToken)) throw new ConvexError({ kind: 'invalid', message: 'apnsToken must be the device token in hex' });
     const t = await checkPhoneToken(ctx, token);
@@ -1109,7 +1279,7 @@ export const registerDevice = mutation({
       .withIndex('by_apnsToken', (q) => q.eq('apnsToken', apnsToken))
       .unique();
     const key = pushKey ?? existing?.pushKey;
-    const row = { apnsToken, environment, tokenName: t.name, tokenId: t.id, updatedAt: Date.now(), ...(existing?.notify ? { notify: existing.notify } : {}), ...(key ? { pushKey: key } : {}), ...(platform ? { platform } : {}) };
+    const row = { apnsToken, environment, tokenName: t.name, tokenId: t.id, updatedAt: Date.now(), ...(existing?.notify ? { notify: existing.notify } : {}), ...(key ? { pushKey: key } : {}), ...(platform ? { platform } : {}), ...(webPush ? { webPush } : {}) };
     // A phone token's oldest registrations give way to a new one (or one it
     // takes over from another token), so a token holds at most
     // MAX_DEVICES_PER_TOKEN rows: a phone reinstalled gets a new APNs token,
@@ -1125,6 +1295,46 @@ export const registerDevice = mutation({
     return null;
   },
 });
+
+// The F-Droid build's UnifiedPush registration needs this deployment's VAPID
+// public key first (API 93): an uncompressed P-256 point, base64url. Made
+// the first time anyone asks (devices:putVapidKey keeps the first one saved),
+// and the same from then on. An action, as only an action can make a key.
+export const webPushKey = action({
+  args: { token: v.string() },
+  returns: v.object({ vapid: v.string() }),
+  handler: async (ctx, { token }): Promise<{ vapid: string }> => {
+    await ctx.runQuery(internal.phone.phoneTokenOk, { token });
+    let key = await ctx.runQuery(internal.devices.vapidKey, {});
+    if (!key) {
+      const pair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+      const jwk = await crypto.subtle.exportKey('jwk', pair.privateKey);
+      if (!jwk.x || !jwk.y || !jwk.d) throw new Error('VAPID key export missing a part');
+      key = await ctx.runMutation(internal.devices.putVapidKey, { x: jwk.x, y: jwk.y, d: jwk.d });
+    }
+    const point = new Uint8Array(65);
+    point[0] = 4;
+    point.set(fromB64url(key.x), 1);
+    point.set(fromB64url(key.y), 33);
+    return { vapid: toB64url(point) };
+  },
+});
+
+// For phone actions: throws as any phone call does when the token's no good.
+export const phoneTokenOk = internalQuery({
+  args: { token: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { token }) => {
+    await checkPhoneToken(ctx, token);
+    return null;
+  },
+});
+
+function fromB64url(s: string): Uint8Array {
+  const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+const toB64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 // When this phone wants a push (API 3): "away" (the default) only while
 // Mike isn't at the Mac, "always", or "off".
@@ -1173,9 +1383,12 @@ async function commandImages(ctx: QueryCtx, tokenId: Id<'tokens'>, images: Id<'_
 
 // A runner the phone named for a new thread: one that has heartbeated here
 // (runners), or "any". Anything else would wait for ever, as nothing takes it.
+// Not a thread's box on a virtual runner: that runs its one thread only.
 async function knownRunner(ctx: QueryCtx, runnerId: string): Promise<string> {
   if (runnerId === 'any') return runnerId;
-  if (runnerId.length > 100 || !(await ctx.db.query('runners').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first())) throw new ConvexError({ kind: 'notFound', message: 'no such runner' });
+  const r = runnerId.length > 100 ? null : await ctx.db.query('runners').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first();
+  if (!r) throw new ConvexError({ kind: 'notFound', message: 'no such runner' });
+  if (r.box) throw new ConvexError({ kind: 'badArgs', message: "That runner is one thread's box on a virtual runner: it takes no new threads." });
   return runnerId;
 }
 
@@ -1184,14 +1397,14 @@ async function knownRunner(ctx: QueryCtx, runnerId: string): Promise<string> {
 // what the runner's own pendingCommands reads. One that waits too long goes
 // (sync:pruneFiles, COMMAND_KEEP_MS). Its photos are recorded in commandFiles
 // so a delete elsewhere sees they're still on their way (sync.ts storageInUse).
-async function queue(ctx: MutationCtx, runnerId: string, kind: 'send' | 'respond' | 'update' | 'create' | 'page' | 'share' | 'quickAsk' | 'schedule' | 'picture' | 'press' | 'slashCommands' | 'interrupt', threadId: string | undefined, args: Record<string, unknown>) {
+async function queue(ctx: MutationCtx, runnerId: string, kind: 'send' | 'respond' | 'update' | 'create' | 'page' | 'share' | 'quickAsk' | 'schedule' | 'picture' | 'press' | 'slashCommands' | 'interrupt' | 'designReviews' | 'respondReview', threadId: string | undefined, args: Record<string, unknown>) {
   let n = 0;
   let bytes = docBytes(args);
   for await (const c of ctx.db.query('commands').withIndex('by_runner_state', (q) => q.eq('runnerId', runnerId).eq('state', 'pending'))) {
     bytes += docBytes(c);
     if (++n >= WAITING_PER_RUNNER || bytes > WAITING_BYTES_PER_RUNNER) throw new ConvexError({ kind: 'tooMany', message: 'Too much is waiting for that runner: it takes it when it next comes online.' });
   }
-  const commandId = await ctx.db.insert('commands', { runnerId, ...(threadId ? { threadId } : {}), kind, args, state: 'pending', createdAt: Date.now() });
+  const commandId = await queued(ctx, { runnerId, ...(threadId ? { threadId } : {}), kind, args, createdAt: Date.now() });
   for (const image of Array.isArray(args.images) ? (args.images as { storageId: Id<'_storage'> }[]) : []) await ctx.db.insert('commandFiles', { storageId: image.storageId, commandId });
   return commandId;
 }

@@ -596,6 +596,11 @@ test('the default account is the one with the most room, worked out again as usa
   // A dev runner's keepAccount stays put.
   writeRunnerJson(h.home, { defaults: { accountId: 'claude-main', keepAccount: true } });
   assert.equal(h.runner.hello().defaults.accountId, 'claude-main');
+  // ...unless its plan has ended: every turn there would fail (a kept dev
+  // home on claude-main after its Max lapsed, 16 Nov 2026).
+  h.fake.base = h.fake.base.map((a) => (a.id === 'claude-main' ? { ...a, planEnded: true } : a));
+  assert.equal(h.runner.hello().defaults.accountId, 'claude-3');
+  assert.equal(h.runner.create({ text: 'y' }).thread.accountId, 'claude-3');
   // A test can swap the picker.
   const seen: (string | undefined)[] = [];
   const h2 = codexHarness({}, { pickAccount: (_a, last) => (seen.push(last), 'codex-main') });
@@ -801,4 +806,40 @@ test('archiving during a turn archives in Codex only once the live CLI has exite
   await tick();
   const archived: { nativeSessionId: string }[] = h.codex.archived;
   assert.ok(!archived.some((a) => a.nativeSessionId === '019a-back'));
+});
+
+// ------------------------------------------------------- usage resets
+
+test("accounts.useReset spends a Codex login's reset once at a time, and the reading after it goes to the usage store", async () => {
+  const readings: { accountId: string; reading: any }[] = [];
+  const h = codexHarness({}, { usage: { record: (accountId, reading) => readings.push({ accountId, reading }) } });
+  let release!: () => void;
+  const asked: string[] = [];
+  h.codex.useReset = async (account) => {
+    asked.push(account.id);
+    await new Promise<void>((r) => (release = r));
+    return { outcome: 'reset', limits: { kind: 'limits', windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 100 }], blocked: false, resets: { available: 1 } } };
+  };
+  const first = h.runner.useReset('codex-main');
+  // A second click while the first is out would spend a second reset.
+  await assert.rejects(h.runner.useReset('codex-main'), (e: RpcError) => e.code === -32020);
+  await tick();
+  release();
+  const r = await first;
+  assert.equal(r.outcome, 'reset');
+  assert.deepEqual(asked, ['codex-main']);
+  assert.deepEqual(readings.at(-1), { accountId: 'codex-main', reading: { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 100 }], blocked: false, resets: { available: 1 } } });
+  // Nothing left: said so, and nothing recorded without a reading.
+  h.codex.useReset = async () => ({ outcome: 'noCredit' });
+  const n = readings.length;
+  assert.equal((await h.runner.useReset('codex-main')).outcome, 'noCredit');
+  assert.equal(readings.length, n);
+  // Claude has no resets, and an unknown login is -32010.
+  await assert.rejects(h.runner.useReset('claude-main'), (e: RpcError) => e.code === -32602);
+  await assert.rejects(h.runner.useReset('codex-9'), (e: RpcError) => e.code === -32010);
+  // Codex failing is the runner's own error, with its words.
+  h.codex.useReset = async () => {
+    throw new Error('connection reset');
+  };
+  await assert.rejects(h.runner.useReset('codex-main'), (e: RpcError) => e.code === -32000 && /connection reset/.test(e.message));
 });

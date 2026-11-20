@@ -4,11 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { checkSummary } from '../helpers/protocol-check.ts';
-import { Projects, drainProjectMethods, projectMethods, BRIEF_MAX, NOTES_LONG, type ProjectHost } from '../../src/projects.ts';
+import { Projects, drainProjectMethods, projectMethods, applyNoteEdits, BRIEF_MAX, NOTES_LONG, type ProjectHost } from '../../src/projects.ts';
 import { projectRouter, type PrimaryLink } from '../../src/handover.ts';
 import type { PocketCardInput, PocketCardSummary } from '../../src/sync.ts';
 import { Librarian, type LibrarianPocket, librarianMethods, saysNoFit, disclaims, mainCheckout, PICK_CHECKS_PER_LOOK, SETTLE_MS, CATCH_UP_MS, CATCH_UP_MIN_CHARS, FIRST_MESSAGE_MS, SWEEP_MS, KEYWORDS_SYSTEM } from '../../src/librarian.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
+import { PROJECT_STEP_NUDGE } from '../../src/needs.ts';
+import { AGENT_MESSAGE_PREFIX } from '../../src/protocol.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger, type Logger } from '../../src/log.ts';
 import { ErrorCode, RpcError } from '../../src/protocol.ts';
@@ -769,6 +771,169 @@ test('agent tools: make, read, update, join and leave projects', async () => {
   assert.equal((await call('read_project', { project: 'nope' })).error, true);
 });
 
+test('applyNoteEdits: like Edit, each old matches once, in order, all or none', () => {
+  const notes = 'Intro.\n\n- one\n- two\n- three\n\nOutro.';
+  assert.equal(applyNoteEdits(notes, [{ old: '- two', new: '- two, done' }]), 'Intro.\n\n- one\n- two, done\n- three\n\nOutro.');
+  // Several, each on the result of the ones before.
+  assert.equal(applyNoteEdits(notes, [{ old: 'Intro.', new: 'Start.' }, { old: 'Start.\n', new: 'Begin.\n' }]), 'Begin.\n\n- one\n- two\n- three\n\nOutro.');
+  // Taking out a bullet doesn't split the list; a paragraph leaves one blank line.
+  assert.equal(applyNoteEdits(notes, [{ old: '- two', new: '' }]), 'Intro.\n\n- one\n- three\n\nOutro.');
+  assert.equal(applyNoteEdits(notes, [{ old: '- one\n- two\n- three', new: '' }]), 'Intro.\n\nOutro.');
+  assert.equal(applyNoteEdits(notes, [{ old: 'Intro.', new: '' }]), '- one\n- two\n- three\n\nOutro.');
+  // An old with its own line break comes out exactly; CRLF is LF, so a \r
+  // can't hide from the reviewer's diff.
+  const doc = '## Decisions\n- Keep X\n- Drop Y\n\n## Gotchas\n- Z';
+  assert.equal(applyNoteEdits(doc, [{ old: '- Drop Y\n', new: '' }]), '## Decisions\n- Keep X\n\n## Gotchas\n- Z');
+  assert.equal(applyNoteEdits('## A\n\n- Drop\n- Keep', [{ old: '\n- Drop', new: '' }]), '## A\n\n- Keep');
+  assert.equal(applyNoteEdits('- a\r\n- b\r\n- c', [{ old: '- b', new: '' }]), '- a\n- c');
+  assert.equal(applyNoteEdits('a\nb', [{ old: 'a\r\nb', new: 'a\rb, c' }]), 'a\nb, c');
+  assert.throws(() => applyNoteEdits('x'.repeat(49_990) + ' END', [{ old: 'END', new: 'y'.repeat(100) }]), /past the 50000/);
+  // The size is of the notes as saved: trimmed, with the paragraph on the end (Codex and Gemini, round two).
+  assert.equal(applyNoteEdits('x'.repeat(49_999) + 'a', [{ old: 'a', new: 'b\n' }]).length, 50_000);
+  assert.throws(() => applyNoteEdits('A' + 'x'.repeat(49_989), [{ old: 'A', new: 'B' }], '0123456789'), /past the 50000/);
+  // A long run of line breaks before a removal is linear work.
+  const t0 = Date.now();
+  applyNoteEdits('MARKER DELETE', [{ old: 'MARKER', new: 'A' + '\n'.repeat(45_000) + 'B' }, { old: 'DELETE', new: '' }]);
+  assert.ok(Date.now() - t0 < 1000);
+  const fails = (edits: unknown, re: RegExp) => assert.throws(() => applyNoteEdits(notes, edits), (e: any) => e instanceof RpcError && re.test(e.message));
+  fails([{ old: '- four', new: 'x' }], /old isn't in the notes, so nothing changed/);
+  fails([{ old: '- t', new: 'x' }], /more than once/);
+  fails([{ old: '- one', new: 'x' }, { old: '- one', new: 'y' }], /editNotes\[1\]'s old isn't in the notes \(after the edits before it\)/);
+  fails([{ old: '', new: 'x' }], /old is empty/);
+  fails([{ old: 'Intro.', new: 'Intro.' }], /the same/);
+  fails([], /must be a list/);
+  fails([{ old: 'Intro.' }], /both text/);
+});
+
+test('update_project editNotes: changes one line in place, refuses what doesn\'t match, and goes with appendNote', async () => {
+  const { h, projects, create } = setup();
+  const { thread } = create();
+  const tools = buildThreadbearTools(h.runner, thread.id, Date.now, undefined, projects);
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const t = tools.find((x) => x.name === name)!;
+    const r = await t.handler(args as never, {} as never);
+    return { text: r.content.map((c: any) => c.text).join(''), error: Boolean(r.isError) };
+  };
+  const p = projects.create({ title: 'App', notes: 'Decided: npm.\n\n- Open: pick a host\n- Owed: docs', by: 'mike' });
+  assert.deepEqual(await call('update_project', { project: p.id, editNotes: [{ old: '- Open: pick a host', new: '- Host: Fly, picked 20 Nov' }] }), { text: `Updated "App" (${p.id}).`, error: false });
+  assert.equal(projects.list()[0].notes, 'Decided: npm.\n\n- Host: Fly, picked 20 Nov\n- Owed: docs');
+  const miss = await call('update_project', { project: p.id, editNotes: [{ old: '- Owed: docs', new: '' }, { old: 'nowhere', new: 'x' }], state: 'Moving' });
+  assert.equal(miss.error, true);
+  assert.match(miss.text, /editNotes\[1\]'s old isn't in the notes/);
+  assert.equal(projects.list()[0].notes, 'Decided: npm.\n\n- Host: Fly, picked 20 Nov\n- Owed: docs', 'all or none');
+  assert.equal(projects.list()[0].state, '', 'and nothing else changed');
+  assert.equal((await call('update_project', { project: p.id, notes: 'x', editNotes: [{ old: 'a', new: 'b' }] })).error, true);
+  assert.equal((await call('update_project', { project: p.id, editNotes: [{ old: '- Owed: docs', new: '' }], appendNote: 'Gotcha: tags.' })).error, false);
+  assert.equal(projects.list()[0].notes, 'Decided: npm.\n\n- Host: Fly, picked 20 Nov\n\nGotcha: tags.');
+  // One step where the notes live: the notes judged, or nothing.
+  assert.throws(() => projects.editNotes(p.id, [{ old: 'Decided: npm.', new: 'Decided: pnpm.' }], { ifNotes: 'what the card showed', state: 'x' }), /changed while this waited/);
+  assert.equal(projects.list()[0].state, '');
+  const done = projects.editNotes(p.id, [{ old: 'Decided: npm.', new: 'Decided: pnpm.' }], { ifNotes: projects.list()[0].notes, state: 'Moving', appendNote: 'Last.' });
+  assert.equal(done.notes, 'Decided: pnpm.\n\n- Host: Fly, picked 20 Nov\n\nGotcha: tags.\n\nLast.');
+  assert.equal(done.state, 'Moving');
+});
+
+// 20 Nov 2026: the calendar site's thread said Done with its project's state
+// naming a next step for Mike and earlier follow-ups never answered.
+test("end_turn: a Done card in a project still going is told once of the project's state and earlier items nobody answered", async () => {
+  const { h, repo, projects, create } = setup();
+  const app = repo('dev/cal');
+  const { thread } = create();
+  const tools = buildThreadbearTools(h.runner, thread.id, Date.now, undefined, projects, undefined, { oneReply: () => true, plainCardNote: false, tryFirstNote: false, sleep: async () => {} });
+  const tool = (name: string) => tools.find((x) => x.name === name)!;
+  await tool('create_project').handler({ title: 'Calendar', folders: [app], goals: 'Voting site', state: "Live. Next is Peter's review of the live site." } as never, {} as never);
+  let s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  let n = 0;
+  const endTurn = async (input: Record<string, unknown>) => {
+    const itemId = `e${++n}`;
+    s.out({ kind: 'event', event: { type: 'tool.call', itemId, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
+    const r = (await tool('end_turn').handler(input as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
+    const text = r.content.map((c) => c.text).join('');
+    // The CLI may have been resumed while the call ran (a card answer does that).
+    s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId, ok: !r.isError, text, truncated: false, images: [] } });
+    return { text, error: Boolean(r.isError) };
+  };
+  // An earlier turn's card: three follow-ups, then a question, each refused once first.
+  s.text('m1', 'Google sign-in works.');
+  let r = await endTurn({ needs: 'nothing', next: ['Draft an email telling Peter the site is ready', 'Load the rest of Peter\'s photos once he sends them', 'Make Google\'s sign-in screen name the calendar site'] });
+  assert.ok(r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+  assert.match(r.text, /"Calendar" \(its state: "Live\. Next is Peter's review of the live site\."\)/);
+  r = await endTurn({ needs: 'nothing', next: ['Draft an email telling Peter the site is ready', 'Load the rest of Peter\'s photos once he sends them', 'Make Google\'s sign-in screen name the calendar site'] });
+  assert.equal(r.error, false, r.text);
+  s.text('m2', 'Done.');
+  s.result('completed');
+  // Mike ticks one follow-up (its words are his message).
+  h.runner.send(thread.id, "Make Google's sign-in screen name the calendar site");
+  s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  s.text('m3', 'Which of these should I build?');
+  r = await endTurn({ needs: 'you', asks: [{ question: 'Neon suggested three bigger changes. Which should I build?', options: [{ label: 'Download all' }, { label: 'None' }] }, { question: "Send the site to Peter's list now?", options: [{ label: 'Send it' }, { label: 'Wait' }] }] });
+  assert.equal(r.error, false, r.text);
+  s.text('m4', 'Asked.');
+  s.result('completed');
+  // He replies with something else, so the question goes unanswered.
+  h.runner.send(thread.id, 'Can you have Neon design a few versions?');
+  s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  s.text('m5', 'Design A is live.');
+  // Snoozing, archiving or waiting on threads isn't Done: no note. A blank snooze is no snooze.
+  r = await endTurn({ needs: 'nothing', snooze: ' ' });
+  assert.ok(r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+  s.result('completed');
+  h.runner.send(thread.id, 'keep going');
+  s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  s.text('m5b', 'Design A is live.');
+  r = await endTurn({ needs: 'nothing', snooze: '2h' });
+  assert.equal(r.error, false, r.text);
+  s.result('completed');
+  // Another agent quoting an item isn't Mike answering it.
+  h.runner.send(thread.id, `${AGENT_MESSAGE_PREFIX}abc] Still open: Draft an email telling Peter the site is ready`);
+  s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  s.text('m5c', 'Noted.');
+  s.result('completed');
+  // His card answer, a turn later than the card, is.
+  h.runner.send(thread.id, "Send the site to Peter's list now?\nWait", [], { answers: [{ action: "Send the site to Peter's list now?", answer: 'Wait' }] });
+  s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  s.text('m6', 'Fixed the review findings.');
+  r = await endTurn({ needs: 'nothing', next: ["Load the rest of Peter's photos once he sends them"] });
+  assert.ok(r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+  assert.match(r.text, /"Draft an email telling Peter the site is ready"; "Neon suggested three bigger changes\. Which should I build\?"\./);
+  // The ticked one, and one this card already carries, aren't listed.
+  assert.doesNotMatch(r.text, /sign-in screen|rest of Peter's photos|Peter's list/);
+  // Once a turn: sent again as it was, it's taken.
+  r = await endTurn({ needs: 'nothing', next: ["Load the rest of Peter's photos once he sends them"] });
+  assert.equal(r.error, false, r.text);
+
+  // A Codex sub-agent's call runs through the same handler and never reaches
+  // the thread's events, so the note is capped at once a turn in memory too.
+  s.result('completed');
+  h.runner.send(thread.id, 'next bit');
+  s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  s.init();
+  const codexEnd = buildThreadbearTools(h.runner, thread.id, Date.now, undefined, projects, undefined, { provider: 'codex', oneReply: () => true, plainCardNote: false, tryFirstNote: false, sleep: async () => {} }).find((x) => x.name === 'end_turn')! as unknown as { formFor?: (a: unknown) => { handler: (a: unknown, e: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }> }; handler: (a: unknown, e: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }> };
+  const child = codexEnd.formFor?.({ needs: 'nothing' }) ?? codexEnd;
+  const first = await child.handler({ needs: 'nothing' }, {});
+  assert.ok(first.content[0].text.startsWith(PROJECT_STEP_NUDGE), first.content[0].text);
+  const second = await child.handler({ needs: 'nothing' }, {});
+  assert.ok(!second.content[0].text.startsWith(PROJECT_STEP_NUDGE), second.content[0].text);
+
+  // A thread another thread started, in the same project: its Done is about its own brief.
+  const helper = h.runner.create({ text: 'Fix the review window', accountId: 'claude-3', cwd: app, startedBy: { kind: 'thread', label: 'Agent', threadId: thread.id } }).thread;
+  const p = projects.list()[0];
+  projects.changeMembership(helper.id, { add: [p.id], by: 'agent' });
+  const helperEnd = buildThreadbearTools(h.runner, helper.id, Date.now, undefined, projects, undefined, { oneReply: () => true, plainCardNote: false, tryFirstNote: false, sleep: async () => {} }).find((x) => x.name === 'end_turn')!;
+  const hs = h.adapter.sessions.filter((x) => x.opts.threadId === helper.id).at(-1)!;
+  hs.init();
+  hs.text('h1', 'Fixed.');
+  const hr = (await helperEnd.handler({ needs: 'nothing' } as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
+  assert.ok(!hr.isError, hr.content[0].text);
+});
+
 // The primary's side of a handover in these tests: projects with no
 // threads of their own, as the kept thread is still on the draining runner.
 const noThreads: ProjectHost = {
@@ -814,6 +979,16 @@ test('a thread finishing its turn on a draining runner changes projects on the n
   assert.equal(primary.record(p.id)?.state, 'Releases live');
   const saved = JSON.parse(fs.readFileSync(path.join(h.home, 'projects.json'), 'utf8'));
   assert.equal(saved.projects[0].notes, 'Forks follow tags.', "in the new runner's projects.json");
+  // editNotes is made on the primary, in one step.
+  assert.equal((await call('update_project', { project: p.id, editNotes: [{ old: 'Forks', new: 'Forks and mirrors' }] })).error, false);
+  assert.equal(primary.record(p.id)?.notes, 'Forks and mirrors follow tags.');
+  // An older primary without it refuses, rather than saving edits made here.
+  const older = link;
+  link = { call: async (method, params: any = {}) => (params.op === 'editNotes' ? Promise.reject(new Error('drain.projects has no editNotes')) : older!.call(method, params)) };
+  assert.equal((await call('update_project', { project: p.id, editNotes: [{ old: 'mirrors', new: 'clones' }] })).error, true);
+  assert.equal(primary.record(p.id)?.notes, 'Forks and mirrors follow tags.');
+  link = older;
+  assert.equal((await call('update_project', { project: p.id, editNotes: [{ old: 'Forks and mirrors', new: 'Forks' }] })).error, false);
   assert.match((await call('read_project', { project: p.id })).text, /\nState: Releases live\n[\s\S]*\nForks follow tags\.\n/);
 
   // A project made now is the new runner's. The kept thread joins it here,

@@ -254,7 +254,7 @@ impl Composer {
         out
     }
 
-    /// Picks files for "+" > Attach images… (ComposerView.chooseImages).
+    /// Picks files for "+" > Attach images or Markdown… (ComposerView.chooseImages).
     fn attach_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = crate::composer_media::choose_images(window, cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -292,10 +292,10 @@ impl Composer {
             // Another runner's thread before its logins have come: its Mac's
             // name where the chips would be, and send (remoteControls).
             (Some(away), false) if !away.logins_known => {
-                return row.child(div().ml(px(-7.)).child(render_runner_chip(away, cx))).child(div().flex_1()).child(send_button).into_any_element();
+                return row.child(machine_slot().ml(px(-7.)).child(self.render_machine_chip(&data, away.name.clone(), away.icon, away.place.clone(), &away.cwd, cx))).child(div().flex_1()).child(send_button).into_any_element();
             }
             // Its logins known: the machine's chip in place of "+".
-            (Some(away), false) => row = row.child(div().ml(px(-7.)).child(render_runner_chip(away, cx))).child(chip_divider(cx)),
+            (Some(away), false) => row = row.child(machine_slot().ml(px(-7.)).child(self.render_machine_chip(&data, away.name.clone(), away.icon, away.place.clone(), &away.cwd, cx))).child(chip_divider(cx)),
             // A new thread for another runner, before it's said what logins
             // it has: the machine chip, and how it's going (draftWaitingControls).
             (Some(away), true) if !away.logins_known => {
@@ -313,8 +313,23 @@ impl Composer {
             // This Mac: "+", then the machine chip on a new thread.
             (None, _) => {
                 row = row.child(div().flex_none().ml(px(-7.)).child(self.render_plus(&data, window, cx)));
-                if data.is_new && self.app.upgrade().is_some_and(|a| !a.read(cx).remote.runners.is_empty()) {
+                let others = self.app.upgrade().is_some_and(|a| {
+                    let remote = &a.read(cx).remote;
+                    !remote.runners.is_empty() || !remote.services().is_empty()
+                });
+                if data.is_new && others {
                     row = row.child(self.render_runs_on_chip(cx));
+                } else if others {
+                    // This Mac's thread, once there are other machines: which
+                    // one it's on, and its menu to move it (machine_menu_rows).
+                    if let Some((name, icon)) = self.app.upgrade().and_then(|a| {
+                        let t = a.read(cx);
+                        let name = data.summary.as_ref().and_then(|s| t.runner_label(s))?;
+                        Some((name, t.self_runner_symbol()))
+                    }) {
+                        let cwd = data.summary.as_ref().map_or_else(String::new, |s| s.cwd.clone());
+                        row = row.child(self.render_machine_chip(&data, name.clone(), icon, format!("On {name}"), &cwd, cx)).child(chip_divider(cx));
+                    }
                 }
             }
         }
@@ -341,7 +356,7 @@ impl Composer {
             .into_any_element()
     }
 
-    /// Opens a small menu: "Attach images…" and the folder (PlusButton).
+    /// Opens a small menu: "Attach images or Markdown…" and the folder (PlusButton).
     fn render_plus(&self, data: &ChipData, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let composer = cx.entity().downgrade();
         let current = data.summary.as_ref().map(|t| t.cwd.clone()).unwrap_or_default();
@@ -351,7 +366,7 @@ impl Composer {
         // schedules are made there (the Swift app's Send menu says the same).
         let can_schedule = data.away.is_none() && self.app.upgrade().is_some_and(|a| a.read(cx).schedules_supported);
         let can_save = self.thread_id.is_none() && data.away.is_none();
-        let trigger = ChipTrigger { busy: self.chips_busy(cx).1, badge: None, id: "composer-plus-button".into(), kind: TriggerKind::Plus, title: SharedString::default(), icon: None, tip: "Attach images, change the folder or schedule the message".into(), selected: false };
+        let trigger = ChipTrigger { busy: self.chips_busy(cx).1, badge: None, id: "composer-plus-button".into(), kind: TriggerKind::Plus, title: SharedString::default(), icon: None, tip: "Attach images or Markdown, change the folder or schedule the message".into(), selected: false };
         // Spinning while a folder change lands, and no menu till then.
         if trigger.busy {
             return trigger.into_any_element();
@@ -373,7 +388,7 @@ impl Composer {
                             if let Some(c) = c.upgrade() { c.update(cx, |c, cx| c.save_to_backlog(window, cx)); }
                         }))
                     })
-                    .child(menu_row("attach", Some(IconName::Image), "Attach images…", None, false, window, cx, move |window, cx| {
+                    .child(menu_row("attach", Some(IconName::Image), "Attach images or Markdown…", None, false, window, cx, move |window, cx| {
                         popover.update(cx, |s, cx| s.dismiss(window, cx));
                         if let Some(c) = c1.upgrade() {
                             c.update(cx, |c, cx| c.attach_images(window, cx));
@@ -416,7 +431,7 @@ impl Composer {
             .into_any_element()
     }
 
-    fn render_permission_chip(&self, mode: String, composer: &Entity<Composer>, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_permission_chip(&self, mode: String, composer: &Entity<Composer>, cx: &mut Context<Self>) -> AnyElement {
         let title = permission_title(&mode);
         let help = permission_help(&mode);
         let icon = permission_icon(&mode);
@@ -424,6 +439,13 @@ impl Composer {
         let data = self.chip_data(cx);
         let provider = data.summary.as_ref().map(|t| t.provider.as_str()).unwrap_or_default();
         let has_auto = data.logins.has_auto_mode(provider);
+        // Another runner's thread: what it really has (its row's
+        // permissionMode), with no menu, as a mode can't be changed from
+        // here (relay.ts refuses it): a pick would only fail.
+        if let (false, Some(away)) = (data.is_new, data.away.as_ref()) {
+            let tip = format!("{help}. Its access can only be changed in the Threadbear app on {}", away.name);
+            return ChipTrigger { busy: false, badge: None, id: "composer-permission-chip".into(), kind: TriggerKind::Label, title: title.into(), icon: Some(if mode == "full" { crate::icons::symbol("lock.open") } else { Icon::from(icon) }), tip: tip.into(), selected: false }.into_any_element();
+        }
         let is_pi = provider == "pi";
         style::menu::popover(Popover::new("composer-permission"), cx)
             // Its chip's title may shrink to fit a narrow box.
@@ -444,6 +466,7 @@ impl Composer {
                     })
                 }))
             })
+            .into_any_element()
     }
 
     fn render_account_chip(&self, data: &ChipData, cx: &mut Context<Self>) -> impl IntoElement {
@@ -546,7 +569,11 @@ impl Composer {
                 let tip = if t.remote.runners.iter().any(|r| r.id == runner && !r.online) { format!("Runs on {name}, offline") } else { format!("Runs on {name}") };
                 (t.runner_icon_symbol(Some(&runner)), tip)
             }
-            None => (self.app.upgrade().map_or("desktopcomputer", |a| a.read(cx).self_runner_symbol()), "Runs on this Mac".to_owned()),
+            None => match self.app.upgrade().and_then(|a| a.read(cx).new_thread.picks.service.clone().map(|s| a.read(cx).service_name_of(&s))) {
+                // A virtual runner: a machine of its own for this thread.
+                Some(name) => (crate::icons::VIRTUAL_RUNNER, format!("Runs on {name}, a machine of its own")),
+                None => (self.app.upgrade().map_or("desktopcomputer", |a| a.read(cx).self_runner_symbol()), "Runs on this Mac".to_owned()),
+            },
         };
         let app = self.app.clone();
         h_flex()
@@ -575,6 +602,53 @@ impl Composer {
             .child(chip_divider(cx))
     }
 
+    /// The machine chip on a thread's box (`runnerChip`): the machine it's
+    /// on, by icon and name, with a chevron, as there's a menu to move it
+    /// (`Threadbear::machine_menu_rows`). On another runner's thread it leads
+    /// the row in place of "+"; on this Mac's it comes after "+", once there
+    /// are other machines. While a move's going it spins, and its menu is
+    /// Cancel Move, so a second click can't start another.
+    fn render_machine_chip(&self, data: &ChipData, name: String, icon: &'static str, place: String, cwd: &str, cx: &App) -> AnyElement {
+        let thread_id = data.summary.as_ref().map(|s| s.id.clone());
+        let moving = data.summary.as_ref().and_then(|s| s.moving_line());
+        let tip: SharedString = match &moving {
+            Some(line) => line.clone().into(),
+            None => format!("{place}, in {}. Click to move it to another machine", abbreviate_home(cwd)).into(),
+        };
+        let app = self.app.clone();
+        let mut chip = h_flex()
+            .id("composer-runner-name")
+            .test_support()
+            .role(Role::Button)
+            .aria_label(name.clone())
+            // It gives way, its name ending "…": as flex_none it pushed Send
+            // out of a 560-point box on Linux, whose font is wider
+            // (composer-chips.feature, 17 Nov). But last, after the model's
+            // and access's chips (MACHINE_SHRINK).
+            .min_w_0();
+        chip.style().flex_shrink = Some(MACHINE_SHRINK);
+        chip
+            .gap(px(4.))
+            .h(px(26.))
+            .px(px(7.))
+            .rounded(px(7.))
+            .cursor_pointer()
+            .hover(|s| s.bg(style::chip_hover_fill(cx)))
+            .map(|d| match &moving {
+                Some(_) => d.child(div().flex_none().child(crate::spinner::Spinner::new().color(style::secondary_text(cx)).with_size(px(size::CHIP)))),
+                None => d.child(div().flex_none().child(crate::icons::symbol(icon).with_size(px(size::CHIP - 1.)).text_color(style::faint_icon(cx)))),
+            })
+            .child(div().min_w_0().text_size(px(size::CHIP)).text_color(style::quiet_text(cx)).truncate().child(name))
+            .child(div().flex_none().flex().child(Icon::from(IconName::ChevronDown).with_size(px(9.)).text_color(style::faint_icon(cx))))
+            .tip(tip)
+            .on_click(move |ev: &ClickEvent, window, cx| {
+                let (Some(app), Some(id)) = (app.upgrade(), thread_id.clone()) else { return };
+                let at = ev.position();
+                app.update(cx, |app, cx| app.open_machine_menu(id, point(at.x, at.y - px(12.)), window, cx));
+            })
+            .into_any_element()
+    }
+
     /// The model picker's state lives on the composer so its search text and
     /// column stay put while it's open.
     fn picker_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ModelPickerView> {
@@ -594,6 +668,9 @@ const PINNED_COLUMN: &str = "@pinned";
 /// colours (ComposerChip).
 enum TriggerKind {
     Chip,
+    /// A chip with no menu behind it (another runner's thread's access):
+    /// its words and tip, but no chevron, hover or pointer promising one.
+    Label,
     Plus,
     Ring(ContextMeter),
 }
@@ -636,7 +713,8 @@ impl RenderOnce for ChipTrigger {
         // A chip spinning on a change says what it's waiting for; "+" keeps
         // its own tip, as the Swift PlusButton does.
         let tip: SharedString = if busy && matches!(self.kind, TriggerKind::Chip) { "Moving this thread".into() } else { tip };
-        let base = div().id(self.id).flex().items_center().when(!busy, |d| d.cursor_pointer()).test_support().role(Role::Button).aria_label(label).tip(tip.clone());
+        let menu = !matches!(self.kind, TriggerKind::Label);
+        let base = div().id(self.id).flex().items_center().when(!busy && menu, |d| d.cursor_pointer()).test_support().role(Role::Button).aria_label(label).tip(tip.clone());
         let spinner = |side: f32| crate::spinner::Spinner::new().color(style::secondary_text(cx)).with_size(px(side));
         match self.kind {
             TriggerKind::Plus => base
@@ -650,45 +728,46 @@ impl RenderOnce for ChipTrigger {
                 .when(busy, |d| d.child(spinner(12.)))
                 .into_any_element(),
             TriggerKind::Ring(meter) => base.justify_center().size(px(26.)).rounded_full().hover(|s| s.bg(style::hover_fill(cx))).child(context_ring(meter, cx)).into_any_element(),
-            TriggerKind::Chip => base
+            TriggerKind::Chip | TriggerKind::Label => base
                 .min_w_0()
                 .h(px(26.))
                 .px(px(7.))
                 .gap(px(4.))
                 .rounded(px(7.))
-                .when(!busy, |d| d.hover(|s| s.bg(style::chip_hover_fill(cx))))
+                .when(!busy && menu, |d| d.hover(|s| s.bg(style::chip_hover_fill(cx))))
                 .when(busy, |s| s.child(div().flex_none().child(spinner(size::CHIP))))
                 .when_some(self.icon.filter(|_| !busy), |s, icon| s.child(div().flex_none().flex().child(icon.with_size(px(size::CHIP - 1.)).text_color(style::faint_icon(cx)))))
                 // Its title is what gives way, ending "…", as a SwiftUI
                 // Text with lineLimit(1) does.
                 .when(!self.title.is_empty(), |s| s.child(div().min_w_0().text_size(px(size::CHIP)).text_color(style::quiet_text(cx)).truncate().child(self.title.clone())))
                 .when_some(self.badge.clone(), |s, badge| {
-                    let color = if badge == ChipBadge::Blocked { cx.theme().danger } else { style::needs_you(cx) };
+                    let color = if badge.is_stop() { cx.theme().danger } else { style::needs_you(cx) };
                     s.child(div().flex_none().text_size(px(size::CHIP)).text_color(color).whitespace_nowrap().child(badge_words(&badge)))
                 })
-                .when(!self.title.is_empty(), |s| s.child(div().flex_none().flex().child(Icon::from(IconName::ChevronDown).with_size(px(9.)).text_color(style::faint_icon(cx)))))
+                .when(menu && !self.title.is_empty(), |s| s.child(div().flex_none().flex().child(Icon::from(IconName::ChevronDown).with_size(px(9.)).text_color(style::faint_icon(cx)))))
                 .into_any_element(),
         }
     }
+}
+
+/// How readily the machine chip shrinks against the other chips' 1: a
+/// machine's name is short and says where the thread is, so "laptop" stays
+/// whole while "Claude · Opus 5.5" gives way to "Claude · Op…" (Mike's
+/// window with Highlights open showed "la…", 18 Nov). Still above 0, so it
+/// shrinks too rather than push Send out of a narrow box.
+const MACHINE_SHRINK: f32 = 0.05;
+
+/// The box another runner's machine chip sits in, giving way as late.
+fn machine_slot() -> Div {
+    let mut d = div().min_w_0();
+    d.style().flex_shrink = Some(MACHINE_SHRINK);
+    d
 }
 
 fn chip_divider(cx: &App) -> impl IntoElement {
     div().flex_none().w(px(1.)).h(px(12.)).bg(style::chip_divider(cx))
 }
 
-/// The machine chip on another runner's thread (`runnerChip`): its icon and
-/// name at the front of the row, in place of "+" and the folder.
-fn render_runner_chip(away: &AwayRunner, cx: &App) -> impl IntoElement {
-    let tip = format!("{}, in {}", away.place, abbreviate_home(&away.cwd));
-    h_flex()
-        .id("composer-runner-name")
-        .gap(px(4.))
-        .h(px(26.))
-        .px(px(7.))
-        .child(crate::icons::symbol(away.icon).with_size(px(size::CHIP - 1.)).text_color(style::faint_icon(cx)))
-        .child(div().text_size(px(size::CHIP)).text_color(style::quiet_text(cx)).whitespace_nowrap().child(away.name.clone()))
-        .tip(tip.clone())
-}
 
 /// The ring for how full the context is (ContextRing): grey, orange near full,
 /// a sliver even when nearly empty, so it reads as a meter.
@@ -737,10 +816,7 @@ fn permission_icon(mode: &str) -> IconName {
 }
 
 fn abbreviate_home(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
-        _ => path.to_owned(),
-    }
+    threadbear_core::new_thread::abbreviate_home(path, &crate::files::home_dir())
 }
 
 /// A row in one of the chips' menus: an icon, a title, a line under it and a
@@ -1049,7 +1125,7 @@ impl ModelPickerView {
 /// the room left, orange under a quarter and red at its limit.
 fn pool_login_row(row: threadbear_core::login_picker::PoolLoginRow, cx: &App, action: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     let color = match row.badge {
-        Some(ChipBadge::Blocked) => cx.theme().danger,
+        Some(ChipBadge::Blocked | ChipBadge::SignedOut | ChipBadge::PlanEnded) => cx.theme().danger,
         Some(ChipBadge::Low(_)) => style::needs_you(cx),
         None => style::secondary_label(cx),
     };
@@ -1089,7 +1165,7 @@ impl Composer {
     /// new-thread page, the pool a new thread starts in.
     fn unpin_pool(&self, data: &ChipData, cx: &App) -> Option<String> {
         let thread = data.summary.as_ref()?;
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = crate::files::home_dir();
         let last = self.app.upgrade().and_then(|a| a.read(cx).new_thread.prefs.remembered.last_pool.clone());
         threadbear_core::login_picker::unpin_target(&data.logins.pools, &thread.account_id, &thread.cwd, &home, last.as_deref())
     }
@@ -1328,6 +1404,8 @@ pub(crate) fn badge_words(badge: &ChipBadge) -> String {
     match badge {
         ChipBadge::Low(percent) => format!("\u{00B7} {percent}"),
         ChipBadge::Blocked => "Limit reached".to_owned(),
+        ChipBadge::SignedOut => "Signed out".to_owned(),
+        ChipBadge::PlanEnded => "Plan ended".to_owned(),
     }
 }
 

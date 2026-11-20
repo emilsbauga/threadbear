@@ -157,3 +157,38 @@ Then('the list is {int} points wider than it was', async function (this: Threadb
     return columns && near(columns[1], before.columns[1] + points);
   });
 });
+
+When('the window is {int} by {int} points', async function (this: ThreadbearWorld, w: number, h: number) {
+  await this.app.do({ cmd: 'resize', w, h });
+  // A frame or two for the box to follow the window.
+  await new Promise((r) => setTimeout(r, 400));
+});
+
+// Where the palette was drawn and the window it's in, in the window's points
+// (the GPUI dump's `palette.frame`, x, y, width and height, and
+// `palette.window`), and its detail column's width as drawn
+// (`palette.detailWidth`), past the lines between the columns and its edge.
+type Drawn = { frame: [number, number, number, number]; window: [number, number]; detailWidth: number };
+
+async function drawn(world: ThreadbearWorld): Promise<Drawn> {
+  return world.until('the palette drawn', (d) => {
+    const p = (d as unknown as { palette?: Partial<Drawn> }).palette;
+    return p?.frame && p.window && typeof p.detailWidth === 'number' ? (p as Drawn) : undefined;
+  });
+}
+
+Then('the palette is inside the window', async function (this: ThreadbearWorld) {
+  // A frame for a resize or a zoom to reach it.
+  await new Promise((r) => setTimeout(r, 400));
+  const { frame: [x, y, w, h], window: [ww, wh] } = await drawn(this);
+  const at = `the palette at ${x},${y} ${w}x${h} in a window ${ww}x${wh}`;
+  assert.ok(x >= -0.5 && y >= -0.5, `${at}: off the window's top or left`);
+  assert.ok(x + w <= ww + 0.5 && y + h <= wh + 0.5, `${at}: off the window's right or bottom`);
+});
+
+Then('the palette is at least {int} points wide, with {int} for its details', async function (this: ThreadbearWorld, width: number, detail: number) {
+  const { size } = await geometry(this);
+  assert.ok(size[0] >= width - 0.5, `the palette is ${size[0]} points wide`);
+  const { detailWidth } = await drawn(this);
+  assert.ok(detailWidth >= detail - 0.5, `the details are ${detailWidth} points wide in a palette ${size[0]} wide`);
+});

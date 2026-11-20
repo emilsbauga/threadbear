@@ -33,6 +33,22 @@ Then('{string} is enabled to a screen reader', async function (this: ThreadbearW
   assert.notEqual(n.disabled, true, `"${label}" is ${JSON.stringify(n)}`);
 });
 
+Then('{string} is a radio button to a screen reader', async function (this: ThreadbearWorld, label: string) {
+  const n = await node(this, label, false, (x) => x.role === 'RadioButton');
+  assert.equal(n.role, 'RadioButton', `"${label}" is ${JSON.stringify(n)}`);
+});
+
+// One of a set of choices (a radio button's checked state).
+Then('{string} is chosen to a screen reader', async function (this: ThreadbearWorld, label: string) {
+  const n = await node(this, label, false, (x) => x.checked === true);
+  assert.equal(n.checked, true, `"${label}" is ${JSON.stringify(n)}`);
+});
+
+Then("{string} isn't chosen to a screen reader", async function (this: ThreadbearWorld, label: string) {
+  const n = await node(this, label, false, (x) => x.checked !== true);
+  assert.notEqual(n.checked, true, `"${label}" is ${JSON.stringify(n)}`);
+});
+
 // A row is labelled by its tooltip, which starts with the thread's title.
 Then('the row of {string} is a list item to a screen reader', async function (this: ThreadbearWorld, title: string) {
   const n = await node(this, title, true, (x) => x.role === 'ListItem');

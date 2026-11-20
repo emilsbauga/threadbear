@@ -56,12 +56,32 @@ pub(crate) struct TurningArc {
     side: f32,
     color: Hsla,
     layered: bool,
+    /// How much of the ring it draws: three quarters, or less (`sweep`).
+    sweep: f32,
+    /// Layered outside the Threads panel (`outside_threads`).
+    kept: bool,
 }
 
 impl TurningArc {
     /// `side` in points, before the zoom.
     pub(crate) fn new(side: f32, color: Hsla) -> Self {
-        Self { side, color, layered: false }
+        Self { side, color, layered: false, sweep: 0.75, kept: false }
+    }
+
+    /// A shorter arc, as a fraction of the ring: the Updates icon's quarter
+    /// going round its own circle.
+    pub(crate) fn sweep(mut self, sweep: f32) -> Self {
+        self.sweep = sweep;
+        self
+    }
+
+    /// Layered, in a view drawn outside the Threads panel (the activity bar,
+    /// in the app's own view): kept while the panel isn't in front, and not
+    /// faded at the list's foot. The view calls `view_drawing` too.
+    pub(crate) fn outside_threads(mut self) -> Self {
+        self.layered = true;
+        self.kept = true;
+        self
     }
 
     /// Turned by the window's layer rather than by drawing its view again:
@@ -79,7 +99,7 @@ impl RenderOnce for TurningArc {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         #[cfg(test)]
         RENDERS.with(|counts| counts[0].set(counts[0].get() + 1));
-        let (color, layered) = (self.color, self.layered);
+        let (color, layered, sweep, kept) = (self.color, self.layered, self.sweep, self.kept);
         canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
@@ -91,11 +111,11 @@ impl RenderOnce for TurningArc {
                 if layered && LAYERED.with(|l| l.borrow().contains_key(&id)) && drawing_now(id, window.current_view()) {
                     // `opacity` scales the alpha: the row's own opacity, once.
                     let color = color.opacity(window.element_opacity());
-                    place(id, window.current_view(), bounds, window.content_mask(), color);
+                    place(window.current_view(), bounds, window.content_mask(), color, sweep, kept, id);
                 } else {
                     // A window with no layer (a panel in one of its own)
                     // turns its arcs itself, redrawing their view.
-                    paint_arc(bounds, color, window);
+                    paint_arc(bounds, color, sweep, window);
                     next_frame(window, cx);
                 }
             },
@@ -105,7 +125,7 @@ impl RenderOnce for TurningArc {
     }
 }
 
-fn paint_arc(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+fn paint_arc(bounds: Bounds<Pixels>, color: Hsla, sweep: f32, window: &mut Window) {
     static START: OnceLock<Instant> = OnceLock::new();
     let turned = (START.get_or_init(Instant::now).elapsed().as_secs_f32() / TURN_SECONDS).fract();
     // The ring as Swift's: 1.6 wide, 3 in from the sides, zoomed like an
@@ -116,11 +136,11 @@ fn paint_arc(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
     let center = bounds.center();
     let at = |angle: f32| point(center.x + gpui_kit::px(radius * angle.cos()), center.y + gpui_kit::px(radius * angle.sin()));
     let start = turned * std::f32::consts::TAU;
-    let end = start + 0.75 * std::f32::consts::TAU;
+    let end = start + sweep * std::f32::consts::TAU;
     let mut path = PathBuilder::stroke(gpui_kit::px(width));
     path.move_to(at(start));
-    // Clockwise on screen (y runs down), the long way round.
-    path.arc_to(point(gpui_kit::px(radius), gpui_kit::px(radius)), gpui_kit::px(0.), true, true, at(end));
+    // Clockwise on screen (y runs down), the long way round past half.
+    path.arc_to(point(gpui_kit::px(radius), gpui_kit::px(radius)), gpui_kit::px(0.), sweep > 0.5, true, at(end));
     if let Ok(path) = path.build() {
         window.paint_path(path, color);
     }
@@ -154,6 +174,9 @@ struct Placed {
     bounds: Bounds<Pixels>,
     mask: ContentMask<Pixels>,
     color: Hsla,
+    sweep: f32,
+    /// Outside the Threads panel (`outside_threads`).
+    kept: bool,
 }
 
 /// A view with layered arcs is drawing: it places the ones it still has as it
@@ -173,8 +196,8 @@ fn drawing_now(window: WindowId, view: EntityId) -> bool {
     DRAWN.with(|d| d.borrow().get(&(window, view)).is_some_and(|frame| *frame == FRAMES.get()))
 }
 
-fn place(window: WindowId, view: EntityId, bounds: Bounds<Pixels>, mask: ContentMask<Pixels>, color: Hsla) {
-    PLACED.with(|p| p.borrow_mut().entry(window).or_default().push(Placed { view, bounds, mask, color }));
+fn place(view: EntityId, bounds: Bounds<Pixels>, mask: ContentMask<Pixels>, color: Hsla, sweep: f32, kept: bool, window: WindowId) {
+    PLACED.with(|p| p.borrow_mut().entry(window).or_default().push(Placed { view, bounds, mask, color, sweep, kept }));
 }
 
 /// The window's arcs, turned: drawn last over the window's own content, and
@@ -213,7 +236,11 @@ impl Render for ArcLayer {
                 let in_front = dock_view.read(cx).shows(panel, cx);
                 let dragging = dock.read(cx).controller.drag.is_some() || dock_view.read(cx).is_landing();
                 if !in_front {
-                    PLACED.with(|p| p.borrow_mut().remove(&window.window_handle().window_id()));
+                    PLACED.with(|p| {
+                        if let Some(arcs) = p.borrow_mut().get_mut(&window.window_handle().window_id()) {
+                            arcs.retain(|a| a.kept);
+                        }
+                    });
                 }
                 paint_layer(!dragging, window, cx)
             },
@@ -250,9 +277,9 @@ fn paint_layer(draw: bool, window: &mut Window, cx: &mut App) {
     let placed: HashSet<(WindowId, EntityId)> = PLACED.with(|p| p.borrow().iter().flat_map(|(w, arcs)| arcs.iter().map(move |a| (*w, a.view))).collect());
     DRAWN.with(|d| d.borrow_mut().retain(|key, drew| *drew == frame || placed.contains(key)));
     for arc in arcs.iter().filter(|_| draw) {
-        let shown = foot_shown(f32::from(arc.mask.bounds.bottom()), f32::from(arc.bounds.center().y));
+        let shown = if arc.kept { 1. } else { foot_shown(f32::from(arc.mask.bounds.bottom()), f32::from(arc.bounds.center().y)) };
         let color = arc.color.opacity(shown);
-        window.with_content_mask(Some(arc.mask.clone()), |window| paint_arc(arc.bounds, color, window));
+        window.with_content_mask(Some(arc.mask.clone()), |window| paint_arc(arc.bounds, color, arc.sweep, window));
     }
     FRAMES.set(frame + 1);
     // The next turn: this layer's view draws again (and the root with it),

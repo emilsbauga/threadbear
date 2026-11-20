@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use threadbear_core::juice;
 use threadbear_core::shortcuts::ShortcutCommand;
+use threadbear_core::updates::NextVersion;
 use crate::tips::Tip as _;
 
 /// `ActivityBar.width`.
@@ -120,6 +121,55 @@ fn bouncing(id: &SharedString, icon: Icon) -> AnyElement {
     })
     .into_any_element()
 }
+
+/// The Updates icon as the next version stands, so a glance says it
+/// without opening the panel (`next_version`): a quarter of a ring going
+/// round its circle while it builds, and filled green once it's ready, popping
+/// in as the dot does. None for the plain icon. Mike picked these from three
+/// on 19 Nov (review d3ac73e3), after a week of opening Updates to look.
+fn updates_face(next: NextVersion, cx: &App) -> Option<AnyElement> {
+    let ready_pop = turned_up("updates-ready".to_owned(), next == NextVersion::Ready);
+    match next {
+        NextVersion::None => None,
+        NextVersion::Coming => {
+            let faint = style::secondary_text(cx).opacity(0.35);
+            let ring = crate::spinner::TurningArc::new(UPDATES_RING, cx.theme().foreground).sweep(0.25).outside_threads();
+            Some(
+                div()
+                    .relative()
+                    .size(px(15.))
+                    .child(icons::symbol("arrow.down.circle").with_size(px(15.)).text_color(faint))
+                    .child(div().absolute().top(px((15. - UPDATES_RING) / 2.)).left(px((15. - UPDATES_RING) / 2.)).child(ring))
+                    .into_any_element(),
+            )
+        }
+        NextVersion::Ready => {
+            let reduce = cx.reduce_motion();
+            let pop_length = if reduce { juice::POP_REDUCED } else { juice::POP };
+            let green = div()
+                .size(px(14.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(style::tick_green(cx))
+                .child(icons::symbol("arrow.down").with_size(px(9.)).text_color(cx.theme().background));
+            Some(match ready_pop {
+                Some(at) => green
+                    .with_animation(SharedString::from(format!("rail-updates-ready-{at:?}")), Animation::new(pop_length), move |g, t| {
+                        let (scale, opacity) = juice::pop_in(pop_length.mul_f32(t), reduce);
+                        g.size(px(14. * scale)).opacity(opacity)
+                    })
+                    .into_any_element(),
+                None => green.into_any_element(),
+            })
+        }
+    }
+}
+
+/// The ring's side, as TurningArc reckons it (3 in from the sides): the
+/// icon's own circle at 15 points.
+const UPDATES_RING: f32 = 15.5;
 
 /// When the count or dot at `key` turned up, while it's still popping in
 /// (`Juice.popIn`): it pops only on turning up, not when the app first draws
@@ -369,6 +419,7 @@ impl Threadbear {
         let mut button = RailButton::new("rail-updates", "arrow.down.circle", self.updates_tooltip(), self.activity_panel_showing(shell::UPDATES, cx));
         button.dot = self.updates_dot();
         button.quiet_dot = self.updates_quiet_dot();
+        button.face = updates_face(self.next_version(), cx);
         let updates = rail_button(button, |this, _, cx| this.toggle_under_threads(shell::UPDATES, cx), cx);
         // Right-click: the app's update in a popover (updates_panel.rs).
         foot.push(self.with_update_popover(updates, window, cx));
@@ -380,6 +431,9 @@ impl Threadbear {
         let mut button = RailButton::new("rail-usage", "gauge.with.dots.needle.33percent", "Usage", usage_shown);
         button.face = Some(pot);
         button.tip = tip;
+        // A login signed out, or whose sign-in ends within days: its row in
+        // the panel says which, with Sign in… (usage.rs).
+        button.dot = threadbear_core::usage::sign_in_needed(&self.logins.accounts, crate::now_ms());
         let usage = rail_button(button, |this, _, cx| this.toggle_under_threads(shell::USAGE, cx), cx);
         let mut button = RailButton::new("rail-settings", "gearshape", "Settings", false);
         button.tip = self.shortcut_tip("Settings", ShortcutCommand::Settings);
@@ -496,7 +550,7 @@ impl Threadbear {
             let quiet = self.remote.all_runners.iter().any(|r| threadbear_core::runners::state(r) != threadbear_core::runners::State::Online);
             activity.push(json!({ "title": "Runners", "dot": false, "quietDot": quiet, "active": self.activity_panel_showing(shell::RUNNERS, cx) }));
         }
-        activity.push(json!({ "title": "Updates", "dot": self.updates_dot(), "quietDot": self.updates_quiet_dot(), "active": self.activity_panel_showing(shell::UPDATES, cx) }));
+        activity.push(json!({ "title": "Updates", "dot": self.updates_dot(), "quietDot": self.updates_quiet_dot(), "nextVersion": format!("{:?}", self.next_version()).to_lowercase(), "active": self.activity_panel_showing(shell::UPDATES, cx) }));
         let mut right = vec![];
         if let Some(thread) = self.pane_thread() {
             let project_page = self.projects.open.is_some();

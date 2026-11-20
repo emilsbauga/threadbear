@@ -60,6 +60,9 @@ export const handoversPart = {
       ready: opts.ready ?? (() => true),
     };
     this.draining = d;
+    // New threads start on the new runner, so a CLI started ahead of one here
+    // would never be used.
+    this.dropSpare('handing over');
     // Accounts are the primary's to watch now.
     this.rescanTimer?.cancel();
     this.accountsTimer?.cancel();
@@ -218,6 +221,11 @@ export const handoversPart = {
   adopt(this: Runner, threadId: string, opts: { crashed?: boolean } = {}): ThreadSummary | undefined {
     const had = this.threads.get(threadId);
     if (had) return this.summary(had);
+    // A box takes in no thread but its own (box-mode.ts).
+    if (this.boxThread !== undefined && threadId !== this.boxThread) {
+      this.log.warn("box: won't take in a thread that isn't its own", { threadId });
+      return undefined;
+    }
     // A thread handed over while this runner is still connecting to the old
     // one comes before start: which worktrees are held is worked out first,
     // from every thread on disk, and before this one's record, if it can't
@@ -266,6 +274,9 @@ export const handoversPart = {
       else if (rec.queue.length && this.bucket(rec) === 'inbox') {
         this.kickQueue(st);
       }
+      // Finished there, and let go before the guess at whether Mike needed
+      // to see it was made (runner/inbox-guess.ts).
+      this.catchUpInboxGuess(st);
     } catch (e) {
       this.recoveryFailed(st, e);
     }

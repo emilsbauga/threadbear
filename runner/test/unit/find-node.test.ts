@@ -10,6 +10,12 @@ import { spawnSync } from 'node:child_process';
 import { tmpDir } from '../helpers/fakes.ts';
 import { reachOf } from '../../src/script-trust.ts';
 import { followOptions } from '../../src/patch-trust.ts';
+import { IS_WINDOWS, skipOnWindows } from '../helpers/platform.ts';
+
+// The finder is for the Mac and Linux shell scripts, and these tests run it with
+// /bin/bash, which Windows doesn't have.
+const FINDER_REASON = "find-node.sh is for the Mac and Linux shell scripts, and these tests run it with /bin/bash";
+const NO_FINDER_ON_WINDOWS = skipOnWindows(FINDER_REASON);
 
 const REPO = path.resolve(import.meta.dirname, '..', '..', '..');
 const FINDER = path.join(REPO, 'runner', 'scripts', 'find-node.sh');
@@ -38,7 +44,7 @@ function exe(file: string) {
 // Homebrew's is the last place it looks, and these tests can't hide it.
 const homebrew = ['/opt/homebrew/bin/node', '/usr/local/bin/node'].some((f) => fs.existsSync(f));
 
-test('THREADBEAR_NODE is taken as given, before PATH', () => {
+test('THREADBEAR_NODE is taken as given, before PATH', NO_FINDER_ON_WINDOWS, () => {
   const s = sandbox();
   exe(path.join(s.bin, 'node'));
   const mine = exe(path.join(s.root, 'elsewhere', 'node24'));
@@ -47,7 +53,7 @@ test('THREADBEAR_NODE is taken as given, before PATH', () => {
   assert.equal(r.stdout, mine);
 });
 
-test('a THREADBEAR_NODE that is not a program fails and says so, rather than using another', () => {
+test('a THREADBEAR_NODE that is not a program fails and says so, rather than using another', NO_FINDER_ON_WINDOWS, () => {
   const s = sandbox();
   exe(path.join(s.bin, 'node'));
   for (const bad of [path.join(s.root, 'missing'), s.root]) {
@@ -58,7 +64,7 @@ test('a THREADBEAR_NODE that is not a program fails and says so, rather than usi
   }
 });
 
-test('without THREADBEAR_NODE, the node on PATH', () => {
+test('without THREADBEAR_NODE, the node on PATH', NO_FINDER_ON_WINDOWS, () => {
   const s = sandbox();
   const onPath = exe(path.join(s.bin, 'node'));
   exe(path.join(s.home, '.nvm', 'versions', 'node', 'v26.0.0', 'bin', 'node'));
@@ -67,7 +73,7 @@ test('without THREADBEAR_NODE, the node on PATH', () => {
   assert.equal(r.stdout, onPath);
 });
 
-test("with none on PATH (an ssh session), nvm's newest Node 24 or newer, by number", () => {
+test("with none on PATH (an ssh session), nvm's newest Node 24 or newer, by number", NO_FINDER_ON_WINDOWS, () => {
   const s = sandbox();
   const nvm = path.join(s.home, '.nvm', 'versions', 'node');
   exe(path.join(nvm, 'v23.11.0', 'bin', 'node'));
@@ -88,7 +94,7 @@ test("with none on PATH (an ssh session), nvm's newest Node 24 or newer, by numb
   assert.equal(r2.stdout, there, r2.stderr);
 });
 
-test('only an nvm Node older than 24 is not used', { skip: homebrew && 'Homebrew has a node here' }, () => {
+test('only an nvm Node older than 24 is not used', { skip: IS_WINDOWS ? FINDER_REASON : homebrew && 'Homebrew has a node here' }, () => {
   const s = sandbox();
   exe(path.join(s.home, '.nvm', 'versions', 'node', 'v22.3.0', 'bin', 'node'));
   const r = find({ HOME: s.home, PATH: s.bin });
@@ -98,7 +104,7 @@ test('only an nvm Node older than 24 is not used', { skip: homebrew && 'Homebrew
   assert.match(r.stderr, /THREADBEAR_NODE/);
 });
 
-test('a script that fails to find one stops, and says what it needs', { skip: homebrew && 'Homebrew has a node here' }, () => {
+test('a script that fails to find one stops, and says what it needs', { skip: IS_WINDOWS ? FINDER_REASON : homebrew && 'Homebrew has a node here' }, () => {
   const s = sandbox();
   const script = path.join(s.root, 'uses-node.sh');
   fs.writeFileSync(script, `. ${JSON.stringify(FINDER)}\nNODE="$(threadbear_find_node)" || exit 1\necho "ran with $NODE"\n`);

@@ -308,7 +308,8 @@ impl AskLink {
     }
 
     /// What clicking it opens (`AskLink.target`): a web page, a file with `~`
-    /// expanded against `home`, or a review; None for anything else, which
+    /// expanded against `home`, a review, or another thread (`thread:<id>`,
+    /// for an ask whose step is over there); None for anything else, which
     /// isn't drawn.
     pub fn target(&self, home: &str) -> Option<String> {
         let url = self.url.trim();
@@ -321,7 +322,7 @@ impl AskLink {
         let (scheme, rest) = url.split_once(':')?;
         match scheme.to_ascii_lowercase().as_str() {
             "http" | "https" | "file" => Some(url.to_owned()),
-            "review" if !rest.trim().is_empty() => Some(url.to_owned()),
+            "review" | "thread" if !rest.trim().is_empty() => Some(url.to_owned()),
             _ => None,
         }
     }
@@ -349,6 +350,10 @@ pub struct ReviewDraft {
     pub picked_ids: Vec<String>,
     pub notes: BTreeMap<String, String>,
     pub reply: Option<String>,
+    /// Pictures pasted into the reply, each placed by a `[Picture N]` in
+    /// `reply`, as a message's are (Mike, 17 Nov: one pasted in the review
+    /// window went in as its file path).
+    pub images: Vec<ImageRef>,
     pub none: bool,
 }
 
@@ -376,7 +381,9 @@ impl ReviewDraft {
             .unwrap_or_default();
         let mut picked_ids = picked_ids;
         picked_ids.truncate(REVIEW_OPTIONS_MAX);
-        Some(ReviewDraft { picked_ids, notes, reply: string(c, "reply").map(|r| review_text(r, REVIEW_REPLY_MAX)), none: boolean(c, "none").unwrap_or(false) })
+        // A picture that doesn't read is left out rather than the draft.
+        let images = c.get("images").and_then(Value::as_array).map(|list| list.iter().take(REVIEW_REPLY_IMAGES_MAX).filter_map(ImageRef::decode).collect()).unwrap_or_default();
+        Some(ReviewDraft { picked_ids, notes, reply: string(c, "reply").map(|r| review_text(r, REVIEW_REPLY_MAX)), images, none: boolean(c, "none").unwrap_or(false) })
     }
 }
 
@@ -423,6 +430,8 @@ pub const REVIEW_OPTIONS_MAX: usize = 12;
 /// An option's shots (maxReviewShots) and a draft's reply (reviewDraft).
 pub const REVIEW_SHOTS_MAX: usize = 8;
 pub const REVIEW_REPLY_MAX: usize = 8000;
+/// The most pictures a reply takes (runner/src/reviews.ts maxReplyImages).
+pub const REVIEW_REPLY_IMAGES_MAX: usize = 20;
 
 fn review_text(text: String, max: usize) -> String {
     match text.char_indices().nth(max) {
@@ -1220,9 +1229,18 @@ pub struct ReviewFinding {
     /// fixed, disputed or left; None when the agent didn't answer.
     pub outcome: Option<String>,
     pub note: Option<String>,
+    /// The reviewer that found it ("Gemini (opencode-main)"), when the
+    /// runner names one: a panel's findings are merged into one list.
+    pub by: Option<String>,
 }
 
 impl ReviewFinding {
+    /// Still open: left for Mike, or not answered at all. The row keeps these
+    /// in sight while it's folded (LabReview::shown_findings).
+    pub fn is_open(&self) -> bool {
+        matches!(self.outcome.as_deref(), None | Some("left"))
+    }
+
     fn decode(v: &Value) -> Option<ReviewFinding> {
         let c = v.as_object()?;
         Some(ReviewFinding {
@@ -1234,8 +1252,36 @@ impl ReviewFinding {
             case: string(c, "case"),
             outcome: string(c, "outcome"),
             note: string(c, "note"),
+            by: string(c, "by"),
         })
     }
+}
+
+/// One of the reviewers on a panel that reviewed the latest round together
+/// (LabReviewLedger.panel).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelReviewer {
+    /// "Codex (codex-1)".
+    pub reviewer: String,
+    pub thread_id: String,
+    /// Another lab, not a fresh session of the same one.
+    pub independent: bool,
+}
+
+impl PanelReviewer {
+    fn decode(v: &Value) -> Option<PanelReviewer> {
+        let c = v.as_object()?;
+        Some(PanelReviewer {
+            reviewer: string(c, "reviewer").filter(|r| !r.is_empty())?,
+            thread_id: string(c, "threadId").unwrap_or_default(),
+            independent: boolean(c, "independent").unwrap_or(true),
+        })
+    }
+}
+
+/// A reviewer's name without its login: "Codex (codex-1)" is "Codex".
+fn reviewer_name(reviewer: &str) -> &str {
+    reviewer.split(" (").next().unwrap_or(reviewer)
 }
 
 /// The review ledger a turn that answered another lab's findings carries
@@ -1256,6 +1302,9 @@ pub struct LabReview {
     /// Fixes made in the last round there is, which no review looked at.
     pub unchecked: bool,
     pub findings: Vec<ReviewFinding>,
+    /// Who reviewed the latest round, when a panel of several did; then
+    /// `reviewer` is their names joined with ", ".
+    pub panel: Option<Vec<PanelReviewer>>,
 }
 
 impl LabReview {
@@ -1270,17 +1319,58 @@ impl LabReview {
             unstructured: boolean(c, "unstructured").unwrap_or(false),
             unchecked: boolean(c, "unchecked").unwrap_or(false),
             findings: lossy(c, "findings", ReviewFinding::decode).into_iter().filter(|f| !f.claim.is_empty()).collect(),
+            panel: c.get("panel").and_then(Value::as_array).map(|_| lossy(c, "panel", PanelReviewer::decode)).filter(|p| !p.is_empty()),
         })
+    }
+
+    /// Who found a finding, to show beside it: the reviewer's name without
+    /// its login, unless another on the panel has the same name. None when
+    /// the runner didn't say, or when one reviewer did the whole review and
+    /// the heading already names it.
+    pub fn found_by(&self, finding: &ReviewFinding) -> Option<String> {
+        let by = finding.by.as_deref().filter(|b| !b.is_empty())?;
+        if self.panel.is_none() && by == self.reviewer {
+            return None;
+        }
+        let name = reviewer_name(by);
+        let twin = self.panel.iter().flatten().any(|p| p.reviewer != by && reviewer_name(&p.reviewer) == name);
+        Some(if twin { by.to_owned() } else { name.to_owned() })
+    }
+
+    /// Whether the row folds: it has answered findings to tuck away. Folded,
+    /// it's its heading and any finding still open; the agent's reply says
+    /// what it fixed, so a panel's answered findings (eight of them a screen
+    /// tall, 20 Nov 2026) fold away as the line of work does.
+    pub fn folds(&self) -> bool {
+        self.findings.iter().any(|f| !f.is_open())
+    }
+
+    /// The findings the row draws: every one once Mike opens it; folded, only
+    /// those still open, as they may need him.
+    pub fn shown_findings(&self, open: bool) -> Vec<&ReviewFinding> {
+        self.findings.iter().filter(|f| open || f.is_open()).collect()
     }
 
     /// The one line over the findings: who, how many rounds, how it came out
     /// (LabReview.heading). The reviewer's login ("Codex (codex-1)") is left
     /// off: which account reviewed is noise here (Mike, 12 Nov 2026).
     pub fn heading(&self) -> String {
-        let name = self.reviewer.split(" (").next().unwrap_or(&self.reviewer);
-        let who = if self.independent { format!("Reviewed by {name}") } else { format!("Reviewed by a fresh {name} session") };
+        let one = |reviewer: &str, independent: bool| {
+            let name = reviewer_name(reviewer);
+            if independent { name.to_owned() } else { format!("a fresh {name} session") }
+        };
+        let who = match &self.panel {
+            Some(panel) => {
+                let names: Vec<String> = panel.iter().map(|p| one(&p.reviewer, p.independent)).collect();
+                match names.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => format!("Reviewed by {} and {last}", rest.join(", ")),
+                    _ => format!("Reviewed by {}", names.join("")),
+                }
+            }
+            None => format!("Reviewed by {}", one(&self.reviewer, self.independent)),
+        };
         let rounds = if self.rounds > 1 { format!(", {} rounds", self.rounds) } else { String::new() };
-        let open = self.findings.iter().filter(|f| f.outcome.is_none() || f.outcome.as_deref() == Some("left")).count();
+        let open = self.findings.iter().filter(|f| f.is_open()).count();
         let result = if self.unstructured {
             "see its reply".to_owned()
         } else if self.unchecked {
@@ -1435,7 +1525,9 @@ pub enum EventPayload {
     /// resume after a restart); `edit_of` is the seq of the message this one
     /// replaced; `review` is Mike's answer to a review, when the runner sent
     /// it for one.
-    UserMessage { text: String, images: Vec<ImageRef>, origin: Option<String>, answers: Vec<AskAnswer>, edit_of: Option<i64>, review: Option<ReviewAnswer> },
+    /// `wake_reason` (`wakeReason`): on a runner's message, what happened in a few words ("The
+    /// app restarted onto 1f103ac18"), for the divider before its turn.
+    UserMessage { text: String, images: Vec<ImageRef>, origin: Option<String>, wake_reason: Option<String>, answers: Vec<AskAnswer>, edit_of: Option<i64>, review: Option<ReviewAnswer> },
     /// `summary`: the turn's summary, written by the runner from end_turn.
     /// `gives_way`: on a summary, with bullet replies off. `final_reply`:
     /// One reply's reply, the agent's message after end_turn.
@@ -1537,6 +1629,7 @@ struct TextFields {
     images: Vec<ImageRef>,
     message: Option<String>,
     origin: Option<String>,
+    wake_reason: Option<String>,
     answers: Vec<AskAnswer>,
     edit_of: Option<i64>,
     review_id: Option<String>,
@@ -1555,6 +1648,7 @@ impl TextFields {
             images: lossy(c, "images", ImageRef::decode),
             message: string(c, "message"),
             origin: string(c, "origin"),
+            wake_reason: string(c, "wakeReason"),
             answers: lossy(c, "answers", AskAnswer::decode),
             edit_of: lenient_int(c, "editOf"),
             review_id: string(c, "reviewId"),
@@ -1574,7 +1668,7 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
         "user.message" => {
             let f = TextFields::decode(c);
             let review = ReviewAnswer::parse(&f.text, f.review_id.as_deref(), f.review_response.as_ref());
-            EventPayload::UserMessage { text: f.text, images: f.images, origin: f.origin, answers: f.answers, edit_of: f.edit_of, review }
+            EventPayload::UserMessage { text: f.text, images: f.images, origin: f.origin, wake_reason: f.wake_reason, answers: f.answers, edit_of: f.edit_of, review }
         }
         "assistant.text" => {
             let f = TextFields::decode(c);

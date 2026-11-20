@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Full page screenshots of the built site for review, desktop (1440 wide) and phone (390 wide),
-// into site/review/ (gitignored). Serve it first (`npm run serve`), then `npm run shots`.
+// Full page screenshots of the built site for review, desktop (1440 wide), a big monitor (2560
+// wide) and phone (390 wide), into site/review/ (gitignored). The big one is there because the
+// hero was first laid out for a laptop, then grew far too big on Mike's large screen (19 Nov). Serve it first (`npm run serve`), then `npm run shots`.
 // Playwright comes from wherever it's installed (PLAYWRIGHT_DIR, see loadPlaywright), so the
 // site itself has no dependencies.
 //
@@ -28,7 +29,7 @@ const out = join(dirname(fileURLToPath(import.meta.url)), "../review");
 mkdirSync(out, { recursive: true });
 
 const browser = await chromium.launch();
-for (const [name, viewport, scale] of [["desktop", { width: 1440, height: 900 }, 1], ["phone", { width: 390, height: 844 }, 2]]) {
+for (const [name, viewport, scale] of [["desktop", { width: 1440, height: 900 }, 1], ["wide", { width: 2560, height: 1300 }, 1], ["phone", { width: 390, height: 844 }, 2]]) {
   const page = await browser.newPage({ viewport, deviceScaleFactor: scale, isMobile: name === "phone", hasTouch: name === "phone" });
   for (const [path, file] of [["/", "home"], ["/nope", "404"]]) {
     await page.goto(base + path, { waitUntil: "load" });

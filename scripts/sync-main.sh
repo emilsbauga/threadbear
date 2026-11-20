@@ -53,6 +53,36 @@ fi
 # Everything below runs under the landing lock, in one process: GitHub's
 # has moved too, so this Mac's main may have to.
 if [ "${THREADBEAR_SYNC_LOCKED:-}" != 1 ]; then
+  # With landings going, waiting for the lock may never end (17 Nov: over an
+  # hour, as lockf isn't a fair queue and landings kept coming). When this
+  # repo is in runner.json's pushAfterLanding, the landing that holds the
+  # lock merges GitHub's in, checks it and pushes once it has landed
+  # (worktrees.ts, pushMain), so there's nothing to wait for. Only with a
+  # landing in the queue that says it will push (a dry run never does), and not when a
+  # landing's merge of this same GitHub main already failed: then it won't
+  # try again for hours, so this waits and tries itself.
+  # -k: without it lockf deletes the lock file, and a landing already
+  # waiting on that file would hold a lock nobody else sees (Codex, 17 Nov).
+  if [ "$(uname)" = Darwin ]; then busy() { ! /usr/bin/lockf -k -t 0 "$LOCK" true 2>/dev/null; }; else busy() { ! flock -n "$LOCK" true; }; fi
+  if busy && node -e '
+    const fs = require("fs"), path = require("path"), { execFileSync } = require("child_process");
+    const [main, common, github] = process.argv.slice(1);
+    const home = process.env.THREADBEAR_HOME || process.env.THREADBEAR_DATA_DIR || path.join(process.env.HOME, "Library/Application Support/Threadbear");
+    const repo = (d) => { try { return fs.realpathSync(execFileSync("git", ["-C", d, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()); } catch { return path.resolve(d); } };
+    const json = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return undefined; } };
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+    const list = json(path.join(home, "runner.json"))?.pushAfterLanding;
+    const want = repo(main);
+    const on = Array.isArray(list) && list.some((d) => typeof d === "string" && d && repo(d.replace(/^~(?=\/|$)/, process.env.HOME)) === want);
+    const q = path.join(common, "threadbear-land-queue");
+    let names = []; try { names = fs.readdirSync(q).filter((n) => n.endsWith(".json")); } catch {}
+    const landing = names.some((n) => { const e = json(path.join(q, n)); return e && e.push === true && Number.isInteger(e.pid) && !e.result && !e.refused && alive(e.pid); });
+    const failed = json(path.join(common, "threadbear-land-push.json"))?.github === github;
+    process.exit(on && landing && !failed ? 0 : 1);
+  ' "$MAIN" "$(dirname "$LOCK")" "$(git -C "$MAIN" rev-parse refs/remotes/origin/main)"; then
+    echo "GitHub's main and this one have both moved, and a landing is going: when it lands it merges GitHub's in, checks that and pushes (pushAfterLanding in runner.json). Nothing to do here; tb land's output says how it went."
+    exit 0
+  fi
   echo "Taking the landing lock (a landing in progress finishes first)..."
   if [ "$(uname)" = Darwin ]; then
     exec /usr/bin/lockf -k "$LOCK" /usr/bin/env THREADBEAR_SYNC_LOCKED=1 "$SELF" "$@"
@@ -87,14 +117,48 @@ if git merge-base --is-ancestor origin/main main; then
 fi
 
 echo "main and GitHub's have both moved; checking this Mac's commits on top of GitHub's in a borrowed worktree..."
-wt="$("$MAIN/borrow-worktree.sh" | tail -1)"
-[ -d "$wt" ] || die "Couldn't borrow a worktree; nothing synced."
+# Given back however this ends: a failure, a stop (the traps below turn
+# INT, TERM and HUP into an exit, so the EXIT trap runs), or success. Only
+# SIGKILL gets past that, so the borrow names this process and says what's
+# in it is scratch: once the process has gone, the runner aborts what was
+# half done there and takes it back (runner/src/borrows.ts). On 17 Nov a
+# killed run's borrow was among the 25 never given back.
+wt=""
+wt_admin=""
+borrowed=""
 give_back() {
+  [ -n "$wt" ] || return 0
+  # Only while it's still this run's borrow, checked before anything
+  # changes there: given back by hand meanwhile, it may be someone else's
+  # now (or a link to one), and an abort or a reset would take their work.
+  # Its branch is the borrow's, or the one its rebase is on.
+  local admin on
+  admin="$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  on="$(cat "$admin/rebase-merge/head-name" "$admin/rebase-apply/head-name" 2>/dev/null | head -1 || true)"
+  [ -n "$on" ] || on="$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null || true)"
+  if [ -L "$wt" ] || [ "$admin" != "$wt_admin" ] || [ "$on" != "refs/heads/$borrowed" ]; then
+    echo "$wt isn't this run's borrow any more, so it was left as it is." >&2
+    return 0
+  fi
   git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+  git -C "$wt" merge --abort >/dev/null 2>&1 || true
   git -C "$wt" reset -q --hard main >/dev/null 2>&1 || true
+  # Untracked files the check left (not ignored ones: the build caches stay
+  # for the next borrower), which --give-back would refuse.
+  git -C "$wt" clean -fdq >/dev/null 2>&1 || true
   "$MAIN/borrow-worktree.sh" --give-back "$wt" >/dev/null 2>&1 || echo "Couldn't give $wt back; run $MAIN/borrow-worktree.sh --give-back $wt" >&2
 }
 trap give_back EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Failing here has to fail the script: on 17 Nov every slot was taken, and
+# the run's caller read its output as a push.
+wt="$(THREADBEAR_BORROW_PID=$$ THREADBEAR_BORROW_SCRATCH=1 "$MAIN/borrow-worktree.sh" | tail -1)" || wt=""
+[ -n "$wt" ] && [ -d "$wt" ] || { wt=""; die "Couldn't borrow a worktree to check in, so main wasn't moved or pushed."; }
+wt_admin="$(git -C "$wt" rev-parse --absolute-git-dir)"
+borrowed="$(git -C "$wt" symbolic-ref -q --short HEAD || true)"
+case "$borrowed" in thread/borrow-*) ;; *) wt=""; die "The borrowed worktree isn't on a borrow branch, so main wasn't moved or pushed." ;; esac
 git -C "$wt" reset -q --hard main
 # A merge on this Mac's side (a release brought in) would be flattened by a
 # rebase, losing what only the merge holds, so GitHub's is merged in then.

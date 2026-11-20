@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { CONVEX_CLI, ConvexKeys, cliError, convexFolderFor } from '../../src/convex-keys.ts';
 import { ErrorCode, type RpcError } from '../../src/protocol.ts';
 import type { CommandOutcome } from '../../src/patches.ts';
+import { IS_WINDOWS, SHELL } from '../helpers/platform.ts';
 
 // Stands in for `convex deployment token create ... --save-env <file>`.
 function fakeCli(key = 'dev:calm-cat-1|secretsecret') {
@@ -33,8 +34,9 @@ test('a deploy key is made once per deployment, kept private, and made again on 
   assert.ok(cli.calls[0].command.startsWith(`${CONVEX_CLI} deployment token create `), cli.calls[0].command);
   assert.equal(cli.calls[0].cwd, '/proj');
   const file = path.join(dir, 'calm-cat-1.json');
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  // NTFS has no modes; the user's profile folder is already private to them.
+  if (!IS_WINDOWS) assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (!IS_WINDOWS) assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
   assert.deepEqual(fs.readdirSync(dir), ['calm-cat-1.json'], 'the CLI\'s scratch file is gone');
   assert.equal(await keys.key('calm-cat-1', '/proj'), a);
   assert.equal(cli.calls.length, 1, 'kept for next time');
@@ -136,7 +138,7 @@ test('the runner\'s own Convex CLI is used, not the project\'s older one', () =>
   fs.writeFileSync(path.join(old, 'package.json'), JSON.stringify({ name: 'convex', version: '1.32.0', bin: { convex: 'bin/main.js' } }));
   fs.writeFileSync(path.join(old, 'bin', 'main.js'), 'console.log("Usage: convex [options] [command]")');
   fs.writeFileSync(path.join(folder, 'package.json'), JSON.stringify({ dependencies: { convex: '1.32.0' } }));
-  const help = (args: string) => execFileSync('/bin/sh', ['-c', `${CONVEX_CLI} ${args} --help`], { cwd: folder, encoding: 'utf8' });
+  const help = (args: string) => execFileSync(SHELL[0], [SHELL[1], `${CONVEX_CLI} ${args} --help`], { cwd: folder, encoding: 'utf8' });
   assert.match(help('deployment token create'), /Creates a deploy key/);
   assert.match(help('deployment token delete'), /Usage: convex deployment token delete/);
   assert.match(help('run'), /--inline-query/);

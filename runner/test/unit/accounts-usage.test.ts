@@ -92,7 +92,8 @@ function setup(o: { now?: number; limits?: string } = {}) {
   const home = path.join(root, 'home');
   const write = (text: string) => {
     const tmp = limitsFile + '.tmp';
-    fs.writeFileSync(tmp, text.replaceAll('/Users/example', home));
+    // Into JSON text, so as JSON would write the path (backslashes escaped).
+    fs.writeFileSync(tmp, text.replaceAll('/Users/example', JSON.stringify(home).slice(1, -1)));
     fs.renameSync(tmp, limitsFile);
   };
   write(o.limits ?? LIMITS_FIXTURE);
@@ -650,6 +651,60 @@ test('registry: titles, email and plan from limits.json, usage on every account,
     registry.list();
     assert.equal(seen.length, 1);
     assert.ok(seen[0].some((a) => a.id === 'claude-3'));
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a Codex login's usage resets: kept from its reading, dropped once one has expired, and a change is news", () => {
+  const s = setup();
+  const store = s.make();
+  const codex = s.acct('codex-2', '/nowhere-codex', 'codex');
+  const told: string[][] = [];
+  store.onChange((ids) => told.push(ids));
+  const expires = new Date(s.clock.now() + 60 * 60_000).toISOString();
+  store.record('codex-2', { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 0 }], blocked: true, resets: { available: 2, nextExpiresAt: expires } });
+  assert.deepEqual(store.usageFor(codex)?.resets, { available: 2, nextExpiresAt: expires });
+  // A reading without a count (an update, not a read) keeps it.
+  store.record('codex-2', { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 0 }] });
+  assert.equal(store.usageFor(codex)?.resets?.available, 2);
+  // One used: the count goes down and clients hear of it.
+  told.length = 0;
+  store.record('codex-2', { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 100 }], blocked: false, resets: { available: 1, nextExpiresAt: expires } });
+  assert.equal(store.usageFor(codex)?.resets?.available, 1);
+  assert.ok(told.some((ids) => ids.includes('codex-2')), 'the new count is news');
+  assert.equal(store.usageFor(codex)?.blocked, undefined, 'the reading after a reset lifts the block');
+  // Past the soonest expiry the count can't be trusted until the next read.
+  s.clock.advance(61 * 60_000);
+  assert.equal(store.usageFor(codex)?.resets, undefined);
+});
+
+// claude-main, 16 Nov 2026: its Max lapsed and the Usage card still said
+// "Max" and "Used up, back Wed 5 am". The flip shows on the next rescan.
+test("registry: a login whose plan lapsed is planEnded, with no plan name or usage, and a rescan says so", () => {
+  const d = discoveryRoot();
+  const file = path.join(d.accts, 'claude-2', '.claude.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const write = (organizationType: string) => fs.writeFileSync(file, JSON.stringify({ oauthAccount: { emailAddress: 'two@example.com', organizationType } }));
+  write('claude_max');
+  const usage = new UsageStore({ limitsFile: path.join(d.root, 'none.json'), dataDir: path.join(d.root, 'data'), clock: new FakeClock(GENERATED), log: nullLogger });
+  usage.record('claude-2', { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 0, resetsAt: new Date(GENERATED + 86_400_000).toISOString() }], blocked: true, plan: 'Max' });
+  mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  try {
+    const registry = new AccountRegistry(d.cfg, usage);
+    let two = registry.get('claude-2')!;
+    assert.equal(two.planEnded, undefined);
+    assert.equal(two.plan, 'Max');
+    assert.ok(two.usage);
+    const seen: Account[][] = [];
+    registry.onChange((accounts) => seen.push(accounts));
+    write('claude_free');
+    mock.timers.tick(11_000);
+    two = registry.get('claude-2')!;
+    assert.equal(two.planEnded, true);
+    assert.equal(two.plan, undefined);
+    assert.equal(two.usage, undefined);
+    assert.equal(seen.length, 1, 'clients are told');
   } finally {
     mock.timers.reset();
   }

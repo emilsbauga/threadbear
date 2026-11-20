@@ -15,8 +15,9 @@ you go.
 - [x] The review window plays clips in place, as the Swift one does, rather
   than stills that open in their apps (`review.media`). In since 12 Nov on a
   Mac
-- [ ] The review window shows pages in place, rather than stills that open in
-  the browser (`review.media`)
+- [x] The review window shows pages in place, rather than stills that open in
+  the browser (`review.media`). In through the web runtime; if a page can't
+  show, the window says why and offers Open live
 - [x] Projects: the Projects page and sidebar view, a project's page, its
   decisions, Projects ▸ in the row and ... menus, the header's project tiles
   opening the page, New Thread in a project (`projects.*`, `header.projectchip`)
@@ -62,8 +63,9 @@ you go.
 - [x] PDFs and videos open in their own app rather than the pane
   (`file.quicklook`, `file.video`). In since 12 Nov on a Mac; Windows and
   Linux still open them in their app
-- [ ] .html files open in their own app rather than the pane
-  (`file.htmlpreview`)
+- [x] .html files open in their own app rather than the pane
+  (`file.htmlpreview`). They show in the pane through the web runtime, sealed,
+  with their scripts off until Run them (`file.runthem`)
 - [x] A folder doesn't update while it's open, takes one row at a time, has no
   type-to-select, no Space, ⌘↑ or ⌘⇧. keys, no icon view, and the path bar's
   "…" isn't a menu (`folder.*`)
@@ -135,9 +137,10 @@ you go.
 - [x] Highlights shows each project's Notion board (`highlights.board`),
   with card mentions and links to the thread working on a card. Done folds
   away, long columns have More, and the board scrolls sideways.
-- [ ] An image panel has no Open Simulator button; `.app`, `.icns` and PDF
+- [x] An image panel has no Open Simulator button; `.app`, `.icns` and PDF
   icons fall back to a symbol (`panel.image`, `patches.icons`,
-  `rail.originbadge`)
+  `rail.originbadge`). On a Mac a click on the picture opens Simulator, and
+  patch icons are the real ones through the open gate
 - [x] Settings > Runners, Devices and Keyboard are placeholders (the Keyboard
   file is picked up live if edited by hand) (`settings.runners`,
   `settings.devices`, `settings.keyboard`). In since 11 Nov

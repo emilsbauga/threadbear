@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit -p .",
     "context-budget": "UPDATE_CONTEXT_BUDGET=1 node --test test/unit/context-budget.test.ts",
     "experiment-docs": "UPDATE_EXPERIMENT_DOCS=1 node --test test/unit/experiment-docs.test.ts",
-    "parity-docs": "UPDATE_PARITY_DOCS=1 node --test --test-name-pattern=docs/parity test/unit/parity.test.ts"
+    "parity-docs": "UPDATE_PARITY_DOCS=1 node --test --test-name-pattern=docs/parity test/unit/parity.test.ts",
+    "machine-docs": "UPDATE_MACHINE_DOCS=1 node --test test/unit/machine-docs.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.310",

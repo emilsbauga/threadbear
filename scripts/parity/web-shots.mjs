@@ -35,9 +35,19 @@ try {
   await cdp.send('Page.enable');
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
   const results = [];
+  // The seed's browser token (parity-seed.ts traded a sign-in code for it)
+  // goes straight into the site's localStorage, where the site keeps it: a
+  // link's #token= isn't taken any more (web/src/token.ts).
+  await cdp.send('Page.navigate', { url: `${site}/` });
+  for (const until = Date.now() + 15000; ; ) {
+    const { result } = await cdp.send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true });
+    if (result.value === 'complete') break;
+    if (Date.now() > until) throw new Error('timed out waiting for the site to load');
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  await cdp.send('Runtime.evaluate', { expression: `localStorage.setItem('threadbear.token', ${JSON.stringify(seed.token)})` });
   for (const [i, t] of seed.threads.entries()) {
-    // The token goes in the hash first time; it stays in localStorage after.
-    await cdp.send('Page.navigate', { url: `${site}/t/${encodeURIComponent(t.threadId)}#token=${seed.token}` });
+    await cdp.send('Page.navigate', { url: `${site}/t/${encodeURIComponent(t.threadId)}` });
     let missing = t.shows;
     const until = Date.now() + 20000;
     while (Date.now() < until) {

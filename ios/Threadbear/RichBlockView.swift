@@ -257,7 +257,9 @@ struct RichWebView: UIViewRepresentable {
 /// How rich blocks' web views are locked down, as the Mac's local previews
 /// are (WebPanelPool.webView(for:) and LocalPreviewSchemeHandler there).
 @MainActor enum RichWebSandbox {
-    static func configuration(scripts: Bool) -> WKWebViewConfiguration {
+    /// `pele`: a diagram's page, which runs only Pele and the draw script;
+    /// off for a live page (LivePageView.swift), whose own scripts run.
+    static func configuration(scripts: Bool, pele: Bool = true) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         let store = WKWebsiteDataStore.nonPersistent()
         // Any connection WebKit would open goes to a port on this phone that
@@ -279,7 +281,7 @@ struct RichWebView: UIViewRepresentable {
         // A page's own scripts never run. A diagram's page runs only Pele and
         // the draw function, which the app put there.
         config.defaultWebpagePreferences.allowsContentJavaScript = scripts
-        if scripts, let pele = peleSource {
+        if scripts, pele, let pele = peleSource {
             config.userContentController.addUserScript(WKUserScript(source: pele, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             config.userContentController.addUserScript(WKUserScript(source: drawScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
@@ -321,6 +323,32 @@ struct RichWebView: UIViewRepresentable {
      {"trigger":{"url-filter":"^about:"},"action":{"type":"ignore-previous-rules"}},
      {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}}]
     """
+
+    /// A live page's: the same, and blob: too, for the workers and
+    /// pictures a page makes for itself.
+    static let liveRuleList = """
+    [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
+     {"trigger":{"url-filter":"^about:"},"action":{"type":"ignore-previous-rules"}},
+     {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}},
+     {"trigger":{"url-filter":"^blob:"},"action":{"type":"ignore-previous-rules"}}]
+    """
+
+    private static var liveRules: WKContentRuleList?
+    private static var liveWaiting: [(WKContentRuleList?) -> Void]?
+
+    static func withLiveRules(_ use: @escaping (WKContentRuleList?) -> Void) {
+        if let liveRules { return use(liveRules) }
+        if liveWaiting != nil { liveWaiting?.append(use); return }
+        liveWaiting = [use]
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "threadbear-live-page", encodedContentRuleList: liveRuleList) { list, _ in
+            MainActor.assumeIsolated {
+                liveRules = list
+                let all = liveWaiting ?? []
+                liveWaiting = nil
+                all.forEach { $0(list) }
+            }
+        }
+    }
 
     private static var rules: WKContentRuleList?
     private static var waiting: [(WKContentRuleList?) -> Void]?

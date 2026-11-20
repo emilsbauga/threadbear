@@ -34,9 +34,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.mikerosoft.threadbear.android.LocalModel
 import com.mikerosoft.threadbear.android.LocalSnackbar
 import com.mikerosoft.threadbear.android.R
@@ -52,6 +49,10 @@ fun PairScreen() {
     val model = LocalModel.current
     val context = LocalContext.current
     val busy by model.pairingBusy.collectAsStateWithLifecycle()
+    // Each store's own scanner (QrScanner.kt in src/github, src/fdroid).
+    val scan = rememberQrScanner(failed = { model.note(it) }) {
+        if (!model.ask(it, PairingSource.SCANNED)) model.note("That code isn't a Threadbear pairing code.")
+    }
 
     Scaffold(snackbarHost = { SnackbarHost(LocalSnackbar.current) }) { inner ->
         Box(Modifier.fillMaxSize().padding(inner).safeDrawingPadding(), contentAlignment = Alignment.Center) {
@@ -77,9 +78,7 @@ fun PairScreen() {
                     CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
                 } else {
                     Button(
-                        onClick = {
-                            scan(context, failed = { model.note(it) }) { if (!model.ask(it, PairingSource.SCANNED)) model.note("That code isn't a Threadbear pairing code.") }
-                        },
+                        onClick = scan,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
                     ) {
@@ -102,13 +101,6 @@ fun PairScreen() {
             }
         }
     }
-}
-
-private fun scan(context: Context, failed: (String) -> Unit, found: (String) -> Unit) {
-    val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
-    GmsBarcodeScanning.getClient(context, options).startScan()
-        .addOnSuccessListener { code -> code.rawValue?.let(found) }
-        .addOnFailureListener { failed("Couldn't open the scanner: ${it.message}") }
 }
 
 private fun clipboardText(context: Context): String? {

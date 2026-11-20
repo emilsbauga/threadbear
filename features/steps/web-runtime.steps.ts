@@ -1,6 +1,7 @@
 // The web runtime (features/web-runtime.feature): the GPUI app's Chromium,
 // installed on request and checked against its pinned build.
-import { Then, When } from '@cucumber/cucumber';
+import { After, Given, Then, When } from '@cucumber/cucumber';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -47,4 +48,43 @@ Then('the web runtime draws a page with no window', async function (this: Thread
 
 Then('Settings says the web runtime is {string}', async function (this: ThreadbearWorld, words: string) {
   await this.until(`Settings saying the web runtime is "${words}"`, (d) => (d as { settingsWindow?: { webRuntime?: string } | null }).settingsWindow?.webRuntime === words);
+});
+
+// A stand-in for a handover's old copy: a process that's alive, named in the
+// profile's lock as Chromium names its own ("<host>-<pid>").
+let holder: ChildProcess | undefined;
+
+After(function () {
+  holder?.kill();
+  holder = undefined;
+});
+
+Given("another process has the web runtime's profile", function (this: ThreadbearWorld) {
+  const root = process.env.THREADBEAR_WEB_RUNTIME_DIR;
+  if (!root) throw new Error('no web runtime folder for this scenario');
+  const profile = process.env.THREADBEAR_WEB_PROFILE_DIR || path.join(root, 'profile');
+  fs.mkdirSync(profile, { recursive: true });
+  holder = spawn('/bin/sleep', ['300'], { stdio: 'ignore' });
+  const lock = path.join(profile, 'SingletonLock');
+  fs.rmSync(lock, { force: true });
+  fs.symlinkSync(`${os.hostname()}-${holder.pid}`, lock);
+});
+
+When('something needs the web runtime', async function (this: ThreadbearWorld) {
+  // Asks for Chromium and gives up waiting after a second: it's meant to
+  // be waiting still.
+  await this.app.do({ cmd: 'webRuntime', do: 'start', wait: 1 }, 30).catch(() => {});
+});
+
+Then('the web runtime waits for that process', async function (this: ThreadbearWorld) {
+  const engine = `waiting for pid ${holder?.pid}`;
+  await this.until(`the web runtime ${engine}`, (d) => webRuntime(d)?.engine === engine);
+  // And still is a few seconds on, rather than having tried and failed.
+  await new Promise((r) => setTimeout(r, 3000));
+  await this.until(`the web runtime still ${engine}`, (d) => webRuntime(d)?.engine === engine);
+});
+
+When('that process quits', function () {
+  holder?.kill();
+  holder = undefined;
 });

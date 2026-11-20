@@ -12,6 +12,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { threeWays, type View } from '../helpers/routes.ts';
 import { SCENARIOS } from '../helpers/scenario-list.ts';
+import { phoneReviewScenario } from '../helpers/phone-review-scenario.ts';
+import { tmpDir } from '../helpers/fakes.ts';
+import { makePng } from '../helpers/png.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+
+test('phone reads review previews and submits a revision-checked answer through Convex', phoneReviewScenario);
 
 type Route = 'relay' | 'phone';
 type Field = 'needs' | 'recap' | 'asks' | 'next' | 'looseEnds' | 'review' | 'plans' | 'messages' | 'notes' | 'pictures' | 'failed' | 'origins';
@@ -19,7 +26,6 @@ type Field = 'needs' | 'recap' | 'asks' | 'next' | 'looseEnds' | 'review' | 'pla
 // Differences that are meant, each with why. A test below fails once one
 // of these stops being a difference, so the list can't outlive its reason.
 const KNOWN: { route: Route; field: Field; why: string }[] = [
-  { route: 'relay', field: 'pictures', why: "Pictures in messages stay on that runner; the Mac shows each one's chip in the words." },
   { route: 'phone', field: 'pictures', why: "phone:thread carries words only; the phone gets a message's pictures from phone:images." },
   { route: 'phone', field: 'plans', why: "phone:thread carries words only; the phone gets a message's plan flag from phone:messages (API 72) and draws its own plan card." },
 ];
@@ -85,4 +91,44 @@ test('another Mac reopens a thread with only the reply its pane missed', async (
   const reply = await relay.call(threadId, 'threads.subscribe', { afterSeq: Math.max(...relayEvents.map((e) => Number(e.seq))), relaySeen: seen }) as { events: Record<string, unknown>[] };
   assert.deepEqual(reply.events.map((e) => e.seq), [missing.seq]);
   assert.equal(reply.events[0]?.text, 'The earlier reply.');
+});
+
+// 17 Nov 2026: a picture pasted on one Mac into the other's thread reached
+// it and showed as a message with no picture on the Mac it was pasted on.
+// The runner that has the thread puts it up for the phone; the other Mac's
+// relay gives the app the message with its pictures (backend API 87), and
+// the file itself when the app asks its runner for it (files.read with that
+// runner's id).
+test("another Mac gets a message's pictures, and each file from the backend", async () => {
+  const dir = tmpDir('tb-scenario-');
+  const png = makePng(6, 4);
+  const files = ['a.png', 'b.png'].map((name) => path.join(dir, name));
+  for (const f of files) fs.writeFileSync(f, png);
+  const { relay, relayEvents, runnerId, refused, views } = await threeWays((p) => {
+    p.say('Ready.');
+    p.endTurn({ needs: 'nothing' });
+    // One placed in the words, one not.
+    p.send('like [Picture 2] please', files.map((f) => ({ path: f, mediaType: 'image/png' })));
+    p.say('Done.');
+    p.endTurn({ needs: 'nothing' });
+    // One picture, and a marker that is only words (Codex's review, 18 Nov).
+    p.send('[Picture 1] and the literal token [Picture 2]', [{ path: files[0]!, mediaType: 'image/png' }]);
+    p.say('Seen.');
+    p.endTurn({ needs: 'nothing' });
+  });
+  assert.deepEqual(refused, []);
+  const said = relayEvents.find((e) => e.type === 'user.message' && String(e.text).includes('please'))!;
+  // The words as on the Mac that has the thread: no line counting the pictures.
+  assert.equal(said.text, 'like [Picture 2] please');
+  assert.deepEqual(views.relay.messages, views.here.messages);
+  assert.deepEqual(views.relay.messages.map((m) => m.pictures), views.here.messages.map((m) => m.pictures));
+  assert.deepEqual(said.images.map((i: { mediaType: string; width?: number; height?: number }) => [i.mediaType, i.width, i.height]), [['image/png', 6, 4], ['image/png', 6, 4]]);
+  for (const image of said.images as { path: string }[]) {
+    const read = await relay.readFile(runnerId, image.path);
+    assert.deepEqual(Buffer.from(read.data, 'base64'), Buffer.from(png));
+    assert.equal(read.mediaType, 'image/png');
+    assert.equal(read.truncated, false);
+  }
+  // Nothing else on that Mac is read this way.
+  await assert.rejects(relay.readFile(runnerId, path.join(dir, 'other.png')), /kept there for now/);
 });

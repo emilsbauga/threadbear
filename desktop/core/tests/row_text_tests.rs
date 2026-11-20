@@ -486,13 +486,29 @@ fn row_debug_events() -> Vec<Event> {
 #[test]
 fn testOriginIsReadAndCarriedToTheRow() {
     let e = event(1, "user.message", json!({"text": "Check your change.", "images": [], "origin": "runner"}));
-    assert_eq!(e.payload, EventPayload::UserMessage { text: "Check your change.".into(), images: vec![], origin: Some("runner".into()), answers: vec![], edit_of: None, review: None });
+    assert_eq!(e.payload, EventPayload::UserMessage { text: "Check your change.".into(), images: vec![], origin: Some("runner".into()), wake_reason: None, answers: vec![], edit_of: None, review: None });
     let model = from_events(vec![e, user(2, "Thanks")]);
     let (RowContent::User(runner), RowContent::User(mike)) = (&model.items()[0].content, &model.items()[1].content) else { panic!("users") };
     assert!(runner.is_from_runner());
     assert!(!mike.is_from_runner());
     // Still a user row: it starts the turn the runner asked for.
     assert_eq!(model.items()[0].kind(), RowKind::User);
+}
+
+#[test]
+fn testRunnerNoteSaysWhyFromItsWakeReason() {
+    let header = |fields: Value| {
+        let model = from_events(vec![event(1, "user.message", fields)]);
+        let RowContent::User(message) = &model.items()[0].content else { panic!("a user") };
+        message.runner_header()
+    };
+    // A login move isn't a restart, so it mustn't say one.
+    assert_eq!(header(json!({"text": "Carry on.", "images": [], "origin": "runner", "wakeReason": "Moved to another login"})), "Sent by the runner: moved to another login");
+    assert_eq!(header(json!({"text": "Carry on.", "images": [], "origin": "runner", "wakeReason": "The login had room again"})), "Sent by the runner: the login had room again");
+    // A restart, or an older runner that sends no reason, keeps the old line.
+    assert_eq!(header(json!({"text": "Carry on.", "images": [], "origin": "runner", "wakeReason": "The runner restarted"})), "Sent by the runner after it restarted");
+    assert_eq!(header(json!({"text": "Carry on.", "images": [], "origin": "runner", "wakeReason": "The runner came back"})), "Sent by the runner after it restarted");
+    assert_eq!(header(json!({"text": "Carry on.", "images": [], "origin": "runner"})), "Sent by the runner after it restarted");
 }
 
 #[test]

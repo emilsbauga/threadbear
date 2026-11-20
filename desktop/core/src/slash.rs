@@ -235,11 +235,7 @@ pub fn plain_description(text: &str) -> String {
 
 /// A path to show: the home folder as ~.
 pub fn short_path(path: &str, home: &str) -> String {
-    if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) {
-        format!("~{}", &path[home.len()..])
-    } else {
-        path.to_owned()
-    }
+    crate::new_thread::abbreviate_home(path, home)
 }
 
 pub fn in_category(command: &SlashCommand, category: Category, recent: &[String]) -> bool {
@@ -388,9 +384,21 @@ impl PaletteLayout {
     }
 
     /// A dragged width: never under 480 (three columns and their words),
-    /// never wider than the window less a margin each side.
+    /// never wider than the window less a margin each side. In a window
+    /// too narrow for 480 and those margins, 8 in from each side, as
+    /// auto_width has it, rather than 480 and off the window.
     pub fn width_in(w: f64, window: f64) -> f64 {
-        w.max(480.).min((window - 80.).max(480.))
+        let most = (window - 80.).max(480.).min(window - 16.);
+        w.max(480.).min(most)
+    }
+
+    /// The width with none dragged: the box's, but never under the 480 a
+    /// dragged one keeps, so a narrow box (a narrow window, or panels open
+    /// beside the thread) doesn't leave the details a few letters wide. That
+    /// least gives way to the window less 8 a side, and never goes under the
+    /// box.
+    pub fn auto_width(box_width: f64, window: f64) -> f64 {
+        box_width.max(480_f64.min(window - 16.))
     }
 
     /// A dragged column: at least its least, and leaving the others theirs
@@ -651,6 +659,16 @@ mod tests {
     }
 
     #[test]
+    fn the_palette_is_as_wide_as_the_box_but_480_at_least() {
+        assert_eq!(PaletteLayout::auto_width(700., 1200.), 700.);
+        assert_eq!(PaletteLayout::auto_width(165., 560.), 480.);
+        // A window too narrow for 480 still leaves 8 a side...
+        assert_eq!(PaletteLayout::auto_width(300., 420.), 404.);
+        // ...but never makes it narrower than the box.
+        assert_eq!(PaletteLayout::auto_width(300., 250.), 300.);
+    }
+
+    #[test]
     fn the_palette_is_about_half_the_window() {
         assert_eq!(palette_height(800., 300., 560.), 400.);
         assert_eq!(palette_height(300., 300., 560.), 300.);
@@ -706,6 +724,11 @@ mod tests {
         assert_eq!(PaletteLayout::height_in(400., 200.), 220., "220 even in a short window");
         assert_eq!(PaletteLayout::width_in(300., 1200.), 480.);
         assert_eq!(PaletteLayout::width_in(2000., 1200.), 1120.);
+        // A window narrower than 480 and its margins: 8 in from each side, as
+        // one with none dragged (auto_width), not 480 and off the window.
+        assert_eq!(PaletteLayout::width_in(600., 380.), 364.);
+        assert_eq!(PaletteLayout::width_in(300., 420.), 404.);
+        assert_eq!(PaletteLayout::width_in(500., 520.), 480.);
         assert_eq!(PaletteLayout::column(50., 110., 400., 900.), 110.);
         assert_eq!(PaletteLayout::column(700., 110., 400., 900.), 500., "leaving the others theirs");
     }

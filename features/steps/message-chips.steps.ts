@@ -67,3 +67,17 @@ When('I follow {string} in my message {string}', async function (this: Threadbea
   const row = await this.until(`my message "${words}"`, (d) => mine(d, words));
   await this.app.do({ cmd: 'link', row: row.id, url });
 });
+
+// A web address in my words is drawn as a link (the GPUI app's dump lists
+// them as `links`).
+Then('my message {string} shows the link {string}', async function (this: ThreadbearWorld, words: string, url: string) {
+  let seen: string[] | undefined;
+  try {
+    await this.until(`my message "${words}" with the link ${url}`, (d) => {
+      seen = mine(d, words)?.links;
+      return seen?.includes(url) ?? false;
+    });
+  } catch (error) {
+    assert.fail(`${(error as Error).message.split('\n')[0]}; its links were ${JSON.stringify(seen)}`);
+  }
+});

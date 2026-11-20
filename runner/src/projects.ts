@@ -24,7 +24,7 @@ import type { ProjectFolder } from './patches.ts';
 import { atomicWriteFileSync, isDirectory, readJsonSync } from './fsutil.ts';
 import { expandHome } from './config.ts';
 import { fileHash, removeIcons, storeIcon } from './project-icons.ts';
-import { trimEndOf } from './linear-text.ts';
+import { trimEndOf, trimStartOf } from './linear-text.ts';
 import type { TaskBoards } from './notion-tasks.ts';
 
 // What projects.json holds for each: the counts are worked out from the
@@ -440,6 +440,21 @@ export class Projects {
     return this.update(projectId, { notes: rec.notes.trim() ? `${rec.notes.trimEnd()}\n\n${add}` : add });
   }
 
+  // update_project's editNotes: the edits (applyNoteEdits), a paragraph on
+  // the end and the call's other fields, saved as one change. It reads, edits
+  // and writes the notes in one step on the runner that owns them, so an
+  // edit can't land on notes another thread changed meanwhile, or undo that
+  // change; ifNotes, the notes a card reviewer or Mike judged, refuses it
+  // when they're not those any more (Codex review, 20 Nov 2026).
+  editNotes(projectId: string, edits: NoteEdit[], opts: Omit<UpdateProjectParams, 'notes'> & { appendNote?: string; ifNotes?: string } = {}): Project {
+    const rec = this.must(projectId);
+    const { appendNote, ifNotes, ...rest } = opts;
+    if (ifNotes !== undefined && rec.notes !== ifNotes) {
+      throw bad(`The notes changed while this waited for an OK, so nothing changed. Read them again (read_project) and redo the edit on what they say now.`);
+    }
+    return this.update(projectId, { ...rest, notes: applyNoteEdits(rec.notes, edits, appendNote) });
+  }
+
   // Adds links, or retitles ones it already has (same url), keeping the
   // rest. For agents and the librarian, which add one at a time.
   addLinks(projectId: string, links: LinkInput[]): Project {
@@ -792,6 +807,58 @@ function checkText(name: string, text: unknown, max: number): string {
   return text.trim();
 }
 
+export type NoteEdit = { old: string; new: string };
+
+// update_project's editNotes, like Claude Code's Edit: each `old` must be in
+// the notes exactly once (after the edits before it), and is replaced by
+// `new`; an empty `new` takes it out. All or none: the first that doesn't
+// match throws, and nothing is saved. Before this, changing one stale line
+// meant sending all the notes back, which a copy could quietly corrupt and
+// which reached the card reviewer as a rewrite (thread c21654fd, 17 Nov 2026).
+// With append, a paragraph on the end after them. The result is the notes
+// as they'd be saved (trimmed), and its size is checked here, so an edit too
+// big is refused before anyone is asked.
+export function applyNoteEdits(notes: string, edits: unknown, append?: string): string {
+  if (!Array.isArray(edits) || !edits.length) throw bad('editNotes must be a list of { old, new }.');
+  // Line ends as LF throughout, as the card reviewer's diff compares them,
+  // so a \r can't change the notes without showing there (Gemini review).
+  const lf = (t: string) => t.replace(/\r\n?/g, '\n');
+  let out = lf(notes);
+  for (const [i, e] of edits.entries()) {
+    const raw = (e ?? {}) as Record<string, unknown>;
+    if (typeof raw.old !== 'string' || typeof raw.new !== 'string') throw bad('Each of editNotes is { old, new }, both text.');
+    const old = lf(raw.old);
+    const next = lf(raw.new);
+    const which = edits.length > 1 ? `editNotes[${i}]` : 'editNotes';
+    if (!old) throw bad(`${which}'s old is empty: name the text to change. appendNote adds a paragraph.`);
+    if (old === next) throw bad(`${which}'s old and new are the same.`);
+    const at = out.indexOf(old);
+    if (at < 0) {
+      throw bad(`${which}'s old isn't in the notes${i ? ' (after the edits before it)' : ''}, so nothing changed. Copy it exactly as read_project shows it.`);
+    }
+    if (out.indexOf(old, at + 1) >= 0) throw bad(`${which}'s old is in the notes more than once, so nothing changed. Take in more of the text round it.`);
+    const before = out.slice(0, at);
+    const after = out.slice(at + old.length);
+    // An old that names its own line break is taken out exactly, as Edit
+    // would (Gemini review: "- Drop\n" ate the blank line after it).
+    if (next || old.startsWith('\n') || old.endsWith('\n')) {
+      out = before + next + after;
+      continue;
+    }
+    // Text alone taken out leaves the line breaks of one side, not both: a
+    // bullet taken out of a list doesn't split it with a blank line.
+    const b = trimEndOf(before, '\n');
+    const a = trimStartOf(after, '\n');
+    const breaks = b && a ? Math.max(before.length - b.length, after.length - a.length) : 0;
+    out = b + '\n'.repeat(breaks) + a;
+  }
+  out = out.trim();
+  const add = append?.trim();
+  if (add) out = out ? `${out}\n\n${add}` : add;
+  if (out.length > NOTES_MAX) throw bad(`The notes would be ${out.length} characters, past the ${NOTES_MAX} they can hold. Make the edit shorter, or rewrite the notes shorter with notes.`);
+  return out;
+}
+
 // Each a web address with a title (the host when there's none), no two the
 // same, at most LINKS_MAX.
 export function checkLinks(links: unknown): ProjectLink[] {
@@ -920,7 +987,7 @@ function bool(p: Record<string, unknown>, k: string): boolean | undefined {
 
 // The Projects calls the agent tools make, which a draining runner's tools
 // make on the primary instead (projectRouter in handover.ts).
-export const DRAIN_PROJECT_OPS = ['list', 'get', 'find', 'create', 'update', 'appendNote', 'addLinks', 'removeLinks', 'changeMembership', 'chooseIcon'] as const;
+export const DRAIN_PROJECT_OPS = ['list', 'get', 'find', 'create', 'update', 'editNotes', 'appendNote', 'addLinks', 'removeLinks', 'changeMembership', 'chooseIcon'] as const;
 export type DrainProjectOp = (typeof DRAIN_PROJECT_OPS)[number];
 
 // drain.projects (docs/protocol.md, "Handovers"): a kept thread's project

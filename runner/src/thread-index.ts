@@ -39,24 +39,65 @@ export type IndexRow = {
   asked?: string;
   recap?: string;
   keywords?: string;
+  // Its access mode (API 88), so another Mac's composer shows what it
+  // really is; left out by an older runner, and that Mac says it can't tell.
+  permissionMode?: string;
 };
 
 // What the Mac app gets (docs/protocol.md, "Other runners' threads").
-export type RemoteRunner = { id: string; name: string; icon?: string; online: boolean; lastSeenAt: string; followProblem?: string };
+// `box`: a thread's box on a virtual runner (docs/virtual-runners.md), with
+// its state, which counts as online while it starts or sleeps (decision 6).
+// `waiting`: a message wants it woken, and its virtual runner has its
+// maxBoxes up: it wakes when one sleeps, and the message waits meanwhile.
+// `unsure`: the provider made more than one machine for its box and which
+// holds the thread's work isn't known yet; each message tries the next.
+// `unreachable`: no heartbeat for 5 minutes, but the provider still has it.
+// `service` (API 94): its virtual runner's id. `token`, with `login`: its
+// login has no cloud token ('none') or a refused one ('dead'), so the
+// thread shows the token card.
+export type BoxView = { state: string; waiting?: true; unreachable?: true; unsure?: true; service?: string; token?: 'none' | 'dead'; login?: string };
+export type RemoteRunner = { id: string; name: string; icon?: string; online: boolean; lastSeenAt: string; followProblem?: string; box?: BoxView };
+// A virtual runner, for Runs on's entries after the machines (API 94, the
+// virtualRunners experiment, the main Mac's key only).
+export type VirtualRunner = { id: string; name: string; provider: string };
 // `moving`: set by the main Mac's runner for a move it knows of (main.ts
 // remoteMoving), never by the backend's rows.
 export type RemoteThread = IndexRow & { runnerId: string; moving?: import('./moves.ts').ThreadMoving };
 // `order`: Mike's runner order (backend API 58), every runner's id, this
 // one's too, for the app's Settings > Runners. Left out before it's heard.
-export type RemoteThreads = { runners: RemoteRunner[]; threads: RemoteThread[]; order?: string[]; ready?: boolean };
+export type RemoteThreads = { runners: RemoteRunner[]; threads: RemoteThread[]; order?: string[]; ready?: boolean; services?: VirtualRunner[] };
 
-type RawRunner = { runnerId: string; name: string; icon?: string; lastSeenAt: number; followProblem?: string };
+type RawRunner = { runnerId: string; name: string; icon?: string; lastSeenAt: number; followProblem?: string; box?: { state?: unknown; waiting?: unknown; unreachable?: unknown; unsure?: unknown; service?: unknown; token?: unknown; login?: unknown } };
+
+// A box's view as the backend gave it, only what's of the expected shape.
+function boxView(b: NonNullable<RawRunner['box']>): BoxView {
+  const short = (x: unknown) => (typeof x === 'string' && x.length > 0 && x.length <= 200 ? x : undefined);
+  const token = b.token === 'none' || b.token === 'dead' ? b.token : undefined;
+  const login = token ? short(b.login) : undefined;
+  return {
+    state: typeof b.state === 'string' ? b.state : 'expired',
+    ...(b.waiting === true ? { waiting: true as const } : {}),
+    ...(b.unreachable === true ? { unreachable: true as const } : {}),
+    ...(b.unsure === true ? { unsure: true as const } : {}),
+    ...(short(b.service) ? { service: short(b.service)! } : {}),
+    ...(token && login ? { token, login } : {}),
+  };
+}
 type SinceRow = RemoteThread & { updatedMs?: number; deleted?: boolean };
 
 const FLUSH_MS = 1000;
 const BATCH = 50;
 // As on the phone: not heard from for this long is offline.
 const ONLINE_MS = 3 * 60_000;
+
+/**
+ * A thread's box on a virtual runner is reachable in every state but these
+ * (convex/lib.ts boxStateReachable, the same rule): a message for it starts
+ * or wakes a box, so its runner not heartbeating isn't it being offline.
+ */
+export function boxReachable(state: unknown): boolean {
+  return typeof state === 'string' && state !== 'destroying' && state !== 'expired';
+}
 // The other runners' threads are watched only while a Mac app is
 // connected, and for a while after it goes, so an app relaunching doesn't
 // start the watch again. Each re-run of that watch reads every one of the
@@ -66,7 +107,7 @@ const ONLINE_MS = 3 * 60_000;
 const WATCH_CHECK_MS = 15_000;
 const UNWATCH_AFTER_MS = 2 * 60_000;
 
-export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withBacklog = true, withBacklogged = true, withRecap = true, withKeywords = true): IndexRow {
+export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withKeywords = true, withMode = true, withBacklog = true, withBacklogged = true, withRecap = true): IndexRow {
   const row: IndexRow = {
     threadId: t.id,
     title: t.title,
@@ -92,6 +133,8 @@ export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = t
   if (withRecap && t.recap) row.recap = t.recap;
   // Changes after a look or once from the keyword sweep, so rarely.
   if (withKeywords && t.keywords) row.keywords = t.keywords;
+  // Changes only when Mike picks another (or a plan ends), so rarely.
+  if (withMode && t.permissionMode) row.permissionMode = t.permissionMode;
   if (withStartedBy && t.startedBy) {
     // Not the thread's id: only the row's tooltip uses this, by that title.
     const { kind, label, icon, threadTitle, why } = t.startedBy;
@@ -128,11 +171,15 @@ export class ThreadIndex {
     takesRecap?: () => boolean;
     // Whether it knows `keywords` (API 74).
     takesKeywords?: () => boolean;
+    // Whether it knows `permissionMode` (API 88).
+    takesMode?: () => boolean;
     // Whether the backend can answer with only the rows changed since the
     // last answer (API 29). Without it, every re-run reads every row.
     takesSince?: () => boolean;
     // Whether the backend has the runner order for the main key (API 58).
     takesOrder?: () => boolean;
+    // Whether to watch the virtual runners (API 94, the experiment, the main key).
+    takesServices?: () => boolean;
     // Whether a Mac app is connected to this runner. Only an app shows the
     // other runners' threads, so with none there's nothing to watch them
     // for. Left out, they're always watched.
@@ -153,12 +200,16 @@ export class ThreadIndex {
   private full = true;
   private timer?: TimerHandle;
   private flushing = false;
+  private flushFails = 0;
   private unlisten?: () => void;
   private unsubscribe?: () => void;
   private remote: RemoteThreads = { runners: [], threads: [] };
   // Mike's runner order, watched with the other runners (API 58).
   private order?: string[];
   private unsubOrder?: () => void;
+  // The virtual runners, watched with the other runners (API 94).
+  private services?: VirtualRunner[];
+  private unsubServices?: () => void;
   // A backend before API 54 dropped a runner key's archived rows while this
   // remembered them as sent: they go once more, then this says so (snapshot).
   private archivedSent = false;
@@ -265,6 +316,7 @@ export class ThreadIndex {
     this.answered = false;
     const failed = (e: Error) => this.watchFailed(e);
     this.watchOrder();
+    this.watchServices();
     this.watchingSince = this.deps.takesSince?.() ?? false;
     if (this.watchingSince) {
       // A heartbeat re-runs only this small read; the rows are watched
@@ -287,6 +339,8 @@ export class ThreadIndex {
     this.unsubscribe = undefined;
     this.unsubOrder?.();
     this.unsubOrder = undefined;
+    this.unsubServices?.();
+    this.unsubServices = undefined;
     this.unsubRows?.();
     this.unsubRows = undefined;
     this.rowsKey = undefined;
@@ -309,6 +363,36 @@ export class ThreadIndex {
       },
       (e) => this.deps.log.warn('the runner order subscription failed', { error: String(e) }),
     );
+  }
+
+  // The virtual runners, for Runs on (boxes:runnerServices, owner only). It
+  // re-runs as their boxes start and sleep (its counts), which is rare
+  // beside the threads' rows. A failure leaves the last list, logged.
+  private watchServices(): void {
+    if (this.unsubServices || !this.deps.subscribe || !this.deps.takesServices?.()) return;
+    this.unsubServices = this.deps.subscribe(
+      'boxes:runnerServices',
+      { key: this.deps.key },
+      (v) => {
+        const rows = Array.isArray(v) ? (v as { serviceId?: unknown; name?: unknown; provider?: unknown }[]) : [];
+        this.services = rows
+          .filter((r) => typeof r.serviceId === 'string' && typeof r.name === 'string' && typeof r.provider === 'string')
+          .map((r) => ({ id: r.serviceId as string, name: r.name as string, provider: r.provider as string }));
+        this.remote = { ...this.remote, services: this.services };
+        this.deps.publish?.({ method: 'remoteThreads.updated', params: { ...this.remote, ready: this.heard() } });
+      },
+      (e) => this.deps.log.warn('the virtual runners subscription failed', { error: String(e) }),
+    );
+  }
+
+  // No longer watched (the experiment switched off): the app hears they went.
+  private dropServices(): void {
+    this.unsubServices?.();
+    this.unsubServices = undefined;
+    this.services = undefined;
+    const { services: _gone, ...rest } = this.remote;
+    this.remote = rest;
+    this.deps.publish?.({ method: 'remoteThreads.updated', params: { ...this.remote, ready: this.heard() } });
   }
 
   private onRunners(v: unknown): void {
@@ -450,12 +534,16 @@ export class ThreadIndex {
     }
     // The backend's taken the runner order since the watch began.
     if (this.unsubscribe) this.watchOrder();
+    // The virtual runners: the experiment switched, or the backend reached
+    // API 94, since the watch began (Codex's review of slice 5, 7).
+    if (this.unsubscribe) this.watchServices();
+    if (this.unsubServices && !this.deps.takesServices?.()) this.dropServices();
     for (const t of this.deps.host.list(['inbox', 'snoozed', 'archived'])) this.mark(t);
     this.schedule();
   }
 
   private mark(t: ThreadSummary): void {
-    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true, this.deps.takesKeywords?.() ?? true);
+    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesKeywords?.() ?? true, this.deps.takesMode?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true);
     if (this.sent.get(t.id) === writeKey(row)) {
       this.dirty.delete(t.id);
       return;
@@ -471,6 +559,26 @@ export class ThreadIndex {
       this.timer = undefined;
       void this.flush();
     }, ms);
+  }
+
+  /**
+   * Box mode's save (sync.ts flushAll): this runner's rows all written, for
+   * sure, before boxSaved. Waits for a write going, writes what's left, and
+   * throws if it failed, left anything, or the index hasn't started.
+   */
+  async flushAll(timeoutMs = 60_000): Promise<void> {
+    if (!this.running) throw new Error("The sidebar index hasn't started, so the thread's row can't be written before its save.");
+    const end = Date.now() + timeoutMs;
+    while (this.flushing) {
+      if (Date.now() > end) throw new Error("The sidebar index was still writing, so the thread's row didn't go up before its save.");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    if (!this.dirty.size && !this.removed.size && !this.full) return;
+    this.timer?.cancel();
+    this.timer = undefined;
+    const fails = this.flushFails;
+    await this.flush();
+    if (this.flushFails !== fails || this.dirty.size || this.removed.size || this.full) throw new Error("The thread's row in the sidebar index didn't go up before its save.");
   }
 
   private async flush(): Promise<void> {
@@ -508,6 +616,7 @@ export class ThreadIndex {
       for (const r of rows) if (!this.dirty.has(r.threadId) && this.sent.get(r.threadId) !== writeKey(r)) this.dirty.set(r.threadId, r);
       for (const id of this.removing) this.removed.add(id);
       this.removing = [];
+      this.flushFails++;
       this.deps.log.warn('could not write the thread index; trying again', { error: String(e) });
       this.flushing = false;
       this.schedule(15_000);
@@ -522,12 +631,13 @@ export class ThreadIndex {
     const now = this.deps.clock.now();
     this.remote = {
       runners: (value?.runners ?? [])
-        .filter((r) => r.lastSeenAt > 0 || (value?.threads ?? []).some((t) => t.runnerId === r.runnerId))
+        .filter((r) => r.lastSeenAt > 0 || r.box || (value?.threads ?? []).some((t) => t.runnerId === r.runnerId))
         .map((r) => ({
           id: r.runnerId,
           name: r.name,
           ...(r.icon ? { icon: r.icon } : {}),
-          online: now - r.lastSeenAt < ONLINE_MS,
+          online: now - r.lastSeenAt < ONLINE_MS || boxReachable(r.box?.state),
+          ...(r.box ? { box: boxView(r.box) } : {}),
           lastSeenAt: new Date(r.lastSeenAt).toISOString(),
           ...(r.followProblem ? { followProblem: r.followProblem } : {}),
         })),
@@ -536,6 +646,7 @@ export class ThreadIndex {
       // checked, and an extra Mac may be compromised.
       threads: (value?.threads ?? []).filter((t) => isThreadIdShape(t?.threadId)),
       ...(this.order ? { order: this.order } : {}),
+      ...(this.services ? { services: this.services } : {}),
     };
     this.deps.publish?.({ method: 'remoteThreads.updated', params: { ...this.remote, ready: this.heard() } });
   }

@@ -439,7 +439,7 @@ fn code_sheet(qr: Option<Qr>, secondary: Hsla, closed: WeakEntity<SettingsWindow
 /// The code's squares, painted a run of them at a time, each square a whole
 /// number of the screen's pixels so the edges stay sharp, and centred in the
 /// 220 points the Swift sheet gives it.
-fn qr_canvas(qr: Qr) -> impl IntoElement {
+pub(crate) fn qr_canvas(qr: Qr) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {

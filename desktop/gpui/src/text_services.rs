@@ -14,7 +14,7 @@ use gpui_kit::component::input::TextareaState;
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use threadbear_core::spelling::Found;
+use threadbear_core::spelling::{Found, Outcome};
 
 /// The Edit menu's switches for the message box, kept between runs (prefs).
 /// Spelling while typing is on, grammar off, and quotes and dashes off as the
@@ -62,14 +62,26 @@ pub(crate) const MAX_CHECKED: usize = 20_000;
 mod mac {
     use super::*;
     use objc2::rc::Retained;
-    use objc2_app_kit::NSSpellChecker;
+    use objc2_app_kit::{NSCorrectionResponse, NSSpellChecker};
     use objc2_foundation::{NSRange, NSString, NSTextCheckingType};
-    use threadbear_core::spelling::{byte_of_utf16, utf16_of_byte, Kind};
+    use threadbear_core::spelling::{byte_of_utf16, utf16_of_byte, Kind, Response, OWN_WORDS};
 
     thread_local! {
         /// One spell document for the app's text boxes, so Ignore Spelling
         /// lasts while the app runs, as an NSTextView's does for its window.
-        static TAG: isize = NSSpellChecker::uniqueSpellDocumentTag();
+        /// It knows the app's own name from the start, so the checker's
+        /// guesses and corrections leave it be (core's `without_own_words`
+        /// makes sure of the marks and corrections either way).
+        static TAG: isize = {
+            let tag = NSSpellChecker::uniqueSpellDocumentTag();
+            let checker = checker();
+            for word in OWN_WORDS {
+                for form in [word.to_string(), word.to_lowercase(), word.to_uppercase()] {
+                    checker.ignoreWord_inSpellDocumentWithTag(&NSString::from_str(&form), tag);
+                }
+            }
+            tag
+        };
         #[allow(deprecated)]
         static VOICE: Retained<objc2_app_kit::NSSpeechSynthesizer> = objc2_app_kit::NSSpeechSynthesizer::new();
     }
@@ -162,6 +174,24 @@ mod mac {
         checker().ignoreWord_inSpellDocumentWithTag(&NSString::from_str(word), tag);
     }
 
+    pub fn record_response(outcome: &Outcome) {
+        let tag = TAG.with(|t| *t);
+        let response = match outcome.response {
+            Response::Accepted => NSCorrectionResponse::Accepted,
+            Response::Edited => NSCorrectionResponse::Edited,
+            Response::Reverted => NSCorrectionResponse::Reverted,
+        };
+        let checker = checker();
+        let language = checker.language();
+        let (correction, word) = (NSString::from_str(&outcome.correction), NSString::from_str(&outcome.word));
+        checker.recordResponse_toCorrection_forWord_language_inSpellDocumentWithTag(response, &correction, &word, Some(&language), tag);
+        // A word whose correction was put back is what was meant, so it
+        // isn't marked either while the app runs.
+        if outcome.response == Response::Reverted {
+            checker.ignoreWord_inSpellDocumentWithTag(&word, tag);
+        }
+    }
+
     #[allow(deprecated)]
     pub fn speak(text: &str) {
         VOICE.with(|v| {
@@ -200,6 +230,7 @@ mod mac {
     }
     pub fn learn(_: &str) {}
     pub fn ignore(_: &str) {}
+    pub fn record_response(_: &Outcome) {}
     pub fn speak(_: &str) {}
     pub fn stop_speaking() {}
     pub fn speaking() -> bool {
@@ -233,6 +264,13 @@ pub(crate) fn learn(word: &str) {
 /// Ignore Spelling: not marked again while the app runs.
 pub(crate) fn ignore(word: &str) {
     mac::ignore(word)
+}
+
+/// What became of an autocorrection, told to the spell checker
+/// (`recordResponse:toCorrection:...`) as NSTextView tells it, so it learns
+/// from it; one put back is also ignored from then on while the app runs.
+pub(crate) fn record_response(outcome: &Outcome) {
+    mac::record_response(outcome)
 }
 
 /// Edit > Speech > Start Speaking, in the Mac's spoken-content voice.

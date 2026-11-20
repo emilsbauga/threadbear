@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeHarness } from '../helpers/fakes.ts';
 import { nullLogger } from '../../src/log.ts';
+import { onlyOnWindows } from '../helpers/platform.ts';
 import {
   StuckJobs,
   QUIET_MS,
@@ -80,7 +81,7 @@ test('an idle thread whose shell has sat quiet and idle gets one message about i
   const said = nudges(h, thread.id);
   assert.equal(said.length, 1);
   assert.match(said[0], /stuck-job check/);
-  assert.match(said[0], /snip2\.py.*\(shell, 40 min, running zsh, sleep\)/);
+  assert.match(said[0], /snip2\.py.*\(shell b1, 40 min, running zsh, sleep\)/);
   assert.match(said[0], /ask the user in end_turn/);
 
   // Once only, even after the turn it started has ended.
@@ -129,7 +130,7 @@ test('a sub-agent whose transcript has gone quiet counts; a monitor never does',
   await jobs.sweep();
   const said = nudges(h, thread.id);
   assert.equal(said.length, 1);
-  assert.match(said[0], /James interview round 1 cut \(sub-agent, 33 min\)/);
+  assert.match(said[0], /James interview round 1 cut \(sub-agent a1, 33 min\)/);
   assert.doesNotMatch(said[0], /deploy/);
 });
 
@@ -386,8 +387,61 @@ test('a loop that keeps starting landings is judged three hours after the first'
 });
 
 // The probe can't tie a loop polling a landing's log to the landing in
-// another shell, so that one is still told, with a word about the landing.
-test("a quiet shell beside a landing in the same thread is told to leave the landing alone", async () => {
+// another shell, so anything else of the thread's is left alone while a
+// landing is going. On 19 Nov a sub-agent's four copies of one wait loop
+// beside its tb land were each told about in turn, 37 minutes old every
+// time, so the one notice seemed to come four times.
+test('quiet jobs beside a landing in the same thread are left alone until it ends', async () => {
+  const { h, probe, jobs, thread, s } = setUp();
+  const land = { id: 'b6', type: 'local_bash', kind: 'shell' as const, description: 'Land it' };
+  const polls = ['p1', 'p2', 'p3', 'p4'].map((id) => ({ id, type: 'local_bash', kind: 'shell' as const, description: 'Wait for landing result' }));
+  const agent = { id: 'a2', type: 'local_agent', kind: 'agent' as const, description: 'Build and land the Android app' };
+  s.out({ kind: 'tasks', tasks: [land, ...polls, agent] });
+  s.result('completed');
+  const started = h.clock.now();
+  probe.files.set('b6', { startedAt: started, lastOutputAt: started });
+  probe.files.set('a2', { startedAt: started, lastOutputAt: started });
+  // The copies started five minutes apart, as the sub-agent ran its wait again.
+  polls.forEach((p, i) => probe.files.set(p.id, { startedAt: started + i * 5 * MIN, lastOutputAt: started + i * 5 * MIN }));
+  let cpu = 0;
+  const poll = (id: string): BackgroundShell => ({
+    taskId: id,
+    cpuSeconds: (cpu += 0.1),
+    commands: ['zsh', 'sleep'],
+    processes: [{ command: "/bin/zsh -c eval 'until grep -q EXIT /tmp/land2.log; do sleep 15; done'", startedAt: started }, { command: 'sleep 15', startedAt: h.clock.now() }],
+  });
+  const look = async (landing: boolean) => {
+    // A nudge starts a turn; end it, as the agent would.
+    if (!h.runner.idleBackground().length) s.result('completed');
+    probe.shellsBySession.set(session(h), [
+      ...(landing ? [{ taskId: 'b6', cpuSeconds: (cpu += 0.1), commands: ['zsh', 'node', 'lockf'], processes: [{ command: LAND, startedAt: started }] }] : []),
+      ...polls.map((p) => poll(p.id)),
+    ]);
+    h.clock.advance(5 * MIN);
+    await jobs.sweep();
+  };
+  // An hour and a half of the landing waiting its turn: nothing is told.
+  for (let i = 0; i < 18; i++) await look(true);
+  assert.deepEqual(nudges(h, thread.id), []);
+
+  // The landing ends and nothing else does. The sub-agent, its transcript
+  // still quiet, is told at the next look; the loops at the one after (two
+  // looks to see their CPU), all in one message, each copy by its own id.
+  await look(false);
+  await look(false);
+  const told = nudges(h, thread.id);
+  assert.equal(told.length, 2);
+  assert.match(told[0], /- Build and land the Android app \(sub-agent a2/);
+  for (const p of polls) assert.match(told[1], new RegExp(`- Wait for landing result \\(shell ${p.id}, \\d+ min`));
+  assert.doesNotMatch(told.join('\n'), /- Land it/);
+  // And not again.
+  for (let i = 0; i < 4; i++) await look(false);
+  assert.equal(nudges(h, thread.id).length, 2);
+});
+
+// A landing past its three hours is what's stuck, and no longer holds back
+// the jobs beside it.
+test('jobs beside a landing past its three hours are told about with it', async () => {
   const { h, probe, jobs, thread, s } = setUp();
   const land = { id: 'b6', type: 'local_bash', kind: 'shell' as const, description: 'Land it' };
   const poll = { id: 'b7', type: 'local_bash', kind: 'shell' as const, description: 'Wait for the landing' };
@@ -396,21 +450,68 @@ test("a quiet shell beside a landing in the same thread is told to leave the lan
   const started = h.clock.now();
   probe.files.set('b6', { startedAt: started, lastOutputAt: started });
   probe.files.set('b7', { startedAt: started, lastOutputAt: started });
-  const shells = (cpu: number): BackgroundShell[] => [
-    { taskId: 'b6', cpuSeconds: cpu, commands: ['zsh', 'node', 'lockf'], processes: [{ command: LAND, startedAt: started }] },
-    { taskId: 'b7', cpuSeconds: cpu, commands: ['zsh', 'sleep'], processes: [{ command: "/bin/zsh -c eval 'until grep -q EXIT /tmp/land.log; do sleep 20; done'", startedAt: started }, { command: 'sleep 20', startedAt: started }] },
-  ];
-  probe.shellsBySession.set(session(h), shells(0.1));
-  h.clock.advance(35 * MIN);
-  await jobs.sweep();
-  probe.shellsBySession.set(session(h), shells(0.3));
-  h.clock.advance(5 * MIN);
-  await jobs.sweep();
+  let cpu = 0;
+  const look = async () => {
+    if (!h.runner.idleBackground().length) s.result('completed');
+    cpu += 0.1;
+    probe.shellsBySession.set(session(h), [
+      { taskId: 'b6', cpuSeconds: cpu, commands: ['zsh', 'node', 'lockf'], processes: [{ command: LAND, startedAt: started }] },
+      { taskId: 'b7', cpuSeconds: cpu, commands: ['zsh', 'sleep'], processes: [{ command: "/bin/zsh -c eval 'until grep -q EXIT /tmp/land.log; do sleep 20; done'", startedAt: started }] },
+    ]);
+    h.clock.advance(5 * MIN);
+    await jobs.sweep();
+  };
+  while (h.clock.now() < started + LAND_WAIT_MS) await look();
+  assert.deepEqual(nudges(h, thread.id), []);
+  for (let i = 0; i < 3; i++) await look();
   const told = nudges(h, thread.id);
   assert.equal(told.length, 1);
-  assert.match(told[0], /- Wait for the landing \(shell/);
-  assert.doesNotMatch(told[0], /- Land it/);
-  assert.match(told[0], /A tb land in another of this thread's shells is still going.*Leave it running/);
+  assert.match(told[0], /- Land it \(shell b6/);
+  assert.match(told[0], /- Wait for the landing \(shell b7/);
+  assert.doesNotMatch(told[0], /Leave it running/);
+});
+
+// Each shell's landings would otherwise hold the other back before either's
+// first was noted, for good (Codex's review, 19 Nov).
+test('two shells that keep starting landings are judged three hours after the first', async () => {
+  const { h, probe, jobs, thread, s } = setUp();
+  const tasks = ['l1', 'l2'].map((id) => ({ id, type: 'local_bash', kind: 'shell' as const, description: 'Land until it lands' }));
+  s.out({ kind: 'tasks', tasks });
+  s.result('completed');
+  const started = h.clock.now();
+  for (const t of tasks) probe.files.set(t.id, { startedAt: started, lastOutputAt: started });
+  let cpu = 0;
+  const look = async () => {
+    if (!h.runner.idleBackground().length) s.result('completed');
+    probe.shellsBySession.set(session(h), tasks.map((t) => ({ taskId: t.id, cpuSeconds: (cpu += 0.1), commands: ['zsh', 'node'], processes: [{ command: LAND, startedAt: h.clock.now() }] })));
+    h.clock.advance(5 * MIN);
+    await jobs.sweep();
+  };
+  for (let i = 0; i < 41; i++) await look();
+  assert.deepEqual(nudges(h, thread.id), []);
+  for (let i = 0; i < 2; i++) await look();
+  const told = nudges(h, thread.id);
+  assert.equal(told.length, 1);
+  assert.match(told[0], /shell l1/);
+  assert.match(told[0], /shell l2/);
+});
+
+// The probe is slow; a job that ends while it runs isn't named (Codex's
+// review, 19 Nov).
+test('a job that ends while the shells are being looked at is not told about', async () => {
+  const { h, probe, jobs, thread, s } = setUp();
+  s.out({ kind: 'tasks', tasks: [{ id: 'a3', type: 'local_agent', kind: 'agent', description: 'Watch the build' }] });
+  s.result('completed');
+  const started = h.clock.now();
+  probe.files.set('a3', { startedAt: started, lastOutputAt: started });
+  const shells = probe.shells.bind(probe);
+  probe.shells = async (ids: string[]) => {
+    s.out({ kind: 'tasks', tasks: [] });
+    return shells(ids);
+  };
+  h.clock.advance(QUIET_MS + 5 * MIN);
+  await jobs.sweep();
+  assert.deepEqual(nudges(h, thread.id), []);
 });
 
 test('which command lines are a landing', () => {
@@ -457,4 +558,35 @@ test('which command lines are a landing', () => {
   assert.equal(isLanding('/bin/bash /tmp/node /tmp/tb land', files), false);
   assert.equal(isLanding('/Users/m/My Tools/bin/node /x/runner/bin/tb land', files), true);
   assert.equal(isLanding('/bin/bash /tmp/node /tmp/tb land'), false, 'on the real disk');
+});
+
+
+// ps and lsof are how it looks at a CLI's shells, and Windows has neither. Each
+// due sweep used to try them and log a warning that it failed.
+test('on Windows, with no probe given, the check is off: nothing is armed and a sweep logs nothing', onlyOnWindows('Only Windows has no ps and lsof to look with'), async () => {
+  const h = makeHarness();
+  const warnings: string[] = [];
+  const log = { ...nullLogger, warn: (m: string) => void warnings.push(m) };
+  const jobs = new StuckJobs({ host: h.runner, clock: h.clock, log, home: h.home });
+  h.runner.create({ text: 'Cut the interview', accountId: 'claude-3' });
+  const s = h.adapter.last;
+  s.init();
+  s.out({ kind: 'tasks', tasks: [waiter] });
+  s.result('completed');
+  const timers = h.clock.pending();
+  jobs.start();
+  assert.equal(h.clock.pending(), timers, 'no timer to wake it');
+  h.clock.advance(60 * MIN);
+  await jobs.sweep();
+  assert.deepEqual(warnings, []);
+  jobs.stop();
+});
+
+test('a probe given to it is used on every platform', async () => {
+  const h = makeHarness();
+  const jobs = new StuckJobs({ host: h.runner, clock: h.clock, log: nullLogger, home: h.home, probe: new FakeProbe() });
+  const timers = h.clock.pending();
+  jobs.start();
+  assert.equal(h.clock.pending(), timers + 1);
+  jobs.stop();
 });

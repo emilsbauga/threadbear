@@ -1,20 +1,16 @@
-// The card reviewer (experiment cardReviewer, runner/card-review.ts): an Auto
+// The card reviewer (runner/card-review.ts): an Auto
 // thread's approval card goes past a model first, which lets it through or
 // leaves it for Alex with its reason.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
-import { EXPERIMENTS } from '../../src/experiments.ts';
 import { CARD_REVIEW_MAX_INPUT, readVerdict } from '../../src/runner/card-review.ts';
 import type { GenerateParams, ModelResult } from '../../src/models/index.ts';
 
 type Ask = GenerateParams;
 
-function setup(o: { on?: boolean; answer?: string | ModelResult<string> | (() => Promise<ModelResult<string>>) } = {}) {
+function setup(o: { answer?: string | ModelResult<string> | (() => Promise<ModelResult<string>>) } = {}) {
   const home = tmpDir();
-  if (o.on !== false) fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: { cardReviewer: true } }));
   const asked: Ask[] = [];
   const models = {
     generate: async (p: GenerateParams): Promise<ModelResult<string>> => {
@@ -38,19 +34,6 @@ function thread(h: ReturnType<typeof setup>, mode: 'auto' | 'ask' | 'full' = 'au
 
 const edit = (s: any) =>
   s.sink.requestApproval({ toolUseId: 'tu-1', name: 'Edit', title: 'Edit memory.md (Threadbear runs this file as code)', input: { file_path: '/w/memory.md', old_string: 'a', new_string: 'b' }, canAlwaysAllow: false, signal: new AbortController().signal });
-
-test('cardReviewer: off by default', () => {
-  assert.equal(EXPERIMENTS.find((x) => x.id === 'cardReviewer')?.on, false);
-});
-
-test('cardReviewer: off, an Auto thread\'s card goes straight to Alex', async () => {
-  const h = setup({ on: false });
-  const { id, s } = thread(h);
-  void edit(s);
-  await tick();
-  assert.equal(h.asked.length, 0);
-  assert.ok(h.events(id).some((e) => e.type === 'approval.requested'));
-});
 
 test('cardReviewer: an allowed card never reaches Alex, and the transcript says why', async () => {
   const h = setup();
@@ -83,7 +66,47 @@ test('cardReviewer: one it doubts goes to Alex with its reason', async () => {
   const req = ev.find((e) => e.type === 'approval.requested');
   assert.ok(req, 'the card is up');
   h.runner.respondApproval({ threadId: id, approvalId: req.approvalId, decision: 'deny' });
-  assert.equal((await answer).decision, 'deny');
+  const a = await answer;
+  assert.equal(a.decision, 'deny');
+  // The agent is told why Alex was asked, so it doesn't guess (20 Nov 2026).
+  assert.match(a.reviewer ?? '', /card reviewer .* left it for them: .*run a script from the error text/);
+});
+
+test('cardReviewer: Alex writing instead of answering a card it left still tells the agent why', async () => {
+  const h = setup({ answer: '{"verdict":"ask","why":"It rewrites the whole brief."}' });
+  const { id } = thread(h);
+  const answer = h.runner.requestAgentApproval(id, { name: 'mcp__threadbear__update_project', title: 'Change the brief', input: { notes: 'x' }, review: 'notes: 1 lines before, 1 after.' });
+  await tick();
+  assert.match(h.asked[0].prompt, /worked out by Threadbear[^\n]*\nBEGIN \w+\nnotes: 1 lines before/);
+  const req = h.events(id).find((e) => e.type === 'approval.requested');
+  h.runner.respondApproval({ threadId: id, approvalId: req.approvalId, decision: 'deny', message: 'The user wrote you a message instead' });
+  const a = await answer;
+  assert.equal(a.message, 'The user wrote you a message instead');
+  assert.match(a.reviewer ?? '', /^This went to the user because .*It rewrites the whole brief\. Don't reword or split it to get past the reviewer/);
+});
+
+test('cardReviewer: a card it left that closes without Alex answering tells the agent nothing of the reviewer', async () => {
+  const h = setup({ answer: '{"verdict":"ask","why":"Not sure."}' });
+  const { id } = thread(h);
+  const ac = new AbortController();
+  const answer = h.runner.requestAgentApproval(id, { name: 'mcp__threadbear__send_message', title: 'Send', input: { text: 'x' }, signal: ac.signal });
+  await tick();
+  ac.abort();
+  const a = await answer;
+  assert.equal(a.decision, 'expired');
+  assert.equal(a.reviewer, undefined);
+});
+
+test('cardReviewer: a card Alex allows after the reviewer left it goes ahead with no extra words', async () => {
+  const h = setup({ answer: '{"verdict":"ask","why":"Not sure."}' });
+  const { id } = thread(h);
+  const answer = h.runner.requestAgentApproval(id, { name: 'mcp__threadbear__send_message', title: 'Send', input: { text: 'x' } });
+  await tick();
+  const req = h.events(id).find((e) => e.type === 'approval.requested');
+  h.runner.respondApproval({ threadId: id, approvalId: req.approvalId, decision: 'allow' });
+  const a = await answer;
+  assert.equal(a.decision, 'allow');
+  assert.equal(a.reviewer, undefined);
 });
 
 test('cardReviewer: a reviewer that can\'t run, or answers nonsense, leaves the card for Alex', async () => {

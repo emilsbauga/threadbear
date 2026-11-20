@@ -42,6 +42,8 @@ struct BubbleBackground: View {
 struct ProjectTiles: View {
     @Environment(AppModel.self) private var model
     var projects: [ProjectRef]
+    /// The thread's runner: its projects are that runner's.
+    var runnerId: String
     var size: CGFloat = 30
 
     var body: some View {
@@ -65,7 +67,7 @@ struct ProjectTiles: View {
                     }
                     .offset(x: 4, y: -4)
             }
-            ProjectIconView(project: projects.first.flatMap { model.project($0.id) }, title: projects.first?.title, size: size)
+            ProjectIconView(project: projects.first.flatMap { model.project($0.id, runnerId: runnerId) }, title: projects.first?.title, size: size)
         }
         .frame(width: size + 4, height: size + 4, alignment: .bottomLeading)
         .accessibilityHidden(true)

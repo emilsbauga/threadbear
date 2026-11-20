@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -359,6 +360,39 @@ test('Stop hook: a reply that closes by asking, under a done card, is sent back 
   }
 });
 
+// Thread 4e8b6ac9 (16 Nov 2026): the finished clip linked at a path that
+// left out its project folder, so the click only said "Couldn't find".
+test('Stop hook: a reply linking a file that is not there is sent back once to fix it', async () => {
+  const run = async (...blocks: string[]) => {
+    const { state, outputs } = start([], {}, { mcpServersFor: () => ({ threadbear: { type: 'sdk', name: 'threadbear' } }), oneReply: () => true });
+    const stop = state.options.hooks.Stop[0].hooks[0];
+    await state.frame!({ type: 'assistant', session_id: 's', message: { id: 'a', role: 'assistant', content: [{ type: 'tool_use', id: 'e1', name: END_TURN_FULL_NAME, input: { needs: 'nothing' } }] } });
+    await state.options.hooks.PostToolUse[0].hooks[0]({ hook_event_name: 'PostToolUse', tool_name: END_TURN_FULL_NAME });
+    await state.frame!({ type: 'user', session_id: 's', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e1', content: oneReplyAccepted(false) }] } });
+    for (const [i, text] of blocks.entries()) await state.frame!({ type: 'assistant', session_id: 's', message: { id: `b${i}`, role: 'assistant', content: [{ type: 'text', text }] } });
+    const first = await stop({ hook_event_name: 'Stop', stop_hook_active: false });
+    const redos = outputs.filter((o: AdapterOutput) => o.kind === 'endTurnNudge' && o.reopen && o.rewrite).length;
+    return { first, redos, stop, state };
+  };
+  const here = fileURLToPath(import.meta.url);
+  const dead = await run(`The clip is [clip.mp4](/nonexistent-threadbear/clip.mp4), the test [here](${here}:12).`);
+  assert.equal(dead.first.decision, 'block');
+  assert.match(dead.first.reason, /links a file that isn't on this Mac: `\/nonexistent-threadbear\/clip\.mp4`\./);
+  assert.equal(dead.redos, 1, 'the runner is told, so the next reply takes its place');
+  assert.deepEqual(await dead.stop({ hook_event_name: 'Stop', stop_hook_active: true }), {}, 'once');
+  dead.state.close!();
+  // In the first of two blocks, and over a closing question: one nudge, for
+  // the links, which says to put the question on the new card.
+  const both = await run('The clip is [clip.mp4](/nonexistent-threadbear/clip.mp4).', 'Which version do you want?');
+  assert.equal(both.first.decision, 'block');
+  assert.match(both.first.reason, /make that its ask/);
+  assert.equal(both.redos, 1);
+  both.state.close!();
+  const fine = await run(`The test is [here](${here}), and \`/nonexistent-threadbear/old.md\` is gone.`);
+  assert.deepEqual([fine.first, fine.redos], [{}, 0]);
+  fine.state.close!();
+});
+
 // From Codex's review: a repeat that only adds archive ("Added: ...") is a
 // successful result too, and took the check away with it, so the thread was
 // archived with its question unanswered.
@@ -440,7 +474,13 @@ test('pictures go to the CLI where their [Picture N] markers are, the rest befor
 // Without this the CLI nudged the model after every end_turn ("[Your
 // previous response had no visible output...]") and a throwaway line
 // landed under the real answer (28 Oct 2026).
-test('end_turn is a terminal MCP tool for the CLI, so its result ends the turn without a nudge', () => {
+test('end_turn is a terminal MCP tool for the CLI, so its result ends the turn without a nudge', (t) => {
+  // A run from inside Claude Code's desktop app inherits its own list.
+  const inherited = process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS;
+  delete process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS;
+  t.after(() => {
+    if (inherited !== undefined) process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS = inherited;
+  });
   const { state } = start();
   assert.equal(state.options.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS, 'mcp__threadbear__end_turn');
   assert.equal(terminalMcpTools(undefined), 'mcp__threadbear__end_turn');
@@ -484,6 +524,22 @@ test('a card closed unanswered is a plain denial saying so; only Stop interrupts
     assert.equal(res.behavior, 'deny');
     assert.equal(res.interrupt, interrupt);
     if (!interrupt) assert.match(res.message, /Threadbear closed this permission request.*did not decline/);
+    state.close!();
+  }
+});
+
+// A deny of a card the card reviewer left for Mike says both that he said no
+// and why he was asked (Gemini review, 20 Nov 2026).
+test('a denial keeps saying the user said no when the reviewer\'s reason comes with it', async () => {
+  for (const [answer, want] of [
+    [{ decision: 'deny', reviewer: 'Because X.' }, /^The user denied this\. Ask them how to proceed\. Because X\.$/],
+    [{ decision: 'deny', message: 'Not now', reviewer: 'Because X.' }, /^Not now Because X\.$/],
+    [{ decision: 'deny' }, /^The user denied this\. Ask them how to proceed\.$/],
+  ] as const) {
+    const { state } = start([], {}, {}, async () => answer);
+    const res = await state.options.canUseTool('Write', { file_path: '/tmp/x.txt', content: 'hi' }, { signal: new AbortController().signal, toolUseID: 'toolu_sub', agentID: 'agent-1' });
+    assert.equal(res.behavior, 'deny');
+    assert.match(res.message, want);
     state.close!();
   }
 });
@@ -687,7 +743,7 @@ test('a queued allow asks again if the input changed or the file now runs as cod
   release({ decision: 'deny' });
   assert.equal((await changed).behavior, 'deny');
   // The helper now runs as code (an earlier call made it so): a card that shows it all.
-  codeFiles.add(`${dir}/helper.ts`);
+  codeFiles.add(path.resolve(dir, 'helper.ts')); // the adapter asks about the resolved path, with backslashes on Windows
   cards = approvals.length;
   const asCode = state.options.canUseTool('Write', { file_path: `${dir}/helper.ts`, content: 'one' }, opts('w1'));
   await new Promise((r) => setImmediate(r));
@@ -716,7 +772,7 @@ test('more calls joining a waiting card leave the ones it shows as they were', a
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(approvals[0].queued?.map((c) => c.itemId), ['w1']);
   // The helper becomes code while the card waits, then more calls stream in.
-  codeFiles.add(helper.file_path);
+  codeFiles.add(path.resolve(helper.file_path));
   await call('r1', 'Read', { file_path: `${dir}/a.txt` });
   await call('b1', 'Bash', { command: 'ls' });
   const grown = outputs.filter((o) => o.kind === 'approvalQueue').at(-1);
@@ -751,7 +807,7 @@ test('two cards listing the same call: each answer holds for the call as its own
   await new Promise((r) => setImmediate(r));
   assert.ok(!/code/.test(approvals[0].queued!.find((c) => c.itemId === 'w1')!.title), 'card A shows it as text');
   // The helper becomes code, and a parallel call's card opens listing it too.
-  codeFiles.add(helper.file_path);
+  codeFiles.add(path.resolve(helper.file_path));
   const b = state.options.canUseTool('mcp__other__b', { q: 2 }, opts('m2'));
   await new Promise((r) => setImmediate(r));
   assert.match(approvals[1].queued!.find((c) => c.itemId === 'w1')!.title, /code/, 'card B shows it as code');
@@ -810,4 +866,20 @@ test('Stop hook: a notice handed over with "Now write your reply" does not undo 
   await frames(true);
   assert.equal((await stop({ hook_event_name: 'Stop', stop_hook_active: false })).reason, ONE_REPLY_END_TURN_NUDGE);
   state.close!();
+});
+
+test('a background wait loop is refused before it runs, in every mode, and a short wait or plain command goes on', async () => {
+  for (const mode of ['full', 'auto', 'ask'] as const) {
+    const { state } = start([], { permissionMode: mode });
+    const hook = state.options.hooks.PreToolUse[0].hooks[0];
+    const call = (id: string, tool_input: Record<string, unknown>) => hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: id, tool_input });
+    const refused = await call('w1', { command: 'until git merge-base --is-ancestor abc main; do sleep 60; done', run_in_background: true });
+    assert.equal(refused.hookSpecificOutput?.permissionDecision, 'deny', mode);
+    assert.match(refused.hookSpecificOutput.permissionDecisionReason, /schedule_message/);
+    const short = await call('w2', { command: 'until curl -sf localhost:3000; do sleep 1; done # short wait', run_in_background: true });
+    assert.notEqual(short?.hookSpecificOutput?.permissionDecision, 'deny', mode);
+    const plain = await call('w3', { command: 'npm run dev', run_in_background: true });
+    assert.notEqual(plain?.hookSpecificOutput?.permissionDecision, 'deny', mode);
+    state.close!();
+  }
 });

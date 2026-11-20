@@ -1,0 +1,19 @@
+# The unit test files a Windows runner's update has to pass before it
+# moves onto a new release of main (scripts/deploy-steps.mjs, unitTests;
+# scripts/test-windows.mjs --gate). They cover what only Windows runs: the
+# platform module, the release pointer, the Scheduled Task and installer,
+# Codex's copies, the build steps, file writes and Git Bash.
+#
+# Not the whole suite, as it is on a Mac: a landing is checked on a Mac and
+# Linux, not Windows, so a new test that assumes a Mac (/bin/ps, /bin/sh, a
+# symlink without Developer Mode) lands and then held the Dell off main for
+# good (17 and 18 Nov). The whole suite still runs on GitHub's Windows job.
+platform.test.ts
+windows-release.test.ts
+install-windows.test.ts
+codex-current.test.ts
+deploy-steps.test.ts
+fsutil.test.ts
+system-tools.test.ts
+win32-helper.test.ts
+windows-jobs.test.ts

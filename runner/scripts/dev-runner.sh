@@ -24,8 +24,9 @@
 # THREADBEAR_HOME doesn't last past one command in an agent's shell), and
 # prints the app/Tools/dev-app.sh command for a debug app against it. On a
 # new data dir, threads default to the folder <home>/work (under $TMPDIR
-# when <home> isn't), the login claude-main (TB_E2E_ACCOUNT picks another)
-# and model claude-haiku-5-5, and Codex threads to gpt-6-luna at low effort
+# when <home> isn't), the first Claude login that works (src/test-login.ts:
+# not plan-ended, hidden or noted, else claude-main; TB_E2E_ACCOUNT picks
+# another) and model claude-haiku-5-5, and Codex threads to gpt-6-luna at low effort
 # (runner.json's defaults; keepAccount keeps new threads on that login rather
 # than the one with the most room), not your real folders or the
 # account's own model, so a thread started from a debug app's composer is
@@ -151,6 +152,7 @@ if [ ! -e "$DATA_HOME/runner.json" ]; then
   # Cellar), which isn't there when Codex was installed elsewhere: then the
   # one on PATH, as codexPath (Codex's review, 9 Nov 2026).
   DEV_CODEX=""
+  DEV_LOGIN="$("$NODE" "$RUNNER_DIR/src/test-login.ts")"
   [ -n "${THREADBEAR_CODEX_PATH:-}" ] || DEV_CODEX="$(command -v codex 2>/dev/null || true)"
   "$NODE" -e 'const fs = require("fs"), path = require("path");
   const beside = fs.existsSync(path.join(path.dirname(process.execPath), "codex"));
@@ -159,8 +161,8 @@ if [ ! -e "$DATA_HOME/runner.json" ]; then
     cliUpdates: { claude: "off", codex: "off" },
     ...(process.argv[4] && !beside ? { codexPath: process.argv[4] } : {}),
   }, null, 2) + "\n")' \
-    "$DATA_HOME/runner.json" "$WORK" "${TB_E2E_ACCOUNT:-claude-main}" "$DEV_CODEX"
-  IN_WORK="   (in $(printf '%q' "$WORK"), on claude-haiku-5-5)"
+    "$DATA_HOME/runner.json" "$WORK" "$DEV_LOGIN" "$DEV_CODEX"
+  IN_WORK="   (in $(printf '%q' "$WORK"), on $DEV_LOGIN and claude-haiku-5-5)"
 fi
 # THREADBEAR_PORT and THREADBEAR_URL go too: tb then reads the port this
 # runner wrote to runner.json. THREADBEAR_TB is what tb prints in the

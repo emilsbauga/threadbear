@@ -84,6 +84,15 @@ document.getElementById('late-link').onclick = () => {
 };
 </script>`,
     '/second': '<!doctype html><title>Second page</title><p>The site\'s second page.</p>',
+    // Buttons at known places, and every press the page gets with where it
+    // landed, for features/tools/panel-hits.ts.
+    '/hits': `<!doctype html><title>Hits</title><body style="margin:0;font:13px -apple-system,system-ui">
+<button id="b1" style="position:absolute;left:20px;top:40px;width:120px;height:26px">One</button>
+<button id="b2" style="position:absolute;left:20px;top:300px;width:120px;height:26px">Two</button>
+<script>
+window.hits = [];
+addEventListener('mousedown', (e) => hits.push({ x: e.clientX, y: e.clientY, on: e.target.id || e.target.tagName }), true);
+</script>`,
   }));
   const dashboard = await serve(() => ({
     '/': `<!doctype html><title>Waiting for credentials</title><body style="font:14px -apple-system,system-ui;padding:16px">

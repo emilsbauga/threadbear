@@ -32,7 +32,7 @@ use threadbear_core::new_thread::abbreviate_home;
 use threadbear_core::runner_settings::{experiment_about, BringIn, RunnerSettings, StandingInstructions};
 use crate::tips::Tip as _;
 
-mod devices;
+pub(crate) mod devices;
 mod keyboard;
 mod pools;
 mod reviewers;
@@ -93,6 +93,9 @@ impl Tab {
 
 /// The sidebar's width, and the window's, at 100% (`SettingsLayout`).
 const SIDEBAR_WIDTH: f32 = 215.;
+/// The Same as the system tile's tip, and its label for scripts.
+const APPEARANCE_TIP: &str = if cfg!(target_os = "macos") { "Light or dark as the Mac is" } else if cfg!(target_os = "windows") { "Light or dark as Windows is" } else { "Light or dark as the system is" };
+const FONT_TIP: &str = "The font for everything but code";
 
 impl Threadbear {
     /// ⌘, or the gear: the window, brought forward if it's open, on `tab` if
@@ -218,8 +221,78 @@ fn bind_sidebar_keys(cx: &mut App) {
     });
 }
 
+/// The app, for a section's bear button: sections are drawn by free
+/// functions that have only the `App`.
+struct SettingsApp(WeakEntity<Threadbear>);
+impl Global for SettingsApp {}
+
+/// Starts a thread about a section, in the main window (`start_thread_about`).
+fn start_thread_about(title: &str, cx: &mut App) {
+    let Some(app) = cx.try_global::<SettingsApp>().and_then(|a| a.0.upgrade()) else { return };
+    let main = app.read(cx).main_window;
+    let words = format!("About Threadbear's {title} settings: ");
+    cx.activate(true);
+    main.update(cx, |_, window, cx| app.update(cx, |app, cx| app.start_thread_about(words, window, cx))).ok();
+}
+
+/// A section's bear button, at the end of its heading: start a thread about
+/// it (Mike, 17 Nov, in place of "Ask your agent to ..." in its ⓘ).
+fn thread_button(id: &str, title: &str, cx: &App) -> AnyElement {
+    let tip = format!("Start a thread about {title}");
+    let title = title.to_owned();
+    let (faint, fg) = (style::secondary_text(cx), cx.theme().foreground);
+    div()
+        .id(SharedString::from(format!("{id}-thread")))
+        .test_support()
+        .a11y_role(Role::Button)
+        .aria_label(tip.clone())
+        .tip(tip)
+        .cursor_pointer()
+        .p(px(2.))
+        .rounded(px(4.))
+        .text_color(faint)
+        .hover(move |s| s.text_color(fg))
+        .on_click(move |_, _, cx| start_thread_about(&title, cx))
+        .child(icons::symbol("bear.plus").with_size(px(17.)))
+        .into_any_element()
+}
+
+/// A section's ⓘ: what it is, then a button to start a thread about it.
+fn section_info(id: &str, title: &str, about: &str, cx: &App) -> AnyElement {
+    use gpui_kit::component::popover::Popover;
+    let secondary = style::secondary_text(cx);
+    let (about, title) = (SharedString::from(about.to_owned()), title.to_owned());
+    let trigger_tip = about.clone();
+    let button_id = SharedString::from(format!("{id}-info-thread"));
+    Popover::new(ElementId::Name(SharedString::from(format!("{id}-info"))))
+        .anchor(gpui_kit::Anchor::BottomLeft)
+        .trigger(crate::home_page::InfoTrigger::new(SharedString::from(format!("{id}-info")), trigger_tip, secondary))
+        .content(move |_, _, _| {
+            let title = title.clone();
+            v_flex()
+                .w(px(280.))
+                .p(px(12.))
+                .gap(px(10.))
+                .text_size(px(12.))
+                .child(about.clone())
+                .child(
+                    h_flex().child(
+                        Button::new(button_id.clone())
+                            .label("Start a thread about this")
+                            .icon(icons::symbol("bear.plus"))
+                            .small()
+                            .secondary()
+                            .tooltip("Opens a new thread to ask your agent about these settings")
+                            .on_click(move |_, _, cx| start_thread_about(&title, cx)),
+                    ),
+                )
+        })
+        .into_any_element()
+}
+
 impl SettingsWindow {
     fn new(app: WeakEntity<Threadbear>, client: std::sync::Arc<threadbear_client::runner::Client>, instructions_now: Option<StandingInstructions>, tab: Tab, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.set_global(SettingsApp(app.clone()));
         let instructions = cx.new(|cx| TextareaState::new(window, cx).placeholder("For example: I build with React, TypeScript and Convex. Write plainly and briefly."));
         let mut subs = vec![cx.subscribe_in(&instructions, window, |this, _, ev: &InputEvent, _, cx| {
             if matches!(ev, InputEvent::Change) && !this.filling {
@@ -564,19 +637,23 @@ impl SettingsWindow {
         if settings.lab_review_supported {
             let on = settings.lab_review;
             let switch = self.switch("settings-lab-review", on, "Have another lab check each code change a thread makes", cx, |this, on, cx| this.update(json!({ "labReview": on }), cx));
-            let mut rows = vec![row("Review code changes before a thread is done", switch, cx)];
-            // Who reviews, in order, while reviews are on (reviewers.rs).
-            if let Some(list) = settings.lab_reviewers.as_ref().filter(|_| on) {
-                rows.extend(self.reviewer_rows(list, cx));
-            }
-            sections.push(section(
+            let rows = vec![row("Review code changes before a thread is done", switch, cx)];
+            let review = section(
                 "settings-code-review",
                 "Code review",
-                "When a thread changes code and is done, another lab tries to break the change in a review thread of its own. Your thread waits for what it finds, fixes what holds up, and tells you in its reply. The reviewers below go in order: the first that isn't the thread's own provider and has a login with room reviews, on its model and effort, so when one runs out the next takes over. Drag them to change the order. With no other lab to hand, a fresh session of the thread's own provider reviews instead.",
+                "When a thread changes code and is done, another lab tries to break the change in a review thread of its own. Your thread waits for what it finds, fixes what holds up, and tells you in its reply.\n\nA change gets one reviewer: the first in Every change that isn't the thread's own provider and has a login with room, so when one runs out the next takes over. Drag them to change the order. A big or risky change gets everyone in Big or risky changes at once, or one reviewer from Every change if fewer than two of them can review. With no other lab to hand, a fresh session of the thread's own provider reviews.",
                 "explain what a review found, change who reviews, or turn reviews on or off for you.",
                 rows,
                 cx,
-            ));
+            );
+            // Who reviews, while reviews are on (reviewers.rs): two lists
+            // under the switch, kept closer to it than the next section.
+            let lists = if on { self.review_lists(settings, cx) } else { Vec::new() };
+            if lists.is_empty() {
+                sections.push(review);
+            } else {
+                sections.push(v_flex().gap(px(20.)).child(review).children(lists).into_any_element());
+            }
         }
         // Why it's worth turning on, then what's in it, for anyone wary of
         // turning it on (the Swift app's, Mike, 29 Oct). This Mac's own
@@ -601,6 +678,35 @@ impl SettingsWindow {
                 "While any thread is working, and for three minutes after, your Mac won't go to sleep on its own, so a long turn, or one you started from your phone, isn't cut off halfway. The screen still sleeps.",
                 "check whether it's holding your Mac awake right now.",
                 vec![row("Keep the Mac awake while threads work", switch, cx)],
+                cx,
+            ));
+        }
+        // The Usage panel's own settings (Mike, 18 Nov: not dumped at the
+        // foot of the panel). The spare week nudge is the runner's; whether
+        // to show a model's own week is this app's, and only while a login
+        // has one.
+        let mut usage_rows = Vec::new();
+        if let Some(on) = settings.spare_week {
+            let switch = self.switch("settings-spare-week", on, "Start a thread with ideas a day before a login's week resets with lots of it unused", cx, |this, on, cx| this.update(json!({ "spareWeek": on }), cx));
+            usage_rows.push(row("Tell me when a week's about to go unused", switch, cx));
+        }
+        if let Some(app) = self.app.upgrade() {
+            let titles = threadbear_core::usage::model_week_titles(&app.read(cx).logins.accounts);
+            if !titles.is_empty() {
+                let on = app.read(cx).usage.show_model_weeks;
+                let switch = self.switch("settings-model-weeks", on, threadbear_core::usage::MODEL_WEEKS_TIP, cx, |this, on, cx| {
+                    this.app.update(cx, |app, cx| app.set_show_model_weeks(on, cx)).ok();
+                });
+                usage_rows.push(row_with(div().child(threadbear_core::usage::model_weeks_switch(&titles)).into_any_element(), switch, cx));
+            }
+        }
+        if !usage_rows.is_empty() {
+            sections.push(section(
+                "settings-usage",
+                "Usage",
+                "A day before a login's week resets, if at the rate it's going 30% or more of it would be left, a thread on that login suggests work to spend it on and asks before starting any. The Usage panel's Find work for it does the same whenever you like.",
+                "suggest work for a login with room left, or turn this off for you.",
+                usage_rows,
                 cx,
             ));
         }
@@ -676,28 +782,96 @@ impl SettingsWindow {
         sections
     }
 
-    /// The appearance is this app's own, so it's here while the runner's away too.
+    /// The appearance is this app's own, so it's here while the runner's away
+    /// too. Light or dark as pictures, then the accent, spacing, text size
+    /// and font (Mike picked these from three directions, 17 Nov). Each
+    /// changes every window as it's clicked.
     fn appearance_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let current = style::appearance();
         let app = self.app.clone();
-        let menu = Button::new("settings-appearance").label(current.title()).small().secondary().dropdown_caret(true).tooltip("Light or dark for Threadbear, whatever the Mac is set to").dropdown_menu(move |menu: PopupMenu, _, _| {
-            let mut menu = menu;
-            for choice in style::Appearance::ALL {
+        let current = style::appearance();
+        let looks = h_flex().gap(px(14.)).children(style::Appearance::ALL.into_iter().map(|choice| {
+            let app = app.clone();
+            let tip = match choice {
+                style::Appearance::System => APPEARANCE_TIP,
+                style::Appearance::Light => "Always light, whatever the system is set to",
+                style::Appearance::Dark => "Always dark, whatever the system is set to",
+            };
+            look_tile(choice, choice == current, tip, cx, move |_, window, cx| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |app, cx| app.set_appearance(choice, window, cx));
+                }
+            })
+        }));
+        let accent_now = style::accent_choice();
+        let accents = h_flex().gap(px(8.)).items_center().children(style::Accent::ALL.into_iter().map(|choice| {
+            let app = app.clone();
+            accent_dot(choice, choice == accent_now, cx, move |_, window, cx| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |app, cx| app.set_accent(choice, window, cx));
+                }
+            })
+        }));
+        let compact = style::compact();
+        let spacing = segmented(
+            [("Roomy", "More room between rows and turns", !compact, false), ("Compact", "Rows and turns closer together, so more fit", compact, true)].map(|(label, tip, on, value)| {
                 let app = app.clone();
-                menu = menu.item(PopupMenuItem::new(choice.title()).checked(choice == current).on_click(move |_, window, cx| {
+                Segment { id: SharedString::from(format!("settings-spacing-{}", label.to_lowercase())), label, tip, on, click: Box::new(move |window: &mut Window, cx: &mut App| {
                     if let Some(app) = app.upgrade() {
-                        app.update(cx, |app, cx| app.set_appearance(choice, window, cx));
+                        app.update(cx, |app, cx| app.set_compact(value, window, cx));
+                    }
+                }) }
+            }),
+            cx,
+        );
+        // The zoom (⌘= and ⌘-) at three of its steps; one between them
+        // lights whichever side it's on.
+        let zoom = style::zoom_percent();
+        let text_size = segmented(
+            [("Smaller", "Text and everything else a step smaller (90%)", zoom < 100, 90), ("Normal", "Text at its usual size (100%)", zoom == 100, 100), ("Larger", "Text and everything else a step larger (110%)", zoom > 100, 110)].map(|(label, tip, on, percent)| {
+                let app = app.clone();
+                Segment { id: SharedString::from(format!("settings-text-size-{}", label.to_lowercase())), label, tip, on, click: Box::new(move |window: &mut Window, cx: &mut App| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |app, cx| app.set_zoom(percent, window, cx));
+                    }
+                    // set_zoom redraws the window it's given, this one.
+                    cx.refresh_windows();
+                }) }
+            }),
+            cx,
+        );
+        let font_now = style::font_choice();
+        let font_app = app.clone();
+        let font_menu = Button::new("settings-font").label(font_now.title()).small().secondary().dropdown_caret(true).tooltip(FONT_TIP).dropdown_menu(move |menu: PopupMenu, _, _| {
+            let mut menu = menu;
+            for choice in style::Font::ALL {
+                let app = font_app.clone();
+                menu = menu.item(PopupMenuItem::new(choice.title()).checked(choice == font_now).on_click(move |_, window, cx| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |app, cx| app.set_font(choice, window, cx));
                     }
                 }));
             }
             menu
         });
+        let font = div().id("settings-font-holder").test_support().a11y_role(Role::GenericContainer).aria_label(FONT_TIP).flex_none().child(font_menu);
         section(
             "settings-appearance-section",
             "Appearance",
-            "Light or dark for Threadbear only. Same as the Mac follows System Settings > Appearance.",
-            "change it for you.",
-            vec![row("Appearance", div().id("settings-appearance-holder").test_support().a11y_role(Role::GenericContainer).aria_label("Light or dark for Threadbear, whatever the Mac is set to").child(menu), cx)],
+            if cfg!(target_os = "macos") {
+                "How Threadbear looks, for Threadbear only. Same as the Mac follows System Settings > Appearance, and the first accent is the Mac's own. Text size is the same as View > Zoom (⌘= and ⌘-). The bear colours are Wayne Sutton's, from his fork."
+            } else if cfg!(target_os = "windows") {
+                "How Threadbear looks, for Threadbear only. Same as Windows follows Settings > Personalization > Colors. Text size is the same as View > Zoom (Ctrl+= and Ctrl+-). The bear colours are Wayne Sutton's, from his fork."
+            } else {
+                "How Threadbear looks, for Threadbear only. Text size is the same as View > Zoom (Ctrl+= and Ctrl+-). The bear colours are Wayne Sutton's, from his fork."
+            },
+            "change any of it for you.",
+            vec![
+                div().px(px(ROW_INSET)).pt(px(12.)).pb(px(10.)).child(looks).into_any_element(),
+                row("Accent", accents, cx),
+                row("Spacing", spacing, cx),
+                row("Text size", text_size, cx),
+                row("Font", font, cx),
+            ],
             cx,
         )
     }
@@ -1070,8 +1244,7 @@ fn rows_with_dividers(rows: Vec<AnyElement>, cx: &App) -> AnyElement {
 /// headings from the window's: 10 points on macOS 27.
 const ROW_INSET: f32 = 10.;
 
-fn section_with_body(id: &'static str, title: &str, about: &str, ask: &str, body: AnyElement, cx: &App) -> AnyElement {
-    let info = format!("{about}\n\nAsk your agent to {ask}");
+fn section_with_body(id: &'static str, title: &str, about: &str, _ask: &str, body: AnyElement, cx: &App) -> AnyElement {
     // As a grouped Form draws a section on macOS 27, measured from the Swift
     // window: the heading in line with the rows' words and 11 points over
     // the group, which has no edge, corners of 12 and a fill of 3% of the
@@ -1079,7 +1252,16 @@ fn section_with_body(id: &'static str, title: &str, about: &str, ask: &str, body
     v_flex()
         .id(id)
         .gap(px(11.))
-        .child(h_flex().gap(px(6.)).items_center().px(px(ROW_INSET)).child(div().text_size(px(13.)).line_height(px(16.)).font_semibold().child(title.to_owned())).child(info_tip(SharedString::from(format!("{id}-info")), info, cx)))
+        .child(
+            h_flex()
+                .gap(px(6.))
+                .items_center()
+                .px(px(ROW_INSET))
+                .child(div().text_size(px(13.)).line_height(px(16.)).font_semibold().child(title.to_owned()))
+                .child(section_info(id, title, about, cx))
+                .child(div().flex_1())
+                .child(thread_button(id, title, cx)),
+        )
         .child(div().rounded(px(12.)).bg(style::primary_opacity(cx, 0.03)).child(body))
         .into_any_element()
 }
@@ -1100,6 +1282,141 @@ fn row_with(label: AnyElement, control: AnyElement, _cx: &App) -> AnyElement {
         .line_height(px(17.))
         .child(div().flex_1().min_w_0().child(label))
         .child(control)
+        .into_any_element()
+}
+
+/// One of Appearance's pictures: a little window in that look, with the
+/// sidebar down its left and two lines of words, and the system's split down
+/// the middle. The picked one has a ring in the accent.
+fn look_tile(choice: style::Appearance, on: bool, tip: &'static str, cx: &App, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+    let ring = style::control_accent(cx);
+    let tint = style::control_accent(cx);
+    let half = |dark: bool| {
+        let (side, main, line) = if dark { (rgb(0x262626), rgb(0x1c1c1c), rgb(0x4a4a4a)) } else { (rgb(0xececec), rgb(0xffffff), rgb(0xcfcfcf)) };
+        (side, main, line)
+    };
+    let picture = |dark: bool| {
+        let (side, main, line) = half(dark);
+        h_flex()
+            .size_full()
+            .child(div().w(px(26.)).h_full().bg(side))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .h_full()
+                    .bg(main)
+                    .p(px(7.))
+                    .gap(px(5.))
+                    .child(div().h(px(5.)).w(px(44.)).rounded_full().bg(line))
+                    .child(div().h(px(5.)).w(px(30.)).rounded_full().bg(line))
+                    .child(div().flex_1())
+                    .child(h_flex().justify_end().child(div().h(px(6.)).w(px(20.)).rounded_full().bg(tint))),
+            )
+    };
+    let thumb = match choice {
+        style::Appearance::Light => picture(false).into_any_element(),
+        style::Appearance::Dark => picture(true).into_any_element(),
+        style::Appearance::System => h_flex()
+            .size_full()
+            .relative()
+            .child(div().absolute().top_0().left_0().bottom_0().w(px(46.)).overflow_hidden().child(div().w(px(92.)).h_full().child(picture(false))))
+            .child(div().absolute().top_0().right_0().bottom_0().w(px(46.)).overflow_hidden().child(div().ml(px(-46.)).w(px(92.)).h_full().child(picture(true))))
+            .into_any_element(),
+    };
+    let (fg, faint) = (cx.theme().foreground, style::secondary_text(cx));
+    v_flex()
+        .id(SharedString::from(format!("settings-look-{}", choice.name())))
+        .test_support()
+        .a11y_role(Role::Button)
+        .aria_label(tip)
+        .tip(tip)
+        .cursor_pointer()
+        .items_center()
+        .gap(px(6.))
+        .child(
+            div()
+                .w(px(96.))
+                .h(px(64.))
+                .rounded(px(9.))
+                .border(px(2.))
+                .border_color(if on { ring } else { gpui_kit::transparent_black() })
+                .p(px(2.))
+                .child(div().size_full().rounded(px(6.)).overflow_hidden().border_1().border_color(style::primary_opacity(cx, 0.12)).child(thumb)),
+        )
+        .on_click(click)
+        .child(div().text_size(px(12.)).text_color(if on { fg } else { faint }).child(choice.title()))
+        .into_any_element()
+}
+
+/// One accent: a dot in its colour, ringed when it's the one picked. The
+/// system's is the Mac's accent where there is one, else the usual blue.
+fn accent_dot(choice: style::Accent, on: bool, cx: &App, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+    let colour: Hsla = match choice.rgb() {
+        Some(hex) => rgb(hex).into(),
+        None => {
+            // What the system's would be: the Mac's accent, read at launch.
+            let picked = style::accent_choice();
+            if picked == style::Accent::System { style::control_accent(cx) } else { rgb(0x0a84ff).into() }
+        }
+    };
+    let tip: SharedString = match choice {
+        style::Accent::System if cfg!(target_os = "macos") => "Use the Mac's accent colour".into(),
+        style::Accent::System => "Use blue, the usual accent".into(),
+        _ => format!("Use {} as the accent", choice.title()).into(),
+    };
+    div()
+        .id(SharedString::from(format!("settings-accent-{}", choice.name())))
+        .test_support()
+        .a11y_role(Role::Button)
+        .aria_label(tip.clone())
+        .tip(tip)
+        .cursor_pointer()
+        .size(px(24.))
+        .rounded_full()
+        .border(px(2.))
+        .border_color(if on { style::primary_opacity(cx, 0.6) } else { gpui_kit::transparent_black() })
+        .p(px(2.))
+        .on_click(click)
+        .child(div().size_full().rounded_full().bg(colour))
+        .into_any_element()
+}
+
+/// A choice in a row of them (`segmented`).
+struct Segment {
+    id: SharedString,
+    label: &'static str,
+    tip: &'static str,
+    on: bool,
+    click: Box<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// A few choices side by side, the picked one lit, as a segmented control
+/// draws them.
+fn segmented<const N: usize>(choices: [Segment; N], cx: &App) -> AnyElement {
+    let (fg, faint, lit, track) = (cx.theme().foreground, style::secondary_text(cx), style::primary_opacity(cx, 0.14), style::primary_opacity(cx, 0.06));
+    h_flex()
+        .flex_none()
+        .p(px(2.))
+        .rounded(px(7.))
+        .bg(track)
+        .children(choices.into_iter().map(|c| {
+            let click = c.click;
+            div()
+                .id(c.id)
+                .test_support()
+                .a11y_role(Role::Button)
+                .aria_label(c.tip)
+                .tip(c.tip)
+                .cursor_pointer()
+                .px(px(11.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .text_size(px(12.))
+                .when(c.on, |s| s.bg(lit).text_color(fg))
+                .when(!c.on, |s| s.text_color(faint))
+                .on_click(move |_, window, cx| click(window, cx))
+                .child(c.label)
+        }))
         .into_any_element()
 }
 
@@ -1181,13 +1498,24 @@ impl SettingsWindow {
         json!({
             "tab": self.tab.name(),
             "appearance": style::appearance().name(),
+            "accent": style::accent_choice().name(),
+            "compact": style::compact(),
+            "font": style::font_choice().name(),
             "defaultFolder": settings.as_ref().map(|s| s.default_cwd.clone()),
             "keepAwake": settings.as_ref().and_then(|s| s.keep_awake),
             "fullSync": settings.as_ref().and_then(|s| s.full_sync),
+            "spareWeek": settings.as_ref().and_then(|s| s.spare_week),
+            // Usage's switch for a model's own week, while a login has one.
+            "modelWeeks": self.app.upgrade().and_then(|a| {
+                let a = a.read(cx);
+                let titles = threadbear_core::usage::model_week_titles(&a.logins.accounts);
+                (!titles.is_empty()).then(|| json!({ "switch": threadbear_core::usage::model_weeks_switch(&titles), "on": a.usage.show_model_weeks }))
+            }),
             "labReview": settings.as_ref().map(|s| s.lab_review),
             "evolvingTitles": self.app.upgrade().and_then(|a| a.read(cx).librarian.status.as_ref().and_then(|s| s.evolving_titles)),
             "hideTestingWindows": self.app.upgrade().map(|a| a.read(cx).settings.saved.hide_testing_windows != Some(false)),
             "labReviewers": settings.as_ref().and_then(|s| s.lab_reviewers.as_ref()).map(|l| l.iter().map(|r| r.provider.clone()).collect::<Vec<_>>()),
+            "labPanel": settings.as_ref().and_then(|s| s.lab_panel.as_ref()).map(|l| l.iter().map(|r| r.provider.clone()).collect::<Vec<_>>()),
             "privateFolders": settings.as_ref().map(|s| s.private_folders.clone()),
             "smallJobsPool": settings.as_ref().and_then(|s| s.pool.clone()),
             // General's Web runtime row, as it reads.
@@ -1218,7 +1546,13 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
 #[cfg(feature = "automation")]
 pub(crate) fn scroll_into_view(app: &Entity<Threadbear>, bounds: Bounds<Pixels>, cx: &App) -> bool {
     let Some((_, view)) = app.read(cx).settings_window.as_ref() else { return false };
-    let scroll = &view.read(cx).scroll;
+    scroll_to(&view.read(cx).scroll, bounds)
+}
+
+/// Scrolls `scroll`'s pane so `bounds`, drawn wholly or partly out of
+/// sight in it, comes into view. False when it's in view already.
+#[cfg(feature = "automation")]
+pub(crate) fn scroll_to(scroll: &ScrollHandle, bounds: Bounds<Pixels>) -> bool {
     let (pane, offset, most) = (scroll.bounds(), scroll.offset(), scroll.max_offset());
     let margin = gpui_kit::px(12.);
     let y = if bounds.bottom() > pane.bottom() {

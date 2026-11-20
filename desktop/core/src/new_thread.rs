@@ -31,6 +31,11 @@ pub struct AccountUsage {
 
 /// The account's usage, if the runner sent any.
 pub fn usage_of(account: &Account) -> Option<AccountUsage> {
+    // A signed-out login has no room for anything, as the runner's pools
+    // have it (docs/protocol.md, Pools, "Signed out").
+    if (account.signed_out || account.plan_ended) && account.usage.is_none() {
+        return Some(AccountUsage { windows: Vec::new(), blocked: true });
+    }
     let v = account.usage.as_ref()?;
     Some(AccountUsage {
         windows: v["windows"]
@@ -48,7 +53,7 @@ pub fn usage_of(account: &Account) -> Option<AccountUsage> {
                     .collect()
             })
             .unwrap_or_default(),
-        blocked: v["blocked"].as_bool().unwrap_or(false),
+        blocked: v["blocked"].as_bool().unwrap_or(false) || account.signed_out || account.plan_ended,
     })
 }
 
@@ -142,6 +147,9 @@ pub fn room_tooltip<Tz: TimeZone>(account: &Account, now: &DateTime<Tz>) -> Stri
     let mut text = account.name();
     if let Some(note) = account.note.as_deref().filter(|n| !n.is_empty()) {
         text.push_str(&format!(" ({note})"));
+    }
+    if account.plan_ended {
+        return format!("{text}: Plan ended.");
     }
     let Some(usage) = usage_of(account) else { return text };
     let main = main_windows(&usage);
@@ -351,10 +359,27 @@ pub fn pool_providers(pool: &Pool, accounts: &[Account]) -> Vec<String> {
 pub enum ChipBadge {
     Low(String),
     Blocked,
+    /// "Signed out" in red: no turn runs on it until it's signed in again.
+    SignedOut,
+    /// "Plan ended" in red: its paid plan lapsed, so no turn runs on it.
+    PlanEnded,
+}
+
+impl ChipBadge {
+    /// Red: nothing runs on it now.
+    pub fn is_stop(&self) -> bool {
+        matches!(self, ChipBadge::Blocked | ChipBadge::SignedOut | ChipBadge::PlanEnded)
+    }
 }
 
 /// `AccountUsageText.chipBadge`, for one login.
 pub fn chip_badge(account: Option<&Account>) -> Option<ChipBadge> {
+    if account.is_some_and(|a| a.plan_ended) {
+        return Some(ChipBadge::PlanEnded);
+    }
+    if account.is_some_and(|a| a.signed_out) {
+        return Some(ChipBadge::SignedOut);
+    }
     let usage = usage_of(account?)?;
     if usage.blocked {
         return Some(ChipBadge::Blocked);
@@ -446,6 +471,40 @@ pub fn has_room(account: &Account) -> bool {
     !usage.blocked && !room(&usage).is_some_and(|r| r < PICK_FLOOR)
 }
 
+/// `usage.resets`: a Codex login's usage resets left (docs/protocol.md,
+/// Pools, "Usage resets"), and when the soonest expires (ms).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageResets {
+    pub available: u64,
+    pub next_expires_at: Option<i64>,
+}
+
+pub fn resets_of(account: &Account) -> Option<UsageResets> {
+    let r = account.usage.as_ref()?.get("resets")?;
+    Some(UsageResets { available: r["available"].as_u64()?, next_expires_at: r["nextExpiresAt"].as_str().and_then(parse_ms) })
+}
+
+/// The login the limit box offers to spend a usage reset on: the first of
+/// `candidates` (the thread's own login, then its pool's) that is a Codex
+/// login out of room with a reset left. Never by itself: Mike clicks it.
+pub fn reset_target<'a>(candidates: impl IntoIterator<Item = &'a Account>) -> Option<&'a Account> {
+    candidates.into_iter().find(|a| a.provider_id() == "codex" && !a.signed_out && !has_room(a) && resets_of(a).is_some_and(|r| r.available > 0))
+}
+
+/// The Use a reset button's tip: "Restores sam@example.com's 5-hour and
+/// weekly limits now. 2 left, the next expires 2 Dec."
+pub fn reset_tip<Tz: TimeZone>(target: &Account, accounts: &[Account], now: &DateTime<Tz>) -> String {
+    let mut tip = format!("Restores {}'s 5-hour and weekly limits now.", short_account_name(&target.id, accounts));
+    if let Some(r) = resets_of(target) {
+        tip.push_str(&format!(" {} left", r.available));
+        if let Some(at) = r.next_expires_at.and_then(|ms| now.timezone().timestamp_millis_opt(ms).single()) {
+            tip.push_str(&format!(", the next expires {}", reset_time(&at, now)));
+        }
+        tip.push('.');
+    }
+    tip
+}
+
 fn weekly_reset(account: &Account, now_ms: i64) -> f64 {
     let reset = usage_of(account).and_then(|u| u.windows.iter().find(|w| w.kind == "weekly").and_then(|w| w.resets_at));
     match reset {
@@ -515,6 +574,10 @@ pub struct NewThreadPicks {
     /// The runner it starts on; None for this Mac.
     pub runner: Option<String>,
     pub runner_picked: bool,
+    /// A virtual runner it starts on instead (`threads.create`'s
+    /// `serviceId`), with `runner` None: the folder and login are this
+    /// Mac's, as the runner here reads the repo and the login's email.
+    pub service: Option<String>,
 }
 
 /// What the next new thread remembers across sends (AppModel's UserDefaults:
@@ -535,6 +598,9 @@ pub struct Remembered {
     pub last_permission: Option<String>,
     /// The runner new threads start on ("Runs on"'s star), nil for this Mac.
     pub default_runner: Option<String>,
+    /// Or the virtual runner they start on, when that has the star
+    /// (`default_runner` is None then).
+    pub default_service: Option<String>,
 }
 
 impl Remembered {
@@ -740,6 +806,7 @@ impl Draft<'_> {
                 let usage = usage_of(account);
                 let tight = usage.as_ref().and_then(tightest);
                 let look = match tight {
+                    _ if account.signed_out || account.plan_ended => RoomLook::Blocked,
                     Some(t) if usage.as_ref().is_some_and(|u| u.blocked) || t.remaining_percent < 1. => RoomLook::Blocked,
                     Some(t) if t.remaining_percent < CHIP_WARNING => RoomLook::Low,
                     _ => RoomLook::Ample,
@@ -748,7 +815,7 @@ impl Draft<'_> {
                     id: account.id.clone(),
                     label: account_label(&account.id, &self.logins.accounts),
                     note: account.note.clone().filter(|n| !n.is_empty()),
-                    line: room_line(usage.as_ref()).unwrap_or_else(|| "Nothing known yet".to_owned()),
+                    line: if account.plan_ended { "Plan ended".to_owned() } else if account.signed_out { "Signed out".to_owned() } else { room_line(usage.as_ref()).unwrap_or_else(|| "Nothing known yet".to_owned()) },
                     tooltip: room_tooltip(account, now),
                     selected: pool.is_none() && account.id == selected,
                     fraction: tight.map(|t| (t.remaining_percent / 100.).clamp(0., 1.)),
@@ -809,12 +876,21 @@ pub fn short_folder(path: &str) -> String {
     folder_name(path)
 }
 
-/// `String.abbreviatingHome`.
+/// `String.abbreviatingHome`: the home folder shown as `~`. A Windows home
+/// (`C:\Users\alex`, from a runner on Windows) matches whatever its case,
+/// with `\` or `/` after it, as Windows reads both (runner-windows-plan.md,
+/// slice 6); the rest of the path is kept as written.
 pub fn abbreviate_home(path: &str, home: &str) -> String {
-    if !home.is_empty() && path == home {
-        "~".to_owned()
-    } else if !home.is_empty() && path.starts_with(&format!("{home}/")) {
-        format!("~{}", &path[home.len()..])
+    let windows = crate::reducer::text::is_windows_path(home);
+    let home = home.trim_end_matches(|c| c == '/' || (windows && c == '\\'));
+    if home.is_empty() || path.len() < home.len() || !path.is_char_boundary(home.len()) {
+        return path.to_owned();
+    }
+    let (head, rest) = path.split_at(home.len());
+    let same = if windows { head.replace('\\', "/").eq_ignore_ascii_case(&home.replace('\\', "/")) } else { head == home };
+    let follows = rest.is_empty() || rest.starts_with('/') || (windows && rest.starts_with('\\'));
+    if same && follows {
+        format!("~{rest}")
     } else {
         path.to_owned()
     }
@@ -873,6 +949,31 @@ mod tests {
         l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap().usage = Some(usage(90., 95.));
         let ids: Vec<&str> = switch_targets(&l.accounts, "claude-3").into_iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["claude-main", "codex-main"]);
+    }
+
+    #[test]
+    fn a_codex_login_out_of_room_with_resets_left_is_offered_one() {
+        let mut l = with_pools();
+        let out = json!({ "blocked": true, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0 }], "resets": { "available": 2, "nextExpiresAt": "2026-12-01T22:37:40.000Z" } });
+        // No count known: nothing to offer.
+        assert!(reset_target(l.accounts.iter()).is_none());
+        l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap().usage = Some(out.clone());
+        let target = reset_target(l.accounts.iter()).expect("codex-main is out with resets left");
+        assert_eq!(target.id, "codex-main");
+        assert_eq!(resets_of(target), Some(UsageResets { available: 2, next_expires_at: parse_ms("2026-12-01T22:37:40.000Z") }));
+        let tz = FixedOffset::east_opt(8 * 3600).unwrap();
+        let now = tz.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+        assert_eq!(reset_tip(target, &l.accounts, &now), "Restores Codex's 5-hour and weekly limits now. 2 left, the next expires 2 Dec.");
+        // A Claude login out of room never is, nor a Codex one with room,
+        // none left, or signed out.
+        l.accounts.iter_mut().find(|a| a.id == "claude-main").unwrap().usage = Some(out.clone());
+        assert_eq!(reset_target(l.accounts.iter().filter(|a| a.id == "claude-main")).map(|a| a.id.as_str()), None);
+        let codex = l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap();
+        codex.usage = Some(json!({ "blocked": false, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 40 }], "resets": { "available": 2 } }));
+        assert!(reset_target(l.accounts.iter()).is_none(), "room left");
+        let codex = l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap();
+        codex.usage = Some(json!({ "blocked": true, "windows": [], "resets": { "available": 0 } }));
+        assert!(reset_target(l.accounts.iter()).is_none(), "none left");
     }
 
     #[test]
@@ -987,6 +1088,21 @@ mod tests {
         let now = FixedOffset::east_opt(0).unwrap().timestamp_millis_opt(0).unwrap();
         let cards = draft(&l, &picks, &mem).room_cards(&now);
         assert_eq!(cards.iter().filter(|c| c.selected).map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["claude-3"]);
+    }
+
+    // A signed-out login has no room for a new thread, and its chip says
+    // why rather than "Limit reached" (Grok's review, 16 Nov).
+    #[test]
+    fn signed_out_logins_have_no_room_and_say_so() {
+        let out = Account { id: "s".into(), provider: "claude".into(), signed_out: true, usage: Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 71.0 }] })), ..Default::default() };
+        assert!(usage_of(&out).unwrap().blocked);
+        assert_eq!(chip_badge(Some(&out)), Some(ChipBadge::SignedOut));
+        assert!(ChipBadge::SignedOut.is_stop());
+        let ended = Account { id: "e".into(), provider: "claude".into(), plan_ended: true, usage: out.usage.clone(), ..Default::default() };
+        assert_eq!(chip_badge(Some(&ended)), Some(ChipBadge::PlanEnded));
+        assert!(usage_of(&ended).is_some_and(|u| u.blocked), "its old room is no room");
+        let bare = Account { id: "t".into(), signed_out: true, ..Default::default() };
+        assert!(usage_of(&bare).unwrap().blocked, "no usage known still has no room");
     }
 
     #[test]
@@ -1135,5 +1251,16 @@ mod tests {
         assert_eq!(short_folder("/"), "/");
         assert_eq!(abbreviate_home("/Users/alex/dev", "/Users/alex"), "~/dev");
         assert_eq!(abbreviate_home("/opt", "/Users/alex"), "/opt");
+        assert_eq!(abbreviate_home("/Users/alexandra/dev", "/Users/alex"), "/Users/alexandra/dev");
+        assert_eq!(abbreviate_home("/users/alex/dev", "/Users/alex"), "/users/alex/dev");
+        assert_eq!(abbreviate_home("/Users/alex", "/Users/alex/"), "~");
+        // A runner on Windows: any case, either slash, and nothing else.
+        assert_eq!(abbreviate_home("C:\\Users\\mikec\\dev\\me", "C:\\Users\\mikec"), "~\\dev\\me");
+        assert_eq!(abbreviate_home("c:\\users\\MIKEC\\dev", "C:\\Users\\mikec"), "~\\dev");
+        assert_eq!(abbreviate_home("C:/Users/mikec/dev", "C:\\Users\\mikec"), "~/dev");
+        assert_eq!(abbreviate_home("C:\\Users\\mikec", "C:\\Users\\mikec\\"), "~");
+        assert_eq!(abbreviate_home("C:\\Users\\mikecann\\x", "C:\\Users\\mikec"), "C:\\Users\\mikecann\\x");
+        assert_eq!(abbreviate_home("D:\\Users\\mikec\\x", "C:\\Users\\mikec"), "D:\\Users\\mikec\\x");
+        assert_eq!(abbreviate_home("C:\\Users\\mikec\\x", "/Users/alex"), "C:\\Users\\mikec\\x");
     }
 }

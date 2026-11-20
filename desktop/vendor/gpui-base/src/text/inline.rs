@@ -1109,6 +1109,99 @@ impl Inline {
     }
 }
 
+impl Inline {
+    /// Paints the sheen of a link that was just pressed over its words, and
+    /// asks for the next frame until it has crossed (`link_glint`).
+    fn paint_link_glint(&self, text_layout: &TextLayout, window: &mut Window, cx: &mut App) {
+        let Some((range, t)) = super::link_glint::playing(&self.state, cx) else {
+            return;
+        };
+        if range.end > self.text.len() {
+            return;
+        }
+        let glyphs = glyph_boxes(
+            text_layout,
+            window.text_style().text_align,
+            text_layout.bounds().size.width,
+        );
+        let rows = range_boxes(&glyphs, range.clone());
+        let width = rows.iter().map(|(_, left, right)| *right - *left).fold(Pixels::ZERO, |a, b| a + b);
+        if width <= Pixels::ZERO {
+            return;
+        }
+        let text_style = self.text_style.clone().unwrap_or_else(|| window.text_style());
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let runs = text_runs(self.text.len(), &text_style, &self.highlights);
+        let origin = text_layout.bounds().origin;
+        let line_height = text_layout.line_height();
+        let (whole, strips) = super::link_glint::frame(t, width);
+
+        // Each row of the link, with its own words shaped again lighter.
+        let mut along = Pixels::ZERO;
+        for (row, left, right) in rows {
+            let words = glyphs
+                .iter()
+                .filter(|glyph| glyph.row == row && glyph.text.start < range.end && glyph.text.end > range.start)
+                .fold(None::<Range<usize>>, |acc, glyph| {
+                    let start = glyph.text.start.max(range.start);
+                    let end = glyph.text.end.min(range.end);
+                    Some(acc.map_or(start..end, |acc| acc.start.min(start)..acc.end.max(end)))
+                });
+            let Some(words) = words else { continue };
+            let text = &self.text[words.clone()];
+            if text.contains('\n') {
+                along += right - left;
+                continue;
+            }
+            let top = origin.y + line_height * row as f32;
+            let shaped = |strength: f32, window: &mut Window| {
+                let mut lit = Vec::new();
+                let mut ix = 0;
+                for run in &runs {
+                    let (start, end) = (ix.max(words.start), (ix + run.len).min(words.end));
+                    ix += run.len;
+                    if start >= end {
+                        continue;
+                    }
+                    let mut run = run.clone();
+                    run.len = end - start;
+                    run.color = super::link_glint::lit(run.color, strength);
+                    run.underline = None;
+                    run.strikethrough = None;
+                    run.background_color = None;
+                    lit.push(run);
+                }
+                window
+                    .text_system()
+                    .shape_line(SharedString::from(text.to_string()), font_size, &lit, None)
+            };
+            let paint = |line: gpui::ShapedLine, from: Pixels, to: Pixels, window: &mut Window, cx: &mut App| {
+                let mask = Bounds::from_corners(point(from, top), point(to, top + line_height));
+                window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+                    _ = line.paint(point(origin.x + left, top), line_height, TextAlign::Left, None, window, cx);
+                });
+            };
+            if whole > 0.02 {
+                let line = shaped(whole, window);
+                paint(line, origin.x + left, origin.x + right, window, cx);
+            }
+            for (from, to, strength) in &strips {
+                let (from, to) = (origin.x + left + (*from - along), origin.x + left + (*to - along));
+                let (from, to) = (from.max(origin.x + left), to.min(origin.x + right));
+                if from >= to {
+                    continue;
+                }
+                // Solid, so each strip carries the whole link's lift too,
+                // as a see-through band over the lifted link would.
+                let line = shaped(whole + (1. - whole) * *strength, window);
+                paint(line, from, to, window, cx);
+            }
+            along += right - left;
+        }
+        window.request_animation_frame();
+    }
+}
+
 impl IntoElement for Inline {
     type Element = Self;
 
@@ -1282,6 +1375,7 @@ impl Element for Inline {
         }
 
         _ = text_layout.paint_foreground(window, cx);
+        self.paint_link_glint(&text_layout, window, cx);
 
         if is_selectable {
             if let Some(text_view_state) = GlobalState::global(cx).text_view_state() {
@@ -1423,6 +1517,40 @@ impl Element for Inline {
             });
         }
 
+        if !self.links.is_empty() {
+            // Threadbear's: a plain left press on a link says which link it
+            // went down on, for a handler further out that may drag the link
+            // out (`GlobalState::take_pressed_link`). Bubble phase, so it's
+            // noted before the handlers around this text see the press. With
+            // words selected here too: the press clears them first.
+            window.on_mouse_event({
+                let links = self.links.clone();
+                let text_layout = text_layout.clone();
+                let hitbox = hitbox.clone();
+                let glint_state = self.state.clone();
+                move |event: &MouseDownEvent, phase, window, cx| {
+                    if !phase.bubble()
+                        || event.button != MouseButton::Left
+                        || event.click_count != 1
+                        || !hitbox.is_hovered(window)
+                    {
+                        return;
+                    }
+                    if let Some(link) =
+                        Self::link_for_position(&text_layout, &links, event.position)
+                    {
+                        GlobalState::note_pressed_link(link.url, cx);
+                    }
+                    if let Some(range) =
+                        Self::link_range_for_position(&text_layout, &links, event.position)
+                    {
+                        super::link_glint::start(&glint_state, range, cx);
+                        cx.notify(current_view);
+                    }
+                }
+            });
+        }
+
         if !is_selection {
             // click to open link
             window.on_mouse_event({
@@ -1433,7 +1561,9 @@ impl Element for Inline {
                 let link_click_handler = self.link_click_handler.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.bubble() || !hitbox.is_hovered(window) {
+                    // Threadbear's: a press that became a drag (a file link
+                    // dragged out, `start_drag`) ends here, and isn't a click.
+                    if !phase.bubble() || !hitbox.is_hovered(window) || cx.has_active_drag() {
                         return;
                     }
                     if text_view_state

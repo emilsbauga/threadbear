@@ -129,15 +129,22 @@ export class BringIn {
   }
 }
 
-// "release/2026-11-06" as "6 Nov".
-export function releaseDay(tag: string): string {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// A release's day on this Mac, "6 Nov": from when it was tagged. The tag's
+// name is the day on Mike's runner in Perth, which was "tomorrow" all
+// afternoon in California (Wayne, 14 Nov 2026), so the name is only the
+// fallback, for a release with no date.
+export function releaseDay(tag: string, date?: string): string {
+  const at = date ? new Date(date) : undefined;
+  if (at && !Number.isNaN(at.getTime())) return `${at.getDate()} ${MONTHS[at.getMonth()]}`;
   const m = /(\d{4})-(\d{2})-(\d{2})$/.exec(tag);
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return m && Number(m[2]) >= 1 && Number(m[2]) <= 12 ? `${Number(m[3])} ${months[Number(m[2]) - 1]}` : tag;
+  return m && Number(m[2]) >= 1 && Number(m[2]) <= 12 ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]}` : tag;
 }
 
 function title(r: UpstreamRelease, fresh: { why: string }[]): string {
-  return fresh.length ? `Important update from Mike (${releaseDay(r.tag)})` : `Bring in Mike's release of ${releaseDay(r.tag)}`;
+  const day = releaseDay(r.tag, r.date);
+  return fresh.length ? `Important update from Mike (${day})` : `Bring in Mike's release of ${day}`;
 }
 
 function importantLines(fresh: { why: string }[]): string {

@@ -18,12 +18,14 @@ class FakeTransport : ConvexTransport {
     val calls = mutableListOf<Pair<String, Map<String, JsonElement>>>()
     var queries: (String, Map<String, JsonElement>) -> String = { _, _ -> "null" }
     var mutations: (String, Map<String, JsonElement>) -> String = { _, _ -> "\"cmd1\"" }
+    var actions: (String, Map<String, JsonElement>) -> String = { _, _ -> "null" }
     var subscriptions: (String, Map<String, JsonElement>) -> List<String> = { _, _ -> emptyList() }
     var subscriptionError: TransportError? = null
     override val connected: StateFlow<Boolean> = MutableStateFlow(true)
 
     override suspend fun query(name: String, args: Map<String, JsonElement>): String { calls += name to args; return queries(name, args) }
     override suspend fun mutation(name: String, args: Map<String, JsonElement>): String { calls += name to args; return mutations(name, args) }
+    override suspend fun action(name: String, args: Map<String, JsonElement>): String { calls += name to args; return actions(name, args) }
     override fun subscribe(name: String, args: Map<String, JsonElement>): Flow<String> = flow {
         calls += name to args
         subscriptions(name, args).forEach { emit(it) }

@@ -110,6 +110,10 @@ test('rate-limit updates are merged into the snapshot read at start', () => {
     },
   });
   assert.equal(read.rateLimits.primary?.usedPercent, 5);
+  // Only a read carries the resets; every reading after it repeats them.
+  const counted = new RateLimitTracker();
+  counted.read({ ordinaryUsageAllowed: true, rateLimits: { limitId: 'codex', limitName: null, primary: null, secondary: null, credits: null, planType: null, rateLimitReachedType: null }, rateLimitsByLimitId: null, rateLimitResetCredits: { availableCount: 2, credits: null } });
+  assert.equal(counted.update({ rateLimits: { limitId: 'codex', primary: { usedPercent: 9, windowDurationMins: 10080, resetsAt: 1 } } }).rateLimitResetCredits?.availableCount, 2);
   // An update for one bucket, with nulls for what it doesn't know.
   const u = t.update({ rateLimits: { limitId: 'codex', limitName: null, primary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: 100 }, secondary: null, credits: null, planType: 'prolite', rateLimitReachedType: null, spendControlReached: null } });
   assert.equal(u.rateLimits.primary?.usedPercent, 7);
@@ -225,7 +229,9 @@ test('a binary set by hand, or one that is missing, is spawned as given', () => 
   fs.writeFileSync(f, '#!/bin/sh\n', { mode: 0o755 });
   assert.deepEqual(resolveCodexBinary(f), { command: f, args: [], native: false });
   assert.deepEqual(resolveCodexBinary('/nowhere/codex'), { command: '/nowhere/codex', args: [], native: false });
-  assert.equal(fallbackCodexPath('/x/node/bin/node'), '/x/node/bin/codex');
+  // npm's codex link beside node; on Windows the package's codex.js, as its codex.cmd needs a shell.
+  assert.equal(fallbackCodexPath('/x/node/bin/node', 'darwin'), '/x/node/bin/codex');
+  assert.equal(fallbackCodexPath('C:\\node\\node.exe', 'win32'), 'C:\\node\\node_modules\\@openai\\codex\\bin\\codex.js');
 });
 
 // ---- A real process
@@ -376,8 +382,7 @@ test('spawn retry: a binary that appears a moment later', async () => {
   const p = proc(late);
   const started = p.start();
   await new Promise((r) => setTimeout(r, 250));
-  fs.copyFileSync(f.bin, late);
-  fs.chmodSync(late, 0o755);
+  f.install(late);
   const conn = await f.next();
   await conn.init();
   await started;
@@ -436,7 +441,7 @@ function generated(o: { drop?: string[]; addNotification?: string; addItem?: str
   fs.writeFileSync(path.join(dir, 'ServerNotification.ts'), `export type ServerNotification = ${notes.filter((n) => !drop.has(n)).map((n) => `{ "method": "${n}", "params": P }`).join(' | ')};`);
   fs.writeFileSync(path.join(dir, 'ClientRequest.ts'), `export type ClientRequest = ${union(surface.CLIENT_REQUESTS)};`);
   fs.writeFileSync(path.join(dir, 'ClientNotification.ts'), `export type ClientNotification = ${union(surface.CLIENT_NOTIFICATIONS)};`);
-  fs.writeFileSync(path.join(dir, 'ServerRequest.ts'), `export type ServerRequest = ${union([...surface.SERVER_REQUESTS, ...surface.REFUSED_SERVER_REQUESTS])};`);
+  fs.writeFileSync(path.join(dir, 'ServerRequest.ts'), `export type ServerRequest = ${union([...surface.SERVER_REQUESTS, ...surface.OPTIONAL_SERVER_REQUESTS, ...surface.REFUSED_SERVER_REQUESTS])};`);
   const items = { ...surface.ITEM_FIELDS, ...Object.fromEntries(surface.IGNORED_ITEMS.map((t) => [t, []])), ...(o.addItem ? { [o.addItem]: [] } : {}) };
   // webSearch's fields live in a file of their own, as in the real output.
   const members = Object.entries(items)
@@ -456,6 +461,11 @@ function generated(o: { drop?: string[]; addNotification?: string; addItem?: str
 test('checkSurface: a complete schema passes', () => {
   assert.deepEqual(surface.checkSurface(generated()), { missing: [], added: [] });
   assert.equal(surface.testedVersion, '0.164.0');
+});
+
+test('checkSurface: a request Codex stops sending that loses nothing (currentTime/read, gone in 0.171.0) holds nothing back', () => {
+  assert.deepEqual(surface.checkSurface(generated({ drop: ['currentTime/read'] })), { missing: [], added: [] });
+  assert.ok(surface.checkSurface(generated({ drop: ['item/commandExecution/requestApproval'] })).missing.includes('server request item/commandExecution/requestApproval'), 'approvals still do');
 });
 
 test('checkSurface names what a new version lost, and what it added', () => {

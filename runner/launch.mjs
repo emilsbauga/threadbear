@@ -16,7 +16,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 // THREADBARE_* was the old name for these variables (config.ts, adoptOldNames).
 for (const [k, v] of Object.entries(process.env)) {
@@ -60,23 +60,35 @@ export function writeState(dir, state) {
   fs.renameSync(tmp, file);
 }
 
-// The release `current` points at, or null when there's no link yet.
-export function readCurrentLink(dir) {
+// The release `current` points at, or null when there's no link yet. On
+// Windows `current` is a text file holding the release's id instead:
+// a symlink there needs admin or Developer Mode, and a directory junction
+// can't be renamed over another, so it couldn't be swapped atomically.
+// src/release.ts's currentLink reads it the same way.
+export function readCurrentLink(dir, platform = process.platform) {
+  const file = path.join(dir, 'current');
   try {
-    return path.basename(fs.readlinkSync(path.join(dir, 'current')));
+    return path.basename(fs.readlinkSync(file));
+  } catch {
+    if (platform !== 'win32') return null;
+  }
+  try {
+    const id = fs.readFileSync(file, 'utf8').trim();
+    return id && !/[\\/]/.test(id) ? id : null;
   } catch {
     return null;
   }
 }
 
-// A new link under a temp name renamed over the old one: rename is atomic,
-// so `current` always names a whole release. The target is relative so the
-// data dir can move.
-export function pointCurrent(dir, id) {
+// A new link (or on Windows a file) under a temp name renamed over the old
+// one: rename is atomic, so `current` always names a whole release. The
+// target is relative so the data dir can move.
+export function pointCurrent(dir, id, platform = process.platform) {
   const link = path.join(dir, 'current');
   const tmp = `${link}.${process.pid}.tmp`;
   fs.rmSync(tmp, { force: true });
-  fs.symlinkSync(path.join('releases', id), tmp);
+  if (platform === 'win32') fs.writeFileSync(tmp, id + '\n');
+  else fs.symlinkSync(path.join('releases', id), tmp);
   fs.renameSync(tmp, link);
 }
 
@@ -156,13 +168,71 @@ export function markBootClean(dir, at, pid = process.pid) {
   return true;
 }
 
+// Where log() writes: stderr, which launchd and systemd send to the
+// runner's log file. On Windows the task has nowhere for it to go, so
+// --log names the file (launchArgs).
+let logFd = 2;
+
+// The supervisor's own arguments, which only the Windows task passes: a
+// Scheduled Task's action has no environment of its own, so the data dir
+// and port come as --home and --port and go into the environment the
+// runners inherit, and --log is where output goes (see logFd).
+export function launchArgs(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i++) {
+    const k = argv[i];
+    if ((k === '--home' || k === '--port' || k === '--log') && argv[i + 1] !== undefined) out[k.slice(2)] = argv[++i];
+  }
+  return out;
+}
+
+// Calls gone() once the process `ppid` has exited, checking every second.
+// Windows can hand a dead process's id to a new one, so every
+// `identityEvery` checks `startedAt(ppid)` is compared with what it was at
+// the start (Codex's review): a different start time is a different
+// process. With no start time to compare (PowerShell refused), only the
+// id is watched. `alive` and `startedAt` are for tests.
+export function watchParent(ppid, gone, { everyMs = 1000, identityEvery = 60, alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}, startedAt = windowsStartTime } = {}) {
+  if (!ppid || ppid <= 1) return null;
+  const first = startedAt(ppid);
+  let n = 0;
+  const timer = setInterval(() => {
+    // A later read that fails says nothing either way, so it's no reason to stop.
+    const same = alive(ppid) && (!first || ++n % identityEvery !== 0 || [undefined, first].includes(startedAt(ppid)));
+    if (same) return;
+    clearInterval(timer);
+    gone();
+  }, everyMs);
+  timer.unref?.();
+  return timer;
+}
+
+// A process's start time (100 ns ticks since 1601, so no time zone), from
+// PowerShell, or undefined.
+function windowsStartTime(pid) {
+  try {
+    const out = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${Math.trunc(pid)} -ErrorAction Stop).StartTime.ToFileTimeUtc()`], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+    const t = out.stdout?.trim();
+    return out.status === 0 && /^\d+$/.test(t) ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function log(level, msg, extra) {
   // Same line format as the runner's log (src/log.ts); launchd sends
   // stderr to the runner's log file. Written straight to the fd so a line
   // logged from the 'exit' handler isn't lost.
   const line = `${new Date().toISOString()} ${level} launch: ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}\n`;
   try {
-    fs.writeSync(2, line);
+    fs.writeSync(logFd, line);
   } catch {
     // no stderr to write to
   }
@@ -189,6 +259,60 @@ function msEnv(name, fallback) {
   return Number.isFinite(v) && v >= 0 ? v : fallback;
 }
 
+// Where install-runner.sh --stage builds a new Threadbear Runner.app: beside
+// the one the job runs, never over it. macOS checks the job's program
+// against its bundle on disk for every privacy grant (Screen Recording,
+// folders) asked for by anything under it, so replacing the bundle under a
+// running launcher, as staging did on 15 Nov 2026, makes every one of them
+// fail until the job restarts: "The user declined TCCs" from
+// ScreenCaptureKit in an agent's shell, with the grant still on in Settings.
+export function stagedAppPath(app) {
+  return path.join(path.dirname(app), `.${path.basename(app)}.staged`);
+}
+
+// At the job's start, before any runner: a staged app is moved into place
+// and true returned, so the supervisor exits and launchd starts the job
+// again on the new app (KeepAlive, 5 s later). The launcher running this
+// is the old one, but it's about to exit, with nothing started under it
+// yet. Anything wrong (no app in the env, a staged app that doesn't verify,
+// a rename that fails) leaves the old app running and returns false; a
+// failed swap puts the old app back.
+export function takeStagedApp(app, verify, logFn = log) {
+  if (!app || process.platform !== 'darwin') return false;
+  const staged = stagedAppPath(app);
+  if (!fs.existsSync(staged)) return false;
+  if (!verify(staged)) {
+    logFn('WARN', "a staged Threadbear Runner.app doesn't verify, so it's left out", { staged });
+    return false;
+  }
+  const old = path.join(path.dirname(app), `.${path.basename(app)}.old`);
+  try {
+    fs.rmSync(old, { recursive: true, force: true });
+    fs.renameSync(app, old);
+  } catch (e) {
+    logFn('WARN', "couldn't move the old Threadbear Runner.app aside for the staged one", { error: String(e) });
+    return false;
+  }
+  try {
+    fs.renameSync(staged, app);
+  } catch (e) {
+    logFn('WARN', "couldn't move the staged Threadbear Runner.app in", { error: String(e) });
+    try {
+      fs.renameSync(old, app);
+    } catch {
+      // nothing more to try; launchd's next start says so
+    }
+    return false;
+  }
+  fs.rmSync(old, { recursive: true, force: true });
+  logFn('INFO', 'took in the staged Threadbear Runner.app; launchd starts it next', { app });
+  return true;
+}
+
+function codesignVerifies(app) {
+  return spawnSync('codesign', ['--verify', app], { stdio: 'ignore' }).status === 0;
+}
+
 // The supervisor: launchd's program. Each runner is a child process
 // (`node <release>/src/main.ts`, THREADBEAR_SUPERVISED=1, an IPC channel),
 // so a new release can start while an older one finishes the turns it
@@ -201,6 +325,18 @@ function msEnv(name, fallback) {
 // (code 1) and launchd starts it again, as before handovers; with a
 // draining child still running it tries again itself after CRASH_RETRY_MS.
 async function main() {
+  const given = launchArgs(process.argv.slice(2));
+  if (given.home) process.env.THREADBEAR_HOME = given.home;
+  if (given.port) process.env.THREADBEAR_PORT = given.port;
+  if (given.log) {
+    // The runner writes the same file, as it does on a Mac, where launchd
+    // sends stderr to the file the runner logs to.
+    process.env.THREADBEAR_LOG = given.log;
+    fs.mkdirSync(path.dirname(given.log), { recursive: true });
+    logFd = fs.openSync(given.log, 'a');
+  }
+  // Exit code 0 isn't a failed start to launchd; KeepAlive starts it again.
+  if (takeStagedApp(process.env.THREADBEAR_RUNNER_APP, codesignVerifies)) process.exit(0);
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const children = new Set();
   let newest = null;
@@ -244,10 +380,15 @@ async function main() {
       log('WARN', `release ${plan.start} keeps crashing at startup and there's no other good release to go back to`, { lastGood: state.lastGood });
     }
     const root = path.join(dir, 'releases', plan.start);
-    const proc = spawn(process.execPath, [path.join(root, 'src', 'main.ts')], {
+    // A small young generation: Node's default lets it grow to 16 MB a half,
+    // which a mostly idle runner keeps. With 2 MB a fresh runner's footprint
+    // went from 115 MB to 85 MB (M5, 20 Nov 2026), and that is what stays in
+    // memory after the app quits (ADEMark's A9 counted 168 MB). Only at
+    // launch: v8.setFlagsFromString can't resize it once the heap exists.
+    const proc = spawn(process.execPath, ['--max-semi-space-size=2', path.join(root, 'src', 'main.ts')], {
       cwd: root,
       env: { ...process.env, THREADBEAR_SUPERVISED: '1' },
-      stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
+      stdio: ['ignore', 'pipe', logFd === 2 ? 'inherit' : logFd, 'ipc'],
     });
     const boot = plan.state.boots.at(-1);
     boot.pid = proc.pid;
@@ -265,7 +406,8 @@ async function main() {
     // Forwarded unchanged; only scanned for the listening line.
     let partial = '';
     proc.stdout.on('data', (chunk) => {
-      process.stdout.write(chunk);
+      if (logFd === 2) process.stdout.write(chunk);
+      else fs.writeSync(logFd, chunk);
       if (child.listened) return;
       partial += chunk.toString('utf8');
       if (LISTENING_LINE.test(partial)) listening(child);
@@ -301,11 +443,14 @@ async function main() {
     clearTimeout(child.watchdog);
   }
 
-  // SIGTERM, then SIGKILL if it's still there.
+  // SIGTERM, then SIGKILL if it's still there. On Windows SIGTERM is
+  // already a hard kill, so the runner is asked over IPC instead
+  // (release.ts onStopRequest) and only killed if it hasn't gone by then.
   function stopChild(child, graceMs = killAfterMs) {
     if (child.exited) return;
     try {
-      child.proc.kill('SIGTERM');
+      if (process.platform === 'win32' && child.proc.connected) child.proc.send({ type: 'stop' });
+      else child.proc.kill('SIGTERM');
     } catch {
       // gone
     }
@@ -415,6 +560,12 @@ async function main() {
     for (const c of children) stopChild(c, stopGraceMs);
   }
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => stopAll(sig));
+  // Windows: ending the Scheduled Task (schtasks /End, Task Scheduler's End,
+  // an uninstall) kills only the conhost.exe it started, and this process
+  // and its runners lived on, so a restart left the old runner holding the
+  // port and the lock (17 Nov 2026). With no signal coming, this watches
+  // for its parent to go and stops its runners the usual way.
+  if (process.platform === 'win32') watchParent(process.ppid, () => stopAll('parent gone'));
   // If the supervisor itself goes some other way, its children don't
   // outlive it (they also stop when the IPC channel closes).
   process.on('exit', () => {

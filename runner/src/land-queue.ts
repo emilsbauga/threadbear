@@ -50,13 +50,40 @@ export type QueueEntry = {
   // tb land --despite-red: the repair for a red main. Goes first in a
   // group check, outside the limit.
   fix?: boolean;
+  // The main on which this fix is checked like any other landing, inside
+  // the limit (ridesFree): a group check with it failed, and main by itself
+  // passes what failed, so the failure is in the landings and a fix has no
+  // claim to ride in every group. On 18 Nov most of a line of fourteen had
+  // landed with --despite-red (GitHub's desktop workflow was red all day),
+  // so two of them that failed only together were in every group, and the
+  // halving couldn't split them. Lapses once main moves, like `limit`.
+  ordinaryAt?: string;
+  // tb land pushes main to GitHub once this lands (worktrees.ts, pushMain).
+  push?: boolean;
   // The most landings it may be checked with. Each failed check of a group
   // halves it for everyone in that group, so a failure is narrowed down in a
   // few checks rather than one by one.
   limit?: number;
   limitAt?: string; // the main that limit was set on; it lapses once main moves
   result?: QueueResult;
+  // Left out of its group by the lock's holder: after the group's check
+  // failed, what failed was run on this landing by itself (on the main it
+  // would have landed on, `at`) and failed there too. `text` is what its tb
+  // prints as it stops. Out of the line from then on, like one with a result.
+  refused?: { text: string; at: string };
+  // Checked by itself from now on, never in another's group: a group's
+  // check failed with it, and the holder's next one passed without it
+  // (worktrees.ts, landLocked). It may only fail with the holder, so it
+  // isn't refused; its own tb checks it alone when its turn comes. On 17
+  // Nov one broken landing at the front of the line went into every
+  // holder's group, each halving down to it and landing only the holder,
+  // for over four hours. `why` is what its tb says when it gets there.
+  alone?: { why: string; at: number };
 };
+
+// A fix that goes first in every group check and outside the limit, on
+// this main: one not yet shown to be just another landing (ordinaryAt).
+export const ridesFree = (e: Pick<QueueEntry, 'fix' | 'ordinaryAt'>, main: string): boolean => !!e.fix && e.ordinaryAt !== main;
 
 export const queueDir = (common: string): string => path.join(common, 'threadbear-land-queue');
 const runningFile = (common: string): string => path.join(common, 'threadbear-land-running.json');
@@ -123,7 +150,7 @@ export function waiting(common: string): QueueEntry[] {
       leaveQueue(common, e.id);
       continue;
     }
-    if (!e.result) found.push(e);
+    if (!e.result && !e.refused) found.push(e);
   }
   return found.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
 }
@@ -193,6 +220,7 @@ export function waitingLine(common: string, timesFile: string, me: QueueEntry | 
   const ahead = me ? all.filter((e) => e.id !== me.id && (e.at < me.at || (e.at === me.at && e.id < me.id))).length : all.length;
   const typical = typicalCheckSeconds(timesFile);
   const parts: string[] = [];
+  if (me && readEntry(common, me.id)?.alone) parts.push('set aside to be checked by itself, as a group check failed with it');
   if (running) {
     const ago = Math.max(0, Math.round((now - running.startedAt) / 1000));
     if (me && checking(me)) {

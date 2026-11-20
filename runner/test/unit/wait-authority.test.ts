@@ -1,9 +1,10 @@
 // A thread waiting on others hears what they said only if they have as much
 // access as it has, or its own agent asked to wait (end_turn's waitFor) and
 // hasn't been raised since (runner/hibernation.ts, mayHear). Daybreak, 12 Nov
-// 2026 (finding 104): the quiet inbox made a Full-access thread wait on the
-// Ask helper it had started, by itself, and the helper's closing reply
-// started a turn there, which send_message would have asked Mike for first.
+// 2026 (finding 104): the quiet inbox, then an experiment, made a Full-access
+// thread wait on the Ask helper it had started, by itself, and the helper's
+// closing reply started a turn there, which send_message would have asked
+// Mike for first. That waiting was taken out on 16 Nov 2026.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,9 +25,9 @@ async function until(check: () => boolean, what: string): Promise<void> {
 }
 const settle = () => new Promise((r) => setTimeout(r, 150));
 
-function setup(quietInbox = true) {
+function setup() {
   const home = tmpDir();
-  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: { quietInbox } }));
+  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({}));
   const h = makeHarness(home);
   const make = (text: string, permissionMode: PermissionMode, parent?: string) =>
     h.runner.create({ text, accountId: 'claude-main', permissionMode, ...(parent ? { startedBy: { kind: 'thread' as const, label: 'Agent', threadId: parent } } : {}) }).thread.id;
@@ -43,7 +44,7 @@ function setup(quietInbox = true) {
   return { h, make, finish, heard, notes };
 }
 
-test('quietInbox: a Full thread never waits by itself on an Ask helper it started, so its reply starts no turn there', async () => {
+test('a Full thread never waits by itself on an Ask helper it started, so its reply starts no turn there', async () => {
   const { h, make, finish, heard } = setup();
   const parent = make('Plan the port', 'full');
   const child = make('Fix the panel reload', 'ask', parent);
@@ -64,59 +65,8 @@ test('quietInbox: a Full thread never waits by itself on an Ask helper it starte
   assert.equal(h.runner.get(p2).waitingOn, undefined);
 });
 
-test('quietInbox: a helper with as much access is still waited on, and its reply comes through', async () => {
-  const { h, make, finish, heard } = setup();
-  const parent = make('Plan the port', 'ask');
-  const child = make('Fix the panel reload', 'ask', parent);
-  finish(parent);
-  await until(() => Boolean(h.runner.get(parent).waitingOn?.length), 'the wait');
-  finish(child, { needs: 'nothing' }, PAYLOAD);
-  await until(() => !h.runner.get(parent).snoozedUntil, 'the wake');
-  assert.equal(heard(parent), true);
-});
-
-test('quietInbox: raised to Full while it waits, it wakes for Alex without passing the reply on', async () => {
-  const { h, make, finish, heard, notes } = setup();
-  const parent = make('Plan the port', 'ask');
-  const child = make('Fix the panel reload', 'ask', parent);
-  finish(parent);
-  await until(() => Boolean(h.runner.get(parent).waitingOn?.length), 'the wait');
-  h.runner.update({ threadId: parent, permissionMode: 'full' });
-  const sessions = h.adapter.sessions.filter((x) => x.opts.threadId === parent).length;
-  finish(child, { needs: 'nothing' }, PAYLOAD);
-  await until(() => !h.runner.get(parent).snoozedUntil, 'the wake');
-  await settle();
-  assert.equal(heard(parent), false, 'not passed on');
-  assert.equal(h.adapter.sessions.filter((x) => x.opts.threadId === parent).length, sessions, 'no new turn');
-  assert.equal(h.runner.get(parent).waitingOn, undefined);
-  assert.ok(notes(parent).some((n) => /has less access than this thread, so what it said wasn't passed/.test(n)), 'says why');
-});
-
-test('quietInbox: a helper that lowers itself while it is waited on has its reply held back', async () => {
-  const { h, make, finish, heard } = setup();
-  const parent = make('Plan the port', 'full');
-  const child = make('Fix the panel reload', 'full', parent);
-  finish(parent);
-  await until(() => Boolean(h.runner.get(parent).waitingOn?.length), 'the wait');
-  h.runner.update({ threadId: child, permissionMode: 'ask' });
-  finish(child, { needs: 'nothing' }, PAYLOAD);
-  await until(() => !h.runner.get(parent).snoozedUntil, 'the wake');
-  await settle();
-  assert.equal(heard(parent), false);
-});
-
-test('quietInbox: a helper shut in a sandbox counts as less than a Full thread outside one', async () => {
-  const { h, make, finish } = setup();
-  const parent = make('Plan the port', 'full');
-  const child = make('Fix the panel reload', 'full', parent);
-  h.runner.threads.get(child)!.rec.confined = true;
-  finish(parent);
-  await settle();
-  assert.equal(h.runner.get(parent).waitingOn, undefined);
-});
-
 test("waitFor: a Full thread's own wait on an Ask thread still hears it, as it asked", async () => {
-  const { h, make, finish, heard } = setup(false);
+  const { h, make, finish, heard } = setup();
   const waiter = make('Write the plan', 'full');
   const target = make('Measure it', 'ask');
   finish(waiter, { needs: 'nothing', waitFor: [target] });
@@ -127,7 +77,7 @@ test("waitFor: a Full thread's own wait on an Ask thread still hears it, as it a
 });
 
 test('waitFor: asked for in Ask and raised to Full since, the reply of an Ask thread is held back', async () => {
-  const { h, make, finish, heard, notes } = setup(false);
+  const { h, make, finish, heard, notes } = setup();
   const waiter = make('Write the plan', 'ask');
   const target = make('Measure it', 'ask');
   finish(waiter, { needs: 'nothing', waitFor: [target] });
@@ -141,7 +91,7 @@ test('waitFor: asked for in Ask and raised to Full since, the reply of an Ask th
 });
 
 test('a wait with no record of who asked (from before) counts as asked from the least', async () => {
-  const { h, make, finish, heard } = setup(false);
+  const { h, make, finish, heard } = setup();
   const waiter = make('Write the plan', 'full');
   const target = make('Measure it', 'ask');
   finish(waiter, { needs: 'nothing', waitFor: [target] });
@@ -154,36 +104,47 @@ test('a wait with no record of who asked (from before) counts as asked from the 
 
 test("a wait's `by` that isn't an access is dropped as the record loads", async () => {
   const { normaliseRecord } = await import('../../src/store.ts');
-  const rec: Record<string, unknown> = { waitingOn: [{ threadId: 'a', title: 'A', by: { mode: 'root', confined: false } }, { threadId: 'b', title: 'B', by: { mode: 'full', confined: false } }] };
+  const rec: Record<string, unknown> = {
+    waitingOn: [
+      { threadId: 'a', title: 'A', by: { mode: 'root' } },
+      { threadId: 'b', title: 'B', by: { mode: 'full' } },
+      // An older release's, from outside its sandbox, still counts.
+      { threadId: 'c', title: 'C', by: { mode: 'full', confined: false } },
+      // One from inside the sandbox (taken out 16 Nov 2026) counts as the least.
+      { threadId: 'd', title: 'D', by: { mode: 'full', confined: true } },
+    ],
+  };
   normaliseRecord(rec);
   const waits = rec.waitingOn as { by?: unknown }[];
   assert.equal(waits[0]!.by, undefined);
-  assert.deepEqual(waits[1]!.by, { mode: 'full', confined: false });
+  assert.deepEqual(waits[1]!.by, { mode: 'full' });
+  assert.deepEqual(waits[2]!.by, { mode: 'full', confined: false });
+  assert.equal(waits[3]!.by, undefined);
 });
 
 // Codex's review and verify-fix: a helper's title is its own words too, and
 // one archived or finished with no reply carried only that, unchecked.
-test('quietInbox: raised while it waits, a helper that puts words in its title and archives itself is held back too', async () => {
+test('waitFor: raised while it waits, a thread that puts words in its title and archives itself is held back too', async () => {
   const { h, make, finish, notes } = setup();
-  const parent = make('Plan the port', 'auto');
-  const child = make('Fix the panel reload', 'auto', parent);
-  finish(parent);
-  await until(() => Boolean(h.runner.get(parent).waitingOn?.length), 'the wait');
-  h.runner.update({ threadId: parent, permissionMode: 'full' });
-  h.runner.update({ threadId: child, title: PAYLOAD });
-  h.runner.update({ threadId: child, archived: true });
-  await until(() => !h.runner.get(parent).snoozedUntil, 'the wake');
+  const waiter = make('Plan the port', 'auto');
+  const target = make('Fix the panel reload', 'auto');
+  finish(waiter, { needs: 'nothing', waitFor: [target] });
+  assert.ok(h.runner.get(waiter).waitingOn?.length);
+  h.runner.update({ threadId: waiter, permissionMode: 'full' });
+  h.runner.update({ threadId: target, title: PAYLOAD });
+  h.runner.update({ threadId: target, archived: true });
+  await until(() => !h.runner.get(waiter).snoozedUntil, 'the wake');
   await settle();
-  assert.equal(h.events(parent).some((e) => e.type === 'user.message' && String(e.text).includes('SECURITY_POC')), false);
-  assert.ok(notes(parent).some((n) => /less access than this thread/.test(n)));
+  assert.equal(h.events(waiter).some((e) => e.type === 'user.message' && String(e.text).includes('SECURITY_POC')), false);
+  assert.ok(notes(waiter).some((n) => /less access than this thread/.test(n)));
 });
 
 test("a lab review's findings are held back from a thread raised since the review started", async () => {
-  const { h, make, finish, heard, notes } = setup(false);
+  const { h, make, finish, heard, notes } = setup();
   const waiter = make('Change it', 'ask');
   const reviewer = make('Review it', 'ask');
   finish(waiter);
-  h.runner.waitOnReview(h.runner.threads.get(waiter)!, reviewer);
+  h.runner.waitOnReview(h.runner.threads.get(waiter)!, [reviewer]);
   assert.ok(h.runner.get(waiter).waitingOn?.length);
   h.runner.update({ threadId: waiter, permissionMode: 'full' });
   finish(reviewer, { needs: 'nothing' }, PAYLOAD);
@@ -194,11 +155,11 @@ test("a lab review's findings are held back from a thread raised since the revie
 });
 
 test("a lab review of a thread that wasn't raised still comes through", async () => {
-  const { h, make, finish, heard } = setup(false);
+  const { h, make, finish, heard } = setup();
   const waiter = make('Change it', 'full');
   const reviewer = make('Review it', 'ask');
   finish(waiter);
-  h.runner.waitOnReview(h.runner.threads.get(waiter)!, reviewer);
+  h.runner.waitOnReview(h.runner.threads.get(waiter)!, [reviewer]);
   finish(reviewer, { needs: 'nothing' }, PAYLOAD);
   await until(() => !h.runner.get(waiter).snoozedUntil, 'the wake');
   assert.equal(heard(waiter), true);
@@ -208,7 +169,7 @@ test("a lab review of a thread that wasn't raised still comes through", async ()
 // raised between its end_turn call and the turn's end counted as asking
 // with the access it had been raised to.
 test('waitFor: raised between its end_turn call and the end of the turn, it still asked from Ask', async () => {
-  const { h, make, finish, heard } = setup(false);
+  const { h, make, finish, heard } = setup();
   const waiter = make('Write the plan', 'ask');
   const target = make('Measure it', 'ask');
   const s = h.adapter.sessions.filter((x) => x.opts.threadId === waiter).at(-1)!;

@@ -398,7 +398,12 @@ test("a moved worktree that changes what trust covers is held to the stored hash
 
 test("an older runner's staged worktree loses untracked packages at adopt, and a linked node_modules is left alone", async () => {
   const repo = fs.realpathSync(tmpDir('tb-move-pkgs-'));
-  const g = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+  // A global gitignore with node_modules/ in it (a common one) would keep
+  // committed/node_modules out of the commit. An empty file, not /dev/null,
+  // which Windows' git doesn't have.
+  const noExcludes = path.join(fs.realpathSync(tmpDir('tb-move-excludes-')), 'none');
+  fs.writeFileSync(noExcludes, '');
+  const g = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', `core.excludesFile=${noExcludes}`, ...a], { encoding: 'utf8' }).trim();
   g('init', '-q');
   fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
   fs.mkdirSync(path.join(repo, 'committed', 'node_modules', 'c'), { recursive: true });
@@ -439,9 +444,31 @@ test("a compromised old runner's oversized review notes arrive cut to what show_
   const option = (n: number, note: string) => ({ id: `o${n}`, title: 'T'.repeat(300), note, image });
   const review = (rid: string, note: string, options: unknown[]) => ({ id: rid, title: 'Pick one', note, options, status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: { o0: 'n'.repeat(9000) }, reply: 'r'.repeat(9000) } });
   const fits = { id: 'fits', title: 'Fine', note: 'A `normal` note 😀', options: [{ id: 'a', title: 'A', note: 'why', image }], status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: {} } };
-  recEntry.data = Buffer.from(JSON.stringify({ ...JSON.parse(recEntry.data.toString('utf8')), reviews: [review('big', '`'.repeat(20_000), Array.from({ length: 20 }, (_, n) => option(n, '`x'.repeat(5000)))), fits, 'not a review', { id: 'no options' }] }));
+  // A queued answer to a review naming a file on this Mac as its reply's
+  // picture (Codex's review, 17 Nov): it comes without it.
+  const secret = path.join(tmpDir(), 'private.png');
+  fs.writeFileSync(secret, 'png');
+  const queue = [
+    // First, as adopting starts the queue: a message's picture at the other
+    // runner's own path (another user, say), which came with the move: it's
+    // this thread's copy here.
+    { turnId: 'q-photo', text: 'and this [Picture 1]', images: [{ path: `/home/someone/.threadbear/threads/${id}/media/moved.png`, mediaType: 'image/png' }] },
+    { turnId: 'q-answer', text: 'Review: Fine\n\nLook [Picture 1]', images: [{ path: secret, mediaType: 'image/png' }], reviewId: 'fits', reviewResponse: { notes: { a: null }, reply: 'Look [Picture 1]', images: [{ path: secret, mediaType: 'image/png' }] } }];
+  packed.push({ path: 'thread/media/moved.png', data: fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'features', 'support', 'sample.png')) } as any);
+  recEntry.data = Buffer.from(JSON.stringify({ ...JSON.parse(recEntry.data.toString('utf8')), queue, reviews: [review('big', '`'.repeat(20_000), Array.from({ length: 20 }, (_, n) => option(n, '`x'.repeat(5000)))), fits, 'not a review', { id: 'no options' }] }));
   await t.runner.placeMove(r, packed);
   await t.runner.adoptMoved(r);
+  await tick();
+  const answer = [...(t.store.load(id)?.queue ?? []), ...t.runner.events(id, { limit: 1000 }).events.filter((e) => e.type === 'user.message')].find((q: any) => q.reviewId === 'fits') as any;
+  assert.ok(answer, 'the answer itself still comes');
+  assert.deepEqual(answer.images, []);
+  assert.equal(answer.reviewResponse.images, undefined);
+  assert.match(answer.text, /Look \[Picture 1 unavailable\]/, 'the words say it was left out');
+  const photo = [...(t.store.load(id)?.queue ?? []), ...t.runner.events(id, { limit: 1000 }).events.filter((e) => e.type === 'user.message')].find((q: any) => q.turnId === 'q-photo') as any;
+  assert.ok(photo, 'the message came');
+  assert.equal(photo.images.length, 1, 'with its picture');
+  assert.equal(path.basename(photo.images[0].path), 'moved.png');
+  assert.ok(photo.images[0].path.startsWith(fs.realpathSync(t.home)) || photo.images[0].path.startsWith(t.home), photo.images[0].path);
   const [big, kept, ...rest] = t.runner.listReviews(id).reviews.sort((a, b) => (a.id === 'big' ? -1 : b.id === 'big' ? 1 : 0));
   assert.deepEqual(rest, []);
   assert.equal(big!.note!.length, 4000);

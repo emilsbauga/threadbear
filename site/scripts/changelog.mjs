@@ -95,6 +95,27 @@ export function readReleases(dir, people = readPeople(dir)) {
 }
 
 /**
+ * /changelog.json: the newest releases' cards and how many plain lines each has, for a fork's
+ * Updates panel (the runner reads it, runner/src/changelog.ts, and the app shows the cards of
+ * the releases it hasn't brought in). Only what the panel draws, so it stays small: no credits,
+ * no alt text, no plain lines. The newest `max`, as a fork brings in at most ten at once.
+ */
+export function changelogFeed(releases, max = 20) {
+  return {
+    releases: releases.slice(0, max).map((r) => ({
+      release: r.release,
+      highlights: r.highlights.map((h) => ({
+        kind: h.kind,
+        title: h.title,
+        text: h.text,
+        media: h.media.type === "clip" ? { type: "clip", src: h.media.src, poster: h.media.poster } : { type: "image", src: h.media.src },
+      })),
+      ...Object.fromEntries(KINDS.map((k) => [k, r[k].length])),
+    })),
+  };
+}
+
+/**
  * Page text: HTML-escaped, and em and en dashes made a comma and a hyphen (the build refuses a
  * page with either), braces as entities so a mention of a {{placeholder}} doesn't trip the
  * build's leftover check. `code` spans in backticks become <code>.

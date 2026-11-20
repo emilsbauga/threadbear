@@ -15,7 +15,7 @@ static void tb_menu_images(NSMenu *menu) {
     @"Hide Terminal": @"apple.terminal", @"Reset Panel Layout": @"rectangle.3.group",
     @"Back": @"chevron.left", @"Forward": @"chevron.right",
     @"Next Inbox Thread": @"chevron.down", @"Show Previous Tab": @"chevron.backward.square",
-    @"Show Next Tab": @"chevron.forward.square", @"Take the Tour": @"map",
+    @"Show Next Tab": @"chevron.forward.square", @"Set Up Threadbear": @"wand.and.stars", @"Take the Tour": @"map",
     @"Finish Setting Up": @"checklist", @"Archive": @"archivebox",
     @"Unarchive": @"tray.and.arrow.up", @"Hibernate": @"moon.zzz",
     @"Stop": @"stop.circle", @"Copy Transcript as Markdown": @"doc.plaintext",

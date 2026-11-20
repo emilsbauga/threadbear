@@ -194,7 +194,7 @@ test('end_turn snooze: words are read as Hibernate in words reads them', async (
   assert.match(asked[0].prompt, /when the parts arrive/);
   const t = h.runner.get(thread.id);
   assert.equal(t.snoozedUntil, NO_WAKE_TIME);
-  assert.deepEqual(t.wakeWhen, { said: 'when the parts arrive', topic: 'the parts arriving' });
+  assert.deepEqual(t.wakeWhen, { said: 'when the parts arrive', topic: 'the parts arriving', agent: true });
 });
 
 // 13 Nov 2026: an agent hibernated "until the GPUI app replaces the Swift
@@ -208,8 +208,9 @@ test('end_turn snooze in words: an agent waiting for something wakes with a turn
   assert.match(asked[0].prompt, /The thread's agent is waiting: until the GPUI app replaces the Swift app/);
   assert.match(asked[0].system!, /thread's own agent asking/);
   const t = h.runner.get(thread.id);
-  // Who set it stays in the runner: the protocol's wakeWhen is unchanged.
-  assert.deepEqual(t.wakeWhen, { said: 'until the GPUI app replaces the Swift app', topic: 'the GPUI app has replaced the Swift app' });
+  // `agent`: its own agent set it, so with commits not on main the sidebar
+  // shows it as waiting to land, not hibernating (Mike's own has no flag).
+  assert.deepEqual(t.wakeWhen, { said: 'until the GPUI app replaces the Swift app', topic: 'the GPUI app has replaced the Swift app', agent: true });
   assert.deepEqual(checkSummary(t), []);
   assert.match(h.events(thread.id).at(-1).text, /^Hibernating until the GPUI app has replaced the Swift app\. The agent said "until the GPUI app replaces the Swift app"\.$/);
   assert.deepEqual(h.runner.waitingTopics(), [{ threadId: thread.id, title: 'Plan the workbench drawers', topic: 'the GPUI app has replaced the Swift app', happened: true }]);

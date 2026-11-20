@@ -203,6 +203,9 @@ pub mod words {
     pub const CUT_NO_EDIT: &str = "Only the start of this file is shown, so it can't be edited here.";
     pub const NOT_UTF8: &str = "This file isn't UTF-8 text, so it can't be edited here.";
     pub const GONE: &str = "This file isn't there any more.";
+    /// A file opened while the runner was away (restarting onto a new
+    /// release, say): it's read once the app's connected again.
+    pub const WAITING: &str = "Waiting for the runner. This opens once it's back.";
     pub const CONFLICT: &str = "Changed on disk while you were editing.";
     pub const TAKE_FILES: &str = "Take the file's";
     pub const TAKE_FILES_TIP: &str = "Show what's in the file now. What you typed since your last save goes.";
@@ -497,9 +500,15 @@ impl MarkdownView {
     }
 
     /// Whether a file opens with its raw text up for typing: a Markdown file
-    /// once Markdown was the last pick. Anything else opens to read.
+    /// once Markdown was the last pick, and code and plain text always (they
+    /// read the same either way, and clicking into them to type should just
+    /// work). Pictures, pages and the like open to look at. Nothing's
+    /// written until something's typed (`EditSession::save_now`).
     pub fn opens_raw(path: &str, last_pick: MarkdownView) -> bool {
-        is_markdown(path) && last_pick == MarkdownView::Markdown
+        if is_markdown(path) {
+            return last_pick == MarkdownView::Markdown;
+        }
+        crate::highlights::viewer_for_path(path) == crate::highlights::Viewer::Text
     }
 }
 
@@ -786,7 +795,11 @@ mod tests {
         assert!(!MarkdownView::opens_raw("/tmp/README.md", MarkdownView::Preview));
         assert!(!MarkdownView::opens_raw("/tmp/notes.MDX", MarkdownView::Preview));
         assert!(MarkdownView::opens_raw("/tmp/README.markdown", MarkdownView::Markdown), "the pick is remembered");
-        assert!(!MarkdownView::opens_raw("/tmp/hello.ts", MarkdownView::Markdown), "code still opens to read");
+        assert!(MarkdownView::opens_raw("/tmp/hello.ts", MarkdownView::Preview), "code opens to type in");
+        assert!(MarkdownView::opens_raw("/tmp/notes.txt", MarkdownView::Preview), "so does plain text");
+        assert!(MarkdownView::opens_raw("/tmp/put-1.json", MarkdownView::Preview), "and data");
+        assert!(!MarkdownView::opens_raw("/tmp/a.png", MarkdownView::Markdown), "a picture is to look at");
+        assert!(!MarkdownView::opens_raw("/tmp/a.html", MarkdownView::Markdown), "so is a page");
         assert_eq!(MarkdownView::from_name("markdown"), Some(MarkdownView::Markdown));
         assert_eq!(MarkdownView::from_name("raw"), None);
     }

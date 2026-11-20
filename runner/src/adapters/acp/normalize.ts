@@ -37,6 +37,10 @@ type Tool = {
   output: AcpToolContent[];
   rawOutput?: unknown;
   diffed: Set<string>;
+  // A call through Grok's use_tool (useToolCall), and once it names the
+  // tool it calls.
+  wrapped?: boolean;
+  resolved?: boolean;
 };
 
 function toolKind(acp: string | undefined): ToolKind {
@@ -116,6 +120,23 @@ const firstLine = (s: string): string => firstLineSafely(s, 200, '…');
 export function canonicalToolName(name: string): string {
   const m = /^threadbear[_:.-]+(.+)$/.exec(name);
   return m ? `mcp__threadbear__${m[1]}` : name;
+}
+
+// Grok calls a deferred tool (an MCP server's, threadbear's among them)
+// through its own `use_tool`, as `{ tool_name: "threadbear__end_turn",
+// tool_input: {...} }`. Its first frame is titled use_tool and only a later
+// one names the tool, so the shape is enough once the call has been seen as
+// use_tool by its title or name. Not the shape alone, nor Grok's `variant`
+// in it: any tool's arguments can say those, and would pass for end_turn
+// (Codex's review, 16 Nov 2026).
+function useToolCall(u: AcpToolCall, t: Tool): { name: string; input: Record<string, unknown> } | undefined {
+  // Before its row is out: a call seen as something else can't become one.
+  if (!t.emitted && [u.title, u.name].includes('use_tool')) t.wrapped = true;
+  const raw = u.rawInput;
+  if (!isPlainObject(raw) || typeof raw.tool_name !== 'string' || !raw.tool_name || !isPlainObject(raw.tool_input)) return undefined;
+  if (!t.wrapped) return undefined;
+  t.resolved = true;
+  return { name: raw.tool_name, input: raw.tool_input };
 }
 
 export class AcpNormalizer {
@@ -219,7 +240,14 @@ export class AcpNormalizer {
     if (typeof u.kind === 'string') t.acpKind = u.kind;
     if (typeof u.name === 'string' && u.name) t.name = u.name;
     if (typeof u.title === 'string' && u.title) t.title = u.title;
-    if (isPlainObject(u.rawInput) && Object.keys(u.rawInput).length) t.input = u.rawInput;
+    const wrapped = useToolCall(u, t);
+    if (wrapped) {
+      // The row is the tool it calls, so the runner sees end_turn as
+      // end_turn: named `use_tool`, every Grok review's verdict went unseen
+      // and the thread it reviewed slept on (16 Nov 2026, 53cd067b).
+      t.name = wrapped.name;
+      t.input = wrapped.input;
+    } else if (isPlainObject(u.rawInput) && Object.keys(u.rawInput).length) t.input = u.rawInput;
     // Everything this call has ever named, however it was named.
     for (const p of requestPaths(u)) if (!t.paths.includes(p)) t.paths.push(p);
     if (Array.isArray(u.content)) t.output = u.content;
@@ -244,8 +272,12 @@ export class AcpNormalizer {
     this.merge(t, u);
     // Agents can open a call with nothing filled in yet (OpenCode: title
     // "write", rawInput {}), so the row waits for its input or its start.
-    const under = u.status === 'in_progress' || u.status === 'completed' || u.status === 'failed';
-    if (Object.keys(t.input).length || under) this.emitCall(t, out);
+    const over = u.status === 'completed' || u.status === 'failed';
+    const under = u.status === 'in_progress' || over;
+    // A use_tool call's row waits for the tool it names (its arguments can
+    // stream in after it starts), or its row would be use_tool for good.
+    const unnamed = t.wrapped && !t.resolved && !over;
+    if (!unnamed && (Object.keys(t.input).length || under)) this.emitCall(t, out);
     if (t.emitted) this.emitDiffs(t, out);
     if ((u.status === 'completed' || u.status === 'failed') && !t.done) this.emitResult(t, u.status === 'completed', out);
   }
@@ -291,6 +323,9 @@ export class AcpNormalizer {
     if (!texts.length && isPlainObject(t.rawOutput)) {
       const said = t.rawOutput.output ?? t.rawOutput.error;
       if (typeof said === 'string') texts.push(said);
+      // Grok's MCP result: `output: { OkayOutput: "Noted: ..." }` (or its
+      // error's). Dropped, end_turn's "Noted" never reached the runner.
+      else if (isPlainObject(said)) for (const v of Object.values(said)) if (typeof v === 'string') texts.push(v);
     }
     out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.id, ok, ...truncateResultText(texts.join('\n'), t.id, this.ctx), images } });
   }

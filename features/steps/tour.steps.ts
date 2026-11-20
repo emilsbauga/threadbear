@@ -86,7 +86,11 @@ Then('Finish setting up is open with {string}, {string} and {string} all done', 
   });
 });
 
-After({ tags: '@tour.firstrun' }, () => {
+// After every scenario, not just one tag's: when the setup-cards scenarios
+// moved to @tour.hello, a launch they'd allowed to start by itself carried on
+// into every scenario after them, and the setup cards covered the window for
+// all of updates, usage and web-panels on the Mac (17 Nov).
+After(() => {
   delete process.env.THREADBEAR_TOUR_AUTOSTART;
   delete process.env.THREADBEAR_SWIFT_DEFAULTS;
 });
@@ -137,6 +141,3 @@ Given('the app opens as a new install would, after a Swift app whose tour was ne
   await openAsNew(this, 'unfinished');
 });
 
-Then("the tour can't be skipped", async function (this: ThreadbearWorld) {
-  await this.until('a tour with no Skip', (d) => (d as unknown as { tour?: { skippable: boolean } }).tour?.skippable === false);
-});

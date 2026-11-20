@@ -14,7 +14,10 @@ import type { OrderedQuery } from 'convex/server';
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { DataModel, Doc, Id } from './_generated/dataModel';
 import { checkRunnerId, forbidden, isSeq, MAX_SEQ, pageLimit, runnerAuth, sha256, withoutCredentials } from './lib';
-import { docBytes, isThreadId } from './runnerAccess';
+import { docBytes, isThreadId, mayTouch, ownThreadOnly } from './runnerAccess';
+import { queued, request as requestMachine } from './machines';
+import { requestStateFrom } from './requestStates';
+import { steppingFor } from './stepping';
 import { messageButton } from './schema';
 import { deleteIfUnused, MAX_COMMAND_FILES, MAX_RUNNER_UPLOAD_BYTES, storageInUse } from './sync';
 import { UPLOAD_CLAIM_MS, newClaim } from './uploads';
@@ -41,11 +44,17 @@ const relayRow = v.object({
   // The reply buttons its text links (API 59), as the phone gets them; the
   // relay answers buttons.list from them (API 68).
   buttons: v.optional(v.array(messageButton)),
+  // How many pictures a user's message came with (API 87), so the relay
+  // shows them without counting from the words.
+  pictures: v.optional(v.number()),
+  // The asks a user's message answered (API 89), so another Mac draws them
+  // as answers.
+  answers: v.optional(v.array(v.object({ action: v.string(), answer: v.string() }))),
   at: v.string(),
 });
 
 type Button = { id: string; title: string; kind: 'start' | 'send'; target?: string; pressedThreadId?: string; failed?: string };
-type Row = { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; plan?: boolean; planDecision?: 'go' | 'revise'; turn?: string; wokeBy?: { kind: string; description: string }[]; buttons?: Button[]; at: string };
+type Row = { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; plan?: boolean; planDecision?: 'go' | 'revise'; turn?: string; wokeBy?: { kind: string; description: string }[]; buttons?: Button[]; pictures?: number; answers?: { action: string; answer: string }[]; at: string };
 function toRow(m: Row): Row {
   return {
     seq: m.seq,
@@ -61,6 +70,9 @@ function toRow(m: Row): Row {
     ...(m.turn ? { turn: m.turn } : {}),
     ...(m.wokeBy ? { wokeBy: m.wokeBy } : {}),
     ...(m.buttons?.length ? { buttons: m.buttons } : {}),
+    // Only a count a message could have: a runner key writes what it likes.
+    ...(m.role === 'user' && Number.isSafeInteger(m.pictures) && m.pictures! >= 1 && m.pictures! <= 999 ? { pictures: m.pictures } : {}),
+    ...(m.role === 'user' && m.answers?.length ? { answers: m.answers } : {}),
     at: m.at,
   };
 }
@@ -132,6 +144,59 @@ export const remoteMessages = query({
   },
 });
 
+// How many messages one picturesAtSeqs reads, and pictures of each: a
+// message carries at most a handful (the app pastes up to 6 into one sent
+// to another runner, MAX_COMMAND_FILES), and the relay asks only for the
+// ones whose words say they have some.
+const PICTURE_SEQS_MAX = 50;
+const PICTURES_PER_SEQ = 30;
+// A pasted picture's src (runner/src/share-images.ts pastedImagesInEvent).
+const PASTED = /^picture:(\d{1,3})$/;
+
+/**
+ * The pictures pasted into the messages at `seqs` of another runner's
+ * thread (API 87), each with its file's URL: what that runner put up for
+ * the phone and the website (replyImages with src "picture:N", N being
+ * which of the message's pictures). Read by seq, so the thread's other
+ * pictures are never read. Owner only: the main Mac's runner shows them in
+ * the app and answers its files.read for them (runner/src/relay.ts).
+ */
+export const picturesAtSeqs = query({
+  args: { key: v.string(), threadId: v.string(), seqs: v.array(v.number()) },
+  returns: v.array(
+    v.object({
+      seq: v.number(),
+      n: v.number(),
+      path: v.string(),
+      url: v.string(),
+      mediaType: v.string(),
+      width: v.optional(v.number()),
+      height: v.optional(v.number()),
+    }),
+  ),
+  handler: async (ctx, { key, threadId, seqs }) => {
+    await runnerAuth(ctx, key, 'picturesAtSeqs');
+    const out = [];
+    for (const seq of [...new Set(seqs.filter(isSeq))].sort((a, b) => a - b).slice(0, PICTURE_SEQS_MAX)) {
+      const found = new Map<number, Doc<'replyImages'>>();
+      // A reply's or a pinned picture at the same seq isn't one of these:
+      // passed over, but counted, so a seq can't make this read without end.
+      let read = 0;
+      for await (const img of ctx.db.query('replyImages').withIndex('by_thread_seq', (q) => q.eq('threadId', threadId).eq('seq', seq))) {
+        if (++read > PICTURES_PER_SEQ * 2 || found.size >= PICTURES_PER_SEQ) break;
+        const n = Number(PASTED.exec(img.src ?? '')?.[1] ?? 0);
+        if (n >= 1 && !found.has(n)) found.set(n, img);
+      }
+      for (const [n, img] of [...found].sort((a, b) => a[0] - b[0])) {
+        const url = await ctx.storage.getUrl(img.storageId);
+        if (!url) continue;
+        out.push({ seq, n, path: img.path, url, mediaType: img.mediaType, ...(img.width ? { width: img.width } : {}), ...(img.height ? { height: img.height } : {}) });
+      }
+    }
+    return out;
+  },
+});
+
 /** One thread's row (its state, open approval and card), live while it's open. Null once it's gone. */
 export const remoteThread = query({
   args: { key: v.string(), threadId: v.string() },
@@ -159,7 +224,11 @@ type Kind = (typeof KINDS)[number];
 // with no file contents or tool output in them (step 4 brings those, scrubbed).
 // moves.describe and moves.preview (API 65) are the Mac's Move sheet
 // (threads.movePreview): plans only, nothing starts.
-export const CALLS = new Set(['files.list', 'moves.describe', 'moves.preview']);
+// accounts.yearToken (API 90) is the Mac's Runners panel's Year-long token…
+// for one of that runner's logins: its answer is a state and the claude.ai
+// page, never a token, and its code (useless without the verifier only
+// that runner's setup-token holds) goes with the args once it's finished.
+export const CALLS = new Set(['files.list', 'moves.describe', 'moves.preview', 'accounts.yearToken']);
 // A moves.preview's thread description: only these fields, each a short
 // string (or worktree and schedules), so nothing else sits in the row.
 const MOVE_INFO_STRINGS = ['title', 'cwd', 'home', 'provider', 'accountId', 'email', 'model', 'effort', 'permissionMode', 'origin', 'repoTop', 'subdir', 'sessionId'];
@@ -170,6 +239,7 @@ function moveInfoArg(raw: unknown): Record<string, unknown> {
   // Which repo, never a password or token in its address: the runner the
   // preview asks reads this row (an older main Mac's runner sends it whole).
   if (typeof out.origin === 'string') out.origin = withoutCredentials(out.origin);
+  if (out.origin === '') delete out.origin;
   // Nor what no target plans from: an older main Mac's runner sends the
   // thread's title (made from its first message) and session whole.
   if ('title' in out) out.title = '';
@@ -266,6 +336,11 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
         out = { method: a.method, params: { info: moveInfoArg(p.info), ...(typeof p.cwd === 'string' ? { cwd: p.cwd } : {}), ...(typeof p.accountId === 'string' ? { accountId: p.accountId } : {}) } };
       } else if (a.method === 'moves.describe') {
         out = { method: a.method, params: {} };
+      } else if (a.method === 'accounts.yearToken') {
+        const p = (a.params && typeof a.params === 'object' ? a.params : {}) as Record<string, unknown>;
+        if (typeof p.accountId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(p.accountId)) throw bad('accounts.yearToken needs a login');
+        if (p.code !== undefined && (typeof p.code !== 'string' || !/^[A-Za-z0-9_-]{8,512}#[A-Za-z0-9_-]{8,512}$/.test(p.code))) throw bad("that isn't a code from Claude's page");
+        out = { method: a.method, params: { accountId: p.accountId, ...(typeof p.code === 'string' ? { code: p.code } : {}), ...(p.check === true ? { check: true } : {}), ...(p.cancel === true ? { cancel: true } : {}) } };
       } else {
         out = { method: a.method, params: typeof (a.params as { path?: unknown } | undefined)?.path === 'string' ? { path: (a.params as { path: string }).path } : {} };
       }
@@ -302,13 +377,19 @@ export const queueCommand = mutation({
     if (!runner) throw new ConvexError({ kind: 'notFound', message: 'no such runner' });
     if (threadId !== undefined) {
       const t = await ctx.db.query('threads').withIndex('by_threadId', (q) => q.eq('threadId', threadId)).unique();
-      if (!t) throw new ConvexError({ kind: 'notFound', message: 'no such thread' });
-      if (t.runnerId !== runnerId) throw forbidden("queue that: the thread isn't that runner's");
+      // A thread on a virtual runner has no row until its box writes one
+      // (it may be booting, or waiting for a cloud token): its box row says whose it is.
+      const owner = t?.runnerId ?? (await ctx.db.query('boxes').withIndex('by_threadId', (q) => q.eq('threadId', threadId)).unique())?.runnerId;
+      if (owner === undefined) throw new ConvexError({ kind: 'notFound', message: 'no such thread' });
+      if (owner !== runnerId) throw forbidden("queue that: the thread isn't that runner's");
     } else if (kind !== 'create' && kind !== 'call') {
       throw new ConvexError({ kind: 'badArgs', message: `a ${kind} needs a thread` });
+    } else if (kind === 'create' && runner.box) {
+      // A box runs its one thread: a new one on a virtual runner is boxes:startThread's.
+      throw new ConvexError({ kind: 'badArgs', message: "That runner is one thread's box on a virtual runner: it takes no new threads." });
     }
     const images = kind === 'send' || kind === 'create' ? await commandPictures(ctx, (args as { images?: unknown } | null)?.images) : [];
-    const commandId = await ctx.db.insert('commands', { runnerId, ...(threadId !== undefined ? { threadId } : {}), kind, args: { ...commandArgs(kind, args), ...(images.length ? { images } : {}), from: 'mac' }, state: 'pending', createdAt: Date.now() });
+    const commandId = await queued(ctx, { runnerId, ...(threadId !== undefined ? { threadId } : {}), kind, args: { ...commandArgs(kind, args), ...(images.length ? { images } : {}), from: 'mac' }, createdAt: Date.now() });
     // On their way, so nothing deletes them before that runner has fetched
     // them; sync:finishCommand deletes them once it has (as a phone's photos).
     for (const image of images) await ctx.db.insert('commandFiles', { storageId: image.storageId, commandId });
@@ -525,6 +606,7 @@ const requestOut = v.object({
   state: stateV,
   result: v.optional(v.object({ runnerId: v.string(), runnerName: v.string(), threadId: v.string() })),
   decidedAt: v.optional(v.number()),
+  claim: v.optional(v.string()),
 });
 
 async function runnerNameOf(ctx: { db: any }, runnerId: string): Promise<string> {
@@ -550,7 +632,7 @@ export const fileRequest = mutation({
     if (!isThreadId(threadId)) throw bad("that isn't a thread id");
     // Asked from one of its own threads, so the card and its answer are its own.
     const t = await ctx.db.query('threads').withIndex('by_threadId', (q) => q.eq('threadId', threadId)).unique();
-    if (!t || t.runnerId !== caller.runnerId) throw forbidden("ask for that: the thread isn't this runner's");
+    if (!t || !mayTouch(caller, t.runnerId, threadId)) throw forbidden("ask for that: the thread isn't this runner's");
     if (await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first()) throw bad('that request id is taken');
     const now = Date.now();
     // Oldest first: what's past a week goes, and then the oldest until
@@ -561,6 +643,8 @@ export const fileRequest = mutation({
       const old = now - r.createdAt > REQUEST_KEEP_MS;
       if (!old && kept < REQUESTS_KEPT_MAX) break;
       if (!old && r.state === 'claimed') continue;
+      // A box makes room among its own thread's requests only.
+      if (!ownThreadOnly(caller, r.threadId)) continue;
       await ctx.db.delete(r._id);
       kept--;
     }
@@ -568,7 +652,8 @@ export const fileRequest = mutation({
     const waiting = await ctx.db.query('runnerRequests').withIndex('by_runner_state', (q) => q.eq('runnerId', caller.runnerId).eq('state', 'pending')).take(REQUESTS_KEPT_MAX);
     const pending = waiting.filter((r) => now - r.createdAt < PENDING_LIVE_MS).length;
     if (pending >= REQUESTS_PENDING_MAX) throw new ConvexError({ kind: 'tooMany', message: `A runner key may have at most ${REQUESTS_PENDING_MAX} requests waiting` });
-    await ctx.db.insert('runnerRequests', { requestId, runnerId: caller.runnerId, threadId, target, ...request, createdAt: now, state: 'pending' });
+    const made = await requestMachine.create(ctx, { requestId, runnerId: caller.runnerId, threadId, target, ...request, createdAt: now, state: 'pending' } as never, { type: 'FILE' });
+    if (made.status !== 'done') throw new ConvexError({ kind: 'conflict', message: `the request couldn't be filed: ${made.reasons.join(' ')}` });
     return null;
   },
 });
@@ -580,17 +665,20 @@ export const runnerRequest = query({
   handler: async (ctx, { key, requestId }) => {
     const caller = await runnerAuth(ctx, key, 'runnerRequest');
     const r = await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first();
-    if (!r || (!caller.owner && r.runnerId !== caller.runnerId)) return null;
-    const { _id, _creationTime, ...rest } = r;
+    if (!r || (!caller.owner && r.runnerId !== caller.runnerId) || !ownThreadOnly(caller, r.threadId)) return null;
+    const { _id, _creationTime, requestState: _s, ...rest } = r;
     return { ...rest, docId: String(_id), runnerName: await runnerNameOf(ctx, r.runnerId) };
   },
 });
 
-// What the main Mac's runner may move a request to, from where: it claims
-// one before starting it (so a retry, or another click, can't start a
-// second), then marks it allowed with where it started; it hands a claim
-// back only when starting failed here; it says no only to a pending one.
-const MOVES: Record<string, string[]> = { claimed: ['pending'], allowed: ['claimed'], pending: ['claimed'], denied: ['pending'] };
+// What the main Mac's runner may move a request to, from where, is the
+// request machine's (requestMachine.ts): it claims one before starting it
+// (so a retry, or another click, can't start a second), then marks it
+// allowed with where it started; it hands a claim back only when starting
+// failed here; it says no only to a pending one. Each `state` it asks for
+// is that machine's event.
+const EVENTS = { claimed: 'CLAIM', allowed: 'ALLOW', pending: 'HAND_BACK', denied: 'DENY' } as const;
+const CLAIM = /^[A-Za-z0-9_-]{8,64}$/;
 
 /** Mike's answer, recorded by the main Mac's runner as it starts the thread (or he said no). */
 export const decideRequest = mutation({
@@ -601,15 +689,25 @@ export const decideRequest = mutation({
     // The row as read (runnerRequest's docId): another row under this id isn't it.
     docId: v.string(),
     result: v.optional(v.object({ runnerId: v.string(), runnerName: v.string(), threadId: v.string() })),
+    // API 85: with `claimed`, the runner's id for this claim. The same claim
+    // asked again (its first answer was lost) is told yes, and nothing
+    // changes; any other claim of a claimed request is refused, as before.
+    claim: v.optional(v.string()),
   },
   returns: v.null(),
-  handler: async (ctx, { key, requestId, state, docId, result }) => {
+  handler: async (ctx, { key, requestId, state, docId, result, claim }) => {
     await runnerAuth(ctx, key, 'decideRequest');
+    if (claim !== undefined && !CLAIM.test(claim)) throw new ConvexError({ kind: 'badArgs', message: 'claim must be 8 to 64 letters, digits, - or _' });
     const r = await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first();
     if (!r || String(r._id) !== docId) throw new ConvexError({ kind: 'notFound', message: 'no such request' });
-    if (!MOVES[state]!.includes(r.state)) throw new ConvexError({ kind: 'badArgs', message: `that request is ${r.state}` });
-    if (state === 'allowed' && !result) throw new ConvexError({ kind: 'badArgs', message: 'an allowed request says where it started' });
-    await ctx.db.patch(r._id, { state, ...(state === 'allowed' && result ? { result } : {}), decidedAt: Date.now() });
+    if (steppingFor('requestState')) return await decideAsBefore(ctx, r, state, result, claim);
+    if (state === 'allowed' && !result && r.state === 'claimed') throw new ConvexError({ kind: 'badArgs', message: 'an allowed request says where it started' });
+    const type = EVENTS[state];
+    const event = type === 'CLAIM' ? { type, ...(claim !== undefined ? { claim } : {}) } : type === 'ALLOW' ? { type, result: result ?? { runnerId: '', runnerName: '', threadId: '' } } : { type };
+    // The same claim asking again stays claimed and is told yes; anything
+    // the request's state doesn't take is refused as it always was.
+    const r2 = await requestMachine.send(ctx, r._id, event);
+    if (r2.status !== 'done') throw new ConvexError({ kind: 'badArgs', message: `that request is ${r.state}` });
     return null;
   },
 });
@@ -621,9 +719,31 @@ export const closeRequest = mutation({
   handler: async (ctx, { key, requestId }) => {
     const caller = await runnerAuth(ctx, key, 'closeRequest');
     const r = await ctx.db.query('runnerRequests').withIndex('by_requestId', (q) => q.eq('requestId', requestId)).first();
-    if (!r || (!caller.owner && r.runnerId !== caller.runnerId)) throw new ConvexError({ kind: 'notFound', message: 'no such request' });
+    if (!r || (!caller.owner && r.runnerId !== caller.runnerId) || !ownThreadOnly(caller, r.threadId)) throw new ConvexError({ kind: 'notFound', message: 'no such request' });
     // Only one nobody has started: a claimed one may be starting now.
-    if (r.state === 'pending') await ctx.db.patch(r._id, { state: 'closed', decidedAt: Date.now() });
+    if (r.state !== 'pending') return null;
+    if (steppingFor('requestState')) await asBefore(ctx, r, { state: 'closed', decidedAt: Date.now() });
+    else await requestMachine.send(ctx, r._id, { type: 'CLOSE' });
     return null;
   },
 });
+
+// While the deploy's stepping stone has the machine off (stepping.ts), the
+// main Mac's answer and the asking runner's close go through the way they
+// did before it: a thread already started whose `allowed` was refused would
+// otherwise leave its request claimed. The machine has never run on this
+// deployment then, so the old fields are the request's whole story; a row
+// the backfill has already reached gets its requestState again from them.
+const MOVES_BEFORE: Record<string, string[]> = { claimed: ['pending'], allowed: ['claimed'], pending: ['claimed'], denied: ['pending'] };
+async function decideAsBefore(ctx: MutationCtx, r: Doc<'runnerRequests'>, state: 'claimed' | 'allowed' | 'pending' | 'denied', result: Doc<'runnerRequests'>['result'], claim: string | undefined): Promise<null> {
+  if (state === 'claimed' && r.state === 'claimed' && claim !== undefined && r.claim === claim) return null;
+  if (!MOVES_BEFORE[state]!.includes(r.state)) throw new ConvexError({ kind: 'badArgs', message: `that request is ${r.state}` });
+  if (state === 'allowed' && !result) throw new ConvexError({ kind: 'badArgs', message: 'an allowed request says where it started' });
+  await asBefore(ctx, r, { state, ...(state === 'allowed' && result ? { result } : {}), ...(state === 'claimed' ? { claim } : state === 'pending' ? { claim: undefined } : {}), decidedAt: Date.now() });
+  return null;
+}
+
+async function asBefore(ctx: MutationCtx, r: Doc<'runnerRequests'>, fields: Partial<Doc<'runnerRequests'>>): Promise<void> {
+  const backfilled = (r as Partial<Doc<'runnerRequests'>>).requestState !== undefined;
+  await ctx.db.patch(r._id, { ...fields, ...(backfilled ? { requestState: requestStateFrom({ ...r, ...fields }) } : {}) });
+}

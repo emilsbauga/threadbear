@@ -21,7 +21,16 @@
 # ciVerdict reads the runs on that exact commit).
 #
 # Costs nothing: standard ubuntu runners, free for a public repo; a newer
-# push cancels the check before it.
+# push replaces a check still waiting.
+#
+# tb land holds a landing that changes what this checks while its last run
+# on main failed (runner/src/land-gate.ts, docs/thread-worktrees.md "Red on
+# GitHub"), and main's runs aren't cancelled by newer pushes, so each one
+# finishes and says something (only a pull request's are). From 16 to 19
+# Nov this workflow was red on Windows while landings went on top, and
+# with every workflow having to pass on one commit for the daily release,
+# none went out (runner/src/upstream.ts).
+# tb land: hold while red
 name: Android
 
 on:
@@ -40,12 +49,18 @@ permissions:
 
 concurrency:
   group: android-${{ github.ref }}
-  # A newer push to main or a PR replaces its check; a release build always finishes.
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # A newer push to a PR replaces its check; main's and a release build's always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Only in Mike's repo (or when started by hand): in a fork, a push of its
+# main ran every job here on Linux, Mac, Windows and Android, though its
+# owner only builds and checks for their own system (./check.sh does that
+# before tb land), and most of those runs went red for reasons that were
+# never theirs (Wayne, 19 Nov 2026; 9 forks had Actions on). PRs to Mike's
+# repo still run, as they run in his repo.
 jobs:
   check:
-    if: "!startsWith(github.ref, 'refs/tags/')"
+    if: "!startsWith(github.ref, 'refs/tags/') && (github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch')"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -60,8 +75,12 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" >/dev/null
-      - name: Kit tests and a debug build
-        run: cd android-native && ./gradlew --no-daemon :kit:test :app:assembleDebug
+      - name: Kit tests, a debug build and the F-Droid build
+        run: cd android-native && ./gradlew --no-daemon :kit:test :app:assembleGithubDebug :app:assembleFdroidRelease
+      # F-Droid takes only free software: no Firebase, Play services or ML Kit
+      # class may get into the fdroid APK (docs/android-native.md, "Flavours").
+      - name: No Google code in the F-Droid build
+        run: cd android-native && ./check-fdroid-apk.sh app/build/outputs/apk/fdroid/release/app-fdroid-release-unsigned.apk
 
   # The release is two jobs, so the signing key never meets the build
   # (Daybreak 123, 15 Nov 2026). `apk` builds an unsigned APK: Gradle, its
@@ -139,9 +158,10 @@ jobs:
           export THREADBEAR_RELEASE="${TAG#release/}"
           cd android-native
           # No key here: with none, the release build comes out unsigned (build.gradle.kts).
-          ./gradlew --no-daemon :kit:test :app:assembleRelease
+          # The github flavour: Firebase push and the update check (docs/android-native.md, "Flavours").
+          ./gradlew --no-daemon :kit:test :app:assembleGithubRelease
           mkdir -p "$RUNNER_TEMP/unsigned"
-          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/unsigned/threadbear-android-unsigned.apk"
+          cp app/build/outputs/apk/github/release/app-github-release-unsigned.apk "$RUNNER_TEMP/unsigned/threadbear-android-unsigned.apk"
           echo "sha256=$(sha256sum "$RUNNER_TEMP/unsigned/threadbear-android-unsigned.apk" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           rm -f app/google-services.json
 
@@ -219,6 +239,14 @@ jobs:
             gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" --latest="$latest"
           fi
           gh release upload "$TAG" "$RUNNER_TEMP/threadbear-android.apk"
+          # For F-Droid's update check (its recipe's UpdateCheckData reads
+          # releases/latest/download/android-version.txt): the release's
+          # versionCode and versionName, as build.gradle.kts makes them from
+          # the tag's date. F-Droid can't read them from the source, as they
+          # come from the tag rather than a file.
+          day="${TAG#release/}"
+          printf 'versionCode=%s\nversionName=%s\n' "${day//-/}" "$day" > "$RUNNER_TEMP/android-version.txt"
+          gh release upload "$TAG" "$RUNNER_TEMP/android-version.txt" --clobber
 
       - name: Never leave the key on the runner
         if: always()

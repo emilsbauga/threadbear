@@ -550,9 +550,9 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         return id
     }
 
-    private func append(_ threadId: String, role: PhoneMessage.Role, text: String, origin: String? = nil) {
+    private func append(_ threadId: String, role: PhoneMessage.Role, text: String, origin: String? = nil, answers: [AskAnswer] = []) {
         var list = messagesById[threadId] ?? []
-        list.append(PhoneMessage(seq: (list.last?.seq ?? 0) + 1, role: role, text: text, origin: origin, at: .now))
+        list.append(PhoneMessage(seq: (list.last?.seq ?? 0) + 1, role: role, text: text, origin: origin, answers: answers.isEmpty ? nil : answers, at: .now))
         messagesById[threadId] = list
     }
 
@@ -600,7 +600,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         let id = answered { fake in
             fake.mutate { s in
                 s.waitingByThread[threadId] = nil
-                s.append(threadId, role: .user, text: text, origin: "phone")
+                s.append(threadId, role: .user, text: text, origin: "phone", answers: answers)
                 // The next turn closes the card, as on the runner.
                 s.threadsById[threadId]?.asks = nil
                 s.threadsById[threadId]?.asksSeq = nil
@@ -647,6 +647,38 @@ public final class FakeBackend: Backend, @unchecked Sendable {
             s.threadsById[threadId]?.working = nil
         }
         return newCommand()
+    }
+
+    // Synthetic review data for the simulator, never a real conversation.
+    private static var sampleDesignReview: PhoneDesignReview {
+        PhoneDesignReview(id: "sample-review", title: "Choose a layout", note: "Compare the spacing before choosing.", recommended: "A", status: "pending", revision: 0, draft: DesignReviewDraft(), options: [
+            .init(id: "A", title: "Roomier layout", reference: false, shots: [.init(src: "review:sample:a", title: "Overview", kind: "image")]),
+            .init(id: "B", title: "Current layout", reference: true, shots: [.init(src: "review:sample:b", title: nil, kind: "page")])
+        ])
+    }
+
+    public func designReviews(threadId: String, reviewId: String?) async throws -> String {
+        let id = UUID().uuidString
+        var status = CommandStatus(state: .done)
+        status.designReviews = reviewId == nil
+            ? DesignReviewResult(reviews: [.init(id: "sample-review", title: "Choose a layout")])
+            : DesignReviewResult(review: Self.sampleDesignReview)
+        lock.withLock { commands[id] = status }
+        return id
+    }
+
+    public func respondReview(threadId: String, review: PhoneDesignReview, draft: DesignReviewDraft) async throws -> String {
+        let id = UUID().uuidString
+        lock.withLock { commands[id] = CommandStatus(state: answersFail ? .failed : .done, note: answersFail ? "The review changed on the Mac." : nil) }
+        return id
+    }
+
+    public func reviewImages(threadId: String, sources: [String]) -> AsyncThrowingStream<[MessageImage], Error> {
+        let pictures = [
+            MessageImage(seq: 1, src: "review:sample:a", url: Self.samplePicture("review-a", width: 1200, height: 800, hue: 0.33), width: 1200, height: 800),
+            MessageImage(seq: 1, src: "review:sample:b", url: Self.samplePicture("review-b", width: 1200, height: 800, hue: 0.58), width: 1200, height: 800)
+        ]
+        return AsyncThrowingStream { $0.yield(pictures); $0.finish() }
     }
 
     /// A Claude thread's list, as a runner would send it, for the palette
@@ -871,7 +903,9 @@ public final class FakeBackend: Backend, @unchecked Sendable {
                         lastActivityAt: ago(25), costUsd: 1.84, projects: site, earliestSeq: 1,
                         asks: [PhoneAsk(action: "Ship the fix to the website now?",
                                         why: "It's on a preview while you look. I'll merge and deploy once you say so.",
-                                        options: ["Ship it", "Not yet"], suggested: 0,
+                                        options: ["Ship it", "Not yet"],
+                                        optionNotes: ["I merge, deploy and check the live site", "It stays on the preview for now"],
+                                        suggested: 0,
                                         links: [PhoneAskLink(title: "See the preview", url: "https://example.com")])],
                         asksSeq: 126),
             PhoneThread(threadId: "a4", title: "Tidy up old feature flags", cwd: "~/code/api",

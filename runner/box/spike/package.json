@@ -1,0 +1,23 @@
+{
+  "name": "threadbear-box-spike",
+  "private": true,
+  "description": "Throwaway spike for docs/virtual-runners.md step 1: does a paused Fly Machine or Daytona sandbox come back as the same runner? Not part of the runner.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "node build.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p convex",
+    "spike": "node driver.ts"
+  },
+  "dependencies": {
+    "convex": "1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "esbuild": "0.27.0",
+    "typescript": "7.0.2"
+  }
+}

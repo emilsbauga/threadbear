@@ -27,6 +27,10 @@ This is Mike's copy's page. In a fork there's nothing to do here.
   which the site's Worker serves at `/media/changelog/<release>/<name>`. A name never changes
   once it's up (they're cached for good): a new picture gets a new name.
 - `npm run media -- check` says whether every file the JSON names is up on the live site.
+- The build also writes `/changelog.json` (`changelogFeed`): the newest 20 releases' cards and
+  line counts. Forks' runners read it for the Updates panel's From Mike section
+  (`runner/src/changelog.ts`), so a release's cards show there once its entry is deployed, and
+  its pictures need to be up by then.
 
 ## Writing a release's entry
 
@@ -70,21 +74,30 @@ that has no file yet (`git tag -l 'release/*'` against `ls site/changelog`).
 
 ## Making the pictures
 
-Use the debug app on the mock runner (`app/Tools/dev-app.sh`; the commands are in
-app/README.md, "Seeing and driving it from a script"). Its window stays behind Mike's work and
-nothing moves the real pointer, so it's fine on Mike's Mac, one build at a time with
-`taskpolicy -b`. Always `--appearance dark --size 1240x820`, and stop every instance when done.
+Film the GPUI app (the Swift one is frozen) with `desktop/scripts/film.sh` (its header has the
+commands): it builds the scripted app at your checkout on Tinker Desk, runs it on the mock runner
+on a 2x stage there, in front, and `film.sh record` records its window. Nothing shows on Mike's
+Mac. Always `--appearance dark --size 1240x820`, and `film.sh stop` as soon as the takes are done,
+as it holds Tinker Desk's build lock meanwhile.
 
-- For the release's own build: borrow a worktree (`./borrow-worktree.sh`, it has build caches),
-  `git checkout --detach release/<this>` in it, then `app/Tools/dev-app.sh start --mock
-  --appearance dark --size 1240x820 --id cl-after`. Give it back afterwards.
+- For the release's own build: borrow a worktree (`./borrow-worktree.sh`), `git checkout
+  --detach release/<this>` in it, then `film.sh start` there. The first build can wait a while
+  behind other threads' builds, so run it in the background with a long time limit; after that
+  `film.sh start --no-build` is quick. Give the worktree back afterwards.
+- Made-up replies (a reply with links to other threads, a draft) come from `--turns FILE`
+  (MOCK_SCRIPTED_TURNS in the mock runner). The mock reads the file once, so a changed file needs
+  `film.sh stop` and `start --no-build` again. Thread ids there are like `demo_ci_slow`.
+- A recording starts about three seconds after `film.sh record` returns to the background, so
+  wait six or seven seconds before the first command.
+- Settings opens in a window of its own, which `film.sh record` doesn't record and scripted
+  clicks don't reach: get its id with `film.sh do '{"cmd":"window","settings":true}'`, record it
+  with `site/scripts/record-window.swift <id>` through `~/.local/bin/desk` there, and click it
+  with a small CGEvent program run the same way (taking the pointer is fine on Tinker Desk).
 - **clip** is the default: anything that moves or happens in steps (a palette opening as you
   type, a card filling as you swipe, a change to how something works), a few seconds long. For
   a change to something that existed, show the new behaviour in the clip; there's no
-  before/after. **image** is only for something that reads standing still. To record, compile
-  `site/scripts/record-window.swift` once, get the window's id with
-  `dev-app.sh do '{"cmd":"window","sheet":false,"settings":false}'` (the third word), record it
-  for a few seconds while sending the commands with short sleeps between, then crop and encode:
+  before/after. **image** is only for something that reads standing still. Record with
+  `film.sh record <out.mov> --seconds N &` while sending the commands, then crop and encode:
   `ffmpeg -ss <start> -i raw.mov -t <secs> -vf "crop=W:H:X:Y,fps=30,format=yuv420p" -c:v libx264
   -preset slow -crf 24 -threads 2 -movflags +faststart -an <name>.mp4`, and a WebP poster from a
   frame that shows the point.
@@ -95,9 +108,7 @@ nothing moves the real pointer, so it's fine on Mike's Mac, one build at a time 
   picker design review, for one) shows Mike's real email addresses. Crop those out or use
   another screen.
 - Every highlight has a clip or a picture: the build refuses one without (Mike, 11 Nov, "more
-  videos and screenshots please"). Something that only draws with the window in front (the
-  Terminal panel) is filmed on Tinker Desk, where taking over the screen is fine: a temp clone
-  of the release, commands through `ssh tinker-desk '~/.local/bin/desk "<cmd>"'`, then delete
-  it all, as Tinker Desk is kept clear of Threadbear. Something the mock can't show at all (the
-  Browser panel, a thread waiting for a connection) becomes a plain line, never a faked picture.
+  videos and screenshots please"). Something the mock can't show at all (the Browser panel, a
+  thread waiting for a connection, a file preview of a file it doesn't have) becomes a plain
+  line, never a faked picture.
 - `alt` says what the picture shows, for someone who can't see it.

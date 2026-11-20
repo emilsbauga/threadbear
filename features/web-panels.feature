@@ -9,7 +9,8 @@ Feature: Web pages in a thread's panels
   # from a script, and its dump doesn't read a page's title or the Convex
   # panel's state yet, so these run on the GPUI app (@swift-pending). The
   # GPUI app needs its web runtime for them: @web-runtime scenarios are
-  # skipped without TB_WEB_RUNTIME_ARCHIVE (support/web-runtime.ts).
+  # skipped without TB_WEB_RUNTIME_ARCHIVE (support/web-runtime.ts), which
+  # GitHub's Mac has (desktop.yml).
 
   Background:
     Given the app is connected to a runner with the demo threads
@@ -40,6 +41,22 @@ Feature: Web pages in a thread's panels
     Then the panel's page is out of sight under the menu
     When I press Escape
     Then the panel shows the page "Panel home"
+
+  # Chromium sizes the layer it draws a page in by adding each change of the
+  # view's size to what it had, so half points left over built up: on 16 Nov
+  # Mike's YouTube panel was drawn 12 points or more above where its clicks
+  # went, after a morning of panels moving. It shows on a Retina screen, where
+  # half points are pixels: there, 25 resizes left it 9.5 points out before
+  # the fix. On a 1x screen (Tinker Desk's) it passes either way.
+  @panel.web @web-runtime @swift-pending
+  Scenario: A panel's page is drawn where its clicks land, however often its panel moves
+    Given the web runtime is installed
+    When I open the thread "Add dark mode to the dashboard"
+    And the thread's url panel shows the page server
+    And I show the "mock.page" section of the pane
+    Then the panel shows the page "Panel home"
+    When the panel is moved across the top of the window and the window resized 25 times
+    Then the panel's page is drawn the size of its view
 
   @panel.web @panel.bar @web-runtime @swift-pending
   Scenario: A link to another site opens in the browser, and the panel keeps its page

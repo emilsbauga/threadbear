@@ -58,6 +58,32 @@ Feature: Sending a message
     And I paste "there\nworld" into the composer
     Then the composer says the lines "Hello there\nworld"
 
+  # Voice Type pastes a whole dictation at once; Mike reads the end of it
+  # before sending, so the box shows where the words finish (17 Nov).
+  @composer.textbox @swift-pending
+  Scenario: A paste longer than the box shows its end
+    When I paste a long dictation into the composer
+    Then the composer's cursor is in view
+
+  # A click anywhere in the box takes the keyboard there, not just one on its
+  # words: the page behind took it back from the box's own padding (19 Nov).
+  # Not run on the frozen Swift app.
+  @composer.textbox @swift-pending
+  Scenario: A click in the box off its words puts the cursor in it
+    When I start a new thread
+    And I click away from the message box
+    And I click the message box under its controls
+    And I type "on the page" where the cursor is
+    Then the composer says "on the page"
+
+  @composer.textbox @swift-pending
+  Scenario: A click in a thread's box off its words puts the cursor in it
+    Given I open the thread "Morning brief"
+    When I click away from the message box
+    And I click the message box under its controls
+    And I type "in the thread" where the cursor is
+    Then the composer says "in the thread"
+
   @composer.textbox
   Scenario: What I've typed stays with its thread
     When I type "half a thought" in the composer
@@ -105,6 +131,19 @@ Feature: Sending a message
     When I type "and the rest" in the composer
     And I drop a file on the first letter of the composer's words
     Then the composer starts with the dropped file's path, then "and the rest"
+
+  # A file that isn't a picture isn't uploaded (a video can be gigabytes):
+  # it goes in as its path in backticks for the agent to open where it is,
+  # drawn in the box and the bubble as a chip with its name and a dot that
+  # says it stays on the Mac. The Swift app is frozen with plain paths.
+  @composer.filedrop @swift-pending
+  Scenario: A dropped file that isn't a picture shows as its chip and sends its path
+    When I type "and the rest" in the composer
+    And I drop a file on the first letter of the composer's words
+    Then the composer's chips are "file: driver.ts"
+    And the composer starts with the dropped file's path, then "and the rest"
+    When I press Return
+    Then the transcript shows my message with the dropped file's path and the chip "file: driver.ts"
 
   @composer.filedrop @swift-pending
   Scenario Outline: A file dropped among existing words keeps the words on both sides

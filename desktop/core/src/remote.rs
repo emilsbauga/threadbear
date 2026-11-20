@@ -38,6 +38,75 @@ pub struct RemoteRunner {
     pub name: String,
     pub icon: Option<String>,
     pub online: bool,
+    /// One thread's box on a virtual runner (`RemoteRunner.box`): such a
+    /// runner is never a machine to pick (Runs on, Move to, Settings).
+    pub runner_box: Option<RunnerBox>,
+}
+
+/// Why a box's thread waits on a cloud token (`RemoteRunner.box.token`):
+/// its login has none yet, or Claude refused the one it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenNeed {
+    None,
+    Dead,
+}
+
+/// A thread's box on a virtual runner, as its machine has it
+/// (docs/protocol.md, "Other runners' threads" and "Virtual runners").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunnerBox {
+    /// creating, starting, awake, saving, asleep, waking, needsToken and the
+    /// rest; anything this app doesn't know is shown as nothing special.
+    pub state: String,
+    pub waiting: bool,
+    pub unreachable: bool,
+    pub unsure: bool,
+    /// Its virtual runner's id (`RemoteThreads.services`).
+    pub service: Option<String>,
+    pub token: Option<TokenNeed>,
+    /// The Claude login it runs on, an email: whose token the card makes.
+    pub login: Option<String>,
+}
+
+impl RunnerBox {
+    fn decode(v: &Value) -> Option<RunnerBox> {
+        // Any box at all is a box: one this app can't read is still never a
+        // machine to pick, just one it says nothing special about.
+        if v.is_null() {
+            return None;
+        }
+        let state = v["state"].as_str().unwrap_or("").to_owned();
+        let text = |key: &str| v[key].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        let token = match v["token"].as_str() {
+            Some("none") => Some(TokenNeed::None),
+            Some("dead") => Some(TokenNeed::Dead),
+            _ => None,
+        };
+        Some(RunnerBox { state, waiting: v["waiting"] == true, unreachable: v["unreachable"] == true, unsure: v["unsure"] == true, service: text("service"), token, login: text("login") })
+    }
+
+    /// Its thread can't run until a cloud token is set for its login: the
+    /// thread shows the token card.
+    pub fn needs_token(&self) -> bool {
+        self.token.is_some() || self.state == "needsToken"
+    }
+}
+
+/// A virtual runner (`RemoteThreads.services`): one Runs on entry, however
+/// many threads (boxes) are on it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VirtualRunner {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+}
+
+impl VirtualRunner {
+    fn decode(v: &Value) -> Option<VirtualRunner> {
+        let id = v["id"].as_str().filter(|s| !s.is_empty())?.to_owned();
+        let name = v["name"].as_str().filter(|s| !s.is_empty()).unwrap_or(&id).to_owned();
+        Some(VirtualRunner { name, provider: v["provider"].as_str().unwrap_or("").to_owned(), id })
+    }
 }
 
 /// `RemoteThreads`: what the sidebar shows of the other runners.
@@ -48,6 +117,9 @@ pub struct RemoteThreads {
     /// Mike's runner order (backend API 58), every runner's id: what the
     /// phone and the Runners panel list them in. None from a backend without one.
     pub order: Option<Vec<String>>,
+    /// The virtual runners (API 94, the virtualRunners experiment): Runs
+    /// on's entries after the machines. Empty from an older runner.
+    pub services: Vec<VirtualRunner>,
     /// A partial or unready index cannot prove a previously seen row is gone.
     /// Missing `ready` is an older runner, whose array is already ready.
     complete: bool,
@@ -57,7 +129,8 @@ impl RemoteRunner {
     fn decode(v: &Value) -> Option<RemoteRunner> {
         let id = v["id"].as_str().filter(|s| !s.is_empty())?.to_owned();
         let name = v["name"].as_str().filter(|s| !s.is_empty()).unwrap_or(&id).to_owned();
-        Some(RemoteRunner { name, icon: v["icon"].as_str().filter(|s| !s.is_empty()).map(str::to_owned), online: v["online"].as_bool().unwrap_or(false), id })
+        let runner_box = v.get("box").and_then(RunnerBox::decode);
+        Some(RemoteRunner { name, icon: v["icon"].as_str().filter(|s| !s.is_empty()).map(str::to_owned), online: v["online"].as_bool().unwrap_or(false), runner_box, id })
     }
 }
 
@@ -104,7 +177,10 @@ fn summary(row: &Value) -> Option<ThreadSummary> {
         last_seq: if unread { 1 } else { 0 },
         last_seen_seq: 0,
         runner_id: Some(runner_id),
-        permission_mode: "full".to_owned(),
+        // Its real access (API 88). A runner from before it doesn't say, and
+        // guessing Full access showed every other runner's thread as that,
+        // even ones on Auto (18 Nov 2026), so it's "unknown".
+        permission_mode: row["permissionMode"].as_str().filter(|s| matches!(*s, "full" | "ask" | "auto" | "plan")).unwrap_or("unknown").to_owned(),
         // The done card's loose ends, which this Mac's runner adds to the row
         // of a thread it's watching (relay.ts `overlay`): the sidebar's own
         // rows don't carry them, and this summary replaces the last one.
@@ -131,6 +207,7 @@ pub fn decode_remote_threads(value: &Value) -> RemoteThreads {
         runners: value["runners"].as_array().into_iter().flatten().filter_map(RemoteRunner::decode).collect(),
         threads,
         order: value["order"].as_array().map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect()),
+        services: value["services"].as_array().into_iter().flatten().filter_map(VirtualRunner::decode).collect(),
         complete,
     }
 }
@@ -201,6 +278,11 @@ impl RemoteThreads {
 
     pub fn runner(&self, id: &str) -> Option<&RemoteRunner> {
         self.runners.iter().find(|r| r.id == id)
+    }
+
+    /// The other runners that are machines: every one but a box's.
+    pub fn machines(&self) -> impl Iterator<Item = &RemoteRunner> {
+        self.runners.iter().filter(|r| r.runner_box.is_none())
     }
 }
 
@@ -281,8 +363,13 @@ pub struct MovePreview {
     pub worktree: bool,
     /// That repo is cloned there first.
     pub clone: Option<String>,
+    /// The address it's cloned from, shown with `clone`.
+    pub clone_from: Option<String>,
     /// The thread's own runner said what it would leave behind.
     pub source_checked: bool,
+    /// The runner's one-use id for this look: `threads.move` takes it, so
+    /// the move does what this showed or nothing (Daybreak 142).
+    pub preview_id: Option<String>,
 }
 
 impl MovePreview {
@@ -302,14 +389,56 @@ impl MovePreview {
             problems: lines("problems"),
             worktree: value["worktree"].as_bool().unwrap_or(false),
             clone: text("clone"),
+            clone_from: text("cloneFrom"),
             source_checked: value["sourceChecked"].as_bool().unwrap_or(false),
+            preview_id: text("previewId"),
         }
     }
 
     /// Nothing to decide or be told: Move to goes without showing the sheet.
+    /// A clone is always shown first (where from, and to), and only a look
+    /// the runner gave an id to can go.
     pub fn can_go_as_is(&self) -> bool {
-        self.source_checked && self.problems.is_empty() && self.left_behind.is_empty() && self.cwd.is_some() && self.account_id.is_some()
+        self.source_checked && self.problems.is_empty() && self.left_behind.is_empty() && self.cwd.is_some() && self.account_id.is_some() && self.clone.is_none() && self.preview_id.is_some()
     }
+}
+
+/// What the in-thread token card shows for a box waiting on a cloud token
+/// (docs/protocol.md, "Cloud tokens on the Mac"): whose token, whether its
+/// last one was refused, and this Mac's login of that email when it runs on
+/// a year-long token the card can offer to use as well.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenCard {
+    pub login: String,
+    pub text: String,
+    pub tip: String,
+    pub dead: bool,
+    pub mac_account: Option<String>,
+}
+
+pub fn token_card(b: &RunnerBox, logins: &crate::logins::RunnerLogins) -> Option<TokenCard> {
+    if !b.needs_token() {
+        return None;
+    }
+    let login = b.login.clone().filter(|l| !l.is_empty())?;
+    let dead = b.token == Some(TokenNeed::Dead);
+    let mac_account = logins
+        .accounts
+        .iter()
+        .find(|a| a.provider_id() == "claude" && a.year_token.is_some() && a.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(&login)))
+        .map(|a| a.id.clone());
+    let (text, tip) = if dead {
+        (
+            format!("Claude refused {login}'s cloud token"),
+            "Claude turned down the token this login's cloud machines run on: it was revoked or has run out. Make a new one, and the thread carries on once it's set.".to_owned(),
+        )
+    } else {
+        (
+            format!("{login} needs a cloud token"),
+            "A thread on a virtual runner runs Claude Code on a token from claude setup-token, kept sealed in your backend, one per login. Your message waits and goes once it's set.".to_owned(),
+        )
+    };
+    Some(TokenCard { login, text, tip, dead, mac_account })
 }
 
 #[cfg(test)]
@@ -342,6 +471,24 @@ mod tests {
         // No activity time falls back to its creation.
         assert_eq!(list.threads[1].last_activity_at, "2026-11-09T01:00:00.000Z");
         assert!(list.threads[1].busy());
+    }
+
+    // A row's own mode (API 88), never a guess of Full access: a runner that
+    // doesn't say, or says something no app knows, is "unknown" (18 Nov
+    // 2026, an Auto thread on the Dell XPS showed as Full access).
+    #[test]
+    fn a_rows_access_mode_is_its_own_or_unknown() {
+        let list = decode_remote_threads(&json!({
+            "runners": [{ "id": "r", "name": "Dell XPS" }],
+            "threads": [
+                { "runnerId": "r", "threadId": "t1", "status": "idle", "createdAt": "2026-11-09T01:00:00.000Z", "permissionMode": "auto" },
+                { "runnerId": "r", "threadId": "t2", "status": "idle", "createdAt": "2026-11-09T01:00:00.000Z" },
+                { "runnerId": "r", "threadId": "t3", "status": "idle", "createdAt": "2026-11-09T01:00:00.000Z", "permissionMode": "root" },
+            ],
+        }));
+        let modes: Vec<_> = list.threads.iter().map(|t| t.permission_mode.as_str()).collect();
+        assert_eq!(modes, vec!["auto", "unknown", "unknown"]);
+        assert_eq!(crate::logins::permission_title("unknown"), "Access unknown");
     }
 
     // The relay puts a watched thread's done-card loose ends on its row
@@ -450,12 +597,17 @@ mod tests {
 
     #[test]
     fn a_preview_with_nothing_to_say_can_just_go() {
-        let answer = json!({ "cwd": "/Users/alex/x", "accountId": "claude-main", "accounts": [{ "id": "claude-main", "title": "Claude", "email": "a@b" }], "leftBehind": [], "problems": [], "sourceChecked": true });
+        let answer = json!({ "cwd": "/Users/alex/x", "accountId": "claude-main", "accounts": [{ "id": "claude-main", "title": "Claude", "email": "a@b" }], "leftBehind": [], "problems": [], "sourceChecked": true, "previewId": "p1" });
         assert!(MovePreview::decode(&answer).can_go_as_is());
         let left = json!({ "cwd": "/x", "accountId": "a", "leftBehind": ["a job"], "sourceChecked": true });
         assert!(!MovePreview::decode(&left).can_go_as_is());
-        let unchecked = json!({ "cwd": "/x", "accountId": "a", "sourceChecked": false });
+        let unchecked = json!({ "cwd": "/x", "accountId": "a", "sourceChecked": false, "previewId": "p1" });
         assert!(!MovePreview::decode(&unchecked).can_go_as_is());
+        let cloning = json!({ "cwd": "/x", "accountId": "a", "sourceChecked": true, "previewId": "p1", "clone": "/x", "cloneFrom": "git@github.com:o/r.git" });
+        assert!(!MovePreview::decode(&cloning).can_go_as_is(), "a clone is shown first");
+        assert_eq!(MovePreview::decode(&cloning).clone_from.as_deref(), Some("git@github.com:o/r.git"));
+        let unbound = json!({ "cwd": "/x", "accountId": "a", "sourceChecked": true });
+        assert!(!MovePreview::decode(&unbound).can_go_as_is(), "no previewId, nothing to bind the move to");
         assert_eq!(MovePreview::decode(&answer).accounts[0].label(), "Claude (a@b)");
     }
 
@@ -491,4 +643,74 @@ mod tests {
         ]}));
         assert_eq!(list.threads[0].snoozed_until_restart, Some(true));
     }
+    // Virtual runners (docs/protocol.md, "Virtual runners"): a box's runner
+    // says its box, and the list says the virtual runners themselves.
+    #[test]
+    fn a_box_runner_and_the_virtual_runners_decode() {
+        let list = decode_remote_threads(&json!({
+            "runners": [
+                { "id": "m", "name": "bruce", "online": true },
+                { "id": "b1", "name": "Cloud (Fly)", "online": true, "box": { "state": "needsToken", "service": "s1", "token": "none", "login": "mike@example.com" } },
+                { "id": "b2", "name": "Cloud (Fly)", "online": true, "box": { "state": "awake", "token": "dead", "login": "mike@example.com", "waiting": true, "unreachable": true, "unsure": true } },
+                { "id": "b3", "name": "Cloud (Fly)", "online": true, "box": { "state": "asleep", "token": "what" } },
+                { "id": "b4", "box": "nonsense" },
+            ],
+            "threads": [],
+            "services": [{ "id": "s1", "name": "Cloud (Fly)", "provider": "fly" }, { "name": "no id" }, { "id": "s2", "provider": "fly" }],
+        }));
+        assert!(list.runner("m").unwrap().runner_box.is_none());
+        let b1 = list.runner("b1").unwrap().runner_box.clone().unwrap();
+        assert_eq!(b1.state, "needsToken");
+        assert_eq!(b1.service.as_deref(), Some("s1"));
+        assert_eq!(b1.token, Some(TokenNeed::None));
+        assert_eq!(b1.login.as_deref(), Some("mike@example.com"));
+        let b2 = list.runner("b2").unwrap().runner_box.clone().unwrap();
+        assert_eq!(b2.token, Some(TokenNeed::Dead));
+        assert!(b2.waiting && b2.unreachable && b2.unsure);
+        assert_eq!(list.runner("b3").unwrap().runner_box.as_ref().unwrap().token, None, "an unknown token word is no need");
+        assert_eq!(list.runner("b4").unwrap().runner_box.as_ref().unwrap().state, "", "a box it can't read is still a box, with nothing to say");
+        assert_eq!(list.services, vec![VirtualRunner { id: "s1".into(), name: "Cloud (Fly)".into(), provider: "fly".into() }, VirtualRunner { id: "s2".into(), name: "s2".into(), provider: "fly".into() }]);
+        let machines: Vec<&str> = list.machines().map(|r| r.id.as_str()).collect();
+        assert_eq!(machines, vec!["m"], "a box's runner is never a machine to pick");
+        assert!(decode_remote_threads(&json!({ "runners": [], "threads": [] })).services.is_empty(), "an older runner sends none");
+    }
+
+    #[test]
+    fn a_box_needs_a_token_while_its_login_has_none_or_a_refused_one() {
+        let b = |state: &str, token: Option<TokenNeed>| RunnerBox { state: state.into(), token, ..Default::default() };
+        assert!(b("needsToken", None).needs_token());
+        assert!(b("awake", Some(TokenNeed::Dead)).needs_token());
+        assert!(b("asleep", Some(TokenNeed::None)).needs_token());
+        assert!(!b("awake", None).needs_token());
+    }
+    // The in-thread token card (Mike's "option C", 17 Nov): what it says,
+    // and the third way only when this Mac's login of that email has a
+    // year-long token.
+    #[test]
+    fn the_token_card_says_whose_token_and_offers_this_macs_only_when_there_is_one() {
+        use crate::logins::{Account, RunnerLogins, YearToken};
+        let logins = RunnerLogins {
+            accounts: vec![
+                Account { id: "claude-main".into(), provider: "claude".into(), email: Some("Mike@Example.com".into()), year_token: Some(YearToken { made_at: None }), ..Default::default() },
+                Account { id: "claude-2".into(), provider: "claude".into(), email: Some("work@example.com".into()), ..Default::default() },
+                Account { id: "codex-main".into(), provider: "codex".into(), email: Some("codex@example.com".into()), year_token: Some(YearToken { made_at: None }), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let need = |state: &str, token: Option<TokenNeed>, login: &str| RunnerBox { state: state.into(), token, login: Some(login.into()), ..Default::default() };
+        let none = token_card(&need("needsToken", Some(TokenNeed::None), "mike@example.com"), &logins).unwrap();
+        assert_eq!(none.text, "mike@example.com needs a cloud token");
+        assert_eq!(none.login, "mike@example.com");
+        assert!(!none.dead);
+        assert_eq!(none.mac_account.as_deref(), Some("claude-main"), "an email is matched whatever its case");
+        let dead = token_card(&need("awake", Some(TokenNeed::Dead), "work@example.com"), &logins).unwrap();
+        assert_eq!(dead.text, "Claude refused work@example.com's cloud token");
+        assert!(dead.dead);
+        assert_eq!(dead.mac_account, None, "no year-long token on this Mac for that login");
+        assert_eq!(token_card(&need("needsToken", Some(TokenNeed::None), "codex@example.com"), &logins).unwrap().mac_account, None, "only a Claude login's token");
+        assert!(token_card(&need("awake", None, "mike@example.com"), &logins).is_none(), "no card once it has one");
+        let nameless = RunnerBox { state: "needsToken".into(), ..Default::default() };
+        assert!(token_card(&nameless, &logins).is_none(), "nothing to make a token for without its login");
+    }
 }
+

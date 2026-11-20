@@ -91,6 +91,15 @@ test("finds the fork's own Swift commits and nothing of Mike's", async () => {
   assert.match(st.changes[1].date, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test('a commit that changed the new app too is already in it, so it is not listed', async () => {
+  const w = world();
+  // Made before the freeze in both apps at once (a fork's Zed button, 12 Nov):
+  // nothing to rebuild, and no Ports: trailer to take it off the list.
+  commit(w.theirs, ['app/Sources/Threadbear/Views/Header.swift', 'desktop/gpui/src/header.rs'], 'Zed button in both apps');
+  const st = await scanSwiftChanges(w.theirs);
+  assert.deepEqual(st.changes.map((c) => c.subject), ['Orange dock badge', 'Bigger sidebar font']);
+});
+
 test("in Mike's own copy it's off, and with nothing of upstream's to compare with too", async () => {
   const w = world();
   git(w.theirs, 'remote', 'set-url', 'origin', 'https://github.com/mikecann/threadbear');

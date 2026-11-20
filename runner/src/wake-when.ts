@@ -20,7 +20,7 @@ export type WakeWhen = {
   // something to happen before it carries on: the topic is then what has to
   // have happened, and waking hands the agent a turn to check it really
   // has, and go back to sleep if not. Mike's own Wake when… only brings the
-  // thread back for him. Kept in the runner: the apps never see it.
+  // thread back for him. The apps see only that its agent set it (`agent`).
   // Before 13 Nov 2026 an agent's "until the GPUI app replaces the Swift
   // app" was read as a topic, woke on the first talk of the plan, and sat
   // in the inbox with nothing done.

@@ -74,7 +74,7 @@ const menus: Record<string, Menu> = {
   sort: { target: () => ({ label: 'Sort: Newest first' }), item: 'Needs you first', region: [-20, -14, 280, 150] },
   moon: { target: (row) => ({ label: 'Hibernate', hoverFirst: `${row}\n` }), item: 'Tomorrow, 9 am', region: [-120, -20, 420, 320] },
   row: { target: (row) => ({ label: `${row}\n`, prefix: true, right: true }), item: 'Rename', region: [-10, -10, 320, 420] },
-  plus: { target: () => ({ label: 'Attach images, change the folder or schedule the message' }), item: 'Attach images…', region: [-20, -330, 340, 350] },
+  plus: { target: () => ({ label: 'Attach images or Markdown, change the folder or schedule the message' }), item: 'Attach images or Markdown…', region: [-20, -330, 340, 350] },
   permission: { target: () => ({ label: 'Full access' }), item: 'Ask before edits', region: [-60, -260, 410, 280] },
   panel: { target: () => ({ label: '', right: true, fromRight: [160, 620] }), item: 'Open in New Window', region: [-20, -10, 330, 200] },
 };

@@ -12,7 +12,7 @@
 <h1 align="center">Threadbear</h1>
 
 <p align="center">
-  A Mac app for running your Claude Code and Codex threads, on the subscriptions you already have.<br>
+  A desktop app (Mac, Windows and Linux) for running your Claude Code, Codex, Grok, Cursor and OpenCode threads, on the subscriptions you already have.<br>
   You get all of the source, so when something bugs you, you (or more likely your agent) can change it.
 </p>
 
@@ -20,17 +20,18 @@
   <b><a href="#installing-it">Install it</a></b> ·
   <a href="https://threadbear.mikecann.app">Website</a> ·
   <a href="https://www.youtube.com/watch?v=HCR6jqR0LEI">Watch the launch video</a> ·
-  <a href="https://apps.apple.com/app/id6827837354">iPhone app</a>
+  <a href="https://apps.apple.com/app/id6827837354">iPhone app</a> ·
+  <a href="https://threadbear.mikecann.app/docs/phone-and-browser#on-android">Android app</a>
 </p>
 
 <p align="center">
   <img src="site/public/screens/mac-thread.webp" width="960" alt="Threadbear on a Mac: the list of threads, a thread and its Highlights side by side">
 </p>
 
-I made it for myself, and you get the whole thing: the source, the Mac app, a
-little runner that keeps your agents going when the app's closed, and a Convex
-backend in your own account so the iPhone app and a web page for each thread
-can follow along. None of it runs on a server of mine, so I never see any of
+I made it for myself, and you get the whole thing: the source, the desktop app,
+a little runner that keeps your agents going when the app's closed, and a
+Convex backend in your own account so the iPhone and Android apps and a web
+page for each thread can follow along. None of it runs on a server of mine, so I never see any of
 it.
 
 ## What it does
@@ -90,12 +91,13 @@ You fork the code, so you can change anything. My changes come as a daily releas
   never stops a turn.
 - **Every thread has its own link.** Open a thread on the web from its menu,
   then copy its link to open in any browser you're signed in on.
-- **Schedules that run on any of your Macs.** Send a thread a message at a set
-  time, once or over and over, or start a new thread each time, on whichever
-  Mac you pick.
-- **Runs on your own Claude or Codex login.** It drives the official `claude`
-  and `codex` command line tools, logged in as you, and never reads or copies
-  your login tokens.
+- **Schedules that run on any of your machines.** Send a thread a message at a
+  set time, once or over and over, or start a new thread each time, on
+  whichever machine you pick.
+- **Runs on your own logins.** It drives the official `claude` and `codex`
+  command line tools, logged in as you, and never reads or copies your login
+  tokens. Grok, Cursor and OpenCode get threads too, through their own CLIs
+  ([more on those](docs/guide.md#accounts-pools-and-usage)).
 
 The [launch video](https://www.youtube.com/watch?v=HCR6jqR0LEI) goes through
 all of it in about 25 minutes, so grab yourself a lovely cup of tea first.
@@ -106,9 +108,11 @@ and [docs/guide.md](docs/guide.md) is the full guide.
 
 You'll need:
 
-- A Mac with Apple silicon, on macOS 26 or later
-- Xcode 26 or newer, and Node 24 or newer
-- Claude Code or Codex, installed and logged in
+- A Mac with Apple silicon, on macOS 26 or later (Windows and Linux work too,
+  but these steps are written for a Mac for now)
+- Xcode's command line tools (`xcode-select --install`), and Node 24 or newer
+- Claude Code or Codex, installed and logged in. Grok, Cursor and OpenCode
+  can run threads too, but titles and the librarian need a Claude login
 - A free [Convex](https://convex.dev) account
 - The GitHub CLI (`gh`), to make your fork
 
@@ -139,9 +143,11 @@ cd threadbear
 
 Setup checks your Mac, logs you in to Convex, makes a Convex project in your
 account and deploys the backend and website to it, then builds and installs
-the runner and the Mac app. Messages go to that deployment; tool output stays on
-your Mac until you pair a phone or add a machine, when Threadbear offers to send
-that too (scrubbed first, not a guarantee) so they can show it. If something goes wrong, fix it and run setup
+the runner and the Mac app (the first build takes 20 to 40 minutes and needs
+about 5 GB free; it installs Rust if you haven't got it). The app opens on a
+few setup cards. Messages go to that deployment; tool output stays on
+your Mac unless you turn on full sync (`tb settings full on`), which sends that
+too (scrubbed first, not a guarantee) so your phone and other machines can show it. If something goes wrong, fix it and run setup
 again: it only does what's missing. `./threadbear setup --dry-run` shows what
 it would do first.
 
@@ -154,6 +160,7 @@ fine, setup forks it for you as long as `gh` is logged in.
 - Open Threadbear and a short tour shows you around (Help > Take the Tour
   runs it again).
 - For your phone, get [Threadbear for iPhone](https://apps.apple.com/app/id6827837354)
+  or [for Android](docs/guide.md#on-android) (an APK from GitHub for now)
   and pair it from Settings > Phone & browser on the Mac, which shows a code
   to scan. The same place opens the website in your browser, signed in.
 - Your copy updates itself whenever your `main` changes. My changes come as a
@@ -174,6 +181,8 @@ If you're an agent, start here:
   then [docs/plan.md](docs/plan.md) for how it fits together and
   [docs/protocol.md](docs/protocol.md), the contract between the runner and
   the apps.
+- **Sending Mike a change:** [CONTRIBUTING.md](CONTRIBUTING.md) says what
+  he takes and how, so read it before you start.
 - **The backend, iPhone app and website:**
   [docs/convex-backend.md](docs/convex-backend.md),
   [ios/README.md](ios/README.md) and [docs/website.md](docs/website.md).
@@ -188,9 +197,11 @@ If you're an agent, start here:
 Where things are:
 
 - `runner/`: the runner (TypeScript), the background process that drives the
-  `claude` and `codex` CLIs
-- `app/`: the Mac app (SwiftUI and AppKit)
-- `ios/`: the iPhone app
+  `claude` and `codex` CLIs, and Grok, Cursor and OpenCode over the Agent
+  Client Protocol
+- `desktop/`: the desktop app (Rust and GPUI), for Mac, Windows and Linux
+- `app/`: the old Mac app (SwiftUI and AppKit), frozen now
+- `ios/`: the iPhone app, `android-native/`: the Android app
 - `convex/`: the backend, `web/`: the website
 - `relay/`: the push relay (Mike's, shared by everyone)
 - `site/`: the landing page at threadbear.mikecann.app

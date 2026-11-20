@@ -233,10 +233,17 @@ pub(crate) fn info_tip(id: impl Into<SharedString>, text: impl Into<SharedString
 }
 
 #[derive(IntoElement)]
-struct InfoTrigger {
+pub(crate) struct InfoTrigger {
     id: SharedString,
     text: SharedString,
     color: Hsla,
+}
+
+impl InfoTrigger {
+    /// The ⓘ for a popover of one's own (Settings' sections, with a button).
+    pub(crate) fn new(id: SharedString, text: SharedString, color: Hsla) -> Self {
+        Self { id, text, color }
+    }
 }
 
 impl gpui_kit::component::Selectable for InfoTrigger {

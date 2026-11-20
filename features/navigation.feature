@@ -118,3 +118,17 @@ Feature: Getting around the app
     When I open the first thread in the Inbox
     And I go down the Inbox to its last thread with Next Inbox Thread
     Then the open thread's row is in view in the sidebar
+
+  # The new-thread page is used up once its message starts a thread: Back
+  # from that thread goes to where you were before ⌘N, not an empty box
+  # (Swift's showStartedThread, 8 Nov; the GPUI app missed it till 18 Nov).
+  @nav.history @nav.sidebuttons
+  Scenario: Back from a thread just started goes to where I was before Command-N
+    Given I open the thread "Morning brief"
+    When I press Command-N
+    And I send "Why did last night's backup fail"
+    Then a thread called "Why did last night's backup fail" opens
+    When I press the mouse's "back" button
+    Then the open thread is "Morning brief"
+    When I press the mouse's "forward" button
+    Then the open thread is "Why did last night's backup fail"

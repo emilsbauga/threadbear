@@ -10,11 +10,15 @@
 //
 // Imported, it's the test's side: FakeCodex makes the socket and a `codex`
 // script that starts the relay, and hands out one FakeConn per process.
+//
+// On Windows the socket is a named pipe, and what the adapter starts is the
+// launcher of an npm install of @openai/codex (a codex.js the runner runs
+// through node), as Windows can't start a script as a program.
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PATIENCE_MS } from './patience.ts';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -23,7 +27,7 @@ type Msg = Record<string, unknown>;
 
 // ---- The relay (the child process)
 
-function relay(): void {
+export function relay(): void {
   const sock = net.createConnection(process.env.FAKE_CODEX_SOCKET!);
   const keep = ['CODEX_HOME', 'CODEX_MANAGED_BY_NPM', 'CODEX_MANAGED_PACKAGE_ROOT', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE', 'CODEX_THREAD_ID', 'THREADBEAR_THREAD_ID', 'CLAUDECODE', 'CLAUDE_CONFIG_DIR'];
   const env: Record<string, string | undefined> = {};
@@ -204,30 +208,57 @@ export class FakeConn {
   }
 }
 
+// Puts the program the adapter is told to start at `where`, wired to the socket,
+// and gives the path the adapter is handed. On a Mac or Linux that is a shell
+// script at `where`, spawned as a native binary would be. On Windows `where`
+// is a folder holding an npm install of @openai/codex whose launcher starts
+// the relay, and the path is that launcher.
+function installFake(where: string, sockPath: string): string {
+  if (process.platform !== 'win32') {
+    fs.writeFileSync(where, `#!/bin/sh\nFAKE_CODEX_SOCKET='${sockPath}' exec '${process.execPath}' '${SELF}' "$@"\n`, { mode: 0o755 });
+    return where;
+  }
+  const pkg = path.join(where, 'node_modules', '@openai', 'codex');
+  const launcher = path.join(pkg, 'bin', 'codex.js');
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@openai/codex', version: '0.164.0' }));
+  fs.writeFileSync(launcher, `process.env.FAKE_CODEX_SOCKET = ${JSON.stringify(sockPath)};\n(await import(${JSON.stringify(pathToFileURL(SELF).href)})).relay();\n`);
+  return launcher;
+}
+
 export class FakeCodex {
   readonly dir: string;
   // The `codex` the adapter is told to start.
   readonly bin: string;
+  private sockPath: string;
   private server: net.Server;
   private conns: FakeConn[] = [];
   private waiters: ((c: FakeConn) => void)[] = [];
   readonly all: FakeConn[] = [];
 
-  private constructor(dir: string, bin: string, server: net.Server) {
+  private constructor(dir: string, bin: string, sockPath: string, server: net.Server) {
     this.dir = dir;
     this.bin = bin;
+    this.sockPath = sockPath;
     this.server = server;
+  }
+
+  // Another copy of the program at `where` (a path that did not exist, or was
+  // not there yet), for a test of a binary that turns up late. Gives the path
+  // to start it by.
+  install(where: string): string {
+    return installFake(where, this.sockPath);
   }
 
   static async create(): Promise<FakeCodex> {
     // Unix socket paths are short (104 bytes on macOS), so /tmp, not $TMPDIR.
-    const dir = fs.mkdtempSync(path.join(os.platform() === 'darwin' ? '/tmp' : os.tmpdir(), 'tb-fcx-'));
-    const sockPath = path.join(dir, 's');
-    const bin = path.join(dir, 'codex');
-    // A shell script, so the adapter spawns it as a native binary would be.
-    fs.writeFileSync(bin, `#!/bin/sh\nFAKE_CODEX_SOCKET='${sockPath}' exec '${process.execPath}' '${SELF}' "$@"\n`, { mode: 0o755 });
+    const made = fs.mkdtempSync(path.join(os.platform() === 'darwin' ? '/tmp' : os.tmpdir(), 'tb-fcx-'));
+    // On Windows the runner reports a launcher by its real path, so that is the path the tests compare with.
+    const dir = process.platform === 'win32' ? fs.realpathSync(made) : made;
+    const sockPath = process.platform === 'win32' ? `\\\\.\\pipe\\${path.basename(dir)}` : path.join(dir, 's');
+    const bin = installFake(path.join(dir, 'codex'), sockPath);
     const server = net.createServer();
-    const fake = new FakeCodex(dir, bin, server);
+    const fake = new FakeCodex(dir, bin, sockPath, server);
     server.on('connection', (sock) => fake.accept(sock));
     await new Promise<void>((r) => server.listen(sockPath, r));
     return fake;

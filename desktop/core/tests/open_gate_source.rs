@@ -91,6 +91,9 @@ const ALLOWED_LINES: &[(&str, &str, usize)] = &[
     ("gpui/native/media_views.m", "size_t tb_media_thumbnail(int fd, long long length, const char *name, bool pdf, const TBMediaVersion *expected, unsigned char *out, size_t capacity) {", 1),
     // Where the video and PDF views are made, called only from the gate.
     ("gpui/native/media_views.m", "void *tb_media_open(void *nativeParent, int fd, long long length, const char *path, int kind, bool muted, float volume) {", 1),
+    // The setup cards ask GitHub's CLI who it's signed in as, once, from
+    // fixed places with fixed arguments, and read only its words (hello.rs).
+    ("gpui/src/hello.rs", "if let Ok(out) = std::process::Command::new(gh).args([\"auth\", \"status\", \"--hostname\", \"github.com\"]).output() {", 1),
     ("gpui/src/swift_import.rs", "let out = Command::new(\"/usr/bin/defaults\").args([\"export\", \"com.mikerosoft.threadbear\", \"-\"]).stderr(Stdio::null()).output().map_err(|e| format!(\"couldn't run defaults: {e}\"))?;", 1),
 ];
 
@@ -336,7 +339,7 @@ fn checked_files_open_by_reference_not_by_path() {
     let gate = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../gpui/src/open_gate.rs")).unwrap().replace("\r\n", "\n");
     let open_file = fn_body(&gate, "pub(crate) fn open_file(");
     assert!(!open_file.contains("system_open("), "open_file opens without open_checked:\n{open_file}");
-    assert_eq!(open_file.matches("open_checked(").count(), 2, "both the document and the yes go through open_checked:\n{open_file}");
+    assert_eq!(open_file.matches("open_checked(").count(), 3, "the document, a remembered kind and the yes all go through open_checked:\n{open_file}");
     let checked = fn_body(&gate, "fn open_checked(");
     assert!(checked.contains("still_same("), "open_checked doesn't look again");
     let mac = gate.split("#[cfg(target_os = \"macos\")]\nfn open_the_file(").nth(1).expect("the Mac's open_the_file");

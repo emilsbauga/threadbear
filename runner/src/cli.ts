@@ -16,8 +16,9 @@ import { DEV_HELP, formatModels, logsCommand, runDev } from './tb-dev.ts';
 import { findWorktreePatch, isInside } from './patches.ts';
 import { TRUST_ALL } from './patch-trust.ts';
 import { checkoutTop, land, landTargetFromGit, realpath, type LandTarget } from './worktrees.ts';
-import { landRefusal } from './follow-origin.ts';
+import { landRefusal, pushAfterLanding } from './follow-origin.ts';
 import { gateCacheDir, gh, landHold } from './land-gate.ts';
+import { detachable, landInBackground, landWorker } from './land-detach.ts';
 import { activityCommand } from './activity.ts';
 import { runnerKeysCommand } from './runner-keys.ts';
 import { pickRunner } from './moves.ts';
@@ -31,6 +32,9 @@ const OPTIONS = {
   model: { type: 'string' },
   effort: { type: 'string' },
   ask: { type: 'boolean' },
+  // tb checkup --post / --skip (checkup.ts).
+  post: { type: 'boolean' },
+  skip: { type: 'boolean' },
   auto: { type: 'boolean' },
   plan: { type: 'boolean' },
   full: { type: 'boolean' },
@@ -113,6 +117,7 @@ const HELP = `tb: talk to the Threadbear runner
                                   stops it, without moving
   tb delete <threadId>
   tb accounts                     the Claude and Codex logins (* new threads start on it)
+  tb accounts --json              every login with its usage (weekly %, resets) as JSON
   tb accounts <account> [--json]  that account's models and its default
   tb pools [--json]               the pools, their logins and room (* new threads start on it)
   tb actions <threadId> [--json]  the thread's actions, panels and patches (from its folder)
@@ -146,7 +151,8 @@ const HELP = `tb: talk to the Threadbear runner
                                   summarize or generate. It spends like any other
   tb land [--dry-run] [--despite-red]
                                   in a thread's own worktree: rebase its branch on main, run
-                                  the repo's check, then move main to it (never pushes);
+                                  the repo's check, then move main to it (and push it, only in a
+                                  repo listed in runner.json's pushAfterLanding);
                                   --dry-run stops before main moves. A GitHub workflow
                                   marked "# tb land: hold while red" holds the landings it
                                   would run for while it's red on main; --despite-red
@@ -207,6 +213,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   models: ['json', 'remove', 'labels', 'field', 'system', 'cwd'],
   status: ['json'],
   updates: ['json'],
+  checkup: ['text', 'post', 'skip', 'json'],
   self: ['json'],
   restart: ['now', 'force', 'resume', 'no-resume', 'cancel', 'reason', 'thread', 'max-wait'],
   show: ['last', 'tools'],
@@ -279,7 +286,13 @@ async function main(argv: string[]): Promise<number> {
   // The app's activity log is files on this Mac: no runner needed.
   if (cmd === 'activity') return activityCommand(cfg, values);
   // Works with no runner too: from any thread/ worktree, by git alone.
-  if (cmd === 'land') return landCommand(cfg, Boolean(values['dry-run']), Boolean(values['despite-red']));
+  // In a process of its own, which a time limit stopping this tb can't
+  // reach once its check has started (land-detach.ts).
+  if (cmd === 'land') {
+    const worker = landWorker();
+    if (!worker && detachable()) return landInBackground(argv);
+    return landCommand(cfg, Boolean(values['dry-run']), Boolean(values['despite-red']), worker?.onLocked);
+  }
   // tb runner uses this Mac's keys straight from disk, so the runner never
   // sees them to refuse them (tb-connect.ts).
   if (cmd === 'runner') {
@@ -334,7 +347,7 @@ type Flags = Record<string, string | boolean | string[] | undefined>;
 // worktrees of their own with its THREADBEAR_THREAD_ID, and went for the
 // parent's (GPUI port thread, 11 Nov). The check is the one in that
 // worktree's own patch, so a branch that changes it lands under its own.
-async function landCommand(cfg: ReturnType<typeof loadConfig>, dryRun: boolean, despiteRed = false): Promise<number> {
+async function landCommand(cfg: ReturnType<typeof loadConfig>, dryRun: boolean, despiteRed = false, onLocked?: () => boolean): Promise<number> {
   const here = process.cwd();
   let target: Omit<LandTarget, 'check'> | undefined;
   let from = here;
@@ -383,6 +396,11 @@ async function landCommand(cfg: ReturnType<typeof loadConfig>, dryRun: boolean, 
     // A workflow red on main holds what it would run for (land-gate.ts).
     despiteRed,
     hold: (root, files) => { const dir = gateCacheDir(root); return landHold(root, files, (line) => console.log(line), gh, dir ? { dir } : undefined); },
+    // Main goes to GitHub once it has landed, on the owner's Mac only.
+    push: !dryRun && pushAfterLanding(cfg.home, target.mainCheckout),
+    // Stopped while it waits, it says it's out of the line, then exits.
+    sayWhenStopped: true,
+    ...(onLocked ? { onLocked } : {}),
   });
 }
 
@@ -568,7 +586,7 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
       }
       if (r.note) console.log(r.note);
       if (r.image) console.log(r.image.path);
-      for (const item of r.items ?? []) console.log(`  ${item.tone === 'done' ? '✓' : item.tone === 'failed' ? '✗' : item.tone === 'attention' ? '!' : '·'} ${item.title}${item.detail ? `  ${item.detail}` : ''}`);
+      for (const item of r.items ?? []) console.log(`  ${item.tone === 'done' ? '✓' : item.tone === 'failed' ? '✗' : item.tone === 'attention' ? '!' : item.tone === 'warning' ? '▲' : item.tone === 'working' ? '…' : '·'} ${item.title}${item.detail ? `  ${item.detail}` : ''}`);
       return 0;
     }
     case 'actions': {
@@ -632,6 +650,25 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
           return 0;
         }
         console.log(formatModels(a, r.defaults));
+        return 0;
+      }
+      if (f.json) {
+        // Every login with the runner's merged usage (this runner's turns,
+        // Token Stats' limits.json and other runners' shared readings), the
+        // same view list_accounts and the apps get, for scripts that check
+        // room left: usage.json alone is only this runner's own readings.
+        const accounts = r.accounts.map((a) => ({
+          id: a.id,
+          provider: a.provider,
+          title: a.title,
+          email: a.email,
+          note: a.note,
+          isDefault: a.id === r.defaults.accountId,
+          signedOut: a.signedOut,
+          planEnded: a.planEnded,
+          usage: a.usage,
+        }));
+        console.log(JSON.stringify({ accounts, defaultAccountId: r.defaults.accountId }, null, 2));
         return 0;
       }
       for (const a of r.accounts) {
@@ -776,8 +813,7 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
       return 0;
     }
     case 'settings': {
-      // tb settings full on|off: full sync (docs/full-convex.md), the one
-      // setting the runner asks about by itself (convex-use.ts askBrief).
+      // tb settings full on|off: full sync (docs/full-convex.md).
       if (args[0] === 'full') {
         const v = args[1];
         if (v !== 'on' && v !== 'off') {
@@ -940,10 +976,10 @@ async function moveToRunner(client: RunnerClient, threadId: string, f: Flags): P
   if (typeof f.cwd === 'string') params.cwd = f.cwd;
   if (typeof f.account === 'string') params.accountId = f.account;
   if (f.preview) {
-    const p = await client.call<{ cwd?: string; accountId?: string; leftBehind: string[]; problems: string[]; worktree?: boolean; clone?: string }>('threads.movePreview', params);
+    const p = await client.call<{ cwd?: string; accountId?: string; leftBehind: string[]; problems: string[]; worktree?: boolean; clone?: string; cloneFrom?: string }>('threads.movePreview', params);
     if (f.json) console.log(JSON.stringify(p, null, 2));
     else {
-      if (p.cwd) console.log(`${p.worktree ? 'A new worktree in' : 'In'} ${p.cwd}${p.clone ? ` (cloned to ${p.clone} first)` : ''}, on ${p.accountId}`);
+      if (p.cwd) console.log(`${p.worktree ? 'A new worktree in' : 'In'} ${p.cwd}${p.clone ? ` (cloned${p.cloneFrom ? ` from ${p.cloneFrom}` : ''} to ${p.clone} first)` : ''}, on ${p.accountId}`);
       for (const l of p.leftBehind) console.log(`Won't come: ${l}`);
       for (const l of p.problems) console.log(`Can't move: ${l}`);
     }

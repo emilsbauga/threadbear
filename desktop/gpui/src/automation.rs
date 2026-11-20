@@ -205,6 +205,15 @@ async fn run(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &Value,
         cx.update_window(window, |_, window, cx| window.render_frame(cx)).map_err(|e| e.to_string())?;
         return crate::web_panels::send_keys(window, text(cmd, "text"), cx).map(|()| json!("ok"));
     }
+    // A click at (`x`, `y`) in the window as AppKit hands a person's one on,
+    // so a page's view under it gets it as it would a real click: DevTools'
+    // clicks (`webPanel` `click`) skip AppKit's hit-testing and first-click
+    // rules, where the missed clicks in a panel were (16 Nov).
+    if cmd["cmd"] == "native-click" {
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).map_err(|e| e.to_string())?;
+        let (x, y) = (cmd["x"].as_f64().ok_or("native-click needs x")?, cmd["y"].as_f64().ok_or("native-click needs y")?);
+        return crate::web_panels::send_click(window, x as f32, y as f32, cx).map(|said| json!(said));
+    }
     // The activity log (activity.rs), as the Swift app's `activity`: a press
     // or a key, then what today's file has, a moment later.
     if cmd["cmd"] == "activity" {
@@ -286,6 +295,14 @@ async fn run(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &Value,
         })
         .ok();
         return Ok(json!(cx.update(|cx| app.read(cx).tour_line(cx))));
+    }
+    // The first launch's setup cards (hello.rs): {"do": "start"|"next"|"back"|"skip"|"end"},
+    // or nothing to read which card's up: "ok 2/6 agents".
+    if cmd["cmd"] == "hello" {
+        let line = cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| app.update(cx, |t, cx| t.hello_command(cmd, window, cx)))).map_err(|e| e.to_string())??;
+        cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).ok();
+        return Ok(json!(line));
     }
     // Until what the window shows holds every condition given (or with
     // "not", none), as the Swift command: read from the same `dump` a
@@ -389,13 +406,13 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         // Whether anything's on its way across the window (the panels
         // gliding, an archive flight), which the spec driver asks before
         // every click so it never reads a control's spot mid-move
-        // (features/support/gpui.ts, `settle`). Cheap while nothing moves; a
-        // frame only while something does, as a covered window gets none
-        // from the system and a glide ends at a frame.
+        // (features/support/gpui.ts, `settle`). A covered window gets no
+        // frames from the system, and a glide ends at a frame.
         "motion" => {
-            if app.read(cx).moving(cx) {
-                window.render_frame(cx);
-            }
+            // Always a frame first: what's moving says so for 40 ms after
+            // each frame it draws, and a covered window can go longer than
+            // that without one, mid-move (Codex's review, 18 Nov).
+            window.render_frame(cx);
             Ok(json!({ "moving": app.read(cx).moving(cx) }))
         }
         "dump" => {
@@ -462,6 +479,13 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
                 Some(name) => Some(crate::settings_window::Tab::from_name(name).ok_or_else(|| format!("tab must be one of {}", crate::settings_window::Tab::ALL.map(|t| t.name()).join(", ")))?),
                 None => None,
             };
+            // Appearance's Font by its saved name ("system", "serif", "mono",
+            // "allo"), for comparing shots of each without the menu.
+            if let Some(name) = cmd["font"].as_str() {
+                let font = crate::style::Font::ALL.into_iter().find(|f| f.name() == name).ok_or_else(|| format!("font must be one of {}", crate::style::Font::ALL.map(|f| f.name()).join(", ")))?;
+                app.update(cx, |t, cx| t.set_font(font, window, cx));
+                return Ok(json!("ok"));
+            }
             app.update(cx, |t, cx| t.open_settings(tab, cx));
             // Its sections' buttons and menus, as the Swift command takes them.
             if let Some(done) = crate::settings_window::automation(app, cmd, cx)? {
@@ -527,7 +551,7 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         "archive" | "snooze" if cmd.get("id").is_some() || cmd.get("said").is_some() => crate::sidebar::automation(app, cmd, window, cx),
         "click" if cmd.get("tip").is_some() || cmd.get("tipPrefix").is_some() => crate::sidebar::automation(app, cmd, window, cx),
         // The pane beside the thread (highlights.rs): the Swift app's names.
-        "preview" | "folder" | "highlight" | "trust" | "action" | "project-why" => crate::highlights::automation(app, cmd, window, cx),
+        "preview" | "folder" | "highlight" | "trust" | "action" | "switch" | "project-why" => crate::highlights::automation(app, cmd, window, cx),
         "expand" | "collapse" if cmd.get("highlightSection").is_some() => crate::highlights::automation(app, cmd, window, cx),
         "viewer" => {
             let side = app.read(cx).side.clone();
@@ -570,13 +594,33 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
             });
             Ok(json!(format!("ok {node}")))
         }
+        // Every labelled control on screen, with its role and middle point,
+        // for an agent exploring the app (features/tools/fuzz-agent.mjs):
+        // what it could press, without guessing labels from a picture.
+        "labels" => {
+            window.render_frame(cx);
+            let mut seen = std::collections::HashSet::new();
+            let list: Vec<Value> = window
+                .elements()
+                .into_iter()
+                .filter(|e| e.visible())
+                .filter_map(|e| {
+                    let label = e.label()?.trim().to_owned();
+                    let (x, y) = whole_point(e.visible_bounds())?;
+                    if label.is_empty() || !seen.insert((label.clone(), x, y)) { return None; }
+                    let short: String = label.chars().take(80).collect();
+                    Some(json!({ "label": short, "role": e.role().map(|r| format!("{r:?}")), "x": x, "y": y, "disabled": e.disabled() }))
+                })
+                .collect();
+            Ok(json!(list))
+        }
         "tile-point" => crate::remote_pictures::tile_point_command(app, cmd, window, cx),
         // A picture tile of the transcript, as a click on it (`viewer` says what opened).
         "tile" => {
             let index = cmd["index"].as_u64().unwrap_or(0) as usize;
             let count = cmd["count"].as_u64().unwrap_or(1) as usize;
-            let images = app.update(cx, |t, cx| t.update_pane(cx, |p, _| p.last_row_images(count)))??;
-            crate::viewer::open_from_tile(&images, index, window, cx);
+            let (images, runner) = app.update(cx, |t, cx| t.update_pane(cx, |p, _| p.last_row_images(count).map(|images| (images, p.summary.runner_id.clone()))))??;
+            crate::viewer::open_from_tile(&images, index, runner.as_deref(), window, cx);
             let side = app.read(cx).side.clone();
             crate::viewer::viewer_command(&side, &json!({}), cx)
         }
@@ -602,6 +646,13 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
             let words = text(cmd, "text").to_string();
             let search = app.read(cx).search.clone();
             search.update(cx, |s, cx| s.set_value(words, window, cx));
+            Ok(json!("ok"))
+        }
+        // `"here": true` types wherever the cursor is, as keys would, rather
+        // than putting it in the message box first.
+        "type" if cmd["here"].as_bool() == Some(true) => {
+            window.render_frame(cx);
+            window.input(text(cmd, "text"), cx);
             Ok(json!("ok"))
         }
         "type" | "send" => {
@@ -735,6 +786,16 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
             if text(cmd, "menu") == "runner" {
                 return crate::new_thread::runner_menu_command(app, cmd, cx);
             }
+            // The machine chip under an open thread's box: its menu's lines,
+            // or a pick from it (sidebar.rs, machine_menu_rows).
+            if text(cmd, "menu") == "machine" {
+                let Some(id) = app.read(cx).composer(cx).and_then(|c| c.read(cx).thread_id.clone()) else { return Err("no thread open".into()) };
+                if let Some(title) = cmd["click"].as_str() {
+                    let title = title.to_owned();
+                    return app.update(cx, |t, cx| t.machine_menu_click(&id, &title, window, cx)).map(|_| json!("ok"));
+                }
+                return Ok(json!(app.read(cx).machine_menu_lines(&id)));
+            }
             let Some(composer) = app.read(cx).composer(cx) else { return Err("no thread open".into()) };
             let data = composer.read(cx).chip_data(cx);
             match text(cmd, "menu") {
@@ -803,6 +864,13 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         // The open card's picks (the Swift `decide`), and its buttons (`ask`).
         "decide" => {
             let Some(composer) = app.read(cx).composer(cx) else { return Err("no thread open".into()) };
+            // `boxPoint`: where ask n's (1-based) Something else box is, as
+            // "ok x y" for `click-at`, measured on a fresh frame.
+            if let Some(n) = cmd["boxPoint"].as_u64() {
+                window.render_frame(cx);
+                let (x, y) = composer.read(cx).answer_box_point((n as usize).wrapping_sub(1), cx).ok_or_else(|| format!("ask {n} has no Something else box on screen"))?;
+                return Ok(json!(format!("ok {x} {y}")));
+            }
             composer.update(cx, |c, cx| c.decide(cmd, window, cx)).map(|s| json!(s))
         }
         "ask" => {
@@ -963,7 +1031,13 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         }
         "link" => {
             let (row, url) = (text(cmd, "row").to_string(), text(cmd, "url").to_string());
-            app.update(cx, |t, cx| t.update_pane(cx, |p, cx| p.follow_link_command(&row, &url, window, cx)))??;
+            // The pane alone, not through the app's update: a file link asks
+            // whether the side pane is its thread's, which reads the app,
+            // and GPUI aborts on that read while the app's being updated (a
+            // `~/` file link killed the dev app, 17 Nov). A real click
+            // reaches the pane the same way.
+            let pane = app.read(cx).pane.clone().ok_or("no thread open")?;
+            pane.update(cx, |p, cx| p.follow_link_command(&row, &url, window, cx))?;
             Ok(json!("ok"))
         }
         "archive" => {
@@ -973,6 +1047,12 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
         "snooze" => {
             let seconds = cmd["seconds"].as_i64().unwrap_or(3600);
             app.update(cx, |t, cx| t.snooze_open(seconds, cx))?;
+            Ok(json!("ok"))
+        }
+        // The token card on a virtual runner's thread (token_card.rs).
+        "token-card" => {
+            let press = text(cmd, "press").to_string();
+            app.update(cx, |t, cx| t.token_card_press(&press, cx))?;
             Ok(json!("ok"))
         }
         "menu" => {
@@ -998,6 +1078,12 @@ fn step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App
             // `"set": words` puts them there first, as Voice Type does before its ⌘V.
             if let Some(words) = cmd["set"].as_str() {
                 cx.write_to_clipboard(ClipboardItem::new_string(words.to_string()));
+            }
+            // `"image": path`: a PNG's bytes, as a screenshot copied to the
+            // clipboard puts them there.
+            if let Some(file) = cmd["image"].as_str() {
+                let bytes = std::fs::read(file).map_err(|e| format!("couldn't read {file}: {e}"))?;
+                cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, bytes)));
             }
             // `"type": "html"`: the HTML beside the words, as a draft's Copy puts it.
             let words = if cmd["type"] == "html" { crate::draft_boxes::clipboard_html().unwrap_or_default() } else { cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default() };
@@ -1260,9 +1346,10 @@ fn shell_step(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &m
                 app.update(cx, |t, cx| t.set_share(id2, &access, false, cx));
             }
             if let Some(open) = cmd["open"].as_bool() {
-                app.update(cx, |t, cx| {
-                    t.share_popover = open.then(|| id.clone());
-                    cx.notify();
+                app.update(cx, |t, cx| match (open, t.share_popover.is_some()) {
+                    (true, _) if t.share_popover.as_deref() != Some(id.as_str()) => t.toggle_share_popover(id.clone(), window, cx),
+                    (false, true) => t.close_share_popover(window, cx),
+                    _ => {}
                 });
             }
             Ok(json!(app.read(cx).share_status()))

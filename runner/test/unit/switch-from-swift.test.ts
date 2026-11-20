@@ -23,9 +23,9 @@ function git(cwd: string, ...args: string[]) {
   assert.equal(r.status, 0, r.stderr);
 }
 
-// A home with cargo in ~/.cargo/bin (so rustup is never fetched) unless
-// noRust, and a checkout whose main has a stage-update.sh that makes an
-// empty bundle where it's told to, or exits with stageExit.
+// A home with rustup and cargo in ~/.cargo/bin (so rustup is never
+// fetched) unless noRust, and a checkout whose main has a stage-update.sh
+// that makes an empty bundle where it's told to, or exits with stageExit.
 function world(o: { noRust?: boolean; warm?: boolean; cachedMb?: number; stageExit?: number; runnerJson?: unknown } = {}) {
   const root = fs.realpathSync(tmpDir());
   const home = path.join(root, 'home');
@@ -33,7 +33,7 @@ function world(o: { noRust?: boolean; warm?: boolean; cachedMb?: number; stageEx
   fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
   if (!o.noRust) {
     fs.mkdirSync(path.join(home, '.cargo', 'bin'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.cargo', 'bin', 'cargo'), '#!/bin/sh\n', { mode: 0o755 });
+    for (const bin of ['cargo', 'rustup']) fs.writeFileSync(path.join(home, '.cargo', 'bin', bin), '#!/bin/sh\n', { mode: 0o755 });
   }
   const cache = path.join(home, 'Library', 'Caches', 'Threadbear', 'update-desktop');
   if (o.warm) fs.mkdirSync(path.join(cache, 'target', 'release'), { recursive: true });
@@ -107,6 +107,23 @@ test("with no Rust and another Mac (or none) doing the build, Rust isn't install
   assert.doesNotMatch(r.stdout, /STEP Installing Rust/);
 });
 
+test("a Mac with only Homebrew's cargo gets rustup too, as the build uses rustup's newest stable", mac, () => {
+  const w = world({ noRust: true });
+  const brew = path.join(w.home, 'brew', 'bin');
+  fs.mkdirSync(brew, { recursive: true });
+  fs.writeFileSync(path.join(brew, 'cargo'), '#!/bin/sh\n', { mode: 0o755 });
+  // rustup.rs's script, standing in: it leaves rustup and cargo in ~/.cargo/bin.
+  const init = path.join(w.home, 'rustup-init.sh');
+  fs.writeFileSync(init, 'echo "init $*" >> "$HOME/init.log"\nmkdir -p "$HOME/.cargo/bin"\nfor b in rustup cargo; do printf "#!/bin/sh\\n" > "$HOME/.cargo/bin/$b"; chmod +x "$HOME/.cargo/bin/$b"; done\n');
+  const r = spawnSync('/bin/bash', [SCRIPT, w.checkout, '--no-open'], {
+    encoding: 'utf8',
+    env: { HOME: w.home, TMPDIR: path.join(w.home, 'tmp'), PATH: `/usr/bin:/bin:${brew}`, THREADBEAR_SWITCH_FREE_KB: String(8 * GiB), THREADBEAR_SWITCH_RUSTUP_INIT: init },
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /STEP Installing Rust/);
+  assert.equal(fs.readFileSync(path.join(w.home, 'init.log'), 'utf8'), 'init -y --profile minimal --no-modify-path\n');
+});
+
 test('free space comes from the disk itself when nothing stands in for it', mac, () => {
   const w = world();
   const r = spawnSync('/bin/bash', [SCRIPT, w.checkout, '--no-open'], { encoding: 'utf8', env: { HOME: w.home, TMPDIR: path.join(w.home, 'tmp'), PATH: '/usr/bin:/bin' } });
@@ -155,6 +172,59 @@ test('an app already installed is left alone, with nothing built', mac, () => {
   const r = run(w, 0);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.doesNotMatch(r.stdout, /STEP Building/);
+});
+
+// Setup run again after a pull: an installed app built from another
+// desktop/ tree gets main's staged beside it, where its own updates go
+// (Tinker Desk's second account, 19 Nov 2026: the app built it in the
+// background minutes after setup said all was done).
+function builtFrom(w: { home: string }, tree: string) {
+  const res = path.join(w.home, 'Applications', 'Threadbear GPUI.app', 'Contents', 'Resources');
+  fs.mkdirSync(res, { recursive: true });
+  fs.writeFileSync(path.join(res, 'build.json'), JSON.stringify({ appTree: tree }));
+}
+const mainTree = (w: { checkout: string }) => spawnSync('git', ['-C', w.checkout, 'rev-parse', 'refs/heads/main:desktop'], { encoding: 'utf8' }).stdout.trim();
+const next = (w: { home: string }) => path.join(w.home, 'Applications', '.Threadbear GPUI.app.next');
+
+test("an installed app behind main gets main's build staged for its next start", mac, () => {
+  const w = world();
+  assert.equal(run(w, 50 * GiB).status, 0);
+  builtFrom(w, 'an-older-tree');
+  const r = run(w, 50 * GiB);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /STEP Building main's version of the app/);
+  assert.equal(fs.existsSync(path.join(next(w), 'Contents', 'MacOS', 'threadbear-gpui')), true);
+});
+
+test('an installed app already on main builds nothing', mac, () => {
+  const w = world();
+  assert.equal(run(w, 50 * GiB).status, 0);
+  builtFrom(w, mainTree(w));
+  const r = run(w, 50 * GiB);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /STEP Building/);
+  assert.equal(fs.existsSync(next(w)), false);
+});
+
+test("an installed app behind main isn't rebuilt on a disk without room, and setup goes on", mac, () => {
+  const w = world();
+  assert.equal(run(w, 50 * GiB).status, 0);
+  builtFrom(w, 'an-older-tree');
+  const r = run(w, 1);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /needs about .* GB free/);
+  assert.equal(fs.existsSync(next(w)), false);
+});
+
+test("main's build failing for an installed app doesn't fail setup: its own updates try again", mac, () => {
+  const w = world({ stageExit: 1 });
+  const macos = path.join(w.home, 'Applications', 'Threadbear GPUI.app', 'Contents', 'MacOS');
+  fs.mkdirSync(macos, { recursive: true });
+  for (const b of ['threadbear-gpui', 'threadbear-web-helper']) fs.writeFileSync(path.join(macos, b), '#!/bin/sh\n', { mode: 0o755 });
+  builtFrom(w, 'an-older-tree');
+  const r = run(w, 50 * GiB);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /tries again by itself/);
 });
 
 test("a build that couldn't run says what to do in this thread, not that an app will try later", mac, () => {

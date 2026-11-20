@@ -19,7 +19,8 @@ use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::new_thread::{Draft, NewThreadPicks};
 use threadbear_core::updates::{self as rules, AppSide, CliStatus, RunnerUpdates};
@@ -53,7 +54,45 @@ pub(crate) struct UpdatesPanelState {
     /// restarts, Esc puts it away).
     pub(crate) popover: bool,
     popover_focus: Option<FocusHandle>,
+    /// The From Mike cards' pictures, by address, fetched from the site
+    /// the first time a card needs one and kept while the app runs.
+    pictures: HashMap<String, Picture>,
 }
+
+enum Picture {
+    Loading,
+    Ready(Arc<Image>),
+    Failed,
+}
+
+/// A card's picture from the What's new page, at most 4 MB, sniffed: a
+/// page or anything that isn't a PNG, JPEG or WebP fails. Public addresses
+/// only (composer_url's resolver), as for a dragged web picture.
+fn fetch_picture(url: &str) -> Result<Image, String> {
+    if !url.starts_with("https://") {
+        return Err("not https".into());
+    }
+    #[cfg(target_os = "macos")]
+    let resolver: crate::composer_url::PublicResolver = Default::default();
+    #[cfg(target_os = "macos")]
+    let agent = crate::composer_url::agent(resolver);
+    // composer_url's address check is the Mac's (its interface list); the
+    // address is the runner's, made from Mike's site, so elsewhere a plain one.
+    #[cfg(not(target_os = "macos"))]
+    let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).timeout_global(Some(std::time::Duration::from_secs(30))).build().into();
+    let mut response = agent.get(url).call().map_err(|e| e.to_string())?;
+    let data = response.body_mut().with_config().limit(4 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string())?;
+    let format = match image::guess_format(&data).map_err(|e| e.to_string())? {
+        image::ImageFormat::Png => ImageFormat::Png,
+        image::ImageFormat::Jpeg => ImageFormat::Jpeg,
+        image::ImageFormat::WebP => ImageFormat::Webp,
+        other => return Err(format!("{other:?} isn't a card picture")),
+    };
+    Ok(Image::from_bytes(format, data))
+}
+
+/// A card's picture is this tall; the cards share the panel's width.
+const CARD_PICTURE: f32 = 78.;
 
 impl Threadbear {
     // What the runner says.
@@ -113,7 +152,12 @@ impl Threadbear {
 
     /// Something on its way for the runner or a CLI: the icon's grey dot.
     pub(crate) fn updates_quiet_dot(&self) -> bool {
-        rules::shown(&self.app_side(), self.updates_panel.runner.as_ref()) || self.updates_panel.clis.iter().any(rules::cli_pending)
+        rules::quiet_dot(&self.app_side(), self.updates_panel.runner.as_ref(), &self.updates_panel.clis)
+    }
+
+    /// The ring while the next version builds, green once it's ready.
+    pub(crate) fn next_version(&self) -> rules::NextVersion {
+        rules::next_version(&self.app_side(), self.updates_panel.runner.as_ref())
     }
 
     /// Something only Mike can do: the accent dot.
@@ -488,6 +532,11 @@ impl Threadbear {
     fn render_app_update(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let side = self.app_side();
         let mut out = vec![text_line(rules::app_line(&side), 12., style::label_text(cx)).into_any_element()];
+        // The thread whose box holds it, to go and send or clear it there.
+        if let (Some(threadbear_core::app_update::RestartWait::Held(_)), Some(id)) = (&side.wait, self.updater.hold_thread.clone()) {
+            let open = id.clone();
+            out.push(text_button(SharedString::from(format!("updates-hold-{id}")), self.thread_title(&id), "Open the thread with the words still typed", 12., true, false, cx, move |t, window, cx| t.open(open.clone(), window, cx)));
+        }
         if side.staged.is_some() {
             out.push(h_flex().child(push_button("updates-restart", "Restart to Update", "Quit and reopen on the new version. Running threads carry on in the runner.", false, false, cx, |t, _, cx| t.restart_to_update(cx))).into_any_element());
         } else if side.failed {
@@ -538,13 +587,10 @@ impl Threadbear {
     /// Mike's plain-words notes, or commit subjects from a release made
     /// before there were any, then Bring Them In and Let's Discuss.
     fn render_release(&mut self, release: &rules::Release, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let (fg, secondary) = (style::label_text(cx), style::secondary_text(cx));
         let mut out = Vec::new();
-        for (heading, lines) in rules::release_lines(release) {
-            if let Some(heading) = heading {
-                out.push(text_line(heading, 11., fg).font_weight(FontWeight::MEDIUM).pt(px(2.)).into_any_element());
-            }
-            out.extend(lines.into_iter().map(|l| text_line(l, 11., secondary).line_clamp(2).into_any_element()));
+        match rules::release_digest(release) {
+            Some(digest) => out.extend(self.render_digest(&digest, cx)),
+            None => out.extend(notes_lines(rules::release_lines(release), cx)),
         }
         let busy = self.updates_panel.bringing_in || self.new_thread.creating;
         let buttons = vec![
@@ -555,6 +601,109 @@ impl Threadbear {
         let row = button_row(buttons, busy, cx);
         out.push(if busy { div().opacity(0.5).child(row).into_any_element() } else { row });
         out
+    }
+
+    /// The What's new page's cards for the releases main doesn't have (Mike
+    /// picked them over the notes as text, 17 Nov 2026): two to a row, each
+    /// its picture and title, the rest of its words behind a tip, opening
+    /// its release on the page; then how many changes of each kind with See
+    /// all, the Important fixes in a line with theirs behind a tip, and the
+    /// notes of a release the page has no entry for yet.
+    fn render_digest(&mut self, d: &rules::Digest, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let (fg, secondary) = (style::label_text(cx), style::secondary_text(cx));
+        let mut out = Vec::new();
+        let mut cards: Vec<AnyElement> = Vec::new();
+        for (i, (card, link)) in d.cards.iter().enumerate() {
+            self.want_picture(&card.picture, cx);
+            // A frame of its own holds the picture to the card's height
+            // (an img's own size gave way to a tall picture's), and the whole
+            // picture fits in it: a crop of a screenshot cut its words.
+            let frame = div().w_full().h(px(CARD_PICTURE)).flex_none().overflow_hidden().bg(hsla(0., 0., 0., 0.25)).border_b_1().border_color(style::hairline(cx));
+            // Loading or failed: the card keeps its shape, and its title says what it is.
+            let picture: AnyElement = match self.updates_panel.pictures.get(&card.picture) {
+                Some(Picture::Ready(image)) => frame.child(img(ImageSource::Image(image.clone())).size_full().object_fit(ObjectFit::Contain)).into_any_element(),
+                _ => frame.into_any_element(),
+            };
+            let play = card.clip.then(|| {
+                div().absolute().right(px(6.)).top(px(CARD_PICTURE - 20.)).px(px(5.)).py(px(1.)).rounded(px(8.)).bg(hsla(0., 0., 0., 0.65)).child(icons::symbol("play").size(px(9.)).text_color(hsla(0., 0., 1., 1.)))
+            });
+            let link = link.clone();
+            let tip = if card.clip { format!("{}\nOpens the clip on the What's new page", card.text) } else { format!("{}\nOpens it on the What's new page", card.text) };
+            cards.push(
+                crate::highlights::tipped(
+                    div()
+                        .id(SharedString::from(format!("updates-card-{i}")))
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(style::hairline(cx))
+                        .bg(cx.theme().secondary)
+                        .cursor_pointer()
+                        .hover(|s| s.border_color(style::secondary_text(cx).opacity(0.5)))
+                        .child(picture)
+                        .children(play)
+                        .child(text_line(card.title.clone(), 11.5, fg).px(px(8.)).py(px(5.)).line_clamp(2)),
+                    tip,
+                )
+                .on_click(move |_, _, cx| crate::files::open_web(&link, cx))
+                .into_any_element(),
+            );
+        }
+        let mut cards = cards.into_iter();
+        loop {
+            let row: Vec<AnyElement> = cards.by_ref().take(2).collect();
+            if row.is_empty() {
+                break;
+            }
+            // A last card on its own keeps half the width, as in a grid.
+            let spacer = (row.len() == 1).then(|| div().flex_1().into_any_element());
+            out.push(h_flex().gap(px(8.)).items_start().children(row).children(spacer).into_any_element());
+        }
+        let page = d.page.clone();
+        let more = if d.more > 0 { format!("See all, and {} more like these", d.more) } else { "See all".to_owned() };
+        let counts = rules::digest_counts(d);
+        out.push(
+            h_flex()
+                .gap(px(10.))
+                .pt(px(2.))
+                .when(!counts.is_empty(), |r| r.child(text_line(counts, 11., secondary)))
+                .child(text_button("updates-changelog", "See all", format!("{more} on the What's new page"), 11., true, false, cx, move |_, _, cx| crate::files::open_web(&page, cx)))
+                .into_any_element(),
+        );
+        if let Some(line) = rules::important_line(d.important.len()) {
+            let whys = rules::important_tip(&d.important);
+            out.push(crate::highlights::tipped(div().id("updates-important").child(text_line(line, 11., system_orange(cx))), whys).into_any_element());
+        }
+        out.extend(notes_lines(d.notes.clone(), cx));
+        out
+    }
+
+    /// Fetches a card's picture once, off the main thread.
+    fn want_picture(&mut self, url: &str, cx: &mut Context<Self>) {
+        if self.updates_panel.pictures.contains_key(url) {
+            return;
+        }
+        self.updates_panel.pictures.insert(url.to_owned(), Picture::Loading);
+        let url = url.to_owned();
+        cx.spawn(async move |this, cx| {
+            let from = url.clone();
+            let got = cx.background_executor().spawn(async move { fetch_picture(&from) }).await;
+            let _ = this.update(cx, |t, cx| {
+                let picture = match got {
+                    Ok(image) => Picture::Ready(Arc::new(image)),
+                    Err(e) => {
+                        eprintln!("threadbear: couldn't load a changelog picture {url}: {e}");
+                        Picture::Failed
+                    }
+                };
+                t.updates_panel.pictures.insert(url, picture);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Each change: its subject, when and what, and Port this and Dismiss,
@@ -623,7 +772,8 @@ impl Threadbear {
         let title = rules::update_title(cli);
         // Its first line's baseline on the button's, as the Swift row's
         // `.firstTextBaseline` puts it.
-        let status = text_line(rules::status_line(cli), 12., if cli.status == "held" { system_orange(cx) } else { fg }).flex_1().min_w_0().when(title.is_some(), |s| s.mt(px(2.)));
+        // Being looked into needs nothing from Mike, so it isn't orange.
+        let status = text_line(rules::status_line(cli), 12., if cli.status == "held" && !rules::is_investigated(cli) { system_orange(cx) } else { fg }).flex_1().min_w_0().when(title.is_some(), |s| s.mt(px(2.)));
         let mut top = h_flex().items_start().gap(px(6.)).child(status);
         if let Some(title) = title {
             let tip = if cli.can_update_now {
@@ -642,6 +792,11 @@ impl Threadbear {
         }
         if let Some(missing) = cli.hold.as_ref().map(|h| &h.missing).filter(|m| !m.is_empty()) {
             row = row.child(text_line(format!("Missing: {}", missing.join(", ")), 11., tertiary).line_clamp(2));
+        }
+        if let Some(id) = rules::hold_thread(cli) {
+            let open = id.to_owned();
+            let tip = if rules::is_investigated(cli) { "Open the thread looking into it" } else { "Open the thread that looked into it" };
+            row = row.child(text_button(SharedString::from(format!("updates-hold-{provider}")), self.thread_title(id), tip, 12., true, false, cx, move |t, window, cx| t.open(open.clone(), window, cx)));
         }
         if let Some(managed) = rules::managed_line(cli) {
             row = row.child(text_line(managed, 11., tertiary));
@@ -714,7 +869,12 @@ impl Threadbear {
                 });
             }
         }
-        lines.extend(["# App".to_owned(), rules::app_line(&self.app_side()), "# Runner".to_owned()]);
+        let side = self.app_side();
+        lines.extend(["# App".to_owned(), rules::app_line(&side)]);
+        if let (Some(threadbear_core::app_update::RestartWait::Held(_)), Some(id)) = (&side.wait, &self.updater.hold_thread) {
+            lines.push(format!("  > {}", self.thread_title(id)));
+        }
+        lines.push("# Runner".to_owned());
         match &self.updates_panel.runner {
             Some(runner) => {
                 let (build, old, launcher) = (rules::build_line(runner), rules::old_runners_line(runner), rules::launcher_line(runner));
@@ -744,7 +904,22 @@ impl Threadbear {
             lines.push("# From Mike".to_owned());
             lines.push(text);
             if let Some(release) = upstream.filter(|u| u.available()).and_then(|u| u.release.as_ref()) {
-                for (heading, group) in rules::release_lines(release) {
+                // The page's cards as "[card] <title> (clip) -> <link>", then
+                // the counts and See all, the Important line, and any notes.
+                let groups = match rules::release_digest(release) {
+                    Some(d) => {
+                        for (card, link) in &d.cards {
+                            lines.push(format!("[card] {}{} -> {link}", card.title, if card.clip { " (clip)" } else { "" }));
+                        }
+                        lines.push(format!("{} [See all -> {}]", rules::digest_counts(&d), d.page).trim_start().to_owned());
+                        if let Some(line) = rules::important_line(d.important.len()) {
+                            lines.push(format!("{line} (tip: {})", d.important.join("; ")));
+                        }
+                        d.notes
+                    }
+                    None => rules::release_lines(release),
+                };
+                for (heading, group) in groups {
                     lines.extend(heading.map(|h| format!("## {h}")));
                     lines.extend(group.into_iter().map(|l| format!("  {l}")));
                 }
@@ -761,6 +936,9 @@ impl Threadbear {
                 if let Some(missing) = cli.hold.as_ref().map(|h| &h.missing).filter(|m| !m.is_empty()) {
                     lines.push(format!("  Missing: {}", missing.join(", ")));
                 }
+                if let Some(id) = rules::hold_thread(cli) {
+                    lines.push(format!("  [{}]", self.thread_title(id)));
+                }
                 lines.extend(rules::managed_line(cli).map(|m| format!("  {m}")));
             }
             let checked = rules::checked_line(clis, &threadbear_core::sidebar::local_now());
@@ -768,6 +946,20 @@ impl Threadbear {
         }
         json!({ "shown": self.activity_panel_showing(shell::UPDATES, cx), "lines": lines })
     }
+}
+
+/// Release notes as the section has always listed them: a day's heading
+/// when there are several, then its lines.
+fn notes_lines(groups: Vec<(Option<String>, Vec<String>)>, cx: &App) -> Vec<AnyElement> {
+    let (fg, secondary) = (style::label_text(cx), style::secondary_text(cx));
+    let mut out = Vec::new();
+    for (heading, lines) in groups {
+        if let Some(heading) = heading {
+            out.push(text_line(heading, 11., fg).font_weight(FontWeight::MEDIUM).pt(px(2.)).into_any_element());
+        }
+        out.extend(lines.into_iter().map(|l| text_line(l, 11., secondary).line_clamp(2).into_any_element()));
+    }
+    out
 }
 
 /// Small headings, as the Usage panel groups its logins (`section`).

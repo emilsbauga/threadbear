@@ -6,12 +6,12 @@ Feature: Working on a file in the side pane
   Background:
     Given the app is connected to a runner with the demo threads
 
-  @file.editor
-  Scenario: The pencil opens the file's text to type in, and what's typed is saved by itself
+  # Code and plain text open with their own text up; the Swift app is frozen
+  # and still opens them to read until the pencil.
+  @file.editor @swift-pending
+  Scenario: A text file opens ready to type in, and what's typed is saved by itself
     When I open the thread "Rebuild the three landing pages"
     And I open "logs/docs-build.txt" in the thread's folder in the pane
-    Then the pane's file can be edited
-    When I start editing the pane's file
     Then the pane's file is being edited
     When I type "Fixed in 4b7d0a8." at the end of the pane's file
     Then the file "logs/docs-build.txt" on disk ends with "Fixed in 4b7d0a8."

@@ -56,3 +56,24 @@ Feature: Drafts in a reply
     And I select "one link" in the draft
     And I press ⌘C
     Then the clipboard holds just "one link"
+
+  # Mike, 18 Nov: change the agent's draft in its box, and Post and close
+  # uses his words. The Swift app is frozen, so it's the GPUI app's alone.
+  @rich.draft.edit @swift-pending
+  Scenario: A draft changed in its box goes with my next message, for the agent to use
+    When I open the thread "Morning brief"
+    And a reply with a Slack draft streams in
+    And I change the draft to "Hey *Wayne*, thanks mate"
+    Then the reply shows an edited "Slack draft" box reading "Hey Wayne, thanks mate"
+    When I send "Post it"
+    Then my message says "Post it" then my Slack draft "Hey *Wayne*, thanks mate"
+
+  @rich.draft.edit @swift-pending
+  Scenario: Undo puts the agent's draft back, and nothing extra is sent
+    When I open the thread "Morning brief"
+    And a reply with a Slack draft streams in
+    And I change the draft to "Something else"
+    And I press the draft's Undo
+    Then the reply shows a "Slack draft" box with the lines "Threadbear, 6 Nov", "• one link" and "• two"
+    When I send "Post it"
+    Then the transcript shows my message "Post it" and nothing after it

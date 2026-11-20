@@ -204,13 +204,23 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
     suspend fun loadEarlier(threadId: String, beforeSeq: Int): String =
         command("phone:loadEarlier", args("threadId" to JsonPrimitive(threadId), "beforeSeq" to JsonPrimitive(beforeSeq)))
 
-    suspend fun registerDevice(pushToken: String, environment: String, platform: String, pushKey: String?) {
+    /**
+     * `platform` "android" for a Firebase token, or (API 93) "webpush" for a
+     * UnifiedPush endpoint URL in `pushToken` with its `webPush` keys.
+     */
+    suspend fun registerDevice(pushToken: String, environment: String, platform: String, pushKey: String?, webPush: WebPush.Keys? = null) {
         val a = mutableListOf<Pair<String, JsonElement>>(
             "apnsToken" to JsonPrimitive(pushToken), "environment" to JsonPrimitive(environment), "platform" to JsonPrimitive(platform),
         )
         pushKey?.let { a += "pushKey" to JsonPrimitive(it) }
+        webPush?.let { a += "webPush" to buildJsonObject { put("p256dh", it.p256dh); put("auth", it.auth) } }
         transport.mutation("phone:registerDevice", args(*a.toTypedArray()))
     }
+
+    /** The backend's VAPID public key for Web Push (API 93, an action): base64url, no padding. */
+    suspend fun webPushKey(): String =
+        (parseJson(transport.action("phone:webPushKey", args())) as? JsonObject)?.str("vapid")
+            ?: throw TransportError.Server("Couldn't read the server's push key")
 
     // New threads and photos (NewThreadScreen, the composers' photos).
 

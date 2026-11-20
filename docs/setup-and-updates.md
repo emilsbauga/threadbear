@@ -14,7 +14,9 @@ Mike, since it's his app first and other people patch their own copy.
 
 How it works today (file references are in the research notes at the bottom):
 
-- **Install** is two hand-run scripts: `app/install.sh` builds the Mac app, and
+- **Install** is two hand-run scripts: `app/install.sh` builds the Mac app (since
+  18 Nov 2026 setup builds the GPUI app instead, with
+  `desktop/scripts/switch-from-swift.sh`), and
   `runner/scripts/install-runner.sh` installs the runner's LaunchAgent. Node was pinned
   to Mike's nvm path (since 9 Nov, the node on PATH or nvm's newest), and some defaults are his (`~/dev/me/misc`, `claude-2` for
   Convex work, Token Stats for account limits).
@@ -96,6 +98,11 @@ someone whose work keeps them on its own tailnet: no phone and no second Mac the
    (docs/protocol.md, "Runner keys"). No `.env.local` and no env vars set by hand. With the self-hosted
    option it starts the local backend instead.
 3. Builds and installs the runner and the Mac app (today's two scripts, folded together).
+   The runner's typecheck and unit tests (up to an hour on a busy Mac) only run when
+   HEAD isn't a commit Mike's `main` has, or with `--run-checks`: his main only moves to
+   commits a landing's check passed, so on his code they'd only say it again
+   (`scripts/checked-upstream.mjs`; on Tinker Desk's second account, 19 Nov, they took
+   58 minutes and then failed on something about that Mac).
 4. Opens the Mac app, whose first screen shows a pairing QR code for the phone
    (Settings › Phone, replacing `pair-qr.swift`).
 
@@ -125,7 +132,10 @@ It also waits until GitHub's checks (the Xcode 26 builds) have passed on that ex
 commit, as the runner staying up says nothing about the apps building. Nothing else
 pushes main, so the runner pushes a settled main to GitHub first if it isn't there yet. A release held
 back says why in `tb status` and the Updates panel, and goes out on the next hourly look
-once the checks are green. The tag is signed with Mike's SSH signing key and pushed to GitHub. The tag's message
+once the checks are green. When main's newest commit is red, the newest older one since
+the last release that GitHub checked and passed on every workflow goes out instead (an
+hour old at least, and the head of a push, so its changes were checked on their own), so
+one red push doesn't hold releases for days. The tag is signed with Mike's SSH signing key and pushed to GitHub. The tag's message
 starts with plain-words notes ("What's new:", a few lines Opus writes from the commits
 on Mike's runner, for people who use Threadbear rather than work on it), then lists
 every commit since the last tag. The app's Updates panel shows the notes, and the

@@ -1,6 +1,6 @@
 // Real end-to-end check for small jobs on a Claude pool (docs/protocol.md,
 // "Settings and models"): a fresh runner with its small jobs on a pool
-// holding only the test login (TB_E2E_ACCOUNT, claude-main by default), answers models.run through the real
+// holding only the test login (TB_E2E_ACCOUNT, else src/test-login.ts's pick), answers models.run through the real
 // claude CLI on Haiku, records the login it ran on, and leaves no session
 // behind in the login's config dir (so the Agent Archive never sees these
 // calls as threads). Tiny prompts and a temp runner data dir. Run with
@@ -12,10 +12,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { RunnerClient } from '../../src/client.ts';
+import { testLogin } from '../../src/test-login.ts';
 import { projectDirName } from '../../src/transcripts.ts';
 import { ledgerPath } from '../../src/models/ledger.ts';
 
-const ACCOUNT = process.env.TB_E2E_ACCOUNT ?? 'claude-main';
+const ACCOUNT = testLogin();
 const RUNNER_DIR = path.join(import.meta.dirname, '..', '..');
 
 type Ev = Record<string, any>;

@@ -9,7 +9,7 @@ import path from 'node:path';
 import { FakeAccounts, makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { projectDirName } from '../../src/transcripts.ts';
 import { realpath } from '../../src/worktrees.ts';
-import type { MoveRow } from '../../src/moves.ts';
+import { moveInfoFrom, type MoveRow } from '../../src/moves.ts';
 import type { Account } from '../../src/protocol.ts';
 
 function machine(accounts: Account[]) {
@@ -139,12 +139,14 @@ test('the plan says why a thread has nowhere to go, and finds its repo by origin
   const found = await plan({ cwd: '/Users/alex/dev/foo/app', provider: 'claude', origin: 'git@github.com:alex-example/foo.git', repoTop: '/Users/alex/dev/foo', subdir: 'app' });
   assert.ok(!('problem' in found));
   assert.equal(!('problem' in found) && found.cwd, path.join(realpath(repo), 'app'));
-  // Nowhere it knows, but S's path under this home has room: cloned there.
+  // Nowhere it knows, but S's path under its home is, here, a new folder
+  // beside a repo this runner works in: cloned there.
   const home = process.env.HOME!;
-  const parent = tmpDir('tb-move-parent-');
-  const cloned = await plan({ cwd: `/Users/alex/x/new/app`, provider: 'claude', origin: 'git@github.com:alex-example/other.git', repoTop: path.join(parent, 'new'), subdir: 'app', home: '/nowhere' });
-  assert.ok(!('problem' in cloned) && cloned.clone?.to === path.join(parent, 'new'), JSON.stringify(cloned));
-  void home;
+  const beside = path.relative(realpath(home), realpath(path.dirname(repo)));
+  const cloned = await plan({ cwd: `/Users/alex/${beside}/new/app`, provider: 'claude', origin: 'git@github.com:alex-example/other.git', repoTop: `/Users/alex/${beside}/new`, subdir: 'app' });
+  // Named for the repo (its origin), not the old runner's folder.
+  assert.ok(!('problem' in cloned) && cloned.clone?.to === path.join(home, beside, 'other'), JSON.stringify(cloned));
+  assert.equal(!('problem' in cloned) && cloned.cwd, path.join(home, beside, 'other', 'app'));
 });
 
 test("a place that can't finish undoes what it made", async () => {
@@ -155,7 +157,11 @@ test("a place that can't finish undoes what it made", async () => {
   s.adapter.last.init();
   s.adapter.last.result('completed');
   await tick();
-  const r = row(id, { plan: { cwd: work, accountId: 'claude-1', worktree: { repo: work, subdir: '' }, leftBehind: [] } });
+  // A worktree thread, into a copy of its repo that has no worktree patch.
+  execFileSync('git', ['-C', work, 'init', '-q']);
+  execFileSync('git', ['-C', work, 'remote', 'add', 'origin', 'https://github.com/alex-example/undo']);
+  const info = { ...(await s.runner.describeForMove(id, 0))!, worktree: true };
+  const r = row(id, { info, cwd: work, plan: { cwd: work, accountId: 'claude-1', worktree: { repo: work, subdir: '' }, within: work, leftBehind: [] } });
   await assert.rejects(t.runner.placeMove(r, (await s.runner.packForMove(id, r)).entries), /has no worktree patch/);
   assert.equal(fs.existsSync(path.join(t.home, 'moves', r.moveId)), false);
   assert.equal(t.runner.threads.has(id), false);
@@ -264,4 +270,342 @@ test('a moved record with bad press notes is cleaned, and never stops the runner
   again.runner.summary(again.runner.threads.get(id)!);
   const third = makeHarness(tHome, {}, { accounts: new FakeAccounts(accounts) });
   assert.ok(third.runner.threads.has(id));
+});
+
+// Daybreak 136 (16 Nov 2026): where a moved thread goes is the target's
+// pick. The old runner's description (which a compromised extra Mac
+// writes) once put the clone and the thread's folder anywhere: an absolute
+// repoTop outside its home came through as it was, and a subdir of `..`
+// led out of the repo, with the clone's folder never checked.
+function tMachine() {
+  return machine([{ id: 'claude-1', provider: 'claude', title: 'T', configDir: tmpDir() }]);
+}
+const BASE = { title: 'x', home: '/Users/alex', accountId: 'a', permissionMode: 'ask', worktree: false, schedules: 0, provider: 'claude' };
+function gitRepo(dir: string, origin: string): string {
+  execFileSync('git', ['-C', dir, 'init', '-q']);
+  execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', origin]);
+  return dir;
+}
+
+test('a subdir that could lead out of the repo is refused, in every form', async () => {
+  const t = tMachine();
+  const repo = gitRepo(tmpDir('tb-move-repo-'), 'https://github.com/alex-example/sub');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: repo });
+  for (const subdir of ['..', '../..', '../../etc', 'app/../../..', '/etc', '.', './app', 'app//x', 'app/', '%2e%2e', '..%2fetc', 'app\\..\\..', 'a\u0000b']) {
+    const plan = await t.runner.planMove(row('t', { info: { ...BASE, cwd: '/Users/alex/dev/sub', origin: 'git@github.com:alex-example/sub.git', repoTop: '/Users/alex/dev/sub', subdir } as never }));
+    assert.ok('problem' in plan, `${JSON.stringify(subdir)}: ${JSON.stringify(plan)}`);
+    assert.match((plan as { problem: string }).problem, /didn't describe it properly/);
+  }
+});
+
+test("a clone goes only to a new folder under this home, beside one of this runner's repos", async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const repo = gitRepo(tmpDir('tb-move-repo-'), 'https://github.com/alex-example/mine');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: repo });
+  const beside = path.relative(home, realpath(path.dirname(repo)));
+  const ask = (repoTop: string, home = '/Users/alex', subdir = '', origin = 'git@github.com:attacker/payload.git') => t.runner.planMove(row('t', { info: { ...BASE, home, cwd: repoTop, origin, repoTop, subdir } as never }));
+  // Outside the old runner's home: no place here, whatever its parent.
+  const outside = tmpDir('tb-move-outside-');
+  assert.ok('problem' in (await ask(path.join(outside, 'payload'))));
+  assert.ok('problem' in (await ask('/tmp/payload')));
+  // Its home claimed as / or as the folder itself changes nothing.
+  assert.ok('problem' in (await ask('/etc/payload', '/')), 'under / is under this home, at ~/etc, which has no repo beside it');
+  // Under its home, but `..` to leave this one.
+  assert.ok('problem' in (await ask('/Users/alex/../../private/tmp/payload')));
+  // Somewhere tools load from, where no repo of this runner's is.
+  fs.mkdirSync(path.join(home, '.claude', 'skills'), { recursive: true });
+  assert.ok('problem' in (await ask('/Users/alex/.claude/skills/evil')));
+  fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
+  assert.ok('problem' in (await ask('/Users/alex/Library/LaunchAgents/evil')));
+  // The folder is named for the repo, whatever the old runner calls it:
+  // never hidden, never one that's there already, never a name tools look
+  // for in the folders above them (security review, 16 Nov 2026).
+  assert.ok('problem' in (await ask(`/Users/alex/${beside}/x`, '/Users/alex', '', 'git@github.com:attacker/.hidden.git')));
+  // (A folder of its own beside the repo, named in lower case: the name
+  // from an origin is lowercased, and a mixed-case tmp folder's name only
+  // matches it on a Mac's case-insensitive disk.)
+  fs.mkdirSync(path.join(path.dirname(repo), 'taken'));
+  assert.ok('problem' in (await ask(`/Users/alex/${beside}/x`, '/Users/alex', '', 'https://github.com/attacker/taken')));
+  for (const name of ['node_modules', 'bin', 'Vendor', 'site-packages', 'go']) {
+    assert.ok('problem' in (await ask(`/Users/alex/${beside}/${name}`, '/Users/alex', '', `https://github.com/attacker/${name}.git`)), name);
+  }
+  // A clone for a worktree thread: made by hand first, so no worktree
+  // patch from a folder above the clone runs its setup in it.
+  const wt = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${beside}/payload`, origin: 'git@github.com:attacker/payload.git', repoTop: `/Users/alex/${beside}/payload`, subdir: '', worktree: true } as never }));
+  assert.ok('problem' in wt && /Clone it there yourself/.test(wt.problem), JSON.stringify(wt));
+  // A link beside the repo to elsewhere isn't beside it.
+  const elsewhere = tmpDir('tb-move-elsewhere-');
+  fs.symlinkSync(elsewhere, path.join(path.dirname(repo), 'via-link'));
+  assert.ok('problem' in (await ask(`/Users/alex/${beside}/via-link/payload`)));
+  // Even beside one of its own repos, never under a hidden folder or
+  // ~/Library, where tools load what they find: a skill's own repo that a
+  // thread here works in makes ~/.claude/skills no place to clone to.
+  const skill = path.join(home, '.claude', 'skills', 'mine');
+  fs.mkdirSync(skill, { recursive: true });
+  gitRepo(skill, 'https://github.com/alex-example/skill');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: skill });
+  assert.ok('problem' in (await ask('/Users/alex/.claude/skills/evil')));
+  const agents = path.join(home, 'Library', 'LaunchAgents', 'mine');
+  fs.mkdirSync(agents, { recursive: true });
+  gitRepo(agents, 'https://github.com/alex-example/agents');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: agents });
+  assert.ok('problem' in (await ask('/Users/alex/Library/LaunchAgents/evil')));
+  // A plain name that links into one of those.
+  fs.symlinkSync(path.join(home, '.claude', 'skills'), path.join(home, 'skills-link'));
+  assert.ok('problem' in (await ask('/Users/alex/skills-link/evil')));
+  // The real thing: a new folder beside it.
+  const ok = await ask(`/Users/alex/${beside}/payload`);
+  assert.ok(!('problem' in ok) && ok.clone?.to === path.join(home, beside, 'payload'), JSON.stringify(ok));
+});
+
+test("the thread's folder in a repo found here can't lead out of it through a link", async () => {
+  const t = tMachine();
+  const repo = gitRepo(tmpDir('tb-move-repo-'), 'https://github.com/alex-example/linked');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: repo });
+  fs.symlinkSync(tmpDir('tb-move-secret-'), path.join(repo, 'out'));
+  const plan = await t.runner.planMove(row('t', { info: { ...BASE, cwd: '/Users/alex/dev/linked/out', origin: 'git@github.com:alex-example/linked.git', repoTop: '/Users/alex/dev/linked', subdir: 'out' } as never }));
+  assert.ok('problem' in plan && /leads out of/.test(plan.problem), JSON.stringify(plan));
+});
+
+test("a folder that's no repo goes only to the same place under this home", async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const ask = (cwd: string, home = '/Users/alex') => t.runner.planMove(row('t', { info: { ...BASE, home, cwd } as never }));
+  assert.ok('problem' in (await ask('/etc')), 'outside its home');
+  assert.ok('problem' in (await ask('/Users/alex/../../etc')), 'not normalised');
+  const inHome = tmpDir('tb-move-plain-');
+  const rel = path.relative(home, realpath(inHome));
+  const ok = await ask(`/Users/alex/${rel}`);
+  assert.ok(!('problem' in ok) && ok.cwd === path.join(home, rel), JSON.stringify(ok));
+  // A link under this home that leads out of it.
+  fs.symlinkSync(realpath('/etc'), path.join(inHome, 'etc-link'));
+  const linked = await ask(`/Users/alex/${rel}/etc-link`);
+  assert.ok('problem' in linked && /leads out of the home folder/.test(linked.problem), JSON.stringify(linked));
+});
+
+test('placing plans again: a plan the backend changed, or a folder swapped for a link since, places nothing', async () => {
+  const s = machine([{ id: 'claude-main', provider: 'claude', title: 'S', configDir: tmpDir() }]);
+  const t = tMachine();
+  const repo = gitRepo(tmpDir('tb-move-repo-'), 'https://github.com/alex-example/swap');
+  fs.mkdirSync(path.join(repo, 'app'));
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: repo });
+  const work = tmpDir('tb-move-work-');
+  const id = s.runner.create({ text: 'hello', accountId: 'claude-main', cwd: work }).thread.id;
+  s.adapter.last.init();
+  s.adapter.last.result('completed');
+  await tick();
+  const info = { ...BASE, cwd: '/Users/alex/dev/swap/app', origin: 'git@github.com:alex-example/swap.git', repoTop: '/Users/alex/dev/swap', subdir: 'app' };
+  const r = row(id, { info: info as never });
+  const plan = await t.runner.planMove(r);
+  assert.ok(!('problem' in plan), JSON.stringify(plan));
+  const entries = (await s.runner.packForMove(id, r)).entries;
+  // The row's plan as a backend could hand it back: somewhere else.
+  await assert.rejects(t.runner.placeMove({ ...r, plan: { ...(plan as never as object), cwd: '/etc' } as never }, entries), /changed since the move was planned/);
+  assert.equal(fs.existsSync(path.join(t.home, 'moves', r.moveId)), false);
+  // The folder swapped for a link out between planning and placing.
+  fs.rmSync(path.join(repo, 'app'), { recursive: true });
+  fs.symlinkSync(tmpDir('tb-move-secret-'), path.join(repo, 'app'));
+  await assert.rejects(t.runner.placeMove({ ...r, plan: plan as never }, entries), /leads out of/);
+  assert.equal(t.runner.threads.has(id), false);
+  assert.equal(fs.existsSync(path.join(t.home, 'moves', r.moveId)), false);
+});
+
+test("a repo directly in this home doesn't make the home a place to clone to", async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const top = path.join(home, 'toplevel-repo');
+  fs.mkdirSync(top, { recursive: true });
+  gitRepo(top, 'https://github.com/alex-example/top');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: top });
+  const plan = await t.runner.planMove(row('t', { info: { ...BASE, cwd: '/Users/alex/bin', origin: 'https://github.com/attacker/payload.git', repoTop: '/Users/alex/payload' } as never }));
+  assert.ok('problem' in plan, JSON.stringify(plan));
+});
+
+test('the home itself, a hidden folder or ~/Library is never a folder picked on the old runner\'s word', async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const ask = (cwd: string, extra: Record<string, unknown> = {}) => t.runner.planMove(row('t', { info: { ...BASE, cwd, ...extra } as never }));
+  fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'Library', 'Application Support'), { recursive: true });
+  assert.ok('problem' in (await ask('/Users/alex')));
+  assert.ok('problem' in (await ask('/Users/alex/.ssh')));
+  assert.ok('problem' in (await ask('/Users/alex/Library/Application Support')));
+  fs.symlinkSync(path.join(home, '.ssh'), path.join(home, 'keys'));
+  assert.ok('problem' in (await ask('/Users/alex/keys')), 'a plain name linking to one');
+  // A repo under a hidden folder, named by its real origin, isn't found there.
+  const dot = path.join(home, '.dotfiles');
+  fs.mkdirSync(dot, { recursive: true });
+  gitRepo(dot, 'https://github.com/alex-example/dotfiles');
+  const found = await ask('/Users/alex/.dotfiles', { origin: 'https://github.com/alex-example/dotfiles', repoTop: '/Users/alex/.dotfiles', subdir: '' });
+  assert.ok('problem' in found, JSON.stringify(found));
+  // Mike's own pick still goes anywhere he says.
+  const picked = await t.runner.planMove(row('t', { cwd: path.join(home, '.ssh'), info: { ...BASE, cwd: '/Users/alex/.ssh' } as never }));
+  assert.ok(!('problem' in picked), JSON.stringify(picked));
+});
+
+test("a thread whose folder is reached through a link describes itself honestly", async () => {
+  const s = machine([{ id: 'claude-main', provider: 'claude', title: 'S', configDir: tmpDir() }]);
+  const repo = gitRepo(tmpDir('tb-move-repo-'), 'https://github.com/alex-example/linkdesc');
+  fs.mkdirSync(path.join(repo, 'app'));
+  const via = path.join(tmpDir('tb-move-via-'), 'code');
+  fs.symlinkSync(repo, via);
+  const id = s.runner.create({ text: 'x', accountId: 'claude-main', cwd: path.join(via, 'app') }).thread.id;
+  const info = (await s.runner.describeForMove(id, 0))!;
+  assert.equal(info.subdir, 'app');
+  assert.ok(moveInfoFrom(info), 'the description passes its own checks');
+});
+
+// Security review, 17 Nov 2026: a clone checked only its own name against
+// the folders tools load from, so with a checkout inside a node_modules that
+// one of this runner's threads works in (a thread moved there earlier, say),
+// a missing package could be cloned beside it and loaded by the app above.
+// Every folder on the way counts, and S's path never finds a repo there.
+test("a clone never goes inside a node_modules or vendor, even beside one of this runner's repos", async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const app = tmpDir('tb-move-app-');
+  const nested = path.join(app, 'node_modules', 'local-copy');
+  fs.mkdirSync(nested, { recursive: true });
+  gitRepo(nested, 'https://github.com/alex-example/local-copy');
+  const rel = path.relative(home, realpath(app));
+  // S's path names the nested checkout: not found there on its word.
+  const found = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${rel}/node_modules/local-copy`, origin: 'https://github.com/alex-example/local-copy.git', repoTop: `/Users/alex/${rel}/node_modules/local-copy`, subdir: '' } as never }));
+  assert.ok('problem' in found, JSON.stringify(found));
+  // A thread here works in it: still no clone beside it, nor a move into it.
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: nested });
+  const clone = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${rel}/node_modules/whatever`, origin: 'https://github.com/attacker/missing-dependency.git', repoTop: `/Users/alex/${rel}/node_modules/whatever`, subdir: '' } as never }));
+  assert.ok('problem' in clone && !('clone' in clone), JSON.stringify(clone));
+  const into = await t.runner.planMove(row('t', { info: { ...BASE, cwd: '/Users/alex/elsewhere/local-copy', origin: 'https://github.com/alex-example/local-copy.git', repoTop: '/Users/alex/elsewhere/local-copy', subdir: '' } as never }));
+  assert.ok('problem' in into, JSON.stringify(into));
+  // Through a plain name that links into a vendor folder, the same.
+  const vendor = path.join(app, 'vendor', 'gem');
+  fs.mkdirSync(vendor, { recursive: true });
+  gitRepo(vendor, 'https://github.com/alex-example/gem');
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: vendor });
+  fs.symlinkSync(path.join(app, 'vendor'), path.join(app, 'plain'));
+  const linked = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${rel}/plain/payload`, origin: 'https://github.com/attacker/payload.git', repoTop: `/Users/alex/${rel}/plain/payload`, subdir: '' } as never }));
+  assert.ok('problem' in linked && !('clone' in linked), JSON.stringify(linked));
+});
+
+// Security review, 17 Nov 2026: a home that's itself a git repo (dotfiles)
+// and one of this runner's threads working in it made the home a repo found
+// by origin, whose subdir could be Library/LaunchAgents or .ssh.
+test('a home that is a repo is never where a thread goes on the old runner\'s word', async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
+  gitRepo(home, 'https://github.com/alex-example/dotfiles');
+  try {
+    t.runner.create({ text: 'x', accountId: 'claude-1', cwd: home });
+    for (const subdir of ['Library/LaunchAgents', '.ssh', '']) {
+      const plan = await t.runner.planMove(row('t', { info: { ...BASE, home: '/s', cwd: `/s/${subdir}`, origin: 'https://github.com/alex-example/dotfiles.git', repoTop: '/s', subdir } as never }));
+      assert.ok('problem' in plan, `${subdir}: ${JSON.stringify(plan)}`);
+    }
+    // Mike's pick of it still goes.
+    const picked = await t.runner.planMove(row('t', { cwd: home, info: { ...BASE, home: '/s', cwd: '/s', origin: 'https://github.com/alex-example/dotfiles.git', repoTop: '/s', subdir: '' } as never }));
+    assert.ok(!('problem' in picked), JSON.stringify(picked));
+  } finally {
+    fs.rmSync(path.join(home, '.git'), { recursive: true, force: true });
+  }
+});
+
+// Security review, 17 Nov 2026 (second pass): S's path through a link in
+// this home to a checkout outside it found that checkout by origin, though
+// none of this runner's threads works there.
+test("S's path through a link in this home never finds a repo outside it", async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const outside = fs.mkdtempSync(path.join(realpath('/tmp'), 'tb-move-external-'));
+  try {
+    gitRepo(outside, 'https://example.com/o/project.git');
+    const inHome = tmpDir('tb-move-linkhome-');
+    fs.symlinkSync(outside, path.join(inHome, 'project'));
+    const rel = path.relative(home, realpath(inHome));
+    const plan = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${rel}/project`, origin: 'https://example.com/o/project.git', repoTop: `/Users/alex/${rel}/project`, subdir: '' } as never }));
+    assert.ok('problem' in plan, JSON.stringify(plan));
+    // One of this runner's own threads works there: then it's this runner's repo.
+    t.runner.create({ text: 'x', accountId: 'claude-1', cwd: outside });
+    const known = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${rel}/project`, origin: 'https://example.com/o/project.git', repoTop: `/Users/alex/${rel}/project`, subdir: '' } as never }));
+    assert.ok(!('problem' in known) && realpath(known.cwd) === realpath(outside), JSON.stringify(known));
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+// Security review, 17 Nov 2026 (second pass): S's subdir naming a hidden or
+// installed packages' folder in the repo (.git, node_modules/x) runs the
+// thread at the repo's top instead, said in what stays behind.
+test("a subdir that's a hidden or packages' folder in the repo runs at its top", async () => {
+  const t = tMachine();
+  const repo = gitRepo(tmpDir('tb-move-repo-'), 'https://github.com/alex-example/pkgs');
+  fs.mkdirSync(path.join(repo, 'node_modules', 'left-pad'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'src', 'lib'), { recursive: true });
+  fs.symlinkSync(path.join(repo, '.git'), path.join(repo, 'plain'));
+  t.runner.create({ text: 'x', accountId: 'claude-1', cwd: repo });
+  const ask = (subdir: string) => t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/dev/pkgs/${subdir}`, origin: 'git@github.com:alex-example/pkgs.git', repoTop: '/Users/alex/dev/pkgs', subdir } as never }));
+  for (const subdir of ['.git', 'node_modules/left-pad', 'plain']) {
+    const plan = await ask(subdir);
+    assert.ok(!('problem' in plan) && plan.cwd === repo && plan.leftBehind.some((l) => /runs at the top/.test(l)), `${subdir}: ${JSON.stringify(plan)}`);
+  }
+  const ok = await ask('src/lib');
+  assert.ok(!('problem' in ok) && ok.cwd === path.join(repo, 'src', 'lib'), JSON.stringify(ok));
+});
+
+// Security review, 17 Nov 2026 (third pass): a worktree is made in the repo
+// its patch is in, and a nested checkout with no patch of its own found its
+// parent repo's by looking upward, so the thread's worktree would have been
+// made in that other repo, never previewed.
+test("a worktree thread's repo needs a worktree patch of its own, not a parent repo's", async () => {
+  const t = tMachine();
+  const commit = (dir: string, origin: string) => {
+    const g = (...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { stdio: 'pipe' });
+    g('init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    g('add', 'a.txt');
+    g('commit', '-qm', 'a');
+    g('remote', 'add', 'origin', origin);
+  };
+  const outer = tmpDir('tb-move-outer-');
+  commit(outer, 'https://example.com/outer.git');
+  fs.mkdirSync(path.join(outer, '.threadbear', 'patches'), { recursive: true });
+  fs.writeFileSync(path.join(outer, '.threadbear', 'patches', 'w.ts'), 'export default { worktree: {} };\n');
+  const inner = path.join(outer, 'inner');
+  fs.mkdirSync(inner);
+  commit(inner, 'https://example.com/inner.git');
+  const home = realpath(process.env.HOME!);
+  const rel = path.relative(home, realpath(inner));
+  const info = { ...BASE, cwd: `/Users/alex/${rel}`, origin: 'https://example.com/inner.git', repoTop: `/Users/alex/${rel}`, subdir: '', worktree: true };
+  const preview = await t.runner.previewMove({ info: info as never, self: 'T1' });
+  assert.ok(preview.problems.some((p) => /no worktree patch of its own/.test(p)), JSON.stringify(preview));
+  // The parent repo itself, with its own patch: fine.
+  const outerRel = path.relative(home, realpath(outer));
+  const own = await t.runner.previewMove({ info: { ...info, cwd: `/Users/alex/${outerRel}`, origin: 'https://example.com/outer.git', repoTop: `/Users/alex/${outerRel}` } as never, self: 'T1' });
+  assert.deepEqual(own.problems, [], JSON.stringify(own));
+});
+
+// Security review, 17 Nov 2026 (third pass): this runner's own repos are
+// all known before a match from S's path is weighed, so a linked checkout
+// in this home of a repo whose main checkout is outside it still goes.
+test("a linked checkout of one of this runner's repos outside the home is found from S's path", async () => {
+  const t = tMachine();
+  const home = realpath(process.env.HOME!);
+  const outside = fs.mkdtempSync(path.join(realpath('/tmp'), 'tb-move-main-'));
+  try {
+    const g = (dir: string, ...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { stdio: 'pipe' });
+    g(outside, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(outside, 'a.txt'), 'a\n');
+    g(outside, 'add', 'a.txt');
+    g(outside, 'commit', '-qm', 'a');
+    g(outside, 'remote', 'add', 'origin', 'https://example.com/o/project.git');
+    const parent = tmpDir('tb-move-linked-');
+    const linked = path.join(parent, 'project');
+    g(outside, 'worktree', 'add', '-q', '-b', 'side', linked);
+    t.runner.create({ text: 'x', accountId: 'claude-1', cwd: outside });
+    const rel = path.relative(home, realpath(linked));
+    const plan = await t.runner.planMove(row('t', { info: { ...BASE, cwd: `/Users/alex/${rel}`, origin: 'https://example.com/o/project.git', repoTop: `/Users/alex/${rel}`, subdir: '' } as never }));
+    assert.ok(!('problem' in plan) && realpath(plan.cwd) === realpath(outside), JSON.stringify(plan));
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
 });

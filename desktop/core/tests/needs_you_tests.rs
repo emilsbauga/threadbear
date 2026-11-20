@@ -278,6 +278,9 @@ fn an_asks_link_opens_a_page_a_file_or_a_review_and_nothing_else() {
     assert_eq!(link("/tmp/shot.png").target("").as_deref(), Some("/tmp/shot.png"));
     assert_eq!(link("review:abc123").target("").as_deref(), Some("review:abc123"));
     assert_eq!(link("review:").target(""), None);
+    // An ask whose step is in another thread opens that thread.
+    assert_eq!(link("thread:335f6ddb").target("").as_deref(), Some("thread:335f6ddb"));
+    assert_eq!(link("thread:").target(""), None);
     assert_eq!(link("javascript:alert(1)").target(""), None);
     assert_eq!(link("notes.md").target("/Users/m"), None);
 }
@@ -336,4 +339,85 @@ fn a_reviewed_turns_ledger_is_a_row_over_the_reply() {
     ]);
     let ids = ids(&carried);
     assert_eq!(ids.iter().position(|i| i == "lr:t2").map(|p| p + 1), ids.iter().position(|i| i == "a:m2"), "{ids:?}");
+}
+
+#[test]
+fn a_panels_ledger_names_everyone_and_who_found_each_finding() {
+    let review = LabReview::decode(&json!({
+        "reviewer": "Gemini (opencode-main), Codex (codex-1), Claude (claude-2)", "independent": true, "rounds": 1, "threadId": "rev-1", "passed": false,
+        "panel": [
+            {"reviewer": "Gemini (opencode-main)", "threadId": "rev-1", "independent": true},
+            {"reviewer": "Codex (codex-1)", "threadId": "rev-2", "independent": true},
+            {"reviewer": "Claude (claude-2)", "threadId": "rev-3", "independent": false},
+            "not a reviewer"
+        ],
+        "findings": [
+            {"id": 1, "claim": "Drops the session on refresh.", "outcome": "fixed", "by": "Codex (codex-1)"},
+            {"id": 2, "claim": "Keeps the old token.", "outcome": "left"}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(review.panel.as_ref().map(Vec::len), Some(3), "one that isn't an object is left out");
+    assert_eq!(review.heading(), "Reviewed by Gemini, Codex and a fresh Claude session: 1 open");
+    assert_eq!(review.found_by(&review.findings[0]).as_deref(), Some("Codex"), "the login is left off");
+    assert_eq!(review.found_by(&review.findings[1]), None, "the runner didn't say");
+
+    // The same provider on two models: the login tells them apart.
+    let twins = LabReview::decode(&json!({
+        "reviewer": "Gemini (opencode-main), Gemini (opencode-2)",
+        "panel": [{"reviewer": "Gemini (opencode-main)", "threadId": "a"}, {"reviewer": "Gemini (opencode-2)", "threadId": "b"}],
+        "findings": [{"id": 1, "claim": "x", "by": "Gemini (opencode-2)"}]
+    }))
+    .unwrap();
+    assert_eq!(twins.found_by(&twins.findings[0]).as_deref(), Some("Gemini (opencode-2)"));
+
+    // One reviewer: the heading already names it.
+    let one = LabReview::decode(&json!({"reviewer": "Codex (codex-1)", "findings": [{"id": 1, "claim": "x", "by": "Codex (codex-1)"}]})).unwrap();
+    assert!(one.panel.is_none());
+    assert_eq!(one.found_by(&one.findings[0]), None);
+}
+
+/// The review row folds like the line of work: its heading alone, opening
+/// to every finding. A finding still open (left for Mike, or not answered)
+/// stays in sight while it's folded, as it may need him (Mike, 20 Nov 2026,
+/// after a panel's eight answered findings ran a screen tall over the reply
+/// that already said what was fixed).
+#[test]
+fn a_review_row_folds_its_answered_findings_away() {
+    let finding = |id: i64, outcome: Option<&str>| {
+        let mut f = json!({"id": id, "claim": format!("Finding {id}"), "by": "Codex (codex-1)"});
+        if let Some(outcome) = outcome {
+            f["outcome"] = json!(outcome);
+        }
+        f
+    };
+    let panel = |findings: Vec<Value>| {
+        LabReview::decode(&json!({
+            "reviewer": "Codex (codex-1), Grok (grok-1)", "threadId": "rev-1",
+            "panel": [{"reviewer": "Codex (codex-1)", "threadId": "rev-1"}, {"reviewer": "Grok (grok-1)", "threadId": "rev-2"}],
+            "findings": findings
+        }))
+        .unwrap()
+    };
+    let claims = |shown: Vec<&ReviewFinding>| shown.iter().map(|f| f.claim.clone()).collect::<Vec<_>>();
+
+    // All answered: folded, it's the heading alone; open, every finding.
+    let answered = panel(vec![finding(1, Some("fixed")), finding(2, Some("fixed")), finding(3, Some("disputed"))]);
+    assert_eq!(answered.heading(), "Reviewed by Codex and Grok: all answered", "the heading is as it was");
+    assert!(answered.folds());
+    assert!(answered.shown_findings(false).is_empty(), "folded by default: nothing under the heading");
+    assert_eq!(claims(answered.shown_findings(true)), ["Finding 1", "Finding 2", "Finding 3"]);
+
+    // Some still open: those stay under the heading while it's folded.
+    let mixed = panel(vec![finding(1, Some("fixed")), finding(2, Some("left")), finding(3, None), finding(4, Some("disputed"))]);
+    assert_eq!(mixed.heading(), "Reviewed by Codex and Grok: 2 open");
+    assert!(mixed.folds());
+    assert_eq!(claims(mixed.shown_findings(false)), ["Finding 2", "Finding 3"]);
+    assert_eq!(claims(mixed.shown_findings(true)), ["Finding 1", "Finding 2", "Finding 3", "Finding 4"], "open, in the ledger's order");
+
+    // Every one open, or none at all: nothing to fold, so no disclosure.
+    let open = panel(vec![finding(1, Some("left")), finding(2, None)]);
+    assert!(!open.folds());
+    assert_eq!(claims(open.shown_findings(false)), ["Finding 1", "Finding 2"]);
+    assert!(!panel(vec![]).folds());
 }

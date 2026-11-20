@@ -577,7 +577,7 @@ mod tests {
     fn settings_lists_this_mac_and_the_others_in_mikes_order() {
         use crate::remote::RemoteRunner;
         let me = RunnerInfo { is_self: true, icon: Some("laptopcomputer".into()), ..runner("m", "laptop") };
-        let mini = RemoteRunner { id: "b".into(), name: "mac-mini".into(), icon: Some("macmini".into()), online: true };
+        let mini = RemoteRunner { id: "b".into(), name: "mac-mini".into(), icon: Some("macmini".into()), online: true, ..Default::default() };
         let cloud = RemoteRunner { id: "c".into(), name: "cloud".into(), online: false, ..Default::default() };
         let others = [mini.clone(), cloud.clone()];
         let lines = |rows: Vec<SettingsRow>| rows.iter().map(settings_line).collect::<Vec<_>>();

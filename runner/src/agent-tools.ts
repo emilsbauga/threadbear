@@ -27,7 +27,6 @@ export type ToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>; // a zod raw shape
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (args: any, extra: unknown) => Promise<{ content?: unknown[]; isError?: boolean }>;
   annotations?: { readOnlyHint?: boolean };
   // A tool whose arguments have changed shape: the version of it this call
@@ -86,7 +85,6 @@ export function dynamicToolSpecs(tools: ToolDefinition[]): DynamicToolSpec[] {
 }
 
 export function jsonSchema(t: ToolDefinition): unknown {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const schema = z.toJSONSchema(z.object(t.inputSchema as any)) as Record<string, unknown>;
   delete schema.$schema;
   return schema;
@@ -139,7 +137,6 @@ export class AgentTools {
     }
     const raw = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? (params.arguments as Record<string, unknown>) : {};
     const tool = known.formFor?.(raw) ?? known;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parsed = z.object(tool.inputSchema as any).safeParse(raw);
     if (!parsed.success) return text(`Those arguments don't fit ${name}: ${z.prettifyError(parsed.error)}`, false);
     const args = parsed.data as Record<string, unknown>;

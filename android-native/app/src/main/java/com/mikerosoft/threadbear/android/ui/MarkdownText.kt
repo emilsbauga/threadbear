@@ -141,6 +141,8 @@ private fun Block(block: MarkdownBlock, inline: InlineStyle, style: TextStyle, s
             val image = pictures.image(block.src, seq)
             val web = ThreadPictures.webLink(block.src)
             when {
+                // A live page runs in the Mac and iPhone apps only, so far.
+                image != null && image.isPage -> PictureOnMac(block.alt, "A live page: open it on your Mac or iPhone")
                 image != null -> ReplyPicture(image.url, block.alt, image.width, image.height)
                 // Never fetched here: a link, like any other in the reply
                 // (Daybreak findings 129 and 133).

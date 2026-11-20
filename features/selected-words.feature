@@ -31,6 +31,19 @@ Feature: Words selected in a reply
     And I press "explain" on the bar over "Ship the release notes today."
     Then the pane explains "Ship the release notes today." with "is what the agent called this step"
 
+  # A follow-up asked the runner through the pane's own entity from inside
+  # the pane's update, and GPUI aborts on that: every follow-up took the app
+  # down until 18 Nov (explain_pane.rs, `fetch_explanation`). GPUI's only, as
+  # the Swift app is frozen and its script has no way to ask one.
+  @rich.explain @swift-pending
+  Scenario: A follow-up question in the pane gets its own answer
+    When I open the thread "Morning brief"
+    And a reply saying "Ship the [release notes](https://example.com/notes) **today**." streams in
+    And I press "explain" on the bar over "Ship the release notes today."
+    Then the pane explains "Ship the release notes today." with "is what the agent called this step"
+    When I ask the follow-up "Why today?" in the pane
+    Then the pane explains "Ship the release notes today." with "Why today? That's the mock runner's answer to a follow-up."
+
   # A scripted Swift app's ⌘C goes to the Mac's own clipboard, not the
   # instance's own that `clipboard` reads (Automation.pasteboard), so it
   # can't be read back there; its Copy on the bar is checked above. And as

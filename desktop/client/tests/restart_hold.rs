@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use threadbear_client::auth::{self, Role};
 use threadbear_client::config::RunnerConfig;
-use threadbear_client::runner::{Client, Progress, ProgressFn, Resend, Sink, Status, CLOSED, NOT_CONNECTED};
+use threadbear_client::runner::{Client, Progress, ProgressFn, Resend, Sink, Status, CLOSED, NOT_CONNECTED, TIMED_OUT};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -25,6 +25,9 @@ enum Reply {
     Close,
     /// Says it's restarting, then closes without an answer.
     RestartAndClose,
+    /// Never answers, with the connection left open, as a runner whose
+    /// event loop has stalled; `lands` says whether it took the message.
+    Stall { lands: bool },
 }
 
 #[derive(Default)]
@@ -36,6 +39,8 @@ struct Runner {
     down: bool,
     connection: u64,
     conns: Vec<mpsc::UnboundedSender<Message>>,
+    /// How many more `hello`s it answers with an error.
+    hello_errors: u32,
     /// The thread `threads.list` answers with, and the events after a send.
     summary: Value,
     events: Vec<Value>,
@@ -144,16 +149,24 @@ async fn serve(stream: tokio::net::TcpStream, state: Arc<Mutex<Runner>>, port: u
             let mut s = state.lock().unwrap();
             s.seen.push((method.clone(), params.clone(), connection));
             match method.as_str() {
+                "hello" if s.hello_errors > 0 => {
+                    s.hello_errors -= 1;
+                    Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": "hello broke" } }).to_string())
+                }
                 "hello" => Some(answer(json!({ "protocol": 1, "runnerVersion": format!("fake-{connection}") }))),
                 "threads.send" | "threads.update" => match if s.replies.is_empty() { Reply::Ok } else { s.replies.remove(0) } {
                     Reply::Ok => {
                         // A send lands as its user.message, as the runner's does.
                         if method == "threads.send" {
-                            let seq = s.summary["lastSeq"].as_i64().unwrap_or(0) + 1;
-                            s.summary["lastSeq"] = json!(seq);
-                            s.events.push(json!({ "seq": seq, "type": "user.message", "text": params["text"] }));
+                            land(&mut s, &params);
                         }
                         Some(answer(json!({ "turnId": "turn_1" })))
+                    }
+                    Reply::Stall { lands } => {
+                        if lands {
+                            land(&mut s, &params);
+                        }
+                        None
                     }
                     Reply::Refuse(code, message) => Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()),
                     Reply::Close => {
@@ -181,6 +194,13 @@ async fn serve(stream: tokio::net::TcpStream, state: Arc<Mutex<Runner>>, port: u
         }
     }
     writer.abort();
+}
+
+/// A send's user.message, after the thread's last event.
+fn land(s: &mut Runner, params: &Value) {
+    let seq = s.summary["lastSeq"].as_i64().unwrap_or(0) + 1;
+    s.summary["lastSeq"] = json!(seq);
+    s.events.push(json!({ "seq": seq, "type": "user.message", "text": params["text"] }));
 }
 
 struct Statuses(mpsc::UnboundedSender<Status>);
@@ -243,6 +263,22 @@ fn resend(text: &str, after_seq: i64, was_idle: bool) -> Resend {
 /// Lets the client hear what's just been sent to it.
 async fn settle() {
     tokio::time::sleep(Duration::from_millis(150)).await;
+}
+
+// A hello that fails ends that session and the next one tries again, as
+// the Swift app's connect loop does: it used to sit on "Connecting" with
+// no threads for as long as the socket stayed open.
+#[tokio::test]
+async fn a_failed_hello_connects_again() {
+    let fake = Fake::start().await;
+    fake.state.lock().unwrap().hello_errors = 1;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let client = Client::new(fake.config.clone(), Statuses(tx));
+    tokio::spawn(client.clone().run());
+    until_disconnected(&mut rx).await;
+    until_connected(&mut rx).await;
+    let hellos: Vec<u64> = fake.state.lock().unwrap().seen.iter().filter(|(m, _, _)| m == "hello").map(|(_, _, c)| *c).collect();
+    assert_eq!(hellos, vec![1, 2], "the second connection's hello");
 }
 
 #[tokio::test]
@@ -685,4 +721,47 @@ async fn another_threads_message_goes_while_one_waits() {
     until_disconnected(&mut rx).await;
     fake.up();
     assert!(tokio::time::timeout(Duration::from_secs(8), held).await.unwrap().unwrap().is_ok());
+}
+
+// 19 Nov: the runner stalled for four minutes on a Mac out of memory, took
+// the message when it came back, and answered after the app had stopped
+// waiting. The app said it wasn't sent and put it back in the box. Now it
+// looks first.
+#[tokio::test]
+async fn a_send_with_no_answer_in_time_that_had_arrived_counts_as_sent() {
+    let fake = Fake::start().await;
+    let (client, _rx) = connect(&fake).await;
+    client.set_timeout_cap(Duration::from_millis(300));
+    fake.reply_with(&[Reply::Stall { lands: true }]);
+    let (said, _) = progress();
+    let answer = client.send_through_restart(client.place("t1"), send("the brief"), resend("the brief", 10, true), said).await;
+    assert!(matches!(answer, Ok(None)), "{answer:?}");
+    assert_eq!(fake.sends().len(), 1, "never sent twice");
+}
+
+#[tokio::test]
+async fn a_send_with_no_answer_in_time_that_hasnt_arrived_is_given_back_once() {
+    let fake = Fake::start().await;
+    let (client, _rx) = connect(&fake).await;
+    client.set_timeout_cap(Duration::from_millis(300));
+    fake.reply_with(&[Reply::Stall { lands: false }]);
+    let (said, _) = progress();
+    let err = client.send_through_restart(client.place("t1"), send("the brief"), resend("the brief", 10, true), said).await.unwrap_err();
+    assert_eq!(err.code, TIMED_OUT);
+    assert_eq!(fake.sends().len(), 1, "not sent again on a guess: a stalled runner may still take it");
+}
+
+// With another message on its way, or a busy thread, one with the same
+// words could pass for it: no answer in time stays that, and it's given
+// back rather than taken as sent on a guess (Codex's and Gemini's review).
+#[tokio::test]
+async fn a_send_with_no_answer_in_time_isnt_confirmed_by_another_with_the_same_words() {
+    let fake = Fake::start().await;
+    let (client, _rx) = connect(&fake).await;
+    client.set_timeout_cap(Duration::from_millis(300));
+    fake.reply_with(&[Reply::Ok, Reply::Stall { lands: false }]);
+    let (said, _) = progress();
+    client.send_through_restart(client.place("t1"), send("yes"), resend("yes", 10, false), said.clone()).await.unwrap();
+    let err = client.send_through_restart(client.place("t1"), send("yes"), resend("yes", 10, false), said).await.unwrap_err();
+    assert_eq!(err.code, TIMED_OUT);
 }

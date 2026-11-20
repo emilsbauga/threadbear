@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process';
 import type { Account } from '../protocol.ts';
 import { cliEnv } from '../adapters/claude/adapter.ts';
 import { USAGE_LIMIT_TEXT } from '../adapters/claude/normalize.ts';
-import { groupAlive, killGroup } from '../proc.ts';
+import { followUpKillDue, hasExited, killGroup } from '../proc.ts';
 
 export type CliRequest = {
   claudePath: string;
@@ -103,7 +103,7 @@ export const askCli: AskCli = (req) =>
       if (!pid) return;
       killGroup(pid, 'SIGTERM');
       setTimeout(() => {
-        if (groupAlive(pid)) killGroup(pid, 'SIGKILL');
+        if (followUpKillDue(pid, hasExited(child))) killGroup(pid, 'SIGKILL');
       }, 3000).unref();
     }, req.timeoutMs);
     timer.unref?.();

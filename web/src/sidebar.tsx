@@ -234,7 +234,7 @@ function SearchBox({ value, onChange }: { value: string; onChange: (text: string
 function FilterMenu({ filter, setFilter, rows }: { filter: Filter; setFilter: (f: Filter) => void; rows: Row[] }) {
   const places = placeChoices(rows);
   const on = isFiltering(filter);
-  const words = [filter.show !== 'all' ? SHOWS.find((s) => s.show === filter.show)?.label : null, filter.place].filter(Boolean).join(', ');
+  const words = [filter.show !== 'all' ? SHOWS.find((s) => s.show === filter.show)?.label : null, filter.placeLabel].filter(Boolean).join(', ');
   return (
     <Pop title={on ? `Filter: ${words}` : 'Filter threads'} icon={<Icon.Filter />} lit={on}>
       {(close) => (
@@ -266,11 +266,11 @@ function FilterMenu({ filter, setFilter, rows }: { filter: Filter; setFilter: (f
               <MenuChoice
                 key={p.place}
                 icon={<Icon.Folder />}
-                label={p.place}
+                label={p.label}
                 note={p.count}
                 on={filter.place === p.place}
                 pick={() => {
-                  setFilter({ ...filter, place: p.place });
+                  setFilter({ ...filter, place: p.place, placeLabel: p.label });
                   close();
                 }}
               />

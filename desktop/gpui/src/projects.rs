@@ -745,6 +745,10 @@ impl Threadbear {
 
     /// The menu of a project's heading, card or row, where it was clicked.
     pub(crate) fn open_project_menu(&mut self, id: &str, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        // The project's menu alone: a right-click went on to the dock panel's
+        // own menu (Hide Title, Open in New Window), which came up over this
+        // one's Open and Archive, as it did on thread rows (12 Nov).
+        cx.stop_propagation();
         let Some(project) = self.project(id).cloned() else { return };
         let rows = self.project_menu_rows(&project);
         self.open_menu(None, rows, position, false, window, cx);

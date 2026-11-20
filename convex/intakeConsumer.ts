@@ -14,7 +14,7 @@ export const bindConsumer = internalMutation({
     const c = await ctx.db.query('intakeClients').withIndex('by_client', q => q.eq('clientId', clientId)).unique();
     if (!c || c.revokedAt !== undefined) throw new Error('No active intake client');
     if (c.consumerRunnerId && c.consumerRunnerId !== runnerId) throw new Error('Intake client is already bound to another runner');
-    await ctx.db.patch(c._id, { consumerRunnerId: runnerId });
+    await ctx.db.patch("intakeClients", c._id, { consumerRunnerId: runnerId });
     return null;
   },
 });
@@ -25,9 +25,9 @@ export const ignoreMessage = internalMutation({
     const row = await ctx.db.query('intakeMessages').withIndex('by_client_message', q => q.eq('clientId', clientId).eq('messageId', messageId)).unique();
     if (!row) throw new Error('Intake message not found');
     if (row.deliveryState === 'saved' || (row.leaseUntil ?? 0) > Date.now()) throw new Error('Message is already saved or has a live lease');
-    await ctx.db.patch(row._id, { deliveryState: 'ignored' });
+    await ctx.db.patch("intakeMessages", row._id, { deliveryState: 'ignored' });
     if (row.transferId) {
-      await ctx.db.patch(row.transferId, { state: 'cancelled', cleanupPending: true });
+      await ctx.db.patch("intakeTransfers", row.transferId, { state: 'cancelled', cleanupPending: true });
       await ctx.scheduler.runAfter(0, internal.intakeFiles.cleanDelivered, { transferId: row.transferId });
     }
     return null;
@@ -35,7 +35,7 @@ export const ignoreMessage = internalMutation({
 });
 
 async function owned(ctx: MutationCtx | QueryCtx, receiptId: Id<'intakeMessages'>, runnerId: string) {
-  const row = await ctx.db.get(receiptId);
+  const row = await ctx.db.get("intakeMessages", receiptId);
   if (!row) return null;
   const client = await ctx.db.query('intakeClients').withIndex('by_client', q => q.eq('clientId', row.clientId)).unique();
   return client && client.revokedAt === undefined && client.consumerRunnerId === runnerId ? row : null;
@@ -72,7 +72,7 @@ export const claimIntake = mutation({
     if ((row.leaseUntil ?? 0) > Date.now() && row.leaseToken !== leaseToken) return { state: 'busy' as const };
     const hash = await sha256('threadbear-intake-v1:' + JSON.stringify([row.clientId, receiptId]));
     const threadId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
-    await ctx.db.patch(receiptId, { leaseToken, leaseUntil: Date.now() + 60_000, deliveryThreadId: threadId });
+    await ctx.db.patch("intakeMessages", receiptId, { leaseToken, leaseUntil: Date.now() + 60_000, deliveryThreadId: threadId });
     return { state: 'claimed' as const, threadId };
   },
 });
@@ -87,9 +87,9 @@ export const finishIntake = mutation({
     if (!row || row.deliveryState === 'ignored') return false;
     if (row.deliveryState === 'saved') return row.leaseToken === leaseToken;
     if (row.leaseToken !== leaseToken || (row.leaseUntil ?? 0) <= Date.now()) return false;
-    await ctx.db.patch(receiptId, { deliveryState: 'saved', deliveredAt: Date.now(), deliveredRunnerId: runnerId, leaseUntil: undefined });
+    await ctx.db.patch("intakeMessages", receiptId, { deliveryState: 'saved', deliveredAt: Date.now(), deliveredRunnerId: runnerId, leaseUntil: undefined });
     if (row.transferId) {
-      await ctx.db.patch(row.transferId, { localSaved: true, cleanupPending: true });
+      await ctx.db.patch("intakeTransfers", row.transferId, { localSaved: true, cleanupPending: true });
       await ctx.scheduler.runAfter(0, internal.intakeFiles.cleanDelivered, { transferId: row.transferId });
     }
     return true;
