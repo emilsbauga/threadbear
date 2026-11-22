@@ -93,3 +93,33 @@ Then('the schedule editor is open on the schedule that sends {string}', async fu
   assert.equal(editor.isNew, false, 'it opened on a new schedule');
   assert.equal(editor.text, text);
 });
+
+When('I start a schedule from this thread that starts a new thread each time', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'schedule', sendsTo: 'new' });
+});
+
+Then("the schedule editor's model menu has a row {string}", async function (this: ThreadbearWorld, line: string) {
+  let editor: { models?: string[] } | undefined;
+  try {
+    await this.until(`"${line}" in the schedule editor's model menu`, (d) => {
+      editor = (d as unknown as { scheduleEditor?: { models?: string[] } }).scheduleEditor;
+      return (editor?.models ?? []).includes(line);
+    });
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nThe schedule editor: ${JSON.stringify(editor)}`);
+  }
+});
+
+When("I pick {string} under {string} in the schedule editor's model menu", async function (this: ThreadbearWorld, title: string, under: string) {
+  await this.app.do({ cmd: 'schedule', pickModel: title, under });
+});
+
+Then('the schedule would start its threads on {string}', async function (this: ThreadbearWorld, provider: string) {
+  await this.until(`the schedule editor on ${provider}`, (d) => (d as unknown as { scheduleEditor?: { provider?: string } }).scheduleEditor?.provider === provider);
+});
+
+// The mock's Personal pool has a Codex login and a Claude one (alex+3).
+Given("there's a thread called {string} on alex+3 in the Personal pool", async function (this: ThreadbearWorld, title: string) {
+  await this.app.do({ cmd: 'mock', method: 'thread', params: { id: `personal-${title.length}`, title, accountId: 'claude-3', poolId: 'personal' } });
+  await this.until(`"${title}" in the sidebar`, (d) => this.thread(d, title));
+});

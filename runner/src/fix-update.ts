@@ -26,7 +26,7 @@
 // the fix to the main Mac instead (and tb land refuses).
 //
 // Handing it over meant a Start it card on the main Mac for every fix: a
-// runner key may not start work there (docs/protocol.md, "Runner keys").
+// runner key may not start work there (docs/protocol/keys.md, "Runner keys").
 // Mike, 19 Nov 2026: "why do we have to treat different runners
 // differently?" So from backend API 91 a following machine only reports the
 // failure in its heartbeat (reported()), and the main Mac's runner starts
@@ -271,7 +271,7 @@ function followUp(f: UpdateFailure, follows: boolean): string {
 
 // What a following machine's heartbeat says about its failed update, as the
 // main Mac reads it from the backend. All of it comes from that machine,
-// which may be compromised (docs/protocol.md, "Runner keys"), so it's checked
+// which may be compromised (docs/protocol/keys.md, "Runner keys"), so it's checked
 // against this Mac's own repo and quoted in the brief as that machine's
 // words, never as instructions.
 export type RemoteFailure = { kind?: unknown; commit?: unknown; subject?: unknown; error?: unknown; logFile?: unknown };

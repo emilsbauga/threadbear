@@ -1,4 +1,4 @@
-// Nested threads (experiment nestedThreads; docs/protocol.md, "Nested
+// Nested threads (experiment nestedThreads; docs/protocol/threads.md, "Nested
 // threads"): the runner's half. The sidebar's half (threads under the one
 // that started them) is the GPUI app's.
 //

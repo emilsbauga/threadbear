@@ -1,5 +1,5 @@
 // A GitHub pull request opened as a tab in the side pane (the inlinePrs
-// experiment; docs/protocol.md, "Pull requests"). Mike picked this, option A
+// experiment; docs/protocol/panels.md, "Pull requests"). Mike picked this, option A
 // of three mockups (18 Nov 2026), after Capy opened PRs beside the chat:
 // "rather than having to farm out to a browser, it's all in line, with
 // everything you need and buttons."
@@ -24,10 +24,23 @@ impl PrRef {
     pub fn parse(url: &str) -> Option<PrRef> {
         let url = url.trim();
         let lower = url.to_ascii_lowercase();
-        let rest = ["https://github.com/", "https://www.github.com/"].iter().find(|p| lower.starts_with(*p)).map(|p| &url[p.len()..])?;
+        let rest = ["https://github.com/", "https://www.github.com/"]
+            .iter()
+            .find(|p| lower.starts_with(*p))
+            .map(|p| &url[p.len()..])?;
         let mut parts = rest.splitn(4, '/');
-        let (owner, repo, pull, tail) = (parts.next()?, parts.next()?, parts.next()?, parts.next().unwrap_or(""));
-        let name_ok = |s: &str| !s.is_empty() && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        let (owner, repo, pull, tail) = (
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next().unwrap_or(""),
+        );
+        let name_ok = |s: &str| {
+            !s.is_empty()
+                && !s.starts_with('-')
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        };
         if !pull.eq_ignore_ascii_case("pull") || !name_ok(owner) || !name_ok(repo) {
             return None;
         }
@@ -37,13 +50,20 @@ impl PrRef {
             return None;
         }
         let number = digits.parse::<u64>().ok().filter(|n| *n > 0)?;
-        Some(PrRef { owner: owner.to_owned(), repo: repo.to_owned(), number })
+        Some(PrRef {
+            owner: owner.to_owned(),
+            repo: repo.to_owned(),
+            number,
+        })
     }
 
     /// The PR's own page, with nothing after the number: the one URL each
     /// tab and state is kept under, however the link was written.
     pub fn url(&self) -> String {
-        format!("https://github.com/{}/{}/pull/{}", self.owner, self.repo, self.number)
+        format!(
+            "https://github.com/{}/{}/pull/{}",
+            self.owner, self.repo, self.number
+        )
     }
 
     /// "#72", the tab's name.
@@ -189,7 +209,17 @@ impl PrFile {
         EditDiff {
             item_id: key.to_owned(),
             path: self.path.clone(),
-            hunks: self.hunks.iter().map(|h| DiffHunk { old_start: h.old_start, old_lines: h.old_lines, new_start: h.new_start, new_lines: h.new_lines, lines: h.lines.clone() }).collect(),
+            hunks: self
+                .hunks
+                .iter()
+                .map(|h| DiffHunk {
+                    old_start: h.old_start,
+                    old_lines: h.old_lines,
+                    new_start: h.new_start,
+                    new_lines: h.new_lines,
+                    lines: h.lines.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -292,7 +322,8 @@ pub enum MergeMethod {
 }
 
 impl MergeMethod {
-    pub const ALL: [MergeMethod; 3] = [MergeMethod::Rebase, MergeMethod::Squash, MergeMethod::Merge];
+    pub const ALL: [MergeMethod; 3] =
+        [MergeMethod::Rebase, MergeMethod::Squash, MergeMethod::Merge];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -319,7 +350,9 @@ impl MergeMethod {
 /// The Merge button's method: the one Mike starred in its menu if this repo
 /// allows it, else the first the repo allows.
 pub fn merge_method(allowed: &[MergeMethod], starred: Option<MergeMethod>) -> Option<MergeMethod> {
-    starred.filter(|m| allowed.contains(m)).or_else(|| allowed.first().copied())
+    starred
+        .filter(|m| allowed.contains(m))
+        .or_else(|| allowed.first().copied())
 }
 
 /// The tab's three views.
@@ -350,10 +383,24 @@ pub fn checks_summary(checks: &[PrCheck]) -> (String, Option<String>) {
         return ("No checks".into(), None);
     }
     let count = |s: CheckState| checks.iter().filter(|c| c.state == s).count();
-    let (passed, running) = (count(CheckState::Passed), count(CheckState::Running) + count(CheckState::Pending));
-    let counted = checks.iter().filter(|c| c.state != CheckState::Skipped).count();
-    let failed: Vec<&str> = checks.iter().filter(|c| c.state == CheckState::Failed).map(|c| c.name.as_str()).collect();
-    let mut words = if passed == counted { format!("All {counted} passed") } else { format!("{passed} of {counted} passed") };
+    let (passed, running) = (
+        count(CheckState::Passed),
+        count(CheckState::Running) + count(CheckState::Pending),
+    );
+    let counted = checks
+        .iter()
+        .filter(|c| c.state != CheckState::Skipped)
+        .count();
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| c.state == CheckState::Failed)
+        .map(|c| c.name.as_str())
+        .collect();
+    let mut words = if passed == counted {
+        format!("All {counted} passed")
+    } else {
+        format!("{passed} of {counted} passed")
+    };
     if running > 0 {
         words.push_str(&format!(", {running} running"));
     }
@@ -412,7 +459,10 @@ pub fn review_prompt(pr: &PrView) -> String {
 
 /// What "Start a thread on it" sends: work on the PR, not a verdict on it.
 pub fn work_prompt(pr: &PrView) -> String {
-    format!("Pull request {} (\"{}\" by {}). ", pr.url, pr.title, pr.author)
+    format!(
+        "Pull request {} (\"{}\" by {}). ",
+        pr.url, pr.title, pr.author
+    )
 }
 
 /// The link a PR's state mark is drawn for in a reply:
@@ -454,10 +504,14 @@ fn pr_link_starts(text: &str) -> Vec<(usize, String)> {
     if !text.contains("github.com/") {
         return Vec::new();
     }
-    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else { return Vec::new() };
+    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else {
+        return Vec::new();
+    };
     let mut at = Vec::new();
     crate::link_marks::collect(&tree, &mut |link| {
-        let Some(start) = link.position.as_ref().map(|p| p.start.offset) else { return };
+        let Some(start) = link.position.as_ref().map(|p| p.start.offset) else {
+            return;
+        };
         if let Some(r) = PrRef::parse(&link.url).filter(|_| text.is_char_boundary(start)) {
             at.push((start, r.url()));
         }
@@ -482,38 +536,77 @@ mod tests {
             with_pr_marks(text),
             "Try [\u{2060}](tbpr:https://github.com/acme/app/pull/72)[#72](https://github.com/acme/app/pull/72/files) or [\u{2060}](tbpr:https://github.com/acme/app/pull/77)https://github.com/acme/app/pull/77, not `https://github.com/acme/app/pull/9` or [docs](https://github.com/acme/app)."
         );
-        assert_eq!(pr_links(text), ["https://github.com/acme/app/pull/72", "https://github.com/acme/app/pull/77"]);
-        assert!(matches!(with_pr_marks("No links here"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(
+            pr_links(text),
+            [
+                "https://github.com/acme/app/pull/72",
+                "https://github.com/acme/app/pull/77"
+            ]
+        );
+        assert!(matches!(
+            with_pr_marks("No links here"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]
     fn pr_links_and_only_pr_links() {
         let r = PrRef::parse("https://github.com/acme/app/pull/72").unwrap();
-        assert_eq!((r.owner.as_str(), r.repo.as_str(), r.number), ("acme", "app", 72));
-        assert_eq!(PrRef::parse("https://github.com/acme/app/pull/72/files#diff-1").unwrap().url(), "https://github.com/acme/app/pull/72");
-        assert_eq!(PrRef::parse("https://www.github.com/a.b/c-d/pull/3?x=1").unwrap().tab_title(), "#3");
-        for no in ["https://github.com/acme/app/issues/72", "https://evil.com/acme/app/pull/72", "http://github.com/acme/app/pull/7", "https://github.com/-x/app/pull/1", "https://github.com/acme/app/pull/0", "https://github.com/acme/app/pull/7x", "https://github.com/acme/app/pull/"] {
+        assert_eq!(
+            (r.owner.as_str(), r.repo.as_str(), r.number),
+            ("acme", "app", 72)
+        );
+        assert_eq!(
+            PrRef::parse("https://github.com/acme/app/pull/72/files#diff-1")
+                .unwrap()
+                .url(),
+            "https://github.com/acme/app/pull/72"
+        );
+        assert_eq!(
+            PrRef::parse("https://www.github.com/a.b/c-d/pull/3?x=1")
+                .unwrap()
+                .tab_title(),
+            "#3"
+        );
+        for no in [
+            "https://github.com/acme/app/issues/72",
+            "https://evil.com/acme/app/pull/72",
+            "http://github.com/acme/app/pull/7",
+            "https://github.com/-x/app/pull/1",
+            "https://github.com/acme/app/pull/0",
+            "https://github.com/acme/app/pull/7x",
+            "https://github.com/acme/app/pull/",
+        ] {
             assert_eq!(PrRef::parse(no), None, "{no}");
         }
     }
 
     fn view(over: serde_json::Value) -> PrView {
         let mut v = json!({ "url": "https://github.com/acme/app/pull/72", "number": 72, "title": "Fewer approvals", "author": "ian", "state": "open", "unknownField": 1 });
-        v.as_object_mut().unwrap().extend(over.as_object().unwrap().clone());
+        v.as_object_mut()
+            .unwrap()
+            .extend(over.as_object().unwrap().clone());
         serde_json::from_value(v).unwrap()
     }
 
     #[test]
     fn the_runners_answer_reads_with_fields_left_out() {
-        let pr = view(json!({ "mergeMethods": ["rebase", "squash"], "files": [{ "path": "a.ts", "additions": 1, "hunks": [{ "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-a", "+b"] }] }] }));
-        assert_eq!(pr.merge_methods, vec![MergeMethod::Rebase, MergeMethod::Squash]);
+        let pr = view(
+            json!({ "mergeMethods": ["rebase", "squash"], "files": [{ "path": "a.ts", "additions": 1, "hunks": [{ "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-a", "+b"] }] }] }),
+        );
+        assert_eq!(
+            pr.merge_methods,
+            vec![MergeMethod::Rebase, MergeMethod::Squash]
+        );
         let diff = pr.files[0].edit_diff("k");
         assert_eq!((diff.path.as_str(), diff.hunks[0].lines.len()), ("a.ts", 2));
     }
 
     #[test]
     fn a_pr_read_without_its_files_takes_them_when_they_come() {
-        let files = |path: &str| serde_json::from_value::<PrFiles>(json!({ "files": [{ "path": path }] })).unwrap();
+        let files = |path: &str| {
+            serde_json::from_value::<PrFiles>(json!({ "files": [{ "path": path }] })).unwrap()
+        };
         let later = view(json!({ "files": [], "filesLater": true }));
         assert!(later.files_later && later.files.is_empty());
         let full = later.clone().with_files(files("a.ts"));
@@ -522,47 +615,105 @@ mod tests {
         // A refresh read without its files keeps the last ones meanwhile,
         // still waiting for its own.
         let refreshed = later.clone().keeping_files_of(&full);
-        assert_eq!((refreshed.files[0].path.as_str(), refreshed.files_later), ("a.ts", true));
+        assert_eq!(
+            (refreshed.files[0].path.as_str(), refreshed.files_later),
+            ("a.ts", true)
+        );
         assert_eq!(refreshed.with_files(files("b.ts")).files[0].path, "b.ts");
         // An older runner's answer has its files and no filesLater.
         assert!(!view(json!({ "files": [{ "path": "c.ts" }] })).files_later);
-        let failed = serde_json::from_value::<PrFiles>(json!({ "files": [], "filesError": "HTTP 502" })).unwrap();
-        assert_eq!(later.with_files(failed).files_error.as_deref(), Some("HTTP 502"));
+        let failed =
+            serde_json::from_value::<PrFiles>(json!({ "files": [], "filesError": "HTTP 502" }))
+                .unwrap();
+        assert_eq!(
+            later.with_files(failed).files_error.as_deref(),
+            Some("HTTP 502")
+        );
     }
 
     #[test]
     fn a_kept_pr_reads_back_as_it_was() {
-        let pr = view(json!({ "state": "merged", "mergeMethods": ["squash"], "checks": [{ "name": "Linux", "state": "failed" }], "files": [{ "path": "a.rs", "additions": 2, "hunks": [{ "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["-a", "+b", "+c"] }] }], "filesCut": 3 }));
-        let kept = serde_json::to_string(&CachedPr { read_at: 5, pr: pr.clone() }).unwrap();
+        let pr = view(
+            json!({ "state": "merged", "mergeMethods": ["squash"], "checks": [{ "name": "Linux", "state": "failed" }], "files": [{ "path": "a.rs", "additions": 2, "hunks": [{ "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["-a", "+b", "+c"] }] }], "filesCut": 3 }),
+        );
+        let kept = serde_json::to_string(&CachedPr {
+            read_at: 5,
+            pr: pr.clone(),
+        })
+        .unwrap();
         let back: CachedPr = serde_json::from_str(&kept).unwrap();
         assert_eq!((back.read_at, back.pr), (5, pr));
-        assert_eq!(PrRef::parse("https://github.com/acme/app.js/pull/72/files").unwrap().cache_name(), "acme~app.js~72.json");
+        assert_eq!(
+            PrRef::parse("https://github.com/acme/app.js/pull/72/files")
+                .unwrap()
+                .cache_name(),
+            "acme~app.js~72.json"
+        );
     }
 
     #[test]
     fn the_prs_read_ahead_are_the_latest_messages_ones() {
-        let (a, b, c) = ("https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2", "https://github.com/o/r/pull/3");
+        let (a, b, c) = (
+            "https://github.com/o/r/pull/1",
+            "https://github.com/o/r/pull/2",
+            "https://github.com/o/r/pull/3",
+        );
         let newest = format!("see {b} and {a}/files");
         let older = format!("{a} {c}");
-        assert_eq!(recent_pr_links([newest.as_str(), older.as_str()], 4), vec![b, a, c]);
-        assert_eq!(recent_pr_links([newest.as_str(), older.as_str()], 2), vec![b, a]);
+        assert_eq!(
+            recent_pr_links([newest.as_str(), older.as_str()], 4),
+            vec![b, a, c]
+        );
+        assert_eq!(
+            recent_pr_links([newest.as_str(), older.as_str()], 2),
+            vec![b, a]
+        );
         assert!(recent_pr_links(["no links here"], 4).is_empty());
     }
 
     #[test]
     fn checks_say_what_failed() {
-        let c = |name: &str, state| PrCheck { name: name.into(), state, url: None, seconds: None };
+        let c = |name: &str, state| PrCheck {
+            name: name.into(),
+            state,
+            url: None,
+            seconds: None,
+        };
         assert_eq!(checks_summary(&[]), ("No checks".into(), None));
-        assert_eq!(checks_summary(&[c("a", CheckState::Passed), c("b", CheckState::Skipped)]), ("All 1 passed".into(), None));
-        assert_eq!(checks_summary(&[c("Windows", CheckState::Failed), c("b", CheckState::Passed), c("c", CheckState::Running)]), ("1 of 3 passed, 1 running".into(), Some("Windows failed".into())));
-        assert_eq!(checks_summary(&[c("W", CheckState::Failed), c("L", CheckState::Failed)]).1, Some("W and 1 more failed".into()));
+        assert_eq!(
+            checks_summary(&[c("a", CheckState::Passed), c("b", CheckState::Skipped)]),
+            ("All 1 passed".into(), None)
+        );
+        assert_eq!(
+            checks_summary(&[
+                c("Windows", CheckState::Failed),
+                c("b", CheckState::Passed),
+                c("c", CheckState::Running)
+            ]),
+            (
+                "1 of 3 passed, 1 running".into(),
+                Some("Windows failed".into())
+            )
+        );
+        assert_eq!(
+            checks_summary(&[c("W", CheckState::Failed), c("L", CheckState::Failed)]).1,
+            Some("W and 1 more failed".into())
+        );
     }
 
     #[test]
     fn status_says_what_decides_a_merge() {
         assert_eq!(status_words(&view(json!({}))), "Open");
-        assert_eq!(status_words(&view(json!({ "review": "approved", "mergeable": "conflicts" }))), "Approved · has conflicts");
-        assert_eq!(status_words(&view(json!({ "state": "merged", "mergedBy": "mike" }))), "Merged by mike");
+        assert_eq!(
+            status_words(&view(
+                json!({ "review": "approved", "mergeable": "conflicts" })
+            )),
+            "Approved · has conflicts"
+        );
+        assert_eq!(
+            status_words(&view(json!({ "state": "merged", "mergedBy": "mike" }))),
+            "Merged by mike"
+        );
         assert_eq!(status_words(&view(json!({ "state": "draft" }))), "Draft");
     }
 

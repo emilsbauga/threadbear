@@ -51,7 +51,10 @@ pub(crate) fn save(places: &HashMap<String, Place>) {
 }
 
 fn load_from(path: &Path) -> HashMap<String, Place> {
-    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 fn save_to(path: &Path, places: &HashMap<String, Place>) {
@@ -67,7 +70,9 @@ fn save_to(path: &Path, places: &HashMap<String, Place>) {
 }
 
 pub(crate) fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
@@ -75,7 +80,17 @@ mod tests {
     use super::*;
 
     fn place(at: u64, path: &str) -> Place {
-        Place { section: Some("threadbear.highlights".into()), open: Some(Open { path: path.into(), folder: false, title: "post.md".into(), from: "threadbear.highlights".into(), back: vec![] }), at }
+        Place {
+            section: Some("threadbear.highlights".into()),
+            open: Some(Open {
+                path: path.into(),
+                folder: false,
+                title: "post.md".into(),
+                from: "threadbear.highlights".into(),
+                back: vec![],
+            }),
+            at,
+        }
     }
 
     #[test]
@@ -83,9 +98,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("desktop-pane.json");
         let mut deep = place(7, "/blog/drafts/post.md");
-        let folder = Open { path: "/blog/drafts".into(), folder: true, title: "drafts".into(), from: "threadbear.files".into(), back: vec![] };
+        let folder = Open {
+            path: "/blog/drafts".into(),
+            folder: true,
+            title: "drafts".into(),
+            from: "threadbear.files".into(),
+            back: vec![],
+        };
         deep.open.as_mut().unwrap().back = vec![folder];
-        let places = HashMap::from([("t1".to_owned(), place(5, "/blog/post.md")), ("t3".to_owned(), deep), ("t2".to_owned(), Place { section: Some("threadbear.files".into()), open: None, at: 6 })]);
+        let places = HashMap::from([
+            ("t1".to_owned(), place(5, "/blog/post.md")),
+            ("t3".to_owned(), deep),
+            (
+                "t2".to_owned(),
+                Place {
+                    section: Some("threadbear.files".into()),
+                    open: None,
+                    at: 6,
+                },
+            ),
+        ]);
         save_to(&file, &places);
         assert_eq!(load_from(&file), places);
     }
@@ -94,7 +126,9 @@ mod tests {
     fn only_the_latest_threads_are_kept() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("desktop-pane.json");
-        let places: HashMap<String, Place> = (0..KEEP as u64 + 10).map(|i| (format!("t{i}"), place(i, "/a.md"))).collect();
+        let places: HashMap<String, Place> = (0..KEEP as u64 + 10)
+            .map(|i| (format!("t{i}"), place(i, "/a.md")))
+            .collect();
         save_to(&file, &places);
         let back = load_from(&file);
         assert_eq!(back.len(), KEEP);

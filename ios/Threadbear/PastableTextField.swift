@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// Paste" prompt; checking `hasImages` beforehand doesn't either.
 ///
 /// Given `photos`, each one is a chip in the words where it was put in
-/// (docs/protocol.md, "Pictures in a message"): a mark in `text`
+/// (docs/protocol/threads.md, "Pictures in a message"): a mark in `text`
 /// (InlinePictures) drawn as its PhotoChipAttachment, so deleting a chip
 /// takes its photo out too.
 struct PastableTextField: UIViewRepresentable {

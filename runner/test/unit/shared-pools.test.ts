@@ -1,4 +1,4 @@
-// Pools shared between runners (docs/protocol.md, "Pools", "Shared between
+// Pools shared between runners (docs/protocol/settings.md, "Pools", "Shared between
 // runners"): the backend's list names logins by provider and email, and
 // each runner turns it into its own pools, and back again on pools.save.
 import { test } from 'node:test';

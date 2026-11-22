@@ -14,7 +14,9 @@ pub enum FeedAction {
     /// Something is ready to apply; flush on the next frame tick.
     ScheduleFlush,
     /// A persisted event skipped ahead. Fetch `threads.events(afterSeq:)`.
-    NeedsCatchUp { after_seq: i64 },
+    NeedsCatchUp {
+        after_seq: i64,
+    },
 }
 
 pub struct ThreadFeed {
@@ -71,10 +73,20 @@ impl ThreadFeed {
         if !self.sparse {
             return None;
         }
-        let seqs: BTreeSet<i64> = self.model.events().iter().chain(&self.pending).filter(|e| !e.is_transient() && e.seq > 0).map(|e| e.seq).collect();
+        let seqs: BTreeSet<i64> = self
+            .model
+            .events()
+            .iter()
+            .chain(&self.pending)
+            .filter(|e| !e.is_transient() && e.seq > 0)
+            .map(|e| e.seq)
+            .collect();
         let mut ranges: Vec<[i64; 2]> = Vec::new();
         for seq in seqs {
-            if let Some(last) = ranges.last_mut().filter(|r| r[1].checked_add(1) == Some(seq)) {
+            if let Some(last) = ranges
+                .last_mut()
+                .filter(|r| r[1].checked_add(1) == Some(seq))
+            {
                 last[1] = seq;
             } else {
                 ranges.push([seq, seq]);
@@ -136,7 +148,9 @@ impl ThreadFeed {
             return FeedAction::None;
         }
         self.is_catching_up = true;
-        FeedAction::NeedsCatchUp { after_seq: self.accepted_seq }
+        FeedAction::NeedsCatchUp {
+            after_seq: self.accepted_seq,
+        }
     }
 
     pub fn receive_all(&mut self, events: Vec<Event>) -> FeedAction {
@@ -169,7 +183,11 @@ impl ThreadFeed {
     /// out between the `threads.events` load and the subscribe, which this
     /// app never got; it replaces each streaming row's text, then the deltas
     /// held since `begin_subscribe` carry on from it.
-    pub fn finish_subscribe(&mut self, events: Vec<Event>, in_progress: &[InProgress]) -> FeedAction {
+    pub fn finish_subscribe(
+        &mut self,
+        events: Vec<Event>,
+        in_progress: &[InProgress],
+    ) -> FeedAction {
         self.subscribing = false;
         let mut action = self.catch_up(events);
         for item in in_progress {
@@ -179,7 +197,11 @@ impl ThreadFeed {
                 "",
                 None,
                 "inProgress",
-                EventPayload::StreamingText { item_id: item.item_id.clone(), is_reasoning: item.type_ == "reasoning", text: item.text.clone() },
+                EventPayload::StreamingText {
+                    item_id: item.item_id.clone(),
+                    is_reasoning: item.type_ == "reasoning",
+                    text: item.text.clone(),
+                },
             ));
         }
         self.pending.append(&mut self.held);
@@ -201,7 +223,11 @@ impl ThreadFeed {
                     self.pending.push(event);
                 }
             }
-            return if self.pending.is_empty() { FeedAction::None } else { FeedAction::ScheduleFlush };
+            return if self.pending.is_empty() {
+                FeedAction::None
+            } else {
+                FeedAction::ScheduleFlush
+            };
         }
         let before = self.accepted_seq;
         for event in events {
@@ -216,7 +242,11 @@ impl ThreadFeed {
             }
         }
         if !self.ahead.is_empty() {
-            self.stalled_catch_ups = if self.accepted_seq == before { self.stalled_catch_ups + 1 } else { 0 };
+            self.stalled_catch_ups = if self.accepted_seq == before {
+                self.stalled_catch_ups + 1
+            } else {
+                0
+            };
             if self.stalled_catch_ups >= Self::MAX_STALLED_CATCH_UPS {
                 if let Some(next) = self.ahead.keys().next().copied() {
                     self.stalled_catch_ups = 0;
@@ -227,7 +257,9 @@ impl ThreadFeed {
         }
         if !self.ahead.is_empty() {
             self.is_catching_up = true;
-            return FeedAction::NeedsCatchUp { after_seq: self.accepted_seq };
+            return FeedAction::NeedsCatchUp {
+                after_seq: self.accepted_seq,
+            };
         }
         self.stalled_catch_ups = 0;
         if self.pending.is_empty() {
@@ -263,7 +295,11 @@ impl ThreadFeed {
         self.model.set_ask_picks(seq, picks)
     }
 
-    pub fn set_start_request(&mut self, approval_id: &str, request: StartRequest) -> TranscriptChange {
+    pub fn set_start_request(
+        &mut self,
+        approval_id: &str,
+        request: StartRequest,
+    ) -> TranscriptChange {
         self.model.set_start_request(approval_id, request)
     }
 
@@ -271,7 +307,12 @@ impl ThreadFeed {
         self.model.set_ask_notes(seq, notes)
     }
 
-    pub fn set_next_picks(&mut self, seq: i64, picks: BTreeSet<i64>, explain: BTreeSet<i64>) -> TranscriptChange {
+    pub fn set_next_picks(
+        &mut self,
+        seq: i64,
+        picks: BTreeSet<i64>,
+        explain: BTreeSet<i64>,
+    ) -> TranscriptChange {
         self.model.set_next_picks(seq, picks, explain)
     }
 
@@ -287,7 +328,11 @@ impl ThreadFeed {
         self.model.set_pending(list)
     }
 
-    pub fn set_live_turn(&mut self, turn: Option<&str>, started_at: Option<f64>) -> TranscriptChange {
+    pub fn set_live_turn(
+        &mut self,
+        turn: Option<&str>,
+        started_at: Option<f64>,
+    ) -> TranscriptChange {
         self.model.set_live_turn(turn, started_at)
     }
 
@@ -310,7 +355,8 @@ impl ThreadFeed {
         self.accepted_seq = model.last_seq();
         self.model = model;
         let accepted = self.accepted_seq;
-        self.pending.retain(|e| e.is_transient() || e.seq > accepted);
+        self.pending
+            .retain(|e| e.is_transient() || e.seq > accepted);
         self.ahead.retain(|seq, _| *seq > accepted);
         self.is_catching_up = false;
         self.drain_ahead();

@@ -10,6 +10,7 @@ import { SAID_MAX, WAKE_SYSTEM, awayFor, hibernateNote, localWhen, readWakeAnswe
 import type { ThreadState } from '../runner.ts';
 import { NO_WAKE_TIME } from '../runner.ts';
 import { parseWhen } from '../when.ts';
+import { parkRecord, placeOf, wakesOnStart, type PlaceEvent } from '../place.ts';
 import type { WaitFor } from '../needs.ts';
 import path from 'node:path';
 import { providerName } from '../providers.ts';
@@ -51,7 +52,7 @@ export const hibernationPart = {
     const by = params.by === 'agent' ? ('agent' as const) : undefined;
     const input = { said, now: this.clock.now(), timeZone, title: st.rec.title, first: gist.first, brief: st.rec.brief?.text, ...(by ? { by } : {}) };
     this.update({ threadId: st.rec.id, snoozedUntil: NO_WAKE_TIME });
-    st.rec.wakeWhen = { said, pending: true, ...(by ? { by } : {}) };
+    this.park(st, { kind: 'wordsAsked', said, ...(by ? { by } : {}) });
     this.markDirty(st);
     const ask = (withThread: boolean) =>
       models.generate({
@@ -71,8 +72,7 @@ export const hibernationPart = {
     }
     const answer = res.ok ? readWakeAnswer(res.value, this.clock.now()) : { error: res.message || `No answer from the model (${res.reason}).` };
     if ('error' in answer) {
-      delete st.rec.snoozedUntil;
-      delete st.rec.wakeWhen;
+      this.park(st, { kind: 'wordsFailed', said });
       st.rec.updatedAt = this.isoNow();
       this.markDirty(st);
       this.armSnoozeTimer();
@@ -80,10 +80,8 @@ export const hibernationPart = {
       if (by) this.recheckStarter(st);
       throw new RpcError(ErrorCode.other, `Couldn't work out when to wake it: ${answer.error}`);
     }
-    st.rec.snoozedUntil = answer.until ?? NO_WAKE_TIME;
-    st.rec.wakeWhen = { said, ...(answer.topic ? { topic: answer.topic } : {}), ...(by ? { by } : {}) };
     // What it already checked counts only for the same words, from its agent.
-    if (st.rec.wakeChecked && (!by || st.rec.wakeChecked.said !== said)) delete st.rec.wakeChecked;
+    this.park(st, { kind: 'wordsAnswered', said, ...(answer.until ? { until: answer.until } : {}), ...(answer.topic ? { topic: answer.topic } : {}), ...(by ? { by } : {}) });
     this.emit(st, { type: 'system.note', text: hibernateNote(answer, said, timeZone, by) });
     this.armSnoozeTimer();
     // Its starter's card counts it as working while it waits to land
@@ -131,7 +129,7 @@ export const hibernationPart = {
     const seq = this.threads.get(inThreadId)?.rec.lastSeq ?? 0;
     const checked = st.rec.wakeChecked?.said === wakeWhen.said ? st.rec.wakeChecked : undefined;
     if (checked && (checked.from[inThreadId] ?? -1) >= seq) return false;
-    st.rec.wakeChecked = { said: wakeWhen.said, from: { ...checked?.from, [inThreadId]: seq } };
+    this.park(st, { kind: 'checked', threadId: inThreadId, seq });
     this.wake(st, { why: `to check whether ${topic}${where ? `, from "${where}"` : ''}` });
     this.armSnoozeTimer();
     // Which thread, only where send_message would let it say so without a
@@ -192,7 +190,8 @@ export const hibernationPart = {
     if (!until || Date.parse(until) <= now) until = new Date(now + WAIT_FOR_DEFAULT_MS).toISOString();
     this.update({ threadId: rec.id, snoozedUntil: until });
     const by = leastAuthority(askedBy, this.authorityNow(rec.id));
-    rec.waitingOn = list.map((x) => ({ ...x, by }));
+    // Refused only if it has woken already (its time passed meanwhile).
+    if (!this.park(st, { kind: 'waitOn', waits: list.map((x) => ({ ...x, by })) })) return;
     this.markDirty(st);
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const also = skipped.length ? ` (${skipped.join(', ')} isn't a thread here that's still going, so it isn't waited on.)` : '';
@@ -499,9 +498,7 @@ export const hibernationPart = {
   // this isn't the one it went to sleep on, or a wake-when whose answer was
   // lost with the old runner.
   wakesOnStart(this: Runner, rec: ThreadState['rec']): boolean {
-    if (rec.wakeWhen?.pending) return true;
-    if (!rec.snoozedUntilRestart) return false;
-    return !rec.untilRelease || rec.untilRelease !== this.release;
+    return wakesOnStart(placeOf(rec), this.release);
   },
 
   armSnoozeTimer(this: Runner): void {
@@ -533,7 +530,7 @@ export const hibernationPart = {
     // (13 Nov 2026, the implicit state machines scan). Brought back later,
     // it's in the inbox, as it would have been.
     if (rec.archivedAt) {
-      this.endHibernation(st);
+      this.park(st, { kind: 'wake' });
       st.rec.updatedAt = this.isoNow();
       this.markDirty(st);
       return;
@@ -550,23 +547,21 @@ export const hibernationPart = {
         : away ? `Woke up after hibernating for ${awayFor(ms)}.` : 'Woke up from hibernating.';
     // Starting "Woke up" is what gives it the bear in the app (RowContent.isWakeNote).
     this.emit(st, { type: 'system.note', text });
-    rec.woke = { at: new Date(now).toISOString(), ...(since ? { since } : {}) };
-    this.endHibernation(st);
+    // Its "Woke up" mark, until Mike looks (place.ts, wake).
+    this.park(st, { kind: 'wake' });
     st.rec.forceUnread = true;
     st.rec.updatedAt = this.isoNow();
     this.markDirty(st);
     this.kickQueue(st);
   },
 
-  endHibernation(this: Runner, st: ThreadState): void {
-    const { rec } = st;
-    delete rec.snoozedAt;
-    delete rec.snoozedUntil;
-    delete rec.snoozedUntilRestart;
-    delete rec.untilRelease;
-    delete rec.wakeWhen;
-    delete rec.waitingOn;
-    delete rec.hibernatedForApp;
+  // Moves where a thread is parked (place.ts): the only way its record's
+  // snooze, wait and archive fields change. A move that doesn't apply where
+  // it is (a caller checked something else) leaves it, and is logged.
+  park(this: Runner, st: ThreadState, e: PlaceEvent): boolean {
+    const res = parkRecord(st.rec, e, this.clock.now());
+    if (!res.ok) this.log.warn('a thread move refused', { threadId: st.rec.id, event: e.kind, why: res.reason });
+    return res.ok;
   },
 };
 

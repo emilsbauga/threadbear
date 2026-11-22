@@ -132,8 +132,14 @@ pub struct Spring {
     pub damping_fraction: f64,
 }
 
-pub const LIFT: Spring = Spring { response: 0.32, damping_fraction: 0.72 };
-pub const SETTLE: Spring = Spring { response: 0.34, damping_fraction: 0.86 };
+pub const LIFT: Spring = Spring {
+    response: 0.32,
+    damping_fraction: 0.72,
+};
+pub const SETTLE: Spring = Spring {
+    response: 0.34,
+    damping_fraction: 0.86,
+};
 /// `Animation.snappy(duration: 0.16)`, for the target highlight moving.
 pub const TRACK_SECONDS: f64 = 0.16;
 /// How long a landed ghost stays before it fades (DockController.finish).
@@ -217,17 +223,24 @@ impl DockController {
             if self.landing.is_some() {
                 return;
             }
-            let Some(group) = self.layout.group_containing(panel) else { return };
-            let Some(frame) = self.frames.get(&group.id).copied() else { return };
+            let Some(group) = self.layout.group_containing(panel) else {
+                return;
+            };
+            let Some(frame) = self.frames.get(&group.id).copied() else {
+                return;
+            };
             // A tab that isn't showing comes to the front as it's picked up.
             if group.selected != panel {
                 self.layout.select(panel);
             }
             self.drag = Some(DragState {
                 panel: panel.to_string(),
-                source_group: group.id.clone(),
+                source_group: group.id,
                 source_frame: frame,
-                grab: Point::new((start.x - frame.min_x()) / frame.width.max(1.), (start.y - frame.min_y()) / frame.height.max(1.)),
+                grab: Point::new(
+                    (start.x - frame.min_x()) / frame.width.max(1.),
+                    (start.y - frame.min_y()) / frame.height.max(1.),
+                ),
                 location,
                 lifted: true,
                 target: None,
@@ -240,7 +253,11 @@ impl DockController {
         let mut target = self.target_for(panel, location);
         // Outside the window altogether, or on the compass's New Window: a
         // window of its own, there.
-        let wants_window = target.as_ref().and_then(|t| t.compass.as_ref()).and_then(|c| c.hovered) == Some(CompassItem::Window)
+        let wants_window = target
+            .as_ref()
+            .and_then(|t| t.compass.as_ref())
+            .and_then(|c| c.hovered)
+            == Some(CompassItem::Window)
             || (target.is_none() && self.is_outside_window(location));
         if wants_window && self.layout.can_float(panel) {
             if let Some(d) = self.drag.clone() {
@@ -263,7 +280,12 @@ impl DockController {
     /// follows the pointer, and over the dock the drop targets show as for
     /// any other panel. `window_frame` is the window's frame on screen and
     /// `mouse` the pointer on screen. Says where to put the window.
-    pub fn window_drag_changed(&mut self, panel: &str, window_frame: Rect, mouse: Point) -> Option<WindowDragUpdate> {
+    pub fn window_drag_changed(
+        &mut self,
+        panel: &str,
+        window_frame: Rect,
+        mouse: Point,
+    ) -> Option<WindowDragUpdate> {
         if self.cancelled {
             return None;
         }
@@ -291,11 +313,16 @@ impl DockController {
         }
         let target = location.and_then(|p| self.target_for(panel, p));
         // See-through over a place to dock, so the targets under it show.
-        let see_through = target.as_ref().is_some_and(|t| t.drop.is_some() || t.compass.is_some());
+        let see_through = target
+            .as_ref()
+            .is_some_and(|t| t.drop.is_some() || t.compass.is_some());
         if let Some(d) = &mut self.drag {
             d.target = target;
         }
-        Some(WindowDragUpdate { origin, alpha: if see_through { WINDOW_SEE_THROUGH } else { 1. } })
+        Some(WindowDragUpdate {
+            origin,
+            alpha: if see_through { WINDOW_SEE_THROUGH } else { 1. },
+        })
     }
 
     /// The panel was let go. Returns `true` if the view should reset a
@@ -362,14 +389,26 @@ impl DockController {
         let to = d.target.as_ref().map(|t| t.land.unwrap_or(t.preview));
         match (drop, to) {
             (Some(drop), Some(to)) => {
-                self.landing = Some(Landing { panel: d.panel.clone(), source_size: size, to });
+                self.landing = Some(Landing {
+                    panel: d.panel.clone(),
+                    source_size: size,
+                    to,
+                });
                 self.drag = None;
                 self.layout.move_panel(&d.panel, drop);
             }
             _ => {
                 // Nowhere to go, or cancelled: fly home.
-                let to = self.frames.get(&d.source_group).copied().unwrap_or(d.source_frame);
-                self.landing = Some(Landing { panel: d.panel.clone(), source_size: size, to });
+                let to = self
+                    .frames
+                    .get(&d.source_group)
+                    .copied()
+                    .unwrap_or(d.source_frame);
+                self.landing = Some(Landing {
+                    panel: d.panel.clone(),
+                    source_size: size,
+                    to,
+                });
                 self.drag = None;
             }
         }
@@ -383,7 +422,9 @@ impl DockController {
     /// A panel's group's frame in the dock, for tests and the demo's
     /// frozen drags.
     pub fn frame_of(&self, panel: &str) -> Option<Rect> {
-        self.layout.group_containing(panel).and_then(|g| self.frames.get(&g.id).copied())
+        self.layout
+            .group_containing(panel)
+            .and_then(|g| self.frames.get(&g.id).copied())
     }
 
     /// The panel showing at `point` (in `window`'s coordinates, top-left
@@ -399,7 +440,11 @@ impl DockController {
                 // window in the dock's coordinates (origin is usually 0).
                 let offset = self.window_rect.map(|r| r.origin()).unwrap_or_default();
                 let p = Point::new(point.x + offset.x, point.y + offset.y);
-                self.layout.groups().into_iter().find(|g| self.frames.get(&g.id).is_some_and(|f| f.contains(p))).map(|g| g.selected)
+                self.layout
+                    .groups()
+                    .into_iter()
+                    .find(|g| self.frames.get(&g.id).is_some_and(|f| f.contains(p)))
+                    .map(|g| g.selected)
             }
         }
     }
@@ -412,10 +457,19 @@ impl DockController {
         if !self.layout.can_float(panel) {
             return;
         }
-        let Some(frame) = self.frame_of(panel) else { return };
+        let Some(frame) = self.frame_of(panel) else {
+            return;
+        };
         let size = Self::window_size_for(frame.size());
-        let at = Rect::new(frame.min_x() + NEW_WINDOW_OFFSET, frame.min_y() + NEW_WINDOW_OFFSET, size.width, size.height);
-        let Some(screen) = self.screen_rect(at) else { return };
+        let at = Rect::new(
+            frame.min_x() + NEW_WINDOW_OFFSET,
+            frame.min_y() + NEW_WINDOW_OFFSET,
+            size.width,
+            size.height,
+        );
+        let Some(screen) = self.screen_rect(at) else {
+            return;
+        };
         self.focus_next = Some(panel.to_string());
         let (home, share) = self.home_of(panel);
         self.layout.float(panel, screen, home, share);
@@ -432,7 +486,12 @@ impl DockController {
             return;
         }
         let s = Self::window_size_for(size);
-        let rect = Rect::new(self.bounds.mid_x() - s.width / 2., self.bounds.mid_y() - s.height / 2., s.width, s.height);
+        let rect = Rect::new(
+            self.bounds.mid_x() - s.width / 2.,
+            self.bounds.mid_y() - s.height / 2.,
+            s.width,
+            s.height,
+        );
         // Not on screen yet (no window to measure from): docked will do.
         if self.bounds.width <= 0. {
             self.open(panel, DockDrop::window(DockEdge::Right));
@@ -452,8 +511,19 @@ impl DockController {
     /// From a window of its own back into the dock, where it came from if
     /// that's still there.
     pub fn put_back(&mut self, panel: &str) {
-        let Some(float) = self.layout.floating.iter().find(|f| f.panel == panel).cloned() else { return };
-        let drop = float.home.filter(|h| self.layout.can_drop(panel, h)).unwrap_or(DockDrop::window(DockEdge::Right));
+        let Some(float) = self
+            .layout
+            .floating
+            .iter()
+            .find(|f| f.panel == panel)
+            .cloned()
+        else {
+            return;
+        };
+        let drop = float
+            .home
+            .filter(|h| self.layout.can_drop(panel, h))
+            .unwrap_or(DockDrop::window(DockEdge::Right));
         self.layout.move_panel(panel, drop);
     }
 
@@ -461,11 +531,15 @@ impl DockController {
     /// that has others, else along the side of the window it's nearest, at
     /// the share of the window it has now.
     pub fn home_of(&self, panel: &str) -> (Option<DockDrop>, Option<f64>) {
-        let Some(group) = self.layout.group_containing(panel) else { return (None, None) };
+        let Some(group) = self.layout.group_containing(panel) else {
+            return (None, None);
+        };
         if group.panels.len() > 1 {
             return (Some(DockDrop::tab(group.id)), None);
         }
-        let Some(f) = self.frames.get(&group.id).copied() else { return (None, None) };
+        let Some(f) = self.frames.get(&group.id).copied() else {
+            return (None, None);
+        };
         if self.bounds.width <= 0. || self.bounds.height <= 0. {
             return (None, None);
         }
@@ -476,20 +550,40 @@ impl DockController {
             (DockEdge::Top, f.mid_y() - b.min_y()),
             (DockEdge::Bottom, b.max_y() - f.mid_y()),
         ];
-        let edge = sides.iter().min_by(|a, b| a.1.total_cmp(&b.1)).expect("four sides").0;
-        let share = if edge.axis() == SplitAxis::Horizontal { f.width / b.width } else { f.height / b.height };
+        #[expect(
+            clippy::expect_used,
+            reason = "min_by over four sides always finds one"
+        )]
+        let edge = sides
+            .iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("four sides")
+            .0;
+        let share = if edge.axis() == SplitAxis::Horizontal {
+            f.width / b.width
+        } else {
+            f.height / b.height
+        };
         (Some(DockDrop::window(edge)), Some(share))
     }
 
     pub fn window_size_for(size: Size) -> Size {
-        Size::new(size.width.max(WINDOW_MIN.width).min(WINDOW_MAX.width), size.height.max(WINDOW_MIN.height).min(WINDOW_MAX.height))
+        Size::new(
+            size.width.clamp(WINDOW_MIN.width, WINDOW_MAX.width),
+            size.height.clamp(WINDOW_MIN.height, WINDOW_MAX.height),
+        )
     }
 
     /// The window a dragged panel would open as, on screen: its own size
     /// (within limits), with the spot it was picked up by under the pointer.
     pub fn float_frame(&self, d: &DragState, p: Point) -> Option<Rect> {
         let size = Self::window_size_for(d.source_frame.size());
-        let rect = Rect::new(p.x - d.grab.x * size.width, p.y - d.grab.y * size.height, size.width, size.height);
+        let rect = Rect::new(
+            p.x - d.grab.x * size.width,
+            p.y - d.grab.y * size.height,
+            size.width,
+            size.height,
+        );
         self.screen_rect(rect)
     }
 
@@ -529,7 +623,11 @@ impl DockController {
 
     /// In the layout and the tab showing in its group, or in a window of its own.
     pub fn is_showing(&self, panel: &str) -> bool {
-        self.layout.is_floating(panel) || self.layout.group_containing(panel).is_some_and(|g| g.selected == panel)
+        self.layout.is_floating(panel)
+            || self
+                .layout
+                .group_containing(panel)
+                .is_some_and(|g| g.selected == panel)
     }
 
     /// Brings a panel up: its tab if it's in the layout, else opened as a
@@ -546,8 +644,60 @@ impl DockController {
             }
             return;
         }
-        let drop = near.iter().find_map(|p| self.layout.group_containing(p)).map(|g| DockDrop::tab(g.id)).unwrap_or_else(|| fallback.clone());
+        let drop = near
+            .iter()
+            .find_map(|p| self.layout.group_containing(p))
+            .map(|g| DockDrop::tab(g.id))
+            .unwrap_or_else(|| fallback.clone());
         self.open(panel, drop);
+    }
+
+    /// Makes the group `panel` is in at least `width` points wide, taking
+    /// the room from what's beside it down to `keep` points each (`widened`
+    /// has the rules), for a panel whose content needs the room. `available`
+    /// and `gap` are the view's, as for `group_frames`. Returns what it
+    /// changed, for `restore_width`. None if nothing changed, or before the
+    /// dock has been laid out, when there are no widths to go by.
+    pub fn widen(
+        &mut self,
+        panel: &str,
+        width: f64,
+        keep: f64,
+        available: &dyn Fn(&str) -> bool,
+        gap: f64,
+    ) -> Option<Widened> {
+        if self.bounds.width <= 0. {
+            return None;
+        }
+        let widened = widened(
+            &self.layout.root,
+            panel,
+            width,
+            keep,
+            self.bounds,
+            available,
+            gap,
+        )?;
+        self.layout.set_fractions(&widened.split, &widened.after);
+        Some(widened)
+    }
+
+    /// Puts back what `widen` changed, and says whether it did. Only while
+    /// the split is still as `widen` left it: once a divider's been dragged,
+    /// or a panel has come or gone beside it, the sizes are ones chosen
+    /// since and they stay.
+    pub fn restore_width(&mut self, widened: &Widened) -> bool {
+        let untouched = split_in(&self.layout.root, &widened.split).is_some_and(|s| {
+            s.children.len() == widened.after.len()
+                && s.fractions
+                    .iter()
+                    .zip(&widened.after)
+                    .all(|(now, after)| (now - after).abs() < WIDEN_SAME)
+        });
+        if untouched {
+            self.layout.set_fractions(&widened.split, &widened.before);
+        }
+        untouched
     }
 
     /// A rail button, VS Code's way: closes a panel that's showing, brings
@@ -598,7 +748,11 @@ impl DockController {
                 }
             }
         }
-        let group = self.layout.groups().into_iter().find(|g| self.frames.get(&g.id).is_some_and(|f| f.contains(p)))?;
+        let group = self
+            .layout
+            .groups()
+            .into_iter()
+            .find(|g| self.frames.get(&g.id).is_some_and(|f| f.contains(p)))?;
         let frame = *self.frames.get(&group.id)?;
 
         let center = Point::new(frame.mid_x(), frame.mid_y());
@@ -609,10 +763,23 @@ impl DockController {
         if !compass_area.contains(p) {
             let fx = (p.x - frame.min_x()) / frame.width;
             let fy = (p.y - frame.min_y()) / frame.height;
-            let sides = [(DockEdge::Left, fx), (DockEdge::Right, 1. - fx), (DockEdge::Top, fy), (DockEdge::Bottom, 1. - fy)];
-            let (edge, distance) = sides.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1)).expect("four sides");
+            let sides = [
+                (DockEdge::Left, fx),
+                (DockEdge::Right, 1. - fx),
+                (DockEdge::Top, fy),
+                (DockEdge::Bottom, 1. - fy),
+            ];
+            #[expect(
+                clippy::expect_used,
+                reason = "min_by over four sides always finds one"
+            )]
+            let (edge, distance) = sides
+                .iter()
+                .copied()
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .expect("four sides");
             if distance < EDGE_BAND {
-                let drop = DockDrop::edge(group.id.clone(), edge);
+                let drop = DockDrop::edge(group.id, edge);
                 return Some(DropTarget {
                     preview: Self::slice(frame, edge, 0.5),
                     drop: self.layout.can_drop(panel, &drop).then_some(drop),
@@ -629,13 +796,22 @@ impl DockController {
                 if *item == CompassItem::Window {
                     return !self.layout.can_float(panel);
                 }
-                !self.layout.can_drop(panel, &Self::drop_for(*item, &group.id))
+                !self
+                    .layout
+                    .can_drop(panel, &Self::drop_for(*item, &group.id))
             })
             .collect();
-        let hovered = items.iter().find(|(_, r)| r.contains(p)).map(|(item, _)| *item);
+        let hovered = items
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .map(|(item, _)| *item);
         let item = hovered.unwrap_or(CompassItem::Tab);
         // New window isn't a place in the dock: drag_changed works out its frame.
-        let drop = if disabled.contains(&item) || item == CompassItem::Window { None } else { Some(Self::drop_for(item, &group.id)) };
+        let drop = if disabled.contains(&item) || item == CompassItem::Window {
+            None
+        } else {
+            Some(Self::drop_for(item, &group.id))
+        };
         let preview = match item {
             CompassItem::Split(edge) => Self::slice(frame, edge, 0.5),
             CompassItem::Tab | CompassItem::Swap | CompassItem::Window => frame,
@@ -643,18 +819,29 @@ impl DockController {
         Some(DropTarget {
             drop,
             preview,
-            compass: Some(CompassState { group: group.id.clone(), center, hovered, disabled }),
+            compass: Some(CompassState {
+                group: group.id,
+                center,
+                hovered,
+                disabled,
+            }),
             ..DropTarget::default()
         })
     }
 
     fn bar_target(&self, panel: &str, p: Point) -> Option<DropTarget> {
-        let group = self.layout.groups().into_iter().find(|g| self.layout.shows_header(g) && self.bars.get(&g.id).is_some_and(|b| b.contains(p)))?;
+        let group = self.layout.groups().into_iter().find(|g| {
+            self.layout.shows_header(g) && self.bars.get(&g.id).is_some_and(|b| b.contains(p))
+        })?;
         let bar = *self.bars.get(&group.id)?;
         let frame = *self.frames.get(&group.id)?;
         let drop = DockDrop::tab(group.id.clone());
         // After the titles, or as far along as there's room for.
-        let start = self.bar_space_starts.get(&group.id).copied().unwrap_or(bar.min_x());
+        let start = self
+            .bar_space_starts
+            .get(&group.id)
+            .copied()
+            .unwrap_or(bar.min_x());
         let width = BAR_TAB_WIDTH.min((bar.width - 16.).max(40.));
         let x = (bar.min_x() + 4.).max((start + 4.).min(bar.max_x() - width - 4.));
         let tab = Rect::new(x, bar.min_y() + 4., width, (bar.height - 8.).max(12.));
@@ -698,10 +885,21 @@ impl DockController {
     pub fn compass_items(c: Point) -> Vec<(CompassItem, Rect)> {
         let s = COMPASS_BUTTON;
         let step = COMPASS_BUTTON + COMPASS_GAP;
-        let at = |dx: f64, dy: f64| Rect::new(c.x + dx * step - s / 2., c.y + dy * step - s / 2., s, s);
+        let at =
+            |dx: f64, dy: f64| Rect::new(c.x + dx * step - s / 2., c.y + dy * step - s / 2., s, s);
         let y = c.y + 2. * step - s / 2. + 6.;
-        let swap = Rect::new(c.x - COMPASS_SWAP_WIDTH - COMPASS_GAP / 2., y, COMPASS_SWAP_WIDTH, COMPASS_SWAP_HEIGHT);
-        let window = Rect::new(c.x + COMPASS_GAP / 2., y, COMPASS_SWAP_WIDTH, COMPASS_SWAP_HEIGHT);
+        let swap = Rect::new(
+            c.x - COMPASS_SWAP_WIDTH - COMPASS_GAP / 2.,
+            y,
+            COMPASS_SWAP_WIDTH,
+            COMPASS_SWAP_HEIGHT,
+        );
+        let window = Rect::new(
+            c.x + COMPASS_GAP / 2.,
+            y,
+            COMPASS_SWAP_WIDTH,
+            COMPASS_SWAP_HEIGHT,
+        );
         vec![
             (CompassItem::Tab, at(0., 0.)),
             (CompassItem::Split(DockEdge::Top), at(0., -1.)),
@@ -717,15 +915,25 @@ impl DockController {
     pub fn slice(r: Rect, edge: DockEdge, share: f64) -> Rect {
         match edge {
             DockEdge::Left => Rect::new(r.min_x(), r.min_y(), r.width * share, r.height),
-            DockEdge::Right => Rect::new(r.max_x() - r.width * share, r.min_y(), r.width * share, r.height),
+            DockEdge::Right => Rect::new(
+                r.max_x() - r.width * share,
+                r.min_y(),
+                r.width * share,
+                r.height,
+            ),
             DockEdge::Top => Rect::new(r.min_x(), r.min_y(), r.width, r.height * share),
-            DockEdge::Bottom => Rect::new(r.min_x(), r.max_y() - r.height * share, r.width, r.height * share),
+            DockEdge::Bottom => Rect::new(
+                r.min_x(),
+                r.max_y() - r.height * share,
+                r.width,
+                r.height * share,
+            ),
         }
     }
 
     /// The ghost's scale once lifted: to about `GHOST_WIDTH` wide, within limits.
     pub fn ghost_scale(size: Size) -> f64 {
-        (GHOST_WIDTH / size.width.max(1.)).max(0.3).min(0.85)
+        (GHOST_WIDTH / size.width.max(1.)).clamp(0.3, 0.85)
     }
 
     /// The ghost's rect while lifted: shrunk, with the grab point under the
@@ -736,7 +944,12 @@ impl DockController {
         let scale = 1. + (Self::ghost_scale(size) - 1.) * lift;
         let w = size.width * scale;
         let h = size.height * scale;
-        Rect::new(d.location.x - d.grab.x * w, d.location.y - d.grab.y * h, w, h)
+        Rect::new(
+            d.location.x - d.grab.x * w,
+            d.location.y - d.grab.y * h,
+            w,
+            h,
+        )
     }
 }
 
@@ -751,12 +964,25 @@ fn union_all(rects: impl IntoIterator<Item = Rect>) -> Rect {
 /// The group as drawn: without its unavailable panels, showing the selected
 /// one if it's available, else the first that is. All of them, if none is.
 pub fn visible_group(group: &DockGroup, available: &dyn Fn(&str) -> bool) -> DockGroup {
-    let panels: Vec<PanelId> = group.panels.iter().filter(|p| available(p)).cloned().collect();
+    let panels: Vec<PanelId> = group
+        .panels
+        .iter()
+        .filter(|p| available(p))
+        .cloned()
+        .collect();
     if panels.is_empty() {
         return group.clone();
     }
-    let selected = if panels.contains(&group.selected) { group.selected.clone() } else { panels[0].clone() };
-    DockGroup { id: group.id.clone(), panels, selected }
+    let selected = if panels.contains(&group.selected) {
+        group.selected.clone()
+    } else {
+        panels[0].clone()
+    };
+    DockGroup {
+        id: group.id.clone(),
+        panels,
+        selected,
+    }
 }
 
 /// The group in the window's top-leading corner as drawn, where the
@@ -776,7 +1002,9 @@ pub fn top_leading_group_id(root: &DockNode, available: &dyn Fn(&str) -> bool) -
 /// The children that have a panel with something to show, by index. All
 /// of them if none has, as a group shows all its tabs then.
 pub fn shown_indices(split: &DockSplit, available: &dyn Fn(&str) -> bool) -> Vec<usize> {
-    let shown: Vec<usize> = (0..split.children.len()).filter(|i| has_available(&split.children[*i], available)).collect();
+    let shown: Vec<usize> = (0..split.children.len())
+        .filter(|i| has_available(&split.children[*i], available))
+        .collect();
     if shown.is_empty() {
         (0..split.children.len()).collect()
     } else {
@@ -819,7 +1047,8 @@ pub fn resized(f: &[f64], i: usize, delta: f64, min: f64) -> Vec<f64> {
     let pair = f[i] + f[i + 1];
     let lo = min;
     let hi = pair - min;
-    if !(lo < hi) {
+    // (Not ordered covers a NaN too.)
+    if lo.partial_cmp(&hi) != Some(std::cmp::Ordering::Less) {
         return f;
     }
     f[i] = (f[i] + delta).max(lo).min(hi);
@@ -832,28 +1061,172 @@ pub fn resized(f: &[f64], i: usize, delta: f64, min: f64) -> Vec<f64> {
 /// in their fractions (`SplitLayout.placeSubviews`). For a layout change's
 /// glide (the view's `LayoutMotion`), which needs to know where the groups are
 /// going before they've been laid out there.
-pub fn group_frames(root: &DockNode, bounds: Rect, available: &dyn Fn(&str) -> bool, gap: f64) -> Vec<(String, Rect)> {
+pub fn group_frames(
+    root: &DockNode,
+    bounds: Rect,
+    available: &dyn Fn(&str) -> bool,
+    gap: f64,
+) -> Vec<(String, Rect)> {
     let mut out = Vec::new();
     place_groups(root, bounds, available, gap, &mut out);
     out
 }
 
-fn place_groups(node: &DockNode, r: Rect, available: &dyn Fn(&str) -> bool, gap: f64, out: &mut Vec<(String, Rect)>) {
+fn place_groups(
+    node: &DockNode,
+    r: Rect,
+    available: &dyn Fn(&str) -> bool,
+    gap: f64,
+    out: &mut Vec<(String, Rect)>,
+) {
     match node {
         DockNode::Group(g) => out.push((g.id.clone(), r)),
         DockNode::Split(s) => {
-            let shown = shown_indices(s, available);
-            let fractions = normalized(&shown.iter().map(|&i| s.fractions[i]).collect::<Vec<_>>());
-            let horizontal = s.axis == SplitAxis::Horizontal;
-            let length = if horizontal { r.width } else { r.height };
-            let room = (length - gap * shown.len().saturating_sub(1) as f64).max(0.);
-            let mut at = 0.;
-            for (k, &i) in shown.iter().enumerate() {
-                let size = room * fractions[k];
-                let child = if horizontal { Rect::new(r.x + at, r.y, size, r.height) } else { Rect::new(r.x, r.y + at, r.width, size) };
+            for (i, child) in shown_rects(s, r, available, gap) {
                 place_groups(&s.children[i], child, available, gap, out);
-                at += size + gap;
             }
         }
+    }
+}
+
+/// A split's shown children, by index, and where each is drawn in `r`.
+fn shown_rects(
+    s: &DockSplit,
+    r: Rect,
+    available: &dyn Fn(&str) -> bool,
+    gap: f64,
+) -> Vec<(usize, Rect)> {
+    let shown = shown_indices(s, available);
+    let fractions = normalized(&shown.iter().map(|&i| s.fractions[i]).collect::<Vec<_>>());
+    let horizontal = s.axis == SplitAxis::Horizontal;
+    let length = if horizontal { r.width } else { r.height };
+    let room = (length - gap * shown.len().saturating_sub(1) as f64).max(0.);
+    let mut at = 0.;
+    let mut out = Vec::new();
+    for (k, &i) in shown.iter().enumerate() {
+        let size = room * fractions[k];
+        out.push((
+            i,
+            if horizontal {
+                Rect::new(r.x + at, r.y, size, r.height)
+            } else {
+                Rect::new(r.x, r.y + at, r.width, size)
+            },
+        ));
+        at += size + gap;
+    }
+    out
+}
+
+// MARK: Widening a panel from code. Not in the Swift dock.
+
+/// What `widened` changed, for `DockController::restore_width` to put back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Widened {
+    pub split: String,
+    /// The split's fractions before and after, hidden children's included.
+    pub before: Vec<f64>,
+    pub after: Vec<f64>,
+}
+
+/// A change of less than this many points isn't made: there'd be nothing to
+/// see, and still something to undo.
+const WIDEN_LEAST: f64 = 0.5;
+/// How far a split's fractions can be from the ones `widened` left and still
+/// count as those: normalising them again moves the last digits.
+const WIDEN_SAME: f64 = 1e-6;
+
+/// The fractions that make the group `panel` is in at least `width` points
+/// wide, with the dock drawn in `bounds` as `group_frames` has it. The room
+/// comes from the other shown children of the nearest split above the group
+/// that lays its children side by side, each giving in proportion to what it
+/// has over `keep` points, so none of them ends up narrower than `keep` (or
+/// than a divider would leave it, `MIN_PANEL`) and one that's narrower
+/// already isn't touched. With too little room for `width`, the group gets
+/// what there is. Hidden children keep their fractions, as with a divider.
+///
+/// None if nothing would change: the group is that wide already, there's
+/// nothing to take, nothing is beside it, or it isn't drawn (its panels have
+/// nothing to show, or `panel` is in a window of its own or not open).
+pub fn widened(
+    root: &DockNode,
+    panel: &str,
+    width: f64,
+    keep: f64,
+    bounds: Rect,
+    available: &dyn Fn(&str) -> bool,
+    gap: f64,
+) -> Option<Widened> {
+    let (split, index, length) = row_of(root, bounds, panel, available, gap, None)?;
+    let shown = shown_indices(split, available);
+    let at = shown.iter().position(|&i| i == index)?;
+    let room = (length - gap * shown.len().saturating_sub(1) as f64).max(0.);
+    let mut sizes: Vec<f64> = normalized(
+        &shown
+            .iter()
+            .map(|&i| split.fractions[i])
+            .collect::<Vec<_>>(),
+    )
+    .iter()
+    .map(|f| f * room)
+    .collect();
+    let keep = keep.max(MIN_PANEL);
+    let spare: Vec<f64> = sizes
+        .iter()
+        .enumerate()
+        .map(|(k, size)| if k == at { 0. } else { (size - keep).max(0.) })
+        .collect();
+    let total: f64 = spare.iter().sum();
+    let take = (width - sizes[at]).min(total);
+    if take < WIDEN_LEAST {
+        return None;
+    }
+    for (size, over) in sizes.iter_mut().zip(&spare) {
+        *size -= take * over / total;
+    }
+    sizes[at] += take;
+    let after =
+        DockLayout::normalised_fractions(&merged(&normalized(&sizes), &split.fractions, &shown));
+    Some(Widened {
+        split: split.id.clone(),
+        before: split.fractions.clone(),
+        after,
+    })
+}
+
+/// The nearest split above `panel`'s group that lays its children side by
+/// side, which of its children the group is in, and the split's width as
+/// drawn. A vertical split in between is passed through: its children are
+/// all as wide as it is. None if the group isn't drawn or has no such split.
+fn row_of<'a>(
+    node: &'a DockNode,
+    r: Rect,
+    panel: &str,
+    available: &dyn Fn(&str) -> bool,
+    gap: f64,
+    row: Option<(&'a DockSplit, usize, f64)>,
+) -> Option<(&'a DockSplit, usize, f64)> {
+    match node {
+        DockNode::Group(g) => row.filter(|_| g.panels.iter().any(|p| p == panel)),
+        DockNode::Split(s) => {
+            shown_rects(s, r, available, gap)
+                .into_iter()
+                .find_map(|(i, child)| {
+                    let row = if s.axis == SplitAxis::Horizontal {
+                        Some((s, i, r.width))
+                    } else {
+                        row
+                    };
+                    row_of(&s.children[i], child, panel, available, gap, row)
+                })
+        }
+    }
+}
+
+fn split_in<'a>(node: &'a DockNode, id: &str) -> Option<&'a DockSplit> {
+    match node {
+        DockNode::Group(_) => None,
+        DockNode::Split(s) if s.id == id => Some(s),
+        DockNode::Split(s) => s.children.iter().find_map(|c| split_in(c, id)),
     }
 }

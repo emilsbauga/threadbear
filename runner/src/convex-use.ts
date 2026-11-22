@@ -1,6 +1,6 @@
 // How much of a free Convex plan this runner is using, as near as a runner can
 // tell, and the once-only question that turns full sync on for an install from
-// before it was the default (docs/full-convex.md step 6).
+// before it was the default (docs/archive/full-convex.md step 6).
 //
 // A runner only holds a deploy key and a runner key, and neither can read the
 // team's usage: that takes a Convex login (the dashboard, or the API with a

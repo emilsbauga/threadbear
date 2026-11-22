@@ -2,7 +2,7 @@
 // Devices.swift (Device, DeviceList, DeviceText), DevicesModel.swift's
 // DefaultBrowser.shortName, RunnerStatus's `localOnly` and `pushOff`, and
 // DevicesSettings.swift's PairingQR: the phones and browsers paired with the
-// mirror as the runner lists them (docs/protocol.md, "Devices"), what each row
+// mirror as the runner lists them (docs/protocol/moves.md, "Devices"), what each row
 // says, and the QR code the iPhone app scans. A token is only ever in the QR
 // code on screen or the link the browser opens: nothing here keeps one.
 use crate::inbox::parse_ms;
@@ -78,7 +78,12 @@ impl Device {
         if !self.name.is_empty() {
             return self.name.clone();
         }
-        if self.kind == Kind::Browser { "Browser" } else { "Phone" }.to_owned()
+        if self.kind == Kind::Browser {
+            "Browser"
+        } else {
+            "Phone"
+        }
+        .to_owned()
     }
 
     /// Run out, as the backend says or as its date does (`DeviceText.detail`).
@@ -101,7 +106,11 @@ impl Device {
             parts.push(format!("Paired {}", day(at, now)));
         }
         if let Some(at) = self.expires_ms {
-            parts.push(format!("{} {}", if parts.is_empty() { "Until" } else { "until" }, day(at, now)));
+            parts.push(format!(
+                "{} {}",
+                if parts.is_empty() { "Until" } else { "until" },
+                day(at, now)
+            ));
         }
         parts.join(", ")
     }
@@ -118,15 +127,24 @@ impl Device {
     /// The device in the dump, as the Swift `settings` command writes it:
     /// `browser "Chrome": Paired 22 Oct, until 20 Jan 2027`.
     pub fn line<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> String {
-        format!("{} \"{}\": {}", self.kind.name(), self.name, self.detail(now))
+        format!(
+            "{} \"{}\": {}",
+            self.kind.name(),
+            self.name,
+            self.detail(now)
+        )
     }
 }
 
 /// "28 Oct", with the year once it isn't this one (`DeviceText.day`), in the
 /// time zone of `now`. en_GB's short months, as the Swift formatter's are.
 fn day<Tz: TimeZone>(at_ms: i64, now: &DateTime<Tz>) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let Some(date) = now.timezone().timestamp_millis_opt(at_ms).single() else { return String::new() };
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let Some(date) = now.timezone().timestamp_millis_opt(at_ms).single() else {
+        return String::new();
+    };
     let short = format!("{} {}", date.day(), MONTHS[date.month0() as usize]);
     if date.year() == now.year() {
         short
@@ -147,7 +165,16 @@ pub struct DeviceList {
 impl DeviceList {
     pub fn decode(v: &Value) -> DeviceList {
         let text = |key: &str| v[key].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
-        DeviceList { devices: v["devices"].as_array().into_iter().flatten().filter_map(Device::decode).collect(), site: text("site"), reason: text("reason") }
+        DeviceList {
+            devices: v["devices"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Device::decode)
+                .collect(),
+            site: text("site"),
+            reason: text("reason"),
+        }
     }
 }
 
@@ -168,11 +195,21 @@ pub fn push_off(status: &Value) -> bool {
 
 /// The same hosts the runner counts as this Mac (runner/src/secure-url.ts).
 fn is_loopback(url: &str) -> bool {
-    let Some(rest) = url.split_once("://").map(|(_, rest)| rest) else { return false };
+    let Some(rest) = url.split_once("://").map(|(_, rest)| rest) else {
+        return false;
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let authority = authority.rsplit('@').next().unwrap_or(authority);
     // "[::1]:3210" keeps its brackets; "127.0.0.1:3210" loses its port.
-    let host = if authority.starts_with('[') { authority.split(']').next().map(|h| format!("{h}]")).unwrap_or_default() } else { authority.split(':').next().unwrap_or("").to_owned() };
+    let host = if authority.starts_with('[') {
+        authority
+            .split(']')
+            .next()
+            .map(|h| format!("{h}]"))
+            .unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or("").to_owned()
+    };
     let host = host.to_lowercase();
     if host == "localhost" || host == "::1" || host == "[::1]" {
         return true;
@@ -187,7 +224,9 @@ fn is_loopback(url: &str) -> bool {
 /// first branches), or None when the sections can show.
 pub fn blocked(unsupported: bool, connected: bool, list: &DeviceList) -> Option<Vec<String>> {
     if unsupported {
-        return Some(vec!["This runner is too old to pair phones. It gets it when it next updates.".to_owned()]);
+        return Some(vec![
+            "This runner is too old to pair phones. It gets it when it next updates.".to_owned(),
+        ]);
     }
     if !connected {
         return Some(vec!["Not connected to the runner.".to_owned()]);
@@ -202,7 +241,11 @@ pub fn blocked(unsupported: bool, connected: bool, list: &DeviceList) -> Option<
 
 /// The first section's heading.
 pub fn add_title(local_only: bool) -> &'static str {
-    if local_only { "Add a browser" } else { "Add a phone or browser" }
+    if local_only {
+        "Add a browser"
+    } else {
+        "Add a phone or browser"
+    }
 }
 
 /// What it is, behind its ⓘ.
@@ -230,12 +273,19 @@ pub const PAIRED_ASK: &str = "explain what a paired phone or browser can see and
 
 /// Open signed in's tooltip, naming the browser the link goes to.
 pub fn website_tip(browser: Option<&str>) -> String {
-    format!("Opens your Threadbear website in {}, signed in for 90 days", browser.unwrap_or("your browser"))
+    format!(
+        "Opens your Threadbear website in {}, signed in for 90 days",
+        browser.unwrap_or("your browser")
+    )
 }
 
 /// What the Paired list says with nothing in it.
 pub fn empty_line(loaded: bool) -> &'static str {
-    if loaded { "Nothing paired yet" } else { "Loading…" }
+    if loaded {
+        "Nothing paired yet"
+    } else {
+        "Loading…"
+    }
 }
 
 /// "Google Chrome" is Chrome to everyone; the rest keep their names
@@ -243,7 +293,11 @@ pub fn empty_line(loaded: bool) -> &'static str {
 pub fn browser_name(raw: &str) -> String {
     let trimmed = raw.trim();
     let name = trimmed.strip_prefix("Google ").unwrap_or(trimmed);
-    if name.is_empty() { "Browser".to_owned() } else { name.to_owned() }
+    if name.is_empty() {
+        "Browser".to_owned()
+    } else {
+        name.to_owned()
+    }
 }
 
 // ---------------------------------------------------------------- the pairing code
@@ -297,7 +351,15 @@ pub fn pairing_qr(text: &str) -> Option<Qr> {
     use qrcodegen::{QrCode, QrCodeEcc, QrSegment, Version};
     let segments = [QrSegment::make_bytes(text.as_bytes())];
     // No boosting the correction level: CoreImage keeps the one it's given.
-    let code = QrCode::encode_segments_advanced(&segments, QrCodeEcc::Medium, Version::MIN, Version::MAX, None, false).ok()?;
+    let code = QrCode::encode_segments_advanced(
+        &segments,
+        QrCodeEcc::Medium,
+        Version::MIN,
+        Version::MAX,
+        None,
+        false,
+    )
+    .ok()?;
     let inner = code.size() as usize;
     let size = inner + 2;
     let mut dark = vec![false; size * size];
@@ -316,7 +378,10 @@ mod tests {
     use serde_json::json;
 
     fn now() -> DateTime<FixedOffset> {
-        FixedOffset::east_opt(0).unwrap().with_ymd_and_hms(2026, 11, 11, 12, 0, 0).unwrap()
+        FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2026, 11, 11, 12, 0, 0)
+            .unwrap()
     }
 
     fn mock_list() -> DeviceList {
@@ -336,12 +401,26 @@ mod tests {
     #[test]
     fn reads_the_list_as_the_swift_app_does() {
         let list = mock_list();
-        assert_eq!(list.devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["tok1", "tok2", "tok3", "tok4"], "a row with no id is left out");
-        assert_eq!(list.site.as_deref(), Some("https://demo-bear-123.convex.site"));
+        assert_eq!(
+            list.devices
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tok1", "tok2", "tok3", "tok4"],
+            "a row with no id is left out"
+        );
+        assert_eq!(
+            list.site.as_deref(),
+            Some("https://demo-bear-123.convex.site")
+        );
         assert_eq!(list.reason, None, "an empty reason is none");
         let other = &list.devices[3];
         assert_eq!(other.kind, Kind::Other);
-        assert_eq!(other.title(), "Phone", "a nameless device is called what it is");
+        assert_eq!(
+            other.title(),
+            "Phone",
+            "a nameless device is called what it is"
+        );
         assert_eq!(other.kind.symbol(), "questionmark.circle");
         assert_eq!(DeviceList::decode(&json!({})), DeviceList::default());
     }
@@ -349,37 +428,85 @@ mod tests {
     #[test]
     fn each_row_says_when_it_was_paired_and_until_when() {
         let list = mock_list();
-        let lines: Vec<String> = list.devices.iter().take(3).map(|d| d.line(&now())).collect();
+        let lines: Vec<String> = list
+            .devices
+            .iter()
+            .take(3)
+            .map(|d| d.line(&now()))
+            .collect();
         // The same lines the Swift app's `settings` command gave for the mock.
-        assert_eq!(lines, [r#"phone "iPhone": Paired 21 Oct, until 19 Jan 2027"#, r#"browser "Chrome": Paired 22 Oct, until 20 Jan 2027"#, r#"browser "Safari": Expired 29 Sep: pair it again"#]);
+        assert_eq!(
+            lines,
+            [
+                r#"phone "iPhone": Paired 21 Oct, until 19 Jan 2027"#,
+                r#"browser "Chrome": Paired 22 Oct, until 20 Jan 2027"#,
+                r#"browser "Safari": Expired 29 Sep: pair it again"#
+            ]
+        );
         // Out of date though the backend hasn't said so yet.
-        let late = Device { expired: false, ..list.devices[1].clone() };
-        let feb = FixedOffset::east_opt(0).unwrap().with_ymd_and_hms(2027, 2, 1, 0, 0, 0).unwrap();
+        let late = Device {
+            expired: false,
+            ..list.devices[1].clone()
+        };
+        let feb = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2027, 2, 1, 0, 0, 0)
+            .unwrap();
         assert_eq!(late.detail(&feb), "Expired 20 Jan: pair it again");
-        let bare = Device { created_ms: None, ..list.devices[0].clone() };
+        let bare = Device {
+            created_ms: None,
+            ..list.devices[0].clone()
+        };
         assert_eq!(bare.detail(&now()), "Until 19 Jan 2027");
-        let undated = Device { created_ms: None, expires_ms: None, expired: true, ..list.devices[0].clone() };
+        let undated = Device {
+            created_ms: None,
+            expires_ms: None,
+            expired: true,
+            ..list.devices[0].clone()
+        };
         assert_eq!(undated.detail(&now()), "Expired: pair it again");
-        assert_eq!(list.devices[1].revoke_tip(), "Sign this browser out. It shows the sign-in page at its next load.");
+        assert_eq!(
+            list.devices[1].revoke_tip(),
+            "Sign this browser out. It shows the sign-in page at its next load."
+        );
     }
 
     #[test]
     fn says_why_nothing_can_pair() {
         let list = DeviceList::default();
-        assert_eq!(blocked(true, true, &list).unwrap()[0], "This runner is too old to pair phones. It gets it when it next updates.");
-        assert_eq!(blocked(false, false, &list).unwrap()[0], "Not connected to the runner.");
+        assert_eq!(
+            blocked(true, true, &list).unwrap()[0],
+            "This runner is too old to pair phones. It gets it when it next updates."
+        );
+        assert_eq!(
+            blocked(false, false, &list).unwrap()[0],
+            "Not connected to the runner."
+        );
         assert_eq!(blocked(false, true, &list), None);
-        let off = DeviceList { reason: Some("sync is off".into()), ..Default::default() };
+        let off = DeviceList {
+            reason: Some("sync is off".into()),
+            ..Default::default()
+        };
         assert_eq!(blocked(false, true, &off).unwrap()[0], "Your threads aren't mirrored to Convex yet (sync is off), so there's nothing for a phone or browser to read.");
     }
 
     #[test]
     fn a_backend_on_this_mac_only_is_a_loopback_one() {
-        assert!(local_only(&json!({ "sync": { "url": "http://127.0.0.1:13210" } })));
-        assert!(local_only(&json!({ "sync": { "url": "http://localhost:3210/" } })));
-        assert!(local_only(&json!({ "sync": { "url": "http://[::1]:3210" } })));
-        assert!(!local_only(&json!({ "sync": { "url": "https://demo-bear-123.convex.cloud" } })));
-        assert!(!local_only(&json!({ "sync": { "url": "http://127.0.0.1.example.com" } })));
+        assert!(local_only(
+            &json!({ "sync": { "url": "http://127.0.0.1:13210" } })
+        ));
+        assert!(local_only(
+            &json!({ "sync": { "url": "http://localhost:3210/" } })
+        ));
+        assert!(local_only(
+            &json!({ "sync": { "url": "http://[::1]:3210" } })
+        ));
+        assert!(!local_only(
+            &json!({ "sync": { "url": "https://demo-bear-123.convex.cloud" } })
+        ));
+        assert!(!local_only(
+            &json!({ "sync": { "url": "http://127.0.0.1.example.com" } })
+        ));
         assert!(!local_only(&json!({})));
         assert!(push_off(&json!({ "sync": { "pushOff": true } })));
         assert!(!push_off(&json!({ "sync": {} })));
@@ -392,26 +519,43 @@ mod tests {
         assert_eq!(browser_name("Google Chrome"), "Chrome");
         assert_eq!(browser_name("Safari"), "Safari");
         assert_eq!(browser_name("  "), "Browser");
-        assert_eq!(website_tip(Some("Chrome")), "Opens your Threadbear website in Chrome, signed in for 90 days");
-        assert_eq!(website_tip(None), "Opens your Threadbear website in your browser, signed in for 90 days");
+        assert_eq!(
+            website_tip(Some("Chrome")),
+            "Opens your Threadbear website in Chrome, signed in for 90 days"
+        );
+        assert_eq!(
+            website_tip(None),
+            "Opens your Threadbear website in your browser, signed in for 90 days"
+        );
     }
 
     #[test]
     fn the_pairing_code_is_corecimages_size() {
         // The mock's 80-byte link is version 5 at level M (37 squares), with a
         // square of margin round it: 39 a side, 5 pixels each in the sheet's 220.
-        let link = "threadbear://pair?url=https%3A%2F%2Fdemo-bear-123.convex.cloud&token=tb_demo0004";
+        let link =
+            "threadbear://pair?url=https%3A%2F%2Fdemo-bear-123.convex.cloud&token=tb_demo0004";
         let qr = pairing_qr(link).unwrap();
         assert_eq!(qr.size, 39);
         assert_eq!(qr.scale(220.), 5.);
         // The margin is light, and the finder pattern's corner is dark.
         assert!((0..qr.size).all(|i| !qr.is_dark(i, 0) && !qr.is_dark(0, i)));
         assert!(qr.is_dark(1, 1) && qr.is_dark(7, 1) && !qr.is_dark(8, 1));
-        assert_eq!(qr.runs(1).first(), Some(&(1, 7)), "the finder's top edge is one run");
+        assert_eq!(
+            qr.runs(1).first(),
+            Some(&(1, 7)),
+            "the finder's top edge is one run"
+        );
         // A real link, with the runner's key, takes a bigger code but still fits.
-        let real = format!("{link}&key=runner_3f6c2a8e-9b1d-4c55-a2b0-7e1f0d9c4b2a:{}", "A".repeat(44));
+        let real = format!(
+            "{link}&key=runner_3f6c2a8e-9b1d-4c55-a2b0-7e1f0d9c4b2a:{}",
+            "A".repeat(44)
+        );
         let big = pairing_qr(&real).unwrap();
         assert!(big.size > qr.size && big.scale(220.) >= 3.);
-        assert!(pairing_qr(&"x".repeat(5000)).is_none(), "too long for any code");
+        assert!(
+            pairing_qr(&"x".repeat(5000)).is_none(),
+            "too long for any code"
+        );
     }
 }

@@ -50,6 +50,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ $# -gt 0 ] || { echo "no command given" >&2; exit 2; }
+# THREADBEAR_REMOTE_TRACE=1: a timed line on stderr as each step starts, so a
+# run that hangs says how far it got (scripts/nightly-fuzz.sh sets it: a
+# round on 20 Nov printed nothing for 47 minutes, and on 18 Nov one sat in
+# a mkdir on the host all night).
+phase() { [ "${THREADBEAR_REMOTE_TRACE:-}" != 1 ] || echo "remote.sh $(date +%H:%M:%S): $*" >&2; }
 [ -z "$build_flag" ] || [ "$desk" = 0 -a "$perf" = 0 ] || { echo "remote.sh: --build is for plain builds, not with --desk or --perf" >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 base=".cache/threadbear-check/gpui"
@@ -145,6 +150,7 @@ if command -v flock >/dev/null 2>&1; then
 else
   turn_cmd() { turn=(perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or die "remote.sh: no lock file: $!\n"; flock($f, $ARGV[0] ? LOCK_EX : LOCK_EX | LOCK_NB) or exit 1' "$1"); }
 fi
+phase "taking this checkout's turn"
 turn_cmd 0
 if ! "${turn[@]}"; then
   if [ -n "$try_flag" ]; then
@@ -175,11 +181,13 @@ fi
 # guard files first: the worktree copy may not exist yet, or be queued for
 # eviction. No build or capture starts until the final whole-command turn.
 boot="$base/run-$tag-tools"
+phase "making the tools folder on $host"
 # The helpers are written here and then run, so every folder down to them must
 # be this account's own and closed to others, or the run stops: a group with
 # write on the cache could otherwise swap one in between (Codex's review of
 # Daybreak 114/116, 13 Nov). A fresh boot folder each run, never one found there.
 "${SSH[@]}" "$host" "umask 077 && mkdir -p $base && for d in .cache ${base%/*} $base; do [ -d \$d ] && [ ! -L \$d ] && [ -O \$d ] && chmod go-w \$d || { echo \"remote.sh: ~/\$d on $host isn't a folder of this account's own\" >&2; exit 1; }; done && rm -rf $boot && mkdir -m 700 $boot"
+phase "copying the helpers to $host"
 for helper in perf-lock.pl perf-children.pl hangup-guard.sh; do
   "${SSH[@]}" "$host" "cat > $boot/$helper" <"$root/scripts/$helper"
 done
@@ -200,6 +208,7 @@ old_target=""
 precopy="$old_target""mkdir -p $src $target; [ -e $target/.synced-by-content ] || { if [ -d $src ]; then find $src -type f -exec touch -c {} + || exit 9; fi; touch $target/.synced-by-content 2>/dev/null; }; touch $src $target; find $base -mindepth 1 -maxdepth 1 \\( -name 'src-*' -o -name 'target-*' -o -name src -o -name target \\) -mtime +3 ! -name 'src-$key' ! -name '${target##*/}' 2>/dev/null | while IFS= read -r d; do [ -n \"\$(find \"\$d\" -mmin -15 2>/dev/null | head -1)\" ] || rm -rf \"\$d\"; done; find $base -mindepth 1 -maxdepth 1 -name 'run-*' -mmin +720 -exec rm -rf {} + 2>/dev/null; true
 cd \"\$HOME/$base\"
 bash \"\$HOME/$boot/trim-remote-cache.sh\" $key ${target##*/}"
+phase "taking the host's lock, then trimming its cache"
 alive_stdin 7
 remote="env THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" THREADBEAR_REMOTE_TOOLS=\"\$HOME/$boot\" perl $boot/perf-lock.pl ${build_flag}${try_flag}- bash -c $(single_quoted "$precopy")"
 "${SSH[@]}" "$host" "$remote" <&7 &
@@ -228,6 +237,12 @@ fi
 # passed on stale code (11 Nov, thread 699f31d2). Unchanged files keep their
 # time, so they don't rebuild. desktop/scripts/test-remote-freshness.sh <host>
 # plays that case.
+# First, a path that became a link, or stopped being one, since the copy there
+# was made (scripts/fix-link-kinds.sh): rsync can't swap those over itself.
+phase "copying the checkout to $host"
+links=()
+while IFS= read -r l; do links+=("$l"); done < <(bash "$root/scripts/fix-link-kinds.sh" --links "$root")
+"${SSH[@]}" "$host" "bash -c $(printf '%q' "$(cat "$root/scripts/fix-link-kinds.sh")") _ $(printf '%q ' "$src" ${links[@]+"${links[@]}"})" </dev/null
 rsync -rlpDcz -e "${SSH[*]}" --delete --exclude .git --exclude node_modules --exclude .build --exclude target --exclude reports \
   --exclude .fixtures --exclude .swiftpm --exclude dist --exclude DerivedData --exclude .DS_Store \
   "$root/" "$host:$src/"
@@ -304,7 +319,7 @@ mkdir -p "\$THREADBEAR_WEB_RUNTIME_PARENT"
 # priority cargo would have called this one, and this one it, for ever.
 export PATH="\$HOME/$src/desktop/scripts/shared-cargo:\$PATH"
 # What the specs need, the first time this folder's used.
-for dir in features app/Tools/mock-runner runner; do
+for dir in features mock-runner runner; do
   [ -d "\$dir/node_modules" ] || npm ci --silent --prefix "\$dir" >/dev/null 2>&1 || true
 done
 PRELUDE
@@ -340,6 +355,7 @@ $postlude"
 # Named by this run alone: a stopped --desk run's .gone file stays there (the
 # guard's comment says why) until the clear-out above, half a day on.
 script="$base/run-$tag.sh"
+phase "sending the run"
 "${SSH[@]}" "$host" "cat > $script" <<<"$run"
 alive_stdin 7
 # What a run waiting for the host's perf lock is told the holder is running
@@ -353,6 +369,7 @@ if [ "$desk" = 1 ]; then
 else
   remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${build_flag}${try_flag}- bash $script"
 fi
+phase "taking the host's lock and running: $*"
 "${SSH[@]}" "$host" "$remote; rc=\$?; rm -f $script; rm -rf $boot; exit \$rc" <&7 &
 ssh_pid=$!
 rc=0

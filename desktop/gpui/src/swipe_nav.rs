@@ -59,7 +59,10 @@ impl SwipeNav {
     /// (app_update.rs). Only while its events are recent, so a gesture whose
     /// end never came can't hold the update off for good.
     pub(crate) fn under_way(&self) -> bool {
-        (self.touched || self.swipe.direction().is_some()) && self.last_event.is_some_and(|at| at.elapsed().as_secs_f32() < 30.)
+        (self.touched || self.swipe.direction().is_some())
+            && self
+                .last_event
+                .is_some_and(|at| at.elapsed().as_secs_f32() < 30.)
     }
 }
 
@@ -68,7 +71,9 @@ impl SwipeNav {
 pub(crate) fn scroll_swipes_on() -> bool {
     #[cfg(target_os = "macos")]
     {
-        #[allow(unused_unsafe)]
+        #[allow(unused_unsafe, reason = "unsafe only in some objc2 versions")]
+        // SAFETY: a class method that only reads a system setting, with no
+        // arguments; unsafe only in some objc2-app-kit versions.
         unsafe {
             objc2_app_kit::NSEvent::isSwipeTrackingFromScrollEventsEnabled()
         }
@@ -87,7 +92,9 @@ fn natural_scrolling() -> bool {
     {
         use objc2_foundation::{NSString, NSUserDefaults};
         let key = NSString::from_str("com.apple.swipescrolldirection");
-        #[allow(unused_unsafe)]
+        #[allow(unused_unsafe, reason = "unsafe only in some objc2 versions")]
+        // SAFETY: NSUserDefaults is thread safe, and these only read one key
+        // through a live NSString; unsafe only in some objc2-foundation versions.
         unsafe {
             let defaults = NSUserDefaults::standardUserDefaults();
             defaults.objectForKey(&key).is_none() || defaults.boolForKey(&key)
@@ -121,12 +128,22 @@ impl Threadbear {
     /// A scroll event, seen before anything else in the window. Says whether
     /// it's the swipe's, to be kept from the rest. `over_row`: the pointer's
     /// on a sidebar row that swipes, which needs the gesture too.
-    pub(crate) fn page_scrolled(&mut self, event: &ScrollEvent, over_row: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn page_scrolled(
+        &mut self,
+        event: &ScrollEvent,
+        over_row: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // A mouse wheel moves in lines and has no phases: never a swipe.
-        let ScrollDelta::Pixels(delta) = event.delta else { return false };
+        let ScrollDelta::Pixels(delta) = event.delta else {
+            return false;
+        };
         let (dx, dy) = (f64::from(f32::from(delta.x)), f64::from(f32::from(delta.y)));
         let now = Instant::now();
-        let elapsed = self.swipe_nav.last_event.map_or(1. / 60., |at| now.saturating_duration_since(at).as_secs_f64());
+        let elapsed = self.swipe_nav.last_event.map_or(1. / 60., |at| {
+            now.saturating_duration_since(at).as_secs_f64()
+        });
         match event.touch_phase {
             TouchPhase::Started => {
                 let nav = &mut self.swipe_nav;
@@ -147,9 +164,15 @@ impl Threadbear {
                     // and a way with nowhere to go is too (it gives a little
                     // and stops); elsewhere the card says there's nowhere to go.
                     let (allowed, empty): (Vec<Direction>, Vec<Direction>) = if over_row {
-                        (ways.into_iter().filter(|w| *w == Direction::Back).collect(), Vec::new())
+                        (
+                            ways.into_iter().filter(|w| *w == Direction::Back).collect(),
+                            Vec::new(),
+                        )
                     } else {
-                        let empty = [Direction::Back, Direction::Forward].into_iter().filter(|w| !ways.contains(w)).collect();
+                        let empty = [Direction::Back, Direction::Forward]
+                            .into_iter()
+                            .filter(|w| !ways.contains(w))
+                            .collect();
                         (ways, empty)
                     };
                     self.swipe_nav.swipe.begin(&allowed, &empty, !over_row);
@@ -157,7 +180,8 @@ impl Threadbear {
                 if dx == 0. && dy == 0. {
                     // The fingers touching is held too, while it's the
                     // window's to decide.
-                    let holds = self.swipe_nav.swipe.holds && self.swipe_nav.swipe.phase == Phase::Deciding;
+                    let holds =
+                        self.swipe_nav.swipe.holds && self.swipe_nav.swipe.phase == Phase::Deciding;
                     if holds {
                         self.swipe_nav.held.push(event.clone());
                     }
@@ -168,7 +192,9 @@ impl Threadbear {
             TouchPhase::Moved => {
                 self.swipe_nav.touched = false;
                 // Momentum after a page swipe: nobody else's, till it stops.
-                if self.swipe_nav.eating_momentum && !crate::row_swipe::momentum_over(&mut self.swipe_nav.momentum_at) {
+                if self.swipe_nav.eating_momentum
+                    && !crate::row_swipe::momentum_over(&mut self.swipe_nav.momentum_at)
+                {
                     return true;
                 }
                 self.swipe_nav.eating_momentum = false;
@@ -211,7 +237,15 @@ impl Threadbear {
         }
     }
 
-    fn page_moved(&mut self, event: &ScrollEvent, dx: f64, dy: f64, elapsed: f64, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn page_moved(
+        &mut self,
+        event: &ScrollEvent,
+        dx: f64,
+        dy: f64,
+        elapsed: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let swipe = &mut self.swipe_nav.swipe;
         let (was, was_armed) = (swipe.direction(), swipe.armed());
         let verdict = swipe.move_by(dx, dy, elapsed);
@@ -245,11 +279,13 @@ impl Threadbear {
         events.push(last.clone());
         let me = cx.entity().downgrade();
         window.defer(cx, move |window, cx| {
-            me.update(cx, |this, _| this.swipe_nav.replaying = true).ok();
+            me.update(cx, |this, _| this.swipe_nav.replaying = true)
+                .ok();
             for event in events {
                 window.dispatch_event(event.to_platform_input(), cx);
             }
-            me.update(cx, |this, _| this.swipe_nav.replaying = false).ok();
+            me.update(cx, |this, _| this.swipe_nav.replaying = false)
+                .ok();
         });
     }
 
@@ -274,7 +310,7 @@ impl Threadbear {
         canvas(
             |_, _, _| {},
             move |_, _, window, _| {
-                let app = app.clone();
+                let app = app;
                 window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                     if phase != DispatchPhase::Capture {
                         return;
@@ -282,15 +318,31 @@ impl Threadbear {
                     // Held events handed on: they go straight through. And
                     // nothing goes back or forward behind a dialog, which
                     // has the window (the Swift app's are windows of their own).
-                    if app.upgrade().is_none_or(|this| this.read(cx).swipe_nav.replaying) || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+                    if app
+                        .upgrade()
+                        .is_none_or(|this| this.read(cx).swipe_nav.replaying)
+                        || window.has_active_dialog(cx)
+                        || window.has_active_sheet(cx)
+                    {
                         return;
                     }
                     let mine = app
                         .update(cx, |this, cx| {
                             if event.touch_phase == TouchPhase::Started {
-                                this.swipe_nav.board_scroll = this.panel_available(crate::shell::HIGHLIGHTS, cx)
-                                    && this.dock.read(cx).controller.is_showing(crate::shell::HIGHLIGHTS)
-                                    && this.pane_thread().is_some_and(|thread| this.side.read(cx).board_scroll_at(&thread, event.position, window));
+                                this.swipe_nav.board_scroll = this
+                                    .panel_available(crate::shell::HIGHLIGHTS, cx)
+                                    && this
+                                        .dock
+                                        .read(cx)
+                                        .controller
+                                        .is_showing(crate::shell::HIGHLIGHTS)
+                                    && this.pane_thread().is_some_and(|thread| {
+                                        this.side.read(cx).board_scroll_at(
+                                            &thread,
+                                            event.position,
+                                            window,
+                                        )
+                                    });
                                 if this.swipe_nav.board_scroll {
                                     this.swipe_nav.swipe.reset();
                                     this.swipe_nav.held.clear();
@@ -299,14 +351,19 @@ impl Threadbear {
                                 }
                             }
                             if this.swipe_nav.board_scroll {
-                                if matches!(event.touch_phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                                if matches!(
+                                    event.touch_phase,
+                                    TouchPhase::Ended | TouchPhase::Cancelled
+                                ) {
                                     this.swipe_nav.board_scroll = false;
                                 }
                                 return false;
                             }
                             // The Archived note swipes away under the fingers
                             // (header.rs), so a gesture on it isn't Back's.
-                            if this.archived_note.is_some() && (this.toast_hovered || this.toast_swipe.x != gpui_kit::px(0.)) {
+                            if this.archived_note.is_some()
+                                && (this.toast_hovered || this.toast_swipe.x != gpui_kit::px(0.))
+                            {
                                 return false;
                             }
                             // A row's swipe under way has the whole gesture,
@@ -337,8 +394,18 @@ impl Threadbear {
         let place = self.destination(back);
         // Nowhere to go: said, rather than nothing showing at all.
         let empty = swipe.is_empty() || place.is_none();
-        let title = place.unwrap_or_else(|| if back { "Nothing to go back to".into() } else { "Nothing to go forward to".into() });
-        let detail = if empty { None } else { self.destination_detail(back) };
+        let title = place.unwrap_or_else(|| {
+            if back {
+                "Nothing to go back to".into()
+            } else {
+                "Nothing to go forward to".into()
+            }
+        });
+        let detail = if empty {
+            None
+        } else {
+            self.destination_detail(back)
+        };
         let armed = swipe.armed();
         let progress = swipe.progress() as f32;
         let accent = style::accent(cx);
@@ -355,7 +422,11 @@ impl Threadbear {
             .w(gpui_kit::px(width * progress))
             .when(fingers_left, |s| s.right_0())
             .when(!fingers_left, |s| s.left_0())
-            .bg(if armed { accent.opacity(0.32) } else { style::primary_opacity(cx, 0.07) });
+            .bg(if armed {
+                accent.opacity(0.32)
+            } else {
+                style::primary_opacity(cx, 0.07)
+            });
         let circle = div()
             .flex_none()
             .size(px(34.))
@@ -363,14 +434,34 @@ impl Threadbear {
             .flex()
             .items_center()
             .justify_center()
-            .bg(if armed { accent } else { style::primary_opacity(cx, 0.08) })
-            .child(crate::sidebar::icon(if back { "chevron.left" } else { "chevron.right" }, 14., if armed { gpui_kit::white() } else { secondary }));
+            .bg(if armed {
+                accent
+            } else {
+                style::primary_opacity(cx, 0.08)
+            })
+            .child(crate::sidebar::icon(
+                if back {
+                    "chevron.left"
+                } else {
+                    "chevron.right"
+                },
+                14.,
+                if armed { gpui_kit::white() } else { secondary },
+            ));
         let label = style::size::LABEL;
         let words = v_flex()
             .flex_1()
             .min_w_0()
             .gap(px(2.))
-            .when(!empty, |s| s.child(div().text_size(px(label)).line_height(px(style::natural_line(label))).text_color(secondary).child(if back { "Back to" } else { "Forward to" })))
+            .when(!empty, |s| {
+                s.child(
+                    div()
+                        .text_size(px(label))
+                        .line_height(px(style::natural_line(label)))
+                        .text_color(secondary)
+                        .child(if back { "Back to" } else { "Forward to" }),
+                )
+            })
             .child(
                 div()
                     .text_size(px(14.))
@@ -378,10 +469,21 @@ impl Threadbear {
                     .line_clamp(2)
                     .overflow_hidden()
                     .when(empty, |s| s.text_color(secondary))
-                    .when(!empty, |s| s.font_weight(FontWeight::SEMIBOLD).text_color(fg))
+                    .when(!empty, |s| {
+                        s.font_weight(FontWeight::SEMIBOLD).text_color(fg)
+                    })
                     .child(title),
             )
-            .when_some(detail, |s, d| s.child(div().truncate().text_size(px(label)).line_height(px(style::natural_line(label))).text_color(secondary).child(d)));
+            .when_some(detail, |s, d| {
+                s.child(
+                    div()
+                        .truncate()
+                        .text_size(px(label))
+                        .line_height(px(style::natural_line(label)))
+                        .text_color(secondary)
+                        .child(d),
+                )
+            });
         let card = div()
             .relative()
             .w(gpui_kit::px(width))
@@ -391,13 +493,41 @@ impl Threadbear {
             .bg(cx.theme().background)
             .border(if armed { px(1.) } else { px(0.5) })
             .border_color(if armed { accent } else { style::hairline(cx) })
-            .shadow(vec![BoxShadow::new(gpui_kit::px(0.), px(6.), hsla(0., 0., 0., 0.4)).blur_radius(px(20.))])
+            .shadow(vec![BoxShadow::new(
+                gpui_kit::px(0.),
+                px(6.),
+                hsla(0., 0., 0., 0.4),
+            )
+            .blur_radius(px(20.))])
             .child(fill)
-            .child(h_flex().relative().px(px(18.)).py(px(16.)).gap(px(12.)).items_center().child(circle).child(words));
+            .child(
+                h_flex()
+                    .relative()
+                    .px(px(18.))
+                    .py(px(16.))
+                    .gap(px(12.))
+                    .items_center()
+                    .child(circle)
+                    .child(words),
+            );
         // In as soon as it's clear it's a swipe, not with the line; one with
         // nowhere to go only gives a little, so it's solid at once.
-        let opacity = if swipe.is_empty() { 1. } else { (0.4 + progress * 2.).min(1.) };
-        Some(div().absolute().inset_0().flex().items_center().justify_center().opacity(opacity).child(card).into_any_element())
+        let opacity = if swipe.is_empty() {
+            1.
+        } else {
+            (0.4 + progress * 2.).min(1.)
+        };
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(opacity)
+                .child(card)
+                .into_any_element(),
+        )
     }
 
     /// The card's second line: a thread's place, as its sidebar row says it
@@ -410,7 +540,9 @@ impl Threadbear {
         if place.home {
             return None;
         }
-        place.thread.and_then(|id| self.threads.get(&id).map(|t| t.place()))
+        place
+            .thread
+            .and_then(|id| self.threads.get(&id).map(|t| t.place()))
     }
 
     /// What the card says, for both apps' dumps (`pageSwipe`): its lines,
@@ -418,15 +550,27 @@ impl Threadbear {
     #[cfg(feature = "automation")]
     pub(crate) fn page_swipe_dump(&self) -> serde_json::Value {
         let swipe = &self.swipe_nav.swipe;
-        let Some(direction) = swipe.direction() else { return serde_json::Value::Null };
+        let Some(direction) = swipe.direction() else {
+            return serde_json::Value::Null;
+        };
         let back = direction == Direction::Back;
         let place = self.destination(back);
         let empty = swipe.is_empty() || place.is_none();
         let mut lines = Vec::new();
         if !empty {
-            lines.push(if back { "Back to".to_owned() } else { "Forward to".to_owned() });
+            lines.push(if back {
+                "Back to".to_owned()
+            } else {
+                "Forward to".to_owned()
+            });
         }
-        lines.push(place.unwrap_or_else(|| if back { "Nothing to go back to".into() } else { "Nothing to go forward to".into() }));
+        lines.push(place.unwrap_or_else(|| {
+            if back {
+                "Nothing to go back to".into()
+            } else {
+                "Nothing to go forward to".into()
+            }
+        }));
         if let Some(detail) = (!empty).then(|| self.destination_detail(back)).flatten() {
             lines.push(detail);
         }
@@ -441,10 +585,18 @@ impl Threadbear {
 /// down, for a picture of the card; a later page-swipe carries on. Says how
 /// far it got and where the window is after.
 #[cfg(feature = "automation")]
-pub(crate) async fn page_swipe_command(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
+pub(crate) async fn page_swipe_command(
+    app: &WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
     let app = app.upgrade().ok_or("the app has gone")?;
-    let (dx, dy) = (cmd["dx"].as_f64().unwrap_or(0.), cmd["dy"].as_f64().unwrap_or(0.));
+    let (dx, dy) = (
+        cmd["dx"].as_f64().unwrap_or(0.),
+        cmd["dy"].as_f64().unwrap_or(0.),
+    );
     let steps = cmd["steps"].as_u64().unwrap_or(8).max(1);
     // Right of the middle, so over the thread rather than the sidebar;
     // `x` and `y` (points from the top left) for somewhere else, such as a
@@ -463,7 +615,13 @@ pub(crate) async fn page_swipe_command(app: &WeakEntity<Threadbear>, window: Any
         .map_err(|e| e.to_string())?;
     let send = |x: f64, y: f64, phase: TouchPhase, cx: &mut AsyncApp| {
         cx.update_window(window, |_, window, cx| {
-            let event = ScrollEvent { position: at, delta: ScrollDelta::Pixels(point(gpui_kit::px(x as f32), gpui_kit::px(y as f32))), modifiers: Modifiers::default(), touch_phase: phase, source: ScrollSource::Pointer };
+            let event = ScrollEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(gpui_kit::px(x as f32), gpui_kit::px(y as f32))),
+                modifiers: Modifiers::default(),
+                touch_phase: phase,
+                source: ScrollSource::Pointer,
+            };
             crate::thread::scripted_input(|| {
                 window.dispatch_event(event.to_platform_input(), cx);
                 window.render_frame(cx);
@@ -478,23 +636,37 @@ pub(crate) async fn page_swipe_command(app: &WeakEntity<Threadbear>, window: Any
     }
     for _ in 0..steps {
         send(dx / steps as f64, dy / steps as f64, TouchPhase::Moved, cx)?;
-        cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(16))
+            .await;
     }
-    let along = app
-        .read_with(cx, |t, _| {
-            let swipe = &t.swipe_nav.swipe;
-            let way = match swipe.direction() {
-                Some(Direction::Back) => "back",
-                Some(Direction::Forward) => "forward",
-                None => "no swipe",
-            };
-            format!("{way} progress {:.2} armed {}", swipe.progress(), swipe.armed())
-        });
+    let along = app.read_with(cx, |t, _| {
+        let swipe = &t.swipe_nav.swipe;
+        let way = match swipe.direction() {
+            Some(Direction::Back) => "back",
+            Some(Direction::Forward) => "forward",
+            None => "no swipe",
+        };
+        format!(
+            "{way} progress {:.2} armed {}",
+            swipe.progress(),
+            swipe.armed()
+        )
+    });
     if cmd["lift"].as_bool() == Some(false) {
         return Ok(serde_json::json!(format!("ok {along}")));
     }
     send(0., 0., TouchPhase::Ended, cx)?;
-    cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
-    let after = app.read_with(cx, |t, _| format!("{} back={} forward={}", t.selected.clone().unwrap_or_else(|| "new".into()), t.can_go_back(), t.can_go_forward()));
+    cx.background_executor()
+        .timer(std::time::Duration::from_millis(300))
+        .await;
+    let after = app.read_with(cx, |t, _| {
+        format!(
+            "{} back={} forward={}",
+            t.selected.clone().unwrap_or_else(|| "new".into()),
+            t.can_go_back(),
+            t.can_go_forward()
+        )
+    });
     Ok(serde_json::json!(format!("ok {along}, let go: {after}")))
 }

@@ -289,7 +289,7 @@ test('titles: a model title replaces the first line, unless one was set meanwhil
 
   // Named by hand before the model answered: the hand wins.
   let release!: () => void;
-  const slow = { generate: (p: any) => new Promise<any>((r) => (release = () => r({ ok: true, value: 'Model title', model: HAIKU }))) };
+  const slow = { generate: (_p: any) => new Promise<any>((r) => (release = () => r({ ok: true, value: 'Model title', model: HAIKU }))) };
   const h2 = makeHarness(undefined, {}, { models: slow });
   const t2 = h2.runner.create({ text: 'something', accountId: 'claude-3' }).thread;
   h2.runner.update({ threadId: t2.id, title: 'Mine' });
@@ -376,7 +376,7 @@ test('titles: naming an older thread also sends the start of its first reply', a
   const asked: any[] = [];
   const models = { generate: async (p: any) => (asked.push(p), { ok: false as const, reason: 'no-pool' as const, message: '' }) };
   const h = makeHarness(undefined, {}, { models });
-  const id = h.runner.create({ text: 'Explain thread count', accountId: 'claude-3' }).thread.id;
+  h.runner.create({ text: 'Explain thread count', accountId: 'claude-3' });
   await tick();
   const s = h.adapter.last;
   s.init();

@@ -3,45 +3,56 @@
 // connection runs on a runtime of its own and hands its events across on a
 // channel; requests run there too and their results come back as tasks.
 // Read-outs that exist only for the scripted control (`automation.rs`).
-#![cfg_attr(not(feature = "automation"), allow(dead_code, unused_imports))]
+#![cfg_attr(
+    not(feature = "automation"),
+    allow(
+        dead_code,
+        unused_imports,
+        reason = "read-outs only the scripted control uses"
+    )
+)]
 // A Windows release is a windowed program, not a console one: without this
 // Windows opens a cmd window behind the app for its stderr (Mike's Dell, 17
 // Nov). Its log goes to a file instead (app_log.rs). Debug and scripted
 // builds keep the console, as the specs and anyone running one by hand read
 // what it prints.
-#![cfg_attr(all(windows, not(debug_assertions), not(feature = "automation")), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(windows, not(debug_assertions), not(feature = "automation")),
+    windows_subsystem = "windows"
+)]
 mod a11y;
+mod about_window;
 mod activity;
-mod backlog;
 mod activity_panels;
 mod agent_browser;
-mod about_window;
 mod alert;
 mod app;
 mod app_log;
-mod archive_flight;
 mod app_update;
+mod archive_flight;
 #[cfg(feature = "automation")]
 mod automation;
 #[cfg(feature = "automation")]
 mod automation_compat;
 #[cfg(any(test, feature = "automation"))]
 mod automation_screenshot;
+mod backlog;
 mod chips;
 mod colour_space;
-mod composer_media;
-#[cfg(target_os = "macos")]
-mod composer_url;
 mod composer;
-mod confetti;
-mod composer_card;
 mod composer_account;
 mod composer_answers;
+mod composer_card;
 mod composer_chips;
 mod composer_context;
+mod composer_drafts;
 mod composer_inline;
+mod composer_media;
 mod composer_send;
 mod composer_spelling;
+#[cfg(target_os = "macos")]
+mod composer_url;
+mod confetti;
 mod connectors_panel;
 mod crash_reporting;
 mod deep_links;
@@ -52,33 +63,37 @@ mod explain_pane;
 mod far_rows;
 mod file_drag;
 mod file_edit;
-mod file_thumbs;
-mod fit_picture;
 mod file_find;
+mod file_thumbs;
 mod file_watch;
 mod files;
-mod fonts;
 mod files_store;
+mod fit_picture;
 mod folders;
+mod fonts;
 #[cfg(feature = "frame-stats")]
 mod frame_stats;
-mod hang_watch;
 mod handover;
-mod input_probe;
+mod hang_watch;
 mod header;
+mod hello;
 mod highlights;
-mod pr_view;
 mod highlights_board;
 mod highlights_project;
 mod highlights_store;
 mod home_page;
 mod icons;
+mod inbox_feed;
+mod input_probe;
 mod installed;
 mod key_hints;
 mod librarian;
+mod live_pages;
 mod mac_switch;
 mod media_view;
+mod milestones;
 mod move_sheet;
+mod native_text;
 mod new_thread;
 mod notify;
 mod open_anything;
@@ -89,6 +104,7 @@ mod pane_store;
 mod patch_icons;
 mod patches;
 mod pinned_panels;
+mod pr_view;
 mod prefs;
 mod project_decisions;
 mod project_page;
@@ -98,49 +114,47 @@ mod projects_page;
 mod push_button;
 mod quit_prompt;
 mod rails;
+mod recipes;
 mod remote;
 mod remote_pictures;
 mod reply_buttons;
 mod reply_links;
+mod review_pane;
 mod review_window;
 mod rich_boxes;
-mod live_pages;
 mod rich_window;
 mod row_motion;
 mod row_swipe;
 mod rows;
-mod scripted;
 mod runner_launcher;
 mod runners_panel;
 mod schedule_editor;
 mod scheduled;
+mod scripted;
 mod selection_bar;
 mod settings;
 mod settings_window;
-mod side_sections;
+mod setup_panel;
 mod shell;
 mod shell_blocks;
+mod side_sections;
 mod sidebar;
 mod slash_palette;
 mod slash_resize;
 mod spinner;
 mod style;
 mod swift_import;
-mod milestones;
 mod swipe_nav;
 mod terminal;
 mod terminal_element;
-mod thread;
 mod text_services;
-mod native_text;
+mod thread;
+mod thread_link_marks;
 mod thread_map;
+mod thread_panels;
 mod tips;
 mod token_card;
-mod thread_panels;
-mod thread_link_marks;
 mod tour;
-mod setup_panel;
-mod hello;
 mod unsent;
 mod updates_panel;
 mod usage;
@@ -158,8 +172,17 @@ use threadbear_client::runner::{Client, RpcError, Sink, Status};
 use threadbear_core::zoom;
 use tokio::sync::mpsc;
 
-pub static RT: LazyLock<tokio::runtime::Runtime> =
-    LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("a tokio runtime"));
+#[expect(
+    clippy::expect_used,
+    reason = "without its runtime the app can reach no runner, so it stops with why"
+)]
+pub static RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a tokio runtime")
+});
 
 pub enum Seen {
     Status(Status),
@@ -178,21 +201,48 @@ impl Sink for ChannelSink {
 }
 
 /// A request on the connection's runtime, awaited from GPUI's.
-pub async fn call(client: Arc<Client>, method: impl Into<String>, params: Value) -> Result<Value, RpcError> {
+pub async fn call(
+    client: Arc<Client>,
+    method: impl Into<String>,
+    params: Value,
+) -> Result<Value, RpcError> {
     let method = method.into();
     // Local Windows files are opened under the desktop's path guard, once.
     // A runner resolving the same raw path again can follow a different
     // link, and a directory listing can stat a child link into an SMB share.
     #[cfg(windows)]
     if params["runnerId"].is_null() && matches!(method.as_str(), "files.read" | "files.list") {
-        return RT.spawn_blocking(move || {
-            let result = if method == "files.read" { threadbear_core::local_files::read(&params) } else { threadbear_core::local_files::list(&params) };
-            result.map_err(|e| RpcError { code: -32602, message: e.to_string(), data: None })
-        }).await.unwrap_or_else(|e| Err(RpcError { code: -1, message: e.to_string(), data: None }));
+        return RT
+            .spawn_blocking(move || {
+                let result = if method == "files.read" {
+                    threadbear_core::local_files::read(&params)
+                } else {
+                    threadbear_core::local_files::list(&params)
+                };
+                result.map_err(|e| RpcError {
+                    code: -32602,
+                    message: e.to_string(),
+                    data: None,
+                })
+            })
+            .await
+            .unwrap_or_else(|e| {
+                Err(RpcError {
+                    code: -1,
+                    message: e.to_string(),
+                    data: None,
+                })
+            });
     }
     RT.spawn(async move { client.call(&method, params).await })
         .await
-        .unwrap_or_else(|e| Err(RpcError { code: -1, message: e.to_string(), data: None }))
+        .unwrap_or_else(|e| {
+            Err(RpcError {
+                code: -1,
+                message: e.to_string(),
+                data: None,
+            })
+        })
 }
 
 /// `threads.update` (a rename, a pick, an archive) for a thread: one of this
@@ -203,7 +253,12 @@ pub async fn call(client: Arc<Client>, method: impl Into<String>, params: Value)
 /// thread goes as it is.
 /// Its place in that order is taken as this is called, where the click is
 /// handled, so call it there and await it later, not inside a task.
-pub fn call_for_thread(client: Arc<Client>, remote: bool, method: &'static str, params: Value) -> impl std::future::Future<Output = Result<Value, RpcError>> + 'static {
+pub fn call_for_thread(
+    client: Arc<Client>,
+    remote: bool,
+    method: &'static str,
+    params: Value,
+) -> impl std::future::Future<Output = Result<Value, RpcError>> + 'static {
     // Connected or not: while a restart's under way it waits for the new
     // runner in its place, and with none it fails (Codex's review, 12 Nov:
     // one made while down skipped the queue once the new runner was up).
@@ -212,14 +267,27 @@ pub fn call_for_thread(client: Arc<Client>, remote: bool, method: &'static str, 
         let Some(place) = place else {
             return call(client, method, params).await;
         };
-        RT.spawn(async move { client.call_in_restart_order_at(place, method, params, Arc::new(|_| {})).await })
-            .await
-            .unwrap_or_else(|e| Err(RpcError { code: -1, message: e.to_string(), data: None }))
+        RT.spawn(async move {
+            client
+                .call_in_restart_order_at(place, method, params, Arc::new(|_| {}))
+                .await
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Err(RpcError {
+                code: -1,
+                message: e.to_string(),
+                data: None,
+            })
+        })
     }
 }
 
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Where the window opens: where it was left, if that's still on a screen
@@ -230,12 +298,30 @@ fn initial_bounds(settings: &Settings, cx: &App) -> Bounds<Pixels> {
         .iter()
         .map(|d| {
             let b = d.bounds();
-            zoom::Rect { x: f64::from(b.origin.x), y: f64::from(b.origin.y), width: f64::from(b.size.width), height: f64::from(b.size.height) }
+            zoom::Rect {
+                x: f64::from(b.origin.x),
+                y: f64::from(b.origin.y),
+                width: f64::from(b.size.width),
+                height: f64::from(b.size.height),
+            }
         })
         .collect();
-    let saved = settings.saved.window_frame.filter(|f| zoom::on_screen(zoom::Rect { x: f.x, y: f.y, width: f.width, height: f.height }, &screens));
+    let saved = settings.saved.window_frame.filter(|f| {
+        zoom::on_screen(
+            zoom::Rect {
+                x: f.x,
+                y: f.y,
+                width: f.width,
+                height: f.height,
+            },
+            &screens,
+        )
+    });
     match saved {
-        Some(f) => Bounds { origin: point(px(f.x as f32), px(f.y as f32)), size: size(px(f.width as f32), px(f.height as f32)) },
+        Some(f) => Bounds {
+            origin: point(px(f.x as f32), px(f.y as f32)),
+            size: size(px(f.width as f32), px(f.height as f32)),
+        },
         None => Bounds::centered(None, size(px(1180.), px(800.)), cx),
     }
 }
@@ -255,7 +341,7 @@ fn main() {
     // The new copy of a handover says it's started (handover.rs).
     handover::announce_start();
     // What it was built from, for the runner to tell a thread waiting for
-    // the app to restart (docs/protocol.md, "App restarts").
+    // the app to restart (docs/protocol/updates.md, "App restarts").
     app_update::announce_build();
     // Before anything else, to catch a panic at launch. Only the installed
     // release, and a scripted app into its own folder (crash_reporting.rs).
@@ -264,7 +350,8 @@ fn main() {
     app_log::start();
     // All of Lucide (about 1 MB), so `icons.rs` can name any icon; the default
     // `Assets` has only gpui-kit's own hundred.
-    let application = scripted::application(gpui_kit::application().with_assets(gpui_kit::assets::AllAssets));
+    let application =
+        scripted::application(gpui_kit::application().with_assets(gpui_kit::assets::AllAssets));
     // threadbear://thread/<id> links from outside (deep_links.rs), queued from
     // now: macOS can hand one over before the window's made.
     let links = deep_links::receive(&application);
@@ -275,7 +362,9 @@ fn main() {
         // An untouched caret should not redraw the window indefinitely.
         // It stays visible after ten seconds and resumes on editing or focus.
         gpui_kit::component::Theme::update(cx, |theme| {
-            theme.cursor_blink = theme.cursor_blink.with_idle_timeout(std::time::Duration::from_secs(10));
+            theme.cursor_blink = theme
+                .cursor_blink
+                .with_idle_timeout(std::time::Duration::from_secs(10));
         });
         native_text::init(cx);
         // Every window's colours as sRGB, before the first opens (colour_space.rs).
@@ -305,7 +394,17 @@ fn main() {
         // The new copy of a handover opens unseen, under the old window
         // (handover.rs), and takes the keys only at "go".
         let hidden = handover::window_options_hidden();
-        let focus = !hidden && !scripted::keep_behind() && settings.saved.update_restore.as_ref().is_none_or(|r| r["front"].as_bool() != Some(false));
+        let focus = !hidden
+            && !scripted::keep_behind()
+            && settings
+                .saved
+                .update_restore
+                .as_ref()
+                .is_none_or(|r| r["front"].as_bool() != Some(false));
+        #[expect(
+            clippy::expect_used,
+            reason = "with no main window there is no app to run"
+        )]
         let (window, app) = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -313,7 +412,11 @@ fn main() {
                 // with the traffic lights over the top-left panel's bar and
                 // the bars moving the window (ThreadbearApp, BearDock's
                 // README says what a hosting window must set).
-                titlebar: Some(TitlebarOptions { title: Some("Threadbear".into()), appears_transparent: true, traffic_light_position: Some(point(px(9.), px(10.))) }),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Threadbear".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(9.), px(10.))),
+                }),
                 app_owns_titlebar_drag: true,
                 window_min_size: Some(size(px(760.), px(480.))),
                 app_id: Some("threadbear".into()),
@@ -328,7 +431,9 @@ fn main() {
         .expect("failed to open the window");
         // Its close quits, and File's and Window's commands reach whichever
         // window is in front (window_menu.rs).
-        window.update(cx, |_, w, cx| window_menu::install(w, cx)).ok();
+        window
+            .update(cx, |_, w, cx| window_menu::install(w, cx))
+            .ok();
         if scripted::keep_behind() {
             window.update(cx, |_, w, _| scripted::place(w)).ok();
         }

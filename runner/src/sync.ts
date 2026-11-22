@@ -149,20 +149,20 @@ export type SyncConfig = {
   runnerId?: string;
   icon?: string;
   pastedPictures?: boolean;
-  // Full sync (docs/full-convex.md step 4): tool output, input and diffs go up too.
+  // Full sync (docs/archive/full-convex.md step 4): tool output, input and diffs go up too.
   // Off unless it's asked for; off, nothing here writes eventBodies.
   // false hides the estimate's warning near Convex's Free limits (convex-use.ts).
   usageWarning?: boolean;
   full?: boolean;
 };
 
-// runner.status's `sync` (docs/protocol.md, "Sync").
+// runner.status's `sync` (docs/protocol/moves.md, "Sync").
 // The backend API version this runner was built for (convex/version.ts; a unit
 // test keeps them equal). sync:heartbeat answers with the backend's, and a
 // lower one means its backend hasn't been deployed since this runner was:
 // said in runner.status, tb status and the log rather than stopping, since
 // the runner only adds to what it sends while the number stays the same.
-export const BACKEND_API_VERSION = 96;
+export const BACKEND_API_VERSION = 98;
 // From this one sync:removeThreads takes the runner's id and leaves a row
 // that's another runner's alone (a thread moved away), whatever the key.
 export const REMOVE_OWN_ROWS_API_VERSION = 92;
@@ -184,7 +184,7 @@ export const ARCHIVED_INDEX_API_VERSION = 54;
 export const BACKLOG_API_VERSION = 96;
 // From this one the main Mac reads and steers other runners' threads through
 // the backend (convex/relay.ts): commands can be `interrupt` or `call`, and a
-// pending approval carries its event's seq (docs/protocol.md, "Other
+// pending approval carries its event's seq (docs/protocol/runners.md, "Other
 // runners' threads through the backend").
 export const RELAY_API_VERSION = 44;
 // Pictures in a message to another runner's thread (relay.ts, relay:queueCommand's images).
@@ -211,6 +211,8 @@ export const SCHEDULE_POOLS_API_VERSION = 36;
 export const SCHEDULE_CHECK_API_VERSION = 51;
 // From this one it can carry `checkTimeoutSecs` too.
 export const SCHEDULE_CHECK_TIMEOUT_API_VERSION = 55;
+// From this one it can carry `provider`, the kind of login in its pool.
+export const SCHEDULE_PROVIDER_API_VERSION = 97;
 // Pools shared between runners: the pools table (shared-pools.ts).
 export const SHARED_POOLS_API_VERSION = 38;
 // From this one sync:pools gives other runners' keys a member that has an
@@ -264,7 +266,7 @@ export const ICONS_API_VERSION = 5;
 // older backend's validator would turn the whole write down, so it gets
 // the row without it, and the link doesn't work until it's deployed.
 export const SHARE_API_VERSION = 8;
-// From this one schedules live in the backend (step 6; docs/protocol.md,
+// From this one schedules live in the backend (step 6; docs/protocol/projects.md,
 // Schedules, "Runners"): the scheduler is attached once a heartbeat says
 // so, and from then on writes them there itself, so they aren't mirrored.
 export const SCHEDULES_API_VERSION = 9;
@@ -352,7 +354,7 @@ export const INDEX_ASKED_API_VERSION = 32;
 // backend's validator would turn the row down, so it goes without.
 export const WOKE_BY_API_VERSION = 33;
 // From this one a message row whose text links button:<id> carries those
-// buttons' state (docs/protocol.md, "Reply buttons"), sent again when one is
+// buttons' state (docs/protocol/events.md, "Reply buttons"), sent again when one is
 // pressed, and the phone can queue a `press` command. An older backend's
 // validator would turn the row down, so it goes without.
 export const BUTTONS_API_VERSION = 59;
@@ -361,7 +363,7 @@ export const BUTTONS_API_VERSION = 59;
 // backend's validator would turn the row down, so it goes as a plain reply.
 // This fork already used 72 for Backlog/intake; plans need the combined backend.
 export const PLAN_API_VERSION = 77;
-// From this one a thread row's pendingApproval can be a secret (docs/protocol.md,
+// From this one a thread row's pendingApproval can be a secret (docs/protocol/threads.md,
 // "Secrets"), answered with phone:secret. An older backend's validator would
 // turn the whole row down, so it goes without the card.
 export const SECRETS_API_VERSION = 35;
@@ -388,7 +390,7 @@ function failedLine(f: RemoteFailure): string {
   const commit = typeof f.commit === 'string' && /^[0-9a-f]{40}$/.test(f.commit) ? ` at ${f.commit.slice(0, 9)}` : '';
   return `couldn't update to main${commit}`;
 }
-// The done card's loose ends (docs/protocol.md, "Loose ends") on a thread
+// The done card's loose ends (docs/protocol/threads.md, "Loose ends") on a thread
 // row, for the phone's done card. An older backend's validator would turn
 // the row down, so it goes without.
 export const LOOSE_ENDS_API_VERSION = 73;
@@ -416,6 +418,10 @@ export const INDEX_MODE_API_VERSION = 88;
 // experiment) and the phone's pictures say their type. An older backend
 // would turn the row down.
 export const LIVE_PAGES_API_VERSION = 95;
+// From this one a threadIndex row carries `request`, what Mike first asked
+// a thread, for the Mac's Feed of another runner's threads. An older
+// backend's validator would turn the row down, so it goes without.
+export const INDEX_REQUEST_API_VERSION = 98;
 // How far back a start looks for pictures, as new ones go up as they come.
 // Reading a whole log for each thread is too much to do for all of them on
 // every start, and it's the threads in use that Mike opens on the phone.
@@ -476,7 +482,7 @@ export type PendingApproval =
   // seq: the event's (API 44), for the main Mac's transcript of this thread.
   | { approvalId: string; kind: 'approval'; seq?: number; name: string; title: string; options: ApprovalOption[]; inputSummary?: string; planSeq?: number }
   | { approvalId: string; kind: 'question'; seq?: number; questions: Question[] }
-  // docs/protocol.md, "Secrets": key is the runner's public key, which the
+  // docs/protocol/threads.md, "Secrets": key is the runner's public key, which the
   // phone seals its answer to.
   | { approvalId: string; kind: 'secret'; seq?: number; label: string; reason: string; placeholder?: string; key: string };
 
@@ -621,7 +627,7 @@ export type Upload = (url: string, bytes: Uint8Array, mediaType: string) => Prom
 export type Download = (url: string) => Promise<Uint8Array>;
 const MAX_PHONE_IMAGE_BYTES = 25 * 1024 * 1024;
 
-// A phone or browser that holds a phone token (docs/protocol.md "Devices"),
+// A phone or browser that holds a phone token (docs/protocol/moves.md "Devices"),
 // as the backend lists them (convex/tokens.ts tokenInfo).
 export const DEVICE_KINDS = ['phone', 'browser'] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
@@ -635,7 +641,7 @@ type Host = {
   list(include: ('inbox' | 'snoozed' | 'archived')[]): ThreadSummary[];
   get(threadId: string): ThreadSummary;
   events(threadId: string, opts: { afterSeq?: number; beforeSeq?: number; limit?: number }): { events: PersistedEvent[] };
-  // The seq ranges edits cut out of a thread (docs/protocol.md, "Editing a
+  // The seq ranges edits cut out of a thread (docs/protocol/threads.md, "Editing a
   // message"), never sent up. Absent in small tests.
   cuts?: (threadId: string) => { from: number; to: number }[];
   // The lists mirrored beside the threads; absent in small tests.
@@ -649,7 +655,7 @@ type Host = {
 
 // What the phone's commands are applied through: the runner's own
 // methods, so a phone message or approval is the same as one from the
-// Mac app (docs/protocol.md, "Sync").
+// Mac app (docs/protocol/moves.md, "Sync").
 // A thread's commands may go on to a draining runner (handover.ts's
 // phoneCommands), so they can answer later; apply() waits for each.
 export type CommandHost = {
@@ -781,7 +787,7 @@ export type SyncDeps = {
   // Box mode (src/box-mode.ts): the key is a box key, the heartbeat names
   // the provider's machine, and a key the backend turns down means a newer
   // box has the thread, so `superseded` is called once and nothing more is
-  // tried (docs/protocol.md, "Box mode").
+  // tried (docs/protocol/boxes.md, "Box mode").
   // `taken`: a command of this kind was taken; `heard`: a heartbeat sent at
   // `sentAt` (performance.now()) found the box in this state. A box stopped
   // by its save runs again only on one of those (box-save.ts SaveHold).
@@ -872,7 +878,7 @@ export function retryLater(e: unknown): boolean {
 }
 
 // What the backend said when this runner's key isn't allowed something
-// (a runner key reaching past its own runner, docs/protocol.md "Runner
+// (a runner key reaching past its own runner, docs/protocol/keys.md "Runner
 // keys"), or undefined for any other error. The feature that asked turns
 // itself off and says this once, rather than trying again.
 export function forbiddenText(e: unknown): string | undefined {
@@ -1074,7 +1080,7 @@ export function toThreadDoc(t: ThreadSummary, runnerId: string, now: number, pen
     doc.asksSeq = t.asksSeq;
   }
   if (next?.length) doc.next = next;
-  // The done card's loose ends (docs/protocol.md, "Loose ends"), for the
+  // The done card's loose ends (docs/protocol/threads.md, "Loose ends"), for the
   // phone's done card. The runner only has them for the card standing now
   // (runner/loose-ends.ts); the same test as lastEnd keeps an older
   // check off a thread that's moved on.
@@ -1257,7 +1263,7 @@ export function toMessageDoc(threadId: string, e: PersistedEvent, scrub: (text: 
   // Mike's own pictures stay on the Mac, so the phone and website get a line saying
   // there were some; a photo sent with no words would be an empty bubble.
   // One a [Picture N] marker places shows as a chip there instead, so the
-  // line counts only the rest (docs/protocol.md, "Pictures in a message").
+  // line counts only the rest (docs/protocol/threads.md, "Pictures in a message").
   const pictures = e.type === 'user.message' ? unplacedPictures(e.text, e.images?.length ?? 0) : 0;
   const note = pictures === 1 ? '[1 picture]' : pictures ? `[${pictures} pictures]` : '';
   const text = note ? (cut ? `${cut}\n\n${note}` : note) : cut;
@@ -1408,6 +1414,7 @@ export function toOwnedScheduleDoc(s: StoredSchedule, apiVersion = BACKEND_API_V
   if (s.poolId !== undefined && apiVersion >= SCHEDULE_POOLS_API_VERSION) out.poolId = s.poolId;
   if (s.check !== undefined && apiVersion >= SCHEDULE_CHECK_API_VERSION) out.check = s.check;
   if (s.checkTimeoutSecs !== undefined && apiVersion >= SCHEDULE_CHECK_TIMEOUT_API_VERSION) out.checkTimeoutSecs = s.checkTimeoutSecs;
+  if (s.provider !== undefined && apiVersion >= SCHEDULE_PROVIDER_API_VERSION) out.provider = s.provider;
   if (s.lastRun) {
     out.lastRun = { at: s.lastRun.at, outcome: s.lastRun.outcome, ...(s.lastRun.threadId ? { threadId: s.lastRun.threadId } : {}), ...(s.lastRun.note ? { note: s.lastRun.note } : {}) };
   }
@@ -1785,6 +1792,7 @@ export class ConvexSync {
         takesBacklogged: () => (this.backendApiVersion ?? 0) >= BACKLOG_API_VERSION,
         takesBacklog: () => (this.backendApiVersion ?? 0) >= BACKLOG_API_VERSION,
         takesRecap: () => (this.backendApiVersion ?? 0) >= RECAP_API_VERSION,
+        takesRequest: () => (this.backendApiVersion ?? 0) >= INDEX_REQUEST_API_VERSION,
         takesKeywords: () => (this.backendApiVersion ?? 0) >= KEYWORDS_API_VERSION,
         takesMode: () => (this.backendApiVersion ?? 0) >= INDEX_MODE_API_VERSION,
         takesSince: () => (this.backendApiVersion ?? 0) >= INDEX_SINCE_API_VERSION,
@@ -1991,7 +1999,7 @@ export class ConvexSync {
     return s;
   }
 
-  // ---- Devices (docs/protocol.md "Devices"): the phone tokens the Mac app
+  // ---- Devices (docs/protocol/moves.md "Devices"): the phone tokens the Mac app
   // issues, lists and revokes through this runner. Each is one call to the
   // backend, outside the mirror's queue; nothing is kept here. The token
   // in issueToken's reply goes back to the caller and nowhere else: never
@@ -2005,7 +2013,7 @@ export class ConvexSync {
   /**
    * This runner's id and the public key a phone seals secrets to, for the
    * pairing link (devices.ts): the phone trusts only runner keys that came
-   * from a Mac this way, never ones the mirror names (docs/protocol.md,
+   * from a Mac this way, never ones the mirror names (docs/protocol/threads.md,
    * "Trusting the key"). Empty without a key.
    */
   pairingKeys(): { runnerId: string; key: string }[] {
@@ -2087,7 +2095,7 @@ export class ConvexSync {
     return Array.isArray(r) ? (r as PocketCardSummary[]) : [];
   }
 
-  // Asking another runner (docs/protocol.md, "Asking another runner";
+  // Asking another runner (docs/protocol/runners.md, "Asking another runner";
   // elsewhere.ts). The owner key reads any request and answers it; a runner
   // key files and reads back its own.
   // A second runner, on a runner key of its own (tbr_): not the main Mac.
@@ -2199,7 +2207,7 @@ export class ConvexSync {
   // rows still refused are left out with a log line, so one can't stall the
   // whole mirror; anything else (an outage) throws, for the flush's retry.
   // Rows the backend left out itself (`skipped`) are said the same way.
-  // ---- Full sync: tool output (docs/full-convex.md step 4). Nothing here runs with
+  // ---- Full sync: tool output (docs/archive/full-convex.md step 4). Nothing here runs with
   // sync.full off.
 
   private queueBodies(found: RawBody[]): void {
@@ -3740,7 +3748,7 @@ export class ConvexSync {
         // Only real pictures from the thread's own places, typed by their
         // bytes: the page is public, and a path is only what the agent wrote.
         // Only from the thread's media folder: a path in Markdown is only
-        // what the agent wrote (docs/protocol.md, "Sharing").
+        // what the agent wrote (docs/protocol/runners.md, "Sharing").
         const file = readShareImage(img.path, this.deps.home ? paths.media(this.deps.home, img.threadId) : undefined);
         if ('skip' in file) {
           this.deps.log.warn('shared picture not sent', { threadId: img.threadId, path: img.path, why: file.skip });
@@ -4603,7 +4611,7 @@ export class ConvexSync {
       },
       requestRun: async (scheduleId, at) => (await call('mutation', 'sync:requestScheduleRun', { scheduleId, at })) === true,
       runners: async () => {
-        // Only the main key may list runners (docs/protocol.md, "Runner keys"), so
+        // Only the main key may list runners (docs/protocol/keys.md, "Runner keys"), so
         // a runner key's asking only ever failed, 11 times in 25 minutes of prod
         // logs, and the callers treat this the same as being refused.
         if (this.deps.key?.startsWith('tbr_')) return [];
@@ -4685,7 +4693,7 @@ export class ConvexSync {
       save: async (pools) => {
         await this.backend('mutation', 'sync:savePools', { key, runnerId, pools });
       },
-      // adoptPools is the main key's (docs/protocol.md, "Runner keys"): on a
+      // adoptPools is the main key's (docs/protocol/keys.md, "Runner keys"): on a
       // runner key it's "not taken", and this runner follows the main Mac's.
       adopt: async (pools) => {
         try {
@@ -4975,7 +4983,7 @@ export class ConvexSync {
       }
       case 'respond': {
         if (a.secret === true) {
-          // docs/protocol.md, "Secrets": opened here, so the value never
+          // docs/protocol/threads.md, "Secrets": opened here, so the value never
           // touched the backend in the clear.
           const approvalId = String(a.approvalId);
           if (a.decision === 'deny') {
@@ -5214,7 +5222,7 @@ export class ConvexSync {
       }
       case 'save': {
         // A box's thread, saved out of the box before it sleeps or is
-        // archived (docs/protocol.md, "Box mode"). Only the backend sends it.
+        // archived (docs/protocol/boxes.md, "Box mode"). Only the backend sends it.
         if (!host.save) throw new Error("This runner isn't a box, so it has nothing to save.");
         return { result: await host.save(needThread()) };
       }

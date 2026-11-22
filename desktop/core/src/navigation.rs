@@ -19,7 +19,11 @@ impl<Place: PartialEq + Clone> Default for NavigationHistory<Place> {
 
 impl<Place: PartialEq + Clone> NavigationHistory<Place> {
     pub fn new(limit: usize) -> Self {
-        Self { entries: Vec::new(), index: -1, limit }
+        Self {
+            entries: Vec::new(),
+            index: -1,
+            limit,
+        }
     }
 
     pub fn current(&self) -> Option<&Place> {
@@ -78,7 +82,9 @@ impl<Place: PartialEq + Clone> NavigationHistory<Place> {
     /// place as soon as it's shown, so it can't use `replace_current` the way
     /// the Swift app did (that put its step off till the main queue's turn).
     pub fn drop_previous_if(&mut self, page: &Place) -> bool {
-        let Ok(at) = usize::try_from(self.index) else { return false };
+        let Ok(at) = usize::try_from(self.index) else {
+            return false;
+        };
         if at == 0 || at >= self.entries.len() || &self.entries[at - 1] != page {
             return false;
         }
@@ -99,7 +105,10 @@ impl<Place: PartialEq + Clone> NavigationHistory<Place> {
     /// Recording it as a new place cut off Forward, and the next Back came to
     /// the old entry and did the same again, so Back never left it.
     pub fn settle_current(&mut self, place: Place) {
-        match usize::try_from(self.index).ok().filter(|i| *i < self.entries.len()) {
+        match usize::try_from(self.index)
+            .ok()
+            .filter(|i| *i < self.entries.len())
+        {
             Some(at) => self.entries[at] = place,
             None => self.record(place),
         }
@@ -165,9 +174,16 @@ mod tests {
         }
         h.back(|_| true);
         h.settle_current("b, as it can be shown".to_string());
-        assert_eq!(h.forward(|_| true).as_deref(), Some("c"), "forward still goes to c");
+        assert_eq!(
+            h.forward(|_| true).as_deref(),
+            Some("c"),
+            "forward still goes to c"
+        );
         h.back(|_| true);
-        assert_eq!(h.current().map(String::as_str), Some("b, as it can be shown"));
+        assert_eq!(
+            h.current().map(String::as_str),
+            Some("b, as it can be shown")
+        );
     }
 
     fn s(place: &str) -> String {
@@ -235,7 +251,11 @@ mod tests {
         assert!(h.drop_previous_if(&s("new")));
         assert_eq!(h.entries, vec![s("a"), s("t")]);
         assert_eq!(h.current(), Some(&s("t")));
-        assert_eq!(h.back(|_| true), Some(s("a")), "back skips the used-up new-thread page");
+        assert_eq!(
+            h.back(|_| true),
+            Some(s("a")),
+            "back skips the used-up new-thread page"
+        );
         assert_eq!(h.forward(|_| true), Some(s("t")));
         // Anything else before it stays.
         assert!(!h.drop_previous_if(&s("new")));
@@ -268,8 +288,14 @@ mod tests {
 
     #[test]
     fn the_tip_names_where_it_goes() {
-        assert_eq!(history_tip(true, Some("Morning brief"), Some("⌘[")), "Back to Morning brief (⌘[)");
-        assert_eq!(history_tip(true, None, Some("⌘[")), "Nothing to go back to (⌘[)");
+        assert_eq!(
+            history_tip(true, Some("Morning brief"), Some("⌘[")),
+            "Back to Morning brief (⌘[)"
+        );
+        assert_eq!(
+            history_tip(true, None, Some("⌘[")),
+            "Nothing to go back to (⌘[)"
+        );
         assert_eq!(history_tip(false, None, None), "Nothing to go forward to");
     }
 }

@@ -3,10 +3,12 @@ package com.mikerosoft.threadbear.kit
 import com.mikerosoft.threadbear.kit.Role.ASSISTANT
 import com.mikerosoft.threadbear.kit.Role.TOOL
 import com.mikerosoft.threadbear.kit.Role.USER
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonObject
 
 class TurnsTest {
     private fun replies(items: List<ThreadItem>) = items.mapNotNull { (it as? ThreadItem.Message)?.message?.seq }
@@ -130,5 +132,44 @@ class TurnsTest {
         assertEquals("A day later", TurnGap.later(25 * 3600.0))
         assertEquals("Mine the repo finished", TurnGap.cause(listOf(WokeTask("agent", "Mine the repo"), WokeTask("shell", "npm test"))))
         assertEquals("2 background jobs finished", TurnGap.cause(listOf(WokeTask("shell", ""), WokeTask("shell", " "))))
+    }
+
+    private fun shown(item: ThreadItem): String = when (item) {
+        is ThreadItem.Message -> "m${item.message.seq}"
+        is ThreadItem.Tools -> "tools " + item.items.joinToString(" ") { it.seq.toString() }
+        is ThreadItem.Gap -> "gap " + item.gap.label
+        is ThreadItem.Worked -> item.worked.title + ": " + item.worked.items.joinToString(", ") { shown(it) }
+    }
+
+    /** The cases the iPhone and the website run too (shared/cases/turns.json). */
+    @Test fun foldingFollowsTheSharedCases() {
+        val cases = (parseJson(File("../../shared/cases/turns.json").readText()) as JsonObject).arr("cases")!!
+        assertTrue(cases.size >= 20)
+        for (c in cases) {
+            val o = c as JsonObject
+            if (o.obj("differs")?.str("android") != null) continue
+            val input = o.obj("input")!!
+            val rows = input.arr("messages")!!.map { r ->
+                val m = r as JsonObject
+                val role = when (m.str("role")) {
+                    "user" -> USER
+                    "assistant" -> ASSISTANT
+                    else -> TOOL
+                }
+                PhoneMessage(
+                    seq = m.num("seq")!!.toInt(),
+                    role = role,
+                    text = m.str("text")!!,
+                    origin = m.str("origin"),
+                    toolKind = if (role == TOOL) "command" else null,
+                    summary = m.bool("summary") ?: false,
+                    turn = m.str("turn"),
+                    wokeBy = m.arr("wokeBy")?.map { w -> (w as JsonObject).let { WokeTask(it.str("kind")!!, it.str("description")!!) } },
+                    at = T0.plusMillis((m.num("at")!! * 1000).toLong()),
+                    plan = m.bool("plan") ?: false,
+                )
+            }
+            assertEquals(o.strings("expect"), Turns.fold(rows, input.bool("busy")!!).map { shown(it) }, o.str("name"))
+        }
     }
 }

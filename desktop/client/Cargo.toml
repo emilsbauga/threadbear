@@ -17,3 +17,6 @@ hex = "0.4"
 rand = "0.9"
 subtle = "2"
 dirs = "6"
+
+[lints]
+workspace = true

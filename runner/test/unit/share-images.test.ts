@@ -190,7 +190,7 @@ test('reply images: a file has to really be a picture', () => {
 
 // A shared // A shared thread's pictures go to a public page, so only real pictures
 // the thread was given or a tool handed back, in its media folder, go up
-// (docs/protocol.md, "Sharing").
+// (docs/protocol/runners.md, "Sharing").
 function pngHeader(w: number, h: number): Buffer {
   const b = Buffer.alloc(24);
   b.writeUInt32BE(0x89504e47, 0);

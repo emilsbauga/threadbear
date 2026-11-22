@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonObject
 
 /**
  * What a provider is called and can do, from `hello.providers`
- * (docs/protocol.md, "Types"; ProviderInfo.swift). A provider id alone
+ * (docs/protocol/types.md, "Types"; ProviderInfo.swift). A provider id alone
  * never decides what a control offers, so a provider this app has never
  * heard of still gets the right menus.
  */

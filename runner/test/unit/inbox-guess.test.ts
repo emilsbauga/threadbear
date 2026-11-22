@@ -1,4 +1,4 @@
-// The inboxGuess experiment (runner/inbox-guess.ts; docs/protocol.md,
+// The inboxGuess experiment (runner/inbox-guess.ts; docs/protocol/threads.md,
 // "Inbox guess"): a model guesses which finished threads Alex didn't need
 // to see, his pick from the done card's Archive menu says whether it was
 // right, and nothing is archived by the guess.

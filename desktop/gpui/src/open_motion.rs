@@ -162,11 +162,25 @@ impl Titles {
     /// Notes `text` as the title shown at (`thread`, `place`): the one it
     /// fades from and when it changed, or None to draw it plain (first
     /// seen, or no room left).
-    fn note(&mut self, thread: &str, place: &str, text: &SharedString, now: Instant, total: Duration) -> Option<(SharedString, Instant)> {
+    fn note(
+        &mut self,
+        thread: &str,
+        place: &str,
+        text: &SharedString,
+        now: Instant,
+        total: Duration,
+    ) -> Option<(SharedString, Instant)> {
         let key = (thread.to_owned(), place.to_owned());
         let Some(entry) = self.map.get_mut(&key) else {
             if self.map.len() < TITLES_KEPT {
-                self.map.insert(key, Title { before: text.clone(), now: text.clone(), changed: now.checked_sub(total).unwrap_or(now) });
+                self.map.insert(
+                    key,
+                    Title {
+                        before: text.clone(),
+                        now: text.clone(),
+                        changed: now.checked_sub(total).unwrap_or(now),
+                    },
+                );
             }
             return None;
         };
@@ -237,7 +251,14 @@ impl Openings {
     /// Notes where the page's box is as it's drawn, for the drop.
     pub(crate) fn box_marker(&self) -> impl IntoElement {
         let top = self.box_top.clone();
-        canvas(move |bounds, _, _| top.set(Some(f32::from(bounds.origin.y))), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+        canvas(
+            move |bounds, _, _| top.set(Some(f32::from(bounds.origin.y))),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 }
 
@@ -256,10 +277,18 @@ impl Entering {
             return Self::default();
         }
         let drop = match opening {
-            Opening::FromNewPage { box_top } => Some(Rc::new(BoxDrop { from: box_top, delta: Cell::new(None), started: Cell::new(None) })),
+            Opening::FromNewPage { box_top } => Some(Rc::new(BoxDrop {
+                from: box_top,
+                delta: Cell::new(None),
+                started: Cell::new(None),
+            })),
             _ => None,
         };
-        Entering { opening: Some(opening), started: None, drop }
+        Entering {
+            opening: Some(opening),
+            started: None,
+            drop,
+        }
     }
 
     /// The transcript's opacity and offset this frame, once it has rows to
@@ -286,12 +315,19 @@ impl Entering {
     /// How far the box dropped from the new-thread page, once it's been
     /// laid out under the transcript (negative: it came down). For the dump.
     pub(crate) fn box_drop(&self) -> Option<f32> {
-        self.drop.as_ref().and_then(|d| d.delta.get()).map(f32::round)
+        self.drop
+            .as_ref()
+            .and_then(|d| d.delta.get())
+            .map(f32::round)
     }
 
     /// The box, painted where its drop has got to.
     pub(crate) fn wrap_box(&self, child: AnyElement) -> AnyElement {
-        Shift { drop: self.drop.clone(), child }.into_any_element()
+        Shift {
+            drop: self.drop.clone(),
+            child,
+        }
+        .into_any_element()
     }
 }
 
@@ -341,21 +377,49 @@ impl Element for Shift {
         None
     }
 
-    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         (self.child.request_layout(window, cx), ())
     }
 
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
-        let offset = self.drop.as_ref().map_or(0., |d| d.offset(f32::from(bounds.origin.y)));
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let offset = self
+            .drop
+            .as_ref()
+            .map_or(0., |d| d.offset(f32::from(bounds.origin.y)));
         if offset != 0. {
             window.request_animation_frame();
             note_moving();
         }
         let child = &mut self.child;
-        window.with_element_offset(point(gpui_kit::px(0.), gpui_kit::px(offset)), |window| child.prepaint(window, cx));
+        window.with_element_offset(point(gpui_kit::px(0.), gpui_kit::px(offset)), |window| {
+            child.prepaint(window, cx)
+        });
     }
 
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         self.child.paint(window, cx);
     }
 }
@@ -370,7 +434,9 @@ pub(crate) fn title(thread: &str, place: &str, text: SharedString, reduce: bool)
     }
     let now = Instant::now();
     let total = TITLE_OUT + TITLE_IN;
-    let Some((before, changed)) = TITLES.with(|titles| titles.borrow_mut().note(thread, place, &text, now, total)) else {
+    let Some((before, changed)) =
+        TITLES.with(|titles| titles.borrow_mut().note(thread, place, &text, now, total))
+    else {
         return text.into_any_element();
     };
     if before == text || changed.elapsed() >= total {
@@ -383,8 +449,25 @@ pub(crate) fn title(thread: &str, place: &str, text: SharedString, reduce: bool)
         .relative()
         .min_w_0()
         .truncate()
-        .child(div().min_w_0().truncate().child(text).with_animation(SharedString::from(format!("{id}-in")), Animation::new(total), |el, t| el.opacity(title_opacities(t).1)))
-        .child(div().absolute().top_0().left_0().right_0().truncate().child(before).with_animation(SharedString::from(format!("{id}-out")), Animation::new(total), |el, t| el.opacity(title_opacities(t).0)))
+        .child(div().min_w_0().truncate().child(text).with_animation(
+            SharedString::from(format!("{id}-in")),
+            Animation::new(total),
+            |el, t| el.opacity(title_opacities(t).1),
+        ))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .truncate()
+                .child(before)
+                .with_animation(
+                    SharedString::from(format!("{id}-out")),
+                    Animation::new(total),
+                    |el, t| el.opacity(title_opacities(t).0),
+                ),
+        )
         .into_any_element()
 }
 
@@ -395,13 +478,22 @@ pub(crate) fn transcript_frame(inner: Div, at: Option<(f32, f32)>) -> Div {
         Some((opacity, dy)) => inner.opacity(opacity).top(px(dy)),
         None => inner,
     };
-    div().relative().flex_1().min_h_0().overflow_hidden().child(inner)
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .child(inner)
 }
 
 #[cfg(test)]
 mod tests {
     // By name: a glob would bring in GPUI's own `test` attribute in place of Rust's.
-    use super::{box_drop_at, page_at, title_opacities, transcript_at, BoxDrop, Opening, Titles, BOX_DROP, CLICK_IN, CLICK_RISE, PAGE_IN, PAGE_RISE, START_OPACITY, STEP_IN, STEP_SHIFT, TITLES_KEPT, TITLE_IN, TITLE_OUT};
+    use super::{
+        box_drop_at, page_at, title_opacities, transcript_at, BoxDrop, Opening, Titles, BOX_DROP,
+        CLICK_IN, CLICK_RISE, PAGE_IN, PAGE_RISE, START_OPACITY, STEP_IN, STEP_SHIFT, TITLES_KEPT,
+        TITLE_IN, TITLE_OUT,
+    };
     use gpui_kit::SharedString;
     use std::cell::Cell;
     use std::time::{Duration, Instant};
@@ -411,31 +503,51 @@ mod tests {
     #[test]
     fn a_clicked_thread_starts_faint_and_low_and_settles_in_place() {
         let (opacity, dy) = transcript_at(Opening::Click, MS(0)).unwrap();
-        assert_eq!(opacity, START_OPACITY, "never blank, so the click shows at once");
+        assert_eq!(
+            opacity, START_OPACITY,
+            "never blank, so the click shows at once"
+        );
         assert_eq!(dy, CLICK_RISE);
         let (mid_o, mid_dy) = transcript_at(Opening::Click, MS(65)).unwrap();
-        assert!(mid_o > 0.8 && mid_dy < 1.5, "eased out: most of the way there by halfway ({mid_o}, {mid_dy})");
+        assert!(
+            mid_o > 0.8 && mid_dy < 1.5,
+            "eased out: most of the way there by halfway ({mid_o}, {mid_dy})"
+        );
         assert_eq!(transcript_at(Opening::Click, CLICK_IN), None);
     }
 
     #[test]
     fn the_arrow_keys_bring_it_in_from_the_way_the_list_was_walked() {
-        assert_eq!(transcript_at(Opening::Step(1), MS(0)).unwrap().1, STEP_SHIFT, "down: from below");
-        assert_eq!(transcript_at(Opening::Step(-1), MS(0)).unwrap().1, -STEP_SHIFT, "up: from above");
+        assert_eq!(
+            transcript_at(Opening::Step(1), MS(0)).unwrap().1,
+            STEP_SHIFT,
+            "down: from below"
+        );
+        assert_eq!(
+            transcript_at(Opening::Step(-1), MS(0)).unwrap().1,
+            -STEP_SHIFT,
+            "up: from above"
+        );
         assert_eq!(transcript_at(Opening::Step(1), STEP_IN), None);
     }
 
     #[test]
     fn nothing_this_short_takes_longer_than_a_quarter_second() {
         for length in [CLICK_IN, STEP_IN, PAGE_IN, BOX_DROP, TITLE_OUT + TITLE_IN] {
-            assert!(length <= MS(250), "{length:?}: Mike's limit for something done many times a day");
+            assert!(
+                length <= MS(250),
+                "{length:?}: Mike's limit for something done many times a day"
+            );
         }
     }
 
     #[test]
     fn the_archive_flight_and_the_new_page_leave_the_transcript_alone() {
         assert_eq!(transcript_at(Opening::Still, MS(0)), None);
-        assert_eq!(transcript_at(Opening::FromNewPage { box_top: 300. }, MS(0)), None);
+        assert_eq!(
+            transcript_at(Opening::FromNewPage { box_top: 300. }, MS(0)),
+            None
+        );
     }
 
     #[test]
@@ -447,15 +559,25 @@ mod tests {
     #[test]
     fn the_box_drops_the_whole_way_and_stops() {
         assert_eq!(box_drop_at(-240., MS(0)), Some(-240.));
-        assert!(box_drop_at(-240., MS(100)).unwrap().abs() < 240. * 0.05, "quint: nearly there by halfway");
+        assert!(
+            box_drop_at(-240., MS(100)).unwrap().abs() < 240. * 0.05,
+            "quint: nearly there by halfway"
+        );
         assert_eq!(box_drop_at(-240., BOX_DROP), None);
     }
 
     #[test]
     fn the_box_drop_measures_from_its_new_place_once() {
-        let drop = BoxDrop { from: 300., delta: Cell::new(None), started: Cell::new(None) };
+        let drop = BoxDrop {
+            from: 300.,
+            delta: Cell::new(None),
+            started: Cell::new(None),
+        };
         let first = drop.offset(620.);
-        assert!((first - -320.).abs() < 1., "starts where it was on the page: {first}");
+        assert!(
+            (first - -320.).abs() < 1.,
+            "starts where it was on the page: {first}"
+        );
         // Laid out again in the same place: the same drop, not a new one.
         assert!(drop.offset(620.) <= 0.);
         assert_eq!(drop.delta.get(), Some(-320.));
@@ -466,9 +588,15 @@ mod tests {
         assert_eq!(title_opacities(0.), (1., 0.));
         let out_end = TITLE_OUT.as_secs_f32() / (TITLE_OUT + TITLE_IN).as_secs_f32();
         let (old, new) = title_opacities(out_end * 0.5);
-        assert!(old > 0. && new == 0., "only the old one at first ({old}, {new})");
+        assert!(
+            old > 0. && new == 0.,
+            "only the old one at first ({old}, {new})"
+        );
         let (old, new) = title_opacities(0.8);
-        assert!(old == 0. && new > 0., "only the new one after ({old}, {new})");
+        assert!(
+            old == 0. && new > 0.,
+            "only the new one after ({old}, {new})"
+        );
         assert_eq!(title_opacities(1.), (0., 1.));
     }
 
@@ -487,12 +615,20 @@ mod tests {
         let mut titles = Titles::default();
         let t0 = Instant::now();
         let (old, new): (SharedString, SharedString) = ("New thread".into(), "Fix the bug".into());
-        assert!(titles.note("t", "header", &old, t0, total).is_none(), "first seen: drawn plain");
+        assert!(
+            titles.note("t", "header", &old, t0, total).is_none(),
+            "first seen: drawn plain"
+        );
         assert_eq!(titles.note("t", "header", &old, t0, total).unwrap().0, old);
         let (before, changed) = titles.note("t", "header", &new, t0 + MS(5), total).unwrap();
         assert_eq!((before, changed), (old, t0 + MS(5)));
-        let (before, _) = titles.note("t", "header", &new, t0 + MS(5) + total, total).unwrap();
-        assert_eq!(before, new, "once it's faded over, only the new text is kept");
+        let (before, _) = titles
+            .note("t", "header", &new, t0 + MS(5) + total, total)
+            .unwrap();
+        assert_eq!(
+            before, new,
+            "once it's faded over, only the new text is kept"
+        );
     }
 
     /// Daybreak 117: another runner churning fresh thread ids through the
@@ -512,14 +648,22 @@ mod tests {
             }
             // The rows leave the index: the app keeps only threads it still has.
             titles.retain(|_| false);
-            assert!(titles.map.is_empty(), "round {round}: nothing outlives its thread");
+            assert!(
+                titles.map.is_empty(),
+                "round {round}: nothing outlives its thread"
+            );
         }
         // Never told they went: the cap still holds, and a stable key is one entry.
         for i in 0..(TITLES_KEPT * 3) {
             titles.note(&format!("fresh-{i}"), "row-inbox", &text, now, total);
         }
         assert_eq!(titles.map.len(), TITLES_KEPT);
-        assert!(titles.note("past-the-cap", "row-inbox", &text, now, total).is_none(), "past the cap a title is just drawn plain");
+        assert!(
+            titles
+                .note("past-the-cap", "row-inbox", &text, now, total)
+                .is_none(),
+            "past the cap a title is just drawn plain"
+        );
         assert_eq!(titles.map.len(), TITLES_KEPT);
         titles.retain(|id| id == "fresh-1");
         for _ in 0..10_000 {

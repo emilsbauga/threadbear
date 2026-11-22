@@ -9,21 +9,39 @@
 /// symbols through Spotlight wherever that says they are, which on 31 Oct
 /// 2026 took the runner's copy of it deep into a Mac's external drive: a
 /// prompt left waiting there held up other apps on that drive for nearly
-/// nine hours (docs/protocol.md, "A dialog on a Mac's screen"). The stack
+/// nine hours (docs/protocol/updates.md, "A dialog on a Mac's screen"). The stack
 /// it's after doesn't need those places. Same list as `sampleSandbox` in
 /// runner/src/frozen-cli.ts and `HangSample.sandboxProfile`.
 pub fn sandbox_profile(home: &str) -> String {
     let mut paths: Vec<String> = vec!["/Volumes".into(), "/System/Volumes/Data/Volumes".into()];
-    for dir in ["Desktop", "Documents", "Downloads", "Dropbox", "Library/CloudStorage", "Library/Mobile Documents"] {
+    for dir in [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Dropbox",
+        "Library/CloudStorage",
+        "Library/Mobile Documents",
+    ] {
         paths.push(format!("{home}/{dir}"));
     }
     let denied: Vec<String> = paths.iter().map(|p| format!("(subpath \"{p}\")")).collect();
-    format!("(version 1)(allow default)(deny file* {})", denied.join(" "))
+    format!(
+        "(version 1)(allow default)(deny file* {})",
+        denied.join(" ")
+    )
 }
 
 /// `sandbox-exec`'s arguments for a sample of `pid` written to `file`.
 pub fn sample_arguments(home: &str, pid: u32, seconds: u32, file: &str) -> Vec<String> {
-    vec!["-p".into(), sandbox_profile(home), "/usr/bin/sample".into(), pid.to_string(), seconds.to_string(), "-file".into(), file.into()]
+    vec![
+        "-p".into(),
+        sandbox_profile(home),
+        "/usr/bin/sample".into(),
+        pid.to_string(),
+        seconds.to_string(),
+        "-file".into(),
+        file.into(),
+    ]
 }
 
 /// The main thread's heaviest path, outermost frame first, each as
@@ -48,7 +66,9 @@ pub fn heaviest_main_thread_path(text: &str) -> Vec<String> {
             continue;
         };
         let line_depth = prefix_length(line);
-        let Some(frame) = frame(line).filter(|_| line_depth > current) else { break };
+        let Some(frame) = frame(line).filter(|_| line_depth > current) else {
+            break;
+        };
         path.push(frame);
         depth = Some(line_depth);
     }
@@ -62,7 +82,14 @@ pub fn is_idle(path: &[String]) -> bool {
     let has = |prefix: &str| path.iter().any(|f| f.starts_with(prefix));
     has("_DPSNextEvent")
         && has("__CFRunLoopServiceMachPort")
-        && !["__CFRunLoopDoSource", "__CFRunLoopDoObservers", "__CFRunLoopDoTimers", "_dispatch_main_queue"].iter().any(|p| has(p))
+        && ![
+            "__CFRunLoopDoSource",
+            "__CFRunLoopDoObservers",
+            "__CFRunLoopDoTimers",
+            "_dispatch_main_queue",
+        ]
+        .iter()
+        .any(|p| has(p))
 }
 
 /// The deepest frame in the app's own code: the name a report goes by, as the
@@ -74,7 +101,10 @@ pub fn is_idle(path: &[String]) -> bool {
 pub fn deepest_app_frame(path: &[String]) -> Option<String> {
     path.iter()
         .rev()
-        .find(|f| (f.starts_with("threadbear_") || f.starts_with("<threadbear_")) && f.split(" (in ").next() != Some("threadbear_gpui::main"))
+        .find(|f| {
+            (f.starts_with("threadbear_") || f.starts_with("<threadbear_"))
+                && f.split(" (in ").next() != Some("threadbear_gpui::main")
+        })
         .cloned()
 }
 
@@ -86,7 +116,10 @@ pub fn deepest_app_frame(path: &[String]) -> Option<String> {
 /// `..`) put back. Either way the hash on the end of each name (`::h3f2a…`)
 /// goes, as it changes with every build and would make each one a new issue.
 pub fn tidy(symbol: &str) -> String {
-    let mangled = symbol.strip_prefix('_').filter(|s| s.starts_with("_R") || s.starts_with("_ZN")).unwrap_or(symbol);
+    let mangled = symbol
+        .strip_prefix('_')
+        .filter(|s| s.starts_with("_R") || s.starts_with("_ZN"))
+        .unwrap_or(symbol);
     if let Ok(demangled) = rustc_demangle::try_demangle(mangled) {
         // The alternate form leaves out the hashes and crate disambiguators.
         return strip_hashes(&format!("{demangled:#}"));
@@ -132,7 +165,10 @@ fn strip_hashes(symbol: &str) -> String {
     let mut out = String::with_capacity(symbol.len());
     let mut i = 0;
     while i < bytes.len() {
-        if symbol[i..].starts_with("::h") && i + 19 <= bytes.len() && bytes[i + 3..i + 19].iter().all(u8::is_ascii_hexdigit) {
+        if symbol[i..].starts_with("::h")
+            && i + 19 <= bytes.len()
+            && bytes[i + 3..i + 19].iter().all(u8::is_ascii_hexdigit)
+        {
             let after = bytes.get(i + 19).copied();
             // The end of the name, or of the segment.
             if after.is_none_or(|c| !c.is_ascii_alphanumeric() && c != b'_') {
@@ -244,16 +280,32 @@ Call graph:
     fn a_rust_apps_frames_are_tidied_and_named_by_its_own_code() {
         let path = heaviest_main_thread_path(RUST);
         assert_eq!(path[2], "std::rt::lang_start_internal (in threadbear-gpui)");
-        assert_eq!(path[4], "<threadbear_gpui::app::Threadbear as gpui::Render>::render (in threadbear-gpui)");
-        assert_eq!(deepest_app_frame(&path).as_deref(), Some("threadbear_gpui::sidebar::SidebarView::rows::{{closure}} (in threadbear-gpui)"));
+        assert_eq!(
+            path[4],
+            "<threadbear_gpui::app::Threadbear as gpui::Render>::render (in threadbear-gpui)"
+        );
+        assert_eq!(
+            deepest_app_frame(&path).as_deref(),
+            Some("threadbear_gpui::sidebar::SidebarView::rows::{{closure}} (in threadbear-gpui)")
+        );
     }
 
     #[test]
     fn main_alone_isnt_a_name() {
-        let rust_main = vec!["main (in threadbear-gpui)".to_owned(), "threadbear_gpui::main (in threadbear-gpui)".to_owned(), "__semwait_signal (in libsystem_kernel.dylib)".to_owned()];
+        let rust_main = vec![
+            "main (in threadbear-gpui)".to_owned(),
+            "threadbear_gpui::main (in threadbear-gpui)".to_owned(),
+            "__semwait_signal (in libsystem_kernel.dylib)".to_owned(),
+        ];
         // Stuck in what main itself runs is a place, though.
-        let in_main = vec!["threadbear_gpui::main (in threadbear-gpui)".to_owned(), "threadbear_gpui::main::{{closure}} (in threadbear-gpui)".to_owned()];
-        assert_eq!(deepest_app_frame(&in_main).as_deref(), Some("threadbear_gpui::main::{{closure}} (in threadbear-gpui)"));
+        let in_main = vec![
+            "threadbear_gpui::main (in threadbear-gpui)".to_owned(),
+            "threadbear_gpui::main::{{closure}} (in threadbear-gpui)".to_owned(),
+        ];
+        assert_eq!(
+            deepest_app_frame(&in_main).as_deref(),
+            Some("threadbear_gpui::main::{{closure}} (in threadbear-gpui)")
+        );
         assert_eq!(deepest_app_frame(&rust_main), None);
         assert_eq!(deepest_app_frame(&heaviest_main_thread_path(IDLE)), None);
     }
@@ -278,7 +330,13 @@ Call graph:
     #[test]
     fn sample_is_kept_away_from_what_macos_asks_about() {
         let profile = sandbox_profile("/Users/me");
-        for path in ["/Volumes", "/Users/me/Downloads", "/Users/me/Documents", "/Users/me/Desktop", "/Users/me/Library/Mobile Documents"] {
+        for path in [
+            "/Volumes",
+            "/Users/me/Downloads",
+            "/Users/me/Documents",
+            "/Users/me/Desktop",
+            "/Users/me/Library/Mobile Documents",
+        ] {
             assert!(profile.contains(&format!("(subpath \"{path}\")")), "{path}");
         }
     }
@@ -287,22 +345,40 @@ Call graph:
     /// leaves in Rust's v0 mangling.
     #[test]
     fn v0_mangled_names_are_demangled() {
-        assert_eq!(tidy("_RNvCslrt7FU2RYJ4_15threadbear_gpui4main"), "threadbear_gpui::main");
-        assert_eq!(tidy("_RNvNtCsdnanKjkF2cC_3std2rt19lang_start_internal"), "std::rt::lang_start_internal");
-        assert_eq!(tidy("_RNvNtCs8lZASfzeS8H_10gpui_apple10dispatcher10trampoline"), "gpui_apple::dispatcher::trampoline");
+        assert_eq!(
+            tidy("_RNvCslrt7FU2RYJ4_15threadbear_gpui4main"),
+            "threadbear_gpui::main"
+        );
+        assert_eq!(
+            tidy("_RNvNtCsdnanKjkF2cC_3std2rt19lang_start_internal"),
+            "std::rt::lang_start_internal"
+        );
+        assert_eq!(
+            tidy("_RNvNtCs8lZASfzeS8H_10gpui_apple10dispatcher10trampoline"),
+            "gpui_apple::dispatcher::trampoline"
+        );
         let line = "    + !     2632 _RNvCslrt7FU2RYJ4_15threadbear_gpui4main  (in threadbear-gpui) + 120  [0x104d5e000]";
         assert_eq!(heaviest_main_thread_path(&format!("Call graph:\n    2632 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)\n{line}\n")), ["threadbear_gpui::main (in threadbear-gpui)"]);
         // Not Rust at all: as it was.
         assert_eq!(tidy("-[NSApplication run]"), "-[NSApplication run]");
-        assert_eq!(tidy("_dispatch_main_queue_drain.cold.6"), "_dispatch_main_queue_drain.cold.6");
+        assert_eq!(
+            tidy("_dispatch_main_queue_drain.cold.6"),
+            "_dispatch_main_queue_drain.cold.6"
+        );
     }
 
     #[test]
     fn hashes_go_but_names_that_look_like_them_stay() {
-        assert_eq!(tidy("core::ops::function::FnOnce::call_once::h1a2b3c4d5e6f7a8b"), "core::ops::function::FnOnce::call_once");
+        assert_eq!(
+            tidy("core::ops::function::FnOnce::call_once::h1a2b3c4d5e6f7a8b"),
+            "core::ops::function::FnOnce::call_once"
+        );
         assert_eq!(tidy("a::h1a2b3c4d5e6f7a8b::b"), "a::b");
         // Not 16 hex digits, or more name after them: a real name.
-        assert_eq!(tidy("threadbear_gpui::hang_watch::start"), "threadbear_gpui::hang_watch::start");
+        assert_eq!(
+            tidy("threadbear_gpui::hang_watch::start"),
+            "threadbear_gpui::hang_watch::start"
+        );
         assert_eq!(tidy("x::h1a2b3c4d5e6f7a8bc"), "x::h1a2b3c4d5e6f7a8bc");
     }
 }

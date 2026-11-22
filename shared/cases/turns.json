@@ -1,0 +1,259 @@
+{
+  "about": "How a thread's turns fold, as the iPhone (Turns.fold, ios/ThreadbearKit/Sources/ThreadbearKit/Turns.swift), Android (Turns.fold, android-native/kit/.../Turns.kt) and the website (fold, web/src/turns.ts) show a thread from its Convex message rows: the message that started a turn, one Worked line holding its work, then the reply. input: busy (the thread's last turn still going) and the rows: seq, role (user, assistant, tool, note), text, at (seconds after the thread began), and origin, summary, plan, turn and wokeBy when set. expect: what's shown, in order: m<seq> a message, tools <seqs> a run of tool lines, note <seq> a login's note, gap <label> the divider before a turn the agent woke up for, and a folded turn as its title (\"Worked for 2m 13s\", or \"Worked\" with no start on the page), a colon, then its items. The desktop app isn't here: it folds the runner's own events, not these rows, and desktop/core/tests/golden holds its cases (shared with the old Swift Mac app).",
+  "platforms": ["ios", "android", "web"],
+  "cases": [
+    {
+      "name": "a finished turn folds its work and shows the summary",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Fix it", "at": 0},
+        {"seq": 2, "role": "assistant", "text": "Looking.", "at": 5},
+        {"seq": 3, "role": "tool", "text": "Run the tests", "at": 10},
+        {"seq": 4, "role": "assistant", "text": "Done.", "at": 120},
+        {"seq": 5, "role": "tool", "text": "threadbear: end_turn", "at": 132},
+        {"seq": 6, "role": "assistant", "text": "- Fixed it\n- Tests pass", "at": 133, "summary": true}
+      ] },
+      "expect": ["m1", "Worked for 2m 13s: m2, tools 3, m4, tools 5", "m6"]
+    },
+    {
+      "name": "work carried on after the summary shows the last thing said (a thread that crashed the phone, 1 Nov)",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Set up the API", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Make the keys", "at": 5},
+        {"seq": 3, "role": "tool", "text": "threadbear: end_turn", "at": 10},
+        {"seq": 4, "role": "assistant", "text": "- Keys made\n- Install the app next", "at": 11, "summary": true},
+        {"seq": 5, "role": "tool", "text": "Check for the app on the phone", "at": 20},
+        {"seq": 6, "role": "assistant", "text": "Installing it myself.", "at": 30},
+        {"seq": 7, "role": "tool", "text": "Tap Get", "at": 40},
+        {"seq": 8, "role": "tool", "text": "threadbear: end_turn", "at": 50},
+        {"seq": 9, "role": "assistant", "text": "It's installed, sign in and tell me.", "at": 60}
+      ] },
+      "expect": ["m1", "Worked for 1m: tools 2 3, m4, tools 5, m6, tools 7 8", "m9"]
+    },
+    {
+      "name": "a longer message after the last step beats the summary's bullets",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Why?", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Read x.ts", "at": 1},
+        {"seq": 3, "role": "assistant", "text": "Because the cache is keyed by folder, so two threads in one folder share a run and the second never starts its own.", "at": 30},
+        {"seq": 4, "role": "tool", "text": "threadbear: end_turn", "at": 31},
+        {"seq": 5, "role": "assistant", "text": "- Explained it", "at": 31, "summary": true}
+      ] },
+      "expect": ["m1", "Worked for 30s: tools 2 4, m5", "m3"]
+    },
+    {
+      "name": "the summary is the reply when nothing longer comes after the last step",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "go", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Bash npm test", "at": 1},
+        {"seq": 3, "role": "assistant", "text": "- tests pass", "at": 5, "summary": true},
+        {"seq": 4, "role": "tool", "text": "threadbear: end_turn", "at": 6}
+      ] },
+      "expect": ["m1", "Worked for 5s: tools 2 4", "m3"]
+    },
+    {
+      "name": "the turn still running isn't folded, and a runner's message joins the turn before",
+      "input": { "busy": true, "messages": [
+        {"seq": 1, "role": "user", "text": "Go", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Build", "at": 1},
+        {"seq": 3, "role": "assistant", "text": "Built.", "at": 2},
+        {"seq": 4, "role": "user", "text": "The app restarted", "at": 3, "origin": "runner"},
+        {"seq": 5, "role": "tool", "text": "Check it", "at": 4},
+        {"seq": 6, "role": "assistant", "text": "Checked.", "at": 9},
+        {"seq": 7, "role": "user", "text": "Next", "at": 20},
+        {"seq": 8, "role": "tool", "text": "Run", "at": 21}
+      ] },
+      "expect": ["m1", "Worked for 9s: tools 2, m4, tools 5", "m3", "m6", "m7", "tools 8"]
+    },
+    {
+      "name": "a runner's message joins the finished turn before it",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "go", "at": 0},
+        {"seq": 2, "role": "assistant", "text": "One", "at": 1},
+        {"seq": 3, "role": "user", "text": "Resumed after a restart", "at": 2, "origin": "runner"},
+        {"seq": 4, "role": "tool", "text": "Read b", "at": 3},
+        {"seq": 5, "role": "assistant", "text": "Two", "at": 4}
+      ] },
+      "expect": ["m1", "Worked for 4s: m3, tools 4", "m2", "m5"]
+    },
+    {
+      "name": "a wake-up after a reply leaves the reply on show (thread 9bc89060, 1 Nov)",
+      "input": { "busy": false, "messages": [
+        {"seq": 157, "role": "user", "text": "Generate an image", "at": 0, "turn": "a"},
+        {"seq": 160, "role": "tool", "text": "Draw it", "at": 16, "turn": "a"},
+        {"seq": 164, "role": "tool", "text": "threadbear: end_turn", "at": 20, "turn": "a"},
+        {"seq": 166, "role": "assistant", "text": "Here's a test bear", "at": 23, "turn": "a"},
+        {"seq": 170, "role": "assistant", "text": "That wait hit its limit", "at": 56, "turn": "b"},
+        {"seq": 171, "role": "tool", "text": "threadbear: end_turn", "at": 58, "turn": "b"},
+        {"seq": 173, "role": "assistant", "text": "Still waiting on you.", "at": 60, "turn": "b"}
+      ] },
+      "expect": ["m157", "Worked for 1m: tools 160 164, m170, tools 171", "m166", "gap 33s later", "m173"],
+      "differs": {"web": "The website draws no divider for the wait before a turn the agent woke up for (its fold has no gap item): the iPhone, Android and the desktop do (desktop/core/src/reducer/turn_gap.rs). Adding one is a website feature, not a small fix."}
+    },
+    {
+      "name": "a wake-up's summary doesn't take the reply's place",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Fix it", "at": 0, "turn": "a"},
+        {"seq": 2, "role": "tool", "text": "Build", "at": 1, "turn": "a"},
+        {"seq": 3, "role": "assistant", "text": "- Fixed it", "at": 2, "summary": true, "turn": "a"},
+        {"seq": 4, "role": "assistant", "text": "- Nothing changed", "at": 9, "summary": true, "turn": "b"}
+      ] },
+      "expect": ["m1", "Worked for 9s: tools 2", "m3", "gap 7s later", "m4"],
+      "differs": {"web": "The website draws no divider for the wait before a turn the agent woke up for (its fold has no gap item): the iPhone, Android and the desktop do (desktop/core/src/reducer/turn_gap.rs). Adding one is a website feature, not a small fix."}
+    },
+    {
+      "name": "the summary of a turn the runner's message started covers the stretch",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Fix it", "at": 0, "turn": "a"},
+        {"seq": 2, "role": "tool", "text": "Build", "at": 1, "turn": "a"},
+        {"seq": 3, "role": "assistant", "text": "- Fixed it", "at": 2, "summary": true, "turn": "a"},
+        {"seq": 4, "role": "user", "text": "The app restarted", "at": 3, "origin": "runner", "turn": "c"},
+        {"seq": 5, "role": "assistant", "text": "- Fixed and checked", "at": 9, "summary": true, "turn": "c"}
+      ] },
+      "expect": ["m1", "Worked for 9s: tools 2, m3, m4", "m5"]
+    },
+    {
+      "name": "rows from before the backend had turns are one turn",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Go", "at": 0},
+        {"seq": 2, "role": "assistant", "text": "One.", "at": 1},
+        {"seq": 3, "role": "assistant", "text": "Two.", "at": 2}
+      ] },
+      "expect": ["m1", "Worked for 2s: m2", "m3"]
+    },
+    {
+      "name": "a quick answer has nothing to fold",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Hi", "at": 0},
+        {"seq": 2, "role": "assistant", "text": "Hello", "at": 2}
+      ] },
+      "expect": ["m1", "m2"]
+    },
+    {
+      "name": "a page that starts partway through a turn says Worked with no time",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "assistant", "text": "Looking.", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Read a", "at": 1},
+        {"seq": 3, "role": "assistant", "text": "Done.", "at": 9}
+      ] },
+      "expect": ["Worked: m1, tools 2", "m3"]
+    },
+    {
+      "name": "a finished turn keeps its plan in view",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Plan the bots", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Read the schema", "at": 5},
+        {"seq": 3, "role": "assistant", "text": "# Bots\n\n1. Add a table", "at": 10, "plan": true},
+        {"seq": 4, "role": "tool", "text": "Finish the plan", "at": 11},
+        {"seq": 5, "role": "assistant", "text": "Waiting on your go.", "at": 12}
+      ] },
+      "expect": ["m1", "Worked for 12s: tools 2 4", "m3", "m5"]
+    },
+    {
+      "name": "a finished turn that said nothing shows its work as it is",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Run it", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Ran the build", "at": 3}
+      ] },
+      "expect": ["m1", "tools 2"]
+    },
+    {
+      "name": "a finished stretch marks each wait between replies",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Technical Convex video", "at": 0, "turn": "t1"},
+        {"seq": 2, "role": "tool", "text": "Mine the repo", "at": 5, "turn": "t1"},
+        {"seq": 3, "role": "assistant", "text": "The two researchers are still running.", "at": 83, "turn": "t1"},
+        {"seq": 4, "role": "assistant", "text": "The repo research is back.", "at": 434, "turn": "t2", "wokeBy": [{"kind": "agent", "description": "Mine LBI repo for video stories"}, {"kind": "shell", "description": "Scrape"}]},
+        {"seq": 5, "role": "assistant", "text": "Both reports are in.", "at": 479, "turn": "t3", "wokeBy": [{"kind": "agent", "description": "Prior art"}]},
+        {"seq": 6, "role": "tool", "text": "Render the cards", "at": 500, "turn": "t3"},
+        {"seq": 7, "role": "tool", "text": "threadbear: end_turn", "at": 560, "turn": "t3"},
+        {"seq": 8, "role": "assistant", "text": "We'd got further than I said.", "at": 570, "turn": "t3"}
+      ] },
+      "expect": ["m1", "Worked for 9m 30s: tools 2, m5, tools 6 7", "m3", "gap 6 min later · Mine LBI repo for video stories finished", "m4", "gap 45s later · Prior art finished", "m8"],
+      "differs": {"web": "The website draws no divider for the wait before a turn the agent woke up for (its fold has no gap item): the iPhone, Android and the desktop do (desktop/core/src/reducer/turn_gap.rs). Adding one is a website feature, not a small fix."}
+    },
+    {
+      "name": "a stretch still going marks the waits in its rows",
+      "input": { "busy": true, "messages": [
+        {"seq": 1, "role": "user", "text": "Technical Convex video", "at": 0, "turn": "t1"},
+        {"seq": 2, "role": "tool", "text": "Mine the repo", "at": 5, "turn": "t1"},
+        {"seq": 3, "role": "assistant", "text": "The two researchers are still running.", "at": 83, "turn": "t1"},
+        {"seq": 4, "role": "assistant", "text": "The repo research is back.", "at": 434, "turn": "t2", "wokeBy": [{"kind": "agent", "description": "Mine LBI repo for video stories"}, {"kind": "shell", "description": "Scrape"}]}
+      ] },
+      "expect": ["m1", "tools 2", "m3", "gap 6 min later · Mine LBI repo for video stories finished", "m4"],
+      "differs": {"web": "The website draws no divider for the wait before a turn the agent woke up for (its fold has no gap item): the iPhone, Android and the desktop do (desktop/core/src/reducer/turn_gap.rs). Adding one is a website feature, not a small fix."}
+    },
+    {
+      "name": "rows from before turns have no divider",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Technical Convex video", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Mine the repo", "at": 5},
+        {"seq": 3, "role": "assistant", "text": "The two researchers are still running.", "at": 83},
+        {"seq": 4, "role": "assistant", "text": "The repo research is back.", "at": 434},
+        {"seq": 5, "role": "assistant", "text": "Both reports are in.", "at": 479},
+        {"seq": 6, "role": "tool", "text": "Render the cards", "at": 500},
+        {"seq": 7, "role": "tool", "text": "threadbear: end_turn", "at": 560},
+        {"seq": 8, "role": "assistant", "text": "We'd got further than I said.", "at": 570}
+      ] },
+      "expect": ["m1", "Worked for 9m 30s: tools 2, m3, m4, m5, tools 6 7", "m8"]
+    },
+    {
+      "name": "a turn a runner's message started has no divider",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "Fix it", "at": 0, "turn": "t1"},
+        {"seq": 2, "role": "assistant", "text": "Merged; checking after the restart.", "at": 10, "turn": "t1"},
+        {"seq": 3, "role": "user", "text": "The app has restarted.", "at": 300, "origin": "runner", "turn": "t2"},
+        {"seq": 4, "role": "assistant", "text": "It's live.", "at": 320, "turn": "t2"}
+      ] },
+      "expect": ["m1", "m3", "m2", "m4"]
+    },
+    {
+      "name": "a login's note stays out of the work, between what came before it and the reply after",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "land it", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Ran tb land", "at": 5},
+        {"seq": 3, "role": "assistant", "text": "You've hit your 5-hour limit", "at": 60, "turn": "aaaa1111"},
+        {"seq": 4, "role": "note", "text": "Moved to alex@example.org: alex@example.net hit its 5-hour limit, back at 11:30 am.", "at": 61},
+        {"seq": 5, "role": "user", "text": "Carry on from where you left off.", "at": 62, "origin": "runner", "turn": "bbbb2222"},
+        {"seq": 6, "role": "tool", "text": "Ran git push", "at": 70, "turn": "bbbb2222"},
+        {"seq": 7, "role": "assistant", "text": "Landed.", "at": 90, "turn": "bbbb2222"}
+      ] },
+      "expect": ["m1", "Worked for 1m 30s: tools 2, m5, tools 6", "m3", "note 4", "m7"],
+      "differs": {"android": "Android doesn't read login notes yet (backend API 79, the role note: PhoneMessage.read skips the row), so it has no note item. Recorded in runner/src/parity.ts, not ported here."}
+    },
+    {
+      "name": "a limit hit before any work keeps the note under the limit's words",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "fix it", "at": 0},
+        {"seq": 2, "role": "assistant", "text": "You've hit your limit", "at": 1, "turn": "aaaa1111"},
+        {"seq": 3, "role": "note", "text": "Moved to alex@example.org: alex@example.net hit its 5-hour limit, back at 11:30 am.", "at": 2},
+        {"seq": 4, "role": "user", "text": "Carry on.", "at": 3, "origin": "runner", "turn": "bbbb2222"},
+        {"seq": 5, "role": "tool", "text": "Edited a file", "at": 4, "turn": "bbbb2222"},
+        {"seq": 6, "role": "assistant", "text": "Fixed.", "at": 9, "turn": "bbbb2222"}
+      ] },
+      "expect": ["m1", "Worked for 9s: m4, tools 5", "m2", "note 3", "m6"],
+      "differs": {"android": "Android doesn't read login notes yet (backend API 79, the role note: PhoneMessage.read skips the row), so it has no note item. Recorded in runner/src/parity.ts, not ported here."}
+    },
+    {
+      "name": "a thread waiting for room ends on its note",
+      "input": { "busy": false, "messages": [
+        {"seq": 1, "role": "user", "text": "land it", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Ran tb land", "at": 5},
+        {"seq": 3, "role": "assistant", "text": "You've hit your 5-hour limit", "at": 60},
+        {"seq": 4, "role": "note", "text": "Every login in Claude is out of room. Carrying on at 11:30 am.", "at": 61}
+      ] },
+      "expect": ["m1", "Worked for 1m: tools 2", "m3", "note 4"],
+      "differs": {"android": "Android doesn't read login notes yet (backend API 79, the role note: PhoneMessage.read skips the row), so it has no note item. Recorded in runner/src/parity.ts, not ported here."}
+    },
+    {
+      "name": "a running turn shows a note in place",
+      "input": { "busy": true, "messages": [
+        {"seq": 1, "role": "user", "text": "go", "at": 0},
+        {"seq": 2, "role": "tool", "text": "Read a", "at": 1},
+        {"seq": 3, "role": "note", "text": "Moved to alex@example.org: alex@example.net hit its 5-hour limit, back at 11:30 am.", "at": 2},
+        {"seq": 4, "role": "assistant", "text": "So far", "at": 3}
+      ] },
+      "expect": ["m1", "tools 2", "note 3", "m4"],
+      "differs": {"android": "Android doesn't read login notes yet (backend API 79, the role note: PhoneMessage.read skips the row), so it has no note item. Recorded in runner/src/parity.ts, not ported here."}
+    }
+  ]
+}

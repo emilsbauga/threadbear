@@ -73,7 +73,9 @@ pub fn link_kind(url: &str) -> LinkKind {
             // file:///a/b and file:/a/b name /a/b; file://host/a names a
             // file on another machine, which isn't opened from here.
             let path = if let Some(after) = rest.strip_prefix("//") {
-                let (host, path) = after.find('/').map_or((after, ""), |i| (&after[..i], &after[i..]));
+                let (host, path) = after
+                    .find('/')
+                    .map_or((after, ""), |i| (&after[..i], &after[i..]));
                 if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
                     return LinkKind::Refuse;
                 }
@@ -83,7 +85,12 @@ pub fn link_kind(url: &str) -> LinkKind {
             };
             let path = url_path(path);
             #[cfg(windows)]
-            let path = if path.starts_with('/') && crate::reducer::text::is_windows_path(&path[1..]) { path[1..].to_owned() } else { path };
+            let path = if path.starts_with('/') && crate::reducer::text::is_windows_path(&path[1..])
+            {
+                path[1..].to_owned()
+            } else {
+                path
+            };
             if path.is_empty() {
                 LinkKind::Refuse
             } else {
@@ -91,7 +98,9 @@ pub fn link_kind(url: &str) -> LinkKind {
             }
         }
         // A Windows path's drive letter reads as a one-letter scheme.
-        Some(s) if s.len() == 1 && url[2..].starts_with(['/', '\\']) => LinkKind::File(url.to_owned()),
+        Some(s) if s.len() == 1 && url[2..].starts_with(['/', '\\']) => {
+            LinkKind::File(url.to_owned())
+        }
         // A drive-relative path is still a file, never an app's scheme.
         // Its missing root (or an embedded device name) is refused below.
         Some(s) if cfg!(windows) && s.len() == 1 => LinkKind::File(url.to_owned()),
@@ -104,7 +113,9 @@ fn scheme(url: &str) -> Option<String> {
     let (s, _) = url.split_once(':')?;
     let mut chars = s.chars();
     let first = chars.next()?;
-    if !first.is_ascii_alphabetic() || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')) {
+    if !first.is_ascii_alphabetic()
+        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    {
         return None;
     }
     Some(s.to_ascii_lowercase())
@@ -125,7 +136,11 @@ pub fn percent_decode(text: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            if let Some(v) = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            if let Some(v) = bytes
+                .get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
                 out.push(v);
                 i += 3;
                 continue;
@@ -145,7 +160,11 @@ pub fn file_url(path: &str) -> String {
     // name, and turning it into `/` would make the URL name another file
     // than the one looked at: `Payload.app\` is a plain folder beside the
     // app `Payload.app` (Codex review, 10 Nov 2026).
-    let mut path = if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() };
+    let mut path = if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
     if !path.starts_with('/') {
         // C:/Users/... is file:///C:/Users/...
         path.insert(0, '/');
@@ -154,7 +173,9 @@ pub fn file_url(path: &str) -> String {
     out.push_str("file://");
     for byte in path.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             // The drive's colon, left as it is.
             b':' if cfg!(windows) && out.len() == 9 => out.push(':'),
             _ => out.push_str(&format!("%{byte:02X}")),
@@ -175,7 +196,11 @@ pub fn absolute(path: &str, cwd: &str, home: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    Some(format!("{}/{}", cwd.trim_end_matches(['/', '\\']), path.trim_start_matches("./")))
+    Some(format!(
+        "{}/{}",
+        cwd.trim_end_matches(['/', '\\']),
+        path.trim_start_matches("./")
+    ))
 }
 
 // ---------------------------------------------------------------- files
@@ -195,20 +220,23 @@ const DOCUMENT_EXTENSIONS: &[&str] = &[
     // pictures
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "ico", "svg", "avif",
     // films and sound
-    "mp4", "mov", "m4v", "webm", "mkv", "avi", "mp3", "wav", "m4a", "aac", "aiff", "aif", "flac", "ogg", "opus",
-    // PDFs and text
-    "pdf", "txt", "text", "md", "markdown", "mdx", "rtf", "csv", "tsv", "log", "json", "jsonc", "jsonl", "yaml", "yml", "toml", "ini", "xml", "plist", "html", "htm", "css",
-    "scss", "less", "diff", "patch", "srt", "vtt",
+    "mp4", "mov", "m4v", "webm", "mkv", "avi", "mp3", "wav", "m4a", "aac", "aiff", "aif", "flac",
+    "ogg", "opus", // PDFs and text
+    "pdf", "txt", "text", "md", "markdown", "mdx", "rtf", "csv", "tsv", "log", "json", "jsonc",
+    "jsonl", "yaml", "yml", "toml", "ini", "xml", "plist", "html", "htm", "css", "scss", "less",
+    "diff", "patch", "srt", "vtt",
     // source code that's compiled, not run as it opens
-    "swift", "rs", "ts", "tsx", "jsx", "c", "h", "m", "mm", "cc", "cpp", "hpp", "cs", "java", "kt", "kts", "go", "sql", "graphql", "proto", "gradle",
-    // office documents
-    "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "numbers", "pages", "odt", "ods", "odp", "rtfd",
-    // fonts
+    "swift", "rs", "ts", "tsx", "jsx", "c", "h", "m", "mm", "cc", "cpp", "hpp", "cs", "java", "kt",
+    "kts", "go", "sql", "graphql", "proto", "gradle", // office documents
+    "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "numbers", "pages", "odt", "ods", "odp",
+    "rtfd", // fonts
     "ttf", "otf", "woff", "woff2",
 ];
 
 fn extension(path: &Path) -> String {
-    path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+    path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
 pub fn is_document(path: &Path) -> bool {
@@ -217,10 +245,28 @@ pub fn is_document(path: &Path) -> bool {
 
 /// Apps that run the file they're given (`LinkPolicy.codeRunnerApps`).
 const CODE_RUNNER_APPS: &[&str] = &[
-    "com.apple.terminal", "com.googlecode.iterm2", "org.python.pythonlauncher", "com.apple.installer", "com.apple.shortcuts", "com.apple.jarlauncher",
-    "com.apple.automator.automator-application-stub", "com.apple.systempreferences", "com.apple.systemsettings", "com.apple.scripteditor.id.scriptapplet",
-    "net.kovidgoyal.kitty", "dev.warp.warp-stable", "dev.warp.warp-preview", "com.mitchellh.ghostty", "io.alacritty", "org.alacritty",
-    "org.tabby", "com.raphaelamorim.rio", "dev.commandline.waveterm", "co.zeit.hyper", "com.github.wez.wezterm", "com.panic.prompt3",
+    "com.apple.terminal",
+    "com.googlecode.iterm2",
+    "org.python.pythonlauncher",
+    "com.apple.installer",
+    "com.apple.shortcuts",
+    "com.apple.jarlauncher",
+    "com.apple.automator.automator-application-stub",
+    "com.apple.systempreferences",
+    "com.apple.systemsettings",
+    "com.apple.scripteditor.id.scriptapplet",
+    "net.kovidgoyal.kitty",
+    "dev.warp.warp-stable",
+    "dev.warp.warp-preview",
+    "com.mitchellh.ghostty",
+    "io.alacritty",
+    "org.alacritty",
+    "org.tabby",
+    "com.raphaelamorim.rio",
+    "dev.commandline.waveterm",
+    "co.zeit.hyper",
+    "com.github.wez.wezterm",
+    "com.panic.prompt3",
 ];
 
 /// Where an app the gate hands a file to may be: the Mac's own folders for
@@ -230,21 +276,48 @@ const CODE_RUNNER_APPS: &[&str] = &[
 /// project can write. Directly, so a repo cloned into ~/Applications isn't
 /// a place apps are installed. `app` is the real path, links followed.
 pub fn installed_where_apps_are(app: &Path) -> bool {
-    if app.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)) {
+    if app.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )
+    }) {
         return false;
     }
-    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
-    let is_app = |c: Option<std::path::Component>| c.is_some_and(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase().ends_with(".app"));
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+    let is_app = |c: Option<std::path::Component>| {
+        c.is_some_and(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(".app")
+        })
+    };
     // /Applications/X.app, /Applications/Utilities/X.app, and anything inside one.
     let in_applications = |root: &Path| {
         app.strip_prefix(root).is_ok_and(|rest| {
             let mut parts = rest.components();
             let first = parts.next();
-            is_app(first) || (first.is_some_and(|c| c.as_os_str() == "Utilities") && is_app(parts.next()))
+            is_app(first)
+                || (first.is_some_and(|c| c.as_os_str() == "Utilities") && is_app(parts.next()))
         })
     };
-    let system = ["/System/Applications/", "/System/Library/", "/System/Volumes/Preboot/Cryptexes/", "/Library/"].iter().any(|root| app.starts_with(root));
-    system || in_applications(Path::new("/Applications")) || home.as_ref().is_some_and(|h| in_applications(&h.join("Applications")) || app.starts_with(h.join("Library/Application Support")))
+    let system = [
+        "/System/Applications/",
+        "/System/Library/",
+        "/System/Volumes/Preboot/Cryptexes/",
+        "/Library/",
+    ]
+    .iter()
+    .any(|root| app.starts_with(root));
+    system
+        || in_applications(Path::new("/Applications"))
+        || home.as_ref().is_some_and(|h| {
+            in_applications(&h.join("Applications"))
+                || app.starts_with(h.join("Library/Application Support"))
+        })
 }
 
 pub fn is_code_runner(bundle_id: &str) -> bool {
@@ -280,7 +353,10 @@ pub struct OpeningApp {
 /// too: local_path walks links without following them into the network.
 pub fn real_path(path: &Path) -> std::io::Result<PathBuf> {
     if on_a_share(path) {
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "a network share or a device"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "a network share or a device",
+        ));
     }
     #[cfg(windows)]
     let local = crate::local_path::LocalPath::new(path)?;
@@ -304,11 +380,23 @@ pub fn real_path(path: &Path) -> std::io::Result<PathBuf> {
 /// dot, less trailing spaces, is one of the names Microsoft lists ("Naming
 /// Files, Paths, and Namespaces": `NUL.tar.gz` is `NUL`), or the console's.
 pub fn is_device_name(name: &str) -> bool {
-    let base = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_uppercase();
-    if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+    let base = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_uppercase();
+    if matches!(
+        base.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
         return true;
     }
-    ["COM", "LPT"].iter().any(|p| base.strip_prefix(p).is_some_and(|n| (n.len() == 1 && n.as_bytes()[0].is_ascii_digit()) || matches!(n, "¹" | "²" | "³")))
+    ["COM", "LPT"].iter().any(|p| {
+        base.strip_prefix(p).is_some_and(|n| {
+            (n.len() == 1 && n.as_bytes()[0].is_ascii_digit()) || matches!(n, "¹" | "²" | "³")
+        })
+    })
 }
 
 /// Whether Windows takes `path` to a network share, a device or a namespace
@@ -326,7 +414,11 @@ pub fn is_share_or_device(path: &str) -> bool {
     if !(sep(0) && sep(1)) {
         return false;
     }
-    let verbatim_drive = s.get(2) == Some(&b'?') && sep(3) && s.get(4).is_some_and(u8::is_ascii_alphabetic) && s.get(5) == Some(&b':') && (sep(6) || s.len() == 6);
+    let verbatim_drive = s.get(2) == Some(&b'?')
+        && sep(3)
+        && s.get(4).is_some_and(u8::is_ascii_alphabetic)
+        && s.get(5) == Some(&b':')
+        && (sep(6) || s.len() == 6);
     !verbatim_drive
 }
 
@@ -342,25 +434,39 @@ pub(crate) fn on_a_share(path: &Path) -> bool {
 /// QueryDosDevice may return a physical volume or a redirector with a path
 /// tail. Only an exact physical-volume name is safe to open as a root.
 pub fn is_local_volume_device(name: &str) -> bool {
-    [r"\Device\HarddiskVolume", r"\Device\CdRom"].iter().any(|prefix| name.strip_prefix(prefix).is_some_and(|tail| !tail.is_empty() && tail.bytes().all(|c| c.is_ascii_digit())))
+    [r"\Device\HarddiskVolume", r"\Device\CdRom"]
+        .iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|tail| !tail.is_empty() && tail.bytes().all(|c| c.is_ascii_digit()))
+        })
 }
 
 /// A checked local path as the Windows shell accepts it. Filesystem reads
 /// keep their checked handle instead of looking this display path up again.
-pub fn system_path(path: &Path) -> &Path { dunce::simplified(path) }
+pub fn system_path(path: &Path) -> &Path {
+    dunce::simplified(path)
+}
 
 /// A reply's file probe uses the same local-path rules as opening it. On
 /// Windows even metadata can contact a share, so never probe the raw path.
 pub fn local_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
     #[cfg(windows)]
-    { crate::local_path::LocalPath::stat(path)?.file()?.metadata() }
+    {
+        crate::local_path::LocalPath::stat(path)?.file()?.metadata()
+    }
     #[cfg(not(windows))]
-    { std::fs::metadata(path) }
+    {
+        std::fs::metadata(path)
+    }
 }
 
 /// Keep the checked components held until an operation opens the resolved
 /// path. Callers must use this path, not re-open the original spelling.
-pub fn with_local_path<T>(path: &Path, read: impl FnOnce(&Path) -> std::io::Result<T>) -> std::io::Result<T> {
+pub fn with_local_path<T>(
+    path: &Path,
+    read: impl FnOnce(&Path) -> std::io::Result<T>,
+) -> std::io::Result<T> {
     #[cfg(windows)]
     {
         let local = crate::local_path::LocalPath::new(path)?;
@@ -374,24 +480,34 @@ pub fn with_local_path<T>(path: &Path, read: impl FnOnce(&Path) -> std::io::Resu
 /// follows a link swapped into the path in the meantime.
 pub fn local_open(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
-    { crate::local_path::LocalPath::for_read(path)?.readable() }
+    {
+        crate::local_path::LocalPath::for_read(path)?.readable()
+    }
     #[cfg(not(windows))]
-    { open_without_waiting(&std::fs::canonicalize(path)?) }
+    {
+        open_without_waiting(&std::fs::canonicalize(path)?)
+    }
 }
 
 /// Open the checked file object for a text edit, without another path lookup.
 pub fn local_open_for_write(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
-    { crate::local_path::LocalPath::for_read(path)?.writable() }
+    {
+        crate::local_path::LocalPath::for_read(path)?.writable()
+    }
     #[cfg(not(windows))]
-    { std::fs::OpenOptions::new().write(true).open(path) }
+    {
+        std::fs::OpenOptions::new().write(true).open(path)
+    }
 }
 
 /// Read a local file with its Windows ancestors held against a link swap.
 pub fn local_read(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let file = local_open(path)?;
-    if !file.metadata()?.is_file() { return Err(std::io::Error::other("Not a file")); }
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("Not a file"));
+    }
     let mut bytes = Vec::new();
     file.take(max as u64).read_to_end(&mut bytes)?;
     Ok(bytes)
@@ -400,13 +516,22 @@ pub fn local_read(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
 /// Open the directory while its checked Windows ancestors are held.
 pub fn local_read_dir(path: &Path) -> std::io::Result<Vec<std::io::Result<LocalDirEntry>>> {
     #[cfg(windows)]
-    { crate::local_path::LocalPath::for_read(path)?.entries() }
+    {
+        crate::local_path::LocalPath::for_read(path)?.entries()
+    }
     #[cfg(not(windows))]
     {
-        Ok(std::fs::read_dir(path)?.take(20_001).map(|e| {
-            let e = e?;
-            Ok(LocalDirEntry { path: e.path(), name: e.file_name(), is_folder: e.file_type()?.is_dir() })
-        }).collect())
+        Ok(std::fs::read_dir(path)?
+            .take(20_001)
+            .map(|e| {
+                let e = e?;
+                Ok(LocalDirEntry {
+                    path: e.path(),
+                    name: e.file_name(),
+                    is_folder: e.file_type()?.is_dir(),
+                })
+            })
+            .collect())
     }
 }
 
@@ -417,8 +542,12 @@ pub struct LocalDirEntry {
 }
 
 impl LocalDirEntry {
-    pub fn path(&self) -> PathBuf { self.path.clone() }
-    pub fn file_name(&self) -> std::ffi::OsString { self.name.clone() }
+    pub fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+    pub fn file_name(&self) -> std::ffi::OsString {
+        self.name.clone()
+    }
 }
 
 /// What looking at a file found.
@@ -485,10 +614,16 @@ fn hold(real: &Path, meta: &std::fs::Metadata) -> Result<Held, ()> {
 fn volume_of(path: &Path) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt as _;
     let name = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statfs is a plain C struct of integers and char arrays, so all
+    // zeros is a valid value.
     let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `name` is a NUL-terminated CString that outlives the call, and
+    // statfs only writes into the local struct it's given.
     if unsafe { libc::statfs(name.as_ptr(), &mut fs) } != 0 {
         return None;
     }
+    // SAFETY: statfs succeeded, so the kernel filled f_mntonname with a
+    // NUL-terminated path inside the array, which lives as long as `fs`.
     let mount = unsafe { std::ffi::CStr::from_ptr(fs.f_mntonname.as_ptr()) };
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(mount.to_bytes())))
 }
@@ -514,7 +649,11 @@ pub struct FileId {
 #[cfg(unix)]
 fn meta_id(meta: &std::fs::Metadata) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
-    Some(FileId { device: meta.dev(), inode: meta.ino(), high: 0 })
+    Some(FileId {
+        device: meta.dev(),
+        inode: meta.ino(),
+        high: 0,
+    })
 }
 
 /// The identity of the open file `file` (its metadata `meta`).
@@ -527,7 +666,11 @@ fn handle_id(_file: &std::fs::File, meta: &std::fs::Metadata) -> Option<FileId> 
 #[cfg(windows)]
 fn handle_id(file: &std::fs::File, _meta: &std::fs::Metadata) -> Option<FileId> {
     let [device, inode, high] = crate::local_path::identity_of(file).ok()?;
-    Some(FileId { device, inode, high })
+    Some(FileId {
+        device,
+        inode,
+        high,
+    })
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -565,7 +708,16 @@ pub fn opener(look: &Look) -> Opener {
         // (`.rtfd`, `.xcodeproj`) goes to its app like a document, by
         // reference; Finder is never handed one to open, as it launches a
         // bundle moved in there.
-        _ if look.runs.is_none() && look.is_dir && look.app.as_ref().is_none_or(|a| a.bundle_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case("com.apple.finder"))) => Opener::FileViewer,
+        _ if look.runs.is_none()
+            && look.is_dir
+            && look.app.as_ref().is_none_or(|a| {
+                a.bundle_id
+                    .as_deref()
+                    .is_some_and(|id| id.eq_ignore_ascii_case("com.apple.finder"))
+            }) =>
+        {
+            Opener::FileViewer
+        }
         Some(app) => Opener::App(app.path.clone()),
         None => Opener::System,
     }
@@ -586,7 +738,10 @@ pub fn look(path: &Path, app_for: &dyn Fn(&Path) -> Option<OpeningApp>) -> Optio
     #[cfg(not(windows))]
     let meta = local_metadata(path).ok()?;
     #[cfg(not(windows))]
-    let linked = std::fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false) || resolved.file_name() != path.file_name();
+    let linked = std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+        || resolved.file_name() != path.file_name();
     #[cfg(windows)]
     let linked = _local.linked;
     #[cfg(windows)]
@@ -603,25 +758,54 @@ pub fn look(path: &Path, app_for: &dyn Fn(&Path) -> Option<OpeningApp>) -> Optio
     // The app as it really is, links followed: what's checked is what's
     // handed the file (Grok's second review: a link in the project to
     // TextEdit, retargeted after the check, launched what it named then).
-    let app = app_for(&resolved).map(|a| OpeningApp { path: real_path(&a.path).unwrap_or(a.path), ..a });
+    let app = app_for(&resolved).map(|a| OpeningApp {
+        path: real_path(&a.path).unwrap_or(a.path),
+        ..a
+    });
     let (runs, trustable) = runs(&resolved, &meta, app.clone());
     let volume = volume_of(&resolved);
-    Some(Look { resolved, runs, trustable, linked, id, app, is_dir: meta.is_dir(), volume, held })
+    Some(Look {
+        resolved,
+        runs,
+        trustable,
+        linked,
+        id,
+        app,
+        is_dir: meta.is_dir(),
+        volume,
+        held,
+    })
 }
 
 /// Why opening `file` would or might run something (`OpenGate.runs`), and,
 /// for a kind of file Threadbear can't place, what Mike may say always opens
 /// (`Look::trustable`). Everything before that last step asks whatever has
 /// been remembered.
-fn runs(file: &Path, meta: &std::fs::Metadata, app: Option<OpeningApp>) -> (Option<String>, Option<TrustedOpener>) {
+fn runs(
+    file: &Path,
+    meta: &std::fs::Metadata,
+    app: Option<OpeningApp>,
+) -> (Option<String>, Option<TrustedOpener>) {
     let name = file.to_string_lossy();
     if runs_code(&name) {
-        return (Some(format!("It's a .{} file, which runs when it's opened.", extension(file))), None);
+        return (
+            Some(format!(
+                "It's a .{} file, which runs when it's opened.",
+                extension(file)
+            )),
+            None,
+        );
     }
     if meta.is_dir() {
         // A bundle is a folder macOS launches or installs rather than shows.
-        if ["Contents/Info.plist", "Contents/MacOS", "Info.plist"].iter().any(|p| local_metadata(&file.join(p)).is_ok()) {
-            return (Some("It's an app or a bundle, which runs when it's opened.".to_owned()), None);
+        if ["Contents/Info.plist", "Contents/MacOS", "Info.plist"]
+            .iter()
+            .any(|p| local_metadata(&file.join(p)).is_ok())
+        {
+            return (
+                Some("It's an app or a bundle, which runs when it's opened.".to_owned()),
+                None,
+            );
         }
     }
     if let Some(app) = &app {
@@ -631,27 +815,48 @@ fn runs(file: &Path, meta: &std::fs::Metadata, app: Option<OpeningApp>) -> (Opti
             return (Some("It's a program.".to_owned()), None);
         }
         if app.bundle_id.as_deref().is_some_and(is_code_runner) {
-            return (Some(format!("It opens in {}, which runs it.", app.name)), None);
+            return (
+                Some(format!("It opens in {}, which runs it.", app.name)),
+                None,
+            );
         }
         // A file (even one named like a document, or a package) that a
         // thread pointed at Finder or an app that mounts or unpacks what
         // it's given: an alias opens what it points at, an image or archive
         // brings in an app (Gemini's third and fourth looks, 19 Nov). A
         // folder going to Finder is only shown, so that one doesn't ask.
-        let id = app.bundle_id.as_deref().map(str::to_ascii_lowercase).unwrap_or_default();
-        if OPENS_WHATS_INSIDE.contains(&id.as_str()) && !(meta.is_dir() && id == "com.apple.finder") {
-            return (Some(format!("It opens in {}, which opens what's inside it.", app.name)), None);
+        let id = app
+            .bundle_id
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        if OPENS_WHATS_INSIDE.contains(&id.as_str()) && !(meta.is_dir() && id == "com.apple.finder")
+        {
+            return (
+                Some(format!(
+                    "It opens in {}, which opens what's inside it.",
+                    app.name
+                )),
+                None,
+            );
         }
         // And one pointed at an app that runs scripts or installs what it's given.
         if RUNS_WHAT_ITS_GIVEN.contains(&id.as_str()) {
-            return (Some(format!("It opens in {}, which may run it.", app.name)), None);
+            return (
+                Some(format!("It opens in {}, which may run it.", app.name)),
+                None,
+            );
         }
         // An app in a project folder (or anywhere else a thread can write)
         // can be made a file's opener, with Launch Services' per-file "open
         // with" setting on the file itself, and opening the file would
         // start it (Grok's review of the Daybreak 125 fix).
         if !installed_where_apps_are(&app.path) {
-            let folder = app.path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let folder = app
+                .path
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
             return (Some(format!("It opens in {}, an app in {folder}, not one installed where apps go, so opening it would run that app.", app.name)), None);
         }
     }
@@ -663,10 +868,15 @@ fn runs(file: &Path, meta: &std::fs::Metadata, app: Option<OpeningApp>) -> (Opti
         return (None, None);
     }
     if is_executable(meta) {
-        return (Some("It's marked as a program, so opening it may run it.".to_owned()), None);
+        return (
+            Some("It's marked as a program, so opening it may run it.".to_owned()),
+            None,
+        );
     }
     let trustable = app.as_ref().and_then(|a| TrustedOpener::new(file, a));
-    let opener = app.map(|a| format!(" It opens in {},", a.name)).unwrap_or_default();
+    let opener = app
+        .map(|a| format!(" It opens in {},", a.name))
+        .unwrap_or_default();
     (Some(format!("Threadbear can't tell what this kind of file does when it's opened.{opener} which may run what's in it.")), trustable)
 }
 
@@ -686,10 +896,20 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
 pub enum FileVerdict {
     /// Open it: the URL is the real file's, built by `file_url`, handed to
     /// `with`, once `still_same` says it's still what `look` saw.
-    Open { url: String, resolved: PathBuf, look: Look, with: Opener },
+    Open {
+        url: String,
+        resolved: PathBuf,
+        look: Look,
+        with: Opener,
+    },
     /// Ask first, then open `url` only on a yes (and only if the file is
     /// still what was asked about: `still_same`).
-    Ask { question: Question, url: String, look: Look, with: Opener },
+    Ask {
+        question: Question,
+        url: String,
+        look: Look,
+        with: Opener,
+    },
     /// Don't, and say why.
     Refuse(String),
 }
@@ -727,19 +947,32 @@ impl TrustedOpener {
     /// always ask.
     fn new(file: &Path, app: &OpeningApp) -> Option<TrustedOpener> {
         let extension = extension(file);
-        let bundle_id = app.bundle_id.as_deref().map(str::trim).filter(|id| !id.is_empty())?;
-        if extension.is_empty() || app.path == file || NEVER_REMEMBERED_EXTENSIONS.contains(&extension.as_str()) {
+        let bundle_id = app
+            .bundle_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())?;
+        if extension.is_empty()
+            || app.path == file
+            || NEVER_REMEMBERED_EXTENSIONS.contains(&extension.as_str())
+        {
             return None;
         }
         if !rememberable_place(&app.path) {
             return None;
         }
-        Some(TrustedOpener { extension, bundle_id: bundle_id.to_owned(), app: app.path.clone() })
+        Some(TrustedOpener {
+            extension,
+            bundle_id: bundle_id.to_owned(),
+            app: app.path.clone(),
+        })
     }
 
     /// The same kind going to the same app, at the same place.
     pub fn same(&self, other: &TrustedOpener) -> bool {
-        self.extension.to_lowercase() == other.extension.to_lowercase() && self.bundle_id.eq_ignore_ascii_case(&other.bundle_id) && self.app == other.app
+        self.extension.to_lowercase() == other.extension.to_lowercase()
+            && self.bundle_id.eq_ignore_ascii_case(&other.bundle_id)
+            && self.app == other.app
     }
 }
 
@@ -748,23 +981,88 @@ impl TrustedOpener {
 /// archive brings in files (an app among them), and a script may run in
 /// whatever opens it (Gemini's review, 19 Nov).
 const NEVER_REMEMBERED_EXTENSIONS: &[&str] = &[
-    "alias", "dmg", "iso", "img", "cdr", "sparseimage", "toast", "zip", "xip", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz", "zst",
-    "tzst", "lz4", "lzma", "tlz", "cpgz", "cpio", "xar", "cab", "7z", "rar", "ipa", "py", "pyw", "pyc", "pyz", "pyzw", "rb", "pl", "php",
-    "lua", "tcl", "awk", "js", "mjs", "cjs", "zsh", "bash", "fish", "csh", "ksh", "tcsh", "applescript", "scpt", "docm", "dotm", "xlsm",
-    "xltm", "xlam", "pptm", "potm", "ppam",
+    "alias",
+    "dmg",
+    "iso",
+    "img",
+    "cdr",
+    "sparseimage",
+    "toast",
+    "zip",
+    "xip",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "tbz",
+    "tbz2",
+    "xz",
+    "txz",
+    "zst",
+    "tzst",
+    "lz4",
+    "lzma",
+    "tlz",
+    "cpgz",
+    "cpio",
+    "xar",
+    "cab",
+    "7z",
+    "rar",
+    "ipa",
+    "py",
+    "pyw",
+    "pyc",
+    "pyz",
+    "pyzw",
+    "rb",
+    "pl",
+    "php",
+    "lua",
+    "tcl",
+    "awk",
+    "js",
+    "mjs",
+    "cjs",
+    "zsh",
+    "bash",
+    "fish",
+    "csh",
+    "ksh",
+    "tcsh",
+    "applescript",
+    "scpt",
+    "docm",
+    "dotm",
+    "xlsm",
+    "xltm",
+    "xlam",
+    "pptm",
+    "potm",
+    "ppam",
 ];
 
 /// Apps that open what a file points at or holds: a file going to one
 /// always asks (`runs`), whatever it's called.
 const OPENS_WHATS_INSIDE: &[&str] = &[
-    "com.apple.finder", "com.apple.diskimagemounter", "com.apple.archiveutility", "cx.c3.theunarchiver", "com.macpaw.site.theunarchiver",
-    "com.aone.keka", "com.macitbetter.betterzip",
+    "com.apple.finder",
+    "com.apple.diskimagemounter",
+    "com.apple.archiveutility",
+    "cx.c3.theunarchiver",
+    "com.macpaw.site.theunarchiver",
+    "com.aone.keka",
+    "com.macitbetter.betterzip",
 ];
 
 /// Apps that run or install what they're given, past the code runners: a
 /// file going to one always asks too.
 const RUNS_WHAT_ITS_GIVEN: &[&str] = &[
-    "com.apple.scripteditor2", "com.apple.automator", "com.apple.installer", "com.apple.shortcuts", "org.python.idle", "com.apple.systemevents",
+    "com.apple.scripteditor2",
+    "com.apple.automator",
+    "com.apple.installer",
+    "com.apple.shortcuts",
+    "org.python.idle",
+    "com.apple.systemevents",
     "com.apple.applescriptutility",
 ];
 
@@ -778,61 +1076,111 @@ fn rememberable_place(app: &Path) -> bool {
     if real_path(app).ok().as_deref() != Some(app) {
         return false;
     }
-    let is_app = |c: &std::path::Component| c.as_os_str().to_string_lossy().to_ascii_lowercase().ends_with(".app");
+    let is_app = |c: &std::path::Component| {
+        c.as_os_str()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".app")
+    };
     let directly_in = |root: &Path| {
-        app.strip_prefix(root).is_ok_and(|rest| match rest.components().collect::<Vec<_>>().as_slice() {
-            [a] => is_app(a),
-            [u, a] => u.as_os_str() == "Utilities" && is_app(a),
-            _ => false,
+        app.strip_prefix(root).is_ok_and(|rest| {
+            match rest.components().collect::<Vec<_>>().as_slice() {
+                [a] => is_app(a),
+                [u, a] => u.as_os_str() == "Utilities" && is_app(a),
+                _ => false,
+            }
         })
     };
-    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
-    directly_in(Path::new("/Applications")) || directly_in(Path::new("/System/Applications")) || home.is_some_and(|h| directly_in(&h.join("Applications")))
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+    directly_in(Path::new("/Applications"))
+        || directly_in(Path::new("/System/Applications"))
+        || home.is_some_and(|h| directly_in(&h.join("Applications")))
 }
 
 /// Whether `look` is a kind of file `trusted` says always opens in its app.
 pub fn remembered(look: &Look, trusted: &[TrustedOpener]) -> bool {
-    look.trustable.as_ref().is_some_and(|t| trusted.iter().any(|k| k.same(t)))
+    look.trustable
+        .as_ref()
+        .is_some_and(|t| trusted.iter().any(|k| k.same(t)))
 }
 
 /// Decides about the file at `path`, which must be absolute already, with
 /// nothing remembered.
-pub fn decide_file(path: &str, origin: Origin, app_for: &dyn Fn(&Path) -> Option<OpeningApp>) -> FileVerdict {
+pub fn decide_file(
+    path: &str,
+    origin: Origin,
+    app_for: &dyn Fn(&Path) -> Option<OpeningApp>,
+) -> FileVerdict {
     decide_file_trusting(path, origin, app_for, &[])
 }
 
 /// `decide_file`, with the kinds of file Mike said always open in their app
 /// (`TrustedOpener`): one of those opens without asking.
-pub fn decide_file_trusting(path: &str, origin: Origin, app_for: &dyn Fn(&Path) -> Option<OpeningApp>, trusted: &[TrustedOpener]) -> FileVerdict {
+pub fn decide_file_trusting(
+    path: &str,
+    origin: Origin,
+    app_for: &dyn Fn(&Path) -> Option<OpeningApp>,
+    trusted: &[TrustedOpener],
+) -> FileVerdict {
     let name = crate::highlights::last_component(path).to_owned();
     if origin == Origin::OtherMac {
         return FileVerdict::Refuse(format!("{} is on another Mac, so Threadbear doesn't open it here. It shows in the pane instead.", if name.is_empty() { "That file" } else { &name }));
     }
     let given = Path::new(path);
     if on_a_share(given) {
-        return FileVerdict::Refuse(format!("{} is on a network share or names a device, so Threadbear doesn't open it from here.", if name.is_empty() { "That file" } else { &name }));
+        return FileVerdict::Refuse(format!(
+            "{} is on a network share or names a device, so Threadbear doesn't open it from here.",
+            if name.is_empty() { "That file" } else { &name }
+        ));
     }
     if !given.is_absolute() {
         return FileVerdict::Refuse(format!("Threadbear couldn't tell where {name} is."));
     }
     let Some(look) = look(given, app_for) else {
-        return FileVerdict::Refuse(format!("{} isn't there any more.", if name.is_empty() { "That file" } else { &name }));
+        return FileVerdict::Refuse(format!(
+            "{} isn't there any more.",
+            if name.is_empty() { "That file" } else { &name }
+        ));
     };
     // Still in the verbatim form, `real_path` found no drive path that names
     // the same file, and `file_url` would make `file:////%3F/...` of it,
     // which opens nothing (Codex's second look at PR #57).
     if cfg!(windows) && look.resolved.to_string_lossy().starts_with(r"\\") {
-        let real = look.resolved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let real = look
+            .resolved
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         return FileVerdict::Refuse(format!("Threadbear can't open {real} on Windows yet: its path is too long, or it's on a network drive."));
     }
     let url = file_url(&look.resolved.to_string_lossy());
     let remembered = remembered(&look, trusted);
     match &look.runs {
-        None => FileVerdict::Open { url, resolved: look.resolved.clone(), with: opener(&look), look },
-        Some(_) if remembered => FileVerdict::Open { url, resolved: look.resolved.clone(), with: opener(&look), look },
+        None => FileVerdict::Open {
+            url,
+            resolved: look.resolved.clone(),
+            with: opener(&look),
+            look,
+        },
+        Some(_) if remembered => FileVerdict::Open {
+            url,
+            resolved: look.resolved.clone(),
+            with: opener(&look),
+            look,
+        },
         Some(why) => {
-            let real = look.resolved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let link = if look.linked { format!("\n\n{name} is a link to {real}.") } else { String::new() };
+            let real = look
+                .resolved
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let link = if look.linked {
+                format!("\n\n{name} is a link to {real}.")
+            } else {
+                String::new()
+            };
             let question = match (&look.trustable, &look.app) {
                 // The app first, as that's what's being trusted, and a way
                 // not to be asked again for this kind (Mike, 19 Nov: asked
@@ -850,7 +1198,12 @@ pub fn decide_file_trusting(path: &str, origin: Origin, app_for: &dyn Fn(&Path) 
                     always: None,
                 },
             };
-            FileVerdict::Ask { question, url, with: opener(&look), look }
+            FileVerdict::Ask {
+                question,
+                url,
+                with: opener(&look),
+                look,
+            }
         }
     }
 }
@@ -862,7 +1215,14 @@ pub fn decide_file_trusting(path: &str, origin: Origin, app_for: &dyn Fn(&Path) 
 /// this, the moment between it and the system's own lookup, is why the file
 /// goes to the app that was checked (`Opener`).
 pub fn still_same(path: &str, asked: &Look, app_for: &dyn Fn(&Path) -> Option<OpeningApp>) -> bool {
-    look(Path::new(path), app_for).is_some_and(|now| now.resolved == asked.resolved && now.runs == asked.runs && now.id == asked.id && now.app == asked.app && now.is_dir == asked.is_dir && now.volume == asked.volume)
+    look(Path::new(path), app_for).is_some_and(|now| {
+        now.resolved == asked.resolved
+            && now.runs == asked.runs
+            && now.id == asked.id
+            && now.app == asked.app
+            && now.is_dir == asked.is_dir
+            && now.volume == asked.volume
+    })
 }
 
 /// Where the system can't be handed the checked file itself (Windows and
@@ -886,12 +1246,21 @@ pub fn checked_copy(look: &Look, folder: &Path, limit: u64) -> std::io::Result<P
     let meta = file.metadata()?;
     // Fails closed where there's no identity to compare.
     if !meta.is_file() || look.is_dir || look.id.is_none() || handle_id(file, &meta) != look.id {
-        return Err(std::io::Error::other("It changed since Threadbear looked at it"));
+        return Err(std::io::Error::other(
+            "It changed since Threadbear looked at it",
+        ));
     }
     if meta.len() > limit {
-        return Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "too big to copy"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "too big to copy",
+        ));
     }
-    let name = look.resolved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = look
+        .resolved
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let copy = crate::private_file::snapshot(file, folder, &name, limit)?;
     // A program said yes to runs from its copy, so the copy keeps its
     // owner's execute bit (and only that: read-only, this user's alone).
@@ -943,7 +1312,11 @@ pub fn media_kind(path: &str) -> Option<Media> {
         Some(Media::Video)
     } else if ext == "pdf" {
         Some(Media::Pdf)
-    } else if ["key", "pages", "numbers", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp"].contains(&ext.as_str()) {
+    } else if [
+        "key", "pages", "numbers", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    ]
+    .contains(&ext.as_str())
+    {
         Some(Media::Office)
     } else {
         None
@@ -954,14 +1327,18 @@ pub fn media_kind(path: &str) -> Option<Media> {
 /// use the same box shape (HEIF's `heic` and `mif1`, AVIF's `avif`), so the
 /// box alone doesn't say it's a film: its main brand does.
 const VIDEO_BRANDS: &[&[u8; 4]] = &[
-    b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"iso7", b"iso8", b"iso9", b"mp41", b"mp42", b"mp71", b"avc1", b"M4V ", b"M4VH", b"M4VP", b"qt  ", b"3gp4", b"3gp5", b"3gp6",
+    b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"iso7", b"iso8", b"iso9", b"mp41",
+    b"mp42", b"mp71", b"avc1", b"M4V ", b"M4VH", b"M4VP", b"qt  ", b"3gp4", b"3gp5", b"3gp6",
     b"3g2a", b"MSNV", b"dash", b"XAVC",
 ];
 
 /// The brands of still pictures in the same box shape (HEIF, AVIF and their
 /// picture sequences): an `ftyp` naming one of these anywhere in its list is
 /// a picture's, whatever its main brand says.
-const PICTURE_BRANDS: &[&[u8; 4]] = &[b"mif1", b"mif2", b"msf1", b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"heif", b"avif", b"avis", b"avci", b"avcs", b"jpeg", b"jpgs"];
+const PICTURE_BRANDS: &[&[u8; 4]] = &[
+    b"mif1", b"mif2", b"msf1", b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"heif",
+    b"avif", b"avis", b"avci", b"avcs", b"jpeg", b"jpgs",
+];
 
 /// The boxes an older QuickTime movie can have before its `moov` (or a newer
 /// file before its `ftyp`): padding, the film's own data, a preview.
@@ -1006,7 +1383,11 @@ pub fn looks_like(kind: Media, head: &[u8], len: u64) -> bool {
 /// picture's brand is refused wherever it is (Codex's second review, 12 Nov:
 /// eight bytes of `free` in front of an AVIF named `.mov` passed when only
 /// the first box was looked at). A PDF starts `%PDF-` and its version.
-pub fn looks_like_at(kind: Media, read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize, len: u64) -> bool {
+pub fn looks_like_at(
+    kind: Media,
+    read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize,
+    len: u64,
+) -> bool {
     match kind {
         Media::Video => film_boxes(read_at, len),
         Media::Office => {
@@ -1015,7 +1396,8 @@ pub fn looks_like_at(kind: Media, read_at: &mut dyn FnMut(u64, &mut [u8]) -> usi
             // must still decode the document, and receives no interactive view.
             let mut head = [0u8; 8];
             let n = read_at(0, &mut head);
-            (n >= 4 && head.starts_with(b"PK\x03\x04")) || (n == 8 && head == *b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+            (n >= 4 && head.starts_with(b"PK\x03\x04"))
+                || (n == 8 && head == *b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
         }
         Media::Pdf => {
             let mut head = [0u8; 6];
@@ -1041,7 +1423,9 @@ fn film_boxes(read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize, len: u64) -> boo
             return movie;
         }
         let kind: [u8; 4] = [header[4], header[5], header[6], header[7]];
-        let small = u64::from(u32::from_be_bytes([header[0], header[1], header[2], header[3]]));
+        let small = u64::from(u32::from_be_bytes([
+            header[0], header[1], header[2], header[3],
+        ]));
         let rest = len - at;
         let size = match small {
             // To the end of the file: only the movie itself can be last
@@ -1051,7 +1435,10 @@ fn film_boxes(read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize, len: u64) -> boo
                 if got < 16 {
                     return false;
                 }
-                let big = u64::from_be_bytes([header[8], header[9], header[10], header[11], header[12], header[13], header[14], header[15]]);
+                let big = u64::from_be_bytes([
+                    header[8], header[9], header[10], header[11], header[12], header[13],
+                    header[14], header[15],
+                ]);
                 // A 64-bit size counts its own 16-byte header.
                 if big < 16 {
                     return false;
@@ -1093,7 +1480,7 @@ fn film_boxes(read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize, len: u64) -> boo
 /// An `ftyp` box at `at`, `size` bytes: a few dozen bytes, whole brands, a
 /// film's main brand, and no picture's brand among the rest.
 fn ftyp_is_a_films(read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize, at: u64, size: u64) -> bool {
-    if !(16..=4096).contains(&size) || size % 4 != 0 {
+    if !(16..=4096).contains(&size) || !size.is_multiple_of(4) {
         return false;
     }
     let mut body = vec![0u8; size as usize];
@@ -1105,7 +1492,9 @@ fn ftyp_is_a_films(read_at: &mut dyn FnMut(u64, &mut [u8]) -> usize, at: u64, si
         return false;
     }
     // The minor version at 12, then the compatible brands from 16.
-    (16..body.len()).step_by(4).all(|i| !PICTURE_BRANDS.iter().any(|b| brand(i) == *b))
+    (16..body.len())
+        .step_by(4)
+        .all(|i| !PICTURE_BRANDS.iter().any(|b| brand(i) == *b))
 }
 
 /// A native thumbnail's exact filesystem version. mtime alone can be put
@@ -1123,11 +1512,24 @@ pub struct MediaVersion {
 }
 
 pub fn media_version(meta: &std::fs::Metadata) -> Option<MediaVersion> {
-    #[cfg(unix)] {
+    #[cfg(unix)]
+    {
         use std::os::unix::fs::MetadataExt as _;
-        Some(MediaVersion { device:meta.dev(), inode:meta.ino(), length:meta.len(), modified:meta.mtime(), modified_ns:meta.mtime_nsec(), changed:meta.ctime(), changed_ns:meta.ctime_nsec() })
+        Some(MediaVersion {
+            device: meta.dev(),
+            inode: meta.ino(),
+            length: meta.len(),
+            modified: meta.mtime(),
+            modified_ns: meta.mtime_nsec(),
+            changed: meta.ctime(),
+            changed_ns: meta.ctime_nsec(),
+        })
     }
-    #[cfg(not(unix))] { let _=meta; None }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
 }
 
 /// A file the rules have checked, held open: the view reads this, not the
@@ -1162,7 +1564,9 @@ pub fn decide_media(path: &str, origin: Origin) -> MediaVerdict {
     let given = crate::highlights::last_component(path);
     let name = if given.is_empty() { "That file" } else { given };
     let Some(kind) = media_kind(path) else {
-        return MediaVerdict::Refuse(format!("{name} isn't a document or video this pane can preview, so it opens in its own app."));
+        return MediaVerdict::Refuse(format!(
+            "{name} isn't a document or video this pane can preview, so it opens in its own app."
+        ));
     };
     let (what, verb) = match kind {
         Media::Video => ("a video", "play it"),
@@ -1170,7 +1574,10 @@ pub fn decide_media(path: &str, origin: Origin) -> MediaVerdict {
         Media::Office => ("an Office or iWork document", "show it"),
     };
     if origin == Origin::OtherMac {
-        return MediaVerdict::Refuse(format!("{name} is on another Mac, so it can't {} here yet.", if kind == Media::Video { "play" } else { "show" }));
+        return MediaVerdict::Refuse(format!(
+            "{name} is on another Mac, so it can't {} here yet.",
+            if kind == Media::Video { "play" } else { "show" }
+        ));
     }
     let given_path = Path::new(path);
     if on_a_share(given_path) {
@@ -1182,12 +1589,20 @@ pub fn decide_media(path: &str, origin: Origin) -> MediaVerdict {
     #[cfg(windows)]
     let _local = match crate::local_path::LocalPath::new(given_path) {
         Ok(local) => local,
-        Err(_) => return MediaVerdict::Refuse(format!("{name} isn't there any more, or isn't an accessible local file.")),
+        Err(_) => {
+            return MediaVerdict::Refuse(format!(
+                "{name} isn't there any more, or isn't an accessible local file."
+            ))
+        }
     };
     let Ok(resolved) = real_path(given_path) else {
         return MediaVerdict::Refuse(format!("{name} isn't there any more."));
     };
-    let not_really = || MediaVerdict::Refuse(format!("{name} isn't really {what}, so Threadbear didn't {verb}."));
+    let not_really = || {
+        MediaVerdict::Refuse(format!(
+            "{name} isn't really {what}, so Threadbear didn't {verb}."
+        ))
+    };
     if media_kind(&resolved.to_string_lossy()) != Some(kind) {
         return not_really();
     }
@@ -1196,11 +1611,23 @@ pub fn decide_media(path: &str, origin: Origin) -> MediaVerdict {
     #[cfg(not(windows))]
     let opened = open_without_waiting(&resolved);
     let Ok(mut file) = opened else {
-        return MediaVerdict::Refuse(format!("{name} changed or went while Threadbear looked at it, so it didn't {verb}."));
+        return MediaVerdict::Refuse(format!(
+            "{name} changed or went while Threadbear looked at it, so it didn't {verb}."
+        ));
     };
-    let Ok(metadata) = file.metadata() else { return not_really() };
-    let package = metadata.is_dir() && kind == Media::Office && ["key", "pages", "numbers"].contains(&extension(&resolved).as_str());
-    let len = if metadata.is_file() { metadata.len() } else if package { 0 } else { return not_really() };
+    let Ok(metadata) = file.metadata() else {
+        return not_really();
+    };
+    let package = metadata.is_dir()
+        && kind == Media::Office
+        && ["key", "pages", "numbers"].contains(&extension(&resolved).as_str());
+    let len = if metadata.is_file() {
+        metadata.len()
+    } else if package {
+        0
+    } else {
+        return not_really();
+    };
     if !package && !looks_like_at(kind, &mut |at, buf| read_at(&file, at, buf), len) {
         return not_really();
     }
@@ -1209,7 +1636,11 @@ pub fn decide_media(path: &str, origin: Origin) -> MediaVerdict {
         use std::io::Seek;
         let _ = file.seek(std::io::SeekFrom::Start(0));
     }
-    MediaVerdict::Show(CheckedFile { real: resolved, file, len })
+    MediaVerdict::Show(CheckedFile {
+        real: resolved,
+        file,
+        len,
+    })
 }
 
 /// Reads what it can of `buf` from `file` at `at`, without moving where the
@@ -1277,22 +1708,28 @@ mod tests {
     #[test]
     fn media_versions_catch_same_length_writes_with_restored_mtime_and_replacements() {
         use std::fs::{self, File, FileTimes};
-        let scratch=Scratch::new("media-version");
-        let path=scratch.path("held.pdf");
-        fs::write(&path,b"first").unwrap();
-        let metadata=fs::metadata(&path).unwrap();
-        let version=media_version(&metadata);
+        let scratch = Scratch::new("media-version");
+        let path = scratch.path("held.pdf");
+        fs::write(&path, b"first").unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        let version = media_version(&metadata);
         std::thread::sleep(std::time::Duration::from_millis(3));
-        fs::write(&path,b"other").unwrap();
-        File::open(&path).unwrap().set_times(FileTimes::new().set_modified(metadata.modified().unwrap())).unwrap();
-        let changed=fs::metadata(&path).unwrap();
-        assert_eq!(metadata.len(),changed.len());
-        assert_eq!(metadata.modified().unwrap(),changed.modified().unwrap());
-        assert_ne!(version,media_version(&changed));
-        fs::rename(&path,scratch.path("old.pdf")).unwrap();
-        fs::write(&path,b"first").unwrap();
-        File::open(&path).unwrap().set_times(FileTimes::new().set_modified(metadata.modified().unwrap())).unwrap();
-        assert_ne!(version,media_version(&fs::metadata(&path).unwrap()));
+        fs::write(&path, b"other").unwrap();
+        File::open(&path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(metadata.modified().unwrap()))
+            .unwrap();
+        let changed = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.len(), changed.len());
+        assert_eq!(metadata.modified().unwrap(), changed.modified().unwrap());
+        assert_ne!(version, media_version(&changed));
+        fs::rename(&path, scratch.path("old.pdf")).unwrap();
+        fs::write(&path, b"first").unwrap();
+        File::open(&path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(metadata.modified().unwrap()))
+            .unwrap();
+        assert_ne!(version, media_version(&fs::metadata(&path).unwrap()));
     }
 
     use std::fs;
@@ -1305,7 +1742,8 @@ mod tests {
     struct Scratch(PathBuf);
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let dir = std::env::temp_dir().join(format!("tb-open-policy-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("tb-open-policy-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             // As `look` resolves paths, so a path made here is the one it gives back.
@@ -1346,7 +1784,11 @@ mod tests {
         assert!(url.ends_with("/Inspect.app%23help/SKILL.md"), "{url}");
         assert!(!url.contains('#'));
         match decide_file(&skill.to_string_lossy(), Origin::ThisMac, &none) {
-            FileVerdict::Open { url: opened, resolved, .. } => {
+            FileVerdict::Open {
+                url: opened,
+                resolved,
+                ..
+            } => {
                 assert_eq!(resolved, skill);
                 assert_eq!(opened, url);
             }
@@ -1357,18 +1799,37 @@ mod tests {
         // path is decoded: the .app is a folder, so it's refused as a program.
         #[cfg(not(windows))]
         {
-            let encoded = format!("{}/.agents/skills/Inspect.app%23help/SKILL.md", s.0.to_string_lossy());
-            assert_eq!(link_kind(&encoded), LinkKind::File(skill.to_string_lossy().into_owned()));
-            let bare = ["file://", &s.0.to_string_lossy(), "/.agents/skills/Inspect.app#help/SKILL.md"].concat();
-            let LinkKind::File(cut) = link_kind(&bare) else { panic!() };
+            let encoded = format!(
+                "{}/.agents/skills/Inspect.app%23help/SKILL.md",
+                s.0.to_string_lossy()
+            );
+            assert_eq!(
+                link_kind(&encoded),
+                LinkKind::File(skill.to_string_lossy().into_owned())
+            );
+            let bare = [
+                "file://",
+                &s.0.to_string_lossy(),
+                "/.agents/skills/Inspect.app#help/SKILL.md",
+            ]
+            .concat();
+            let LinkKind::File(cut) = link_kind(&bare) else {
+                panic!()
+            };
             assert!(cut.ends_with("/Inspect.app"));
-            assert!(matches!(decide_file(&cut, Origin::ThisMac, &none), FileVerdict::Ask { .. }));
+            assert!(matches!(
+                decide_file(&cut, Origin::ThisMac, &none),
+                FileVerdict::Ask { .. }
+            ));
         }
         // The two above are Unix paths: `file://` plus a drive path isn't a
         // URL. A Windows path with a drive letter is taken as written, # and
         // all, so nothing in it is cut off.
         #[cfg(windows)]
-        assert_eq!(link_kind(&skill.to_string_lossy()), LinkKind::File(skill.to_string_lossy().into_owned()));
+        assert_eq!(
+            link_kind(&skill.to_string_lossy()),
+            LinkKind::File(skill.to_string_lossy().into_owned())
+        );
     }
 
     /// Findings 59 and 64: a `.command` (or any program) a reply links to,
@@ -1376,23 +1837,56 @@ mod tests {
     #[test]
     fn programs_ask_first() {
         let s = Scratch::new("programs");
-        for rel in ["docs/report.command", "run.sh", "x.tool", "Setup.pkg", "a.terminal", "go.webloc", "a.jar"] {
+        for rel in [
+            "docs/report.command",
+            "run.sh",
+            "x.tool",
+            "Setup.pkg",
+            "a.terminal",
+            "go.webloc",
+            "a.jar",
+        ] {
             let p = s.file(rel, "#!/bin/sh\necho hi\n");
-            assert!(matches!(decide_file(&p.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Ask { .. }), "{rel}");
+            assert!(
+                matches!(
+                    decide_file(&p.to_string_lossy(), Origin::ThisMac, &none),
+                    FileVerdict::Ask { .. }
+                ),
+                "{rel}"
+            );
         }
         let app = app_bundle(&s, "Tool.app");
-        assert!(matches!(decide_file(&app.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Ask { .. }));
+        assert!(matches!(
+            decide_file(&app.to_string_lossy(), Origin::ThisMac, &none),
+            FileVerdict::Ask { .. }
+        ));
         // A bundle without the name: still a bundle.
         let plain = app_bundle(&s, "Notes");
-        assert!(matches!(decide_file(&plain.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Ask { .. }));
+        assert!(matches!(
+            decide_file(&plain.to_string_lossy(), Origin::ThisMac, &none),
+            FileVerdict::Ask { .. }
+        ));
     }
 
     #[test]
     fn scripts_and_unknown_kinds_ask() {
         let s = Scratch::new("scripts");
-        for rel in ["build.py", "a.js", "tool.rb", "x.applescript", "noextension", "thing.weird"] {
+        for rel in [
+            "build.py",
+            "a.js",
+            "tool.rb",
+            "x.applescript",
+            "noextension",
+            "thing.weird",
+        ] {
             let p = s.file(rel, "print(1)");
-            assert!(matches!(decide_file(&p.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Ask { .. }), "{rel}");
+            assert!(
+                matches!(
+                    decide_file(&p.to_string_lossy(), Origin::ThisMac, &none),
+                    FileVerdict::Ask { .. }
+                ),
+                "{rel}"
+            );
         }
     }
 
@@ -1403,18 +1897,38 @@ mod tests {
         let s = Scratch::new("exec");
         let p = s.file("payload", "#!/bin/sh\n");
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-        let FileVerdict::Ask { question, .. } = decide_file(&p.to_string_lossy(), Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&p.to_string_lossy(), Origin::ThisMac, &none)
+        else {
+            panic!()
+        };
         assert!(question.detail.contains("marked as a program"));
     }
 
     #[test]
     fn documents_and_folders_open() {
         let s = Scratch::new("docs");
-        for rel in ["docs/report.md", "shot.png", "a.pdf", "src/main.rs", "data.csv", "page.html"] {
+        for rel in [
+            "docs/report.md",
+            "shot.png",
+            "a.pdf",
+            "src/main.rs",
+            "data.csv",
+            "page.html",
+        ] {
             let p = s.file(rel, "x");
-            assert!(matches!(decide_file(&p.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Open { .. }), "{rel}");
+            assert!(
+                matches!(
+                    decide_file(&p.to_string_lossy(), Origin::ThisMac, &none),
+                    FileVerdict::Open { .. }
+                ),
+                "{rel}"
+            );
         }
-        assert!(matches!(decide_file(&s.path("docs").to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Open { .. }));
+        assert!(matches!(
+            decide_file(&s.path("docs").to_string_lossy(), Origin::ThisMac, &none),
+            FileVerdict::Open { .. }
+        ));
     }
 
     /// `std::fs::canonicalize` gives a Windows path in its verbatim form,
@@ -1425,13 +1939,24 @@ mod tests {
     fn a_file_on_windows_opens_by_its_drive_path() {
         let s = Scratch::new("drive");
         let doc = s.file("notes.md", "x");
-        let FileVerdict::Open { url, resolved, .. } = decide_file(&doc.to_string_lossy(), Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Open { url, resolved, .. } =
+            decide_file(&doc.to_string_lossy(), Origin::ThisMac, &none)
+        else {
+            panic!()
+        };
         let text = resolved.to_string_lossy().into_owned();
         assert!(!text.starts_with(r"\\"), "{text}");
-        assert!(url.starts_with(&["file:///", &text[..1], ":/"].concat()), "{url}");
+        assert!(
+            url.starts_with(&["file:///", &text[..1], ":/"].concat()),
+            "{url}"
+        );
         assert!(url.ends_with("/notes.md"), "{url}");
         let program = s.file("go.command", "x");
-        let FileVerdict::Ask { question, .. } = decide_file(&program.to_string_lossy(), Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&program.to_string_lossy(), Origin::ThisMac, &none)
+        else {
+            panic!()
+        };
         assert!(!question.detail.contains(r"\\?\"), "{}", question.detail);
     }
 
@@ -1439,10 +1964,30 @@ mod tests {
     /// through as a drive path (Codex's review of PR #57).
     #[test]
     fn device_names_are_known_whatever_follows_them() {
-        for name in ["NUL", "nul.txt", "NUL.tar.gz", "Con .md", "com0", "COM9.x", "lpt¹.md", "LPT³", "CONIN$", "conout$.log"] {
+        for name in [
+            "NUL",
+            "nul.txt",
+            "NUL.tar.gz",
+            "Con .md",
+            "com0",
+            "COM9.x",
+            "lpt¹.md",
+            "LPT³",
+            "CONIN$",
+            "conout$.log",
+        ] {
             assert!(is_device_name(name), "{name}");
         }
-        for name in ["NULL", "console.md", "COM10", "LPT", "notes.md", "AUXILIARY.txt", "xNUL.md", "COMx"] {
+        for name in [
+            "NULL",
+            "console.md",
+            "COM10",
+            "LPT",
+            "notes.md",
+            "AUXILIARY.txt",
+            "xNUL.md",
+            "COMx",
+        ] {
             assert!(!is_device_name(name), "{name}");
         }
     }
@@ -1451,10 +1996,29 @@ mod tests {
     /// the text alike everywhere.
     #[test]
     fn shares_and_devices_are_known_by_their_start() {
-        for path in [r"\\host\share\a.md", "//host/share/a.md", r"\/host/share", r"\\?\UNC\host\share\a.md", r"\\.\pipe\x", r"\\?\GLOBALROOT\Device\x", r"\??\UNC\host\share\x", r"\??\C:\x", r"\\?\Volume{1}\x"] {
+        for path in [
+            r"\\host\share\a.md",
+            "//host/share/a.md",
+            r"\/host/share",
+            r"\\?\UNC\host\share\a.md",
+            r"\\.\pipe\x",
+            r"\\?\GLOBALROOT\Device\x",
+            r"\??\UNC\host\share\x",
+            r"\??\C:\x",
+            r"\\?\Volume{1}\x",
+        ] {
             assert!(is_share_or_device(path), "{path}");
         }
-        for path in [r"C:\work\a.md", "C:/work/a.md", r"\\?\C:\work\a.md", r"\\?\c:", r"\work\a.md", "/Users/m/a.md", "a.md", ""] {
+        for path in [
+            r"C:\work\a.md",
+            "C:/work/a.md",
+            r"\\?\C:\work\a.md",
+            r"\\?\c:",
+            r"\work\a.md",
+            "/Users/m/a.md",
+            "a.md",
+            "",
+        ] {
             assert!(!is_share_or_device(path), "{path}");
         }
     }
@@ -1464,14 +2028,28 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_share_or_a_device_on_windows_is_refused_unlooked() {
-        for path in [r"\\attacker\share\a.md", "//attacker/share/a.md", r"\\?\UNC\attacker\share\a.md", r"\\.\pipe\x", r"\\?\GLOBALROOT\Device\x.md"] {
-            assert!(matches!(decide_file(path, Origin::ThisMac, &none), FileVerdict::Refuse(why) if why.contains("network share")), "{path}");
-            assert!(matches!(decide_media(&format!("{path}.mp4"), Origin::ThisMac), MediaVerdict::Refuse(why) if why.contains("network share")), "{path}");
+        for path in [
+            r"\\attacker\share\a.md",
+            "//attacker/share/a.md",
+            r"\\?\UNC\attacker\share\a.md",
+            r"\\.\pipe\x",
+            r"\\?\GLOBALROOT\Device\x.md",
+        ] {
+            assert!(
+                matches!(decide_file(path, Origin::ThisMac, &none), FileVerdict::Refuse(why) if why.contains("network share")),
+                "{path}"
+            );
+            assert!(
+                matches!(decide_media(&format!("{path}.mp4"), Origin::ThisMac), MediaVerdict::Refuse(why) if why.contains("network share")),
+                "{path}"
+            );
             assert!(real_path(Path::new(path)).is_err(), "{path}");
         }
         // A part named as a device, however it ends, is refused unlooked too.
         let device = Path::new(r"C:\work\NUL.part.md");
-        assert!(matches!(decide_file(&device.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Refuse(why) if why.contains("names a device")));
+        assert!(
+            matches!(decide_file(&device.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Refuse(why) if why.contains("names a device"))
+        );
         // A drive's verbatim form is still this machine's file.
         let s = Scratch::new("verbatim");
         let doc = s.file("notes.md", "x");
@@ -1483,7 +2061,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_links_are_resolved_locally_before_any_file_probe() {
-        use std::os::windows::fs::{symlink_file, symlink_dir};
+        use std::os::windows::fs::{symlink_dir, symlink_file};
         let s = Scratch::new("local-links");
         let doc = s.file("real/notes.md", "notes");
         let local = s.path("local.md");
@@ -1506,10 +2084,24 @@ mod tests {
         let device = s.path("device.md");
         symlink_file(r"\\.\NUL", &device).unwrap();
         for path in [remote, ancestor.join("notes.md"), device] {
-            assert_eq!(real_path(&path).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied, "{}", path.display());
-            assert_eq!(local_metadata(&path).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
-            assert_eq!(local_read(&path, 4096).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
-            assert!(matches!(decide_file(&path.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Refuse(_)));
+            assert_eq!(
+                real_path(&path).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{}",
+                path.display()
+            );
+            assert_eq!(
+                local_metadata(&path).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                local_read(&path, 4096).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert!(matches!(
+                decide_file(&path.to_string_lossy(), Origin::ThisMac, &none),
+                FileVerdict::Refuse(_)
+            ));
             assert!(crate::file_identity::FileIdentity::of(&path).is_none());
         }
     }
@@ -1517,10 +2109,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_file_urls_round_trip_to_a_drive_path() {
-        assert_eq!(link_kind("file:///C:/work/notes%20one.md"), LinkKind::File("C:/work/notes one.md".into()));
-        assert_eq!(link_kind("file://localhost/C:/work/notes.md"), LinkKind::File("C:/work/notes.md".into()));
+        assert_eq!(
+            link_kind("file:///C:/work/notes%20one.md"),
+            LinkKind::File("C:/work/notes one.md".into())
+        );
+        assert_eq!(
+            link_kind("file://localhost/C:/work/notes.md"),
+            LinkKind::File("C:/work/notes.md".into())
+        );
         assert_eq!(link_kind("C:NUL"), LinkKind::File("C:NUL".into()));
-        assert!(matches!(decide_file("C:NUL", Origin::ThisMac, &none), FileVerdict::Refuse(_)));
+        assert!(matches!(
+            decide_file("C:NUL", Origin::ThisMac, &none),
+            FileVerdict::Refuse(_)
+        ));
     }
 
     #[cfg(windows)]
@@ -1531,16 +2132,33 @@ mod tests {
         s.file("work/notes.md", "local");
         let dotted = format!(r"\\?\{}\work ", s.0.display());
         symlink_dir(r"\\127.0.0.1\tb-no-share", &dotted).unwrap();
-        assert_eq!(local_metadata(&s.path(r"work \notes.md")).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            local_metadata(&s.path(r"work \notes.md"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
         let elsewhere = s.file("elsewhere/x.md", "different file");
         fs::create_dir_all(s.path("elsewhere/sub")).unwrap();
         symlink_dir(s.path("elsewhere/sub"), s.path("dirlink")).unwrap();
         symlink_file(r"\\127.0.0.1\tb-no-share\x.md", s.path("x.md")).unwrap();
-        assert_eq!(local_metadata(&s.path(r"dirlink\..\x.md")).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            local_metadata(&s.path(r"dirlink\..\x.md"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
         assert_eq!(local_read(&elsewhere, 64).unwrap(), b"different file");
         let listed = crate::local_files::list(&serde_json::json!({ "path": s.0 })).unwrap();
-        assert!(listed["entries"].as_array().unwrap().iter().any(|e| e["name"] == "x.md" && e["size"].is_null()));
-        assert!(crate::local_files::read(&serde_json::json!({ "path": s.path(r"dirlink\..\x.md") })).is_err());
+        assert!(listed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["name"] == "x.md" && e["size"].is_null()));
+        assert!(crate::local_files::read(
+            &serde_json::json!({ "path": s.path(r"dirlink\..\x.md") })
+        )
+        .is_err());
         fs::remove_dir(&dotted).unwrap();
     }
 
@@ -1549,18 +2167,24 @@ mod tests {
     fn a_short_alias_cannot_hide_a_reserved_long_name() {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
         #[link(name = "kernel32")]
-        extern "system" { fn GetShortPathNameW(long: *const u16, short: *mut u16, size: u32) -> u32; }
+        extern "system" {
+            fn GetShortPathNameW(long: *const u16, short: *mut u16, size: u32) -> u32;
+        }
         let s = Scratch::new("reserved-alias");
         let file = PathBuf::from(format!(r"\\?\{}\NUL.part.md", s.0.display()));
         fs::write(&file, b"ordinary disk bytes").unwrap();
         let long: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut out = vec![0u16; 32768];
-        let len = unsafe { GetShortPathNameW(long.as_ptr(), out.as_mut_ptr(), out.len() as u32) } as usize;
+        let len = unsafe { GetShortPathNameW(long.as_ptr(), out.as_mut_ptr(), out.len() as u32) }
+            as usize;
         assert!(len > 0 && len < out.len());
         // Volumes with 8.3 creation off return the long spelling unchanged;
         // both it and an alias on a volume with 8.3 enabled must be refused.
         let alias = PathBuf::from(std::ffi::OsString::from_wide(&out[..len]));
-        assert_eq!(local_metadata(&alias).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            local_metadata(&alias).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
         assert!(look(&alias, &none).is_none());
         assert!(crate::file_identity::FileIdentity::of(&alias).is_none());
         fs::remove_file(file).unwrap();
@@ -1573,7 +2197,10 @@ mod tests {
         let s = Scratch::new("locked");
         let doc = s.file("folder/notes.md", "the file opened");
         let guard = crate::local_path::LocalPath::new(&doc).unwrap();
-        assert!(fs::rename(&doc, s.path("folder/old.md")).is_err(), "the checked file's name must be locked");
+        assert!(
+            fs::rename(&doc, s.path("folder/old.md")).is_err(),
+            "the checked file's name must be locked"
+        );
         drop(guard);
         let mut file = local_open(&doc).unwrap();
         fs::rename(&doc, s.path("folder/old.md")).unwrap();
@@ -1587,8 +2214,17 @@ mod tests {
 
     #[test]
     fn physical_volume_mappings_have_no_path_tail_or_redirector() {
-        for name in [r"\Device\HarddiskVolume3", r"\Device\CdRom0"] { assert!(is_local_volume_device(name)); }
-        for name in [r"\Device\HarddiskVolume3\repo\link", r"\Device\HarddiskVolumeShadowCopy1", r"\Device\Mup\server", r"\Device\CdRom0\x"] { assert!(!is_local_volume_device(name)); }
+        for name in [r"\Device\HarddiskVolume3", r"\Device\CdRom0"] {
+            assert!(is_local_volume_device(name));
+        }
+        for name in [
+            r"\Device\HarddiskVolume3\repo\link",
+            r"\Device\HarddiskVolumeShadowCopy1",
+            r"\Device\Mup\server",
+            r"\Device\CdRom0\x",
+        ] {
+            assert!(!is_local_volume_device(name));
+        }
     }
 
     #[cfg(windows)]
@@ -1622,8 +2258,13 @@ mod tests {
         fs::create_dir_all(format!(r"\\?\{}", deep.display())).unwrap();
         let doc = deep.join("notes.md");
         fs::write(format!(r"\\?\{}", doc.display()), "x").unwrap();
-        assert!(real_path(&doc).unwrap().to_string_lossy().starts_with(r"\\?\"));
-        assert!(matches!(decide_file(&doc.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Refuse(why) if why.contains("too long")));
+        assert!(real_path(&doc)
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(r"\\?\"));
+        assert!(
+            matches!(decide_file(&doc.to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Refuse(why) if why.contains("too long"))
+        );
     }
 
     /// A kind of file Threadbear can't place asks naming its app, and offers
@@ -1635,68 +2276,196 @@ mod tests {
     /// an app at its real path, so the app has to be there.
     #[cfg(target_os = "macos")]
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "baselined at 220 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
+    )]
     fn an_unknown_kind_can_be_trusted_to_its_installed_app() {
         let s = Scratch::new("trust");
         let project = s.file("Workbench Drawers.tandem", "{}");
         let given = project.to_string_lossy().into_owned();
-        let tandem = |_: &Path| Some(OpeningApp { path: "/System/Applications/TextEdit.app".into(), bundle_id: Some("com.mikecann.tandem".into()), name: "Tandem".into() });
-        let FileVerdict::Ask { question, look, .. } = decide_file(&given, Origin::ThisMac, &tandem) else { panic!() };
+        let tandem = |_: &Path| {
+            Some(OpeningApp {
+                path: "/System/Applications/TextEdit.app".into(),
+                bundle_id: Some("com.mikecann.tandem".into()),
+                name: "Tandem".into(),
+            })
+        };
+        let FileVerdict::Ask { question, look, .. } = decide_file(&given, Origin::ThisMac, &tandem)
+        else {
+            panic!()
+        };
         assert_eq!(question.title, "Open in Tandem?");
         assert!(question.detail.starts_with("Workbench Drawers.tandem came from a thread. Threadbear doesn't know .tandem files, and Tandem may run what's in them."), "{}", question.detail);
-        assert_eq!(question.always.as_deref(), Some("Always open .tandem in Tandem"));
-        let kind = look.trustable.clone().expect("trustable");
-        assert_eq!(kind, TrustedOpener { extension: "tandem".into(), bundle_id: "com.mikecann.tandem".into(), app: "/System/Applications/TextEdit.app".into() });
+        assert_eq!(
+            question.always.as_deref(),
+            Some("Always open .tandem in Tandem")
+        );
+        let kind = look.trustable.expect("trustable");
+        assert_eq!(
+            kind,
+            TrustedOpener {
+                extension: "tandem".into(),
+                bundle_id: "com.mikecann.tandem".into(),
+                app: "/System/Applications/TextEdit.app".into()
+            }
+        );
 
         // Remembered: opens, in Tandem, and is still checked as that file.
-        let FileVerdict::Open { with, look, .. } = decide_file_trusting(&given, Origin::ThisMac, &tandem, std::slice::from_ref(&kind)) else { panic!("a remembered kind asked") };
-        assert_eq!(with, Opener::App("/System/Applications/TextEdit.app".into()));
+        let FileVerdict::Open { with, look, .. } = decide_file_trusting(
+            &given,
+            Origin::ThisMac,
+            &tandem,
+            std::slice::from_ref(&kind),
+        ) else {
+            panic!("a remembered kind asked")
+        };
+        assert_eq!(
+            with,
+            Opener::App("/System/Applications/TextEdit.app".into())
+        );
         assert!(still_same(&given, &look, &tandem));
         // Its name in capitals is the same kind.
         let shouty = s.file("LOUD.TANDEM", "{}");
-        assert!(matches!(decide_file_trusting(&shouty.to_string_lossy(), Origin::ThisMac, &tandem, std::slice::from_ref(&kind)), FileVerdict::Open { .. }));
+        assert!(matches!(
+            decide_file_trusting(
+                &shouty.to_string_lossy(),
+                Origin::ThisMac,
+                &tandem,
+                std::slice::from_ref(&kind)
+            ),
+            FileVerdict::Open { .. }
+        ));
 
         // Another app claiming .tandem, or Tandem's id at another place.
-        let other = |_: &Path| Some(OpeningApp { path: "/Applications/Other.app".into(), bundle_id: Some("com.other.app".into()), name: "Other".into() });
-        assert!(matches!(decide_file_trusting(&given, Origin::ThisMac, &other, std::slice::from_ref(&kind)), FileVerdict::Ask { .. }));
-        let moved = |_: &Path| Some(OpeningApp { path: "/Applications/Copy/Tandem.app".into(), bundle_id: Some("com.mikecann.tandem".into()), name: "Tandem".into() });
-        assert!(matches!(decide_file_trusting(&given, Origin::ThisMac, &moved, std::slice::from_ref(&kind)), FileVerdict::Ask { .. }));
+        let other = |_: &Path| {
+            Some(OpeningApp {
+                path: "/Applications/Other.app".into(),
+                bundle_id: Some("com.other.app".into()),
+                name: "Other".into(),
+            })
+        };
+        assert!(matches!(
+            decide_file_trusting(&given, Origin::ThisMac, &other, std::slice::from_ref(&kind)),
+            FileVerdict::Ask { .. }
+        ));
+        let moved = |_: &Path| {
+            Some(OpeningApp {
+                path: "/Applications/Copy/Tandem.app".into(),
+                bundle_id: Some("com.mikecann.tandem".into()),
+                name: "Tandem".into(),
+            })
+        };
+        assert!(matches!(
+            decide_file_trusting(&given, Origin::ThisMac, &moved, std::slice::from_ref(&kind)),
+            FileVerdict::Ask { .. }
+        ));
         // Tandem's id from an app under Application Support, where a
         // thread may work: asks, with no Always.
         if let Some(home) = std::env::var_os("HOME") {
-            let support = PathBuf::from(home).join("Library/Application Support/Project/Tandem.app");
-            let there = |_: &Path| Some(OpeningApp { path: support.clone(), bundle_id: Some("com.mikecann.tandem".into()), name: "Tandem".into() });
-            let FileVerdict::Ask { question, .. } = decide_file(&given, Origin::ThisMac, &there) else { panic!() };
+            let support =
+                PathBuf::from(home).join("Library/Application Support/Project/Tandem.app");
+            let there = |_: &Path| {
+                Some(OpeningApp {
+                    path: support.clone(),
+                    bundle_id: Some("com.mikecann.tandem".into()),
+                    name: "Tandem".into(),
+                })
+            };
+            let FileVerdict::Ask { question, .. } = decide_file(&given, Origin::ThisMac, &there)
+            else {
+                panic!()
+            };
             assert!(question.always.is_none());
         }
-        let finder = |_: &Path| Some(OpeningApp { path: "/System/Library/CoreServices/Finder.app".into(), bundle_id: Some("com.apple.finder".into()), name: "Finder".into() });
+        let finder = |_: &Path| {
+            Some(OpeningApp {
+                path: "/System/Library/CoreServices/Finder.app".into(),
+                bundle_id: Some("com.apple.finder".into()),
+                name: "Finder".into(),
+            })
+        };
         // A file named like a document that was pointed at Finder or an
         // unpacker asks, with no Always.
         let json = s.file("data.json", "x");
-        let FileVerdict::Ask { question, .. } = decide_file(&json.to_string_lossy(), Origin::ThisMac, &finder) else { panic!("a document went to Finder") };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&json.to_string_lossy(), Origin::ThisMac, &finder)
+        else {
+            panic!("a document went to Finder")
+        };
         assert!(question.always.is_none() && question.detail.contains("opens what's inside it"));
-        let unpacker = |_: &Path| Some(OpeningApp { path: "/System/Library/CoreServices/Applications/Archive Utility.app".into(), bundle_id: Some("com.apple.archiveutility".into()), name: "Archive Utility".into() });
-        assert!(matches!(decide_file(&json.to_string_lossy(), Origin::ThisMac, &unpacker), FileVerdict::Ask { .. }));
+        let unpacker = |_: &Path| {
+            Some(OpeningApp {
+                path: "/System/Library/CoreServices/Applications/Archive Utility.app".into(),
+                bundle_id: Some("com.apple.archiveutility".into()),
+                name: "Archive Utility".into(),
+            })
+        };
+        assert!(matches!(
+            decide_file(&json.to_string_lossy(), Origin::ThisMac, &unpacker),
+            FileVerdict::Ask { .. }
+        ));
         // A document sent to System Events asks too.
-        let events = |_: &Path| Some(OpeningApp { path: "/System/Library/CoreServices/System Events.app".into(), bundle_id: Some("com.apple.systemevents".into()), name: "System Events".into() });
-        assert!(matches!(decide_file(&json.to_string_lossy(), Origin::ThisMac, &events), FileVerdict::Ask { .. }));
+        let events = |_: &Path| {
+            Some(OpeningApp {
+                path: "/System/Library/CoreServices/System Events.app".into(),
+                bundle_id: Some("com.apple.systemevents".into()),
+                name: "System Events".into(),
+            })
+        };
+        assert!(matches!(
+            decide_file(&json.to_string_lossy(), Origin::ThisMac, &events),
+            FileVerdict::Ask { .. }
+        ));
         // A package going to an unpacker asks; a folder still goes to Finder.
         fs::create_dir_all(s.path("notes.rtfd")).unwrap();
-        assert!(matches!(decide_file(&s.path("notes.rtfd").to_string_lossy(), Origin::ThisMac, &unpacker), FileVerdict::Ask { .. }));
+        assert!(matches!(
+            decide_file(
+                &s.path("notes.rtfd").to_string_lossy(),
+                Origin::ThisMac,
+                &unpacker
+            ),
+            FileVerdict::Ask { .. }
+        ));
         fs::create_dir_all(s.path("plain")).unwrap();
-        assert!(matches!(decide_file(&s.path("plain").to_string_lossy(), Origin::ThisMac, &finder), FileVerdict::Open { .. }));
+        assert!(matches!(
+            decide_file(&s.path("plain").to_string_lossy(), Origin::ThisMac, &finder),
+            FileVerdict::Open { .. }
+        ));
         // Finder, or an alias or a disk image: no Always.
         let alias = s.file("go.alias", "x");
-        let FileVerdict::Ask { question, .. } = decide_file(&alias.to_string_lossy(), Origin::ThisMac, &finder) else { panic!() };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&alias.to_string_lossy(), Origin::ThisMac, &finder)
+        else {
+            panic!()
+        };
         assert!(question.always.is_none());
         for rel in ["go.alias", "disk.dmg", "build.py", "deploy.zsh"] {
             let p = s.file(rel, "x");
-            let FileVerdict::Ask { question, .. } = decide_file(&p.to_string_lossy(), Origin::ThisMac, &tandem) else { panic!("{rel}") };
+            let FileVerdict::Ask { question, .. } =
+                decide_file(&p.to_string_lossy(), Origin::ThisMac, &tandem)
+            else {
+                panic!("{rel}")
+            };
             assert!(question.always.is_none(), "{rel}");
         }
         // Tandem's id from an app in the project: asks, with no Always.
         let app_in_project = s.path("Tandem.app");
-        let in_project = |_: &Path| Some(OpeningApp { path: app_in_project.clone(), bundle_id: Some("com.mikecann.tandem".into()), name: "Tandem".into() });
-        let FileVerdict::Ask { question, look, .. } = decide_file_trusting(&given, Origin::ThisMac, &in_project, std::slice::from_ref(&kind)) else { panic!() };
+        let in_project = |_: &Path| {
+            Some(OpeningApp {
+                path: app_in_project.clone(),
+                bundle_id: Some("com.mikecann.tandem".into()),
+                name: "Tandem".into(),
+            })
+        };
+        let FileVerdict::Ask { question, look, .. } = decide_file_trusting(
+            &given,
+            Origin::ThisMac,
+            &in_project,
+            std::slice::from_ref(&kind),
+        ) else {
+            panic!()
+        };
         assert!(question.always.is_none() && look.trustable.is_none());
 
         // A remembered kind never covers a program or a script.
@@ -1704,18 +2473,49 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let program = s.file("payload.tandem", "#!/bin/sh\n");
             fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
-            let FileVerdict::Ask { question, .. } = decide_file_trusting(&program.to_string_lossy(), Origin::ThisMac, &tandem, std::slice::from_ref(&kind)) else { panic!("a program opened") };
+            let FileVerdict::Ask { question, .. } = decide_file_trusting(
+                &program.to_string_lossy(),
+                Origin::ThisMac,
+                &tandem,
+                std::slice::from_ref(&kind),
+            ) else {
+                panic!("a program opened")
+            };
             assert!(question.always.is_none());
         }
         let script = s.file("go.command", "x");
-        let command = TrustedOpener { extension: "command".into(), ..kind.clone() };
-        assert!(matches!(decide_file_trusting(&script.to_string_lossy(), Origin::ThisMac, &tandem, &[command]), FileVerdict::Ask { .. }));
+        let command = TrustedOpener {
+            extension: "command".into(),
+            ..kind
+        };
+        assert!(matches!(
+            decide_file_trusting(
+                &script.to_string_lossy(),
+                Origin::ThisMac,
+                &tandem,
+                &[command]
+            ),
+            FileVerdict::Ask { .. }
+        ));
         // No extension, or no bundle id: nothing to remember.
         let bare = s.file("Makefile2", "x");
-        let FileVerdict::Ask { question, .. } = decide_file(&bare.to_string_lossy(), Origin::ThisMac, &tandem) else { panic!() };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&bare.to_string_lossy(), Origin::ThisMac, &tandem)
+        else {
+            panic!()
+        };
         assert!(question.always.is_none());
-        let unnamed = |_: &Path| Some(OpeningApp { path: "/System/Applications/TextEdit.app".into(), bundle_id: None, name: "Tandem".into() });
-        let FileVerdict::Ask { question, .. } = decide_file(&given, Origin::ThisMac, &unnamed) else { panic!() };
+        let unnamed = |_: &Path| {
+            Some(OpeningApp {
+                path: "/System/Applications/TextEdit.app".into(),
+                bundle_id: None,
+                name: "Tandem".into(),
+            })
+        };
+        let FileVerdict::Ask { question, .. } = decide_file(&given, Origin::ThisMac, &unnamed)
+        else {
+            panic!()
+        };
         assert!(question.always.is_none());
     }
 
@@ -1724,13 +2524,32 @@ mod tests {
     fn a_document_going_to_a_code_runner_asks() {
         let s = Scratch::new("runner");
         let p = s.file("notes.md", "x");
-        let terminal = |_: &Path| Some(OpeningApp { path: PathBuf::from("/System/Applications/Utilities/Terminal.app"), bundle_id: Some("com.apple.Terminal".into()), name: "Terminal".into() });
-        let FileVerdict::Ask { question, .. } = decide_file(&p.to_string_lossy(), Origin::ThisMac, &terminal) else { panic!() };
+        let terminal = |_: &Path| {
+            Some(OpeningApp {
+                path: PathBuf::from("/System/Applications/Utilities/Terminal.app"),
+                bundle_id: Some("com.apple.Terminal".into()),
+                name: "Terminal".into(),
+            })
+        };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&p.to_string_lossy(), Origin::ThisMac, &terminal)
+        else {
+            panic!()
+        };
         assert!(question.detail.contains("Terminal, which runs it"));
         // An app the system says opens as itself.
         let me = s.file("Thing", "x");
-        let itself = |p: &Path| Some(OpeningApp { path: p.to_owned(), bundle_id: Some("com.evil.thing".into()), name: "Thing".into() });
-        assert!(matches!(decide_file(&me.to_string_lossy(), Origin::ThisMac, &itself), FileVerdict::Ask { .. }));
+        let itself = |p: &Path| {
+            Some(OpeningApp {
+                path: p.to_owned(),
+                bundle_id: Some("com.evil.thing".into()),
+                name: "Thing".into(),
+            })
+        };
+        assert!(matches!(
+            decide_file(&me.to_string_lossy(), Origin::ThisMac, &itself),
+            FileVerdict::Ask { .. }
+        ));
     }
 
     /// A symlink is judged, and opened, as the file it points at.
@@ -1740,15 +2559,31 @@ mod tests {
         let s = Scratch::new("links");
         let app = app_bundle(&s, "Payload.app");
         std::os::unix::fs::symlink(&app, s.path("README.md")).unwrap();
-        let FileVerdict::Ask { question, url, look, .. } = decide_file(&s.path("README.md").to_string_lossy(), Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Ask {
+            question,
+            url,
+            look,
+            ..
+        } = decide_file(
+            &s.path("README.md").to_string_lossy(),
+            Origin::ThisMac,
+            &none,
+        )
+        else {
+            panic!()
+        };
         assert!(look.linked);
         assert_eq!(look.resolved, app);
         assert!(url.ends_with("/Payload.app"));
-        assert!(question.detail.contains("README.md is a link to Payload.app"));
+        assert!(question
+            .detail
+            .contains("README.md is a link to Payload.app"));
         // The other way round, a program's name on a document opens the document.
         let doc = s.file("real.md", "x");
         std::os::unix::fs::symlink(&doc, s.path("fake.command")).unwrap();
-        assert!(matches!(decide_file(&s.path("fake.command").to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Open { resolved, .. } if resolved == doc));
+        assert!(
+            matches!(decide_file(&s.path("fake.command").to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Open { resolved, .. } if resolved == doc)
+        );
     }
 
     /// A swap while the question's up isn't what was said yes to.
@@ -1757,7 +2592,11 @@ mod tests {
     fn a_swapped_file_isnt_opened_after_a_yes() {
         let s = Scratch::new("swap");
         let p = s.file("go.command", "#!/bin/sh\n");
-        let FileVerdict::Ask { look, .. } = decide_file(&p.to_string_lossy(), Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Ask { look, .. } =
+            decide_file(&p.to_string_lossy(), Origin::ThisMac, &none)
+        else {
+            panic!()
+        };
         assert!(still_same(&p.to_string_lossy(), &look, &none));
         fs::remove_file(&p).unwrap();
         let other = app_bundle(&s, "Other.app");
@@ -1771,9 +2610,21 @@ mod tests {
     fn mac_apps(file: &Path) -> Option<OpeningApp> {
         let text = PathBuf::from("/System/Applications/TextEdit.app");
         match extension(file).as_str() {
-            "md" => Some(OpeningApp { path: text, bundle_id: Some("com.apple.TextEdit".into()), name: "TextEdit".into() }),
-            "app" => Some(OpeningApp { path: file.to_path_buf(), bundle_id: Some("com.evil.app".into()), name: "Evil".into() }),
-            "command" => Some(OpeningApp { path: "/System/Applications/Utilities/Terminal.app".into(), bundle_id: Some("com.apple.Terminal".into()), name: "Terminal".into() }),
+            "md" => Some(OpeningApp {
+                path: text,
+                bundle_id: Some("com.apple.TextEdit".into()),
+                name: "TextEdit".into(),
+            }),
+            "app" => Some(OpeningApp {
+                path: file.to_path_buf(),
+                bundle_id: Some("com.evil.app".into()),
+                name: "Evil".into(),
+            }),
+            "command" => Some(OpeningApp {
+                path: "/System/Applications/Utilities/Terminal.app".into(),
+                bundle_id: Some("com.apple.Terminal".into()),
+                name: "Terminal".into(),
+            }),
             _ => None,
         }
     }
@@ -1789,25 +2640,40 @@ mod tests {
         let s = Scratch::new("doc-swap");
         let doc = s.file("notes/readme.md", "# hi");
         let given = doc.to_string_lossy().into_owned();
-        let FileVerdict::Open { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps) else { panic!() };
+        let FileVerdict::Open { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps)
+        else {
+            panic!()
+        };
         // Handed to TextEdit, not to whatever the path names when it opens.
-        assert_eq!(with, Opener::App("/System/Applications/TextEdit.app".into()));
+        assert_eq!(
+            with,
+            Opener::App("/System/Applications/TextEdit.app".into())
+        );
         assert!(still_same(&given, &look, &mac_apps));
 
         // The file itself swapped for a link to an app bundle.
         let evil = app_bundle(&s, "Evil.app");
         fs::rename(&doc, s.path("notes/readme.old")).unwrap();
         std::os::unix::fs::symlink(&evil, &doc).unwrap();
-        assert!(!still_same(&given, &look, &mac_apps), "a link to an app passed as the document");
+        assert!(
+            !still_same(&given, &look, &mac_apps),
+            "a link to an app passed as the document"
+        );
         fs::remove_file(&doc).unwrap();
 
         // Replaced by another file of the same name and kind: a different
         // file on disk, which the old check (path and kind) let through.
         fs::write(&doc, "#!/bin/sh\n").unwrap();
-        assert!(!still_same(&given, &look, &mac_apps), "a file swapped in at the same path passed");
+        assert!(
+            !still_same(&given, &look, &mac_apps),
+            "a file swapped in at the same path passed"
+        );
         fs::remove_file(&doc).unwrap();
         fs::rename(s.path("notes/readme.old"), &doc).unwrap();
-        assert!(still_same(&given, &look, &mac_apps), "the untouched document stopped passing");
+        assert!(
+            still_same(&given, &look, &mac_apps),
+            "the untouched document stopped passing"
+        );
 
         // A folder above it swapped for a link to one where that name is a program.
         let other = s.path("other");
@@ -1815,7 +2681,10 @@ mod tests {
         fs::rename(other.join("..").join("Evil.app"), other.join("readme.md")).unwrap();
         fs::rename(s.path("notes"), s.path("notes.old")).unwrap();
         std::os::unix::fs::symlink(&other, s.path("notes")).unwrap();
-        assert!(!still_same(&given, &look, &mac_apps), "an ancestor swapped for a folder with an app in it passed");
+        assert!(
+            !still_same(&given, &look, &mac_apps),
+            "an ancestor swapped for a folder with an app in it passed"
+        );
     }
 
     /// A plain folder opens in a file browser window, never through the app
@@ -1826,7 +2695,10 @@ mod tests {
         let s = Scratch::new("folder");
         fs::create_dir_all(s.path("docs")).unwrap();
         let given = s.path("docs").to_string_lossy().into_owned();
-        let FileVerdict::Open { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps) else { panic!() };
+        let FileVerdict::Open { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps)
+        else {
+            panic!()
+        };
         assert_eq!(with, Opener::FileViewer);
         // Turned into a bundle afterwards: no longer what was looked at.
         fs::create_dir_all(s.path("docs/Contents/MacOS")).unwrap();
@@ -1842,8 +2714,14 @@ mod tests {
         let s = Scratch::new("confirmed");
         let script = s.file("go.command", "#!/bin/sh\n");
         let given = script.to_string_lossy().into_owned();
-        let FileVerdict::Ask { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps) else { panic!() };
-        assert_eq!(with, Opener::App("/System/Applications/Utilities/Terminal.app".into()));
+        let FileVerdict::Ask { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps)
+        else {
+            panic!()
+        };
+        assert_eq!(
+            with,
+            Opener::App("/System/Applications/Utilities/Terminal.app".into())
+        );
         // Swapped after the yes (a new file at the same path): refused. The
         // old one is kept, so the new one can't get its inode back.
         fs::rename(&script, s.path("go.old")).unwrap();
@@ -1852,13 +2730,19 @@ mod tests {
 
         let app = app_bundle(&s, "Tool.app");
         let given = app.to_string_lossy().into_owned();
-        let FileVerdict::Ask { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps) else { panic!() };
+        let FileVerdict::Ask { look, with, .. } = decide_file(&given, Origin::ThisMac, &mac_apps)
+        else {
+            panic!()
+        };
         assert_eq!(with, Opener::System);
         assert!(still_same(&given, &look, &mac_apps));
         let other = app_bundle(&s, "Other.app");
         fs::rename(&app, s.path("Tool.old")).unwrap();
         fs::rename(&other, &app).unwrap();
-        assert!(!still_same(&given, &look, &mac_apps), "another bundle moved into the app's place passed");
+        assert!(
+            !still_same(&given, &look, &mac_apps),
+            "another bundle moved into the app's place passed"
+        );
     }
 
     /// Off a Mac a document opens from a copy of the file that was looked at;
@@ -1869,7 +2753,9 @@ mod tests {
         let s = Scratch::new("copy");
         let doc = s.file("notes/readme.md", "# the real one");
         let given = doc.to_string_lossy().into_owned();
-        let FileVerdict::Open { look, .. } = decide_file(&given, Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Open { look, .. } = decide_file(&given, Origin::ThisMac, &none) else {
+            panic!()
+        };
         let copy = checked_copy(&look, &s.path("opened"), 1024).unwrap();
         assert_eq!(fs::read_to_string(&copy).unwrap(), "# the real one");
         assert!(copy.ends_with("readme.md") && !copy.starts_with(s.path("notes")));
@@ -1878,14 +2764,23 @@ mod tests {
         let evil = s.file("evil.desktop", "[Desktop Entry]\nExec=sh -c id\n");
         fs::rename(&doc, s.path("notes/readme.old")).unwrap();
         std::os::unix::fs::symlink(&evil, &doc).unwrap();
-        assert_eq!(fs::read_to_string(checked_copy(&look, &s.path("opened"), 1024).unwrap()).unwrap(), "# the real one");
+        assert_eq!(
+            fs::read_to_string(checked_copy(&look, &s.path("opened"), 1024).unwrap()).unwrap(),
+            "# the real one"
+        );
         // And a file put at the same path in its place.
         fs::remove_file(&doc).unwrap();
         fs::write(&doc, "# another").unwrap();
-        assert_eq!(fs::read_to_string(checked_copy(&look, &s.path("opened"), 1024).unwrap()).unwrap(), "# the real one");
+        assert_eq!(
+            fs::read_to_string(checked_copy(&look, &s.path("opened"), 1024).unwrap()).unwrap(),
+            "# the real one"
+        );
         // Without the held file (Windows), the path is opened again, and must
         // be the file looked at.
-        let unheld = Look { held: Held(None), ..look };
+        let unheld = Look {
+            held: Held(None),
+            ..look
+        };
         assert!(checked_copy(&unheld, &s.path("opened"), 1024).is_err());
     }
 
@@ -1900,17 +2795,35 @@ mod tests {
         let program = s.file("tool.sh", "#!/bin/sh\necho asked\n");
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         let given = program.to_string_lossy().into_owned();
-        let FileVerdict::Ask { look, .. } = decide_file(&given, Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Ask { look, .. } = decide_file(&given, Origin::ThisMac, &none) else {
+            panic!()
+        };
         let copy = checked_copy(&look, &s.path("opened"), 1024).unwrap();
-        assert_eq!(fs::read_to_string(&copy).unwrap(), "#!/bin/sh\necho asked\n");
-        assert_eq!(fs::metadata(&copy).unwrap().permissions().mode() & 0o777, 0o500);
+        assert_eq!(
+            fs::read_to_string(&copy).unwrap(),
+            "#!/bin/sh\necho asked\n"
+        );
+        assert_eq!(
+            fs::metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
         fs::rename(&program, s.path("tool.old")).unwrap();
         fs::write(&program, "#!/bin/sh\necho swapped\n").unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         let copy = checked_copy(&look, &s.path("opened"), 1024).unwrap();
-        assert_eq!(fs::read_to_string(copy).unwrap(), "#!/bin/sh\necho asked\n", "a program swapped in after the yes was copied");
-        let unheld = Look { held: Held(None), ..look };
-        assert!(checked_copy(&unheld, &s.path("opened"), 1024).is_err(), "a program swapped in after the yes was copied");
+        assert_eq!(
+            fs::read_to_string(copy).unwrap(),
+            "#!/bin/sh\necho asked\n",
+            "a program swapped in after the yes was copied"
+        );
+        let unheld = Look {
+            held: Held(None),
+            ..look
+        };
+        assert!(
+            checked_copy(&unheld, &s.path("opened"), 1024).is_err(),
+            "a program swapped in after the yes was copied"
+        );
     }
 
     /// Grok's review: an app in the project made a document's opener (the
@@ -1922,10 +2835,22 @@ mod tests {
         let s = Scratch::new("project-app");
         let evil = app_bundle(&s, "tools/Evil.app");
         let doc = s.file("readme.md", "# hi");
-        let in_project = |_: &Path| Some(OpeningApp { path: evil.clone(), bundle_id: Some("com.evil.preview".into()), name: "Evil".into() });
-        let FileVerdict::Ask { question, .. } = decide_file(&doc.to_string_lossy(), Origin::ThisMac, &in_project) else { panic!("a document opening in a project's app didn't ask") };
+        let in_project = |_: &Path| {
+            Some(OpeningApp {
+                path: evil.clone(),
+                bundle_id: Some("com.evil.preview".into()),
+                name: "Evil".into(),
+            })
+        };
+        let FileVerdict::Ask { question, .. } =
+            decide_file(&doc.to_string_lossy(), Origin::ThisMac, &in_project)
+        else {
+            panic!("a document opening in a project's app didn't ask")
+        };
         assert!(question.detail.contains("Evil"), "{}", question.detail);
-        assert!(installed_where_apps_are(Path::new("/System/Applications/TextEdit.app")));
+        assert!(installed_where_apps_are(Path::new(
+            "/System/Applications/TextEdit.app"
+        )));
         assert!(!installed_where_apps_are(&evil));
     }
 
@@ -1939,14 +2864,35 @@ mod tests {
         fs::create_dir_all(s.path("plain")).unwrap();
         let apps = |p: &Path| -> Option<OpeningApp> {
             if extension(p) == "rtfd" {
-                Some(OpeningApp { path: "/System/Applications/TextEdit.app".into(), bundle_id: Some("com.apple.TextEdit".into()), name: "TextEdit".into() })
+                Some(OpeningApp {
+                    path: "/System/Applications/TextEdit.app".into(),
+                    bundle_id: Some("com.apple.TextEdit".into()),
+                    name: "TextEdit".into(),
+                })
             } else {
-                Some(OpeningApp { path: "/System/Library/CoreServices/Finder.app".into(), bundle_id: Some("com.apple.finder".into()), name: "Finder".into() })
+                Some(OpeningApp {
+                    path: "/System/Library/CoreServices/Finder.app".into(),
+                    bundle_id: Some("com.apple.finder".into()),
+                    name: "Finder".into(),
+                })
             }
         };
-        let FileVerdict::Open { with, .. } = decide_file(&s.path("notes.rtfd").to_string_lossy(), Origin::ThisMac, &apps) else { panic!() };
-        assert_eq!(with, Opener::App("/System/Applications/TextEdit.app".into()));
-        let FileVerdict::Open { with, .. } = decide_file(&s.path("plain").to_string_lossy(), Origin::ThisMac, &apps) else { panic!() };
+        let FileVerdict::Open { with, .. } = decide_file(
+            &s.path("notes.rtfd").to_string_lossy(),
+            Origin::ThisMac,
+            &apps,
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            with,
+            Opener::App("/System/Applications/TextEdit.app".into())
+        );
+        let FileVerdict::Open { with, .. } =
+            decide_file(&s.path("plain").to_string_lossy(), Origin::ThisMac, &apps)
+        else {
+            panic!()
+        };
         assert_eq!(with, Opener::FileViewer);
     }
 
@@ -1961,23 +2907,46 @@ mod tests {
         let link = s.path("tools/TextEdit.app");
         std::os::unix::fs::symlink("/System/Applications/TextEdit.app", &link).unwrap();
         let doc = s.file("notes.md", "# hi");
-        let by_link = |_: &Path| Some(OpeningApp { path: link.clone(), bundle_id: Some("com.apple.TextEdit".into()), name: "TextEdit".into() });
+        let by_link = |_: &Path| {
+            Some(OpeningApp {
+                path: link.clone(),
+                bundle_id: Some("com.apple.TextEdit".into()),
+                name: "TextEdit".into(),
+            })
+        };
         match decide_file(&doc.to_string_lossy(), Origin::ThisMac, &by_link) {
             // On a Mac, TextEdit itself; never the link.
-            FileVerdict::Open { with, .. } => assert_eq!(with, Opener::App("/System/Applications/TextEdit.app".into())),
+            FileVerdict::Open { with, .. } => assert_eq!(
+                with,
+                Opener::App("/System/Applications/TextEdit.app".into())
+            ),
             // Where TextEdit isn't there to follow, the link is a project's
             // app: asked about, naming it.
-            FileVerdict::Ask { question, .. } => assert!(question.detail.contains("TextEdit"), "{}", question.detail),
+            FileVerdict::Ask { question, .. } => {
+                assert!(question.detail.contains("TextEdit"), "{}", question.detail)
+            }
             other => panic!("{other:?}"),
         }
     }
 
     #[test]
     fn apps_count_as_installed_only_where_apps_go() {
-        for yes in ["/System/Applications/TextEdit.app", "/Applications/Xcode.app", "/Applications/Utilities/Terminal.app", "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app", "/System/Library/CoreServices/Finder.app"] {
+        for yes in [
+            "/System/Applications/TextEdit.app",
+            "/Applications/Xcode.app",
+            "/Applications/Utilities/Terminal.app",
+            "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app",
+            "/System/Library/CoreServices/Finder.app",
+        ] {
             assert!(installed_where_apps_are(Path::new(yes)), "{yes}");
         }
-        for no in ["/Applications/some-repo/Evil.app", "/Applications/Utilities/repo/Evil.app", "/Users/m/dev/proj/Evil.app", "/Applications/../Users/m/Evil.app", "/tmp/Evil.app"] {
+        for no in [
+            "/Applications/some-repo/Evil.app",
+            "/Applications/Utilities/repo/Evil.app",
+            "/Users/m/dev/proj/Evil.app",
+            "/Applications/../Users/m/Evil.app",
+            "/tmp/Evil.app",
+        ] {
             assert!(!installed_where_apps_are(Path::new(no)), "{no}");
         }
     }
@@ -1990,18 +2959,29 @@ mod tests {
         let s = Scratch::new("held");
         let doc = s.file("tool.sh", "#!/bin/sh\necho asked\n");
         let given = doc.to_string_lossy().into_owned();
-        let FileVerdict::Ask { look, .. } = decide_file(&given, Origin::ThisMac, &none) else { panic!() };
+        let FileVerdict::Ask { look, .. } = decide_file(&given, Origin::ThisMac, &none) else {
+            panic!()
+        };
         fs::remove_file(&doc).unwrap();
         fs::write(&doc, "#!/bin/sh\necho swapped\n").unwrap();
-        assert!(!still_same(&given, &look, &none), "a file made in its place got the held file's inode");
+        assert!(
+            !still_same(&given, &look, &none),
+            "a file made in its place got the held file's inode"
+        );
         let copy = checked_copy(&look, &s.path("opened"), 1024).unwrap();
         assert_eq!(fs::read_to_string(copy).unwrap(), "#!/bin/sh\necho asked\n");
     }
 
     #[test]
     fn a_reference_urls_inode_is_read() {
-        assert_eq!(reference_id("file:///.file/id=6571367.368739028/"), Some((6571367, 368739028)));
-        assert_eq!(reference_id("file:///.file/id=7873307.16"), Some((7873307, 16)));
+        assert_eq!(
+            reference_id("file:///.file/id=6571367.368739028/"),
+            Some((6571367, 368739028))
+        );
+        assert_eq!(
+            reference_id("file:///.file/id=7873307.16"),
+            Some((7873307, 16))
+        );
         assert_eq!(reference_id("file:///private/tmp/Tool.app/"), None);
         assert_eq!(reference_id("file:///.file/id=x.1/"), None);
         assert_eq!(reference_id("file:///.file/id=1.x/"), None);
@@ -2011,32 +2991,95 @@ mod tests {
     fn another_macs_files_and_missing_ones_are_refused() {
         let s = Scratch::new("refuse");
         let p = s.file("a.md", "x");
-        assert!(matches!(decide_file(&p.to_string_lossy(), Origin::OtherMac, &none), FileVerdict::Refuse(_)));
-        assert!(matches!(decide_file(&s.path("gone.md").to_string_lossy(), Origin::ThisMac, &none), FileVerdict::Refuse(_)));
-        assert!(matches!(decide_file("relative/a.md", Origin::ThisMac, &none), FileVerdict::Refuse(_)));
+        assert!(matches!(
+            decide_file(&p.to_string_lossy(), Origin::OtherMac, &none),
+            FileVerdict::Refuse(_)
+        ));
+        assert!(matches!(
+            decide_file(&s.path("gone.md").to_string_lossy(), Origin::ThisMac, &none),
+            FileVerdict::Refuse(_)
+        ));
+        assert!(matches!(
+            decide_file("relative/a.md", Origin::ThisMac, &none),
+            FileVerdict::Refuse(_)
+        ));
     }
 
     #[test]
     fn links_by_kind() {
-        assert_eq!(link_kind("https://example.com/a?b#c"), LinkKind::Web("https://example.com/a?b#c".into()));
-        assert_eq!(link_kind("HTTPS://example.com"), LinkKind::Web("HTTPS://example.com".into()));
+        assert_eq!(
+            link_kind("https://example.com/a?b#c"),
+            LinkKind::Web("https://example.com/a?b#c".into())
+        );
+        assert_eq!(
+            link_kind("HTTPS://example.com"),
+            LinkKind::Web("HTTPS://example.com".into())
+        );
         assert_eq!(link_kind("https://"), LinkKind::Refuse);
         assert_eq!(link_kind("https://a b.com"), LinkKind::Refuse);
-        assert_eq!(link_kind("mailto:a@b.c"), LinkKind::Ask("mailto:a@b.c".into()));
-        assert_eq!(link_kind("x-apple.systempreferences:com.apple.preference"), LinkKind::Ask("x-apple.systempreferences:com.apple.preference".into()));
-        assert_eq!(link_kind("file:///tmp/a%20b.md#x"), LinkKind::File("/tmp/a b.md".into()));
-        assert_eq!(link_kind("file://localhost/tmp/a.md"), LinkKind::File("/tmp/a.md".into()));
-        assert_eq!(link_kind("file://evil.example/share/a.app"), LinkKind::Refuse);
-        assert_eq!(link_kind("docs/report.command"), LinkKind::File("docs/report.command".into()));
-        assert_eq!(link_kind("guide.md#links"), LinkKind::File("guide.md".into()));
+        assert_eq!(
+            link_kind("mailto:a@b.c"),
+            LinkKind::Ask("mailto:a@b.c".into())
+        );
+        assert_eq!(
+            link_kind("x-apple.systempreferences:com.apple.preference"),
+            LinkKind::Ask("x-apple.systempreferences:com.apple.preference".into())
+        );
+        assert_eq!(
+            link_kind("file:///tmp/a%20b.md#x"),
+            LinkKind::File("/tmp/a b.md".into())
+        );
+        assert_eq!(
+            link_kind("file://localhost/tmp/a.md"),
+            LinkKind::File("/tmp/a.md".into())
+        );
+        assert_eq!(
+            link_kind("file://evil.example/share/a.app"),
+            LinkKind::Refuse
+        );
+        assert_eq!(
+            link_kind("docs/report.command"),
+            LinkKind::File("docs/report.command".into())
+        );
+        assert_eq!(
+            link_kind("guide.md#links"),
+            LinkKind::File("guide.md".into())
+        );
         assert_eq!(link_kind("a\u{0}b"), LinkKind::Refuse);
         assert_eq!(link_kind("#usage"), LinkKind::Refuse);
         assert!(is_own_scheme("threadbear://thread/x"));
     }
 
+    /// The cases the iPhone, Android and the website run too
+    /// (`shared/cases/link-policy.json`): only the kind, not the path.
+    #[test]
+    fn links_follow_the_shared_cases() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../shared/cases/link-policy.json"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 40);
+        for case in cases.iter().filter(|c| c["differs"]["desktop"].is_null()) {
+            let name = case["name"].as_str().unwrap();
+            let kind = match link_kind(case["input"].as_str().unwrap()) {
+                LinkKind::Web(_) => "web",
+                LinkKind::Ask(_) => "ask",
+                LinkKind::File(_) => "file",
+                LinkKind::Refuse => "refuse",
+            };
+            assert_eq!(kind, case["expect"].as_str().unwrap(), "{name}");
+        }
+    }
+
     #[test]
     fn file_urls_escape_what_a_url_would_read() {
-        assert_eq!(file_url("/a b/c#d?e%f.md"), "file:///a%20b/c%23d%3Fe%25f.md");
+        assert_eq!(
+            file_url("/a b/c#d?e%f.md"),
+            "file:///a%20b/c%23d%3Fe%25f.md"
+        );
         if cfg!(windows) {
             assert_eq!(file_url("C:\\Users\\a.md"), "file:///C:/Users/a.md");
         } else {
@@ -2053,7 +3096,10 @@ mod tests {
         app_bundle(&s, "Payload.app");
         let plain = s.path("Payload.app\\");
         fs::create_dir_all(&plain).unwrap();
-        let LinkKind::File(path) = link_kind(&[&s.0.to_string_lossy(), "/Payload.app%5C"].concat()) else { panic!() };
+        let LinkKind::File(path) = link_kind(&[&s.0.to_string_lossy(), "/Payload.app%5C"].concat())
+        else {
+            panic!()
+        };
         match decide_file(&path, Origin::ThisMac, &none) {
             FileVerdict::Open { url, resolved, .. } => {
                 assert_eq!(resolved, plain);
@@ -2092,28 +3138,52 @@ mod tests {
     fn a_real_video_on_this_mac_plays() {
         let s = Scratch::new("media-real");
         let clip = bytes(&s, "clips/hero.mp4", MP4_HEAD);
-        assert_eq!(shows(decide_media(&clip.to_string_lossy(), Origin::ThisMac)), Some(clip.clone()));
+        assert_eq!(
+            shows(decide_media(&clip.to_string_lossy(), Origin::ThisMac)),
+            Some(clip.clone())
+        );
         // An older QuickTime movie: padding, its data, then the movie box.
-        let old = bytes(&s, "old.MOV", b"\0\0\0\x08wide\0\0\0\x10mdat12345678\0\0\0\x10moov\0\0\0\x08mvhd");
-        assert_eq!(shows(decide_media(&old.to_string_lossy(), Origin::ThisMac)), Some(old));
+        let old = bytes(
+            &s,
+            "old.MOV",
+            b"\0\0\0\x08wide\0\0\0\x10mdat12345678\0\0\0\x10moov\0\0\0\x08mvhd",
+        );
+        assert_eq!(
+            shows(decide_media(&old.to_string_lossy(), Origin::ThisMac)),
+            Some(old)
+        );
         let pdf = bytes(&s, "spec.pdf", b"%PDF-1.7\n");
-        assert_eq!(shows(decide_media(&pdf.to_string_lossy(), Origin::ThisMac)), Some(pdf));
+        assert_eq!(
+            shows(decide_media(&pdf.to_string_lossy(), Origin::ThisMac)),
+            Some(pdf)
+        );
     }
 
     #[test]
     fn office_previews_are_checked_read_only_documents() {
         let s = Scratch::new("office-preview");
-        for ext in ["key", "pages", "numbers", "docx", "xlsx", "pptx", "doc", "xls", "ppt", "odt", "ods", "odp"] {
+        for ext in [
+            "key", "pages", "numbers", "docx", "xlsx", "pptx", "doc", "xls", "ppt", "odt", "ods",
+            "odp",
+        ] {
             let document = bytes(&s, &format!("review.{ext}"), b"PK\x03\x04document");
             assert!(media_kind(&document.to_string_lossy()).is_some(), "{ext}");
-            assert_eq!(shows(decide_media(&document.to_string_lossy(), Origin::ThisMac)), Some(document.clone()), "{ext}");
-            assert!(refusal(decide_media(&document.to_string_lossy(), Origin::OtherMac)).contains("another Mac"));
+            assert_eq!(
+                shows(decide_media(&document.to_string_lossy(), Origin::ThisMac)),
+                Some(document.clone()),
+                "{ext}"
+            );
+            assert!(
+                refusal(decide_media(&document.to_string_lossy(), Origin::OtherMac))
+                    .contains("another Mac")
+            );
             fs::write(&document, b"#!/bin/sh\nopen -a Terminal\n").unwrap();
             refusal(decide_media(&document.to_string_lossy(), Origin::ThisMac));
         }
         let legacy = bytes(&s, "legacy.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy");
         assert!(shows(decide_media(&legacy.to_string_lossy(), Origin::ThisMac)).is_some());
-        #[cfg(unix)] {
+        #[cfg(unix)]
+        {
             let payload = bytes(&s, "run.command", b"PK\x03\x04payload");
             let link = s.path("fake.pages");
             std::os::unix::fs::symlink(payload, &link).unwrap();
@@ -2126,13 +3196,23 @@ mod tests {
         use std::io::Read as _;
         let s = Scratch::new("office-replaced");
         let path = bytes(&s, "brief.docx", b"PK\x03\x04original document");
-        let MediaVerdict::Show(mut checked) = decide_media(&path.to_string_lossy(), Origin::ThisMac) else { panic!("document refused") };
+        let MediaVerdict::Show(mut checked) =
+            decide_media(&path.to_string_lossy(), Origin::ThisMac)
+        else {
+            panic!("document refused")
+        };
         fs::rename(&path, s.path("previous.docx")).unwrap();
         fs::write(&path, b"#!/bin/sh\nlaunch something\n").unwrap();
         let mut read = Vec::new();
         checked.file.read_to_end(&mut read).unwrap();
         assert_eq!(read, b"PK\x03\x04original document");
-        let copy = crate::private_file::snapshot(&checked.file, &s.path("previews"), "brief.docx", 256 * 1024 * 1024).unwrap();
+        let copy = crate::private_file::snapshot(
+            &checked.file,
+            &s.path("previews"),
+            "brief.docx",
+            256 * 1024 * 1024,
+        )
+        .unwrap();
         assert_eq!(fs::read(copy).unwrap(), read);
     }
 
@@ -2141,12 +3221,22 @@ mod tests {
         let s = Scratch::new("iwork-packages");
         for ext in ["key", "pages", "numbers"] {
             let package = s.path(&format!("Brief.{ext}"));
-            bytes(&s, &format!("Brief.{ext}/Index/Document.iwa"), b"package data");
-            assert_eq!(shows(decide_media(&package.to_string_lossy(), Origin::ThisMac)), Some(package.clone()));
+            bytes(
+                &s,
+                &format!("Brief.{ext}/Index/Document.iwa"),
+                b"package data",
+            );
+            assert_eq!(
+                shows(decide_media(&package.to_string_lossy(), Origin::ThisMac)),
+                Some(package.clone())
+            );
             refusal(decide_media(&package.to_string_lossy(), Origin::OtherMac));
         }
         fs::create_dir(s.path("Not a package.docx")).unwrap();
-        refusal(decide_media(&s.path("Not a package.docx").to_string_lossy(), Origin::ThisMac));
+        refusal(decide_media(
+            &s.path("Not a package.docx").to_string_lossy(),
+            Origin::ThisMac,
+        ));
     }
 
     /// What's shown is the file that was checked, held open, read from its
@@ -2156,7 +3246,11 @@ mod tests {
         use std::io::Read;
         let s = Scratch::new("media-held");
         let clip = bytes(&s, "hero.mp4", MP4_HEAD);
-        let MediaVerdict::Show(mut checked) = decide_media(&clip.to_string_lossy(), Origin::ThisMac) else { panic!() };
+        let MediaVerdict::Show(mut checked) =
+            decide_media(&clip.to_string_lossy(), Origin::ThisMac)
+        else {
+            panic!()
+        };
         fs::remove_file(&clip).unwrap();
         fs::write(&clip, b"something else entirely").unwrap();
         let mut read = Vec::new();
@@ -2170,7 +3264,10 @@ mod tests {
         let s = Scratch::new("media-other");
         let clip = bytes(&s, "hero.mp4", MP4_HEAD);
         // The same path is here too, but it isn't the file that thread means.
-        assert!(refusal(decide_media(&clip.to_string_lossy(), Origin::OtherMac)).contains("on another Mac"));
+        assert!(
+            refusal(decide_media(&clip.to_string_lossy(), Origin::OtherMac))
+                .contains("on another Mac")
+        );
     }
 
     #[test]
@@ -2178,16 +3275,26 @@ mod tests {
         let s = Scratch::new("media-fake");
         // Named like a film, but text, or a folder.
         let text = bytes(&s, "notes.mp4", b"#!/bin/sh\nrm -rf ~\n");
-        assert!(refusal(decide_media(&text.to_string_lossy(), Origin::ThisMac)).contains("isn't really a video"));
+        assert!(
+            refusal(decide_media(&text.to_string_lossy(), Origin::ThisMac))
+                .contains("isn't really a video")
+        );
         let folder = s.path("folder.mp4");
         fs::create_dir_all(&folder).unwrap();
         refusal(decide_media(&folder.to_string_lossy(), Origin::ThisMac));
         let fake_pdf = bytes(&s, "fake.pdf", b"<html>");
-        assert!(refusal(decide_media(&fake_pdf.to_string_lossy(), Origin::ThisMac)).contains("isn't really a PDF"));
+        assert!(
+            refusal(decide_media(&fake_pdf.to_string_lossy(), Origin::ThisMac))
+                .contains("isn't really a PDF")
+        );
         // Not a video or a PDF by name at all.
         let key = bytes(&s, "id_ed25519", MP4_HEAD);
         refusal(decide_media(&key.to_string_lossy(), Origin::ThisMac));
-        assert!(refusal(decide_media(&s.path("gone.mp4").to_string_lossy(), Origin::ThisMac)).contains("isn't there"));
+        assert!(refusal(decide_media(
+            &s.path("gone.mp4").to_string_lossy(),
+            Origin::ThisMac
+        ))
+        .contains("isn't there"));
         refusal(decide_media("clips/hero.mp4", Origin::ThisMac));
     }
 
@@ -2199,15 +3306,27 @@ mod tests {
         let s = Scratch::new("media-boxes");
         let text = bytes(&s, "fake.mp4", b"xxxxftyphello, this is only text");
         refusal(decide_media(&text.to_string_lossy(), Origin::ThisMac));
-        let avif = bytes(&s, "photo.mov", b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf\0\0\0\0");
+        let avif = bytes(
+            &s,
+            "photo.mov",
+            b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf\0\0\0\0",
+        );
         refusal(decide_media(&avif.to_string_lossy(), Origin::ThisMac));
         let heic = bytes(&s, "photo.mp4", b"\0\0\0\x18ftypheic\0\0\0\0mif1heic");
         refusal(decide_media(&heic.to_string_lossy(), Origin::ThisMac));
         // A box longer than the file it's in.
         let short = bytes(&s, "short.mov", b"\0\0\x10\0moov\0\0\0\0");
         refusal(decide_media(&short.to_string_lossy(), Origin::ThisMac));
-        let screen_recording = bytes(&s, "Screen Recording.mov", b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x08wide");
-        assert!(shows(decide_media(&screen_recording.to_string_lossy(), Origin::ThisMac)).is_some());
+        let screen_recording = bytes(
+            &s,
+            "Screen Recording.mov",
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x08wide",
+        );
+        assert!(shows(decide_media(
+            &screen_recording.to_string_lossy(),
+            Origin::ThisMac
+        ))
+        .is_some());
         assert!(!looks_like(Media::Pdf, b"%PDF-x", 6));
     }
 
@@ -2226,7 +3345,10 @@ mod tests {
         assert!(!looks_like(Media::Video, &skipped, skipped.len() as u64));
         let s = Scratch::new("media-padded");
         let file = bytes(&s, "photo.mov", &padded);
-        assert!(refusal(decide_media(&file.to_string_lossy(), Origin::ThisMac)).contains("isn't really a video"));
+        assert!(
+            refusal(decide_media(&file.to_string_lossy(), Origin::ThisMac))
+                .contains("isn't really a video")
+        );
 
         // A film's brand first, a picture's among the rest.
         let mixed: &[u8] = b"\0\0\0\x18ftypisom\0\0\0\0isommif1";
@@ -2236,14 +3358,22 @@ mod tests {
         // and a sane one in front of a film's ftyp.
         let tiny: &[u8] = b"\0\0\0\x01free\0\0\0\0\0\0\0\x04\0\0\0\x08moov";
         assert!(!looks_like(Media::Video, tiny, tiny.len() as u64));
-        let huge = [b"\0\0\0\x01mdat\x7f\xff\xff\xff\xff\xff\xff\xff".as_slice(), b"\0\0\0\x08moov"].concat();
+        let huge = [
+            b"\0\0\0\x01mdat\x7f\xff\xff\xff\xff\xff\xff\xff".as_slice(),
+            b"\0\0\0\x08moov",
+        ]
+        .concat();
         assert!(!looks_like(Media::Video, &huge, huge.len() as u64));
         let wide_mdat = [b"\0\0\0\x01mdat\0\0\0\0\0\0\0\x14abcd".as_slice(), MP4_HEAD].concat();
         assert!(looks_like(Media::Video, &wide_mdat, wide_mdat.len() as u64));
 
         // Padding and nothing after it, or padding that runs to the end.
         let only_padding = [free8, free8].concat();
-        assert!(!looks_like(Media::Video, &only_padding, only_padding.len() as u64));
+        assert!(!looks_like(
+            Media::Video,
+            &only_padding,
+            only_padding.len() as u64
+        ));
         let to_end: &[u8] = b"\0\0\0\0free\0\0\0\x08moov";
         assert!(!looks_like(Media::Video, to_end, to_end.len() as u64));
         // More padding boxes than are ever walked past.
@@ -2255,30 +3385,68 @@ mod tests {
 
         // Films that really start with padding still play.
         let padded_film = [free8, MP4_HEAD].concat();
-        assert!(looks_like(Media::Video, &padded_film, padded_film.len() as u64));
+        assert!(looks_like(
+            Media::Video,
+            &padded_film,
+            padded_film.len() as u64
+        ));
         let moov_first: &[u8] = b"\0\0\0\x10moov\0\0\0\x08mvhd";
         assert!(looks_like(Media::Video, moov_first, 16));
-        let moov_then_data = [moov_first, b"\0\0\0\x0cmdatdata".as_slice(), b"\0\0\0\x0cudta\0\0\0\0"].concat();
-        assert!(looks_like(Media::Video, &moov_then_data, moov_then_data.len() as u64));
+        let moov_then_data = [
+            moov_first,
+            b"\0\0\0\x0cmdatdata".as_slice(),
+            b"\0\0\0\x0cudta\0\0\0\0",
+        ]
+        .concat();
+        assert!(looks_like(
+            Media::Video,
+            &moov_then_data,
+            moov_then_data.len() as u64
+        ));
 
         // A movie box in front doesn't make a picture a film either (Codex's
         // third review, 12 Nov), and an empty one isn't a movie.
         let moov_avif = [moov_first, avif].concat();
-        assert!(!looks_like(Media::Video, &moov_avif, moov_avif.len() as u64));
+        assert!(!looks_like(
+            Media::Video,
+            &moov_avif,
+            moov_avif.len() as u64
+        ));
         let empty_moov_avif = [b"\0\0\0\x08moov".as_slice(), avif].concat();
-        assert!(!looks_like(Media::Video, &empty_moov_avif, empty_moov_avif.len() as u64));
+        assert!(!looks_like(
+            Media::Video,
+            &empty_moov_avif,
+            empty_moov_avif.len() as u64
+        ));
         assert!(!looks_like(Media::Video, b"\0\0\0\x08moov", 8));
         // Nor does anything between the movie box and the picture's ftyp
         // (Codex's fourth review, 12 Nov): user data, or padding enough to
         // use up the walk.
         let udta_avif = [moov_first, b"\0\0\0\x08udta".as_slice(), avif].concat();
-        assert!(!looks_like(Media::Video, &udta_avif, udta_avif.len() as u64));
+        assert!(!looks_like(
+            Media::Video,
+            &udta_avif,
+            udta_avif.len() as u64
+        ));
         let padded_avif = [moov_first, &free8.repeat(LEADING_BOXES), avif].concat();
-        assert!(!looks_like(Media::Video, &padded_avif, padded_avif.len() as u64));
+        assert!(!looks_like(
+            Media::Video,
+            &padded_avif,
+            padded_avif.len() as u64
+        ));
         let endless = [moov_first, &free8.repeat(ALL_BOXES)].concat();
         assert!(!looks_like(Media::Video, &endless, endless.len() as u64));
-        let movie_with_extras = [moov_first, &free8.repeat(LEADING_BOXES), b"\0\0\0\x0cudta\0\0\0\0"].concat();
-        assert!(looks_like(Media::Video, &movie_with_extras, movie_with_extras.len() as u64));
+        let movie_with_extras = [
+            moov_first,
+            &free8.repeat(LEADING_BOXES),
+            b"\0\0\0\x0cudta\0\0\0\0",
+        ]
+        .concat();
+        assert!(looks_like(
+            Media::Video,
+            &movie_with_extras,
+            movie_with_extras.len() as u64
+        ));
     }
 
     /// A pipe named like a film is refused at once, not waited on: opening
@@ -2289,11 +3457,17 @@ mod tests {
         let s = Scratch::new("media-pipe");
         let pipe = s.path("stream.mp4");
         let c = std::ffi::CString::new(pipe.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: `c` is a NUL-terminated CString that outlives the call.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let (tx, rx) = std::sync::mpsc::channel();
         let path = pipe.to_string_lossy().into_owned();
-        std::thread::spawn(move || tx.send(shows(decide_media(&path, Origin::ThisMac))).unwrap());
-        let got = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("decide_media waited on a pipe");
+        std::thread::spawn(move || {
+            tx.send(shows(decide_media(&path, Origin::ThisMac)))
+                .unwrap()
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("decide_media waited on a pipe");
         assert_eq!(got, None);
     }
 
@@ -2307,7 +3481,10 @@ mod tests {
         let real = bytes(&s, "take2.mov", MP4_HEAD);
         let link = s.path("latest.mp4");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert_eq!(shows(decide_media(&link.to_string_lossy(), Origin::ThisMac)), Some(real));
+        assert_eq!(
+            shows(decide_media(&link.to_string_lossy(), Origin::ThisMac)),
+            Some(real)
+        );
         let secret = bytes(&s, "secret.key", MP4_HEAD);
         let posing = s.path("clip.mp4");
         std::os::unix::fs::symlink(&secret, &posing).unwrap();
@@ -2326,7 +3503,10 @@ mod tests {
 
     #[test]
     fn absolute_paths() {
-        assert_eq!(absolute("docs/a.md", "/w/repo/", "/h"), Some("/w/repo/docs/a.md".into()));
+        assert_eq!(
+            absolute("docs/a.md", "/w/repo/", "/h"),
+            Some("/w/repo/docs/a.md".into())
+        );
         assert_eq!(absolute("./a.md", "/w", "/h"), Some("/w/a.md".into()));
         assert_eq!(absolute("~/a.md", "/w", "/h/"), Some("/h/a.md".into()));
         assert_eq!(absolute("/x", "", "/h"), Some("/x".into()));

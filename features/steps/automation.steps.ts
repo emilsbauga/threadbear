@@ -1,5 +1,8 @@
 import { Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { coloursIn, readPng } from '../support/png.ts';
+import { tempFolder } from '../support/temp.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 
 When('I give that thread a Convex panel', async function (this: ThreadbearWorld) {
@@ -63,4 +66,26 @@ Then("the script can copy a row's debug information", async function (this: Thre
   assert.ok(row);
   const result = await this.app.do({ cmd: 'debug-info', row: row.id });
   assert.ok(String(result).includes(row.id), String(result));
+});
+
+// No dump or label-point before the shot: each draws a frame, which would
+// move the panel along and hide what the shot itself does.
+let shotFile = '';
+When('I take a screenshot straight away', async function (this: ThreadbearWorld) {
+  shotFile = path.join(tempFolder('threadbear-shot-'), 'window.png');
+  await this.app.shot(shotFile);
+});
+
+Then('the screenshot shows the Usage tile {string} drawn where the panel has it', async function (this: ThreadbearWorld, label: string) {
+  const picture = readPng(shotFile);
+  const size = /^ok \S+ ([0-9.]+)x([0-9.]+)$/.exec(String(await this.app.do({ cmd: 'window' })));
+  assert.ok(size, 'the window command gives its size');
+  const scale = picture.width / Number(size[1]);
+  const point = /^ok ([-0-9.]+) ([-0-9.]+)$/.exec(String(await this.app.do({ cmd: 'label-point', label, prefix: true })));
+  assert.ok(point, `"${label}" is in the panel`);
+  const [x, y] = [Number(point[1]) * scale, Number(point[2]) * scale];
+  // Words drawn there have many shades (antialiased edges); a panel not
+  // drawn yet, or another one's empty space, has one or two.
+  const colours = coloursIn(picture, Math.round(x - 40 * scale), Math.round(y - 8 * scale), Math.round(80 * scale), Math.round(16 * scale));
+  assert.ok(colours > 8, `the shot has ${colours} colours where "${label}" is, so it wasn't drawn there (${shotFile})`);
 });

@@ -2,8 +2,10 @@ package com.mikerosoft.threadbear.android
 
 import android.content.Context
 import com.mikerosoft.threadbear.kit.BackendApi
-import com.mikerosoft.threadbear.kit.CommandState
+import com.mikerosoft.threadbear.kit.CommandKey
 import com.mikerosoft.threadbear.kit.CommandStatus
+import com.mikerosoft.threadbear.kit.PendingCommand
+import com.mikerosoft.threadbear.kit.PendingCommands
 import com.mikerosoft.threadbear.kit.InboxCleared
 import com.mikerosoft.threadbear.kit.InboxSections
 import com.mikerosoft.threadbear.kit.NotifyMode
@@ -41,7 +43,6 @@ import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The inbox's and the app shell's own state, beside AppModel (the iPhone's
@@ -57,13 +58,9 @@ class ShellModel(private val app: AppModel, context: Context, private val scope:
     // Archive and hibernate, at once
 
     /**
-     * Archived from this phone, kept out of the lists until Convex says the
-     * runner has done it, which waits for the Mac if it's asleep.
-     */
-    val archiving = MutableStateFlow<Set<String>>(emptySet())
-    /**
      * Hibernated from this phone, kept out of the lists and on the heading's
-     * count until Convex catches up.
+     * count until Convex catches up. The command itself is in app.commands;
+     * this is the heading's count, which the lists catch up with separately.
      */
     val tucks = MutableStateFlow(Tucks())
     /** He's just taken the last row away, for the empty inbox to greet it. */
@@ -71,18 +68,24 @@ class ShellModel(private val app: AppModel, context: Context, private val scope:
     private var lastInbox: List<PhoneThread> = emptyList()
     private var lastHibernatingCount: Int? = null
 
-    /** The inbox's sections less what's on its way out from here. */
-    fun sections(list: List<PhoneThread>, now: Instant, wakes: Map<String, ScheduleWake>): InboxSections {
-        val gone = archiving.value + tucks.value.hidden
-        return InboxSections.build(list.filter { it.threadId !in gone }, now, wakes)
+    /**
+     * The inbox's sections less what's on its way out from here (an archive
+     * that holdsChange, which waits for the Mac if it's asleep), and with the
+     * changes tapped here shown (AppModel.shown). [pending] is app.commands'
+     * entries as the screen collected them.
+     */
+    fun sections(list: List<PhoneThread>, now: Instant, wakes: Map<String, ScheduleWake>, pending: Map<CommandKey, PendingCommands.Entry> = app.commands.entries.value): InboxSections {
+        val gone = tucks.value.hidden
+        val archiving = pending.filter { (key, entry) -> key is CommandKey.Archive && entry.state.holdsChange }.keys.map { (it as CommandKey.Archive).threadId }.toSet()
+        return InboxSections.build(list.filter { it.threadId !in gone && it.threadId !in archiving }.map { app.shown(it, pending) }, now, wakes)
     }
 
     /** A new inbox list: what it no longer has, or has asleep, is done. */
     fun inboxArrived(list: List<PhoneThread>) {
         lastInbox = list
-        // Gone from the list means it's done, so a later unarchive shows.
+        // Gone from the list once done: let go, so a later unarchive shows.
         val ids = list.map { it.threadId }.toSet()
-        archiving.update { it intersect ids }
+        app.commands.forgetWhere { key, state -> key is CommandKey.Archive && key.threadId !in ids && state is PendingCommand.Done }
         tucks.update { it.inboxArrived(list, Instant.now()) }
     }
 
@@ -104,27 +107,26 @@ class ShellModel(private val app: AppModel, context: Context, private val scope:
         inboxCleared.note(before, sections(lastInbox, now, wakes), now)
     }
 
+    /** Whether an archive from here is keeping the row out of the inbox (the swipe stays gone). */
+    fun archiving(threadId: String) = app.commands[CommandKey.Archive(threadId)].holdsChange
+
     /**
-     * Archives a thread, gone from the inbox at once. The command goes with
-     * a deadline: on a client replaced meanwhile it may never answer, and the
-     * row would stay hidden with nothing watching.
+     * Archives a thread, gone from the inbox at once and kept gone until the
+     * list drops it (half a minute after it's done at most), back with why
+     * if the runner refuses it.
      */
-    fun archive(threadId: String) {
+    fun archive(threadId: String, change: ThreadChange = ThreadChange.Archive) {
         val b = app.backend.value ?: return
-        if (threadId in archiving.value) return
-        if (lastInbox.any { it.threadId == threadId }) takeOffInbox { archiving.update { it + threadId } }
-        scope.launch {
-            try {
-                val command = sendWithin(b, threadId, ThreadChange.Archive)
-                val status = outcome(command)
-                if (status?.state == CommandState.FAILED) throw TransportError.Server(status.note ?: "The runner couldn't archive that thread.")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                archiving.update { it - threadId }
-                app.report(e)
+        val key = CommandKey.Archive(threadId)
+        if (app.commands[key].locked) return
+        val start = {
+            app.commands.start(key, settleMs = 30_000, send = { b.update(threadId, change) }) { state ->
+                app.said(state, "The runner couldn't archive that thread.")
+                // Done with the inbox already without it: nothing left to hide.
+                if (state is PendingCommand.Done && lastInbox.none { it.threadId == threadId }) app.commands.forget(key)
             }
         }
+        if (lastInbox.any { it.threadId == threadId }) takeOffInbox { start() } else start()
     }
 
     /**
@@ -134,78 +136,22 @@ class ShellModel(private val app: AppModel, context: Context, private val scope:
      */
     fun hibernate(threadId: String, change: ThreadChange) {
         val b = app.backend.value ?: return
-        if (threadId in archiving.value || threadId in tucks.value.hidden) return
+        val key = CommandKey.Hibernate(threadId)
+        if (archiving(threadId) || threadId in tucks.value.hidden || app.commands[key].locked) return
         val s = sections(lastInbox, Instant.now(), InboxSections.wakes(app.wakes.value))
         if ((s.inbox + s.running).any { it.threadId == threadId }) takeOffInbox { tucks.update { it.tuck(threadId) } }
-        scope.launch {
-            try {
-                val command = sendWithin(b, threadId, change)
-                val status = outcome(command)
-                if (status?.state == CommandState.FAILED) throw TransportError.Server(status.note ?: "The runner couldn't hibernate that thread.")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                tucks.update { it.undo(threadId) }
-                app.report(e)
-            }
+        app.commands.start(key, send = { b.update(threadId, change) }) { state ->
+            if (!state.holdsChange) tucks.update { it.undo(threadId) }
+            app.said(state, "The runner couldn't hibernate that thread.")
         }
     }
 
     /**
      * Woken or unarchived from a put-away list, hidden there until the runner
-     * has done it: a swipe that only snapped back looked as if it hadn't taken.
+     * has done it (AppModel.bringingBack): a swipe that only snapped back
+     * looked as if it hadn't taken.
      */
-    val bringingBack = MutableStateFlow<Set<String>>(emptySet())
-
-    fun bringBack(threadId: String, change: ThreadChange) {
-        val b = app.backend.value ?: return
-        if (threadId in bringingBack.value) return
-        bringingBack.update { it + threadId }
-        scope.launch {
-            try {
-                val command = sendWithin(b, threadId, change)
-                val status = outcome(command)
-                if (status?.state == CommandState.FAILED) throw TransportError.Server(status.note ?: "The runner couldn't do that.")
-                // Done: a moment for the lists to follow before it's let go.
-                delay(3000)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                app.report(e)
-            } finally {
-                bringingBack.update { it - threadId }
-            }
-        }
-    }
-
-    /**
-     * Sends a change with a deadline: on a client replaced meanwhile it may
-     * never answer. Running out of time is a failure like any other, so the
-     * caller rolls back and says so. withTimeout's own exception is a
-     * CancellationException, which the callers rethrow untouched (for a real
-     * cancellation of the scope), so this turns it into an error instead.
-     */
-    private suspend fun sendWithin(b: PhoneBackend, threadId: String, change: ThreadChange): String =
-        withTimeoutOrNull(20_000) { b.update(threadId, change) }
-            ?: throw TransportError.Server("The server didn't answer in time. Try again.")
-
-    /**
-     * How a command ended: failed or done, or null once it's gone from the
-     * backend. On whichever backend is current, and a subscription that
-     * errors is tried again.
-     */
-    private suspend fun outcome(commandId: String): CommandStatus? {
-        while (true) {
-            val b = app.backend.value ?: return null
-            try {
-                return b.command(commandId).first { it == null || it.state == CommandState.DONE || it.state == CommandState.FAILED }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                delay(2000)
-            }
-        }
-    }
+    fun bringBack(threadId: String, change: ThreadChange) = app.change(threadId, change)
 
     // Search
 
@@ -457,8 +403,6 @@ class ShellModel(private val app: AppModel, context: Context, private val scope:
         starting.value = emptyList()
         drafts.clear()
         retryDraft.value = null
-        archiving.value = emptySet()
-        bringingBack.value = emptySet()
         tucks.value = Tucks()
         pendingRunnerOrder.value = null
         lastInbox = emptyList()

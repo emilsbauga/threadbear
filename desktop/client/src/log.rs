@@ -37,7 +37,12 @@ static FILE: Mutex<Option<LogFile>> = Mutex::new(None);
 pub fn open(path: &Path, opener: Opener) -> std::io::Result<()> {
     let file = opener(path)?;
     let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-    *FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(LogFile { path: path.to_owned(), file, bytes, opener });
+    *FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(LogFile {
+        path: path.to_owned(),
+        file,
+        bytes,
+        opener,
+    });
     Ok(())
 }
 
@@ -50,7 +55,7 @@ pub fn path() -> Option<PathBuf> {
 /// `restart`, `send`, `automation`) and what happened.
 pub fn write(category: &str, message: &str) {
     let line = format!("{} {category} {message}\n", clock());
-    eprint!("threadbear: {category} {message}\n");
+    eprintln!("threadbear: {category} {message}");
     let Ok(mut guard) = FILE.lock() else { return };
     let Some(log) = guard.as_mut() else { return };
     if log.bytes + line.len() as u64 > MAX_BYTES {
@@ -72,9 +77,17 @@ pub fn write(category: &str, message: &str) {
 /// The time of day in UTC, to the millisecond ("10:31:07.042"): the log is
 /// for reading beside the runner's, which is in UTC too.
 fn clock() -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let day_ms = ms % 86_400_000;
-    let (h, m, s, milli) = (day_ms / 3_600_000, day_ms / 60_000 % 60, day_ms / 1000 % 60, day_ms % 1000);
+    let (h, m, s, milli) = (
+        day_ms / 3_600_000,
+        day_ms / 60_000 % 60,
+        day_ms / 1000 % 60,
+        day_ms % 1000,
+    );
     format!("{h:02}:{m:02}:{s:02}.{milli:03}")
 }
 
@@ -88,11 +101,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("desktop.log");
         std::fs::create_dir_all(&dir).unwrap();
-        open(&path, |p| std::fs::OpenOptions::new().create(true).append(true).open(p)).unwrap();
+        open(&path, |p| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+        })
+        .unwrap();
         write("connection", "connected to runner 1.2.3");
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.ends_with(" connection connected to runner 1.2.3\n"), "{text}");
-        assert_eq!(text.split(' ').next().map(str::len), Some("00:00:00.000".len()));
+        assert!(
+            text.ends_with(" connection connected to runner 1.2.3\n"),
+            "{text}"
+        );
+        assert_eq!(
+            text.split(' ').next().map(str::len),
+            Some("00:00:00.000".len())
+        );
         // Past the limit the file is moved aside and begun again.
         let big = "x".repeat(1024);
         for _ in 0..(MAX_BYTES / 1024 + 2) {

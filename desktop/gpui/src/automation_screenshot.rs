@@ -1,5 +1,8 @@
 // Encoding the scripted window's pixels, away from the app's thread.
-use image::{codecs::png::{CompressionType, FilterType, PngEncoder}, ImageEncoder, ImageFormat, RgbaImage};
+use image::{
+    codecs::png::{CompressionType, FilterType, PngEncoder},
+    ImageEncoder, ImageFormat, RgbaImage,
+};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -13,7 +16,12 @@ pub(crate) fn save(image: &RgbaImage, path: &Path) -> Result<(), String> {
             // one window (14 Nov), longer than the caller's timeout.
             // Sub keeps all pixels and compresses UI's flat areas well.
             PngEncoder::new_with_quality(&mut encoded, CompressionType::Fast, FilterType::Sub)
-                .write_image(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::Rgba8)?;
+                .write_image(
+                    image.as_raw(),
+                    image.width(),
+                    image.height(),
+                    image::ExtendedColorType::Rgba8,
+                )?;
         } else {
             image.write_to(&mut encoded, format)?;
         }
@@ -31,7 +39,9 @@ mod tests {
     use super::*;
 
     fn pixels() -> RgbaImage {
-        RgbaImage::from_fn(127, 83, |x, y| image::Rgba([x as u8, y as u8, (x * y) as u8, (x + y) as u8]))
+        RgbaImage::from_fn(127, 83, |x, y| {
+            image::Rgba([x as u8, y as u8, (x * y) as u8, (x + y) as u8])
+        })
     }
 
     #[test]
@@ -100,7 +110,10 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         for _ in 0..2 {
             save(&pixels(), &link).unwrap();
-            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert!(std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
             assert_eq!(image::open(&target).unwrap().to_rgba8(), pixels());
         }
     }
@@ -115,7 +128,10 @@ mod tests {
         std::fs::write(&target, b"old image").unwrap();
         std::fs::hard_link(&target, &link).unwrap();
         save(&pixels(), &link).unwrap();
-        assert_eq!(std::fs::metadata(&target).unwrap().ino(), std::fs::metadata(&link).unwrap().ino());
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().ino(),
+            std::fs::metadata(&link).unwrap().ino()
+        );
         assert_eq!(image::open(&target).unwrap().to_rgba8(), pixels());
     }
 }

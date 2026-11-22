@@ -7,7 +7,7 @@ import type { Logger } from './log.ts';
 import { isCliFor } from './stuck-jobs.ts';
 import { IS_WINDOWS } from './platform.ts';
 
-// A CLI frozen on something only a person can answer (docs/protocol.md,
+// A CLI frozen on something only a person can answer (docs/protocol/updates.md,
 // "Frozen CLIs"). On 31 Oct 2026 a phone thread went to Bruce, its command
 // named ~/Documents, and the CLI's main thread sat in open(2) waiting on a
 // macOS privacy dialog nobody was at the Mac to click. The thread looked
@@ -211,7 +211,7 @@ export function parseProcs(text: string): Proc[] {
 // macOS asks about in Threadbear Runner's name: the very prompt this file is
 // looking for. It happened first at 21:54 on 31 Oct 2026, in the unit test of
 // this code that every release build runs, and that prompt then held up every
-// other app on that drive until 06:43 (docs/protocol.md, "A dialog on a Mac's
+// other app on that drive until 06:43 (docs/protocol/updates.md, "A dialog on a Mac's
 // screen"). The sandbox refuses those paths before macOS thinks of asking.
 // The stacks it's after come from the system's own libraries, which it can
 // still read (tried on Bruce, 1 Nov 2026).

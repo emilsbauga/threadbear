@@ -1,9 +1,19 @@
 //! The 100th thread, then each thousand (`ThreadMilestones.swift`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Decision { Nothing, Remember(usize), Show(usize) }
+pub enum Decision {
+    Nothing,
+    Remember(usize),
+    Show(usize),
+}
 
 pub fn decide(count: usize, shown: Option<usize>) -> Decision {
-    let reached = if count >= 1000 { count / 1000 * 1000 } else if count >= 100 { 100 } else { 0 };
+    let reached = if count >= 1000 {
+        count / 1000 * 1000
+    } else if count >= 100 {
+        100
+    } else {
+        0
+    };
     match shown {
         None if reached < 1000 => Decision::Remember(reached),
         None => Decision::Show(reached),
@@ -14,10 +24,14 @@ pub fn decide(count: usize, shown: Option<usize>) -> Decision {
 
 pub fn title(tier: usize) -> String {
     let digits = tier.to_string();
-    let count: String = digits.chars().enumerate().flat_map(|(i, c)| {
-        let comma = i > 0 && (digits.len() - i) % 3 == 0;
-        comma.then_some(',').into_iter().chain(std::iter::once(c))
-    }).collect();
+    let count: String = digits
+        .chars()
+        .enumerate()
+        .flat_map(|(i, c)| {
+            let comma = i > 0 && (digits.len() - i).is_multiple_of(3);
+            comma.then_some(',').into_iter().chain(std::iter::once(c))
+        })
+        .collect();
     format!("That's {count} threads")
 }
 

@@ -240,7 +240,11 @@ a gpui-kit bump copies the new version in and puts that back.
 `desktop/vendor/gpui-base` keeps the input, text and test-support fixes listed
 in `desktop/Cargo.toml`. `desktop/vendor/gpui-pre` is GPUI 0.3.11 with file
 drops leaving keyboard mode before hover hit tests, so dropping after typing
-still works. GPUI exposes no input-mode setter for an app shim. The published
+still works, and with an `img` playing a GIF whether or not its window is the
+key one (upstream froze it on its first frame in a window behind another app's),
+woken at the GIF's own pace rather than drawn at every display frame
+(`desktop/gpui/tests/gif_frames.rs`). GPUI exposes no input-mode setter for an
+app shim. The published
 crates are separate commits from our changes; retain those patches on an
 update, or remove a patch once upstream includes it.
 
@@ -269,7 +273,7 @@ right. Each spec runs against the mock runner, through the app's scripted
 commands, on both apps: the Swift one through `dev-app.sh`, the GPUI one
 through its own debug socket. Then GPUI has to pass the same file.
 
-**The log** (`docs/gpui-port/PARITY.md`) keeps Ghostex's shape, one entry a
+**The log** (`docs/gpui-port/LOG.md`) keeps Ghostex's shape, one entry a
 slice: what changed, files, what's left, plus a `Verification:` line that has
 to be a spec run or a screenshot from a running app. A slice with no runtime
 check doesn't count. The table has one column per system, so Windows and Linux
@@ -373,13 +377,72 @@ Decided: **A, the daily driver first.**
 4. **Cutover** once every Mac row in the parity table passes and Mike's used it
    for two weeks without going back. One last Swift build moves other people
    across: installs Rust if needed, builds the GPUI app, and swaps itself.
-   `app/` and `dock/` then go, once what the GPUI and iPhone apps still
-   use from `app/` (`scripts/swift-freeze.sh` lists it) has moved out.
+   `app/` and `dock/` then go ("Deleting the Swift app", below). What the
+   GPUI and iPhone apps used from `app/` moved out on 21 Nov 2026.
 5. **Windows and Linux get it as releases** once their parity rows pass.
 
 The website and the iPhone app aren't touched. Later, Ghostex's GPUI-in-the-
 browser build might replace `web/`, but it's a separate decision and Ghostex
 itself doesn't draw everything that way yet.
+
+## Deleting the Swift app
+
+Not before 26 Nov 2026 (two weeks of daily use from 12 Nov), and only when
+Mike says go. Nothing outside `app/` and `dock/` uses them but what
+`runner/test/unit/swift-app-paths.test.ts` allows, so the deletion is one
+change.
+
+**What has to be true first**
+
+- The Mac rows that don't pass yet in [PARITY.md](gpui-port/PARITY.md):
+  `dock.titlebar`, `dock.frame`, `sidebar.hibernate.pick`,
+  `terminal.panel`, `terminal.putcommand`, `projects.decisions` (pending)
+  and `composer.contextring` (partly). Each passes, or Mike drops it.
+- People on forks are moved across. Today the Swift app offers it
+  (`app/Sources/Threadbear/NewApp.swift`: a window once and a sidebar card,
+  whose button starts a thread in the checkout that runs
+  `desktop/scripts/switch-from-swift.sh`), and a fork only sees that after
+  bringing in a release with it and its Swift app rebuilding itself. A
+  last Swift build that moves people needs: the offer made unmissable (no
+  Not now; the date the Swift app stops, `NewAppCopy.retirementDate`), the
+  release that deletes `app/` held back until forks have had that one, and
+  `swift_import.rs` still bringing their settings over. A fork that brings
+  in the deletion while still on the Swift app keeps its installed app,
+  which stops updating; `./threadbear setup` then installs the GPUI app.
+
+**What `git rm -r app dock` takes with it**, and what goes in the same
+change:
+
+- check.sh's Swift steps (the release build, `app mock tests`, `app build`
+  and tests, dock tests, `--app`, `--shots`, `swift_needed` and
+  `SWIFT_NEEDS`, about 70 lines), and `scripts/check-remote.sh`'s app/ and
+  dock/ rule.
+- The two Mac jobs in `.github/workflows/xcode-26.yml` (it keeps the iPhone
+  build; its path filter and cache key lose `app/` and `dock/`).
+- `scripts/swift-freeze.sh`, `swift-freeze-pre-commit`, the hook in
+  `.claude/settings.json` and `worktree-setup.sh`, and their test;
+  `scripts/perf-swift*` and its test; `runner/test/unit/dev-app-reap.test.ts`.
+- `@swift-pending` tags and `features/support/swift.ts` in features/, and
+  the Swift column of PARITY.md (`features/parity.mjs`).
+- `docs/screenshots/` (only app/README.md uses it), the `mac` platform in
+  shared/cases, `shared/art/gpui-app.png`, `app` in
+  `runner/src/app-restarts.ts`'s `APP_DIRS`, and the Swift halves of the
+  docs (docs/forking.md's app rows, docs/on-your-mac.md's app/ paths).
+- Later, once nobody can still be moving across: `desktop/gpui/src/swift_import.rs`.
+- Not `runner/src/swift-changes.ts`: forks' own Swift commits still need
+  porting after the folder's gone from Mike's copy.
+
+**Still pointing into app/ until then** (the test's `ALLOWED`, each with
+why): check.sh, xcode-26.yml, swift-freeze.sh and its test, the check tests
+of the Swift steps, `eslint.config.mjs`'s ignore, the top-level `threadbear`
+(hands `restart`, `mock`, `perf` and `stop` to `app/threadbear`), the runner
+launcher's icon (`runner/launcher/build-launcher.sh`, repointed with the
+next launcher change, as a change there rebuilds and re-signs it), the
+Swift specs' driver and motion clips, the site's clips (filmed in the Swift
+app), the fork view's and design review's source checks, the shared cases'
+`mac`, and `tb export`'s fallback for a fork from before the move. The
+guard can't see a few that name `app` without a path after it:
+`app-restarts.ts`, `scripts/perf-swift.pl`, check-remote.sh.
 
 ## Windows runner
 

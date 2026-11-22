@@ -4,7 +4,7 @@
 use serde::Deserialize;
 
 /// A command the palette offers, as `threads.commands` lists it
-/// (docs/protocol.md, "Slash commands").
+/// (docs/protocol/threads.md, "Slash commands").
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SlashCommand {
@@ -40,7 +40,12 @@ pub struct SlashCommand {
 impl SlashCommand {
     /// What to type, with its arguments: "/code-review [low|medium|high] [target]".
     pub fn usage(&self) -> String {
-        match self.argument_hint.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        match self
+            .argument_hint
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+        {
             Some(hint) => format!("/{} {hint}", self.name),
             None => format!("/{}", self.name),
         }
@@ -60,7 +65,12 @@ pub fn decode_commands(value: &serde_json::Value) -> Vec<SlashCommand> {
     value
         .get("commands")
         .and_then(|c| c.as_array())
-        .map(|list| list.iter().filter_map(|c| crate::wire::read::<SlashCommand>(c.clone())).filter(|c| !c.name.is_empty()).collect())
+        .map(|list| {
+            list.iter()
+                .filter_map(|c| crate::wire::read::<SlashCommand>(c.clone()))
+                .filter(|c| !c.name.is_empty())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -76,7 +86,13 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 5] = [Category::All, Category::Threadbear, Category::Cli, Category::Skills, Category::Recent];
+    pub const ALL: [Category; 5] = [
+        Category::All,
+        Category::Threadbear,
+        Category::Cli,
+        Category::Skills,
+        Category::Recent,
+    ];
 
     /// The CLI's own are named after it ("Claude Code", "Codex").
     pub fn title(self, provider: &str) -> String {
@@ -108,7 +124,10 @@ pub fn cli_name(provider: &str) -> String {
         "codex" => "Codex".to_owned(),
         other => {
             let mut chars = other.chars();
-            chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+            chars
+                .next()
+                .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
         }
     }
 }
@@ -142,7 +161,10 @@ impl Typed {
 pub fn typed(text: &str) -> Option<Typed> {
     let word = text.rsplit(char::is_whitespace).next().unwrap_or(text);
     let rest = word.strip_prefix('/')?;
-    (!rest.contains('/')).then(|| Typed { query: rest.to_owned(), start: text.len() - word.len() })
+    (!rest.contains('/')).then(|| Typed {
+        query: rest.to_owned(),
+        start: text.len() - word.len(),
+    })
 }
 
 /// What the palette offers partway through a message: skills the agent can
@@ -150,7 +172,11 @@ pub fn typed(text: &str) -> Option<Typed> {
 /// only run as the start of a message, do nothing there (claude -p, 9 Nov
 /// 2026; `SlashPalette.midMessage`).
 pub fn mid_message(commands: &[SlashCommand]) -> Vec<SlashCommand> {
-    commands.iter().filter(|c| c.is_skill() && c.user_only != Some(true)).cloned().collect()
+    commands
+        .iter()
+        .filter(|c| c.is_skill() && c.user_only != Some(true))
+        .cloned()
+        .collect()
 }
 
 /// Where a command came from, for the detail pane.
@@ -210,7 +236,14 @@ pub fn plain_description(text: &str) -> String {
         match c {
             '`' | '*' => {}
             // Emphasis, but not the middle of a word (snake_case).
-            '_' if text[..i].chars().next_back().is_none_or(|p| !p.is_alphanumeric()) || text[i + 1..].chars().next().is_none_or(|n| !n.is_alphanumeric()) => {}
+            '_' if text[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|p| !p.is_alphanumeric())
+                || text[i + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(|n| !n.is_alphanumeric()) => {}
             '[' => {
                 // [words](url): keep the words if the brackets close and a
                 // link follows.
@@ -251,26 +284,57 @@ pub fn in_category(command: &SlashCommand, category: Category, recent: &[String]
 /// The matches for what's typed: names that start with it first, then names
 /// that contain it, then ones whose description does, each in the runner's
 /// order. Recent is in the order they were used.
-pub fn matches(commands: &[SlashCommand], query: &str, category: Category, recent: &[String]) -> Vec<SlashCommand> {
+pub fn matches(
+    commands: &[SlashCommand],
+    query: &str,
+    category: Category,
+    recent: &[String],
+) -> Vec<SlashCommand> {
     let q = query.to_lowercase();
     let rank = |c: &SlashCommand| -> Option<u8> {
-        if q.is_empty() { return Some(0); }
+        if q.is_empty() {
+            return Some(0);
+        }
         if let Some(title) = &c.title {
-            let normalize = |s: &str| crate::inbox::fold(s).split(|ch: char| !ch.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+            let normalize = |s: &str| {
+                crate::inbox::fold(s)
+                    .split(|ch: char| !ch.is_alphanumeric())
+                    .filter(|w| !w.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
             let query = normalize(query);
             let words: Vec<_> = query.split_whitespace().collect();
             let title_rank = |s: &str| -> Option<u8> {
                 let s = normalize(s);
-                if s == query { Some(0) }
-                else if s.starts_with(&query) { Some(10) }
-                else if words.iter().all(|w| s.split_whitespace().any(|v| v.starts_with(w))) { Some(20) }
-                else if s.contains(&query) { Some(30) }
-                else if words.iter().all(|w| s.contains(w)) { Some(40) }
-                else { None }
+                if s == query {
+                    Some(0)
+                } else if s.starts_with(&query) {
+                    Some(10)
+                } else if words
+                    .iter()
+                    .all(|w| s.split_whitespace().any(|v| v.starts_with(w)))
+                {
+                    Some(20)
+                } else if s.contains(&query) {
+                    Some(30)
+                } else if words.iter().all(|w| s.contains(w)) {
+                    Some(40)
+                } else {
+                    None
+                }
             };
-            if let Some(r) = title_rank(title) { return Some(r); }
-            if let Some(r) = title_rank(&c.name) { return Some(50 + r); }
-            let all = normalize(&format!("{title} {} {}", c.name, c.description.as_deref().unwrap_or("")));
+            if let Some(r) = title_rank(title) {
+                return Some(r);
+            }
+            if let Some(r) = title_rank(&c.name) {
+                return Some(50 + r);
+            }
+            let all = normalize(&format!(
+                "{title} {} {}",
+                c.name,
+                c.description.as_deref().unwrap_or("")
+            ));
             return words.iter().all(|w| all.contains(w)).then_some(100);
         }
         let name = c.name.to_lowercase();
@@ -278,7 +342,11 @@ pub fn matches(commands: &[SlashCommand], query: &str, category: Category, recen
             Some(50)
         } else if name.contains(&q) {
             Some(51)
-        } else if c.description.as_deref().is_some_and(|d| d.to_lowercase().contains(&q)) {
+        } else if c
+            .description
+            .as_deref()
+            .is_some_and(|d| d.to_lowercase().contains(&q))
+        {
             Some(100)
         } else {
             None
@@ -289,19 +357,29 @@ pub fn matches(commands: &[SlashCommand], query: &str, category: Category, recen
         .filter(|c| in_category(c, category, recent))
         .enumerate()
         .filter_map(|(i, c)| rank(c).map(|r| (r, i, c)))
-        .map(|(r, i, c)| if category == Category::Recent { (r, recent.iter().position(|n| n == &c.name).unwrap_or(i), c) } else { (r, i, c) })
+        .map(|(r, i, c)| {
+            if category == Category::Recent {
+                (r, recent.iter().position(|n| n == &c.name).unwrap_or(i), c)
+            } else {
+                (r, i, c)
+            }
+        })
         .collect();
     ranked.sort_by(|(ra, ia, a), (rb, ib, b)| {
         ra.cmp(rb).then_with(|| {
-            if category == Category::Recent { return ia.cmp(ib); }
+            if category == Category::Recent {
+                return ia.cmp(ib);
+            }
             // Keep ordinary commands in their runner order, and sort equally
             // ranked skill titles as the original skills picker did.
-            (a.title.is_some() as u8).cmp(&(b.title.is_some() as u8)).then_with(|| {
-                match (&a.title, &b.title) {
+            (a.title.is_some() as u8)
+                .cmp(&(b.title.is_some() as u8))
+                .then_with(|| match (&a.title, &b.title) {
                     (Some(a), Some(b)) => crate::inbox::fold(a).cmp(&crate::inbox::fold(b)),
                     _ => ia.cmp(ib),
-                }
-            }).then_with(|| a.path.cmp(&b.path)).then_with(|| ia.cmp(ib))
+                })
+                .then_with(|| a.path.cmp(&b.path))
+                .then_with(|| ia.cmp(ib))
         })
     });
     ranked.into_iter().map(|(_, _, c)| c.clone()).collect()
@@ -340,9 +418,21 @@ pub fn used(name: &str, recent: &[String]) -> Vec<String> {
 /// entry whole. The detail gets the rest, never less than `detail_min`.
 /// `chosen`: Mike dragged the list to that width, so it isn't held to half of
 /// what's left (only to leaving the detail its least).
-pub fn column_widths(total: f64, categories: f64, list: f64, chosen: bool, detail_min: f64, list_min: f64, categories_min: f64) -> (f64, f64) {
+pub fn column_widths(
+    total: f64,
+    categories: f64,
+    list: f64,
+    chosen: bool,
+    detail_min: f64,
+    list_min: f64,
+    categories_min: f64,
+) -> (f64, f64) {
     let mut cats = categories;
-    let mut lst = if chosen { list.max(list_min) } else { list.min(list_min.max((total - cats) / 2.)) };
+    let mut lst = if chosen {
+        list.max(list_min)
+    } else {
+        list.min(list_min.max((total - cats) / 2.))
+    };
     let over = cats + lst + detail_min - total;
     if over > 0. {
         lst = list_min.max(lst - over);
@@ -479,8 +569,16 @@ pub struct PaletteState {
 /// What a palette key does (`SlashPaletteView.handle`): moves the pick, or
 /// gives the command to fill in (Tab) or run (Return). `None`: nothing more
 /// to do, the state changed or the key wasn't one that picks.
-pub fn handle_key(key: PaletteKey, matches: &[SlashCommand], state: &mut PaletteState, text: &str) -> Option<(SlashCommand, bool)> {
-    let index = matches.iter().position(|c| Some(c.name.as_str()) == state.selected.as_deref()).unwrap_or(0);
+pub fn handle_key(
+    key: PaletteKey,
+    matches: &[SlashCommand],
+    state: &mut PaletteState,
+    text: &str,
+) -> Option<(SlashCommand, bool)> {
+    let index = matches
+        .iter()
+        .position(|c| Some(c.name.as_str()) == state.selected.as_deref())
+        .unwrap_or(0);
     match key {
         PaletteKey::Up => {
             if !matches.is_empty() {
@@ -498,13 +596,18 @@ pub fn handle_key(key: PaletteKey, matches: &[SlashCommand], state: &mut Palette
             state.closed_at = Some(text.to_owned());
             None
         }
-        PaletteKey::Tab | PaletteKey::Enter => matches.get(index).map(|c| (c.clone(), key == PaletteKey::Enter)),
+        PaletteKey::Tab | PaletteKey::Enter => matches
+            .get(index)
+            .map(|c| (c.clone(), key == PaletteKey::Enter)),
     }
 }
 
 /// The picked command: the one selected if it's still listed, else the first.
 pub fn picked<'a>(matches: &'a [SlashCommand], state: &PaletteState) -> Option<&'a SlashCommand> {
-    matches.iter().find(|c| Some(c.name.as_str()) == state.selected.as_deref()).or_else(|| matches.first())
+    matches
+        .iter()
+        .find(|c| Some(c.name.as_str()) == state.selected.as_deref())
+        .or_else(|| matches.first())
 }
 
 #[cfg(test)]
@@ -528,21 +631,45 @@ mod tests {
 
     #[test]
     fn a_command_can_be_typed_partway_through_a_message() {
-        assert_eq!(typed("/co"), Some(Typed { query: "co".into(), start: 0 }));
+        assert_eq!(
+            typed("/co"),
+            Some(Typed {
+                query: "co".into(),
+                start: 0
+            })
+        );
         let mid = typed("then use /de").unwrap();
-        assert_eq!((mid.query.as_str(), mid.start, mid.mid_message()), ("de", 9, true));
-        assert_eq!(typed("first line\n/sh").map(|t| t.start), Some(11), "after a line break");
+        assert_eq!(
+            (mid.query.as_str(), mid.start, mid.mid_message()),
+            ("de", 9, true)
+        );
+        assert_eq!(
+            typed("first line\n/sh").map(|t| t.start),
+            Some(11),
+            "after a line break"
+        );
         assert_eq!(typed("the /tmp/ folder"), None, "a space after it ends it");
         assert_eq!(typed("look in /Users/alex"), None, "a path isn't a command");
         assert_eq!(typed("a/b"), None, "a slash inside a word");
         assert_eq!(typed("just words"), None);
-        assert_eq!(typed("é then /x").map(|t| t.start), Some(8), "bytes, as the box counts");
+        assert_eq!(
+            typed("é then /x").map(|t| t.start),
+            Some(8),
+            "bytes, as the box counts"
+        );
         // Only skills the agent can run there.
         let mut list = commands();
-        list.push(SlashCommand { name: "start-only".into(), source: "skill".into(), user_only: Some(true), ..Default::default() });
+        list.push(SlashCommand {
+            name: "start-only".into(),
+            source: "skill".into(),
+            user_only: Some(true),
+            ..Default::default()
+        });
         let names: Vec<String> = mid_message(&list).into_iter().map(|c| c.name).collect();
         assert_eq!(names, ["code-review", "deslop", "ship"]);
-        let user_only = decode_commands(&json!({ "commands": [{ "name": "x", "source": "skill", "userOnly": true }] }));
+        let user_only = decode_commands(
+            &json!({ "commands": [{ "name": "x", "source": "skill", "userOnly": true }] }),
+        );
         assert_eq!(user_only[0].user_only, Some(true));
     }
 
@@ -569,7 +696,17 @@ mod tests {
         let rows = matches(&commands(), "co", Category::All, &[]);
         let names: Vec<&str> = rows.iter().map(|c| c.name.as_str()).collect();
         // Clear's and deslop's descriptions have "co" in them, so they follow.
-        assert_eq!(names, vec!["compact", "context", "cost", "code-review", "clear", "deslop"]);
+        assert_eq!(
+            names,
+            vec![
+                "compact",
+                "context",
+                "cost",
+                "code-review",
+                "clear",
+                "deslop"
+            ]
+        );
     }
 
     #[test]
@@ -586,8 +723,20 @@ mod tests {
         let all = commands();
         let recent = vec!["ship".to_owned()];
         let counts = counts(&all, "", &recent);
-        let by_title: Vec<(String, usize)> = counts.iter().map(|(c, n)| (c.title("claude"), *n)).collect();
-        assert_eq!(by_title, vec![("All".into(), 8), ("Threadbear".into(), 1), ("Claude Code".into(), 4), ("Skills".into(), 3), ("Recent".into(), 1)]);
+        let by_title: Vec<(String, usize)> = counts
+            .iter()
+            .map(|(c, n)| (c.title("claude"), *n))
+            .collect();
+        assert_eq!(
+            by_title,
+            vec![
+                ("All".into(), 8),
+                ("Threadbear".into(), 1),
+                ("Claude Code".into(), 4),
+                ("Skills".into(), 3),
+                ("Recent".into(), 1)
+            ]
+        );
     }
 
     #[test]
@@ -623,7 +772,10 @@ mod tests {
     #[test]
     fn origins_say_where_a_command_is_from() {
         let all = commands();
-        assert_eq!(origin(&all[0], "claude"), "Threadbear's own: it changes this thread's settings");
+        assert_eq!(
+            origin(&all[0], "claude"),
+            "Threadbear's own: it changes this thread's settings"
+        );
         assert_eq!(origin(&all[1], "claude"), "Claude Code's own");
         assert_eq!(origin(&all[1], "codex"), "Codex's own");
         assert_eq!(origin(&all[5], "claude"), "Your skill");
@@ -633,17 +785,35 @@ mod tests {
 
     #[test]
     fn descriptions_lose_their_marks_and_links() {
-        assert_eq!(plain_description("Drive Mac apps with the `computercub` command."), "Drive Mac apps with the computercub command.");
-        assert_eq!(plain_description("**Bold** and *italic* and _emphasis_."), "Bold and italic and emphasis.");
-        assert_eq!(plain_description("See [the docs](https://example.com/x) for more."), "See the docs for more.");
-        assert_eq!(plain_description("A [link](file:///bin/sh) and snake_case stays"), "A link and snake_case stays");
+        assert_eq!(
+            plain_description("Drive Mac apps with the `computercub` command."),
+            "Drive Mac apps with the computercub command."
+        );
+        assert_eq!(
+            plain_description("**Bold** and *italic* and _emphasis_."),
+            "Bold and italic and emphasis."
+        );
+        assert_eq!(
+            plain_description("See [the docs](https://example.com/x) for more."),
+            "See the docs for more."
+        );
+        assert_eq!(
+            plain_description("A [link](file:///bin/sh) and snake_case stays"),
+            "A link and snake_case stays"
+        );
         // Not links, as written.
-        assert_eq!(plain_description("[not a link] and a stray ] bracket"), "[not a link] and a stray ] bracket");
+        assert_eq!(
+            plain_description("[not a link] and a stray ] bracket"),
+            "[not a link] and a stray ] bracket"
+        );
     }
 
     #[test]
     fn short_paths_use_a_tilde() {
-        assert_eq!(short_path("/home/alex/.claude/x", "/home/alex"), "~/.claude/x");
+        assert_eq!(
+            short_path("/home/alex/.claude/x", "/home/alex"),
+            "~/.claude/x"
+        );
         assert_eq!(short_path("/opt/x", "/home/alex"), "/opt/x");
     }
 
@@ -704,14 +874,20 @@ mod tests {
     fn escape_closes_it_at_this_text() {
         let list = matches(&commands(), "", Category::All, &[]);
         let mut state = PaletteState::default();
-        assert_eq!(handle_key(PaletteKey::Escape, &list, &mut state, "/mo"), None);
+        assert_eq!(
+            handle_key(PaletteKey::Escape, &list, &mut state, "/mo"),
+            None
+        );
         assert_eq!(state.closed_at.as_deref(), Some("/mo"));
     }
 
     #[test]
     fn the_pick_falls_back_to_the_first_row() {
         let list = matches(&commands(), "", Category::All, &[]);
-        let mut state = PaletteState { selected: Some("nope".to_owned()), ..Default::default() };
+        let mut state = PaletteState {
+            selected: Some("nope".to_owned()),
+            ..Default::default()
+        };
         assert_eq!(picked(&list, &state).unwrap().name, "model");
         state.selected = Some("ship".to_owned());
         assert_eq!(picked(&list, &state).unwrap().name, "ship");
@@ -719,9 +895,21 @@ mod tests {
 
     #[test]
     fn a_dragged_palette_keeps_to_the_window() {
-        assert_eq!(PaletteLayout::height_in(100., 900.), 220., "never under 220");
-        assert_eq!(PaletteLayout::height_in(2000., 900.), 765., "never over 85% of the window");
-        assert_eq!(PaletteLayout::height_in(400., 200.), 220., "220 even in a short window");
+        assert_eq!(
+            PaletteLayout::height_in(100., 900.),
+            220.,
+            "never under 220"
+        );
+        assert_eq!(
+            PaletteLayout::height_in(2000., 900.),
+            765.,
+            "never over 85% of the window"
+        );
+        assert_eq!(
+            PaletteLayout::height_in(400., 200.),
+            220.,
+            "220 even in a short window"
+        );
         assert_eq!(PaletteLayout::width_in(300., 1200.), 480.);
         assert_eq!(PaletteLayout::width_in(2000., 1200.), 1120.);
         // A window narrower than 480 and its margins: 8 in from each side, as
@@ -730,7 +918,11 @@ mod tests {
         assert_eq!(PaletteLayout::width_in(300., 420.), 404.);
         assert_eq!(PaletteLayout::width_in(500., 520.), 480.);
         assert_eq!(PaletteLayout::column(50., 110., 400., 900.), 110.);
-        assert_eq!(PaletteLayout::column(700., 110., 400., 900.), 500., "leaving the others theirs");
+        assert_eq!(
+            PaletteLayout::column(700., 110., 400., 900.),
+            500.,
+            "leaving the others theirs"
+        );
     }
 
     #[test]
@@ -738,14 +930,159 @@ mod tests {
         let start = (600., 300.);
         // Up 40 (y goes down the screen) and right 25.
         assert_eq!(PaletteEdge::Top.resized(start, 25., -40.), (600., 340.));
-        assert_eq!(PaletteEdge::Trailing.resized(start, 25., -40.), (650., 300.), "a side grows both sides at once");
+        assert_eq!(
+            PaletteEdge::Trailing.resized(start, 25., -40.),
+            (650., 300.),
+            "a side grows both sides at once"
+        );
         assert_eq!(PaletteEdge::Leading.resized(start, 25., -40.), (550., 300.));
-        assert_eq!(PaletteEdge::TopLeading.resized(start, -10., -40.), (620., 340.));
-        let kept = PaletteEdge::Top.kept(PaletteLayout { width: Some(500.), ..PaletteLayout::default() }, (600., 340.));
-        assert_eq!((kept.width, kept.height), (Some(500.), Some(340.)), "the top keeps the height alone");
+        assert_eq!(
+            PaletteEdge::TopLeading.resized(start, -10., -40.),
+            (620., 340.)
+        );
+        let kept = PaletteEdge::Top.kept(
+            PaletteLayout {
+                width: Some(500.),
+                ..PaletteLayout::default()
+            },
+            (600., 340.),
+        );
+        assert_eq!(
+            (kept.width, kept.height),
+            (Some(500.), Some(340.)),
+            "the top keeps the height alone"
+        );
         let kept = PaletteEdge::Trailing.kept(PaletteLayout::default(), (650., 300.));
         assert_eq!((kept.width, kept.height), (Some(650.), None));
         let kept = PaletteEdge::TopTrailing.kept(PaletteLayout::default(), (650., 340.));
         assert_eq!((kept.width, kept.height), (Some(650.), Some(340.)));
+    }
+
+    fn shared_cases(path: &str) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// The palette's rules against the cases the iPhone and Android run too
+    /// (`shared/cases/slash-commands.json`).
+    #[test]
+    fn the_shared_cases() {
+        let file = shared_cases(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../shared/cases/slash-commands.json"
+        ));
+        let read = |v: &serde_json::Value| decode_commands(&json!({ "commands": v }));
+        let names = |l: Vec<SlashCommand>| json!(l.into_iter().map(|c| c.name).collect::<Vec<_>>());
+        let id = |c: Category| match c {
+            Category::All => "all",
+            Category::Threadbear => "threadbear",
+            Category::Cli => "cli",
+            Category::Skills => "skills",
+            Category::Recent => "recent",
+        };
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() > 50);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            if case["differs"].get("desktop").is_some() {
+                continue;
+            }
+            let i = &case["input"];
+            let text = i["text"].as_str().unwrap_or_default();
+            let q = i["query"].as_str().unwrap_or_default();
+            let provider = i["provider"].as_str().unwrap_or_default();
+            let list = i["list"]
+                .as_str()
+                .map(|l| read(&file["lists"][l]))
+                .unwrap_or_default();
+            let recent: Vec<String> = i["recent"]
+                .as_array()
+                .map(|r| {
+                    r.iter()
+                        .filter_map(|n| n.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let command = read(&json!([i["command"]])).pop();
+            let category = Category::ALL
+                .into_iter()
+                .find(|c| Some(id(*c)) == i["category"].as_str())
+                .unwrap_or_default();
+            let actual =
+                match i["op"].as_str().unwrap() {
+                    "query" => json!(query(text)),
+                    "typed" => json!(typed(text)
+                        .map(|t| json!({ "query": t.query, "before": &text[..t.start] }))),
+                    "midMessage" => names(mid_message(&list)),
+                    "matches" => names(matches(&list, q, category, &recent)),
+                    "counts" => json!(counts(&list, q, &recent)
+                        .into_iter()
+                        .map(|(c, n)| json!([id(c), n]))
+                        .collect::<Vec<_>>()),
+                    "usage" => json!(command.as_ref().unwrap().usage()),
+                    "fill" => json!(fill(
+                        command.as_ref().unwrap(),
+                        i["forArguments"].as_bool() == Some(true)
+                    )),
+                    "origin" => json!(origin(command.as_ref().unwrap(), provider)),
+                    "cliTitle" => json!(Category::Cli.title(provider)),
+                    "shortPath" => json!(short_path(
+                        i["path"].as_str().unwrap(),
+                        i["home"].as_str().unwrap()
+                    )),
+                    "used" => json!(used(i["name"].as_str().unwrap(), &recent)),
+                    "description" => json!(plain_description(text)),
+                    op => panic!("unknown op {op} in {name}"),
+                };
+            assert_eq!(actual, case["expect"], "{name}");
+        }
+    }
+
+    /// The palette's columns and sizes (`shared/cases/slash-palette-layout.json`),
+    /// which the iPhone kit's copy of the Swift rules runs too.
+    #[test]
+    fn the_shared_layout_cases() {
+        let file = shared_cases(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../shared/cases/slash-palette-layout.json"
+        ));
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() > 20);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            if case["differs"].get("desktop").is_some() {
+                continue;
+            }
+            let i = &case["input"];
+            let n = |k: &str| i[k].as_f64().unwrap();
+            let e = &case["expect"];
+            let actual = match i["op"].as_str().unwrap() {
+                "columnWidths" => {
+                    let (cats, list) = column_widths(
+                        n("total"),
+                        n("categories"),
+                        n("list"),
+                        i["chosen"].as_bool() == Some(true),
+                        200.,
+                        120.,
+                        110.,
+                    );
+                    assert_eq!(
+                        (cats, list),
+                        (
+                            e["categories"].as_f64().unwrap(),
+                            e["list"].as_f64().unwrap()
+                        ),
+                        "{name}"
+                    );
+                    continue;
+                }
+                "height" => palette_height(n("window"), 300., 560.),
+                "layoutHeight" => PaletteLayout::height_in(n("value"), n("window")),
+                "layoutWidth" => PaletteLayout::width_in(n("value"), n("window")),
+                "column" => PaletteLayout::column(n("value"), n("least"), n("others"), n("total")),
+                op => panic!("unknown op {op} in {name}"),
+            };
+            assert_eq!(actual, e.as_f64().unwrap(), "{name}");
+        }
     }
 }

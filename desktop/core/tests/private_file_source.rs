@@ -7,7 +7,13 @@
 use std::path::{Path, PathBuf};
 
 /// What creates or writes a file, or changes its permissions, directly.
-const WRITERS: &[&str] = &["fs::write(", "File::create(", "OpenOptions::new(", "set_permissions(", "DirBuilder::new("];
+const WRITERS: &[&str] = &[
+    "fs::write(",
+    "File::create(",
+    "OpenOptions::new(",
+    "set_permissions(",
+    "DirBuilder::new(",
+];
 
 /// Whole files let off:
 /// - the helper itself;
@@ -41,21 +47,50 @@ const ALLOWED: &[&str] = &[
 /// - BrowserBear's tabs.json opened to read only, non-blocking so a pipe
 ///   put there can't hold the read (`agent_browser.rs`, `read_tabs`).
 const ALLOWED_LINES: &[(&str, &str, usize)] = &[
-    ("core/src/local_preview.rs", "let mut options = std::fs::OpenOptions::new();", 1),
-    ("gpui/src/web_runtime.rs", "std::fs::write(path, &png).map_err(|e| format!(\"couldn't save the picture: {e}\"))?;", 1),
-    ("gpui/src/automation_screenshot.rs", "std::fs::write(path, encoded.into_inner())?;", 1),
-    ("core/src/open_policy.rs", "let mut options = std::fs::OpenOptions::new();", 1),
-    ("core/src/open_policy.rs", "{ std::fs::OpenOptions::new().write(true).open(path) }", 1),
-    ("gpui/src/agent_browser.rs", "let mut open = std::fs::OpenOptions::new();", 1),
+    (
+        "core/src/local_preview.rs",
+        "let mut options = std::fs::OpenOptions::new();",
+        1,
+    ),
+    (
+        "gpui/src/web_runtime.rs",
+        "std::fs::write(path, &png).map_err(|e| format!(\"couldn't save the picture: {e}\"))?;",
+        1,
+    ),
+    (
+        "gpui/src/automation_screenshot.rs",
+        "std::fs::write(path, encoded.into_inner())?;",
+        1,
+    ),
+    (
+        "core/src/open_policy.rs",
+        "let mut options = std::fs::OpenOptions::new();",
+        1,
+    ),
+    (
+        "core/src/open_policy.rs",
+        "std::fs::OpenOptions::new().write(true).open(path)",
+        1,
+    ),
+    (
+        "gpui/src/agent_browser.rs",
+        "let mut open = std::fs::OpenOptions::new();",
+        1,
+    ),
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             // Test folders write fixtures as they like.
-            if path.file_name().is_some_and(|n| n == "target" || n == "golden" || n == "tests") {
+            if path
+                .file_name()
+                .is_some_and(|n| n == "target" || n == "golden" || n == "tests")
+            {
                 continue;
             }
             rust_files(&path, out);
@@ -67,16 +102,26 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn every_file_is_written_through_private_file() {
-    let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_owned();
+    let desktop = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_owned();
     let mut files = Vec::new();
     for crate_dir in ["gpui/src", "dock/src", "client/src", "core/src", "web/src"] {
         rust_files(&desktop.join(crate_dir), &mut files);
     }
-    assert!(files.iter().any(|f| f.ends_with("gpui/src/drafts.rs")), "the drafts weren't found, so this test isn't looking in the right place");
+    assert!(
+        files.iter().any(|f| f.ends_with("gpui/src/drafts.rs")),
+        "the drafts weren't found, so this test isn't looking in the right place"
+    );
     let mut found = Vec::new();
     let mut allowed_seen = vec![0; ALLOWED_LINES.len()];
     for file in &files {
-        let rel = file.strip_prefix(&desktop).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = file
+            .strip_prefix(&desktop)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         if ALLOWED.contains(&rel.as_str()) {
             continue;
         }
@@ -98,7 +143,10 @@ fn every_file_is_written_through_private_file() {
             if trimmed.starts_with("//") {
                 continue;
             }
-            if let Some(i) = ALLOWED_LINES.iter().position(|(f, l, _)| *f == rel && trimmed == *l) {
+            if let Some(i) = ALLOWED_LINES
+                .iter()
+                .position(|(f, l, _)| *f == rel && trimmed == *l)
+            {
                 allowed_seen[i] += 1;
                 continue;
             }
@@ -109,7 +157,11 @@ fn every_file_is_written_through_private_file() {
             }
         }
     }
-    assert!(found.is_empty(), "write files through threadbear_core::private_file, not directly:\n{}", found.join("\n"));
+    assert!(
+        found.is_empty(),
+        "write files through threadbear_core::private_file, not directly:\n{}",
+        found.join("\n")
+    );
     for ((file, line, times), seen) in ALLOWED_LINES.iter().zip(allowed_seen) {
         assert_eq!(seen, *times, "{file} should have `{line}` {times} time(s): if it has moved or changed, say why it's safe and change ALLOWED_LINES");
     }

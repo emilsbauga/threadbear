@@ -1,4 +1,4 @@
-// Full sync's bodies (src/full-sync.ts, sync.ts; docs/full-convex.md step 4): what
+// Full sync's bodies (src/full-sync.ts, sync.ts; docs/archive/full-convex.md step 4): what
 // goes up when a tool finishes, and that with `sync.full` off nothing does.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -469,7 +469,7 @@ export class UsageStore {
     }
   }
 
-  // A draining runner (docs/protocol.md, "Handovers") keeps readings in
+  // A draining runner (docs/protocol/updates.md, "Handovers") keeps readings in
   // memory only; usage.json is the new runner's to write.
   stopWriting(): void {
     this.writes = false;

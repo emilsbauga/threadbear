@@ -1,5 +1,5 @@
 // Helper threads with nothing for Alex keep out of his inbox
-// (runner/quiet-inbox.ts; docs/protocol.md, "A quiet inbox").
+// (runner/quiet-inbox.ts; docs/protocol/threads.md, "A quiet inbox").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

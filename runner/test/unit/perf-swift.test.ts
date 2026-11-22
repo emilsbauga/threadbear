@@ -24,7 +24,7 @@ function alive(pid: number) {
 function fixture(t: TestContext, { perf = true, tmpFallback = false } = {}) {
   const home = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "tb-swift's $& test-"));
   const repo = path.join(home, 'repo');
-  for (const dir of ['features/support', 'scripts/perf-swift-bin', 'app/Tools/mock-runner', 'bin']) fs.mkdirSync(path.join(repo, dir), { recursive: true });
+  for (const dir of ['features/support', 'scripts/perf-swift-bin', 'app/Tools', 'mock-runner', 'bin']) fs.mkdirSync(path.join(repo, dir), { recursive: true });
   // Stand-in for LaunchServices. Never call the host's real open command.
   fs.writeFileSync(path.join(repo, 'bin/open'), `#!/usr/bin/perl
 use POSIX;
@@ -65,7 +65,7 @@ if [[ " $* " = *' lstart= '* ]] && [ -e "$HOME/slow-ps" ]; then
 fi
 exec /bin/ps "$@"
 `, { mode: 0o755 });
-  fs.writeFileSync(path.join(repo, 'app/Tools/mock-runner/server.mjs'), `import fs from 'node:fs'; fs.writeFileSync(process.env.HOME+'/mock.pid', String(process.pid)); fs.appendFileSync(process.env.HOME+'/all-mock.pids', process.pid+'\\n'); process.on('SIGTERM', ()=>{}); setInterval(()=>{},1000);`);
+  fs.writeFileSync(path.join(repo, 'mock-runner/server.mjs'), `import fs from 'node:fs'; fs.writeFileSync(process.env.HOME+'/mock.pid', String(process.pid)); fs.appendFileSync(process.env.HOME+'/all-mock.pids', process.pid+'\\n'); process.on('SIGTERM', ()=>{}); setInterval(()=>{},1000);`);
   fs.writeFileSync(path.join(repo, 'app/Tools/dev-app.sh'), `#!/bin/bash
 set -eu
 echo $$ >>"$HOME/all-launcher.pids"
@@ -93,7 +93,7 @@ APP
 chmod +x "$dir/Threadbear.app/Contents/MacOS/Threadbear"
 touch "$HOME/before-mock"
 while [ "\u0024{GAP:-}" = mock ] && [ ! -e "$HOME/proceed" ]; do sleep .02; done
-/usr/bin/perl -MPOSIX -e 'my $pid=fork(); die $! unless defined $pid; exit 0 if $pid; POSIX::setsid(); exec @ARGV or die $!;' "$THREADBEAR_NODE" "$(dirname "$0")/mock-runner/server.mjs" --data-dir "$dir/data" </dev/null >"$dir/mock.log" 2>&1
+/usr/bin/perl -MPOSIX -e 'my $pid=fork(); die $! unless defined $pid; exit 0 if $pid; POSIX::setsid(); exec @ARGV or die $!;' "$THREADBEAR_NODE" "$(dirname "$0")/../../mock-runner/server.mjs" --data-dir "$dir/data" </dev/null >"$dir/mock.log" 2>&1
 touch "$HOME/before-app"
 while [ "\u0024{GAP:-}" = app ] && [ ! -e "$HOME/proceed" ]; do sleep .02; done
 open -g -n --env 'BROWSERBEAR_HOME=private browser home' -a "$dir/Threadbear.app" --stdout "$dir/app.stdout" --stderr "$dir/app.stderr" --args --data-dir "$dir/data" --automation-id "$id" --test-owner "$HOME" 'argument with spaces'

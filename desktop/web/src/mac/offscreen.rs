@@ -33,7 +33,9 @@ impl Shared {
     /// A frame Chromium painted: the one waited for, if it's that size (a
     /// pixel either way, for a scale that doesn't come out whole).
     fn paint(&self, width: i32, height: i32) {
-        let Ok(mut waiting) = self.painted.lock() else { return };
+        let Ok(mut waiting) = self.painted.lock() else {
+            return;
+        };
         if let Some(((w, h), _)) = waiting.as_ref() {
             if (width - w).abs() <= 1 && (height - h).abs() <= 1 {
                 if let Some((_, tx)) = waiting.take() {
@@ -45,7 +47,11 @@ impl Shared {
 
     fn fail_all(&self, why: &str) {
         self.gone.store(true, Ordering::Release);
-        let calls: Vec<_> = self.calls.lock().map(|mut c| c.drain().map(|(_, tx)| tx).collect()).unwrap_or_default();
+        let calls: Vec<_> = self
+            .calls
+            .lock()
+            .map(|mut c| c.drain().map(|(_, tx)| tx).collect())
+            .unwrap_or_default();
         for tx in calls {
             let _ = tx.send(Err(why.to_owned()));
         }
@@ -102,9 +108,16 @@ impl Offscreen {
             gone: AtomicBool::new(false),
         });
         let stopped = shared.clone();
-        let guard = sealed::Guard { allowed: shared.allowed.clone(), on_stop: Arc::new(move || stopped.fail_all("its page stopped")) };
+        let guard = sealed::Guard {
+            allowed: shared.allowed.clone(),
+            on_stop: Arc::new(move || stopped.fail_all("its page stopped")),
+        };
         let window_info = WindowInfo::default().set_as_windowless(std::ptr::null_mut());
-        let off = if options.javascript { State::ENABLED } else { State::DISABLED };
+        let off = if options.javascript {
+            State::ENABLED
+        } else {
+            State::DISABLED
+        };
         let settings = BrowserSettings {
             // Enough to settle a layout quickly; nothing here animates.
             windowless_frame_rate: 30,
@@ -129,12 +142,27 @@ impl Offscreen {
             sealed::NoMenu::new(),
             sealed::NoDownloads::new(),
         );
-        let browser = browser_host_create_browser_sync(Some(&window_info), Some(&mut client), Some(&CefString::from(url)), Some(&settings), None, Some(&mut context))
-            .ok_or("Chromium didn't make the page")?;
+        let browser = browser_host_create_browser_sync(
+            Some(&window_info),
+            Some(&mut client),
+            Some(&CefString::from(url)),
+            Some(&settings),
+            None,
+            Some(&mut context),
+        )
+        .ok_or("Chromium didn't make the page")?;
         let host = browser.host().ok_or("the page has no host")?;
         let mut observer = Answers::new(shared.clone());
         let registration = host.add_dev_tools_message_observer(Some(&mut observer));
-        Ok((Offscreen { browser, shared, next: AtomicI32::new(1), _observer: registration }, load))
+        Ok((
+            Offscreen {
+                browser,
+                shared,
+                next: AtomicI32::new(1),
+                _observer: registration,
+            },
+            load,
+        ))
     }
 
     /// A DevTools method on the page (chromedevtools.github.io/devtools-protocol),
@@ -150,9 +178,19 @@ impl Offscreen {
             calls.insert(id, tx);
         }
         let message = json!({ "id": id, "method": method, "params": params }).to_string();
-        let sent = self.browser.host().map(|h| h.send_dev_tools_message(Some(message.as_bytes()))).unwrap_or(0);
+        let sent = self
+            .browser
+            .host()
+            .map(|h| h.send_dev_tools_message(Some(message.as_bytes())))
+            .unwrap_or(0);
         if sent != 1 {
-            if let Some(tx) = self.shared.calls.lock().ok().and_then(|mut c| c.remove(&id)) {
+            if let Some(tx) = self
+                .shared
+                .calls
+                .lock()
+                .ok()
+                .and_then(|mut c| c.remove(&id))
+            {
                 let _ = tx.send(Err(format!("DevTools didn't take {method}")));
             }
         }
@@ -177,11 +215,19 @@ impl Offscreen {
     pub fn resize_and_paint(&self, width: i32, height: i32, scale: f32) -> Reply<()> {
         let (width, height, scale) = (width.max(1), height.max(1), scale.max(0.1));
         let (tx, rx) = oneshot::channel();
-        let expected = ((width as f32 * scale).round() as i32, (height as f32 * scale).round() as i32);
+        let expected = (
+            (width as f32 * scale).round() as i32,
+            (height as f32 * scale).round() as i32,
+        );
         if let Ok(mut waiting) = self.shared.painted.lock() {
             *waiting = Some((expected, tx));
         }
-        let scale_changed = self.shared.scale.lock().map(|mut s| std::mem::replace(&mut *s, scale) != scale).unwrap_or(false);
+        let scale_changed = self
+            .shared
+            .scale
+            .lock()
+            .map(|mut s| std::mem::replace(&mut *s, scale) != scale)
+            .unwrap_or(false);
         if let Ok(mut size) = self.shared.size.lock() {
             *size = (width, height);
         }
@@ -233,7 +279,12 @@ pub async fn picture(page: &Offscreen, width: f64, height: f64) -> Result<Vec<u8
 
 /// The same, at `scale` of the page's own (below 1 for a big one), taking in
 /// what lies beyond the view as well.
-pub(crate) async fn picture_scaled(page: &Offscreen, width: f64, height: f64, scale: f64) -> Result<Vec<u8>, String> {
+pub(crate) async fn picture_scaled(
+    page: &Offscreen,
+    width: f64,
+    height: f64,
+    scale: f64,
+) -> Result<Vec<u8>, String> {
     let shot = page
         .devtools("Page.captureScreenshot", json!({ "format": "png", "fromSurface": true, "captureBeyondViewport": true, "clip": { "x": 0, "y": 0, "width": width, "height": height, "scale": scale } }))
         .await
@@ -247,11 +298,21 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
         out.push(ALPHABET[(n >> 18) as usize & 63] as char);
         out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -279,7 +340,10 @@ fn base64(text: &str) -> Option<Vec<u8>> {
         }
     }
     let bytes: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    let trimmed = bytes.iter().rposition(|b| *b != b'=').map_or(&bytes[..0], |end| &bytes[..=end]);
+    let trimmed = bytes
+        .iter()
+        .rposition(|b| *b != b'=')
+        .map_or(&bytes[..0], |end| &bytes[..=end]);
     let mut out = Vec::with_capacity(trimmed.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0u32);
     for &c in trimmed {
@@ -405,7 +469,11 @@ mod tests {
     #[test]
     fn reads_base64_and_png_sizes() {
         for text in ["", "a", "ab", "abc", "hello world", "<p>ünïcode ✓</p>"] {
-            assert_eq!(base64(&base64_encode(text.as_bytes())).unwrap(), text.as_bytes(), "{text}");
+            assert_eq!(
+                base64(&base64_encode(text.as_bytes())).unwrap(),
+                text.as_bytes(),
+                "{text}"
+            );
         }
         assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
         assert_eq!(base64("aGVsbG8=").unwrap(), b"hello");

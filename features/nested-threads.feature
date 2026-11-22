@@ -3,7 +3,7 @@ Feature: Threads nested under the thread that started them
   I want those threads kept under the thread that started them
   So my Inbox and Running lists show what I started, and where the rest came from
 
-  # Experiment nestedThreads (docs/protocol.md, "Nested threads"): the GPUI
+  # Experiment nestedThreads (docs/protocol/threads.md, "Nested threads"): the GPUI
   # app only. The Swift app is frozen and shows these threads as before.
 
   Background:

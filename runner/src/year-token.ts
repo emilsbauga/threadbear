@@ -1,4 +1,4 @@
-// Year-long tokens (docs/protocol.md, Accounts, "Year-long tokens"). A
+// Year-long tokens (docs/protocol/settings.md, Accounts, "Year-long tokens"). A
 // Claude sign-in lasts about 28 days from Claude Code 2.1.318; a token from
 // `claude setup-token` lasts a year. Mike opts a login in with Year-long
 // token… on its row in Usage: the app runs `claude setup-token` in Terminal

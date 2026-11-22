@@ -11,23 +11,26 @@
 // Mac's Run now waits on a line under the row until that Mac has run it.
 use crate::app::Threadbear;
 use crate::home_page::{home_status_line, home_title, mode_header, Art, Pokes};
-use crate::sidebar::{icon, icon_button, palette, tipped, MenuAction, MenuRow, Palette, CORNER, LEADING, OUTER_INSET, TRAILING};
+use crate::sidebar::{
+    icon, icon_button, palette, tipped, MenuAction, MenuRow, Palette, CORNER, LEADING, OUTER_INSET,
+    TRAILING,
+};
+use crate::spinner::Spinner;
 use crate::{call, icons, now_ms, style};
+use gpui_kit::base::A11yDisabledExt as _;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::dialog::DialogButtonProps;
-use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
+use crate::tips::Tip as _;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use threadbear_core::chrono::Local;
 use threadbear_core::highlights::Schedule;
 use threadbear_core::schedules::{self as rules, ScheduleSection};
-use crate::tips::Tip as _;
-
 
 /// The Scheduled view's own state; the app holds one (`Threadbear::scheduled`).
 pub(crate) struct ScheduledState {
@@ -51,11 +54,22 @@ pub(crate) struct ScheduledState {
 impl ScheduledState {
     pub(crate) fn new(saved_folded: Option<&[String]>) -> Self {
         let folded = match saved_folded {
-            Some(saved) => ScheduleSection::ALL.into_iter().map(ScheduleSection::key).filter(|k| saved.iter().any(|s| s == k)).collect(),
+            Some(saved) => ScheduleSection::ALL
+                .into_iter()
+                .map(ScheduleSection::key)
+                .filter(|k| saved.iter().any(|s| s == k))
+                .collect(),
             // Done starts folded (`storedCollapsedScheduleSections`).
             None => HashSet::from(["done"]),
         };
-        ScheduledState { list: Vec::new(), folded, hovered: None, busy: HashSet::new(), scroll: ScrollHandle::new(), pokes: Pokes::new(Art::Scheduled) }
+        ScheduledState {
+            list: Vec::new(),
+            folded,
+            hovered: None,
+            busy: HashSet::new(),
+            scroll: ScrollHandle::new(),
+            pokes: Pokes::new(Art::Scheduled),
+        }
     }
 
     /// `activeScheduleCount`: the activity bar's badge and the view's count.
@@ -73,7 +87,12 @@ impl Threadbear {
     pub(crate) fn set_schedules(&mut self, value: &Value) {
         self.scheduled.list = Schedule::list(value);
         let live: HashSet<String> = self.scheduled.list.iter().map(|s| s.id.clone()).collect();
-        if self.scheduled.hovered.as_ref().is_some_and(|id| !live.contains(id)) {
+        if self
+            .scheduled
+            .hovered
+            .as_ref()
+            .is_some_and(|id| !live.contains(id))
+        {
             self.scheduled.hovered = None;
         }
     }
@@ -105,7 +124,11 @@ impl Threadbear {
     }
 
     fn self_runner_id(&self) -> Option<&str> {
-        self.remote.all_runners.iter().find(|r| r.is_self).map(|r| r.id.as_str())
+        self.remote
+            .all_runners
+            .iter()
+            .find(|r| r.is_self)
+            .map(|r| r.id.as_str())
     }
 
     /// The other runner a schedule runs on, by name; None when it's this one
@@ -115,7 +138,19 @@ impl Threadbear {
             return None;
         }
         let id = schedule.runner_id.as_deref()?;
-        Some(schedule.runner_name.clone().or_else(|| self.remote.all_runners.iter().find(|r| r.id == id).map(|r| r.name.clone())).unwrap_or_else(|| "another Mac".into()))
+        Some(
+            schedule
+                .runner_name
+                .clone()
+                .or_else(|| {
+                    self.remote
+                        .all_runners
+                        .iter()
+                        .find(|r| r.id == id)
+                        .map(|r| r.name.clone())
+                })
+                .unwrap_or_else(|| "another Mac".into()),
+        )
     }
 
     /// The Mac the editor treats a schedule as running on, when it isn't
@@ -124,33 +159,64 @@ impl Threadbear {
     /// it's taken to be: saving it then sends its own folder back as it was,
     /// rather than this Mac's default folder and models.
     pub(crate) fn editor_away_name(&self, schedule: &Schedule) -> Option<String> {
-        self.away_runner_name(schedule).or_else(|| match (schedule.runner_id.as_ref(), self.self_runner_id()) {
-            (Some(_), None) => Some(schedule.runner_name.clone().unwrap_or_else(|| "another Mac".into())),
-            _ => None,
+        self.away_runner_name(schedule).or_else(|| {
+            match (schedule.runner_id.as_ref(), self.self_runner_id()) {
+                (Some(_), None) => Some(
+                    schedule
+                        .runner_name
+                        .clone()
+                        .unwrap_or_else(|| "another Mac".into()),
+                ),
+                _ => None,
+            }
         })
     }
 
     /// The icon of the runner a schedule runs on (`runnerIcon`).
     pub(crate) fn schedule_runner_symbol(&self, schedule: &Schedule) -> &'static str {
-        let icon = schedule.runner_icon.as_deref().or_else(|| self.remote.all_runners.iter().find(|r| Some(r.id.as_str()) == schedule.runner_id.as_deref()).and_then(|r| r.icon.as_deref()));
+        let icon = schedule.runner_icon.as_deref().or_else(|| {
+            self.remote
+                .all_runners
+                .iter()
+                .find(|r| Some(r.id.as_str()) == schedule.runner_id.as_deref())
+                .and_then(|r| r.icon.as_deref())
+        });
         icons::runner_symbol(icon)
     }
 
     /// Where it sends: its thread's title, or "New thread in misc" (`scheduleTarget`).
     pub(crate) fn schedule_target(&self, schedule: &Schedule) -> String {
-        let title = schedule.thread_id.as_deref().and_then(|id| self.threads.get(id)).map(|t| t.title.as_str());
-        rules::target_text(schedule, title, self.away_runner_name(schedule).is_some(), &self.logins.defaults.cwd)
+        let title = schedule
+            .thread_id
+            .as_deref()
+            .and_then(|id| self.threads.get(id))
+            .map(|t| t.title.as_str());
+        rules::target_text(
+            schedule,
+            title,
+            self.away_runner_name(schedule).is_some(),
+            &self.logins.defaults.cwd,
+        )
     }
 
     /// The thread its target opens: its own, or the last one a schedule that
     /// starts a new thread each time started, once there is one.
     fn schedule_opens(&self, schedule: &Schedule) -> Option<String> {
-        schedule.thread_id.clone().or_else(|| schedule.last_run.as_ref().and_then(|r| r.thread_id.clone())).filter(|id| self.threads.contains_key(id))
+        schedule
+            .thread_id
+            .clone()
+            .or_else(|| schedule.last_run.as_ref().and_then(|r| r.thread_id.clone()))
+            .filter(|id| self.threads.contains_key(id))
     }
 
     /// Folding a heading is remembered, as the inbox's are.
     fn schedule_settings_changed(&mut self, cx: &mut Context<Self>) {
-        let mut folded: Vec<String> = self.scheduled.folded.iter().map(|k| k.to_string()).collect();
+        let mut folded: Vec<String> = self
+            .scheduled
+            .folded
+            .iter()
+            .map(|k| k.to_string())
+            .collect();
         folded.sort();
         self.settings.saved.collapsed_schedule_sections = Some(folded);
         self.save_settings_soon(cx);
@@ -192,7 +258,9 @@ impl Threadbear {
         if self.scheduled.busy.contains(&key) {
             return;
         }
-        let Some(before) = self.schedule(&id).cloned() else { return };
+        let Some(before) = self.schedule(&id).cloned() else {
+            return;
+        };
         let mut guess = before.clone();
         guess.paused = paused;
         self.replace_schedule(guess.clone(), false);
@@ -200,7 +268,12 @@ impl Threadbear {
         cx.notify();
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "schedules.update", json!({ "scheduleId": id, "paused": paused })).await;
+            let res = call(
+                client,
+                "schedules.update",
+                json!({ "scheduleId": id, "paused": paused }),
+            )
+            .await;
             this.update(cx, |this, cx| {
                 this.scheduled.busy.remove(&key);
                 match res {
@@ -220,35 +293,54 @@ impl Threadbear {
     }
 
     /// Asks first: a deleted schedule can't be got back (`deleteSchedule`).
-    pub(crate) fn delete_schedule(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(schedule) = self.schedule(&id) else { return };
+    pub(crate) fn delete_schedule(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(schedule) = self.schedule(&id) else {
+            return;
+        };
         let title = format!("Delete \u{201C}{}\u{201D}?", rules::title(schedule));
         let entity = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let (entity, id) = (entity.clone(), id.clone());
-            alert.title(title.clone()).description("It won't send its message again.").button_props(DialogButtonProps::default().ok_text("Delete").show_cancel(true)).on_ok(move |_, window, cx| {
-                let id = id.clone();
-                // Asked from the editor: the editor goes too.
-                let editing = entity.upgrade().is_some_and(|e| e.read(cx).schedule_editor_id(cx).as_deref() == Some(id.as_str()));
-                if editing {
-                    window.close_all_dialogs(cx);
-                }
-                entity
-                    .update(cx, move |this, cx| {
-                        if editing {
-                            this.schedule_editor = None;
-                        }
-                        this.confirmed_delete_schedule(id, cx);
-                    })
-                    .ok();
-                !editing
-            })
+            alert
+                .title(title.clone())
+                .description("It won't send its message again.")
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    let id = id.clone();
+                    // Asked from the editor: the editor goes too.
+                    let editing = entity.upgrade().is_some_and(|e| {
+                        e.read(cx).schedule_editor_id(cx).as_deref() == Some(id.as_str())
+                    });
+                    if editing {
+                        window.close_all_dialogs(cx);
+                    }
+                    entity
+                        .update(cx, move |this, cx| {
+                            if editing {
+                                this.schedule_editor = None;
+                            }
+                            this.confirmed_delete_schedule(id, cx);
+                        })
+                        .ok();
+                    !editing
+                })
         });
     }
 
     /// Gone at once, and back where it was if the runner refuses.
     pub(crate) fn confirmed_delete_schedule(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some(index) = self.scheduled.list.iter().position(|s| s.id == id) else { return };
+        let Some(index) = self.scheduled.list.iter().position(|s| s.id == id) else {
+            return;
+        };
         let schedule = self.scheduled.list.remove(index);
         cx.notify();
         let client = self.client.clone();
@@ -277,21 +369,53 @@ impl Threadbear {
     /// The row's right-click menu (`ScheduleRowView.iconContextMenu`).
     fn schedule_menu_rows(&self, schedule: &Schedule) -> Vec<MenuRow> {
         let id = schedule.id.clone();
-        let mut rows = vec![MenuRow::item("Edit…", "pencil", MenuAction::EditSchedule(id.clone()))];
+        let mut rows = vec![MenuRow::item(
+            "Edit…",
+            "pencil",
+            MenuAction::EditSchedule(id.clone()),
+        )];
         let run = MenuRow::item("Run now", "play", MenuAction::RunSchedule(id.clone()));
-        rows.push(if self.scheduled.busy.contains(&format!("run:{id}")) { run.disabled() } else { run });
+        rows.push(if self.scheduled.busy.contains(&format!("run:{id}")) {
+            run.disabled()
+        } else {
+            run
+        });
         if !schedule.is_finished() {
-            let (title, symbol) = if schedule.paused { ("Resume", "playpause") } else { ("Pause", "pause") };
-            let pause = MenuRow::item(title, symbol, MenuAction::PauseSchedule(id.clone(), !schedule.paused));
-            rows.push(if self.scheduled.busy.contains(&format!("pause:{id}")) { pause.disabled() } else { pause });
+            let (title, symbol) = if schedule.paused {
+                ("Resume", "playpause")
+            } else {
+                ("Pause", "pause")
+            };
+            let pause = MenuRow::item(
+                title,
+                symbol,
+                MenuAction::PauseSchedule(id.clone(), !schedule.paused),
+            );
+            rows.push(if self.scheduled.busy.contains(&format!("pause:{id}")) {
+                pause.disabled()
+            } else {
+                pause
+            });
         }
         rows.push(MenuRow::separator());
-        rows.push(MenuRow::item("Delete…", "trash", MenuAction::DeleteSchedule(id)));
+        rows.push(MenuRow::item(
+            "Delete…",
+            "trash",
+            MenuAction::DeleteSchedule(id),
+        ));
         rows
     }
 
-    fn open_schedule_menu(&mut self, id: String, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(schedule) = self.schedule(&id).cloned() else { return };
+    fn open_schedule_menu(
+        &mut self,
+        id: String,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(schedule) = self.schedule(&id).cloned() else {
+            return;
+        };
         let rows = self.schedule_menu_rows(&schedule);
         // The menu's "thread" is the schedule here: it keeps the row's buttons out.
         self.open_menu(Some(id), rows, position, false, window, cx);
@@ -334,7 +458,14 @@ impl Threadbear {
             }
         }
         if self.scheduled.list.is_empty() {
-            list = list.child(div().pl(px(LEADING)).pt(px(10.)).text_size(px(style::size::SIDEBAR_PREVIEW)).text_color(p.secondary).child("Nothing scheduled."));
+            list = list.child(
+                div()
+                    .pl(px(LEADING))
+                    .pt(px(10.))
+                    .text_size(px(style::size::SIDEBAR_PREVIEW))
+                    .text_color(p.secondary)
+                    .child("Nothing scheduled."),
+            );
         }
         let count = self.scheduled.active_count();
         let side = p.side;
@@ -343,36 +474,100 @@ impl Threadbear {
             .size_full()
             .bg(p.side)
             .child(mode_header("Scheduled", Some(count), &p))
-            .child(div().px(px(OUTER_INSET)).child(self.render_new_schedule_button(&p, cx)))
+            .child(
+                div()
+                    .px(px(OUTER_INSET))
+                    .child(self.render_new_schedule_button(&p, cx)),
+            )
             .child(
                 // As the inbox's list: no scrollbar, fading out at the foot.
                 div()
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .child(div().id("scheduled-list").size_full().overflow_y_scroll().track_scroll(&self.scheduled.scroll).child(list))
-                    .child(div().absolute().left_0().right_0().bottom_0().h(px(34.)).bg(linear_gradient(180., linear_color_stop(side.opacity(0.), 0.), linear_color_stop(side, 0.88)))),
+                    .child(
+                        div()
+                            .id("scheduled-list")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scheduled.scroll)
+                            .child(list),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(34.))
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(side.opacity(0.), 0.),
+                                linear_color_stop(side, 0.88),
+                            )),
+                    ),
             )
             .into_any_element()
     }
 
     /// `SidebarButtonRow`: the plus where a row's title starts.
-    fn render_new_schedule_button(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_new_schedule_button(
+        &mut self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let (hover, secondary, fg) = (p.hover, p.secondary, p.fg);
-        tipped!(h_flex().gap(px(8.)).pl(px(LEADING - 2.)).pr(px(TRAILING)).py(px(7.)).rounded(px(CORNER)).hover(move |s| s.bg(hover)), "new-schedule", "Schedule a message for later")
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_schedule(None, window, cx)))
-            .child(div().w(px(16.)).flex().justify_center().child(icon("plus", style::size::SIDEBAR_BUTTON, secondary)))
-            .child(div().text_size(px(style::size::SIDEBAR_BUTTON)).line_height(px(17.)).text_color(fg).child("New schedule"))
+        tipped!(
+            h_flex()
+                .gap(px(8.))
+                .pl(px(LEADING - 2.))
+                .pr(px(TRAILING))
+                .py(px(7.))
+                .rounded(px(CORNER))
+                .hover(move |s| s.bg(hover)),
+            "new-schedule",
+            "Schedule a message for later"
+        )
+        .on_click(
+            cx.listener(|this, _: &ClickEvent, window, cx| this.new_schedule(None, window, cx)),
+        )
+        .child(div().w(px(16.)).flex().justify_center().child(icon(
+            "plus",
+            style::size::SIDEBAR_BUTTON,
+            secondary,
+        )))
+        .child(
+            div()
+                .text_size(px(style::size::SIDEBAR_BUTTON))
+                .line_height(px(17.))
+                .text_color(fg)
+                .child("New schedule"),
+        )
     }
 
     /// `ScheduleRowView`: its title and when it next runs; when it runs, the
     /// Mac it runs on if that's another, and where it sends; then a run that
     /// didn't send, or another Mac's Run now still waiting.
-    fn render_schedule_row(&mut self, schedule: &Schedule, now: i64, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_schedule_row(
+        &mut self,
+        schedule: &Schedule,
+        now: i64,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = schedule.id.clone();
         let running = self.scheduled.busy.contains(&format!("run:{id}"));
-        let hovered = self.sidebar.hover_override.as_deref().or(self.scheduled.hovered.as_deref()) == Some(id.as_str());
-        let menu_open = self.sidebar.menu.as_ref().is_some_and(|m| m.thread.as_deref() == Some(id.as_str()));
+        let hovered = self
+            .sidebar
+            .hover_override
+            .as_deref()
+            .or(self.scheduled.hovered.as_deref())
+            == Some(id.as_str());
+        let menu_open = self
+            .sidebar
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.thread.as_deref() == Some(id.as_str()));
         // Stays out while Run now is on its way, so its spinner shows
         // wherever it was asked from (the row's menu, or a pointer that's
         // moved on).
@@ -391,20 +586,37 @@ impl Threadbear {
             .child(rules::title(schedule).to_owned());
         let state: Option<AnyElement> = if show_actions {
             // Room for the hover buttons, drawn over the row.
-            Some(div().flex_none().w(px(3. * 24. - 6.)).h(px(1.)).into_any_element())
+            Some(
+                div()
+                    .flex_none()
+                    .w(px(3. * 24. - 6.))
+                    .h(px(1.))
+                    .into_any_element(),
+            )
         } else if let Some(word) = rules::row_state(schedule) {
             let color = if schedule.paused { secondary } else { faint };
-            Some(div().flex_none().text_size(px(style::size::SIDEBAR_META)).line_height(px(14.)).text_color(color).child(word).into_any_element())
+            Some(
+                div()
+                    .flex_none()
+                    .text_size(px(style::size::SIDEBAR_META))
+                    .line_height(px(14.))
+                    .text_color(color)
+                    .child(word)
+                    .into_any_element(),
+            )
         } else {
             rules::row_next(schedule, now).map(|next| {
-                let full = schedule.next_ms().map(|at| rules::full_time(at, &Local)).unwrap_or_default();
+                let full = schedule
+                    .next_ms()
+                    .map(|at| rules::full_time(at, &Local))
+                    .unwrap_or_default();
                 div()
                     .id(ElementId::Name(format!("schedule-next-{id}").into()))
                     .flex_none()
                     .text_size(px(style::size::SIDEBAR_META))
                     .line_height(px(14.))
                     .text_color(faint)
-                    .tip(full.clone())
+                    .tip(full)
                     .child(next)
                     .into_any_element()
             })
@@ -420,7 +632,13 @@ impl Threadbear {
             .text_size(px(style::size::SIDEBAR_PREVIEW))
             .line_height(px(16.))
             .text_color(secondary)
-            .child(div().flex_none().max_w(relative(0.7)).truncate().child(schedule.when_text.clone()));
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(relative(0.7))
+                    .truncate()
+                    .child(schedule.when_text.clone()),
+            );
         if let Some(away) = away.clone() {
             // Quiet, like the rest of the line: most schedules are this Mac's,
             // and those say nothing about it. Its Mac's icon, so runners tell
@@ -433,22 +651,39 @@ impl Threadbear {
                     .max_w(px(100.))
                     .gap(px(3.))
                     .items_center()
-                    .tip(tip.clone())
-                    .child(icon(self.schedule_runner_symbol(schedule), style::size::SIDEBAR_META, secondary))
+                    .tip(tip)
+                    .child(icon(
+                        self.schedule_runner_symbol(schedule),
+                        style::size::SIDEBAR_META,
+                        secondary,
+                    ))
                     .child(div().min_w_0().truncate().child(away)),
             );
         }
-        place = place.child(dot()).child(self.render_schedule_target(schedule, p, cx));
+        place = place
+            .child(dot())
+            .child(self.render_schedule_target(schedule, p, cx));
 
         // Another Mac's Run now, until that Mac picks it up; else a last run
         // that didn't send.
-        let note: Option<(String, Hsla, String)> = match (away.as_ref(), schedule.run_requested_ms()) {
-            (Some(away), Some(asked)) => {
-                let asked = rules::time_of_day(&threadbear_core::chrono::TimeZone::timestamp_millis_opt(&Local, asked).single().unwrap_or_else(Local::now));
-                Some((format!("Waiting for {away} to run it"), faint, format!("Asked at {asked}. It runs as soon as {away} picks it up.")))
-            }
-            _ => rules::row_problem(schedule).map(|(text, is_failure)| (text.clone(), if is_failure { failed } else { faint }, text)),
-        };
+        let note: Option<(String, Hsla, String)> =
+            match (away.as_ref(), schedule.run_requested_ms()) {
+                (Some(away), Some(asked)) => {
+                    let asked = rules::time_of_day(
+                        &threadbear_core::chrono::TimeZone::timestamp_millis_opt(&Local, asked)
+                            .single()
+                            .unwrap_or_else(Local::now),
+                    );
+                    Some((
+                        format!("Waiting for {away} to run it"),
+                        faint,
+                        format!("Asked at {asked}. It runs as soon as {away} picks it up."),
+                    ))
+                }
+                _ => rules::row_problem(schedule).map(|(text, is_failure)| {
+                    (text.clone(), if is_failure { failed } else { faint }, text)
+                }),
+            };
         let note = note.map(|(text, color, tip)| {
             div()
                 .id(ElementId::Name(format!("schedule-note-{id}").into()))
@@ -456,11 +691,12 @@ impl Threadbear {
                 .text_size(px(style::size::SIDEBAR_META))
                 .line_height(px(14.))
                 .text_color(color)
-                .tip(tip.clone())
+                .tip(tip)
                 .child(text)
         });
 
-        let buttons = show_actions.then(|| self.render_schedule_actions(schedule, away.as_deref(), running, p, cx));
+        let buttons = show_actions
+            .then(|| self.render_schedule_actions(schedule, away.as_deref(), running, p, cx));
         // What it sends, which the row doesn't show. Click to edit it.
         let tip: String = schedule.text.chars().take(300).collect();
         let (hover_id, menu_id, edit_id) = (id.clone(), id.clone(), id.clone());
@@ -469,8 +705,9 @@ impl Threadbear {
             .id(ElementId::Name(format!("schedule-{id}").into()))
             .test_support()
             // Named by its tip, as the Swift app's rows are found.
-            .role(Role::ListItem).aria_label(tip.clone())
-            .tip(tip.clone())
+            .role(Role::ListItem)
+            .aria_label(tip.clone())
+            .tip(tip)
             .relative()
             .gap(px(3.))
             .pt(px(8.))
@@ -487,58 +724,157 @@ impl Threadbear {
                 }
                 cx.notify();
             }))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.edit_schedule(&edit_id, window, cx)))
-            .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, window, cx| this.open_schedule_menu(menu_id.clone(), ev.position, window, cx)))
-            .child(h_flex().items_baseline().gap(px(6.)).child(title).children(state))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.edit_schedule(&edit_id, window, cx)
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.open_schedule_menu(menu_id.clone(), ev.position, window, cx)
+                }),
+            )
+            .child(
+                h_flex()
+                    .items_baseline()
+                    .gap(px(6.))
+                    .child(title)
+                    .children(state),
+            )
             .child(place)
             .children(note)
-            .when_some(buttons, |s, b| s.child(h_flex().absolute().top(px(5.)).right(px(TRAILING - 5.)).gap(px(2.)).child(b)))
+            .when_some(buttons, |s, b| {
+                s.child(
+                    h_flex()
+                        .absolute()
+                        .top(px(5.))
+                        .right(px(TRAILING - 5.))
+                        .gap(px(2.))
+                        .child(b),
+                )
+            })
             .into_any_element()
     }
 
     /// `TargetButton`: where it sends, which opens that thread (or, for one
     /// that starts a new thread each time, the last one it started).
-    fn render_schedule_target(&mut self, schedule: &Schedule, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_schedule_target(
+        &mut self,
+        schedule: &Schedule,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let label = self.schedule_target(schedule);
         let Some(opens) = self.schedule_opens(schedule) else {
             return div().min_w_0().truncate().child(label).into_any_element();
         };
-        let tip = if schedule.thread_id.is_none() { "Open the last thread it started" } else { "Open the thread" };
+        let tip = if schedule.thread_id.is_none() {
+            "Open the last thread it started"
+        } else {
+            "Open the thread"
+        };
         let underline = p.secondary;
-        tipped!(div().min_w_0().truncate().cursor_pointer().hover(move |s| s.underline().text_decoration_color(underline)), ElementId::Name(format!("schedule-target-{}", schedule.id).into()), tip)
-            // The row under it opens the editor; this opens the thread instead.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                cx.stop_propagation();
-                this.open(opens.clone(), window, cx);
-            }))
-            .child(label)
-            .into_any_element()
+        tipped!(
+            div()
+                .min_w_0()
+                .truncate()
+                .cursor_pointer()
+                .hover(move |s| s.underline().text_decoration_color(underline)),
+            ElementId::Name(format!("schedule-target-{}", schedule.id).into()),
+            tip
+        )
+        // The row under it opens the editor; this opens the thread instead.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            cx.stop_propagation();
+            this.open(opens.clone(), window, cx);
+        }))
+        .child(label)
+        .into_any_element()
     }
 
     /// The row's buttons on hover: Run now, Pause or Resume, Delete.
-    fn render_schedule_actions(&mut self, schedule: &Schedule, away: Option<&str>, running: bool, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_schedule_actions(
+        &mut self,
+        schedule: &Schedule,
+        away: Option<&str>,
+        running: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = schedule.id.clone();
         let mut row = h_flex().gap(px(2.));
         if running {
             // On its way: a spinner in its place, and no more clicks.
-            row = row.child(div().flex_none().size(px(22.)).flex().items_center().justify_center().child(Spinner::new().icon(gpui_kit::assets::IconName::LoaderCircle).color(p.secondary).with_size(px(13.))));
+            row = row.child(
+                div()
+                    .flex_none()
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Spinner::new()
+                            .icon(gpui_kit::assets::IconName::LoaderCircle)
+                            .color(p.secondary)
+                            .with_size(px(13.)),
+                    ),
+            );
         } else {
-            let tip = away.map_or_else(|| "Run now".to_owned(), |away| format!("Ask {away} to run it now"));
+            let tip = away.map_or_else(
+                || "Run now".to_owned(),
+                |away| format!("Ask {away} to run it now"),
+            );
             let run_id = id.clone();
-            row = row.child(icon_button(ElementId::Name(format!("run-{id}").into()), icon("paperplane", 13., p.secondary), tip, p, cx.listener(move |this, _: &ClickEvent, _, cx| this.run_schedule(run_id.clone(), cx))));
+            row = row.child(icon_button(
+                ElementId::Name(format!("run-{id}").into()),
+                icon("paperplane", 13., p.secondary),
+                tip,
+                p,
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.run_schedule(run_id.clone(), cx)
+                }),
+            ));
         }
         if !schedule.is_finished() {
             let paused = schedule.paused;
-            let (symbol, tip) = if paused { ("play", "Resume") } else { ("pause", "Pause") };
+            let (symbol, tip) = if paused {
+                ("play", "Resume")
+            } else {
+                ("pause", "Pause")
+            };
             let pausing = self.scheduled.busy.contains(&format!("pause:{id}"));
             let pause_id = id.clone();
-            let button = icon_button(ElementId::Name(format!("pause-{id}").into()), icon(symbol, 13., p.secondary), tip, p, cx.listener(move |this, _: &ClickEvent, _, cx| this.set_schedule_paused(pause_id.clone(), !paused, cx)));
+            let button = icon_button(
+                ElementId::Name(format!("pause-{id}").into()),
+                icon(symbol, 13., p.secondary),
+                tip,
+                p,
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.set_schedule_paused(pause_id.clone(), !paused, cx)
+                }),
+            );
             // Until the last one lands (it already shows), so no second click.
-            row = row.child(div().when(pausing, |d| d.opacity(0.4).occlude()).child(button));
+            // Said to a screen reader and the specs too (`click` with
+            // `enabled`), as it's the wrapper that holds the clicks off.
+            row = row.child(
+                div()
+                    .id(ElementId::Name(format!("pausing-{id}").into()))
+                    .test_support()
+                    .when(pausing, |d| d.opacity(0.4).occlude())
+                    .child(button)
+                    .a11y_disabled(pausing),
+            );
         }
         let delete_id = id.clone();
-        row = row.child(icon_button(ElementId::Name(format!("delete-{id}").into()), icon("trash", 13., p.secondary), "Delete", p, cx.listener(move |this, _: &ClickEvent, window, cx| this.delete_schedule(delete_id.clone(), window, cx))));
+        row = row.child(icon_button(
+            ElementId::Name(format!("delete-{id}").into()),
+            icon("trash", 13., p.secondary),
+            "Delete",
+            p,
+            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.delete_schedule(delete_id.clone(), window, cx)
+            }),
+        ));
         row.into_any_element()
     }
 
@@ -550,11 +886,23 @@ impl Threadbear {
         let now = now_ms();
         let local = Local::now();
         let next = rules::next(&self.scheduled.list);
-        let status = next.map_or_else(|| "Nothing coming up".to_owned(), |s| format!("Next: {}, {}", rules::title(s), rules::when(s, &local)));
-        let stats = if self.schedules_supported { rules::stats(&self.scheduled.list, now) } else { Vec::new() };
+        let status = next.map_or_else(
+            || "Nothing coming up".to_owned(),
+            |s| format!("Next: {}, {}", rules::title(s), rules::when(s, &local)),
+        );
+        let stats = if self.schedules_supported {
+            rules::stats(&self.scheduled.list, now)
+        } else {
+            Vec::new()
+        };
         let about = v_flex()
             .gap(px(12.))
-            .child(home_title("Scheduled", "Messages that send themselves later, once or on repeat.", SCHEDULED_MORE, cx))
+            .child(home_title(
+                "Scheduled",
+                "Messages that send themselves later, once or on repeat.",
+                SCHEDULED_MORE,
+                cx,
+            ))
             .child(home_status_line(&status, next.is_some(), cx));
         self.render_home_page(Art::Scheduled, about.into_any_element(), &stats, None, cx)
     }
@@ -604,8 +952,15 @@ impl Threadbear {
     pub(crate) fn scheduled_home_dump(&self) -> Value {
         let local = Local::now();
         let next = rules::next(&self.scheduled.list);
-        let status = next.map_or_else(|| "Nothing coming up".to_owned(), |s| format!("Next: {}, {}", rules::title(s), rules::when(s, &local)));
-        let stats = if self.schedules_supported { rules::stats(&self.scheduled.list, now_ms()) } else { Vec::new() };
+        let status = next.map_or_else(
+            || "Nothing coming up".to_owned(),
+            |s| format!("Next: {}, {}", rules::title(s), rules::when(s, &local)),
+        );
+        let stats = if self.schedules_supported {
+            rules::stats(&self.scheduled.list, now_ms())
+        } else {
+            Vec::new()
+        };
         json!({
             "title": "Scheduled",
             "status": status,
@@ -622,12 +977,22 @@ const SCHEDULED_MORE: &str = "Once at a set time, or over and over, like every w
 /// folded or opened (`scheduleSection`). A row's buttons are clicked by their
 /// tips once it's hovered (`hover` with its id, sidebar.rs).
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    cx: &mut App,
+) -> Result<Value, String> {
     let name = cmd["cmd"].as_str().unwrap_or("");
     match name {
         "expand" | "collapse" => {
             let raw = cmd["scheduleSection"].as_str().unwrap_or("");
-            let key = ScheduleSection::ALL.into_iter().map(ScheduleSection::key).find(|k| *k == raw).ok_or_else(|| format!("scheduleSection must be one of active, paused, done, not {raw:?}"))?;
+            let key = ScheduleSection::ALL
+                .into_iter()
+                .map(ScheduleSection::key)
+                .find(|k| *k == raw)
+                .ok_or_else(|| {
+                    format!("scheduleSection must be one of active, paused, done, not {raw:?}")
+                })?;
             app.update(cx, |t, cx| {
                 if name == "expand" {
                     t.scheduled.folded.remove(key);
@@ -647,7 +1012,12 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
 /// or a new one (`"from": "none"`, as the list's New schedule; otherwise
 /// from the open thread). And `close-schedule`, which closes it.
 #[cfg(feature = "automation")]
-pub(crate) fn editor_automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn editor_automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     if cmd["cmd"].as_str() == Some("close-schedule") {
         if app.read(cx).schedule_editor.is_some() {
             window.close_all_dialogs(cx);
@@ -658,6 +1028,18 @@ pub(crate) fn editor_automation(app: &Entity<Threadbear>, cmd: &Value, window: &
         }
         return Ok(json!("ok"));
     }
+    // A model in the open editor's menu, by its title, under a kind's
+    // heading ("## Codex") when the pool has several.
+    if let Some(title) = cmd["pickModel"].as_str() {
+        let editor = app
+            .read(cx)
+            .schedule_editor
+            .clone()
+            .ok_or("no schedule editor")?;
+        return editor.update(cx, |e, cx| {
+            e.pick_model_titled(title, cmd["under"].as_str(), cx)
+        });
+    }
     match cmd["id"].as_str() {
         Some(id) => {
             if app.read(cx).schedule(id).is_none() {
@@ -666,8 +1048,18 @@ pub(crate) fn editor_automation(app: &Entity<Threadbear>, cmd: &Value, window: &
             app.update(cx, |t, cx| t.edit_schedule(id, window, cx));
         }
         None => {
-            let from = if cmd["from"].as_str() == Some("none") { None } else { app.read(cx).selected.clone() };
+            let from = if cmd["from"].as_str() == Some("none") {
+                None
+            } else {
+                app.read(cx).selected.clone()
+            };
             app.update(cx, |t, cx| t.new_schedule(from, window, cx));
+            // "A new thread each time" rather than this thread.
+            if cmd["sendsTo"].as_str() == Some("new") {
+                if let Some(editor) = app.read(cx).schedule_editor.clone() {
+                    editor.update(cx, |e, cx| e.send_to_new_threads(cx));
+                }
+            }
         }
     }
     Ok(json!("ok"))

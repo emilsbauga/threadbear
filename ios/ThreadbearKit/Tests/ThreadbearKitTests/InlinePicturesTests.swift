@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ThreadbearKit
 
-/// docs/protocol.md, "Pictures in a message", on the phone.
+/// docs/protocol/threads.md, "Pictures in a message", on the phone.
 struct InlinePicturesTests {
     let m = InlinePictures.markString
 

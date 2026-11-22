@@ -1,8 +1,8 @@
-// Links from a message back into the thread (docs/protocol.md, "Links into the
+// Links from a message back into the thread (docs/protocol/needs-you.md, "Links into the
 // thread"), as the Mac's WorkLinks and the phone's ThreadLinks read them:
 // `work:<words>` quotes a step in the turn's working, `thread:<id>` is another
 // thread and `review:<id>` a design review, which only the Mac can open.
-// `button:<id>` is a reply button (docs/protocol.md, "Reply buttons"). `plain`
+// `button:<id>` is a reply button (docs/protocol/events.md, "Reply buttons"). `plain`
 // is one of those too long to read, shown as its words.
 
 export type LinkTarget = { kind: 'step'; quote: string } | { kind: 'thread'; id: string } | { kind: 'review' } | { kind: 'button'; id: string } | { kind: 'plain' };

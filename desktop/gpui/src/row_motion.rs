@@ -63,7 +63,9 @@ impl RowMotion {
     pub(crate) fn rows_drawn(&self, rows: Vec<String>, quiet: &HashSet<String>, reduce: bool) {
         self.placed.borrow_mut().retain(|k, _| rows.contains(k));
         self.painted.borrow_mut().retain(|k, _| rows.contains(k));
-        self.glides.borrow_mut().rows_drawn(rows, quiet, reduce, Instant::now());
+        self.glides
+            .borrow_mut()
+            .rows_drawn(rows, quiet, reduce, Instant::now());
     }
 
     /// Whether the row is laid out within the part of the list that's showing.
@@ -78,11 +80,18 @@ impl RowMotion {
     /// frame, scrolls the one `reveal` names into view, as little as it takes
     /// (SwiftUI's `scrollTo` with no anchor), and has `view` drawn again for
     /// it. A row not laid out yet is looked for again a few frames running.
-    pub(crate) fn reveal_marker(self: &Rc<Self>, reveal: Reveal, scroll: ScrollHandle, view: Option<EntityId>) -> impl IntoElement {
+    pub(crate) fn reveal_marker(
+        self: &Rc<Self>,
+        reveal: Reveal,
+        scroll: ScrollHandle,
+        view: Option<EntityId>,
+    ) -> impl IntoElement {
         let motion = self.clone();
         canvas(
             move |_, window, cx| {
-                let Some((key, tries)) = reveal.borrow().clone() else { return };
+                let Some((key, tries)) = reveal.borrow().clone() else {
+                    return;
+                };
                 let placed = motion.placed.borrow().get(&key).copied();
                 let redraw = |cx: &mut App| {
                     if let Some(view) = view {
@@ -103,7 +112,8 @@ impl RowMotion {
                             return;
                         };
                         let most = f32::from(scroll.max_offset().y);
-                        scroll.set_offset(point(offset.x, gpui_kit::px(-to.clamp(0., most.max(0.)))));
+                        scroll
+                            .set_offset(point(offset.x, gpui_kit::px(-to.clamp(0., most.max(0.)))));
                         redraw(cx);
                     }
                     None if tries < 20 => {
@@ -126,7 +136,14 @@ impl RowMotion {
     /// list's first child, so it's prepainted before any row.
     pub(crate) fn list_marker(self: &Rc<Self>) -> impl IntoElement {
         let motion = self.clone();
-        canvas(move |bounds, _, _| motion.list_top.set(f32::from(bounds.origin.y)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+        canvas(
+            move |bounds, _, _| motion.list_top.set(f32::from(bounds.origin.y)),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 
     /// Says which row is selected, before the rows are drawn, and whether
@@ -137,11 +154,17 @@ impl RowMotion {
     pub(crate) fn selection(&self, key: Option<&str>, reduce: bool) -> bool {
         let mut selection = self.selection.borrow_mut();
         if selection.key.as_deref() != key {
-            let from = selection.key.take().filter(|from| !reduce && key.is_some() && self.painted.borrow().contains_key(from));
+            let from = selection.key.take().filter(|from| {
+                !reduce && key.is_some() && self.painted.borrow().contains_key(from)
+            });
             selection.slide = from.map(|from| (from, Instant::now()));
             selection.key = key.map(str::to_owned);
         }
-        if selection.slide.as_ref().is_some_and(|(_, at)| at.elapsed() >= juice::SELECTION_SLIDE) {
+        if selection
+            .slide
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= juice::SELECTION_SLIDE)
+        {
             selection.slide = None;
         }
         selection.slide.is_some()
@@ -156,12 +179,25 @@ impl RowMotion {
             |_, _, _| {},
             move |_, _, window, _| {
                 let selection = motion.selection.borrow();
-                let (Some(to), Some((from, at))) = (selection.key.as_ref(), selection.slide.as_ref()) else { return };
+                let (Some(to), Some((from, at))) =
+                    (selection.key.as_ref(), selection.slide.as_ref())
+                else {
+                    return;
+                };
                 let painted = motion.painted.borrow();
-                let (Some(a), Some(b)) = (painted.get(from), painted.get(to)) else { return };
-                let t = juice::selection_slide(juice::progress(at.elapsed(), juice::SELECTION_SLIDE));
+                let (Some(a), Some(b)) = (painted.get(from), painted.get(to)) else {
+                    return;
+                };
+                let t =
+                    juice::selection_slide(juice::progress(at.elapsed(), juice::SELECTION_SLIDE));
                 let mix = |x: Pixels, y: Pixels| x + (y - x) * t;
-                let bounds = Bounds::new(point(mix(a.origin.x, b.origin.x), mix(a.origin.y, b.origin.y)), size(mix(a.size.width, b.size.width), mix(a.size.height, b.size.height)));
+                let bounds = Bounds::new(
+                    point(mix(a.origin.x, b.origin.x), mix(a.origin.y, b.origin.y)),
+                    size(
+                        mix(a.size.width, b.size.width),
+                        mix(a.size.height, b.size.height),
+                    ),
+                );
                 window.paint_quad(fill(bounds, color).corner_radii(px(corner)));
                 // Until it lands, and once more after, for the row to take its
                 // highlight back.
@@ -183,11 +219,20 @@ impl RowMotion {
             Some(at) => div()
                 .relative()
                 .child(row)
-                .with_animation(SharedString::from(format!("arrive-{key}-{at:?}")), Animation::new(ARRIVE).with_easing(ease_out_quint()), |el, t| el.opacity(t).top(px(-ARRIVE_DROP * (1. - t))))
+                .with_animation(
+                    SharedString::from(format!("arrive-{key}-{at:?}")),
+                    Animation::new(ARRIVE).with_easing(ease_out_quint()),
+                    |el, t| el.opacity(t).top(px(-ARRIVE_DROP * (1. - t))),
+                )
                 .into_any_element(),
             None => row,
         };
-        Glide { key: key.to_owned(), child: row, motion: self.clone() }.into_any_element()
+        Glide {
+            key: key.to_owned(),
+            child: row,
+            motion: self.clone(),
+        }
+        .into_any_element()
     }
 }
 
@@ -201,11 +246,21 @@ thread_local! {
 /// and out as the new one comes up from below (down for a smaller number),
 /// as SwiftUI's numeric text does. `key` says which count it is, `height` is
 /// a line of it, and `text` draws one number.
-pub(crate) fn rolling(key: &str, value: usize, height: f32, reduce: bool, text: impl Fn(usize) -> AnyElement) -> AnyElement {
+pub(crate) fn rolling(
+    key: &str,
+    value: usize,
+    height: f32,
+    reduce: bool,
+    text: impl Fn(usize) -> AnyElement,
+) -> AnyElement {
     let now = Instant::now();
     let (before, changed) = COUNTS.with(|counts| {
         let mut counts = counts.borrow_mut();
-        let entry = counts.entry(key.to_owned()).or_insert((value, value, now.checked_sub(ROLL).unwrap_or(now)));
+        let entry = counts.entry(key.to_owned()).or_insert((
+            value,
+            value,
+            now.checked_sub(ROLL).unwrap_or(now),
+        ));
         if entry.1 != value {
             *entry = (entry.1, value, now);
         }
@@ -220,12 +275,24 @@ pub(crate) fn rolling(key: &str, value: usize, height: f32, reduce: bool, text: 
     div()
         .relative()
         .overflow_hidden()
-        .child(div().relative().child(text(value)).with_animation(SharedString::from(format!("{id}-in")), Animation::new(ROLL).with_easing(ease_out_quint()), move |el, t| {
-            el.top(px(height * way * (1. - t))).opacity(t)
-        }))
-        .child(div().absolute().top_0().left_0().right_0().child(text(before)).with_animation(SharedString::from(format!("{id}-out")), Animation::new(ROLL).with_easing(ease_out_quint()), move |el, t| {
-            el.top(px(-height * way * t)).opacity(1. - t)
-        }))
+        .child(div().relative().child(text(value)).with_animation(
+            SharedString::from(format!("{id}-in")),
+            Animation::new(ROLL).with_easing(ease_out_quint()),
+            move |el, t| el.top(px(height * way * (1. - t))).opacity(t),
+        ))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .child(text(before))
+                .with_animation(
+                    SharedString::from(format!("{id}-out")),
+                    Animation::new(ROLL).with_easing(ease_out_quint()),
+                    move |el, t| el.top(px(-height * way * t)).opacity(1. - t),
+                ),
+        )
         .into_any_element()
 }
 
@@ -255,26 +322,62 @@ impl Element for Glide {
         None
     }
 
-    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         // The row's own layout: this only moves where it's painted.
         (self.child.request_layout(window, cx), ())
     }
 
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let top = f32::from(bounds.origin.y) - self.motion.list_top.get();
-        self.motion.placed.borrow_mut().insert(self.key.clone(), (top, f32::from(bounds.size.height)));
-        let offset = self.motion.glides.borrow_mut().place(&self.key, top, Instant::now());
+        self.motion
+            .placed
+            .borrow_mut()
+            .insert(self.key.clone(), (top, f32::from(bounds.size.height)));
+        let offset = self
+            .motion
+            .glides
+            .borrow_mut()
+            .place(&self.key, top, Instant::now());
         if offset != 0. {
             window.request_animation_frame();
         }
-        self.motion.painted.borrow_mut().insert(self.key.clone(), Bounds::new(point(bounds.origin.x, bounds.origin.y + gpui_kit::px(offset)), bounds.size));
+        self.motion.painted.borrow_mut().insert(
+            self.key.clone(),
+            Bounds::new(
+                point(bounds.origin.x, bounds.origin.y + gpui_kit::px(offset)),
+                bounds.size,
+            ),
+        );
         let child = &mut self.child;
         window.with_element_offset(point(gpui_kit::px(0.), gpui_kit::px(offset)), |window| {
             child.prepaint(window, cx);
         });
     }
 
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         self.child.paint(window, cx);
     }
 }

@@ -3,7 +3,7 @@
 // twice is harmless, and a runner that was offline writes each changed
 // row once when it's back.
 import { ConvexError, v } from 'convex/values';
-import { internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
+import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
 import { messageButton, threadFields, updateFailedValidator, views } from './schema';
@@ -457,7 +457,7 @@ async function dropThread(ctx: MutationCtx, threadId: string, row: Doc<'threads'
 // With four runner keys all at their caps, the database holds at most about
 // 4 x 75 MB of theirs (messages 48 MB, threads 3,000 x 8 KB, the rest under
 // 5 MB) and file storage 4 x 150 MB: inside Convex's free plan (0.5 GB and
-// 1 GB) with room for the main Mac's own (docs/protocol.md, "Caps").
+// 1 GB) with room for the main Mac's own (docs/protocol/keys.md, "Caps").
 // Four since 17 Nov 2026: bruce, the Hetzner box and the Pixel held three,
 // and a Windows laptop (its runner in WSL) needed a fourth. The whole-list
 // reads above were already budgeted for four (6.4 MB).
@@ -468,6 +468,7 @@ export const RUNNER_KEY_CAPS = {
   recap: 1_000, // the librarian's 200 + 600, with room for multi-byte text
   threadText: 1_000, // title, preview, cwd, working line, each
   keywords: 400, // the runner's 200 characters (keywords.ts), with room for multi-byte text
+  request: 400, // a threadIndex row's, the runner's 200 characters (requestLine), likewise
   threadsInView: 300, // per view the phone reads whole (inbox, hibernating)
   // Projects a thread is in: each is a lookup when the phones read it
   // (phone.ts projectOwners), so 300 inbox threads stay under 4,096 index reads.
@@ -716,6 +717,7 @@ function sameButtons(a: unknown[] | undefined, b: unknown[] | undefined): boolea
 function fitIndexRow<T extends Record<string, any>>(r: T): T | undefined {
   const out: Record<string, any> = { ...r };
   for (const f of ['title', 'preview', 'cwd', 'asked']) if (typeof out[f] === 'string') out[f] = cutBytes(out[f], 300);
+  if (typeof out.request === 'string') out.request = cutBytes(out.request, CAP.request);
   if (typeof out.recap === 'string') out.recap = cutBytes(out.recap, CAP.recap);
   if (typeof out.keywords === 'string') out.keywords = cutBytes(out.keywords, CAP.keywords);
   // Only something a Mac shows as a mode: anything else would be just room.
@@ -909,7 +911,7 @@ export const upsertThreads = mutation({
       const existing = await threadRow(ctx, t.threadId);
       // A runner key writes only its own threads, and never one that's
       // another runner's: the row says where the phone's commands for it go
-      // and carries its secret card's key (docs/protocol.md, "Runner keys").
+      // and carries its secret card's key (docs/protocol/keys.md, "Runner keys").
       // A box key only its one thread (runnerAccess.ts ownThreadOnly).
       if (!mayWrite(caller, t.runnerId, existing?.runnerId, t.threadId)) throw forbidden(`write thread ${t.threadId}`);
       // Only its own runner's projects (heldElsewhere), and only so many: each
@@ -1634,7 +1636,7 @@ export const runnersList = query({
 
 // ------------------------------------------------------------ tokens
 // The Mac app's Settings › Phone & browser, through the runner (API 6;
-// docs/protocol.md "Devices"): issues the token a new phone or browser
+// docs/protocol/moves.md "Devices"): issues the token a new phone or browser
 // holds, lists them, revokes one. The plain token goes back in the reply
 // that issued it and nowhere else.
 
@@ -2374,7 +2376,7 @@ export const setSchedules = mutation({
 });
 
 // ------------------------------------------------------------ schedules (API 9)
-// Schedules that live here (docs/protocol.md, Schedules, "Runners"). Every
+// Schedules that live here (docs/protocol/projects.md, Schedules, "Runners"). Every
 // runner subscribes to the whole list; a schedule's own runner is the only
 // one that sends it, and takes each run with claimSchedule first so it's
 // sent once even while a handover has two runner processes under one
@@ -2398,6 +2400,7 @@ const ownedScheduleDoc = v.object({
   poolId: v.optional(v.string()),
   check: v.optional(v.string()),
   checkTimeoutSecs: v.optional(v.number()),
+  provider: v.optional(v.string()),
 });
 
 const lastRunDoc = v.object({ at: v.string(), outcome: v.string(), threadId: v.optional(v.string()), note: v.optional(v.string()) });
@@ -3255,7 +3258,7 @@ export const finishCommand = mutation({
     // A lapsed command's own note ("never said how it went") goes with the lapse.
     if ((await command.send(ctx, commandId, { type: 'FINISH', ok })).status !== 'done') return null;
     await ctx.db.patch(commandId, { note: said, ...(made ? { resultThreadId: made } : {}), ...(kept !== undefined ? { result: kept } : {}) });
-    // Its words, and a secret's sealed answer (docs/protocol.md, "Secrets"), have
+    // Its words, and a secret's sealed answer (docs/protocol/threads.md, "Secrets"), have
     // done their job: see finishedArgs.
     await ctx.db.patch(commandId, { args: finishedArgs(c.args) });
     // The runner has its copy of the phone's photos by now, and images are
@@ -3324,7 +3327,7 @@ export const commandEnded = internalMutation({
 });
 
 // ------------------------------------------------------------ tool output
-// Full sync (docs/full-convex.md step 4; sync.full in the runner's runner.json).
+// Full sync (docs/archive/full-convex.md step 4; sync.full in the runner's runner.json).
 // A runner with it off never calls these. See schema.ts eventBodies.
 export const BODY_KEEP_MS = 30 * 24 * 60 * 60_000;
 // Rows pruneBodies deletes a run. Deleting reads the whole row, so this and the
@@ -3762,16 +3765,42 @@ const MAX_DEVICES_PER_TOKEN = 5;
 async function markSet(ctx: QueryCtx | MutationCtx, name: string): Promise<boolean> {
   return (await ctx.db.query('backendMarks').withIndex('by_name', (q) => q.eq('name', name)).first()) !== null;
 }
+// LIMITS_STARTED's mark holds where the next run starts (`cursor`, as
+// limitsAt writes it) and when a run last moved it (`at`). A run that throws
+// schedules nothing, as Convex rolls it back, so a mark no run has moved for
+// LIMITS_STALE_MS has the migration started again from there, by the next
+// heartbeat or pruneFiles (every 6 hours): before that, one bad run left
+// pruneFiles waiting and storageInUse on its slow path for good. A mark from
+// before this (no `at`) is started again too, from the beginning: every
+// step is safe to run twice.
+const LIMITS_STALE_MS = 10 * 60_000;
+const limitsAt = (step: number, cursor: string | null) => JSON.stringify({ step, cursor });
 async function startLimitsMigration(ctx: MutationCtx): Promise<void> {
-  if (await markSet(ctx, LIMITS_STARTED)) return;
-  await ctx.db.insert('backendMarks', { name: LIMITS_STARTED });
-  await ctx.scheduler.runAfter(0, internal.sync.limitsMigration, { step: 0, cursor: null });
+  if (await markSet(ctx, LIMITS_DONE)) return;
+  const started = await ctx.db.query('backendMarks').withIndex('by_name', (q) => q.eq('name', LIMITS_STARTED)).first();
+  if (started && (started.at ?? 0) > Date.now() - LIMITS_STALE_MS) return;
+  // Anything but a position limitsAt wrote: from the beginning.
+  let from: { step: number; cursor: string | null } = { step: 0, cursor: null };
+  try {
+    const at = started?.cursor ? (JSON.parse(started.cursor) as { step?: unknown; cursor?: unknown } | null) : null;
+    if (at && Number.isInteger(at.step) && (at.step as number) >= 0 && (at.step as number) <= MIGRATE_STEPS.length && (at.cursor === null || typeof at.cursor === 'string')) from = { step: at.step as number, cursor: at.cursor as string | null };
+  } catch {
+    // Not JSON.
+  }
+  const mark = { at: Date.now(), cursor: limitsAt(from.step, from.cursor) };
+  if (started) await ctx.db.patch('backendMarks', started._id, mark);
+  else await ctx.db.insert('backendMarks', { name: LIMITS_STARTED, ...mark });
+  await ctx.scheduler.runAfter(0, internal.sync.limitsMigration, from);
 }
 const MIGRATE_STEPS = ['heldPictures', 'shareImages', 'replyImages', 'projectIcons', 'devices', 'deviceCap', 'pending', 'taken'] as const;
 export const limitsMigration = internalMutation({
   args: { step: v.number(), cursor: v.union(v.string(), v.null()) },
   returns: v.null(),
   handler: async (ctx, { step, cursor }) => {
+    // A run the mark doesn't name belongs to a chain that was taken over
+    // (started again while it was still going): it ends here, so only one goes on.
+    const started = await ctx.db.query('backendMarks').withIndex('by_name', (q) => q.eq('name', LIMITS_STARTED)).first();
+    if (started?.cursor !== undefined && started.cursor !== limitsAt(step, cursor)) return null;
     const what = MIGRATE_STEPS[step];
     if (!what) {
       if (!(await markSet(ctx, LIMITS_DONE))) await ctx.db.insert('backendMarks', { name: LIMITS_DONE });
@@ -3797,9 +3826,13 @@ export const limitsMigration = internalMutation({
         if (row.tokenId && !newest.some((d) => d._id === row._id)) await ctx.db.delete(row._id);
       } else if (what === 'pending' || what === 'taken') {
         for (const image of Array.isArray(row.args?.images) ? row.args.images.slice(0, MAX_COMMAND_FILES) : []) {
-          if (!image?.storageId) continue;
+          // A command's args aren't checked (v.any()): an image that names no
+          // stored file can't be in use, and inserting it would throw on every
+          // run, so the migration could never finish.
+          const storageId = typeof image?.storageId === 'string' ? ctx.db.system.normalizeId('_storage', image.storageId) : null;
+          if (!storageId) continue;
           const had = await ctx.db.query('commandFiles').withIndex('by_commandId', (x) => x.eq('commandId', row._id)).take(MAX_COMMAND_FILES);
-          if (!had.some((f) => f.storageId === image.storageId)) await ctx.db.insert('commandFiles', { storageId: image.storageId, commandId: row._id });
+          if (!had.some((f) => f.storageId === storageId)) await ctx.db.insert('commandFiles', { storageId, commandId: row._id });
         }
       } else if (docBytes(row) > 8 * 1024) {
         const cut: Record<string, string> = {};
@@ -3809,13 +3842,17 @@ export const limitsMigration = internalMutation({
         if (Object.keys(cut).length) await ctx.db.patch(row._id, cut);
       }
     }
-    await ctx.scheduler.runAfter(0, internal.sync.limitsMigration, page.isDone ? { step: step + 1, cursor: null } : { step, cursor: page.continueCursor });
+    const next = page.isDone ? { step: step + 1, cursor: null } : { step, cursor: page.continueCursor as string };
+    const mark = { at: Date.now(), cursor: limitsAt(next.step, next.cursor) };
+    if (started) await ctx.db.patch('backendMarks', started._id, mark);
+    else await ctx.db.insert('backendMarks', { name: LIMITS_STARTED, ...mark });
+    await ctx.scheduler.runAfter(0, internal.sync.limitsMigration, next);
     return null;
   },
 });
 
 // ------------------------------------------------------------ thread index (API 12)
-// The Mac app's view of other runners' threads (docs/step6-plan.md, part 2).
+// The Mac app's view of other runners' threads (docs/archive/step6-plan.md, part 2).
 // A runner writes its own rows when what a sidebar shows changes; a Mac
 // app's runner watches the other runners' rows and hands them to the app.
 
@@ -3839,6 +3876,7 @@ const indexDoc = v.object({
   backlog: v.optional(v.boolean()),
   startedBy: v.optional(v.object({ kind: v.string(), label: v.string(), icon: v.optional(v.string()), threadTitle: v.optional(v.string()), why: v.optional(v.string()) })),
   asked: v.optional(v.string()), // since API 32
+  request: v.optional(v.string()), // since API 96
   recap: v.optional(v.string()), // combined fork API 96
   keywords: v.optional(v.string()), // since API 74
   permissionMode: v.optional(v.string()), // since API 88
@@ -4048,7 +4086,7 @@ export const otherRunnersThreads = query({
 });
 
 // ------------------------------------------------------------ runner keys (API 41)
-// The main Mac's `tb runner add|list|revoke` (docs/protocol.md, "Runner
+// The main Mac's `tb runner add|list|revoke` (docs/protocol/keys.md, "Runner
 // keys"): a key for one other runner, which authenticates as that runnerId
 // alone. The plain key goes back in the reply that made it and nowhere
 // else; only its hash is kept.
@@ -4222,7 +4260,6 @@ const AUDIT_CARDS = 5;
 const AUDIT_MESSAGES = 5;
 const AUDIT_PICTURES = 5;
 const sections = ['tokens', 'runnerKeys', 'schedules', 'runnerSchedules', 'cards', 'messages', 'replyImages', 'shareImages'] as const;
-type Section = (typeof sections)[number];
 
 // What a row was when the audit showed it: auditRemove touches it only if it still is.
 function versionOf(kind: string, row: Record<string, any>): string {
@@ -4339,7 +4376,7 @@ export const auditRemove = mutation({
 // with their pictures, accounts, its runner row. A batch a call, so a big
 // runner takes a few; `done` says when there's nothing left.
 const PURGE_BATCH = 50;
-const PURGE_MESSAGES = 200;
+const PURGE_BYTES = 2 * 1024 * 1024;
 export const purgeRunner = mutation({
   args: { key: v.string(), runnerId: v.string() },
   returns: v.object({ done: v.boolean() }),
@@ -4353,56 +4390,80 @@ export const purgeRunner = mutation({
     if (!(await ctx.db.query('runnerKeys').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first())) throw new ConvexError({ kind: 'badArgs', message: `Runner ${runnerId} never had a key of its own: not purging it.` });
     // Never the main Mac's own: its schedules there are the only copy.
     if (await ctx.db.query('ownerRunnerIds').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first()) throw new ConvexError({ kind: 'badArgs', message: `${runnerId} is a runner id the main key has named as its own: not purging it.` });
-    let left = PURGE_BATCH;
-    // A thread at a time, its messages and pictures a page a call, so a long
-    // one takes a few calls rather than one too big to finish.
-    const t = await ctx.db.query('threads').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first();
-    if (t) {
-      const msgs = await ctx.db.query('messages').withIndex('by_thread_seq', (q) => q.eq('threadId', t.threadId)).take(PURGE_MESSAGES);
-      for (const m of msgs) await ctx.db.delete(m._id);
-      if (msgs.length === PURGE_MESSAGES) return { done: false };
-      for (const table of ['replyImages', 'shareImages'] as const) {
-        const imgs = await ctx.db.query(table).withIndex('by_thread_seq', (q) => q.eq('threadId', t.threadId)).take(PURGE_BATCH);
-        for (const img of imgs) {
-          await ctx.db.delete(img._id);
-          await deleteIfUnused(ctx, img.storageId);
-        }
-        if (imgs.length === PURGE_BATCH) return { done: false };
-      }
-      await dropThread(ctx, t.threadId, t);
-      return { done: false };
-    }
-    for (const table of ['threadIndex', 'pocketCards', 'runnerRequests', 'schedules', 'projects', 'projectHeads', 'projectNotes', 'accounts', 'runnerLogins'] as const) {
-      if (left <= 0) break;
-      for (const r of await ctx.db.query(table).withIndex('by_runnerId', (q: any) => q.eq('runnerId', runnerId)).take(left)) {
-        await ctx.db.delete(r._id);
-        // The owner's runner holds a copy of every schedule, this one's too.
-        if (table === 'schedules') {
-          await ctx.db.insert('scheduleGone', { id: (r as Doc<'schedules'>).id, runnerId, at: Date.now() });
-          // An old mirror row can share its id with another runner's live schedule,
-          // whose wake this is then, so it stays.
-          if (!(await scheduleRow(ctx, (r as Doc<'schedules'>).id))) await dropWake(ctx, (r as Doc<'schedules'>).id);
-        }
-        left--;
-      }
-    }
-    if (left > 0) {
-      for (const icon of await ctx.db.query('projectIcons').withIndex('by_runner_project', (q) => q.eq('runnerId', runnerId)).take(left)) {
-        await ctx.db.delete(icon._id);
-        await deleteIfUnused(ctx, icon.storageId);
-        left--;
-      }
-    }
-    if (left > 0) {
-      for (const table of ['runners', 'viewCounts'] as const) {
-        const row = await ctx.db.query(table).withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).unique();
-        if (row) await ctx.db.delete(row._id);
-      }
-      return { done: true };
-    }
-    return { done: false };
+    return { done: await purgeRunnerRows(ctx, runnerId) };
   },
 });
+
+// A runner's rows, a batch a call: true once they're all gone, the
+// `runners` row last. Its storage and memory-offer counts stay, as the rows
+// they count may (a runner key made again for the id goes on from them). purgeRunner's, and an expired box's after its days
+// (boxService.ts purgeExpiredBoxes). Its threads go a thread at a time.
+export async function purgeRunnerRows(ctx: MutationCtx, runnerId: string): Promise<boolean> {
+  // What a call reads, counted as it goes (rows from before the caps can be
+  // a MiB each), so none goes past Convex's limits: the rest in the next.
+  let rows = 0;
+  let bytes = 0;
+  const spent = () => rows >= PURGE_BATCH * 4 || bytes >= PURGE_BYTES;
+  // A file's check (storageInUse) is charged as clearRows charges it: more
+  // before limitsMigration, when the rows it reads can be big (checkCost).
+  const check = await checkCost(ctx, clearBudget(ctx));
+  const read = (doc: unknown, checks = 0) => {
+    rows++;
+    bytes += docBytes(doc) + checks * check;
+  };
+  // A thread at a time: its messages and pictures, then (in a call of its
+  // own, as it has its own allowance, CLEAR_BYTES) dropThread for the rest.
+  const t = await ctx.db.query('threads').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first();
+  if (t) {
+    const freed = new Map<string, number>();
+    for await (const m of ctx.db.query('messages').withIndex('by_thread_seq', (q) => q.eq('threadId', t.threadId))) {
+      read(m);
+      await ctx.db.delete('messages', m._id);
+      if (m.runnerId) freed.set(m.runnerId, (freed.get(m.runnerId) ?? 0) + storedBytes(m));
+      if (spent()) break;
+    }
+    // Its runner's count of message bytes goes down with them, as clearRows' does.
+    for (const [id, n] of freed) await countMessageBytes(ctx, id, -n);
+    for (const table of ['replyImages', 'shareImages'] as const) {
+      if (spent()) break;
+      for await (const img of ctx.db.query(table).withIndex('by_thread_seq', (q) => q.eq('threadId', t.threadId))) {
+        read(img, 1);
+        await ctx.db.delete(table, img._id);
+        await deleteIfUnused(ctx, img.storageId);
+        if (spent()) break;
+      }
+    }
+    if (rows === 0) await dropThread(ctx, t.threadId, t);
+    return false;
+  }
+  for (const table of ['threadIndex', 'pocketCards', 'runnerRequests', 'schedules', 'projects', 'projectHeads', 'projectNotes', 'accounts', 'runnerLogins'] as const) {
+    if (spent()) return false;
+    for await (const r of ctx.db.query(table).withIndex('by_runnerId', (q: any) => q.eq('runnerId', runnerId)) as AsyncIterable<Doc<typeof table>>) {
+      read(r);
+      await ctx.db.delete(r._id);
+      // The owner's runner holds a copy of every schedule, this one's too.
+      if (table === 'schedules') {
+        await ctx.db.insert('scheduleGone', { id: (r as Doc<'schedules'>).id, runnerId, at: Date.now() });
+        // An old mirror row can share its id with another runner's live schedule,
+        // whose wake this is then, so it stays.
+        if (!(await scheduleRow(ctx, (r as Doc<'schedules'>).id))) await dropWake(ctx, (r as Doc<'schedules'>).id);
+      }
+      if (spent()) return false;
+    }
+  }
+  for await (const icon of ctx.db.query('projectIcons').withIndex('by_runner_project', (q) => q.eq('runnerId', runnerId))) {
+    read(icon, 1);
+    await ctx.db.delete('projectIcons', icon._id);
+    await deleteIfUnused(ctx, icon.storageId);
+    if (spent()) return false;
+  }
+  // One row each. Its figures too: runnerStats is read whole (lib.ts).
+  for (const table of ['runnerStats', 'viewCounts', 'runners'] as const) {
+    const row = await ctx.db.query(table).withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first();
+    if (row) await ctx.db.delete(table, row._id);
+  }
+  return true;
+}
 
 // ------------------------------------------------------------ rewriting what's stored
 // Today's rules over rows stored before them: `appendMessages` never rewrites a

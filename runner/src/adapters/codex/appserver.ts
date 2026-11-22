@@ -1,5 +1,5 @@
 // One `codex app-server` process and the JSON-RPC it speaks over stdio.
-// Threadbear runs one of these per live Codex thread (docs/step4-plan.md,
+// Threadbear runs one of these per live Codex thread (docs/archive/step4-plan.md,
 // "Why one process per thread"): released threads never unload inside an
 // app-server, so sharing one would only grow. Closing stdin ends the
 // process in milliseconds, with its MCP servers and running commands.

@@ -95,7 +95,7 @@ Feature: The open card in the composer
   # The runner's loose-ends check (protocol "Loose ends") comes on the
   # thread's summary: the GPUI app dropped it, so its done card never said
   # "Still open" when the Swift app's did (12 Nov).
-  # Experiment inboxGuess (docs/protocol.md, "Inbox guess"): the GPUI app
+  # Experiment inboxGuess (docs/protocol/threads.md, "Inbox guess"): the GPUI app
   # only. The Swift app is frozen and archives straight off.
   @card.done @planned.exp.inboxguess @inbox-guess @swift-pending
   Scenario: Archive on the done card asks whether I needed to see the thread

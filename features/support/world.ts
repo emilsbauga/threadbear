@@ -43,7 +43,7 @@ export class ThreadbearWorld extends World {
   }
 
   /** Waits until a dump passes `check` (it's slow to land, as everything is). */
-  async until<T>(what: string, check: (d: Dump) => T | undefined | false | null, ms = 15_000): Promise<T> {
+  async until<T>(what: string, check: (d: Dump) => T | undefined | false | null | '' | 0, ms = 15_000): Promise<T> {
     const deadline = Date.now() + ms;
     let last: Dump | undefined;
     for (;;) {
@@ -173,6 +173,9 @@ Before(async function (this: ThreadbearWorld, { pickle }) {
   else delete process.env.TB_MOCK_NESTED;
   if (nestedOff) process.env.TB_MOCK_NESTED_OFF = '1';
   else delete process.env.TB_MOCK_NESTED_OFF;
+  // The Feed: the feed experiment on in the hello, and its demo threads.
+  if (pickle.tags.some((t) => t.name === '@feed')) process.env.TB_MOCK_FEED = '1';
+  else delete process.env.TB_MOCK_FEED;
   // The done card's Archive menu: the inboxGuess experiment on in the hello.
   if (pickle.tags.some((t) => t.name === '@inbox-guess')) process.env.TB_MOCK_INBOX_GUESS = '1';
   else delete process.env.TB_MOCK_INBOX_GUESS;
@@ -180,9 +183,15 @@ Before(async function (this: ThreadbearWorld, { pickle }) {
   // the mock's made-up PR.
   if (pickle.tags.some((t) => t.name === '@inline-prs')) process.env.TB_MOCK_PRS = '1';
   else delete process.env.TB_MOCK_PRS;
+  // Reviews as a page beside the thread (the reviewPage experiment).
+  if (pickle.tags.some((t) => t.name === '@review-page')) process.env.TB_MOCK_REVIEW_PAGE = '1';
+  else delete process.env.TB_MOCK_REVIEW_PAGE;
   // Its files read 3 s after the rest of it, as a big PR's are.
   if (pickle.tags.some((t) => t.name === '@slow-pr-files')) process.env.TB_MOCK_PR_FILES_MS = '3000';
   else delete process.env.TB_MOCK_PR_FILES_MS;
+  // The Recipes view: the recipes experiment on, with the mock's recipes.
+  if (pickle.tags.some((t) => t.name === '@recipes')) process.env.TB_MOCK_RECIPES = '1';
+  else delete process.env.TB_MOCK_RECIPES;
   // Parts of a project: Photo sync as a part of Threadbear.
   if (pickle.tags.some((t) => t.name === '@project-parts')) process.env.TB_MOCK_PARTS = '1';
   else delete process.env.TB_MOCK_PARTS;

@@ -67,6 +67,16 @@ Then("the transcript says it couldn't be loaded", async function (this: Threadbe
   await this.until('the transcript failed', (d) => (d.transcript?.state ?? '').startsWith('failed:'));
 });
 
+// The mock answers each read 3 s late here (@thread.loading), so the read the
+// reconnect starts is still on its way when the app's back.
+Then("as the app connects again the transcript is a spinner while it's read", async function (this: ThreadbearWorld) {
+  await this.until('the connection to drop', (d) => d.connection !== 'connected');
+  await this.until('the app connected again', (d) => d.connection === 'connected', 30_000);
+  const d = await this.until('the spinner while it reads again', (d) => d.transcript.state === 'loading' && d, 2000);
+  assert.equal(d.transcript.spinner, true, 'no spinner while it reads again');
+  assert.equal(d.transcript.rows.length, 0, 'rows before the read has answered');
+});
+
 When('I press Try again on the transcript', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'click', tip: 'Load the thread again' });
 });

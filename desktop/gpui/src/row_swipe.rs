@@ -151,7 +151,8 @@ impl RowGestures {
     /// Following the fingers, springing back or going: its hover buttons stay
     /// away meanwhile, as they'd ride along (`showsActions`).
     pub(crate) fn is_moving(&self, id: &str) -> bool {
-        let tracking = self.swipe.is_swiping() && self.row.as_ref().is_some_and(|(row, _)| row == id);
+        let tracking =
+            self.swipe.is_swiping() && self.row.as_ref().is_some_and(|(row, _)| row == id);
         tracking || self.leaving.as_ref().is_some_and(|s| s.row == id)
     }
 
@@ -159,14 +160,21 @@ impl RowGestures {
     /// update's restart waits for it (app_update.rs). Only while it's recent,
     /// so a gesture whose end never came can't hold the update off for good.
     pub(crate) fn under_way(&self) -> bool {
-        let recent = |at: Option<Instant>, within: f32| at.is_some_and(|at| at.elapsed().as_secs_f32() < within);
-        (self.swipe.is_swiping() && recent(self.moved_at, 30.)) || recent(self.leaving.as_ref().map(|s| s.at), 2.)
+        let recent = |at: Option<Instant>, within: f32| {
+            at.is_some_and(|at| at.elapsed().as_secs_f32() < within)
+        };
+        (self.swipe.is_swiping() && recent(self.moved_at, 30.))
+            || recent(self.leaving.as_ref().map(|s| s.at), 2.)
     }
 
     /// For scripts: how far along the row is and whether it's past the line,
     /// as the Swift app's `swipe` says it.
     pub(crate) fn along(&self) -> String {
-        format!("offset {} armed {}", self.swipe.offset().round() as i64, self.swipe.armed())
+        format!(
+            "offset {} armed {}",
+            self.swipe.offset().round() as i64,
+            self.swipe.armed()
+        )
     }
 
     fn fresh_swipe(&mut self, id: &str, action: SwipeAction, right_taken: bool) {
@@ -181,7 +189,9 @@ impl RowGestures {
     /// by how far one event happened to move.
     fn move_swipe(&mut self, dx: f64, dy: f64) -> bool {
         let now = Instant::now();
-        let elapsed = self.moved_at.map_or(1. / 60., |at| now.saturating_duration_since(at).as_secs_f64());
+        let elapsed = self.moved_at.map_or(1. / 60., |at| {
+            now.saturating_duration_since(at).as_secs_f64()
+        });
         self.moved_at = Some(now);
         self.swipe.move_timed(dx, dy, elapsed)
     }
@@ -233,7 +243,13 @@ impl Threadbear {
     /// the space it leaves on the right (`RowSwipeModifier`). The backing is
     /// only as wide as the gap, as the rows have no fill of their own and a
     /// full-width one would show through the text.
-    pub(crate) fn swipe_slot(&self, id: &str, action: Option<SwipeAction>, row: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn swipe_slot(
+        &self,
+        id: &str,
+        action: Option<SwipeAction>,
+        row: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let gestures = &self.sidebar.gestures;
         let reduce = cx.reduce_motion();
         let now = Instant::now();
@@ -246,16 +262,25 @@ impl Threadbear {
             // Off the row's left edge, and a little more for its shadow
             // (`gone`), with the backing blue all the way.
             let span = if reduce { SLIDE_OFF_REDUCED } else { SLIDE_OFF };
-            let t = (now.saturating_duration_since(leaving.at).as_secs_f32() / span.as_secs_f32()).min(1.);
+            let t = (now.saturating_duration_since(leaving.at).as_secs_f32() / span.as_secs_f32())
+                .min(1.);
             animating = t < 1.;
             let gone = -(width + 40.);
-            shown = Some((leaving.from + (gone - leaving.from) * ease_in(t), true, leaving.action));
+            shown = Some((
+                leaving.from + (gone - leaving.from) * ease_in(t),
+                true,
+                leaving.action,
+            ));
             if leaving.plain {
                 fade = Some(1. - ease_in(t));
             }
         } else if let Some(spring) = gestures.spring.as_ref().filter(|s| s.row == id) {
             let t = now.saturating_duration_since(spring.at).as_secs_f32();
-            let span = if reduce { SPRING_BACK_REDUCED } else { SPRING_BACK };
+            let span = if reduce {
+                SPRING_BACK_REDUCED
+            } else {
+                SPRING_BACK
+            };
             animating = t < span;
             let left = match (animating, reduce) {
                 (false, _) => 0.,
@@ -264,7 +289,11 @@ impl Threadbear {
             };
             shown = Some((spring.from * left, false, spring.action));
         } else if let Some((_, action)) = gestures.row.as_ref().filter(|(row, _)| row == id) {
-            shown = Some((gestures.swipe.offset() as f32, gestures.swipe.armed(), *action));
+            shown = Some((
+                gestures.swipe.offset() as f32,
+                gestures.swipe.armed(),
+                *action,
+            ));
         }
         let measured = gestures.width.clone();
         // Every row's width is the list's; a frame at a time while the row
@@ -294,13 +323,32 @@ impl Threadbear {
                     cx.stop_propagation();
                 }
             }));
-        let Some((offset, armed, action)) = shown.filter(|(offset, ..)| offset.abs() >= 0.25) else { return slot.child(row).into_any_element() };
+        let Some((offset, armed, action)) = shown.filter(|(offset, ..)| offset.abs() >= 0.25)
+        else {
+            return slot.child(row).into_any_element();
+        };
         if let Some(fade) = fade {
-            return slot.child(div().relative().left(gpui_kit::px(offset)).opacity(fade).child(row)).into_any_element();
+            return slot
+                .child(
+                    div()
+                        .relative()
+                        .left(gpui_kit::px(offset))
+                        .opacity(fade)
+                        .child(row),
+                )
+                .into_any_element();
         }
         let backing = (offset < 0.).then(|| {
-            let fill = if armed { style::accent(cx) } else { style::primary_opacity(cx, 0.07) };
-            let ink = if armed { gpui_kit::white() } else { style::secondary_text(cx) };
+            let fill = if armed {
+                style::accent(cx)
+            } else {
+                style::primary_opacity(cx, 0.07)
+            };
+            let ink = if armed {
+                gpui_kit::white()
+            } else {
+                style::secondary_text(cx)
+            };
             // Hidden until there's room for it, and a touch bigger once
             // letting go does it.
             let room = ((-offset - style::zoomed(16.)) / style::zoomed(24.)).clamp(0., 1.);
@@ -318,16 +366,27 @@ impl Threadbear {
                 .justify_center()
                 .child(icon(action.symbol(), size, ink).opacity(room))
         });
-        slot.children(backing).child(div().relative().left(gpui_kit::px(offset)).child(row)).into_any_element()
+        slot.children(backing)
+            .child(div().relative().left(gpui_kit::px(offset)).child(row))
+            .into_any_element()
     }
 
     // ---------------------------------------------------------------- the trackpad
 
     /// Two fingers over a row (`RowSwipeController.handle`). Says whether
     /// the event was the row's, so the list doesn't scroll as well.
-    pub(crate) fn row_scrolled(&mut self, id: &str, action: Option<SwipeAction>, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn row_scrolled(
+        &mut self,
+        id: &str,
+        action: Option<SwipeAction>,
+        event: &ScrollEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // A mouse wheel moves in lines and isn't a swipe.
-        let ScrollDelta::Pixels(delta) = event.delta else { return false };
+        let ScrollDelta::Pixels(delta) = event.delta else {
+            return false;
+        };
         let (dx, dy) = (f64::from(f32::from(delta.x)), f64::from(f32::from(delta.y)));
         match event.touch_phase {
             TouchPhase::Started => {
@@ -335,7 +394,9 @@ impl Threadbear {
                 gestures.eating_momentum = false;
                 // The first movement after the fingers touched is more of the
                 // same gesture, not a new one.
-                let same = gestures.touched && gestures.swipe.phase == Phase::Deciding && gestures.row.as_ref().is_some_and(|(row, _)| row == id);
+                let same = gestures.touched
+                    && gestures.swipe.phase == Phase::Deciding
+                    && gestures.row.as_ref().is_some_and(|(row, _)| row == id);
                 gestures.touched = true;
                 if !same {
                     if gestures.leaving.is_some() {
@@ -369,7 +430,9 @@ impl Threadbear {
             TouchPhase::Cancelled => {
                 let gestures = &mut self.sidebar.gestures;
                 gestures.touched = false;
-                let Some((row, action)) = gestures.row.clone().filter(|(row, _)| row == id) else { return false };
+                let Some((row, action)) = gestures.row.clone().filter(|(row, _)| row == id) else {
+                    return false;
+                };
                 let (was, at) = (gestures.swipe.is_swiping(), gestures.swipe.offset() as f32);
                 gestures.swipe.cancel();
                 self.spring_back(&row, action, at, cx);
@@ -383,16 +446,28 @@ impl Threadbear {
     /// (the row slides out from under it), and the trackpad's momentum after
     /// it, as RowSwipeController's monitor does. None when there's no swipe
     /// under way, for the page swipe and the row under the pointer to look at.
-    pub(crate) fn row_swipe_scrolled(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) -> Option<bool> {
+    pub(crate) fn row_swipe_scrolled(
+        &mut self,
+        event: &ScrollEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<bool> {
         let gestures = &mut self.sidebar.gestures;
         // A mouse wheel's lines are never momentum: they scroll as ever.
         let trackpad = matches!(event.delta, ScrollDelta::Pixels(_));
-        if gestures.eating_momentum && trackpad && event.touch_phase == TouchPhase::Moved && !momentum_over(&mut gestures.momentum_at) {
+        if gestures.eating_momentum
+            && trackpad
+            && event.touch_phase == TouchPhase::Moved
+            && !momentum_over(&mut gestures.momentum_at)
+        {
             return Some(true);
         }
         // Fingers back on the trackpad, or a quiet moment: the momentum's over.
         gestures.eating_momentum = false;
-        let (id, action) = gestures.row.clone().filter(|_| gestures.swipe.is_swiping())?;
+        let (id, action) = gestures
+            .row
+            .clone()
+            .filter(|_| gestures.swipe.is_swiping())?;
         Some(self.row_scrolled(&id, Some(action), event, window, cx))
     }
 
@@ -417,7 +492,15 @@ impl Threadbear {
     /// The fingers lifted, or the mouse came up: archive past the line (or
     /// on a flick), else spring back. Says whether it was a swipe.
     fn swipe_let_go(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some((row, action)) = self.sidebar.gestures.row.clone().filter(|(row, _)| row == id) else { return false };
+        let Some((row, action)) = self
+            .sidebar
+            .gestures
+            .row
+            .clone()
+            .filter(|(row, _)| row == id)
+        else {
+            return false;
+        };
         let gestures = &mut self.sidebar.gestures;
         let was = gestures.swipe.is_swiping();
         let at = gestures.swipe.offset() as f32;
@@ -443,7 +526,9 @@ impl Threadbear {
         let gestures = &mut self.sidebar.gestures;
         gestures.touched = false;
         gestures.eating_momentum = false;
-        let Some((row, action)) = gestures.row.clone() else { return };
+        let Some((row, action)) = gestures.row.clone() else {
+            return;
+        };
         let (was, at) = (gestures.swipe.is_swiping(), gestures.swipe.offset() as f32);
         gestures.swipe.cancel();
         if was {
@@ -456,15 +541,33 @@ impl Threadbear {
         let gestures = &mut self.sidebar.gestures;
         gestures.swipe.reset();
         gestures.row = None;
-        gestures.spring = (from.abs() >= 0.5).then(|| Settling { row: id.to_owned(), action, from, at: Instant::now(), plain: false });
+        gestures.spring = (from.abs() >= 0.5).then(|| Settling {
+            row: id.to_owned(),
+            action,
+            from,
+            at: Instant::now(),
+            plain: false,
+        });
         cx.notify();
     }
 
     /// Past the line: a busy thread asks first, held where it was let go
     /// (`BusyConfirm`); then the row slides the rest of the way off and the
     /// thread goes.
-    fn finish_swipe(&mut self, id: String, action: SwipeAction, at: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let busy = action == SwipeAction::Archive && self.threads.get(&id).map(|t| &**t).is_some_and(threadbear_core::sidebar::needs_busy_confirm);
+    fn finish_swipe(
+        &mut self,
+        id: String,
+        action: SwipeAction,
+        at: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let busy = action == SwipeAction::Archive
+            && self
+                .threads
+                .get(&id)
+                .map(|t| &**t)
+                .is_some_and(threadbear_core::sidebar::needs_busy_confirm);
         let Some(thread) = self.threads.get(&id).cloned().filter(|_| busy) else {
             self.slide_off(id, action, at, cx);
             return;
@@ -475,13 +578,24 @@ impl Threadbear {
         let (ok_app, close_app) = (cx.entity().downgrade(), cx.entity().downgrade());
         let (ok_id, close_id) = (id.clone(), id);
         window.open_alert_dialog(cx, move |alert, _, _| {
-            let (ok_app, close_app, ok_id, close_id) = (ok_app.clone(), close_app.clone(), ok_id.clone(), close_id.clone());
+            let (ok_app, close_app, ok_id, close_id) = (
+                ok_app.clone(),
+                close_app.clone(),
+                ok_id.clone(),
+                close_id.clone(),
+            );
             alert
                 .title(title.clone())
                 .description(detail.clone())
-                .button_props(gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Archive").show_cancel(true))
+                .button_props(
+                    gpui_kit::component::dialog::DialogButtonProps::default()
+                        .ok_text("Archive")
+                        .show_cancel(true),
+                )
                 .on_ok(move |_, _, cx| {
-                    ok_app.update(cx, |this, cx| this.slide_off(ok_id.clone(), action, at, cx)).ok();
+                    ok_app
+                        .update(cx, |this, cx| this.slide_off(ok_id.clone(), action, at, cx))
+                        .ok();
                     true
                 })
                 // Cancel, Escape or a click outside: back into place, unless
@@ -489,7 +603,13 @@ impl Threadbear {
                 .on_close(move |_, _, cx| {
                     close_app
                         .update(cx, |this, cx| {
-                            if this.sidebar.gestures.row.as_ref().is_some_and(|(row, _)| *row == close_id) {
+                            if this
+                                .sidebar
+                                .gestures
+                                .row
+                                .as_ref()
+                                .is_some_and(|(row, _)| *row == close_id)
+                            {
                                 this.spring_back(&close_id, action, at, cx);
                             }
                         })
@@ -509,7 +629,12 @@ impl Threadbear {
     /// in the time a swipe's takes, and is archived once it's gone, as the
     /// Swift app's `slideOff` (Mike picked it, 13 Nov). Not the open thread,
     /// whose page flies to Archived instead, nor while another row is going.
-    pub(crate) fn archive_row_sliding(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn archive_row_sliding(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let open = self.selected.as_deref() == Some(id.as_str());
         if open || self.sidebar.gestures.leaving.is_some() {
             self.archive_row(id, window, cx);
@@ -518,12 +643,29 @@ impl Threadbear {
         }
     }
 
-    fn send_off(&mut self, id: String, action: SwipeAction, at: f32, plain: bool, cx: &mut Context<Self>) {
-        let quick = if cx.reduce_motion() { SLIDE_OFF_REDUCED } else { SLIDE_OFF };
+    fn send_off(
+        &mut self,
+        id: String,
+        action: SwipeAction,
+        at: f32,
+        plain: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let quick = if cx.reduce_motion() {
+            SLIDE_OFF_REDUCED
+        } else {
+            SLIDE_OFF
+        };
         let gestures = &mut self.sidebar.gestures;
         gestures.swipe.reset();
         gestures.row = None;
-        gestures.leaving = Some(Settling { row: id.clone(), action, from: at, at: Instant::now(), plain });
+        gestures.leaving = Some(Settling {
+            row: id.clone(),
+            action,
+            from: at,
+            at: Instant::now(),
+            plain,
+        });
         if plain {
             gestures.last_slid = Some(id.clone());
         }
@@ -543,9 +685,17 @@ impl Threadbear {
                 .ok();
             // Normally the row's gone by now. One still drawn (the archive
             // was refused, or a list that keeps archived rows) comes back.
-            cx.background_executor().timer(Duration::from_millis(600)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(600))
+                .await;
             me.update(cx, |this, cx| {
-                if this.sidebar.gestures.leaving.as_ref().is_some_and(|s| s.row == id) {
+                if this
+                    .sidebar
+                    .gestures
+                    .leaving
+                    .as_ref()
+                    .is_some_and(|s| s.row == id)
+                {
                     this.sidebar.gestures.leaving = None;
                     cx.notify();
                 }
@@ -560,8 +710,21 @@ impl Threadbear {
     /// The mouse went down on a row, which opens its thread: watched from
     /// here to see whether it's a click, a drag left (the swipe) or the
     /// thread being dragged out. `before` is where the window was.
-    pub(crate) fn row_pressed(&mut self, id: &str, action: Option<SwipeAction>, at: Point<Pixels>, before: crate::shell::NavPlace) {
-        self.sidebar.gestures.press = Some(Press { row: id.to_owned(), action, start: at, last: at, before, decided: None });
+    pub(crate) fn row_pressed(
+        &mut self,
+        id: &str,
+        action: Option<SwipeAction>,
+        at: Point<Pixels>,
+        before: crate::shell::NavPlace,
+    ) {
+        self.sidebar.gestures.press = Some(Press {
+            row: id.to_owned(),
+            action,
+            start: at,
+            last: at,
+            before,
+            decided: None,
+        });
     }
 
     /// The mouse moved with the button down, seen before anything else in the
@@ -570,10 +733,23 @@ impl Threadbear {
     /// thread. Once it's the thread being dragged out, the press opened that
     /// thread, but it's being dragged into the thread that was open, so that
     /// one comes back to drop it on (`dragOut`).
-    pub(crate) fn row_press_moved(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(press) = self.sidebar.gestures.press.as_mut() else { return false };
-        let (dx, dy) = (f64::from(f32::from(at.x - press.start.x)), f64::from(f32::from(at.y - press.start.y)));
-        let (step_x, step_y) = (f64::from(f32::from(at.x - press.last.x)), f64::from(f32::from(at.y - press.last.y)));
+    pub(crate) fn row_press_moved(
+        &mut self,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(press) = self.sidebar.gestures.press.as_mut() else {
+            return false;
+        };
+        let (dx, dy) = (
+            f64::from(f32::from(at.x - press.start.x)),
+            f64::from(f32::from(at.y - press.start.y)),
+        );
+        let (step_x, step_y) = (
+            f64::from(f32::from(at.x - press.last.x)),
+            f64::from(f32::from(at.y - press.last.y)),
+        );
         press.last = at;
         match press.decided {
             Some(Decided::DragOut) => false,
@@ -601,7 +777,9 @@ impl Threadbear {
                 let (row, action) = (press.row.clone(), press.action);
                 let gestures = &mut self.sidebar.gestures;
                 if let Some(action) = action.filter(|_| gestures.leaving.is_none()) {
-                    if gestures.row.as_ref().is_none_or(|(r, _)| *r != row) || gestures.swipe.phase == Phase::Idle {
+                    if gestures.row.as_ref().is_none_or(|(r, _)| *r != row)
+                        || gestures.swipe.phase == Phase::Idle
+                    {
                         gestures.fresh_swipe(&row, action, false);
                     }
                     gestures.move_swipe(step_x, step_y);
@@ -621,13 +799,21 @@ impl Threadbear {
 
     /// The mouse button came up after a press on a row.
     pub(crate) fn row_press_released(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(press) = self.sidebar.gestures.press.take() else { return };
+        let Some(press) = self.sidebar.gestures.press.take() else {
+            return;
+        };
         if press.decided == Some(Decided::DragOut) {
             return;
         }
         if self.sidebar.gestures.swipe.is_swiping() {
             self.swipe_let_go(&press.row, window, cx);
-        } else if self.sidebar.gestures.row.as_ref().is_some_and(|(row, _)| *row == press.row) {
+        } else if self
+            .sidebar
+            .gestures
+            .row
+            .as_ref()
+            .is_some_and(|(row, _)| *row == press.row)
+        {
             // A plain click never left deciding: nothing to spring back.
             self.sidebar.gestures.swipe.reset();
             self.sidebar.gestures.row = None;
@@ -641,18 +827,27 @@ impl Threadbear {
         canvas(
             |_, _, _| {},
             move |_, _, window, _| {
-                let (moved, released) = (app.clone(), app.clone());
+                let (moved, released) = (app.clone(), app);
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture || event.pressed_button != Some(MouseButton::Left) {
+                    if phase != DispatchPhase::Capture
+                        || event.pressed_button != Some(MouseButton::Left)
+                    {
                         return;
                     }
-                    if moved.update(cx, |this, cx| this.row_press_moved(event.position, window, cx)).unwrap_or(false) {
+                    if moved
+                        .update(cx, |this, cx| {
+                            this.row_press_moved(event.position, window, cx)
+                        })
+                        .unwrap_or(false)
+                    {
                         cx.stop_propagation();
                     }
                 });
                 window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
-                        released.update(cx, |this, cx| this.row_press_released(window, cx)).ok();
+                        released
+                            .update(cx, |this, cx| this.row_press_released(window, cx))
+                            .ok();
                     }
                 });
             },
@@ -663,7 +858,14 @@ impl Threadbear {
 
     /// The thread itself, for GPUI's drag of a row out.
     pub(crate) fn dragged_thread(&self, id: &str) -> DraggedThread {
-        DraggedThread { id: id.to_owned(), title: self.threads.get(id).map(|t| t.title.clone()).unwrap_or_default() }
+        DraggedThread {
+            id: id.to_owned(),
+            title: self
+                .threads
+                .get(id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -696,29 +898,59 @@ impl Render for RowDragChip {
 /// The row's middle on screen, in the window's points, found by its tooltip
 /// (its title, then its folder), as a person sees it.
 #[cfg(feature = "automation")]
-fn row_middle(app: &Entity<Threadbear>, id: &str, window: &mut Window, cx: &mut App) -> Result<Point<Pixels>, String> {
+fn row_middle(
+    app: &Entity<Threadbear>,
+    id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Point<Pixels>, String> {
     use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
     window.render_frame(cx);
-    let title = app.read(cx).threads.get(id).map(|t| if t.title.is_empty() { "Untitled".to_owned() } else { t.title.clone() }).ok_or_else(|| format!("no thread {id}"))?;
+    let title = app
+        .read(cx)
+        .threads
+        .get(id)
+        .map(|t| {
+            if t.title.is_empty() {
+                "Untitled".to_owned()
+            } else {
+                t.title.clone()
+            }
+        })
+        .ok_or_else(|| format!("no thread {id}"))?;
     let label = format!("{title}\n");
-    let row = window.elements().into_iter().filter(|e| e.visible() && e.label().is_some_and(|l| l.starts_with(&label))).last();
-    row.map(|r| r.visible_bounds().center()).ok_or_else(|| format!("the row {title:?} isn't on screen"))
+    let row = window
+        .elements()
+        .into_iter()
+        .filter(|e| e.visible() && e.label().is_some_and(|l| l.starts_with(&label)))
+        .next_back();
+    row.map(|r| r.visible_bounds().center())
+        .ok_or_else(|| format!("the row {title:?} isn't on screen"))
 }
 
 /// The row's middle once it's on screen and has stopped moving: a section
 /// folding or unfolding eases its rows shut or open over a moment, and the
 /// rows below it slide meanwhile.
 #[cfg(feature = "automation")]
-async fn row_on_screen(app: &Entity<Threadbear>, id: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<Point<Pixels>, String> {
+async fn row_on_screen(
+    app: &Entity<Threadbear>,
+    id: &str,
+    window: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> Result<Point<Pixels>, String> {
     let mut last = None;
     for _ in 0..60 {
-        let found = cx.update_window(window, |_, window, cx| row_middle(app, id, window, cx)).map_err(|e| e.to_string())?;
+        let found = cx
+            .update_window(window, |_, window, cx| row_middle(app, id, window, cx))
+            .map_err(|e| e.to_string())?;
         match found {
             Ok(at) if last == Some(at) => return Ok(at),
             Ok(at) => last = Some(at),
             Err(_) => last = None,
         }
-        cx.background_executor().timer(Duration::from_millis(60)).await;
+        cx.background_executor()
+            .timer(Duration::from_millis(60))
+            .await;
     }
     last.ok_or_else(|| "that row isn't on screen".to_owned())
 }
@@ -726,10 +958,21 @@ async fn row_on_screen(app: &Entity<Threadbear>, id: &str, window: AnyWindowHand
 /// `row-point`: where a row's middle is, "ok x y", for a real event there
 /// (features/tools/real-gestures.ts).
 #[cfg(feature = "automation")]
-pub(crate) fn row_point_command(app: &Entity<Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
-    let id = app.read(cx).thread_id_from(cmd["id"].as_str().unwrap_or(""))?;
+pub(crate) fn row_point_command(
+    app: &Entity<Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
+    let id = app
+        .read(cx)
+        .thread_id_from(cmd["id"].as_str().unwrap_or(""))?;
     let at = row_middle(app, &id, window, cx)?;
-    Ok(serde_json::json!(format!("ok {} {}", f32::from(at.x).round(), f32::from(at.y).round())))
+    Ok(serde_json::json!(format!(
+        "ok {} {}",
+        f32::from(at.x).round(),
+        f32::from(at.y).round()
+    )))
 }
 
 /// `swipe`, as the Swift app's: two fingers across a sidebar row
@@ -740,17 +983,33 @@ pub(crate) fn row_point_command(app: &Entity<Threadbear>, cmd: &serde_json::Valu
 /// included) carries on and lets go. Says where the row got to and whether
 /// it's past the line, then whether letting go archived it.
 #[cfg(feature = "automation")]
-pub(crate) async fn swipe_command(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
+pub(crate) async fn swipe_command(
+    app: &WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
     let app = app.upgrade().ok_or("the app has gone")?;
-    let id = app.read_with(cx, |t, _| t.thread_id_from(cmd["id"].as_str().unwrap_or("")))?;
+    let id = app.read_with(cx, |t, _| {
+        t.thread_id_from(cmd["id"].as_str().unwrap_or(""))
+    })?;
     let dx = cmd["dx"].as_f64().unwrap_or(0.);
     let steps = cmd["steps"].as_u64().unwrap_or(8).max(1);
     let at = row_on_screen(&app, &id, window, cx).await?;
-    cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| window.pointer_move(at, None, cx))).map_err(|e| e.to_string())?;
+    cx.update_window(window, |_, window, cx| {
+        crate::thread::scripted_input(|| window.pointer_move(at, None, cx))
+    })
+    .map_err(|e| e.to_string())?;
     let send = |x: f64, phase: TouchPhase, cx: &mut AsyncApp| {
         cx.update_window(window, |_, window, cx| {
-            let event = ScrollEvent { position: at, delta: ScrollDelta::Pixels(point(gpui_kit::px(x as f32), gpui_kit::px(0.))), modifiers: Modifiers::default(), touch_phase: phase, source: ScrollSource::Pointer };
+            let event = ScrollEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(gpui_kit::px(x as f32), gpui_kit::px(0.))),
+                modifiers: Modifiers::default(),
+                touch_phase: phase,
+                source: ScrollSource::Pointer,
+            };
             crate::thread::scripted_input(|| {
                 window.dispatch_event(event.to_platform_input(), cx);
                 window.render_frame(cx);
@@ -764,16 +1023,25 @@ pub(crate) async fn swipe_command(app: &WeakEntity<Threadbear>, window: AnyWindo
     }
     for _ in 0..steps {
         send(dx / steps as f64, TouchPhase::Moved, cx)?;
-        cx.background_executor().timer(Duration::from_millis(16)).await;
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
     }
     let along = app.read_with(cx, |t, _| t.sidebar.gestures.along());
     if cmd["lift"].as_bool() == Some(false) {
         return Ok(serde_json::json!(format!("ok {along}")));
     }
     send(0., TouchPhase::Ended, cx)?;
-    cx.background_executor().timer(Duration::from_millis(500)).await;
-    let archived = app.read_with(cx, |t, _| t.threads.get(&id).is_some_and(|t| t.archived_at.is_some()));
-    Ok(serde_json::json!(format!("ok {along}, let go: {}", if archived { "archived" } else { "not archived" })))
+    cx.background_executor()
+        .timer(Duration::from_millis(500))
+        .await;
+    let archived = app.read_with(cx, |t, _| {
+        t.threads.get(&id).is_some_and(|t| t.archived_at.is_some())
+    });
+    Ok(serde_json::json!(format!(
+        "ok {along}, let go: {}",
+        if archived { "archived" } else { "not archived" }
+    )))
 }
 
 /// `row-drag`: the mouse pressed on a row and dragged, by `dx` and `dy` or
@@ -781,10 +1049,17 @@ pub(crate) async fn swipe_command(app: &WeakEntity<Threadbear>, window: AnyWindo
 /// dispatch: left is the swipe, any other way the thread dragged out. Says
 /// how far the row got, then whether letting go archived it.
 #[cfg(feature = "automation")]
-pub(crate) async fn row_drag_command(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
+pub(crate) async fn row_drag_command(
+    app: &WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::TestEventExt as _;
     let app = app.upgrade().ok_or("the app has gone")?;
-    let id = app.read_with(cx, |t, _| t.thread_id_from(cmd["id"].as_str().unwrap_or("")))?;
+    let id = app.read_with(cx, |t, _| {
+        t.thread_id_from(cmd["id"].as_str().unwrap_or(""))
+    })?;
     let from = row_on_screen(&app, &id, window, cx).await?;
     cx.update_window(window, |_, window, cx| {
         crate::thread::scripted_input(|| {
@@ -795,21 +1070,39 @@ pub(crate) async fn row_drag_command(app: &WeakEntity<Threadbear>, window: AnyWi
     .map_err(|e| e.to_string())?;
     let to = match (cmd["x"].as_f64(), cmd["y"].as_f64()) {
         (Some(x), Some(y)) => point(gpui_kit::px(x as f32), gpui_kit::px(y as f32)),
-        _ => point(from.x + gpui_kit::px(cmd["dx"].as_f64().unwrap_or(0.) as f32), from.y + gpui_kit::px(cmd["dy"].as_f64().unwrap_or(0.) as f32)),
+        _ => point(
+            from.x + gpui_kit::px(cmd["dx"].as_f64().unwrap_or(0.) as f32),
+            from.y + gpui_kit::px(cmd["dy"].as_f64().unwrap_or(0.) as f32),
+        ),
     };
     let steps = 12;
     let mut along = String::new();
     for step in 1..=steps {
         let t = step as f32 / steps as f32;
         let at = point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-        cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| window.pointer_move(at, Some(MouseButton::Left), cx))).map_err(|e| e.to_string())?;
-        cx.background_executor().timer(Duration::from_millis(16)).await;
+        cx.update_window(window, |_, window, cx| {
+            crate::thread::scripted_input(|| window.pointer_move(at, Some(MouseButton::Left), cx))
+        })
+        .map_err(|e| e.to_string())?;
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
         if step == steps {
             along = app.read_with(cx, |t, _| t.sidebar.gestures.along());
         }
     }
-    cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| window.pointer_up(to, MouseButton::Left, cx))).map_err(|e| e.to_string())?;
-    cx.background_executor().timer(Duration::from_millis(500)).await;
-    let archived = app.read_with(cx, |t, _| t.threads.get(&id).is_some_and(|t| t.archived_at.is_some()));
-    Ok(serde_json::json!(format!("ok {along}, let go: {}", if archived { "archived" } else { "not archived" })))
+    cx.update_window(window, |_, window, cx| {
+        crate::thread::scripted_input(|| window.pointer_up(to, MouseButton::Left, cx))
+    })
+    .map_err(|e| e.to_string())?;
+    cx.background_executor()
+        .timer(Duration::from_millis(500))
+        .await;
+    let archived = app.read_with(cx, |t, _| {
+        t.threads.get(&id).is_some_and(|t| t.archived_at.is_some())
+    });
+    Ok(serde_json::json!(format!(
+        "ok {along}, let go: {}",
+        if archived { "archived" } else { "not archived" }
+    )))
 }

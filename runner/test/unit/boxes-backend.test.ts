@@ -530,7 +530,7 @@ test('no query hands back a sealed token, a thread key or a key hash', async () 
   for (const x of [...sealed, CLAUDE_TOKEN, got.threadKey]) assert.ok(!text.includes(x), 'nothing secret in what queries return');
 });
 
-// Slice 3's exchange (docs/protocol.md, "Box keys"): the box makes its own
+// Slice 3's exchange (docs/protocol/boxes.md, "Box keys"): the box makes its own
 // key and sends its hash, so an answer lost on the way can be asked for
 // again, by that machine with that key, and by nobody else.
 test("a box's own key: the exchange keeps only its hash, and replays the answer to the same machine and key, never to anyone else", async () => {

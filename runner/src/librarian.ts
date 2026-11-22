@@ -1,5 +1,5 @@
 // The librarian: the runner's own background job that keeps projects up
-// to date (docs/protocol.md, "Projects"). It watches threads' turns and
+// to date (docs/protocol/projects.md, "Projects"). It watches threads' turns and
 // moves, and now and then asks the small model (models/index.ts, feature
 // "projects") which projects a thread belongs in, whether it needs a new
 // one, where the thread has got a project to, and whether the thread's
@@ -1587,7 +1587,7 @@ type PocketSave = { title: string; text: string; place?: string; icon?: PocketIc
 // A card is this thread's only if this Mac's own key filed it for this
 // thread. One another Mac filed (filedBy, through its runner key) can name
 // any thread id, and its text is that Mac's: it's listed by title only,
-// marked, and never acted on (docs/protocol.md, "Runner keys").
+// marked, and never acted on (docs/protocol/keys.md, "Runner keys").
 function isOwnCard(c: PocketCardSummary, threadId: string): boolean {
   return c.threadId === threadId && !c.filedBy;
 }

@@ -1,7 +1,7 @@
 package com.mikerosoft.threadbear.kit
 
 /**
- * Pictures among a message's words, as on the Mac (docs/protocol.md,
+ * Pictures among a message's words, as on the Mac (docs/protocol/threads.md,
  * "Pictures in a message"; InlinePictures.swift on the iPhone). In the
  * composer each photo is a mark in the text, U+FFFC, the k-th mark standing
  * for the k-th photo. A message carries `[Picture N]` markers instead, and

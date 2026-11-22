@@ -66,6 +66,10 @@ export const boxStateV = v.union(
   // Archived with no save, or its save deleted after deleteAfterDays: the
   // thread can't come back. What's sent to it fails, saying so.
   v.object({ kind: v.literal('expired'), at: v.number() }),
+  // Expired past its days again: its thread's and runner's rows are gone,
+  // and the row is deleted in the step that puts it here (boxService.ts
+  // purgeExpiredBoxes), so no stored row is ever in it.
+  v.object({ kind: v.literal('purged'), at: v.number() }),
   // A box couldn't be started or brought back. The thread and its save are
   // kept; the next message tries again.
   v.object({ kind: v.literal('failed'), at: v.number(), error: v.string() }),

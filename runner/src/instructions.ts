@@ -1,4 +1,4 @@
-// Mike's standing instructions for every session (docs/protocol.md,
+// Mike's standing instructions for every session (docs/protocol/settings.md,
 // "Standing instructions"): what every thread's agent should keep in mind,
 // on every login, Claude and Codex alike. After Wayne Sutton's PR.
 //

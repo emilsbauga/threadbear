@@ -13,20 +13,38 @@ use support::*;
 use threadbear_core::reducer::*;
 
 const LIMIT: &str = "You've hit your 5-hour limit · resets 11:30am (Australia/Perth)";
-const MOVED: &str = "Moved to alex@example.org: alex@example.net hit its 5-hour limit, back at 11:30 am.";
-const MOVED_AGAIN: &str = "Moved to alex@example.com: alex@example.org hit its weekly limit, back at Thu 1 pm.";
-const WAITING: &str = "Every login in Claude is out of room. Carrying on at 11:30 am when alex@example.net is back.";
+const MOVED: &str =
+    "Moved to alex@example.org: alex@example.net hit its 5-hour limit, back at 11:30 am.";
+const MOVED_AGAIN: &str =
+    "Moved to alex@example.com: alex@example.org hit its weekly limit, back at Thu 1 pm.";
+const WAITING: &str =
+    "Every login in Claude is out of room. Carrying on at 11:30 am when alex@example.net is back.";
 
 fn mike(seq: i64, words: &str, turn: &str) -> Event {
-    event_turn(seq, "user.message", json!({"text": words, "images": []}), Some(turn))
+    event_turn(
+        seq,
+        "user.message",
+        json!({"text": words, "images": []}),
+        Some(turn),
+    )
 }
 
 fn runner(seq: i64, words: &str, turn: &str) -> Event {
-    event_turn(seq, "user.message", json!({"text": words, "images": [], "origin": "runner"}), Some(turn))
+    event_turn(
+        seq,
+        "user.message",
+        json!({"text": words, "images": [], "origin": "runner"}),
+        Some(turn),
+    )
 }
 
 fn said(seq: i64, item: &str, words: &str, turn: &str) -> Event {
-    event_turn(seq, "assistant.text", json!({"itemId": item, "text": words}), Some(turn))
+    event_turn(
+        seq,
+        "assistant.text",
+        json!({"itemId": item, "text": words}),
+        Some(turn),
+    )
 }
 
 fn note(seq: i64, words: &str) -> Event {
@@ -40,13 +58,22 @@ fn ran_dry(seq: i64, turn: &str) -> Vec<Event> {
     vec![
         said(seq, &format!("limit-{turn}"), LIMIT, turn),
         event_turn(seq + 1, "error", json!({"message": LIMIT}), Some(turn)),
-        event_turn(seq + 2, "turn.completed", json!({"turnId": turn, "outcome": "failed", "durationMs": 600, "error": LIMIT, "errorKind": "usageLimit"}), Some(turn)),
+        event_turn(
+            seq + 2,
+            "turn.completed",
+            json!({"turnId": turn, "outcome": "failed", "durationMs": 600, "error": LIMIT, "errorKind": "usageLimit"}),
+            Some(turn),
+        ),
     ]
 }
 
 /// A turn of work that runs dry at `seq`, after Mike's message.
 fn work_then_dry() -> Vec<Event> {
-    let mut events = vec![mike(1, "Land the fix", "t1"), call_titled(2, "c1", "tb land"), result(3, "c1")];
+    let mut events = vec![
+        mike(1, "Land the fix", "t1"),
+        call_titled(2, "c1", "tb land"),
+        result(3, "c1"),
+    ];
     events.extend(ran_dry(4, "t1"));
     events
 }
@@ -72,9 +99,19 @@ fn a_thread_that_moved_to_another_login_says_so() {
     ]);
     let model = from_events(events);
     assert_eq!(ids(&model), ["u:1", "g:t:c1", "n:7", "n:8", "a:m2", "f:t2"]);
-    let Some(RowContent::Group(group)) = model.row("g:t:c1").map(|r| &r.content) else { panic!("a group") };
-    assert_eq!(group.member_ids, ["t:c1", "u:9", "t:c2"], "the work and the runner's message, with neither copy of the limit");
-    assert!(!words(&model).iter().any(|w| w.contains("You've hit your")), "the notes say which login ran out: {:?}", words(&model));
+    let Some(RowContent::Group(group)) = model.row("g:t:c1").map(|r| &r.content) else {
+        panic!("a group")
+    };
+    assert_eq!(
+        group.member_ids,
+        ["t:c1", "u:9", "t:c2"],
+        "the work and the runner's message, with neither copy of the limit"
+    );
+    assert!(
+        !words(&model).iter().any(|w| w.contains("You've hit your")),
+        "the notes say which login ran out: {:?}",
+        words(&model)
+    );
 }
 
 /// The same thread a second after the limit, while the turn that carries on
@@ -85,13 +122,20 @@ fn the_move_shows_while_the_thread_carries_on() {
     events.extend([
         note(7, MOVED),
         event_turn(8, "turn.started", json!({}), Some("t2")),
-        runner(9, "Your last login hit its usage limit partway through that turn.", "t2"),
+        runner(
+            9,
+            "Your last login hit its usage limit partway through that turn.",
+            "t2",
+        ),
         call_titled(10, "c2", "git push").with_turn("t2"),
     ]);
     let model = from_events(events);
     let rows = ids(&model);
     assert!(rows.iter().any(|r| r == "n:7"), "{rows:?}");
-    assert!(!model.rows().iter().any(|r| r.kind() == RowKind::Error), "{rows:?}");
+    assert!(
+        !model.rows().iter().any(|r| r.kind() == RowKind::Error),
+        "{rows:?}"
+    );
     assert!(!rows.iter().any(|r| r == "a:limit-t1"), "{rows:?}");
 }
 
@@ -101,7 +145,11 @@ fn the_move_shows_while_the_thread_carries_on() {
 #[test]
 fn the_note_takes_the_errors_place_as_it_arrives() {
     let mut model = from_events(work_then_dry());
-    assert_eq!(ids(&model), ["u:1", "g:t:c1", "e:5", "f:t1"], "nothing says what happens next yet, so the error stays; its echo is gone");
+    assert_eq!(
+        ids(&model),
+        ["u:1", "g:t:c1", "e:5", "f:t1"],
+        "nothing says what happens next yet, so the error stays; its echo is gone"
+    );
     model.apply(vec![note(7, MOVED)]);
     assert_eq!(ids(&model), ["u:1", "g:t:c1", "f:t1", "n:7"]);
 }
@@ -124,12 +172,22 @@ fn a_limit_nothing_was_done_about_keeps_its_error() {
     let mut events = work_then_dry();
     // Not a login's note: it doesn't stand in for the error.
     events.push(note(7, "Put in Threadbear by the librarian."));
-    events.extend([mike(8, "Carry on", "t2"), said(9, "m2", "Done.", "t2"), done_turn(10, "t2")]);
+    events.extend([
+        mike(8, "Carry on", "t2"),
+        said(9, "m2", "Done.", "t2"),
+        done_turn(10, "t2"),
+    ]);
     let model = from_events(events);
     let rows = ids(&model);
     assert!(rows.iter().any(|r| r == "e:5"), "{rows:?}");
-    assert!(!rows.iter().any(|r| r == "a:limit-t1"), "the same words twice: {rows:?}");
-    assert!(!rows.iter().any(|r| r == "n:7"), "an ordinary note still folds: {rows:?}");
+    assert!(
+        !rows.iter().any(|r| r == "a:limit-t1"),
+        "the same words twice: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|r| r == "n:7"),
+        "an ordinary note still folds: {rows:?}"
+    );
 }
 
 /// Only the error's own words over again go. A failed turn that said
@@ -139,8 +197,18 @@ fn a_failed_turns_other_words_stay() {
     let model = from_events(vec![
         mike(1, "Deploy it", "t1"),
         said(2, "m1", "Deploying now.", "t1"),
-        event_turn(3, "error", json!({"message": "The CLI stopped."}), Some("t1")),
-        event_turn(4, "turn.completed", json!({"turnId": "t1", "outcome": "failed", "durationMs": 600, "error": "The CLI stopped."}), Some("t1")),
+        event_turn(
+            3,
+            "error",
+            json!({"message": "The CLI stopped."}),
+            Some("t1"),
+        ),
+        event_turn(
+            4,
+            "turn.completed",
+            json!({"turnId": "t1", "outcome": "failed", "durationMs": 600, "error": "The CLI stopped."}),
+            Some("t1"),
+        ),
     ]);
     assert_eq!(ids(&model), ["u:1", "a:m1", "e:3", "f:t1"]);
 }
@@ -154,9 +222,21 @@ fn a_summary_written_before_the_limit_is_still_the_reply() {
         mike(1, "Patch it", "t1"),
         call_titled(2, "c1", "make"),
         result(3, "c1"),
-        call_with(4, "e1", "mcp__threadbear__end_turn", "command", "ls", json!({"needs": "nothing"})),
+        call_with(
+            4,
+            "e1",
+            "mcp__threadbear__end_turn",
+            "command",
+            "ls",
+            json!({"needs": "nothing"}),
+        ),
         result_text(5, "e1", "Noted: this thread is done."),
-        event_turn(6, "assistant.text", json!({"itemId": "e1.summary", "text": "- Patched.", "summary": true}), Some("t1")),
+        event_turn(
+            6,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- Patched.", "summary": true}),
+            Some("t1"),
+        ),
     ];
     events.extend(ran_dry(7, "t1"));
     events.push(note(10, MOVED));
@@ -164,7 +244,10 @@ fn a_summary_written_before_the_limit_is_still_the_reply() {
     let rows = ids(&model);
     assert!(rows.iter().any(|r| r == "a:e1.summary"), "{rows:?}");
     assert!(rows.iter().any(|r| r == "n:10"), "{rows:?}");
-    assert!(!rows.iter().any(|r| r == "a:limit-t1" || r == "e:8"), "{rows:?}");
+    assert!(
+        !rows.iter().any(|r| r == "a:limit-t1" || r == "e:8"),
+        "{rows:?}"
+    );
 }
 
 /// A message that was streaming as the app reconnected never gets its turn
@@ -176,7 +259,10 @@ fn an_echo_with_no_turn_goes_too() {
     events.push(note(7, MOVED));
     let model = from_events(events);
     let rows = ids(&model);
-    assert!(!rows.iter().any(|r| r == "a:limit-t1" || r == "e:5"), "{rows:?}");
+    assert!(
+        !rows.iter().any(|r| r == "a:limit-t1" || r == "e:5"),
+        "{rows:?}"
+    );
 }
 
 /// Mike's No on the limit box takes the wait back: that stays on show too,
@@ -184,7 +270,13 @@ fn an_echo_with_no_turn_goes_too() {
 #[test]
 fn turning_carry_on_off_shows_under_the_wait() {
     let mut events = work_then_dry();
-    events.extend([note(7, WAITING), note(8, "Won't carry on by itself. Send a message when you want it to.")]);
+    events.extend([
+        note(7, WAITING),
+        note(
+            8,
+            "Won't carry on by itself. Send a message when you want it to.",
+        ),
+    ]);
     let model = from_events(events);
     assert_eq!(ids(&model), ["u:1", "g:t:c1", "f:t1", "n:7", "n:8"]);
 }

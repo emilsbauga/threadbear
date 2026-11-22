@@ -13,14 +13,18 @@ const LABEL: &str = "com.mikerosoft.threadbear.runner";
 /// took it. Blocks while launchctl runs, so it's called off the main thread.
 #[cfg(target_os = "macos")]
 pub(crate) fn start() -> Option<String> {
-    let Some(uid) = uid() else { return Some("Couldn't tell which user to start the runner for.".into()) };
+    let Some(uid) = uid() else {
+        return Some("Couldn't tell which user to start the runner for.".into());
+    };
     let domain = format!("gui/{uid}");
     let service = format!("{domain}/{LABEL}");
     if launchctl(&["kickstart", &service]) {
         return None;
     }
     // Not loaded yet: load it from its plist, then start it.
-    let plist = dirs_home().join("Library/LaunchAgents").join(format!("{LABEL}.plist"));
+    let plist = dirs_home()
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist"));
     if !plist.exists() {
         return Some("The runner isn't installed. Run runner/scripts/install-runner.sh in the threadbear repo.".into());
     }
@@ -38,17 +42,27 @@ pub(crate) fn start() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn launchctl(args: &[&str]) -> bool {
-    std::process::Command::new("/bin/launchctl").args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+    std::process::Command::new("/bin/launchctl")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 #[cfg(target_os = "macos")]
 fn uid() -> Option<String> {
-    let out = std::process::Command::new("/usr/bin/id").arg("-u").output().ok()?;
+    let out = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .ok()?;
     let uid = String::from_utf8(out.stdout).ok()?.trim().to_owned();
     (!uid.is_empty() && uid.chars().all(|c| c.is_ascii_digit())).then_some(uid)
 }
 
 #[cfg(target_os = "macos")]
 fn dirs_home() -> std::path::PathBuf {
-    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default()
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
 }

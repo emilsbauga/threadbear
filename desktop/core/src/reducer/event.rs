@@ -3,7 +3,7 @@
 // reducer reads.
 //
 // Decoding goes through serde_json::Value by hand rather than serde's derive,
-// because the Swift decoders' tolerance (docs/protocol.md: "keep both sides
+// because the Swift decoders' tolerance (AGENTS.md: "keep both sides
 // tolerant of unknown fields and event types") is written field by field:
 // some fields fall back when the value is the wrong type (`try?`), some fail
 // the whole event (`try`), and which is which is part of the behaviour. Each
@@ -54,7 +54,7 @@ fn int_value(v: &Value) -> Option<i64> {
         return Some(i);
     }
     let f = v.as_f64()?;
-    if f.fract() == 0.0 && (-9.223372036854775808e18..9.223372036854775808e18).contains(&f) {
+    if f.fract() == 0.0 && (-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&f) {
         Some(f as i64)
     } else {
         None
@@ -87,7 +87,12 @@ fn lossy<T>(c: &Object, key: &str, decode: impl FnMut(&Value) -> Option<T>) -> V
 
 /// `lossy` over at most the first `max` items: what a list from another
 /// runner can't be longer than, so a longer one isn't decoded to be cut.
-fn lossy_first<T>(c: &Object, key: &str, max: usize, mut decode: impl FnMut(&Value) -> Option<T>) -> Vec<T> {
+fn lossy_first<T>(
+    c: &Object,
+    key: &str,
+    max: usize,
+    mut decode: impl FnMut(&Value) -> Option<T>,
+) -> Vec<T> {
     match c.get(key) {
         Some(Value::Array(items)) => items.iter().take(max).filter_map(&mut decode).collect(),
         _ => Vec::new(),
@@ -96,7 +101,11 @@ fn lossy_first<T>(c: &Object, key: &str, max: usize, mut decode: impl FnMut(&Val
 
 /// A `[String]` that's all strings, or None (a `try?` over a strict array).
 fn strings_strict(c: &Object, key: &str) -> Option<Vec<String>> {
-    c.get(key)?.as_array()?.iter().map(|v| v.as_str().map(str::to_owned)).collect()
+    c.get(key)?
+        .as_array()?
+        .iter()
+        .map(|v| v.as_str().map(str::to_owned))
+        .collect()
 }
 
 fn lossy_strings(c: &Object, key: &str) -> Vec<String> {
@@ -115,7 +124,12 @@ pub struct ImageRef {
 
 impl ImageRef {
     pub fn new(path: &str, media_type: &str) -> ImageRef {
-        ImageRef { path: path.to_owned(), media_type: media_type.to_owned(), width: None, height: None }
+        ImageRef {
+            path: path.to_owned(),
+            media_type: media_type.to_owned(),
+            width: None,
+            height: None,
+        }
     }
 
     /// Lenient about sizes (never `Int(_:)` of a number off the wire), strict
@@ -123,7 +137,9 @@ impl ImageRef {
     pub fn decode(v: &Value) -> Option<ImageRef> {
         let c = v.as_object()?;
         let path = c.get("path")?.as_str()?.to_owned();
-        let media_type = string_strict(c, "mediaType").ok()?.unwrap_or_else(|| "image/png".to_owned());
+        let media_type = string_strict(c, "mediaType")
+            .ok()?
+            .unwrap_or_else(|| "image/png".to_owned());
         let size = |key: &str| -> Result<Option<i64>, ()> {
             match c.get(key) {
                 None | Some(Value::Null) => Ok(None),
@@ -135,7 +151,12 @@ impl ImageRef {
         };
         let width = size("width").ok()?;
         let height = size("height").ok()?;
-        Some(ImageRef { path, media_type, width, height })
+        Some(ImageRef {
+            path,
+            media_type,
+            width,
+            height,
+        })
     }
 }
 
@@ -158,7 +179,11 @@ pub struct BackgroundTask {
 
 impl BackgroundTask {
     pub fn new(kind: BackgroundKind, description: &str, finished: bool) -> BackgroundTask {
-        BackgroundTask { kind, description: description.to_owned(), finished }
+        BackgroundTask {
+            kind,
+            description: description.to_owned(),
+            finished,
+        }
     }
 
     /// `BackgroundTask.init(from:)`: lenient about a kind it doesn't know,
@@ -181,7 +206,11 @@ impl BackgroundTask {
             Some(Value::Bool(b)) => *b,
             Some(_) => return None,
         };
-        Some(BackgroundTask { kind, description, finished })
+        Some(BackgroundTask {
+            kind,
+            description,
+            finished,
+        })
     }
 }
 
@@ -205,7 +234,10 @@ impl LooseEnds {
     pub fn decode(v: &Value) -> Option<LooseEnds> {
         let c = v.as_object()?;
         let seq = lenient_int(c, "seq")?;
-        Some(LooseEnds { seq, ends: lossy(c, "ends", LooseEnd::decode) })
+        Some(LooseEnds {
+            seq,
+            ends: lossy(c, "ends", LooseEnd::decode),
+        })
     }
 
     /// Any that should stop a plain Archive: a booked check-in doesn't.
@@ -216,7 +248,12 @@ impl LooseEnds {
 
 impl LooseEnd {
     pub fn new(kind: &str, text: &str) -> LooseEnd {
-        LooseEnd { kind: kind.to_owned(), text: text.to_owned(), thread_id: None, at: None }
+        LooseEnd {
+            kind: kind.to_owned(),
+            text: text.to_owned(),
+            thread_id: None,
+            at: None,
+        }
     }
 
     /// A check-in booked on the thread (`scheduled`, Swift `isBooked`): it
@@ -228,11 +265,20 @@ impl LooseEnd {
     /// Its line on the done card (looseEndsText): a booked check-in says
     /// when it comes back first, "Fri 13 Nov, 9:30 am: Review the week".
     pub fn line<Tz: chrono::TimeZone>(&self, tz: &Tz) -> String {
-        let when = self.at.as_deref().filter(|_| self.is_booked()).and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok());
+        let when = self
+            .at
+            .as_deref()
+            .filter(|_| self.is_booked())
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok());
         match when {
             Some(at) => {
                 let at = at.with_timezone(tz);
-                format!("{}: {}", at.naive_local().format("%a %-d %b, ").to_string() + &crate::schedules::time_of_day(&at), self.text)
+                format!(
+                    "{}: {}",
+                    at.naive_local().format("%a %-d %b, ").to_string()
+                        + &crate::schedules::time_of_day(&at),
+                    self.text
+                )
             }
             None => self.text.clone(),
         }
@@ -267,7 +313,10 @@ pub struct Ask {
 
 impl Ask {
     pub fn new(action: &str) -> Ask {
-        Ask { action: action.to_owned(), ..Ask::default() }
+        Ask {
+            action: action.to_owned(),
+            ..Ask::default()
+        }
     }
 
     pub fn decode(v: &Value) -> Option<Ask> {
@@ -275,7 +324,11 @@ impl Ask {
         let action = c.get("action")?.as_str()?.to_owned();
         let options = strings_strict(c, "options").unwrap_or_default();
         let notes = strings_strict(c, "optionNotes").unwrap_or_default();
-        let option_notes = if notes.len() == options.len() && notes.iter().any(|n| !n.is_empty()) { notes } else { Vec::new() };
+        let option_notes = if notes.len() == options.len() && notes.iter().any(|n| !n.is_empty()) {
+            notes
+        } else {
+            Vec::new()
+        };
         let suggested = c
             .get("suggested")
             .and_then(int_value)
@@ -304,7 +357,10 @@ pub struct AskLink {
 impl AskLink {
     pub fn decode(v: &Value) -> Option<AskLink> {
         let c = v.as_object()?;
-        Some(AskLink { title: c.get("title")?.as_str()?.to_owned(), url: c.get("url")?.as_str()?.to_owned() })
+        Some(AskLink {
+            title: c.get("title")?.as_str()?.to_owned(),
+            url: c.get("url")?.as_str()?.to_owned(),
+        })
     }
 
     /// What clicking it opens (`AskLink.target`): a web page, a file with `~`
@@ -338,7 +394,10 @@ pub struct AskAnswer {
 impl AskAnswer {
     pub fn decode(v: &Value) -> Option<AskAnswer> {
         let c = v.as_object()?;
-        Some(AskAnswer { action: c.get("action")?.as_str()?.to_owned(), answer: c.get("answer")?.as_str()?.to_owned() })
+        Some(AskAnswer {
+            action: c.get("action")?.as_str()?.to_owned(),
+            answer: c.get("answer")?.as_str()?.to_owned(),
+        })
     }
 }
 
@@ -376,14 +435,35 @@ impl ReviewDraft {
                 // At most one note an option, each cut to what the runner
                 // takes (reviewDraft): a moved thread's events are the
                 // other runner's word.
-                map.iter().take(REVIEW_OPTIONS_MAX).map(|(k, v)| v.as_str().map(|s| (k.clone(), review_text(s.to_owned(), REVIEW_NOTE_MAX)))).collect::<Option<BTreeMap<_, _>>>()
+                map.iter()
+                    .take(REVIEW_OPTIONS_MAX)
+                    .map(|(k, v)| {
+                        v.as_str()
+                            .map(|s| (k.clone(), review_text(s.to_owned(), REVIEW_NOTE_MAX)))
+                    })
+                    .collect::<Option<BTreeMap<_, _>>>()
             })
             .unwrap_or_default();
         let mut picked_ids = picked_ids;
         picked_ids.truncate(REVIEW_OPTIONS_MAX);
         // A picture that doesn't read is left out rather than the draft.
-        let images = c.get("images").and_then(Value::as_array).map(|list| list.iter().take(REVIEW_REPLY_IMAGES_MAX).filter_map(ImageRef::decode).collect()).unwrap_or_default();
-        Some(ReviewDraft { picked_ids, notes, reply: string(c, "reply").map(|r| review_text(r, REVIEW_REPLY_MAX)), images, none: boolean(c, "none").unwrap_or(false) })
+        let images = c
+            .get("images")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .take(REVIEW_REPLY_IMAGES_MAX)
+                    .filter_map(ImageRef::decode)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(ReviewDraft {
+            picked_ids,
+            notes,
+            reply: string(c, "reply").map(|r| review_text(r, REVIEW_REPLY_MAX)),
+            images,
+            none: boolean(c, "none").unwrap_or(false),
+        })
     }
 }
 
@@ -397,13 +477,19 @@ pub struct ReviewShot {
 impl ReviewShot {
     fn decode(v: &Value) -> Option<ReviewShot> {
         let c = v.as_object()?;
-        let title = string_strict(c, "title").ok()?.map(|t| review_text(t, REVIEW_TITLE_MAX));
+        let title = string_strict(c, "title")
+            .ok()?
+            .map(|t| review_text(t, REVIEW_TITLE_MAX));
         let image = ImageRef::decode(c.get("image")?)?;
         let media = match c.get("media") {
             None | Some(Value::Null) => None,
             Some(v) => Some(ImageRef::decode(v)?),
         };
-        Some(ReviewShot { title, image, media })
+        Some(ReviewShot {
+            title,
+            image,
+            media,
+        })
     }
 }
 
@@ -444,14 +530,29 @@ impl ReviewOption {
     fn decode(v: &Value) -> Option<ReviewOption> {
         let c = v.as_object()?;
         let id = c.get("id")?.as_str()?.to_owned();
-        let title = review_text(string_strict(c, "title").ok()?.unwrap_or_else(|| id.clone()), REVIEW_TITLE_MAX);
-        let note = string_strict(c, "note").ok()?.map(|n| review_text(n, REVIEW_NOTE_MAX));
+        let title = review_text(
+            string_strict(c, "title")
+                .ok()?
+                .unwrap_or_else(|| id.clone()),
+            REVIEW_TITLE_MAX,
+        );
+        let note = string_strict(c, "note")
+            .ok()?
+            .map(|n| review_text(n, REVIEW_NOTE_MAX));
         let reference = boolean(c, "reference").unwrap_or(false);
         let image = ImageRef::decode(c.get("image")?)?;
         // Only a web page (LinkPolicy.web): a runner, maybe another Mac's,
         // sends this, and Open live hands it to the system.
         let url = string(c, "url").filter(|u| is_web_address(u));
-        Some(ReviewOption { id, title, note, reference, image, shots: lossy_first(c, "shots", REVIEW_SHOTS_MAX, ReviewShot::decode), url })
+        Some(ReviewOption {
+            id,
+            title,
+            note,
+            reference,
+            image,
+            shots: lossy_first(c, "shots", REVIEW_SHOTS_MAX, ReviewShot::decode),
+            url,
+        })
     }
 }
 
@@ -462,7 +563,9 @@ pub fn is_web_address(url: &str) -> bool {
     if text::count(url) > 8192 {
         return false;
     }
-    let Some(colon) = url.find("://") else { return false };
+    let Some(colon) = url.find("://") else {
+        return false;
+    };
     let scheme = url[..colon].to_ascii_lowercase();
     if scheme != "http" && scheme != "https" {
         return false;
@@ -471,7 +574,7 @@ pub fn is_web_address(url: &str) -> bool {
         return false;
     }
     let rest = &url[colon + 3..];
-    let authority = rest.split(|c| c == '/' || c == '?' || c == '#').next().unwrap_or("");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = authority.rsplit('@').next().unwrap_or("");
     let host = host.split(':').next().unwrap_or("");
     !host.is_empty()
@@ -507,14 +610,25 @@ impl DesignReview {
     pub fn decode(v: &Value) -> Option<DesignReview> {
         let c = v.as_object()?;
         let id = c.get("id")?.as_str()?.to_owned();
-        let title = review_text(string_strict(c, "title").ok()?.unwrap_or_else(|| "Design options".to_owned()), REVIEW_TITLE_MAX);
-        let note = string_strict(c, "note").ok()?.map(|n| review_text(n, REVIEW_NOTE_MAX));
+        let title = review_text(
+            string_strict(c, "title")
+                .ok()?
+                .unwrap_or_else(|| "Design options".to_owned()),
+            REVIEW_TITLE_MAX,
+        );
+        let note = string_strict(c, "note")
+            .ok()?
+            .map(|n| review_text(n, REVIEW_NOTE_MAX));
         let recommended = string(c, "recommended");
         let options = lossy_first(c, "options", REVIEW_OPTIONS_MAX, ReviewOption::decode);
-        let status = string_strict(c, "status").ok()?.unwrap_or_else(|| "unknown".to_owned());
+        let status = string_strict(c, "status")
+            .ok()?
+            .unwrap_or_else(|| "unknown".to_owned());
         let revision = lenient_int(c, "revision").unwrap_or(0);
         let created_at = string_strict(c, "createdAt").ok()?.unwrap_or_default();
-        let updated_at = string_strict(c, "updatedAt").ok()?.unwrap_or_else(|| created_at.clone());
+        let updated_at = string_strict(c, "updatedAt")
+            .ok()?
+            .unwrap_or_else(|| created_at.clone());
         let draft = match c.get("draft") {
             None | Some(Value::Null) => ReviewDraft::default(),
             Some(v) => ReviewDraft::decode(v)?,
@@ -524,7 +638,20 @@ impl DesignReview {
             Some(v) => Some(ReviewDraft::decode(v)?),
         };
         let reply_turn_id = string_strict(c, "replyTurnId").ok()?;
-        Some(DesignReview { id, title, note, recommended, options, status, revision, created_at, updated_at, draft, response, reply_turn_id })
+        Some(DesignReview {
+            id,
+            title,
+            note,
+            recommended,
+            options,
+            status,
+            revision,
+            created_at,
+            updated_at,
+            draft,
+            response,
+            reply_turn_id,
+        })
     }
 }
 
@@ -546,7 +673,11 @@ pub struct ReviewAnswerLine {
 impl ReviewAnswer {
     /// None when the text isn't the runner's wording for this review and
     /// draft, so the bubble shows it as it is.
-    pub fn parse(text: &str, review_id: Option<&str>, response: Option<&ReviewDraft>) -> Option<ReviewAnswer> {
+    pub fn parse(
+        text: &str,
+        review_id: Option<&str>,
+        response: Option<&ReviewDraft>,
+    ) -> Option<ReviewAnswer> {
         let (review_id, response) = (review_id?, response?);
         // "Review: <title> (<id>)"
         let head = format!(" ({review_id})");
@@ -565,35 +696,69 @@ impl ReviewAnswer {
             if let Some(without) = option.strip_suffix('.') {
                 option = without;
             }
-            let what = if picks.len() == 1 { Self::bare(option, &picks[0]) } else { option };
-            lines.push(ReviewAnswerLine { label: title.clone(), text: format!("Picked {}: {what}", picks.join(" + ")) });
+            let what = if picks.len() == 1 {
+                Self::bare(option, &picks[0])
+            } else {
+                option
+            };
+            lines.push(ReviewAnswerLine {
+                label: title.clone(),
+                text: format!("Picked {}: {what}", picks.join(" + ")),
+            });
             rest = &rest[end..];
         }
         if response.none {
             rest = rest.strip_prefix("\n\nPicked none of them.")?;
-            lines.push(ReviewAnswerLine { label: title.clone(), text: "None of them".to_owned() });
+            lines.push(ReviewAnswerLine {
+                label: title.clone(),
+                text: "None of them".to_owned(),
+            });
         }
         // His reply, as he wrote it, under the pick or on its own.
         if let Some(reply) = response.reply.as_deref().filter(|r| !r.is_empty()) {
             let lead = format!("\n\n{reply}");
             rest = rest.strip_prefix(&lead)?;
-            let label = if lines.is_empty() { title.clone() } else { String::new() };
-            lines.push(ReviewAnswerLine { label, text: reply.to_owned() });
+            let label = if lines.is_empty() {
+                title.clone()
+            } else {
+                String::new()
+            };
+            lines.push(ReviewAnswerLine {
+                label,
+                text: reply.to_owned(),
+            });
         }
         // "Notes on <id> (<option title>): <note>", in the review's option
         // order, which the draft doesn't keep, so whichever comes next.
-        let mut notes: Vec<(&str, &str)> =
-            response.notes.iter().filter(|(_, note)| !note.is_empty()).map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut notes: Vec<(&str, &str)> = response
+            .notes
+            .iter()
+            .filter(|(_, note)| !note.is_empty())
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         while !notes.is_empty() {
-            let position = notes.iter().position(|(id, _)| rest.starts_with(&format!("\n\nNotes on {id} (")))?;
+            let position = notes
+                .iter()
+                .position(|(id, _)| rest.starts_with(&format!("\n\nNotes on {id} (")))?;
             let (id, note) = notes.remove(position);
             rest = &rest[format!("\n\nNotes on {id} (").len()..];
             let tail = format!("): {note}");
             let found = rest.find(&tail)?;
             let option = &rest[..found];
             // With nothing picked, the review's title goes over the first one.
-            let label = format!("{}Notes on {id}: {}", if lines.is_empty() { format!("{title}\n") } else { String::new() }, Self::bare(option, id));
-            lines.push(ReviewAnswerLine { label, text: note.to_owned() });
+            let label = format!(
+                "{}Notes on {id}: {}",
+                if lines.is_empty() {
+                    format!("{title}\n")
+                } else {
+                    String::new()
+                },
+                Self::bare(option, id)
+            );
+            lines.push(ReviewAnswerLine {
+                label,
+                text: note.to_owned(),
+            });
             rest = &rest[found + tail.len()..];
         }
         (rest.is_empty() && !lines.is_empty()).then_some(ReviewAnswer { lines })
@@ -606,7 +771,10 @@ impl ReviewAnswer {
         "Don't offer one of these later (a next step, a follow-up) as if it were new: say it's one they passed over.";
 
     fn without_passed_over(text: &str) -> &str {
-        match text.strip_suffix(Self::PASSED_OVER_TAIL).and_then(|_| text.rfind("\n\nPassed over: ")) {
+        match text
+            .strip_suffix(Self::PASSED_OVER_TAIL)
+            .and_then(|_| text.rfind("\n\nPassed over: "))
+        {
             Some(start) => &text[..start],
             None => text,
         }
@@ -691,7 +859,12 @@ impl StartRequest {
             None | Some(Value::Null) => None,
             Some(v) => Some(runner(v)?),
         };
-        let runners = c.get("runners")?.as_array()?.iter().map(runner).collect::<Option<Vec<_>>>()?;
+        let runners = c
+            .get("runners")?
+            .as_array()?
+            .iter()
+            .map(runner)
+            .collect::<Option<Vec<_>>>()?;
         Some(StartRequest {
             request,
             target,
@@ -752,14 +925,24 @@ pub struct ToolCall {
 
 impl ToolCall {
     pub fn new(item_id: &str, name: &str, kind: ToolKind, title: &str, input: Value) -> ToolCall {
-        ToolCall { item_id: item_id.to_owned(), name: name.to_owned(), kind, title: title.to_owned(), input }
+        ToolCall {
+            item_id: item_id.to_owned(),
+            name: name.to_owned(),
+            kind,
+            title: title.to_owned(),
+            input,
+        }
     }
 
     fn decode(c: &Object) -> ToolCall {
         let name = string(c, "name").unwrap_or_else(|| "Tool".to_owned());
         ToolCall {
             item_id: string(c, "itemId").unwrap_or_default(),
-            kind: c.get("kind").and_then(Value::as_str).map(ToolKind::from_raw).unwrap_or(ToolKind::Other),
+            kind: c
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(ToolKind::from_raw)
+                .unwrap_or(ToolKind::Other),
             title: string(c, "title").unwrap_or_else(|| name.clone()),
             input: any(c, "input").unwrap_or_else(|| json!({})),
             name,
@@ -781,7 +964,12 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub fn new(item_id: &str, ok: bool, text: &str) -> ToolResult {
-        ToolResult { item_id: item_id.to_owned(), ok, text: text.to_owned(), ..ToolResult::default() }
+        ToolResult {
+            item_id: item_id.to_owned(),
+            ok,
+            text: text.to_owned(),
+            ..ToolResult::default()
+        }
     }
 
     fn decode(c: &Object) -> ToolResult {
@@ -792,7 +980,11 @@ impl ToolResult {
             truncated: boolean(c, "truncated").unwrap_or(false),
             blob_path: string(c, "blobPath"),
             images: lossy(c, "images", ImageRef::decode),
-            held_back_seq: c.get("heldBack").and_then(Value::as_object).and_then(|held| held.get("seq")).and_then(int_value),
+            held_back_seq: c
+                .get("heldBack")
+                .and_then(Value::as_object)
+                .and_then(|held| held.get("seq"))
+                .and_then(int_value),
         }
     }
 }
@@ -814,9 +1006,17 @@ impl DiffHunk {
         let lines = lossy_strings(c, "lines");
         let old_start = lenient_int(c, "oldStart").unwrap_or(1);
         let new_start = lenient_int(c, "newStart").unwrap_or(old_start);
-        let old_lines = lenient_int(c, "oldLines").unwrap_or_else(|| lines.iter().filter(|l| !l.starts_with('+')).count() as i64);
-        let new_lines = lenient_int(c, "newLines").unwrap_or_else(|| lines.iter().filter(|l| !l.starts_with('-')).count() as i64);
-        Some(DiffHunk { old_start, old_lines, new_start, new_lines, lines })
+        let old_lines = lenient_int(c, "oldLines")
+            .unwrap_or_else(|| lines.iter().filter(|l| !l.starts_with('+')).count() as i64);
+        let new_lines = lenient_int(c, "newLines")
+            .unwrap_or_else(|| lines.iter().filter(|l| !l.starts_with('-')).count() as i64);
+        Some(DiffHunk {
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+            lines,
+        })
     }
 }
 
@@ -875,7 +1075,11 @@ impl ApprovalRequest {
             name: name.to_owned(),
             title: title.to_owned(),
             input,
-            options: vec![ApprovalOption::Allow, ApprovalOption::AllowAlways, ApprovalOption::Deny],
+            options: vec![
+                ApprovalOption::Allow,
+                ApprovalOption::AllowAlways,
+                ApprovalOption::Deny,
+            ],
         }
     }
 
@@ -889,17 +1093,27 @@ impl ApprovalRequest {
         // left with none still gets Allow and Deny, which every runner takes,
         // rather than no buttons.
         let raw: Vec<String> = match c.get("options") {
-            Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
             _ => vec!["allow".to_owned(), "deny".to_owned()],
         };
-        let known: Vec<ApprovalOption> = raw.iter().filter_map(|o| ApprovalOption::from_raw(o)).collect();
+        let known: Vec<ApprovalOption> = raw
+            .iter()
+            .filter_map(|o| ApprovalOption::from_raw(o))
+            .collect();
         ApprovalRequest {
             approval_id: string(c, "approvalId").unwrap_or_default(),
             item_id: string(c, "itemId"),
             title: string(c, "title").unwrap_or_else(|| name.clone()),
             name,
             input: any(c, "input").unwrap_or_else(|| json!({})),
-            options: if known.is_empty() { vec![ApprovalOption::Allow, ApprovalOption::Deny] } else { known },
+            options: if known.is_empty() {
+                vec![ApprovalOption::Allow, ApprovalOption::Deny]
+            } else {
+                known
+            },
         }
     }
 }
@@ -914,11 +1128,16 @@ impl QuestionOption {
     fn decode(v: &Value) -> Option<QuestionOption> {
         // A bare string is taken as the label.
         if let Some(label) = v.as_str() {
-            return Some(QuestionOption { label: label.to_owned(), description: None });
+            return Some(QuestionOption {
+                label: label.to_owned(),
+                description: None,
+            });
         }
         let c = v.as_object()?;
         Some(QuestionOption {
-            label: string(c, "label").or_else(|| string(c, "value")).unwrap_or_default(),
+            label: string(c, "label")
+                .or_else(|| string(c, "value"))
+                .unwrap_or_default(),
             description: string(c, "description"),
         })
     }
@@ -939,7 +1158,10 @@ impl Question {
             question: string(c, "question").unwrap_or_default(),
             header: string(c, "header"),
             multi_select: boolean(c, "multiSelect").unwrap_or(false),
-            options: lossy(c, "options", QuestionOption::decode).into_iter().filter(|o| !o.label.is_empty()).collect(),
+            options: lossy(c, "options", QuestionOption::decode)
+                .into_iter()
+                .filter(|o| !o.label.is_empty())
+                .collect(),
         })
     }
 }
@@ -975,17 +1197,31 @@ pub struct SecretRequest {
 
 impl SecretRequest {
     pub fn new(approval_id: &str, label: &str) -> SecretRequest {
-        SecretRequest { approval_id: approval_id.to_owned(), item_id: None, label: label.to_owned(), reason: String::new(), placeholder: None }
+        SecretRequest {
+            approval_id: approval_id.to_owned(),
+            item_id: None,
+            label: label.to_owned(),
+            reason: String::new(),
+            placeholder: None,
+        }
     }
 
     fn decode(c: &Object) -> SecretRequest {
-        let label = string(c, "label").map(|l| text::trim_ws_nl(&l).to_owned()).unwrap_or_default();
+        let label = string(c, "label")
+            .map(|l| text::trim_ws_nl(&l).to_owned())
+            .unwrap_or_default();
         let placeholder = string(c, "placeholder").map(|p| text::trim_ws_nl(&p).to_owned());
         SecretRequest {
             approval_id: string(c, "approvalId").unwrap_or_default(),
             item_id: string(c, "itemId").filter(|id| !id.is_empty()),
-            label: if label.is_empty() { "A secret".to_owned() } else { label },
-            reason: string(c, "reason").map(|r| text::trim_ws_nl(&r).to_owned()).unwrap_or_default(),
+            label: if label.is_empty() {
+                "A secret".to_owned()
+            } else {
+                label
+            },
+            reason: string(c, "reason")
+                .map(|r| text::trim_ws_nl(&r).to_owned())
+                .unwrap_or_default(),
             placeholder: placeholder.filter(|p| !p.is_empty()),
         }
     }
@@ -1025,7 +1261,7 @@ impl ApprovalDecision {
 }
 
 /// The agent's other calls from the same reply, waiting behind an approval
-/// card (`ApprovalQueue`, docs/protocol.md "Queued calls").
+/// card (`ApprovalQueue`, docs/protocol/threads.md "Queued calls").
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApprovalQueue {
     pub approval_id: String,
@@ -1048,13 +1284,18 @@ impl ApprovalQueue {
             Some(ApprovalRequest {
                 approval_id: item_id.clone(),
                 item_id: Some(item_id),
-                title: title.or_else(|| name.clone()).unwrap_or_else(|| "Tool".to_owned()),
+                title: title
+                    .or_else(|| name.clone())
+                    .unwrap_or_else(|| "Tool".to_owned()),
                 name: name.unwrap_or_else(|| "Tool".to_owned()),
                 input: any(call, "input").unwrap_or_else(|| json!({})),
                 options: vec![ApprovalOption::Allow, ApprovalOption::Deny],
             })
         });
-        ApprovalQueue { approval_id: string(c, "approvalId").unwrap_or_default(), calls }
+        ApprovalQueue {
+            approval_id: string(c, "approvalId").unwrap_or_default(),
+            calls,
+        }
     }
 }
 
@@ -1069,7 +1310,11 @@ impl ApprovalResolution {
     fn decode(c: &Object) -> ApprovalResolution {
         ApprovalResolution {
             approval_id: string(c, "approvalId").unwrap_or_default(),
-            decision: c.get("decision").and_then(Value::as_str).map(ApprovalDecision::from_raw).unwrap_or(ApprovalDecision::Expired),
+            decision: c
+                .get("decision")
+                .and_then(Value::as_str)
+                .map(ApprovalDecision::from_raw)
+                .unwrap_or(ApprovalDecision::Expired),
             message: string(c, "message"),
         }
     }
@@ -1092,13 +1337,18 @@ pub struct PlanEntry {
 
 impl PlanEntry {
     pub fn new(text: &str, status: PlanStatus) -> PlanEntry {
-        PlanEntry { text: text.to_owned(), status }
+        PlanEntry {
+            text: text.to_owned(),
+            status,
+        }
     }
 
     /// Claude's TodoWrite calls the text `content`; either is accepted.
     fn decode(v: &Value) -> Option<PlanEntry> {
         let c = v.as_object()?;
-        let text = string(c, "text").or_else(|| string(c, "content")).unwrap_or_default();
+        let text = string(c, "text")
+            .or_else(|| string(c, "content"))
+            .unwrap_or_default();
         let status = match c.get("status").and_then(Value::as_str) {
             Some("in_progress") => PlanStatus::InProgress,
             Some("completed") => PlanStatus::Completed,
@@ -1187,7 +1437,7 @@ pub struct TurnCompletion {
     /// With needs "nothing": follow-ups the agent suggested.
     pub next: Vec<String>,
     /// On the turn that answered another lab's findings: the ledger
-    /// (`review`, docs/protocol.md "Review by another lab").
+    /// (`review`, docs/protocol/needs-you.md "Review by another lab").
     pub review: Option<LabReview>,
 }
 
@@ -1197,11 +1447,21 @@ impl TurnCompletion {
         let error = match c.get("error") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(s.clone()),
-            Some(other) => Some(other.get("message").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| compact_text(other))),
+            Some(other) => Some(
+                other
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| compact_text(other)),
+            ),
         };
         TurnCompletion {
             turn_id: string(c, "turnId").unwrap_or_default(),
-            outcome: c.get("outcome").and_then(Value::as_str).map(TurnOutcome::from_raw).unwrap_or(TurnOutcome::Completed),
+            outcome: c
+                .get("outcome")
+                .and_then(Value::as_str)
+                .map(TurnOutcome::from_raw)
+                .unwrap_or(TurnOutcome::Completed),
             duration_ms: number(c, "durationMs").unwrap_or(0.0),
             cost_usd: number(c, "costUsd"),
             usage: any(c, "usage"),
@@ -1216,7 +1476,7 @@ impl TurnCompletion {
 }
 
 /// One finding of another lab's review, and what the agent did about it
-/// (LabReview.Finding, docs/protocol.md "Review by another lab").
+/// (LabReview.Finding, docs/protocol/needs-you.md "Review by another lab").
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReviewFinding {
     pub id: i64,
@@ -1318,8 +1578,15 @@ impl LabReview {
             passed: boolean(c, "passed").unwrap_or(false),
             unstructured: boolean(c, "unstructured").unwrap_or(false),
             unchecked: boolean(c, "unchecked").unwrap_or(false),
-            findings: lossy(c, "findings", ReviewFinding::decode).into_iter().filter(|f| !f.claim.is_empty()).collect(),
-            panel: c.get("panel").and_then(Value::as_array).map(|_| lossy(c, "panel", PanelReviewer::decode)).filter(|p| !p.is_empty()),
+            findings: lossy(c, "findings", ReviewFinding::decode)
+                .into_iter()
+                .filter(|f| !f.claim.is_empty())
+                .collect(),
+            panel: c
+                .get("panel")
+                .and_then(Value::as_array)
+                .map(|_| lossy(c, "panel", PanelReviewer::decode))
+                .filter(|p| !p.is_empty()),
         })
     }
 
@@ -1333,7 +1600,11 @@ impl LabReview {
             return None;
         }
         let name = reviewer_name(by);
-        let twin = self.panel.iter().flatten().any(|p| p.reviewer != by && reviewer_name(&p.reviewer) == name);
+        let twin = self
+            .panel
+            .iter()
+            .flatten()
+            .any(|p| p.reviewer != by && reviewer_name(&p.reviewer) == name);
         Some(if twin { by.to_owned() } else { name.to_owned() })
     }
 
@@ -1348,7 +1619,10 @@ impl LabReview {
     /// The findings the row draws: every one once Mike opens it; folded, only
     /// those still open, as they may need him.
     pub fn shown_findings(&self, open: bool) -> Vec<&ReviewFinding> {
-        self.findings.iter().filter(|f| open || f.is_open()).collect()
+        self.findings
+            .iter()
+            .filter(|f| open || f.is_open())
+            .collect()
     }
 
     /// The one line over the findings: who, how many rounds, how it came out
@@ -1357,26 +1631,43 @@ impl LabReview {
     pub fn heading(&self) -> String {
         let one = |reviewer: &str, independent: bool| {
             let name = reviewer_name(reviewer);
-            if independent { name.to_owned() } else { format!("a fresh {name} session") }
+            if independent {
+                name.to_owned()
+            } else {
+                format!("a fresh {name} session")
+            }
         };
         let who = match &self.panel {
             Some(panel) => {
-                let names: Vec<String> = panel.iter().map(|p| one(&p.reviewer, p.independent)).collect();
+                let names: Vec<String> = panel
+                    .iter()
+                    .map(|p| one(&p.reviewer, p.independent))
+                    .collect();
                 match names.split_last() {
-                    Some((last, rest)) if !rest.is_empty() => format!("Reviewed by {} and {last}", rest.join(", ")),
+                    Some((last, rest)) if !rest.is_empty() => {
+                        format!("Reviewed by {} and {last}", rest.join(", "))
+                    }
                     _ => format!("Reviewed by {}", names.join("")),
                 }
             }
             None => format!("Reviewed by {}", one(&self.reviewer, self.independent)),
         };
-        let rounds = if self.rounds > 1 { format!(", {} rounds", self.rounds) } else { String::new() };
+        let rounds = if self.rounds > 1 {
+            format!(", {} rounds", self.rounds)
+        } else {
+            String::new()
+        };
         let open = self.findings.iter().filter(|f| f.is_open()).count();
         let result = if self.unstructured {
             "see its reply".to_owned()
         } else if self.unchecked {
             "last fixes not re-reviewed".to_owned()
         } else if self.passed {
-            if self.findings.is_empty() { "nothing found".to_owned() } else { "passed".to_owned() }
+            if self.findings.is_empty() {
+                "nothing found".to_owned()
+            } else {
+                "passed".to_owned()
+            }
         } else if open > 0 {
             format!("{open} open")
         } else {
@@ -1430,7 +1721,13 @@ impl ActionRun {
         let mut title = if self.ok {
             self.title.clone()
         } else {
-            format!("{} failed{}", self.title, self.exit_code.map(|code| format!(" (exit {code})")).unwrap_or_default())
+            format!(
+                "{} failed{}",
+                self.title,
+                self.exit_code
+                    .map(|code| format!(" (exit {code})"))
+                    .unwrap_or_default()
+            )
         };
         // A hook's run says when it ran, as the design's patch line does.
         if self.trigger.as_deref() == Some("turn.end") {
@@ -1443,7 +1740,13 @@ impl ActionRun {
             title,
             input: json!({"command": self.command, "patch": self.patch, "actionId": self.action_id}),
         };
-        let result = ToolResult { item_id: String::new(), ok: self.ok, text: self.text.clone(), truncated: self.truncated, ..ToolResult::default() };
+        let result = ToolResult {
+            item_id: String::new(),
+            ok: self.ok,
+            text: self.text.clone(),
+            truncated: self.truncated,
+            ..ToolResult::default()
+        };
         (call, result)
     }
 }
@@ -1472,14 +1775,23 @@ impl ThreadRewind {
         let files = c.get("files").and_then(Value::as_object);
         let failed = |v: &Value| {
             let f = v.as_object()?;
-            Some(RewindFailedFile { path: string(f, "path").unwrap_or_default(), reason: string(f, "reason").unwrap_or_default() })
+            Some(RewindFailedFile {
+                path: string(f, "path").unwrap_or_default(),
+                reason: string(f, "reason").unwrap_or_default(),
+            })
         };
         ThreadRewind {
             from_seq: lenient_int(c, "fromSeq").unwrap_or(0),
             to_seq: lenient_int(c, "toSeq").unwrap_or(0),
-            undone: files.map(|f| lossy_strings(f, "undone")).unwrap_or_default(),
-            failed: files.map(|f| lossy(f, "failed", failed)).unwrap_or_default(),
-            how: files.and_then(|f| string(f, "how")).unwrap_or_else(|| "none".to_owned()),
+            undone: files
+                .map(|f| lossy_strings(f, "undone"))
+                .unwrap_or_default(),
+            failed: files
+                .map(|f| lossy(f, "failed", failed))
+                .unwrap_or_default(),
+            how: files
+                .and_then(|f| string(f, "how"))
+                .unwrap_or_else(|| "none".to_owned()),
         }
     }
 
@@ -1493,7 +1805,11 @@ impl ThreadRewind {
     pub fn summary(&self) -> String {
         let mut parts = vec!["Edited a message, so the thread carries on from there.".to_owned()];
         if !self.undone.is_empty() {
-            let files = if self.undone.len() == 1 { "1 file".to_owned() } else { format!("{} files", self.undone.len()) };
+            let files = if self.undone.len() == 1 {
+                "1 file".to_owned()
+            } else {
+                format!("{} files", self.undone.len())
+            };
             parts.push(format!("Undid changes to {files}."));
         }
         if !self.failed.is_empty() {
@@ -1510,7 +1826,11 @@ impl ThreadRewind {
                     }
                 })
                 .collect();
-            let more = if self.failed.len() > 3 { format!(" and {} more", self.failed.len() - 3) } else { String::new() };
+            let more = if self.failed.len() > 3 {
+                format!(" and {} more", self.failed.len() - 3)
+            } else {
+                String::new()
+            };
             parts.push(format!("Couldn't undo {}{more}.", named.join(", ")));
         }
         parts.join(" ")
@@ -1527,12 +1847,30 @@ pub enum EventPayload {
     /// it for one.
     /// `wake_reason` (`wakeReason`): on a runner's message, what happened in a few words ("The
     /// app restarted onto 1f103ac18"), for the divider before its turn.
-    UserMessage { text: String, images: Vec<ImageRef>, origin: Option<String>, wake_reason: Option<String>, answers: Vec<AskAnswer>, edit_of: Option<i64>, review: Option<ReviewAnswer> },
+    UserMessage {
+        text: String,
+        images: Vec<ImageRef>,
+        origin: Option<String>,
+        wake_reason: Option<String>,
+        answers: Vec<AskAnswer>,
+        edit_of: Option<i64>,
+        review: Option<ReviewAnswer>,
+    },
     /// `summary`: the turn's summary, written by the runner from end_turn.
     /// `gives_way`: on a summary, with bullet replies off. `final_reply`:
     /// One reply's reply, the agent's message after end_turn.
-    AssistantText { item_id: String, text: String, summary: bool, narration: bool, gives_way: bool, final_reply: bool },
-    Reasoning { item_id: String, text: String },
+    AssistantText {
+        item_id: String,
+        text: String,
+        summary: bool,
+        narration: bool,
+        gives_way: bool,
+        final_reply: bool,
+    },
+    Reasoning {
+        item_id: String,
+        text: String,
+    },
     ToolCall(ToolCall),
     ToolResult(ToolResult),
     EditDiff(EditDiff),
@@ -1548,27 +1886,51 @@ pub enum EventPayload {
     ApprovalQueued(ApprovalQueue),
     PlanUpdated(Vec<PlanEntry>),
     /// "Plan first": the agent's plan, waiting for Mike.
-    PlanProposed { item_id: String, text: String },
+    PlanProposed {
+        item_id: String,
+        text: String,
+    },
     /// `go` approved, otherwise sent back.
-    PlanResolved { item_id: String, go: bool },
+    PlanResolved {
+        item_id: String,
+        go: bool,
+    },
     /// `woke_by`: what finished and started a turn the agent began by itself.
-    TurnStarted { woke_by: Vec<BackgroundTask> },
+    TurnStarted {
+        woke_by: Vec<BackgroundTask>,
+    },
     TurnCompleted(TurnCompletion),
     SystemNote(String),
     Error(String),
     ActionRun(ActionRun),
     /// The ticks on the card of asks that came with the turn.completed at
     /// `asks_seq`: the whole set each time.
-    AsksTicked { asks_seq: i64, ticked: Vec<i64> },
+    AsksTicked {
+        asks_seq: i64,
+        ticked: Vec<i64>,
+    },
     /// Mike edited the message at `from_seq`: every event from there to
     /// `to_seq` is gone from the conversation.
     ThreadRewound(ThreadRewind),
-    AssistantTextDelta { item_id: String, text: String },
-    ReasoningDelta { item_id: String, text: String },
-    ToolOutputDelta { item_id: String, text: String },
+    AssistantTextDelta {
+        item_id: String,
+        text: String,
+    },
+    ReasoningDelta {
+        item_id: String,
+        text: String,
+    },
+    ToolOutputDelta {
+        item_id: String,
+        text: String,
+    },
     /// Everything streamed so far for an item, from a subscribe reply's
     /// `inProgress`. Made by the app, never sent as an event.
-    StreamingText { item_id: String, is_reasoning: bool, text: String },
+    StreamingText {
+        item_id: String,
+        is_reasoning: bool,
+        text: String,
+    },
     /// An event type this app doesn't know yet, or one it couldn't read.
     Unknown,
 }
@@ -1584,8 +1946,22 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(seq: i64, ts: &str, thread_id: &str, turn_id: Option<&str>, type_: &str, payload: EventPayload) -> Event {
-        Event { seq, ts: ts.to_owned(), thread_id: thread_id.to_owned(), turn_id: turn_id.map(str::to_owned), type_: type_.to_owned(), payload }
+    pub fn new(
+        seq: i64,
+        ts: &str,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        type_: &str,
+        payload: EventPayload,
+    ) -> Event {
+        Event {
+            seq,
+            ts: ts.to_owned(),
+            thread_id: thread_id.to_owned(),
+            turn_id: turn_id.map(str::to_owned),
+            type_: type_.to_owned(),
+            payload,
+        }
     }
 
     /// Transient events stream between persisted ones and never consume a
@@ -1598,7 +1974,10 @@ impl Event {
                 | EventPayload::ReasoningDelta { .. }
                 | EventPayload::ToolOutputDelta { .. }
                 | EventPayload::StreamingText { .. }
-        ) || matches!(self.type_.as_str(), "assistant.text.delta" | "reasoning.delta" | "tool.output.delta")
+        ) || matches!(
+            self.type_.as_str(),
+            "assistant.text.delta" | "reasoning.delta" | "tool.output.delta"
+        )
     }
 
     /// `Event.init(from:)`. Never fails for a JSON object: a payload this
@@ -1617,7 +1996,14 @@ impl Event {
             crate::wire::dropped::<EventPayload>("event payload");
             EventPayload::Unknown
         });
-        Some(Event { seq, ts, thread_id, turn_id, type_, payload })
+        Some(Event {
+            seq,
+            ts,
+            thread_id,
+            turn_id,
+            type_,
+            payload,
+        })
     }
 }
 
@@ -1667,16 +2053,35 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
     Ok(match type_ {
         "user.message" => {
             let f = TextFields::decode(c);
-            let review = ReviewAnswer::parse(&f.text, f.review_id.as_deref(), f.review_response.as_ref());
-            EventPayload::UserMessage { text: f.text, images: f.images, origin: f.origin, wake_reason: f.wake_reason, answers: f.answers, edit_of: f.edit_of, review }
+            let review =
+                ReviewAnswer::parse(&f.text, f.review_id.as_deref(), f.review_response.as_ref());
+            EventPayload::UserMessage {
+                text: f.text,
+                images: f.images,
+                origin: f.origin,
+                wake_reason: f.wake_reason,
+                answers: f.answers,
+                edit_of: f.edit_of,
+                review,
+            }
         }
         "assistant.text" => {
             let f = TextFields::decode(c);
-            EventPayload::AssistantText { item_id: f.item_id, text: f.text, summary: f.summary, narration: f.narration, gives_way: f.gives_way, final_reply: f.final_reply }
+            EventPayload::AssistantText {
+                item_id: f.item_id,
+                text: f.text,
+                summary: f.summary,
+                narration: f.narration,
+                gives_way: f.gives_way,
+                final_reply: f.final_reply,
+            }
         }
         "reasoning" => {
             let f = TextFields::decode(c);
-            EventPayload::Reasoning { item_id: f.item_id, text: f.text }
+            EventPayload::Reasoning {
+                item_id: f.item_id,
+                text: f.text,
+            }
         }
         "tool.call" => EventPayload::ToolCall(ToolCall::decode(c)),
         "tool.result" => EventPayload::ToolResult(ToolResult::decode(c)),
@@ -1697,16 +2102,27 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
         "plan.updated" => EventPayload::PlanUpdated(lossy(c, "entries", PlanEntry::decode)),
         "plan.proposed" => {
             // `PlanCardFields`: itemId is required and text's type is strict.
-            let item_id = c.get("itemId").and_then(Value::as_str).ok_or(())?.to_owned();
+            let item_id = c
+                .get("itemId")
+                .and_then(Value::as_str)
+                .ok_or(())?
+                .to_owned();
             let text = string_strict(c, "text")?.unwrap_or_default();
             let _decision = string_strict(c, "decision")?;
             EventPayload::PlanProposed { item_id, text }
         }
         "plan.resolved" => {
-            let item_id = c.get("itemId").and_then(Value::as_str).ok_or(())?.to_owned();
+            let item_id = c
+                .get("itemId")
+                .and_then(Value::as_str)
+                .ok_or(())?
+                .to_owned();
             let _text = string_strict(c, "text")?;
             let decision = string_strict(c, "decision")?;
-            EventPayload::PlanResolved { item_id, go: decision.as_deref() == Some("go") }
+            EventPayload::PlanResolved {
+                item_id,
+                go: decision.as_deref() == Some("go"),
+            }
         }
         "turn.started" => {
             // Not lossy, unlike most lists: one task that can't be read drops
@@ -1714,7 +2130,12 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
             let woke_by = c
                 .get("wokeBy")
                 .and_then(Value::as_array)
-                .and_then(|tasks| tasks.iter().map(BackgroundTask::decode).collect::<Option<Vec<_>>>())
+                .and_then(|tasks| {
+                    tasks
+                        .iter()
+                        .map(BackgroundTask::decode)
+                        .collect::<Option<Vec<_>>>()
+                })
                 .unwrap_or_default();
             EventPayload::TurnStarted { woke_by }
         }
@@ -1722,7 +2143,11 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
         "system.note" => EventPayload::SystemNote(TextFields::decode(c).text),
         "error" => {
             let f = TextFields::decode(c);
-            EventPayload::Error(f.message.or_else(|| string(c, "text")).unwrap_or_else(|| "Something went wrong".to_owned()))
+            EventPayload::Error(
+                f.message
+                    .or_else(|| string(c, "text"))
+                    .unwrap_or_else(|| "Something went wrong".to_owned()),
+            )
         }
         "action.run" => EventPayload::ActionRun(ActionRun::decode(c)),
         "thread.rewound" => EventPayload::ThreadRewound(ThreadRewind::decode(c)),
@@ -1732,22 +2157,35 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
             let asks_seq = c.get("asksSeq").and_then(int_value).ok_or(())?;
             let ticked = match c.get("ticked") {
                 None | Some(Value::Null) => Vec::new(),
-                Some(Value::Array(items)) => items.iter().map(int_value).collect::<Option<Vec<_>>>().ok_or(())?,
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(int_value)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(())?,
                 Some(_) => return Err(()),
             };
             EventPayload::AsksTicked { asks_seq, ticked }
         }
         "assistant.text.delta" => {
             let f = TextFields::decode(c);
-            EventPayload::AssistantTextDelta { item_id: f.item_id, text: f.text }
+            EventPayload::AssistantTextDelta {
+                item_id: f.item_id,
+                text: f.text,
+            }
         }
         "reasoning.delta" => {
             let f = TextFields::decode(c);
-            EventPayload::ReasoningDelta { item_id: f.item_id, text: f.text }
+            EventPayload::ReasoningDelta {
+                item_id: f.item_id,
+                text: f.text,
+            }
         }
         "tool.output.delta" => {
             let f = TextFields::decode(c);
-            EventPayload::ToolOutputDelta { item_id: f.item_id, text: f.text }
+            EventPayload::ToolOutputDelta {
+                item_id: f.item_id,
+                text: f.text,
+            }
         }
         _ => EventPayload::Unknown,
     })
@@ -1763,7 +2201,11 @@ pub struct InProgress {
 
 impl InProgress {
     pub fn new(item_id: &str, type_: &str, text: &str) -> InProgress {
-        InProgress { item_id: item_id.to_owned(), type_: type_.to_owned(), text: text.to_owned() }
+        InProgress {
+            item_id: item_id.to_owned(),
+            type_: type_.to_owned(),
+            text: text.to_owned(),
+        }
     }
 
     fn decode(v: &Value) -> Option<InProgress> {
@@ -1791,10 +2233,25 @@ impl EventsPage {
     pub fn decode(v: &Value) -> Option<EventsPage> {
         let c = v.as_object()?;
         let events: Vec<Event> = lossy(c, "events", Event::decode);
-        let first_seq = lenient_int(c, "firstSeq").or_else(|| events.first().map(|e| e.seq)).unwrap_or(0);
-        let last_seq = lenient_int(c, "lastSeq").or_else(|| events.last().map(|e| e.seq)).unwrap_or(0);
-        let at_start = c.get("relay").and_then(Value::as_object).and_then(|r| r.get("atStart")).and_then(Value::as_bool).unwrap_or(false);
-        Some(EventsPage { events, first_seq, last_seq, in_progress: lossy(c, "inProgress", InProgress::decode), at_start })
+        let first_seq = lenient_int(c, "firstSeq")
+            .or_else(|| events.first().map(|e| e.seq))
+            .unwrap_or(0);
+        let last_seq = lenient_int(c, "lastSeq")
+            .or_else(|| events.last().map(|e| e.seq))
+            .unwrap_or(0);
+        let at_start = c
+            .get("relay")
+            .and_then(Value::as_object)
+            .and_then(|r| r.get("atStart"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Some(EventsPage {
+            events,
+            first_seq,
+            last_seq,
+            in_progress: lossy(c, "inProgress", InProgress::decode),
+            at_start,
+        })
     }
 }
 

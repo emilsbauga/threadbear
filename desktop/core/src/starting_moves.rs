@@ -72,17 +72,29 @@ impl StartingMoves {
     /// Mike picked a machine: the row says it's going to `to_name`. The
     /// token names this pick for the calls it makes.
     pub fn start(&mut self, thread_id: &str, to: &str, to_name: &str) -> (Value, u64) {
-        let moving = serde_json::json!({ "moveId": "", "to": to, "toName": to_name, "state": "asking" });
+        let moving =
+            serde_json::json!({ "moveId": "", "to": to, "toName": to_name, "state": "asking" });
         self.next_token += 1;
         let token = self.next_token;
-        self.by_thread.insert(thread_id.to_owned(), Guess { moving: moving.clone(), token, move_id: None, until_ms: None, ended_seen: None });
+        self.by_thread.insert(
+            thread_id.to_owned(),
+            Guess {
+                moving: moving.clone(),
+                token,
+                move_id: None,
+                until_ms: None,
+                ended_seen: None,
+            },
+        );
         (moving, token)
     }
 
     /// Whether `token`'s guess is still on the thread: not cancelled, given
     /// up on, picked again since or taken over by the runner's own word.
     pub fn is_current(&self, thread_id: &str, token: u64) -> bool {
-        self.by_thread.get(thread_id).is_some_and(|g| g.token == token)
+        self.by_thread
+            .get(thread_id)
+            .is_some_and(|g| g.token == token)
     }
 
     /// Cancel Move before `threads.move` answered: the guess goes, and the
@@ -108,15 +120,26 @@ impl StartingMoves {
     /// Picked, but `threads.move` hasn't answered: Cancel Move is the app's
     /// to do, as the runner has no move to cancel yet.
     pub fn is_pending(&self, thread_id: &str) -> bool {
-        self.by_thread.get(thread_id).is_some_and(|g| g.move_id.is_none())
+        self.by_thread
+            .get(thread_id)
+            .is_some_and(|g| g.move_id.is_none())
     }
 
     /// `threads.move` answered with the move's id: the runner's own word on
     /// it is due, and the guess stands in for it a short while longer. A
     /// failure or cancel of this very move that came in first is handed
     /// back, for the row, and the guess goes.
-    pub fn started(&mut self, thread_id: &str, token: u64, move_id: Option<&str>, now_ms: i64) -> Option<Value> {
-        let g = self.by_thread.get_mut(thread_id).filter(|g| g.token == token)?;
+    pub fn started(
+        &mut self,
+        thread_id: &str,
+        token: u64,
+        move_id: Option<&str>,
+        now_ms: i64,
+    ) -> Option<Value> {
+        let g = self
+            .by_thread
+            .get_mut(thread_id)
+            .filter(|g| g.token == token)?;
         if let (Some(seen), Some(id)) = (&g.ended_seen, move_id) {
             if self::move_id(seen) == Some(id) {
                 let seen = seen.clone();
@@ -139,7 +162,10 @@ impl StartingMoves {
     /// never answered goes without another summary coming in (Codex's
     /// review). True when it went, and the row's guess should too.
     pub fn expire(&mut self, thread_id: &str, token: u64, now_ms: i64) -> bool {
-        let due = self.by_thread.get(thread_id).is_some_and(|g| g.token == token && g.until_ms.is_some_and(|until| now_ms >= until));
+        let due = self
+            .by_thread
+            .get(thread_id)
+            .is_some_and(|g| g.token == token && g.until_ms.is_some_and(|until| now_ms >= until));
         if due {
             self.by_thread.remove(thread_id);
         }
@@ -162,7 +188,9 @@ impl StartingMoves {
     /// yet (an earlier move's is shown for a minute, so a second try right
     /// after one would flash "Couldn't move"), but it's kept for `started`.
     pub fn dress(&mut self, t: &mut ThreadSummary, now_ms: i64) {
-        let Some(g) = self.by_thread.get_mut(&t.id) else { return };
+        let Some(g) = self.by_thread.get_mut(&t.id) else {
+            return;
+        };
         if g.until_ms.is_some_and(|until| now_ms > until) {
             self.by_thread.remove(&t.id);
             return;
@@ -218,7 +246,9 @@ mod tests {
         let mut s = StartingMoves::default();
         let (_, tok) = s.start("t1", "r-m5", "M5");
         s.started("t1", tok, Some("m1"), 1_000);
-        let mut t = thread(Some(json!({ "moveId": "m1", "to": "r-m5", "toName": "M5", "state": "packing" })));
+        let mut t = thread(Some(
+            json!({ "moveId": "m1", "to": "r-m5", "toName": "M5", "state": "packing" }),
+        ));
         s.dress(&mut t, 2_000);
         assert_eq!(t.moving.as_ref().unwrap()["state"], "packing");
         assert!(!s.is_starting("t1"));
@@ -233,7 +263,9 @@ mod tests {
         let mut s = StartingMoves::default();
         let (_, tok) = s.start("t1", "r-m5", "M5");
         s.started("t1", tok, Some("m1"), 1_000);
-        let mut t = thread(Some(json!({ "moveId": "m1", "state": "failed", "note": "No login." })));
+        let mut t = thread(Some(
+            json!({ "moveId": "m1", "state": "failed", "note": "No login." }),
+        ));
         s.dress(&mut t, 2_000);
         assert_eq!(t.moving.as_ref().unwrap()["state"], "failed");
     }
@@ -242,7 +274,9 @@ mod tests {
     fn an_earlier_moves_failure_doesnt_stand_in_for_a_new_try() {
         let mut s = StartingMoves::default();
         let _ = s.start("t1", "r-m5", "M5");
-        let mut t = thread(Some(json!({ "moveId": "m0", "state": "failed", "note": "Changed." })));
+        let mut t = thread(Some(
+            json!({ "moveId": "m0", "state": "failed", "note": "Changed." }),
+        ));
         s.dress(&mut t, 1_000);
         assert_eq!(t.moving_line().as_deref(), Some("Moving to M5…"));
     }
@@ -275,10 +309,18 @@ mod tests {
     fn a_failure_before_the_move_answers_is_handed_back_once_its_id_is_known() {
         let mut s = StartingMoves::default();
         let (_, tok) = s.start("t1", "r-m5", "M5");
-        let mut t = thread(Some(json!({ "moveId": "m1", "state": "failed", "note": "Changed." })));
+        let mut t = thread(Some(
+            json!({ "moveId": "m1", "state": "failed", "note": "Changed." }),
+        ));
         s.dress(&mut t, 1_000);
-        assert_eq!(t.moving_line().as_deref(), Some("Moving to M5…"), "not known to be this move yet");
-        let back = s.started("t1", tok, Some("m1"), 1_100).expect("this move failed");
+        assert_eq!(
+            t.moving_line().as_deref(),
+            Some("Moving to M5…"),
+            "not known to be this move yet"
+        );
+        let back = s
+            .started("t1", tok, Some("m1"), 1_100)
+            .expect("this move failed");
         assert_eq!(back["note"], "Changed.");
         assert!(!s.is_starting("t1"));
     }
@@ -293,14 +335,20 @@ mod tests {
         assert_eq!(s.started("t1", tok, Some("m1"), 1_000), None);
         assert!(!s.is_starting("t1"), "a late answer doesn't bring it back");
         let (_, again) = s.start("t1", "r-m5", "M5");
-        assert!(!s.is_current("t1", tok) && s.is_current("t1", again), "a new pick isn't the old one's");
+        assert!(
+            !s.is_current("t1", tok) && s.is_current("t1", again),
+            "a new pick isn't the old one's"
+        );
     }
 
     #[test]
     fn the_wait_after_the_move_answers_ends_by_itself() {
         let mut s = StartingMoves::default();
         let (_, tok) = s.start("t1", "r-m5", "M5");
-        assert!(!s.expire("t1", tok, 1_000), "not before the move has answered");
+        assert!(
+            !s.expire("t1", tok, 1_000),
+            "not before the move has answered"
+        );
         s.started("t1", tok, Some("m1"), 1_000);
         assert!(!s.expire("t1", tok, 1_000 + SHOWN_AFTER_START_MS - 1));
         assert!(s.expire("t1", tok, 1_000 + SHOWN_AFTER_START_MS));
@@ -322,7 +370,9 @@ mod tests {
         let mut s = StartingMoves::default();
         let (_, tok) = s.start("t1", "r-m5", "M5");
         // remoteThreads.updated with the move comes before threads.move's answer
-        let mut t = thread(Some(json!({ "moveId": "m1", "to": "r-m5", "toName": "M5", "state": "asking" })));
+        let mut t = thread(Some(
+            json!({ "moveId": "m1", "to": "r-m5", "toName": "M5", "state": "asking" }),
+        ));
         s.dress(&mut t, 1_000);
         assert!(!s.is_current("t1", tok), "the runner speaks for it now");
         assert!(!s.take_cancelled(tok), "but nobody cancelled it");
@@ -338,6 +388,9 @@ mod tests {
         assert!(s.take_cancelled(a));
         assert!(!s.take_cancelled(a));
         s.started("t1", b, Some("m2"), 1_000);
-        assert!(!s.cancel_pending("t1"), "started: the runner's move is the one to cancel");
+        assert!(
+            !s.cancel_pending("t1"),
+            "started: the runner's move is the one to cancel"
+        );
     }
 }

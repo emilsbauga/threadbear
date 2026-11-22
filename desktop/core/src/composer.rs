@@ -24,16 +24,24 @@ pub struct ListEdit {
 /// with an unticked one. On an item with nothing in it, the marker comes off,
 /// which is how you get out of the list. `None` means a plain new line.
 pub fn list_newline(text: &str, selection: Range<usize>) -> Option<ListEdit> {
-    if selection.end > text.len() || !text.is_char_boundary(selection.start) || !text.is_char_boundary(selection.end) {
+    if selection.end > text.len()
+        || !text.is_char_boundary(selection.start)
+        || !text.is_char_boundary(selection.end)
+    {
         return None;
     }
     let line_start = text[..selection.start].rfind('\n').map_or(0, |at| at + 1);
     let before = &text[line_start..selection.start];
     let marker = ListMarker::parse(before)?;
-    let line_end = text[selection.end..].find('\n').map_or(text.len(), |at| selection.end + at);
+    let line_end = text[selection.end..]
+        .find('\n')
+        .map_or(text.len(), |at| selection.end + at);
     let after = &text[selection.end..line_end];
     if marker.len == before.len() && after.trim().is_empty() {
-        return Some(ListEdit { range: line_start..selection.start, text: String::new() });
+        return Some(ListEdit {
+            range: line_start..selection.start,
+            text: String::new(),
+        });
     }
     let mut next = before[..marker.indent].to_owned();
     match marker.number {
@@ -47,9 +55,12 @@ pub fn list_newline(text: &str, selection: Range<usize>) -> Option<ListEdit> {
     if marker.has_box {
         // Keep the spacing after the box, but the new one starts unticked.
         next.push_str("[ ]");
-        next.push_str(&before[marker.after_box.clone()]);
+        next.push_str(&before[marker.after_box]);
     }
-    Some(ListEdit { range: selection, text: format!("\n{next}") })
+    Some(ListEdit {
+        range: selection,
+        text: format!("\n{next}"),
+    })
 }
 
 /// `^([ \t]*)(?:([-*+])|([0-9]{1,9})([.)]))([ \t]+)(\[[ xX]\][ \t]+)?`,
@@ -104,7 +115,12 @@ impl ListMarker {
         // The optional "[x] " after it.
         let mut has_box = false;
         let mut after_box = at..at;
-        if bytes.len() >= at + 4 && bytes[at] == b'[' && bytes[at + 2] == b']' && matches!(bytes[at + 1], b' ' | b'x' | b'X') && is_space(bytes[at + 3]) {
+        if bytes.len() >= at + 4
+            && bytes[at] == b'['
+            && bytes[at + 2] == b']'
+            && matches!(bytes[at + 1], b' ' | b'x' | b'X')
+            && is_space(bytes[at + 3])
+        {
             let mut end = at + 3;
             while end < bytes.len() && is_space(bytes[end]) {
                 end += 1;
@@ -113,7 +129,14 @@ impl ListMarker {
             after_box = at + 3..end;
             at = end;
         }
-        Some(ListMarker { indent, number, spaces, has_box, after_box, len: at })
+        Some(ListMarker {
+            indent,
+            number,
+            spaces,
+            has_box,
+            after_box,
+            len: at,
+        })
     }
 }
 
@@ -199,10 +222,16 @@ pub fn picture_markers(text: &str, image_count: usize) -> Vec<(std::ops::Range<u
     while let Some(i) = text[at..].find(OPEN) {
         let start = at + i;
         let digits_at = start + OPEN.len();
-        let digits = text[digits_at..].chars().take_while(|c| c.is_ascii_digit()).count();
+        let digits = text[digits_at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .count();
         let end = digits_at + digits;
         if (1..=3).contains(&digits) && text[end..].starts_with(']') {
-            let index = text[digits_at..end].parse::<usize>().unwrap_or(0).wrapping_sub(1);
+            let index = text[digits_at..end]
+                .parse::<usize>()
+                .unwrap_or(0)
+                .wrapping_sub(1);
             if index < image_count && placed.insert(index) {
                 found.push((start..end + 1, index));
             }
@@ -223,7 +252,7 @@ pub fn edit_draft(text: &str, image_count: usize) -> (String, Vec<usize>) {
     // A mark already in a message's words would stand for the wrong picture.
     let text: String = text.chars().filter(|c| *c != PICTURE_MARK).collect();
     let found = picture_markers(&text, image_count);
-    let mut words = text.clone();
+    let mut words = text;
     for (range, _) in found.iter().rev() {
         words.replace_range(range.clone(), PICTURE_MARK_STR);
     }
@@ -231,9 +260,16 @@ pub fn edit_draft(text: &str, image_count: usize) -> (String, Vec<usize>) {
     let first: Vec<usize> = (0..image_count).filter(|i| !placed.contains(i)).collect();
     if !first.is_empty() {
         let marks: String = std::iter::repeat_n(PICTURE_MARK, first.len()).collect();
-        words = if words.is_empty() { marks } else { format!("{marks} {words}") };
+        words = if words.is_empty() {
+            marks
+        } else {
+            format!("{marks} {words}")
+        };
     }
-    let order = first.into_iter().chain(found.into_iter().map(|(_, i)| i)).collect();
+    let order = first
+        .into_iter()
+        .chain(found.into_iter().map(|(_, i)| i))
+        .collect();
     (words, order)
 }
 
@@ -266,14 +302,20 @@ pub fn message_text(text: &str, first: usize) -> String {
 /// backticks, so one with spaces in its name still reads as one path
 /// (ComposerTextView.pathText).
 pub fn path_text(paths: &[String]) -> String {
-    paths.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(" ")
+    paths
+        .iter()
+        .map(|p| format!("`{p}`"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ---- ComposerChips ----
 
 /// The model chip's name for a model id (ComposerChips.model).
 pub fn model_title(model: Option<&str>) -> String {
-    let Some(model) = model.filter(|m| !m.is_empty()) else { return "Default".to_owned() };
+    let Some(model) = model.filter(|m| !m.is_empty()) else {
+        return "Default".to_owned();
+    };
     if model.chars().all(char::is_alphabetic) {
         return capitalized(model);
     }
@@ -301,8 +343,15 @@ pub fn model_title(model: Option<&str>) -> String {
             parts.pop();
         }
     }
-    let Some(family) = parts.first().copied() else { return model.to_owned() };
-    if parts.len() < 2 || !family.chars().all(char::is_alphabetic) || !parts[1..].iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
+    let Some(family) = parts.first().copied() else {
+        return model.to_owned();
+    };
+    if parts.len() < 2
+        || !family.chars().all(char::is_alphabetic)
+        || !parts[1..]
+            .iter()
+            .all(|p| p.chars().all(|c| c.is_ascii_digit()))
+    {
         return model.to_owned();
     }
     format!("{} {}", capitalized(family), parts[1..].join("."))
@@ -397,7 +446,11 @@ impl ContextMeter {
 
     /// "640k of 1M tokens".
     pub fn amount(&self) -> String {
-        format!("{} of {} tokens", Self::tokens(self.used), Self::tokens(self.window))
+        format!(
+            "{} of {} tokens",
+            Self::tokens(self.used),
+            Self::tokens(self.window)
+        )
     }
 
     /// The ring's tooltip.
@@ -412,7 +465,11 @@ impl ContextMeter {
         }
         if n < 1_000_000 {
             let k = n as f64 / 1000.;
-            return if k < 10. { format!("{}k", Self::trimmed(k)) } else { format!("{}k", k.round() as i64) };
+            return if k < 10. {
+                format!("{}k", Self::trimmed(k))
+            } else {
+                format!("{}k", k.round() as i64)
+            };
         }
         format!("{}M", Self::trimmed(n as f64 / 1_000_000.))
     }
@@ -435,7 +492,12 @@ pub fn choices(ask: &Ask) -> Vec<String> {
     if !ask.options.is_empty() {
         return ask.options.clone();
     }
-    if let Some(reply) = ask.reply.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    if let Some(reply) = ask
+        .reply
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         return vec![reply.to_owned()];
     }
     implied_choices(&ask.action)
@@ -468,16 +530,27 @@ pub fn implied_choices(action: &str) -> Vec<String> {
             if lower[at..].starts_with(" with") {
                 at += " with".len();
             }
-            let spaced = lower[at..].chars().take_while(|c| c.is_whitespace()).count();
+            let spaced = lower[at..]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .count();
             if spaced == 0 {
                 continue;
             }
-            at += lower[at..].chars().take(spaced).map(char::len_utf8).sum::<usize>();
-            let Some((first, mut end)) = quoted_word(action, at) else { continue };
+            at += lower[at..]
+                .chars()
+                .take(spaced)
+                .map(char::len_utf8)
+                .sum::<usize>();
+            let Some((first, mut end)) = quoted_word(action, at) else {
+                continue;
+            };
             let mut out = vec![first];
             // Each further quoted choice straight after the first.
             while out.len() < MAX_IMPLIED {
-                let Some((word, next)) = next_quoted(action, end) else { break };
+                let Some((word, next)) = next_quoted(action, end) else {
+                    break;
+                };
                 out.push(word);
                 end = next;
             }
@@ -492,8 +565,12 @@ pub fn implied_choices(action: &str) -> Vec<String> {
                 continue;
             }
             let rest = rest.trim_start();
-            for word in ["go", "yes", "ok", "okay", "done", "ship it", "merge it", "merge"] {
-                if rest.starts_with(word) && !rest[word.len()..].chars().next().is_some_and(is_word_char) {
+            for word in [
+                "go", "yes", "ok", "okay", "done", "ship it", "merge it", "merge",
+            ] {
+                if rest.starts_with(word)
+                    && !rest[word.len()..].chars().next().is_some_and(is_word_char)
+                {
                     return vec![capitalized_first(word)];
                 }
             }
@@ -527,7 +604,10 @@ fn quoted_word(text: &str, at: usize) -> Option<(String, usize)> {
         return None;
     }
     let closing = inner[close..].chars().next()?;
-    Some((word.to_owned(), at + first.len_utf8() + close + closing.len_utf8()))
+    Some((
+        word.to_owned(),
+        at + first.len_utf8() + close + closing.len_utf8(),
+    ))
 }
 
 /// Decisions.more: a comma, "or" or "/" and then another quoted word.
@@ -571,7 +651,12 @@ fn next_quoted(text: &str, at: usize) -> Option<(String, usize)> {
 /// Decisions.nextUnanswered: the next ask after `index` (wrapping round) with
 /// nothing picked, or `None` when every other has a pick. `or_this` counts
 /// ask `index` too, last.
-pub fn next_unanswered(index: usize, count: usize, picks: &BTreeMap<i64, i64>, or_this: bool) -> Option<usize> {
+pub fn next_unanswered(
+    index: usize,
+    count: usize,
+    picks: &BTreeMap<i64, i64>,
+    or_this: bool,
+) -> Option<usize> {
     if count == 0 {
         return None;
     }
@@ -579,19 +664,26 @@ pub fn next_unanswered(index: usize, count: usize, picks: &BTreeMap<i64, i64>, o
     if or_this {
         order.push(index);
     }
-    order.into_iter().find(|i| !picks.contains_key(&(*i as i64)))
+    order
+        .into_iter()
+        .find(|i| !picks.contains_key(&(*i as i64)))
 }
 
 /// Decisions.filled: picks that will send something. Something else with
 /// nothing written or pasted in its box doesn't count.
-pub fn filled_picks(picks: &BTreeMap<i64, i64>, notes: &BTreeMap<i64, AskNote>) -> BTreeMap<i64, i64> {
+pub fn filled_picks(
+    picks: &BTreeMap<i64, i64>,
+    notes: &BTreeMap<i64, AskNote>,
+) -> BTreeMap<i64, i64> {
     picks
         .iter()
         .filter(|(index, n)| {
             if **n != OWN_ANSWER {
                 return true;
             }
-            notes.get(index).is_some_and(|note| !note.images.is_empty() || !note.text.trim().is_empty())
+            notes
+                .get(index)
+                .is_some_and(|note| !note.images.is_empty() || !note.text.trim().is_empty())
         })
         .map(|(k, v)| (*k, *v))
         .collect()
@@ -613,12 +705,18 @@ pub fn picked_answer_label(ask: &Ask, pick: i64, note: Option<&AskNote>) -> Opti
             n => format!("{n} pictures"),
         });
     }
-    usize::try_from(pick).ok().and_then(|i| choices(ask).get(i).cloned())
+    usize::try_from(pick)
+        .ok()
+        .and_then(|i| choices(ask).get(i).cloned())
 }
 
 /// Decisions.answers: the picked asks as answers, in the card's order, each
 /// with its index on the card.
-pub fn answers(asks: &[Ask], picks: &BTreeMap<i64, i64>, notes: &BTreeMap<i64, AskNote>) -> Vec<(usize, AskAnswer)> {
+pub fn answers(
+    asks: &[Ask],
+    picks: &BTreeMap<i64, i64>,
+    notes: &BTreeMap<i64, AskNote>,
+) -> Vec<(usize, AskAnswer)> {
     let mut picture = 0;
     asks.iter()
         .enumerate()
@@ -630,20 +728,45 @@ pub fn answers(asks: &[Ask], picks: &BTreeMap<i64, i64>, notes: &BTreeMap<i64, A
                 let first = picture + 1;
                 picture += note.images.len();
                 let answer = message_text(&marked, first).trim().to_owned();
-                return (!answer.is_empty()).then(|| (i, AskAnswer { action: ask.action.clone(), answer }));
+                return (!answer.is_empty()).then(|| {
+                    (
+                        i,
+                        AskAnswer {
+                            action: ask.action.clone(),
+                            answer,
+                        },
+                    )
+                });
             }
             let options = choices(ask);
-            options.get(n as usize).map(|choice| (i, AskAnswer { action: ask.action.clone(), answer: choice.clone() }))
+            options.get(n as usize).map(|choice| {
+                (
+                    i,
+                    AskAnswer {
+                        action: ask.action.clone(),
+                        answer: choice.clone(),
+                    },
+                )
+            })
         })
         .collect()
 }
 
 /// Decisions.images: the pictures from the answered asks' boxes, in the
 /// card's order; the composer's own go after them.
-pub fn note_images(asks: &[Ask], picks: &BTreeMap<i64, i64>, notes: &BTreeMap<i64, AskNote>) -> Vec<crate::reducer::ImageRef> {
+pub fn note_images(
+    asks: &[Ask],
+    picks: &BTreeMap<i64, i64>,
+    notes: &BTreeMap<i64, AskNote>,
+) -> Vec<crate::reducer::ImageRef> {
     (0..asks.len() as i64)
         .filter(|i| picks.get(i) == Some(&OWN_ANSWER))
-        .flat_map(|i| notes.get(&i).map(|note| note.images.clone()).unwrap_or_default())
+        .flat_map(|i| {
+            notes
+                .get(&i)
+                .map(|note| note.images.clone())
+                .unwrap_or_default()
+        })
         .collect()
 }
 
@@ -652,7 +775,11 @@ pub fn note_images(asks: &[Ask], picks: &BTreeMap<i64, i64>, notes: &BTreeMap<i6
 fn answer_block(answer: &AskAnswer, number: Option<usize>) -> String {
     match number {
         None => format!("{}\n{}", answer.action, answer.answer),
-        Some(n) => format!("{n}. {}\n   {}", answer.action, answer.answer.replace('\n', "\n   ")),
+        Some(n) => format!(
+            "{n}. {}\n   {}",
+            answer.action,
+            answer.answer.replace('\n', "\n   ")
+        ),
     }
 }
 
@@ -668,7 +795,12 @@ pub fn answers_extra(text: &str, answers: &[AskAnswer]) -> Option<String> {
     let mut rest = text;
     for answer in answers {
         // Numbered or not, as `answers_message` wrote it.
-        let number = rest.find('.').and_then(|dot| rest[..dot].parse::<usize>().ok().filter(|_| rest[dot + 1..].starts_with(' ')));
+        let number = rest.find('.').and_then(|dot| {
+            rest[..dot]
+                .parse::<usize>()
+                .ok()
+                .filter(|_| rest[dot + 1..].starts_with(' '))
+        });
         let expected = answer_block(answer, number);
         rest = rest.strip_prefix(expected.as_str())?;
         if let Some(after) = rest.strip_prefix("\n\n") {
@@ -682,8 +814,16 @@ pub fn answers_extra(text: &str, answers: &[AskAnswer]) -> Option<String> {
 
 /// Decisions.message: one ordinary message, each picked ask's question then
 /// its answer, numbered as on the card, then whatever Mike wrote.
-pub fn answers_message(asks: &[Ask], picks: &BTreeMap<i64, i64>, notes: &BTreeMap<i64, AskNote>, extra: &str) -> String {
-    let parts: Vec<String> = answers(asks, picks, notes).into_iter().map(|(i, answer)| answer_block(&answer, (asks.len() != 1).then_some(i + 1))).collect();
+pub fn answers_message(
+    asks: &[Ask],
+    picks: &BTreeMap<i64, i64>,
+    notes: &BTreeMap<i64, AskNote>,
+    extra: &str,
+) -> String {
+    let parts: Vec<String> = answers(asks, picks, notes)
+        .into_iter()
+        .map(|(i, answer)| answer_block(&answer, (asks.len() != 1).then_some(i + 1)))
+        .collect();
     let mut body = parts.join("\n\n");
     let more = extra.trim();
     if !more.is_empty() {
@@ -698,12 +838,27 @@ pub fn answers_message(asks: &[Ask], picks: &BTreeMap<i64, i64>, notes: &BTreeMa
 /// Decisions.followUpMessage: the ones ticked on a done card, one on its own
 /// or several as a list, then any asked about, then what he typed.
 pub fn follow_up_message(follow_ups: &[String], explain: &[String], extra: &str) -> String {
-    let mut body = if follow_ups.len() == 1 { follow_ups[0].clone() } else { follow_ups.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n") };
+    let mut body = if follow_ups.len() == 1 {
+        follow_ups[0].clone()
+    } else {
+        follow_ups
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     if !explain.is_empty() {
         let question = if explain.len() == 1 {
             format!("What do you mean by \"{}\"? Please explain.", explain[0])
         } else {
-            format!("What do you mean by these? Please explain.\n{}", explain.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n"))
+            format!(
+                "What do you mean by these? Please explain.\n{}",
+                explain
+                    .iter()
+                    .map(|f| format!("- {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
         };
         if !body.is_empty() {
             body.push_str("\n\n");
@@ -731,7 +886,10 @@ mod tests {
     #[test]
     fn an_edited_message_puts_its_pictures_back_where_they_were() {
         let (text, order) = edit_draft("see [Picture 2] and [Picture 1] then [Picture 2] again", 3);
-        assert_eq!(text, "\u{FFFC} see \u{FFFC} and \u{FFFC} then [Picture 2] again", "an unplaced one first, a repeat stays words");
+        assert_eq!(
+            text, "\u{FFFC} see \u{FFFC} and \u{FFFC} then [Picture 2] again",
+            "an unplaced one first, a repeat stays words"
+        );
         assert_eq!(order, vec![2, 1, 0]);
         let (text, order) = edit_draft("", 2);
         assert_eq!(text, "\u{FFFC}\u{FFFC}");
@@ -744,16 +902,44 @@ mod tests {
 
     #[test]
     fn an_answer_keeps_the_words_written_under_it() {
-        let felt = AskAnswer { action: "How did yesterday feel?".into(), answer: "Good".into() };
-        assert_eq!(answers_extra("How did yesterday feel?\nGood\n\nIt was good.\n\nAnd busy.", std::slice::from_ref(&felt)).as_deref(), Some("It was good.\n\nAnd busy."));
-        assert_eq!(answers_extra("How did yesterday feel?\nGood", std::slice::from_ref(&felt)).as_deref(), Some(""));
+        let felt = AskAnswer {
+            action: "How did yesterday feel?".into(),
+            answer: "Good".into(),
+        };
+        assert_eq!(
+            answers_extra(
+                "How did yesterday feel?\nGood\n\nIt was good.\n\nAnd busy.",
+                std::slice::from_ref(&felt)
+            )
+            .as_deref(),
+            Some("It was good.\n\nAnd busy.")
+        );
+        assert_eq!(
+            answers_extra("How did yesterday feel?\nGood", std::slice::from_ref(&felt)).as_deref(),
+            Some("")
+        );
         // Numbered, as a card of several asks sends them.
-        let ship = AskAnswer { action: "Ship it?".into(), answer: "Yes\ntoday".into() };
+        let ship = AskAnswer {
+            action: "Ship it?".into(),
+            answer: "Yes\ntoday".into(),
+        };
         let text = "1. How did yesterday feel?\n   Good\n\n2. Ship it?\n   Yes\n   today\n\nThanks";
-        assert_eq!(answers_extra(text, &[felt.clone(), ship]).as_deref(), Some("Thanks"));
+        assert_eq!(
+            answers_extra(text, &[felt.clone(), ship]).as_deref(),
+            Some("Thanks")
+        );
         // Text that doesn't start with its answers is shown as it is.
-        assert_eq!(answers_extra("Something else entirely", std::slice::from_ref(&felt)), None);
-        assert_eq!(answers_extra("How did yesterday feel?\nGoodish", std::slice::from_ref(&felt)), None);
+        assert_eq!(
+            answers_extra("Something else entirely", std::slice::from_ref(&felt)),
+            None
+        );
+        assert_eq!(
+            answers_extra(
+                "How did yesterday feel?\nGoodish",
+                std::slice::from_ref(&felt)
+            ),
+            None
+        );
         assert_eq!(answers_extra("anything", &[]), None);
     }
 
@@ -795,15 +981,24 @@ mod tests {
         let draft = format!("look at {PICTURE_MARK} and {PICTURE_MARK}");
         assert_eq!(sent_text(&draft, 1), "look at [Picture 1] and [Picture 2]");
         assert_eq!(sent_text(&draft, 3), "look at [Picture 3] and [Picture 4]");
-        assert_eq!(sent_text(&format!("{PICTURE_MARK} \n{PICTURE_MARK}"), 1), "");
+        assert_eq!(
+            sent_text(&format!("{PICTURE_MARK} \n{PICTURE_MARK}"), 1),
+            ""
+        );
         assert_eq!(sent_text("no pictures", 1), "no pictures");
     }
 
     #[test]
     fn normalized_drops_spare_marks_and_adds_missing_ones() {
-        assert_eq!(normalized(&format!("a{PICTURE_MARK}b{PICTURE_MARK}"), 1), format!("a{PICTURE_MARK}b"));
+        assert_eq!(
+            normalized(&format!("a{PICTURE_MARK}b{PICTURE_MARK}"), 1),
+            format!("a{PICTURE_MARK}b")
+        );
         assert_eq!(normalized("text", 1), format!("text {PICTURE_MARK}"));
-        assert_eq!(normalized("text ", 2), format!("text {PICTURE_MARK} {PICTURE_MARK}"));
+        assert_eq!(
+            normalized("text ", 2),
+            format!("text {PICTURE_MARK} {PICTURE_MARK}")
+        );
     }
 
     #[test]
@@ -838,69 +1033,133 @@ mod tests {
     }
 
     fn ask(action: &str, options: &[&str]) -> Ask {
-        Ask { options: options.iter().map(|s| s.to_string()).collect(), ..Ask::new(action) }
+        Ask {
+            options: options.iter().map(|s| s.to_string()).collect(),
+            ..Ask::new(action)
+        }
     }
 
     #[test]
     fn implied_choices_find_the_words_asked_for() {
-        assert_eq!(implied_choices("Reply \"export\" when you're ready"), vec!["export"]);
-        assert_eq!(implied_choices("Say go for Short 2, or name another"), vec!["Go"]);
-        assert_eq!(implied_choices("Reply with \"Land it\", \"Website, then land it\", or \"Hold\""), vec!["Land it", "Website, then land it", "Hold"]);
+        assert_eq!(
+            implied_choices("Reply \"export\" when you're ready"),
+            vec!["export"]
+        );
+        assert_eq!(
+            implied_choices("Say go for Short 2, or name another"),
+            vec!["Go"]
+        );
+        assert_eq!(
+            implied_choices("Reply with \"Land it\", \"Website, then land it\", or \"Hold\""),
+            vec!["Land it", "Website, then land it", "Hold"]
+        );
         assert!(implied_choices("Have a look at the build").is_empty());
     }
 
     #[test]
     fn the_message_numbers_several_asks_but_not_one() {
-        let asks = vec![ask("Ship it?", &["Yes", "No"]), ask("Which colour?", &["Blue"])];
+        let asks = vec![
+            ask("Ship it?", &["Yes", "No"]),
+            ask("Which colour?", &["Blue"]),
+        ];
         let picks = BTreeMap::from([(0, 0), (1, 0)]);
-        assert_eq!(answers_message(&asks, &picks, &BTreeMap::new(), "thanks"), "1. Ship it?\n   Yes\n\n2. Which colour?\n   Blue\n\nthanks");
+        assert_eq!(
+            answers_message(&asks, &picks, &BTreeMap::new(), "thanks"),
+            "1. Ship it?\n   Yes\n\n2. Which colour?\n   Blue\n\nthanks"
+        );
         let one = vec![ask("Ship it?", &["Yes", "No"])];
-        assert_eq!(answers_message(&one, &BTreeMap::from([(0, 1)]), &BTreeMap::new(), ""), "Ship it?\nNo");
+        assert_eq!(
+            answers_message(&one, &BTreeMap::from([(0, 1)]), &BTreeMap::new(), ""),
+            "Ship it?\nNo"
+        );
     }
 
     #[test]
     fn something_else_goes_as_his_own_words() {
         let asks = vec![ask("Ship it?", &["Yes"])];
-        let notes = BTreeMap::from([(0, AskNote { text: "wait for me".into(), images: vec![] })]);
+        let notes = BTreeMap::from([(
+            0,
+            AskNote {
+                text: "wait for me".into(),
+                images: vec![],
+            },
+        )]);
         let picks = BTreeMap::from([(0, OWN_ANSWER)]);
-        assert_eq!(answers_message(&asks, &picks, &notes, ""), "Ship it?\nwait for me");
+        assert_eq!(
+            answers_message(&asks, &picks, &notes, ""),
+            "Ship it?\nwait for me"
+        );
         // With nothing written it's no answer at all.
         assert_eq!(answers_message(&asks, &picks, &BTreeMap::new(), ""), "");
     }
 
     #[test]
     fn follow_up_messages() {
-        assert_eq!(follow_up_message(&["Fix the logo".into()], &[], ""), "Fix the logo");
-        assert_eq!(follow_up_message(&["A".into(), "B".into()], &["C".into()], "and hurry"), "- A\n- B\n\nWhat do you mean by \"C\"? Please explain.\n\nand hurry");
+        assert_eq!(
+            follow_up_message(&["Fix the logo".into()], &[], ""),
+            "Fix the logo"
+        );
+        assert_eq!(
+            follow_up_message(&["A".into(), "B".into()], &["C".into()], "and hurry"),
+            "- A\n- B\n\nWhat do you mean by \"C\"? Please explain.\n\nand hurry"
+        );
     }
 
     #[test]
     fn next_unanswered_wraps_and_counts_this_one_last() {
         let picks = BTreeMap::from([(0, 0), (2, 1)]);
         assert_eq!(next_unanswered(0, 3, &picks, false), Some(1));
-        assert_eq!(next_unanswered(1, 3, &BTreeMap::from([(0, 0), (1, 0), (2, 0)]), true), None);
-        assert_eq!(next_unanswered(1, 3, &BTreeMap::from([(0, 0), (2, 0)]), true), Some(1));
+        assert_eq!(
+            next_unanswered(1, 3, &BTreeMap::from([(0, 0), (1, 0), (2, 0)]), true),
+            None
+        );
+        assert_eq!(
+            next_unanswered(1, 3, &BTreeMap::from([(0, 0), (2, 0)]), true),
+            Some(1)
+        );
     }
 
     #[test]
     fn a_picked_answers_chip_reads_as_its_answer() {
         let mut ask = Ask::new("Check who gets the beta");
         ask.options = vec!["Everyone".into(), "Just us".into()];
-        assert_eq!(picked_answer_label(&ask, 1, None).as_deref(), Some("Just us"));
+        assert_eq!(
+            picked_answer_label(&ask, 1, None).as_deref(),
+            Some("Just us")
+        );
         assert_eq!(picked_answer_label(&ask, 5, None), None);
         let picture = crate::reducer::ImageRef::new("/media/a.png", "image/png");
-        let note = |text: &str, images: usize| AskNote { text: text.into(), images: vec![picture.clone(); images] };
-        assert_eq!(picked_answer_label(&ask, OWN_ANSWER, None).as_deref(), Some("Your answer above"));
-        assert_eq!(picked_answer_label(&ask, OWN_ANSWER, Some(&note("  The testers \u{FFFC} ", 1))).as_deref(), Some("The testers"));
-        assert_eq!(picked_answer_label(&ask, OWN_ANSWER, Some(&note("\u{FFFC}", 1))).as_deref(), Some("1 picture"));
-        assert_eq!(picked_answer_label(&ask, OWN_ANSWER, Some(&note("", 3))).as_deref(), Some("3 pictures"));
+        let note = |text: &str, images: usize| AskNote {
+            text: text.into(),
+            images: vec![picture.clone(); images],
+        };
+        assert_eq!(
+            picked_answer_label(&ask, OWN_ANSWER, None).as_deref(),
+            Some("Your answer above")
+        );
+        assert_eq!(
+            picked_answer_label(&ask, OWN_ANSWER, Some(&note("  The testers \u{FFFC} ", 1)))
+                .as_deref(),
+            Some("The testers")
+        );
+        assert_eq!(
+            picked_answer_label(&ask, OWN_ANSWER, Some(&note("\u{FFFC}", 1))).as_deref(),
+            Some("1 picture")
+        );
+        assert_eq!(
+            picked_answer_label(&ask, OWN_ANSWER, Some(&note("", 3))).as_deref(),
+            Some("3 pictures")
+        );
     }
 
     #[test]
     fn a_stop_shows_as_stopping_only_for_the_turn_it_was_pressed_for() {
         assert!(still_stopping(Some(1_000), 1_000));
         assert!(still_stopping(Some(1_000), 1_000 + STOPPING_SHOWN_MS - 1));
-        assert!(!still_stopping(Some(1_000), 1_000 + STOPPING_SHOWN_MS), "left over from a turn long gone");
+        assert!(
+            !still_stopping(Some(1_000), 1_000 + STOPPING_SHOWN_MS),
+            "left over from a turn long gone"
+        );
         assert!(!still_stopping(None, 5_000));
     }
 }

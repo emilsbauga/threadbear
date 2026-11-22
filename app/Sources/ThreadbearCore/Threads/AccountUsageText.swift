@@ -266,7 +266,7 @@ public enum AccountUsageText {
     // MARK: Picking an account
 
     /// The account a new thread starts on when Mike hasn't picked one
-    /// (docs/step4-plan.md, "Picking an account for a new thread"; the
+    /// (docs/archive/step4-plan.md, "Picking an account for a new thread"; the
     /// runner's `pickAccount` in `usage.ts` is the same rule):
     ///
     /// - only accounts of the last-used account's provider, so a Claude

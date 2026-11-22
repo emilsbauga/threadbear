@@ -68,8 +68,15 @@ impl Record {
         let mut extras = Map::new();
         let from = frames.len().saturating_sub(60);
         extras.insert("frames".into(), json!(frames[from..]));
-        extras.insert("seconds".into(), self.recovered_after.map_or_else(|| json!("never came back"), |s| json!(s as i64)));
-        extras.insert("build".into(), json!(self.build.as_deref().unwrap_or("unknown")));
+        extras.insert(
+            "seconds".into(),
+            self.recovered_after
+                .map_or_else(|| json!("never came back"), |s| json!(s as i64)),
+        );
+        extras.insert(
+            "build".into(),
+            json!(self.build.as_deref().unwrap_or("unknown")),
+        );
         if let Some(context) = &self.context {
             if let Some(p) = context.main_priority {
                 extras.insert("mainPriority".into(), json!(p));
@@ -138,8 +145,19 @@ pub fn file_name(local: chrono::DateTime<chrono::Local>) -> String {
 
 /// The records in `folder`, oldest first, by name without `.json`.
 pub fn names(folder: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
-    let mut names: Vec<String> = entries.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).filter(|n| n.starts_with("hang-")).map(str::to_owned)).collect();
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".json"))
+                .filter(|n| n.starts_with("hang-"))
+                .map(str::to_owned)
+        })
+        .collect();
     names.sort();
     names
 }
@@ -170,7 +188,9 @@ pub struct PastStall {
 pub fn take_past(folder: &Path, now_ms: i64) -> Vec<PastStall> {
     let mut out = Vec::new();
     for name in names(folder) {
-        let Some(mut record) = read(folder, &name) else { continue };
+        let Some(mut record) = read(folder, &name) else {
+            continue;
+        };
         if record.reported == Some(true) {
             continue;
         }
@@ -180,15 +200,23 @@ pub fn take_past(folder: &Path, now_ms: i64) -> Vec<PastStall> {
         }
         record.reported = Some(true);
         let _ = write(folder, &name, &record);
-        if record.recovered_after.is_some_and(|s| s < REPORT_AFTER_SECONDS) {
+        if record
+            .recovered_after
+            .is_some_and(|s| s < REPORT_AFTER_SECONDS)
+        {
             continue;
         }
-        let sample = std::fs::read_to_string(folder.join(format!("{name}.sample"))).unwrap_or_default();
+        let sample =
+            std::fs::read_to_string(folder.join(format!("{name}.sample"))).unwrap_or_default();
         let frames = crate::hang_sample::heaviest_main_thread_path(&sample);
         if frames.is_empty() || crate::hang_sample::is_idle(&frames) {
             continue;
         }
-        out.push(PastStall { name, frames, record });
+        out.push(PastStall {
+            name,
+            frames,
+            record,
+        });
     }
     out
 }
@@ -205,7 +233,9 @@ pub fn prune(folder: &Path) {
 /// What a report's title names the stall by: the app's own deepest frame, or
 /// the top of the stack.
 pub fn stuck_in(frames: &[String]) -> String {
-    crate::hang_sample::deepest_app_frame(frames).or_else(|| frames.last().cloned()).unwrap_or_else(|| "unknown".into())
+    crate::hang_sample::deepest_app_frame(frames)
+        .or_else(|| frames.last().cloned())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 #[cfg(test)]
@@ -231,7 +261,10 @@ mod tests {
         let mut beats = Beats::default();
         assert_eq!(beats.tick(0, || unreachable!()), Tick::Post);
         assert_eq!(beats.tick(1_000, || unreachable!()), Tick::Wait);
-        assert_eq!(beats.tick(4_000, || "hang-a".into()), Tick::Stalled("hang-a".into()));
+        assert_eq!(
+            beats.tick(4_000, || "hang-a".into()),
+            Tick::Stalled("hang-a".into())
+        );
         // Still stuck: one sample is enough.
         assert_eq!(beats.tick(5_000, || unreachable!()), Tick::Wait);
         assert_eq!(beats.arrived(6_500), Some(("hang-a".to_owned(), 6.5)));
@@ -245,18 +278,43 @@ mod tests {
         let swift = r#"{"at":"2026-10-30T09:15:02Z","build":"abc1234","recoveredAfter":33.4,"context":{"mainPriority":4,"loadAverage":61.5,"idleSeconds":812.2}}"#;
         let record: Record = serde_json::from_str(swift).unwrap();
         assert_eq!(record.recovered_after, Some(33.4));
-        assert_eq!(record.context.as_ref().and_then(|c| c.main_priority), Some(4));
+        assert_eq!(
+            record.context.as_ref().and_then(|c| c.main_priority),
+            Some(4)
+        );
         // Nothing it hasn't got is written as null.
-        let fresh = Record { at: "2026-10-30T09:15:02Z".into(), ..Default::default() };
-        assert_eq!(serde_json::to_string(&fresh).unwrap(), r#"{"at":"2026-10-30T09:15:02Z"}"#);
+        let fresh = Record {
+            at: "2026-10-30T09:15:02Z".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&fresh).unwrap(),
+            r#"{"at":"2026-10-30T09:15:02Z"}"#
+        );
     }
 
     #[test]
     fn extras_are_numbers_and_names_only() {
-        let record = Record { at: "x".into(), build: Some("abc1234".into()), recovered_after: Some(20.7), reported: None, context: Some(Context { main_priority: Some(46), load_average: Some(2.5), idle_seconds: Some(3.9) }) };
+        let record = Record {
+            at: "x".into(),
+            build: Some("abc1234".into()),
+            recovered_after: Some(20.7),
+            reported: None,
+            context: Some(Context {
+                main_priority: Some(46),
+                load_average: Some(2.5),
+                idle_seconds: Some(3.9),
+            }),
+        };
         let extras = record.extras(&["a (in threadbear-gpui)".into()]);
-        assert_eq!(extras, json!({ "frames": ["a (in threadbear-gpui)"], "seconds": 20, "build": "abc1234", "mainPriority": 46, "loadAverage": 2.5, "idleSeconds": 3 }));
-        let never = Record { at: "x".into(), ..Default::default() };
+        assert_eq!(
+            extras,
+            json!({ "frames": ["a (in threadbear-gpui)"], "seconds": 20, "build": "abc1234", "mainPriority": 46, "loadAverage": 2.5, "idleSeconds": 3 })
+        );
+        let never = Record {
+            at: "x".into(),
+            ..Default::default()
+        };
         assert_eq!(never.extras(&[])["seconds"], json!("never came back"));
     }
 
@@ -272,7 +330,7 @@ mod tests {
             // Never came back: a force-quit.
             ("hang-3", Record { at: old.clone(), ..Default::default() }, BUSY),
             // Sampled after it was over.
-            ("hang-4", Record { at: old.clone(), recovered_after: Some(16.), ..Default::default() }, "Call graph:\n    5 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)\n    + 5 _DPSNextEvent  (in AppKit)\n    + ! 5 __CFRunLoopServiceMachPort  (in CoreFoundation)\n"),
+            ("hang-4", Record { at: old, recovered_after: Some(16.), ..Default::default() }, "Call graph:\n    5 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)\n    + 5 _DPSNextEvent  (in AppKit)\n    + ! 5 __CFRunLoopServiceMachPort  (in CoreFoundation)\n"),
             // Still settling: the next launch's.
             ("hang-5", Record { at: "2026-11-11T09:59:50Z".into(), ..Default::default() }, BUSY),
         ];
@@ -283,7 +341,10 @@ mod tests {
         let past = take_past(&dir, now);
         let sent: Vec<&str> = past.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(sent, ["hang-1", "hang-3"]);
-        assert_eq!(stuck_in(&past[0].frames), "threadbear_gpui::sidebar::SidebarView::rows (in threadbear-gpui)");
+        assert_eq!(
+            stuck_in(&past[0].frames),
+            "threadbear_gpui::sidebar::SidebarView::rows (in threadbear-gpui)"
+        );
         assert!(take_past(&dir, now).is_empty(), "each is sent once");
         assert_eq!(read(&dir, "hang-2").unwrap().reported, Some(true));
         // Settled by a later launch.
@@ -296,7 +357,15 @@ mod tests {
         let dir = folder("prune");
         for n in 0..12 {
             let name = format!("hang-2026-11-{n:02}");
-            write(&dir, &name, &Record { at: "x".into(), ..Default::default() }).unwrap();
+            write(
+                &dir,
+                &name,
+                &Record {
+                    at: "x".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             std::fs::write(dir.join(format!("{name}.sample")), "").unwrap();
         }
         // Not one of the watch's: left alone.

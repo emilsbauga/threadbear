@@ -1197,7 +1197,7 @@ private struct CircleButtonStyle: ButtonStyle {
 /// effort level along the bottom. There's no "default" effort any more:
 /// the level picked last is what a new thread starts on.
 ///
-/// With pools (docs/pools-plan.md) the rail lists pools with their logins
+/// With pools (docs/archive/pools-plan.md) the rail lists pools with their logins
 /// and best room, and a mixed pool lists its models under each provider.
 /// "Pin to a login ›" went (28 Oct): Mike didn't want it. A thread pinned
 /// before then (or by a script) still gets a "Pinned to … · Unpin" line.

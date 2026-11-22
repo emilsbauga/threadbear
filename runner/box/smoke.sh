@@ -12,7 +12,7 @@
 # 3. In box mode, the whole runner loads and trades its boot token at
 #    THREADBEAR_SYNC_URL: a stand-in for Convex in the same container refuses
 #    the token (`auth`), and the runner stops at once, saying so, as a box
-#    whose token is used or expired does (docs/protocol.md, "Box mode").
+#    whose token is used or expired does (docs/protocol/boxes.md, "Box mode").
 set -euo pipefail
 # The single-quoted scripts are run by the image's shell, which expands them.
 # shellcheck disable=SC2016

@@ -2,10 +2,10 @@
 // agent's lead, each option with its reasons, its shots and a tick, and under
 // them one reply box with None and Send; once it's over, what was sent.
 use super::ReviewWindow;
+use crate::spinner::Spinner;
 use crate::style::{self, px};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Paste, Textarea};
-use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -21,9 +21,19 @@ const PAD: f32 = 14.;
 const RAIL_THUMB: (f32, f32) = (52., 33.);
 
 impl ReviewWindow {
-    pub(super) fn render_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_rail(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let hairline = style::hairline(cx);
-        let mut list = div().id("review-rail").flex_1().min_h_0().w_full().overflow_y_scroll().track_scroll(&self.rail_scroll);
+        let mut list = div()
+            .id("review-rail")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.rail_scroll);
         // The agent's lead, as markdown in the text colour: drawn raw in grey it
         // was one long wall where backticks showed and nothing stood out (Mike, 7 Nov).
         if let Some(note) = self.session.review().note.clone().filter(|n| !n.is_empty()) {
@@ -36,7 +46,13 @@ impl ReviewWindow {
                     .border_color(hairline)
                     .text_size(px(style::size::WORK))
                     .line_height(px(style::natural_line(style::size::WORK) + 2.))
-                    .child(inline_note("review-note", &note, style::label_text(cx), &self.cwd, cx)),
+                    .child(inline_note(
+                        "review-note",
+                        &note,
+                        style::label_text(cx),
+                        &self.cwd,
+                        cx,
+                    )),
             );
         }
         let options = self.session.review().options.clone();
@@ -52,45 +68,166 @@ impl ReviewWindow {
             .bg(style::primary_opacity(cx, 0.025))
             .child(list)
             .child(div().flex_none().w_full().h(gpui_kit::px(1.)).bg(hairline))
-            .child(div().flex_none().w_full().p(px(PAD)).child(self.render_footer(window, cx)))
+            .child(
+                div()
+                    .flex_none()
+                    .w_full()
+                    .p(px(PAD))
+                    .child(self.render_footer(window, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// Under the stage when the window's a closer look from the review's
+    /// page (`closer_look`): the option on show's tick, name and reasons, at the
+    /// thread's reading size, where the eye already is. Nothing while
+    /// they're all side by side.
+    pub(super) fn render_words(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let index = self.session.focused();
+        let Some(option) = self
+            .session
+            .review()
+            .options
+            .get(index)
+            .filter(|_| self.session.mode == ReviewMode::Single)
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let picked = self.session.draft().picked_ids.contains(&option.id);
+        let recommended = self.session.review().recommended.as_deref() == Some(option.id.as_str());
+        let title = h_flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(10.))
+            .child(self.render_pick_mark(&option, picked, cx))
+            .child(
+                div()
+                    .text_size(px(style::size::HEADER + 2.))
+                    .line_height(px(style::natural_line(style::size::HEADER + 2.)))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(option.title.clone()),
+            )
+            .when(recommended, |s| s.child(recommended_mark(cx)));
+        let mut words = v_flex().w_full().max_w(px(860.)).gap(px(6.)).child(title);
+        if let Some(reason) = option.note.clone().filter(|n| !n.is_empty()) {
+            words = words.child(
+                div()
+                    .text_size(px(style::size::BODY))
+                    .line_height(px(style::size::BODY_LINE))
+                    .child(inline_note(
+                        ("review-words", index),
+                        &reason,
+                        style::label_text(cx),
+                        &self.cwd,
+                        cx,
+                    )),
+            );
+        }
+        h_flex()
+            .id("review-words")
+            .flex_none()
+            .w_full()
+            .justify_center()
+            .px(px(28.))
+            .pt(px(14.))
+            .pb(px(22.))
+            .child(words)
             .into_any_element()
     }
 
     /// One option: its tick, its name and reasons (a click shows it on the
     /// stage), its shots when it has several, and a note left on it.
-    fn render_choice(&mut self, index: usize, option: &ReviewOption, cx: &mut Context<Self>) -> AnyElement {
+    fn render_choice(
+        &mut self,
+        index: usize,
+        option: &ReviewOption,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let picked = self.session.draft().picked_ids.contains(&option.id);
         let current = self.session.mode == ReviewMode::Single && self.session.focused() == index;
-        let note = self.session.shown_draft().notes.get(&option.id).cloned().unwrap_or_default();
+        let note = self
+            .session
+            .shown_draft()
+            .notes
+            .get(&option.id)
+            .cloned()
+            .unwrap_or_default();
         let shots = option.all_shots();
-        let bg = if current { style::primary_opacity(cx, 0.06) } else if picked { style::control_accent(cx).opacity(0.07) } else { gpui_kit::transparent_black() };
-        let tip = if current { format!("Showing {}", option.id) } else { format!("Show {}", option.id) };
-        let words = crate::highlights::tipped(div().id(("review-choice", index)).w_full().cursor_pointer(), tip)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if !current {
-                    this.enlarge(index, 0, cx);
-                }
-            }))
-            .child(self.render_choice_text(index, option, cx));
+        let bg = if current {
+            style::primary_opacity(cx, 0.06)
+        } else if picked {
+            style::control_accent(cx).opacity(0.07)
+        } else {
+            gpui_kit::transparent_black()
+        };
+        let tip = if current {
+            format!("Showing {}", option.id)
+        } else {
+            format!("Show {}", option.id)
+        };
+        let words = crate::highlights::tipped(
+            div().id(("review-choice", index)).w_full().cursor_pointer(),
+            tip,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if !current {
+                this.enlarge(index, 0, cx);
+            }
+        }))
+        .child(self.render_choice_text(index, option, cx));
         let mut column = v_flex().flex_1().min_w_0().gap(px(8.)).child(words);
         if shots.len() > 1 {
             let (primary, focused_shot) = (style::label_text(cx), self.session.shot());
             let mut flow = h_flex().flex_wrap().gap_x(px(5.)).gap_y(px(6.));
             for (shot, item) in shots.iter().enumerate() {
                 let on = current && focused_shot == shot;
-                flow = flow.child(
-                    crate::highlights::tipped(div().id(SharedString::from(format!("review-rail-shot-{}-{shot}", option.id))).relative().flex_none().cursor_pointer(), rules::shot_tip(option, shot))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.enlarge(index, shot, cx)))
-                        .child(super::stage::thumb(&item.image, RAIL_THUMB.0, RAIL_THUMB.1, 4., cx).opacity(if on { 1. } else { 0.7 }))
-                        .when(on, |s| s.child(div().absolute().top(px(-2.)).left(px(-2.)).w(px(RAIL_THUMB.0 + 4.)).h(px(RAIL_THUMB.1 + 4.)).rounded(px(4.)).border(px(1.5)).border_color(primary))),
-                );
+                flow =
+                    flow.child(
+                        crate::highlights::tipped(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "review-rail-shot-{}-{shot}",
+                                    option.id
+                                )))
+                                .relative()
+                                .flex_none()
+                                .cursor_pointer(),
+                            rules::shot_tip(option, shot),
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.enlarge(index, shot, cx)
+                        }))
+                        .child(
+                            super::stage::thumb(&item.image, RAIL_THUMB.0, RAIL_THUMB.1, 4., cx)
+                                .opacity(if on { 1. } else { 0.7 }),
+                        )
+                        .when(on, |s| {
+                            s.child(
+                                div()
+                                    .absolute()
+                                    .top(px(-2.))
+                                    .left(px(-2.))
+                                    .w(px(RAIL_THUMB.0 + 4.))
+                                    .h(px(RAIL_THUMB.1 + 4.))
+                                    .rounded(px(4.))
+                                    .border(px(1.5))
+                                    .border_color(primary),
+                            )
+                        }),
+                    );
             }
             column = column.child(flow);
         }
         // A note on one option is from before the one reply box, or a client
         // that still sends them: shown, as it'll go with the reply.
         if !note.is_empty() {
-            column = column.child(div().text_size(px(style::size::WORK)).line_height(px(style::natural_line(style::size::WORK))).child(note));
+            column = column.child(
+                div()
+                    .text_size(px(style::size::WORK))
+                    .line_height(px(style::natural_line(style::size::WORK)))
+                    .child(note),
+            );
         }
         h_flex()
             .relative()
@@ -104,19 +241,40 @@ impl ReviewWindow {
             .bg(bg)
             .child(self.render_pick_mark(option, picked, cx))
             .child(column)
-            .when(current, |s| s.child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(style::primary_opacity(cx, 0.5))))
+            .when(current, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(3.))
+                        .bg(style::primary_opacity(cx, 0.5)),
+                )
+            })
             .into_any_element()
     }
 
     /// The option's name, with the agent's pick marked as on an asks card,
     /// and its reason as inline markdown.
-    fn render_choice_text(&mut self, index: usize, option: &ReviewOption, cx: &mut Context<Self>) -> AnyElement {
+    fn render_choice_text(
+        &mut self,
+        index: usize,
+        option: &ReviewOption,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let recommended = self.session.review().recommended.as_deref() == Some(option.id.as_str());
         let title = h_flex()
             .flex_wrap()
             .items_center()
             .gap_x(px(8.))
-            .child(div().text_size(px(style::size::WORK)).line_height(px(style::natural_line(style::size::WORK))).font_weight(FontWeight::SEMIBOLD).child(option.label()))
+            .child(
+                div()
+                    .text_size(px(style::size::WORK))
+                    .line_height(px(style::natural_line(style::size::WORK)))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(option.label()),
+            )
             .when(recommended, |s| s.child(recommended_mark(cx)));
         let mut words = v_flex().gap(px(3.)).child(title);
         if let Some(reason) = option.note.clone().filter(|n| !n.is_empty()) {
@@ -128,7 +286,13 @@ impl ReviewWindow {
                     .mb(px(-0.75))
                     .text_size(px(style::size::DETAIL))
                     .line_height(px(style::natural_line(style::size::DETAIL) + 1.5))
-                    .child(inline_note(("review-reason", index), &reason, style::secondary_text(cx), &self.cwd, cx)),
+                    .child(inline_note(
+                        ("review-reason", index),
+                        &reason,
+                        style::secondary_text(cx),
+                        &self.cwd,
+                        cx,
+                    )),
             );
         }
         words.into_any_element()
@@ -136,16 +300,34 @@ impl ReviewWindow {
 
     /// A tick, as several can be picked. A reference has none, nor has a sent
     /// review's unpicked option; the gap keeps the words lined up.
-    fn render_pick_mark(&mut self, option: &ReviewOption, picked: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pick_mark(
+        &mut self,
+        option: &ReviewOption,
+        picked: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let accent = style::control_accent(cx);
-        let slot = div().flex_none().size(px(16.)).flex().items_center().justify_center();
+        let slot = div()
+            .flex_none()
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center();
         if self.session.editable() && !option.reference {
             let id = option.id.clone();
-            let tip = if picked { format!("Unpick {}", option.id) } else { format!("Pick {}", option.id) };
-            return crate::highlights::tipped(slot.id(SharedString::from(format!("review-pick-{}", option.id))).cursor_pointer(), tip)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.pick(&id, cx)))
-                .child(checkbox(picked, accent, cx))
-                .into_any_element();
+            let tip = if picked {
+                format!("Unpick {}", option.id)
+            } else {
+                format!("Pick {}", option.id)
+            };
+            return crate::highlights::tipped(
+                slot.id(SharedString::from(format!("review-pick-{}", option.id)))
+                    .cursor_pointer(),
+                tip,
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.pick(&id, cx)))
+            .child(checkbox(picked, accent, cx))
+            .into_any_element();
         }
         if picked {
             return slot.child(checkbox(true, accent, cx)).into_any_element();
@@ -172,7 +354,12 @@ impl ReviewWindow {
         // click anywhere in it puts the cursor in it. The edge is drawn inside
         // its 6 of padding, as the Swift box's strokeBorder is.
         let reply = self.reply.clone();
-        let (me, token_owner, paste_owner, click_owner) = (cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade());
+        let (me, token_owner, paste_owner, click_owner) = (
+            cx.entity().downgrade(),
+            cx.entity().downgrade(),
+            cx.entity().downgrade(),
+            cx.entity().downgrade(),
+        );
         let token_state = self.reply.clone();
         let reply_box = div()
             .id("review-reply")
@@ -191,7 +378,8 @@ impl ReviewWindow {
             })
             // A picture dropped on it goes in as a chip, as one pasted does.
             .on_drop(move |paths: &ExternalPaths, window, cx| {
-                let paths = crate::composer_media::read(true).unwrap_or_else(|| paths.paths().to_vec());
+                let paths =
+                    crate::composer_media::read(true).unwrap_or_else(|| paths.paths().to_vec());
                 if let Some(me) = me.upgrade() {
                     me.update(cx, |this, cx| this.take_reply_paths(paths, window, cx));
                 }
@@ -199,7 +387,9 @@ impl ReviewWindow {
             // HEIC and file promises, which GPUI's own clipboard leaves out,
             // from the Mac's pasteboard first, as the thread's box does.
             .capture_action(cx.listener(|this, _: &Paste, window, cx| {
-                if this.session.editable() && this.reply.read(cx).focus_handle(cx).is_focused(window) {
+                if this.session.editable()
+                    && this.reply.read(cx).focus_handle(cx).is_focused(window)
+                {
                     if let Some(paths) = crate::composer_media::read(false) {
                         this.take_reply_paths(paths, window, cx);
                         cx.stop_propagation();
@@ -209,16 +399,28 @@ impl ReviewWindow {
             .child(
                 crate::composer::bare_textarea(Textarea::new(&self.reply))
                     .token(move |ctx, _, cx| match token_owner.upgrade() {
-                        Some(this) => this.read(cx).reply_pictures.render(ctx, token_state.read(cx), cx),
+                        Some(this) => {
+                            this.read(cx)
+                                .reply_pictures
+                                .render(ctx, token_state.read(cx), cx)
+                        }
                         None => div().into_any_element(),
                     })
-                    .on_paste(move |item, window, cx| paste_owner.upgrade().is_some_and(|this| this.update(cx, |this, cx| this.take_reply_clipboard(Some(item), window, cx))))
+                    .on_paste(move |item, window, cx| {
+                        paste_owner.upgrade().is_some_and(|this| {
+                            this.update(cx, |this, cx| {
+                                this.take_reply_clipboard(Some(item), window, cx)
+                            })
+                        })
+                    })
                     // A plain click on a picture's chip opens it full size
                     // (a drag from it or a Shift-click selects, as in the
                     // thread's box).
                     .on_token_click(move |event, window, cx| {
                         if let Some(this) = click_owner.upgrade() {
-                            this.update(cx, |this, cx| this.open_reply_picture(event.token().id(), window, cx));
+                            this.update(cx, |this, cx| {
+                                this.open_reply_picture(event.token().id(), window, cx)
+                            });
                         }
                     })
                     .w_full()
@@ -226,8 +428,16 @@ impl ReviewWindow {
                     .line_height(px(style::natural_line(style::size::WORK))),
             );
         // None: tinted while it's chosen, as the Swift button's tint is.
-        let none_tip = if none { "Take back none of them" } else { "None of them will do" };
-        let none_fill = if none && active { accent.opacity(0.25) } else { style::primary_opacity(cx, 0.08) };
+        let none_tip = if none {
+            "Take back none of them"
+        } else {
+            "None of them will do"
+        };
+        let none_fill = if none && active {
+            accent.opacity(0.25)
+        } else {
+            style::primary_opacity(cx, 0.08)
+        };
         let none_button = crate::highlights::tipped(
             h_flex()
                 .id("review-none")
@@ -239,7 +449,11 @@ impl ReviewWindow {
                 .justify_center()
                 .items_center()
                 .text_size(px(style::size::LABEL))
-                .text_color(if none && active { accent } else { style::label_text(cx) })
+                .text_color(if none && active {
+                    accent
+                } else {
+                    style::label_text(cx)
+                })
                 .when(editable, |s| s.cursor_pointer())
                 .when(!editable, |s| s.opacity(0.5)),
             none_tip,
@@ -249,7 +463,13 @@ impl ReviewWindow {
         // Send says what will go, and while it goes says so with a spinner and
         // takes no more presses. Grey in a window that isn't in front, as a
         // Mac's own default button is.
-        let (send_fill, send_text) = if can_send && active { (accent, gpui_kit::white()) } else if can_send || submitting { (style::primary_opacity(cx, 0.08), style::label_text(cx)) } else { (style::primary_opacity(cx, 0.04), style::tertiary_label(cx)) };
+        let (send_fill, send_text) = if can_send && active {
+            (accent, gpui_kit::white())
+        } else if can_send || submitting {
+            (style::primary_opacity(cx, 0.08), style::label_text(cx))
+        } else {
+            (style::primary_opacity(cx, 0.04), style::tertiary_label(cx))
+        };
         let send = crate::highlights::tipped(
             h_flex()
                 .id("review-send")
@@ -270,7 +490,12 @@ impl ReviewWindow {
         )
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.submit(cx)))
         .child(div().pt(px(1.)).min_w_0().truncate().child(self.session.send_label()));
-        v_flex().w_full().gap(px(10.)).child(reply_box).child(h_flex().w_full().gap(px(8.)).child(none_button).child(send)).into_any_element()
+        v_flex()
+            .w_full()
+            .gap(px(10.))
+            .child(reply_box)
+            .child(h_flex().w_full().gap(px(8.)).child(none_button).child(send))
+            .into_any_element()
     }
 
     /// What went, once it's over: None of them, the reply as written, and
@@ -278,29 +503,62 @@ impl ReviewWindow {
     fn render_sent(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let sent = self.session.shown_draft().clone();
         let status = rules::status_text(self.session.review());
-        let mut column = v_flex().w_full().gap(px(10.)).text_size(px(style::size::WORK)).line_height(px(style::natural_line(style::size::WORK)));
+        let mut column = v_flex()
+            .w_full()
+            .gap(px(10.))
+            .text_size(px(style::size::WORK))
+            .line_height(px(style::natural_line(style::size::WORK)));
         if sent.none {
-            column = column.child(div().font_weight(FontWeight::SEMIBOLD).child("None of them"));
+            column = column.child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("None of them"),
+            );
         }
         if let Some(reply) = sent.reply.filter(|r| !r.is_empty()) {
             // As tall as it needs up to the reply box's most, then it scrolls,
             // so a long one leaves room for the options and keeps Done on screen.
-            column = column.child(div().id("review-sent-reply").w_full().max_h(px(220.)).overflow_y_scroll().child(reply));
+            column = column.child(
+                div()
+                    .id("review-sent-reply")
+                    .w_full()
+                    .max_h(px(220.))
+                    .overflow_y_scroll()
+                    .child(reply),
+            );
         }
         // The pictures that went with it, as small as the rail's own.
         if !sent.images.is_empty() {
             let edge = style::hairline(cx);
-            column = column.child(h_flex().flex_wrap().gap(px(6.)).children(sent.images.iter().map(|image| {
-                img(crate::rows::markdown::file_picture(&image.path)).size(px(48.)).rounded(px(6.)).border_1().border_color(edge).object_fit(ObjectFit::Cover)
-            })));
+            column = column.child(h_flex().flex_wrap().gap(px(6.)).children(
+                sent.images.iter().map(|image| {
+                    img(crate::rows::markdown::file_picture(&image.path))
+                        .size(px(48.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(edge)
+                        .object_fit(ObjectFit::Cover)
+                }),
+            ));
         }
         column
             .child(
                 h_flex()
                     .w_full()
                     .items_center()
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(style::size::DETAIL)).text_color(style::secondary_text(cx)).child(status))
-                    .child(super::plain_button("review-done", "Done", "Close it", false, cx).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(style::size::DETAIL))
+                            .text_color(style::secondary_text(cx))
+                            .child(status),
+                    )
+                    .child(
+                        super::plain_button("review-done", "Done", "Close it", false, cx)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx))),
+                    ),
             )
             .into_any_element()
     }
@@ -311,8 +569,18 @@ impl ReviewWindow {
 /// in, so it takes the rail's line heights as the Swift rail's text does.
 /// (The kit's markdown view keeps line heights of its own and boxes inline
 /// code.) A link opens through the open gate.
-fn inline_note(id: impl Into<ElementId>, source: &str, color: Hsla, cwd: &str, cx: &App) -> AnyElement {
-    let (base, mono, link_color) = (cx.theme().font_family.clone(), cx.theme().mono_font_family.clone(), style::link_text(cx));
+fn inline_note(
+    id: impl Into<ElementId>,
+    source: &str,
+    color: Hsla,
+    cwd: &str,
+    cx: &App,
+) -> AnyElement {
+    let (base, mono, link_color) = (
+        cx.theme().font_family.clone(),
+        cx.theme().mono_font_family.clone(),
+        style::link_text(cx),
+    );
     let mut text = String::new();
     let mut runs: Vec<TextRun> = vec![];
     let mut links: Vec<(Range<usize>, std::sync::Arc<str>)> = vec![];
@@ -326,7 +594,18 @@ fn inline_note(id: impl Into<ElementId>, source: &str, color: Hsla, cwd: &str, c
         if run.italic {
             face.style = FontStyle::Italic;
         }
-        runs.push(TextRun { len: run.text.len(), font: face, color: if run.link.is_some() { link_color } else { color }, background_color: None, underline: None, strikethrough: None });
+        runs.push(TextRun {
+            len: run.text.len(),
+            font: face,
+            color: if run.link.is_some() {
+                link_color
+            } else {
+                color
+            },
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
         if let Some(url) = run.link {
             links.push((start..text.len(), url));
         }
@@ -338,15 +617,36 @@ fn inline_note(id: impl Into<ElementId>, source: &str, color: Hsla, cwd: &str, c
     // The addresses as the parser shares them, one copy a link.
     let (ranges, urls): (Vec<Range<usize>>, Vec<std::sync::Arc<str>>) = links.into_iter().unzip();
     let cwd = cwd.to_owned();
-    InteractiveText::new(id, styled).on_click(ranges, move |ix, _, cx| crate::open_gate::open_link(&urls[ix], Origin::ThisMac, &cwd, cx)).into_any_element()
+    InteractiveText::new(id, styled)
+        .on_click(ranges, move |ix, _, cx| {
+            crate::open_gate::open_link(&urls[ix], Origin::ThisMac, &cwd, cx)
+        })
+        .into_any_element()
 }
 
 /// A tick box: an outline, or filled with the accent and a white tick.
 fn checkbox(on: bool, accent: Hsla, cx: &App) -> AnyElement {
     if on {
-        return div().size(px(14.)).rounded(px(3.5)).bg(accent).flex().items_center().justify_center().child(Icon::new(IconName::Check).with_size(px(11.)).text_color(gpui_kit::white())).into_any_element();
+        return div()
+            .size(px(14.))
+            .rounded(px(3.5))
+            .bg(accent)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                Icon::new(IconName::Check)
+                    .with_size(px(11.))
+                    .text_color(gpui_kit::white()),
+            )
+            .into_any_element();
     }
-    div().size(px(14.)).rounded(px(3.5)).border(px(1.2)).border_color(style::secondary_text(cx)).into_any_element()
+    div()
+        .size(px(14.))
+        .rounded(px(3.5))
+        .border(px(1.2))
+        .border_color(style::secondary_text(cx))
+        .into_any_element()
 }
 
 /// The agent's pick: a small gold star and "Recommended" in grey, as on an
@@ -357,7 +657,17 @@ pub(super) fn recommended_mark(cx: &App) -> AnyElement {
         .flex_none()
         .gap(px(3.))
         .items_center()
-        .child(crate::icons::symbol("star.fill").with_size(px(11.)).text_color(style::recommended_star(cx)))
-        .child(div().text_size(px(style::size::DETAIL)).line_height(px(style::natural_line(style::size::WORK))).text_color(style::secondary_text(cx)).child("Recommended"))
+        .child(
+            crate::icons::symbol("star.fill")
+                .with_size(px(11.))
+                .text_color(style::recommended_star(cx)),
+        )
+        .child(
+            div()
+                .text_size(px(style::size::DETAIL))
+                .line_height(px(style::natural_line(style::size::WORK)))
+                .text_color(style::secondary_text(cx))
+                .child("Recommended"),
+        )
         .into_any_element()
 }

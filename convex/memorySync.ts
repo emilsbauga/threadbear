@@ -1,4 +1,4 @@
-// Shared memory (docs/protocol.md, "Shared memory"; runner/src/memory-sync.ts).
+// Shared memory (docs/protocol/settings.md, "Shared memory"; runner/src/memory-sync.ts).
 // The main Mac's global CLAUDE.md and the memory folders Claude Code keeps
 // under its home folder, copied to Mike's other runners so a thread on Bruce
 // knows what one on the M5 does.

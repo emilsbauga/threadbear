@@ -1,5 +1,5 @@
 // Starting a thread on another runner from an agent's create_thread
-// (docs/protocol.md, "Asking another runner").
+// (docs/protocol/runners.md, "Asking another runner").
 //
 // The main Mac's runner holds the owner key and starts it straight away,
 // through the relay. A runner on a runner key (the cloud, Bruce) may not
@@ -47,6 +47,9 @@ export type CrossRunnerDeps = {
   runners: () => Promise<RunnerRef[]>;
   createHere: (p: RunnerRequestInput & { startedBy?: { kind: 'thread'; label: string; threadId?: string; why?: string } }) => Promise<{ id: string }>;
   createThere: (runnerId: string, p: RunnerRequestInput) => Promise<{ id: string }>;
+  // A thread started there for one here, whose replies come back to it
+  // (far-reports.ts).
+  startedThere?: (p: { threadId: string; runnerId: string; runnerName: string; starter: string }) => void;
   // Shows the card in one of this runner's threads and waits for its answer.
   card: (threadId: string, c: { approvalId: string; title: string; input: Record<string, unknown>; minutes: number; check: () => Promise<RequestAnswer> }) => Promise<RequestAnswer>;
   // The open card on another runner's thread, as the backend's row has it.
@@ -79,6 +82,21 @@ export function askedHeader(row: Pick<RunnerRequestRow, 'threadId' | 'runnerName
   const id = row.threadId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
   const name = row.runnerName.replace(/[^A-Za-z0-9 _.'-]/g, '').slice(0, 40).trim() || 'another runner';
   return `[Asked for by thread ${id} on ${name}, and allowed by the user on this Mac. The brief below is that thread's. To report back, send_message to thread ${id}.]\n\n`;
+}
+
+// The first line of a thread the main Mac starts on another runner for one
+// of its own. That runner's key may not reach the starter (Runner keys), so
+// the main Mac passes each of its replies back (far-reports.ts), and its
+// send_message to the starter says so (threadbear-mcp.ts).
+export function startedHeader(starter: string, name: string): string {
+  const id = starter.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  const mac = name.replace(/[^A-Za-z0-9 _.'-]/g, '').slice(0, 40).trim() || 'the main Mac';
+  return `[Started by thread ${id} on ${mac}. Each reply you end a turn with goes back to that thread, so put your report in your reply.]\n\n`;
+}
+
+// The starter a thread's first message names, from startedHeader.
+export function starterIn(text: string): string | undefined {
+  return /^\[Started by thread ([A-Za-z0-9_-]+) on /.exec(text)?.[1];
 }
 
 // What Mike read, so Start it starts only that: a request filed again
@@ -168,8 +186,9 @@ export class CrossRunner {
       const target = await this.resolve(runner);
       if (!target) throw bad(`No runner called ${runner}. Runners: ${(await this.deps.runners()).map((r) => r.name).join(', ')}.`);
       if (target.self) return undefined;
-      const t = await this.deps.createThere(target.id, request);
-      return `Started thread ${t.id} on ${target.name}. Use read_thread to see how it goes.`;
+      const t = await this.deps.createThere(target.id, { ...request, text: startedHeader(threadId, this.deps.self().name) + request.text });
+      this.deps.startedThere?.({ threadId: t.id, runnerId: target.id, runnerName: target.name, starter: threadId });
+      return `Started thread ${t.id} on ${target.name}. Each reply it ends a turn with comes back here as a message, so it needn't send_message you. Use read_thread to see how it goes.`;
     }
     const approvalId = crypto.randomUUID();
     // Plan first goes as Ask: a main runner from before Plan first dropped

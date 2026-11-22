@@ -42,26 +42,55 @@ impl Threadbear {
         // The Mac's own time zone, for which day a thread was made on.
         let local = threadbear_core::sidebar::local_now().timezone();
         let launch = crate::installed::launch();
-        let short = launch.build.as_ref().map(|b| b.short.clone()).filter(|s| !s.is_empty());
+        let short = launch
+            .build
+            .as_ref()
+            .map(|b| b.short.clone())
+            .filter(|s| !s.is_empty());
         let view = AboutView {
             lines: den::lines(self.threads.values().map(|t| &**t), now, &local),
-            build: launch.build.as_ref().and_then(|b| den::build(&b.short, &b.built_at, &local)),
+            build: launch
+                .build
+                .as_ref()
+                .and_then(|b| den::build(&b.short, &b.built_at, &local)),
             short,
         };
         // Its own height from what it says, as SwiftUI fits the Swift one to
         // its content: the bear, the name, a line each, the two at the foot.
-        let height = 20. + BEAR + 14. + 20. + if view.lines.is_empty() { 0. } else { 10. + 22. * view.lines.len() as f32 } + 16. + (if view.build.is_some() { 2. } else { 1. }) * 15. + 4. + 32.;
+        let height = 20.
+            + BEAR
+            + 14.
+            + 20.
+            + if view.lines.is_empty() {
+                0.
+            } else {
+                10. + 22. * view.lines.len() as f32
+            }
+            + 16.
+            + (if view.build.is_some() { 2. } else { 1. }) * 15.
+            + 4.
+            + 32.;
         // Over the top of the main window, a little down, as the Swift one sits.
         let main = window.bounds();
-        let origin = point(main.center().x - px(WIDTH / 2.), main.origin.y + px((f32::from(main.size.height) / 8.).min(70.)));
-        let bounds = Bounds { origin, size: size(px(WIDTH), px(height)) };
+        let origin = point(
+            main.center().x - px(WIDTH / 2.),
+            main.origin.y + px((f32::from(main.size.height) / 8.).min(70.)),
+        );
+        let bounds = Bounds {
+            origin,
+            size: size(px(WIDTH), px(height)),
+        };
         // A scripted run's window stays behind whoever's using the Mac.
         let scripted = crate::installed::launch().scripted;
         cx.defer(move |cx| {
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions { title: Some("About Threadbear".into()), appears_transparent: true, traffic_light_position: None }),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("About Threadbear".into()),
+                        appears_transparent: true,
+                        traffic_light_position: None,
+                    }),
                     focus: !scripted,
                     is_resizable: false,
                     is_minimizable: false,
@@ -105,7 +134,10 @@ pub(crate) fn dump(cx: &mut App) -> Option<Vec<String>> {
 
 /// The commit in the code face, a touch brighter than the words round it.
 fn build_line(line: &str, short: Option<&str>, mono: SharedString, commit: Hsla) -> AnyElement {
-    let Some((before, after)) = short.and_then(|s| line.split_once(s).map(|(b, a)| (b.to_owned(), (s.to_owned(), a.to_owned())))) else {
+    let Some((before, after)) = short.and_then(|s| {
+        line.split_once(s)
+            .map(|(b, a)| (b.to_owned(), (s.to_owned(), a.to_owned())))
+    }) else {
         return div().child(line.to_owned()).into_any_element();
     };
     let (short, after) = after;
@@ -114,7 +146,13 @@ fn build_line(line: &str, short: Option<&str>, mono: SharedString, commit: Hsla)
         .flex_wrap()
         .justify_center()
         .child(before.replace(' ', "\u{a0}"))
-        .child(div().font_family(mono).text_size(px(11.)).text_color(commit).child(short))
+        .child(
+            div()
+                .font_family(mono)
+                .text_size(px(11.))
+                .text_color(commit)
+                .child(short),
+        )
         .child(after.replace(' ', "\u{a0}"))
         .into_any_element()
 }
@@ -123,13 +161,22 @@ impl Render for AboutView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (fg, secondary) = (cx.theme().foreground, style::secondary_text(cx));
         let reduce = cx.reduce_motion();
-        let bear = Icon::default().data(BEAR_WAVE).w(px(BEAR)).h(px(BEAR * 2.)).text_color(fg.opacity(0.85));
+        let bear = Icon::default()
+            .data(BEAR_WAVE)
+            .w(px(BEAR))
+            .h(px(BEAR * 2.))
+            .text_color(fg.opacity(0.85));
         // A tilt from its feet, once, as it opens: -9°, 7°, -5°, then still,
         // in the Swift keyframes' times.
         let bear: AnyElement = if reduce {
             bear.into_any_element()
         } else {
-            bear.with_animation("about-wave", Animation::new(Duration::from_millis(900)), |bear, t| bear.rotate(gpui_kit::radians(wave_angle(t).to_radians()))).into_any_element()
+            bear.with_animation(
+                "about-wave",
+                Animation::new(Duration::from_millis(900)),
+                |bear, t| bear.rotate(gpui_kit::radians(wave_angle(t).to_radians())),
+            )
+            .into_any_element()
         };
         let body = v_flex()
             .w_full()
@@ -139,10 +186,37 @@ impl Render for AboutView {
             .pb(px(24.))
             // Only the top half of the bear's picture is bear: the rest hangs
             // below its feet, under what follows.
-            .child(div().relative().w(px(BEAR)).h(px(BEAR)).child(div().absolute().top_0().left_0().child(bear)))
-            .child(div().pt(px(14.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child("Threadbear"))
+            .child(
+                div()
+                    .relative()
+                    .w(px(BEAR))
+                    .h(px(BEAR))
+                    .child(div().absolute().top_0().left_0().child(bear)),
+            )
+            .child(
+                div()
+                    .pt(px(14.))
+                    .text_size(px(15.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(fg)
+                    .child("Threadbear"),
+            )
             .when(!self.lines.is_empty(), |s| {
-                s.child(v_flex().pt(px(10.)).items_center().text_size(px(style::size::LABEL)).text_color(secondary).children(self.lines.iter().map(|l| div().min_h(px(22.)).flex().items_center().text_center().child(l.clone()))))
+                s.child(
+                    v_flex()
+                        .pt(px(10.))
+                        .items_center()
+                        .text_size(px(style::size::LABEL))
+                        .text_color(secondary)
+                        .children(self.lines.iter().map(|l| {
+                            div()
+                                .min_h(px(22.))
+                                .flex()
+                                .items_center()
+                                .text_center()
+                                .child(l.clone())
+                        })),
+                )
             })
             .child(
                 v_flex()
@@ -152,16 +226,32 @@ impl Render for AboutView {
                     .text_center()
                     .text_size(px(11.5))
                     .text_color(secondary.opacity(0.75))
-                    .children(self.build.as_deref().map(|b| build_line(b, self.short.as_deref(), cx.theme().mono_font_family.clone(), secondary)))
+                    .children(self.build.as_deref().map(|b| {
+                        build_line(
+                            b,
+                            self.short.as_deref(),
+                            cx.theme().mono_font_family.clone(),
+                            secondary,
+                        )
+                    }))
                     .child(den::CREDIT),
             );
         let _ = window;
-        let root = div().id("about").size_full().bg(cx.theme().background).child(body);
+        let root = div()
+            .id("about")
+            .size_full()
+            .bg(cx.theme().background)
+            .child(body);
         // Comes up from a touch small and clear, as the Swift one does.
         if reduce {
             root.into_any_element()
         } else {
-            root.with_animation("about-open", Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()), |el, t| el.opacity(t)).into_any_element()
+            root.with_animation(
+                "about-open",
+                Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                |el, t| el.opacity(t),
+            )
+            .into_any_element()
         }
     }
 }

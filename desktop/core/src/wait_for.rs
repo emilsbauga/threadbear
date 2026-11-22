@@ -44,8 +44,23 @@ impl WaitFor {
             negate: c["not"].as_bool() == Some(true),
             timeout_seconds: c["timeout"].as_f64().filter(|t| *t > 0.).unwrap_or(10.),
         };
-        if [&w.row, &w.kind, &w.status, &w.text, &w.banner, &w.connection].iter().all(|o| o.is_none()) && w.loaded.is_none() && w.ready.is_none() {
-            return Err("nothing to wait for (row, kind, status, text, banner, connection, loaded, ready)".to_owned());
+        if [
+            &w.row,
+            &w.kind,
+            &w.status,
+            &w.text,
+            &w.banner,
+            &w.connection,
+        ]
+        .iter()
+        .all(|o| o.is_none())
+            && w.loaded.is_none()
+            && w.ready.is_none()
+        {
+            return Err(
+                "nothing to wait for (row, kind, status, text, banner, connection, loaded, ready)"
+                    .to_owned(),
+            );
         }
         Ok(w)
     }
@@ -55,10 +70,16 @@ impl WaitFor {
     }
 
     fn all_hold(&self, dump: &Value) -> bool {
-        let rows = dump["transcript"]["rows"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let rows = dump["transcript"]["rows"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let field = |r: &Value, k: &str| r[k].as_str().unwrap_or("").to_owned();
         if let Some(row) = &self.row {
-            if !rows.iter().any(|r| field(r, "id").starts_with(row.as_str())) {
+            if !rows
+                .iter()
+                .any(|r| field(r, "id").starts_with(row.as_str()))
+            {
                 return false;
             }
         }
@@ -68,13 +89,20 @@ impl WaitFor {
             }
         }
         if let Some(text) = &self.text {
-            if !rows.iter().any(|r| field(r, "text").contains(text.as_str())) {
+            if !rows
+                .iter()
+                .any(|r| field(r, "text").contains(text.as_str()))
+            {
                 return false;
             }
         }
         if let Some(status) = &self.status {
             let found = match &self.thread {
-                Some(start) => threads(dump).into_iter().find(|t| t["id"].as_str().is_some_and(|id| id.starts_with(start.as_str()))),
+                Some(start) => threads(dump).into_iter().find(|t| {
+                    t["id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with(start.as_str()))
+                }),
                 None => Some(&dump["selection"]).filter(|s| s.is_object()),
             };
             if found.and_then(|t| t["status"].as_str()) != Some(status.as_str()) {
@@ -83,7 +111,11 @@ impl WaitFor {
         }
         if let Some(banner) = &self.banner {
             let shown = dump["banner"]["text"].as_str().unwrap_or("");
-            if if banner.is_empty() { !shown.is_empty() } else { !shown.contains(banner.as_str()) } {
+            if if banner.is_empty() {
+                !shown.is_empty()
+            } else {
+                !shown.contains(banner.as_str())
+            } {
                 return false;
             }
         }
@@ -95,13 +127,16 @@ impl WaitFor {
         }
         if let Some(loaded) = self.loaded {
             let t = &dump["transcript"];
-            let is = t["state"].as_str() == Some("loaded") && t["threadId"].as_str().is_some() && t["threadId"] == dump["selection"]["id"];
+            let is = t["state"].as_str() == Some("loaded")
+                && t["threadId"].as_str().is_some()
+                && t["threadId"] == dump["selection"]["id"];
             if is != loaded {
                 return false;
             }
         }
         if let Some(ready) = self.ready {
-            let is = connection == "connected" && dump["sidebar"]["loading"].as_bool() == Some(false);
+            let is =
+                connection == "connected" && dump["sidebar"]["loading"].as_bool() == Some(false);
             if is != ready {
                 return false;
             }
@@ -119,29 +154,62 @@ impl WaitFor {
             parts.push(format!("a {k} row"));
         }
         if let Some(s) = &self.status {
-            parts.push(format!("status {s}{}", self.thread.as_ref().map(|t| format!(" on {t}")).unwrap_or_default()));
+            parts.push(format!(
+                "status {s}{}",
+                self.thread
+                    .as_ref()
+                    .map(|t| format!(" on {t}"))
+                    .unwrap_or_default()
+            ));
         }
         if let Some(t) = &self.text {
             parts.push(format!("text {t:?}"));
         }
         if let Some(b) = &self.banner {
-            parts.push(if b.is_empty() { "no banner".to_owned() } else { format!("banner {b:?}") });
+            parts.push(if b.is_empty() {
+                "no banner".to_owned()
+            } else {
+                format!("banner {b:?}")
+            });
         }
         if let Some(c) = &self.connection {
             parts.push(format!("connection {c}"));
         }
         if let Some(l) = self.loaded {
-            parts.push(if l { "the thread loaded" } else { "no thread loaded" }.to_owned());
+            parts.push(
+                if l {
+                    "the thread loaded"
+                } else {
+                    "no thread loaded"
+                }
+                .to_owned(),
+            );
         }
         if let Some(r) = self.ready {
-            parts.push(if r { "the thread list" } else { "no thread list" }.to_owned());
+            parts.push(
+                if r {
+                    "the thread list"
+                } else {
+                    "no thread list"
+                }
+                .to_owned(),
+            );
         }
-        format!("{}{}", if self.negate { "not " } else { "" }, parts.join(" and "))
+        format!(
+            "{}{}",
+            if self.negate { "not " } else { "" },
+            parts.join(" and ")
+        )
     }
 }
 
 fn threads(dump: &Value) -> Vec<&Value> {
-    let mut out: Vec<&Value> = dump["sidebar"]["sections"].as_array().into_iter().flatten().flat_map(|s| s["threads"].as_array().into_iter().flatten()).collect();
+    let mut out: Vec<&Value> = dump["sidebar"]["sections"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|s| s["threads"].as_array().into_iter().flatten())
+        .collect();
     if dump["selection"].is_object() {
         out.push(&dump["selection"]);
     }
@@ -171,7 +239,10 @@ mod tests {
     fn needs_something_to_wait_for() {
         assert!(WaitFor::from_command(&json!({ "cmd": "waitFor", "timeout": 2 })).is_err());
         assert_eq!(wait(json!({ "ready": true })).timeout_seconds, 10.);
-        assert_eq!(wait(json!({ "ready": true, "timeout": 2.5 })).timeout_seconds, 2.5);
+        assert_eq!(
+            wait(json!({ "ready": true, "timeout": 2.5 })).timeout_seconds,
+            2.5
+        );
     }
 
     #[test]
@@ -197,7 +268,9 @@ mod tests {
     fn banner_connection_loaded_ready() {
         let mut d = dump();
         assert!(wait(json!({ "banner": "" })).holds(&d));
-        assert!(wait(json!({ "connection": "connected", "loaded": true, "ready": true })).holds(&d));
+        assert!(
+            wait(json!({ "connection": "connected", "loaded": true, "ready": true })).holds(&d)
+        );
         d["banner"] = json!({ "text": "Connecting to the runner…" });
         d["connection"] = json!("connecting");
         d["sidebar"]["loading"] = json!(true);
@@ -210,6 +283,9 @@ mod tests {
 
     #[test]
     fn says_what_it_waited_for() {
-        assert_eq!(wait(json!({ "row": "a:", "banner": "", "not": true })).describe(), "not row a: and no banner");
+        assert_eq!(
+            wait(json!({ "row": "a:", "banner": "", "not": true })).describe(),
+            "not row a: and no banner"
+        );
     }
 }

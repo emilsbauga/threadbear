@@ -90,7 +90,7 @@ test('urgency: a failure that wants Mike outranks a plain one', () => {
 // (app/Sources/ThreadbearCore/Threads/InboxUrgency.swift).
 test('urgency and the Needs you filter follow the shared cases', () => {
   type Case = { name: string; thread: { status?: ThreadRow['status']; needsYou?: boolean; unread?: boolean; pendingReviews?: number }; urgency: number; counted: boolean };
-  const file = new URL('../../app/Tests/Fixtures/inbox-urgency-cases.json', import.meta.url);
+  const file = new URL('../../shared/cases/inbox-urgency.json', import.meta.url);
   const { cases } = JSON.parse(readFileSync(file, 'utf8')) as { cases: Case[] };
   assert.ok(cases.length >= 9);
   for (const c of cases) {

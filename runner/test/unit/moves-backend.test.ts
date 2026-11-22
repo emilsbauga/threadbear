@@ -1,5 +1,5 @@
 // Moving a thread to another runner in the backend (convex/moves.ts,
-// docs/protocol.md "Moving a thread to another runner"), against the
+// docs/protocol/moves.md "Moving a thread to another runner"), against the
 // in-memory database: who may take each step, and the switch handing the
 // thread and everything under it to the new runner.
 import { test } from 'node:test';

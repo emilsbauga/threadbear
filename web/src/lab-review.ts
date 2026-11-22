@@ -1,4 +1,4 @@
-// Another lab's review of a turn's change (docs/protocol.md, "Review by
+// Another lab's review of a turn's change (docs/protocol/needs-you.md, "Review by
 // another lab"): the thread row's `review` (backend API 76), for the turn its
 // `cardTurn` names. Worded as the Mac's row says it (desktop/core
 // LabReview::heading and rows/lab_review.rs finding_detail), so the three

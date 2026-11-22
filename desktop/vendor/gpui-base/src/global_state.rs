@@ -26,6 +26,11 @@ pub struct GlobalState {
     /// The link the current left press went down on, if any (Threadbear's:
     /// the app drags a file link out, `pressed_link`).
     pressed_link: Option<SharedString>,
+    /// Where the current left press went down on a link, and the link's
+    /// address: kept for the release, so a press that slipped a point or two
+    /// (and so started selecting) still follows the link
+    /// (`link_press_for_release`).
+    link_press: LinkPress,
     /// The text views being prepainted or painted, innermost last. Kept
     /// apart from what views read of this global: pushing and popping as
     /// they draw is not a change of it.
@@ -37,6 +42,30 @@ pub struct GlobalState {
     last_touch: Option<Instant>,
 }
 
+/// Threadbear's: the current left press, as far as a link's click goes
+/// (`GlobalState::link_release`).
+enum LinkPress {
+    /// Not on a link, or no press yet.
+    None,
+    /// Down on the link to this address, here, and not moved far since.
+    Down(Point<Pixels>, SharedString),
+    /// Down on a link, but never its click: a Shift press, or one that
+    /// moved past the slop (a drag, even if it came back).
+    NotAClick,
+}
+
+/// What a left release on a link is (`GlobalState::link_release`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkRelease {
+    /// It ends a press on the same link that stayed near where it went
+    /// down: the link's click, whatever a slip selected.
+    Click,
+    /// It ends a press on a link that's a drag or a Shift press: no click.
+    NotAClick,
+    /// The press wasn't on a link (or wasn't seen): words selected say.
+    Unknown,
+}
+
 impl Global for GlobalState {}
 
 impl GlobalState {
@@ -46,6 +75,7 @@ impl GlobalState {
             deferred_popovers: Vec::new(),
             suppress_text_selection: false,
             pressed_link: None,
+            link_press: LinkPress::None,
             text_view_state_stack: RefCell::new(Vec::new()),
             table_cell_stack: RefCell::new(Vec::new()),
             last_touch: None,
@@ -90,6 +120,7 @@ impl GlobalState {
         let state = Self::global_mut(cx);
         state.suppress_text_selection = false;
         state.pressed_link = None;
+        state.link_press = LinkPress::None;
     }
 
     /// Notes that the left press being handled went down on a link to
@@ -99,6 +130,60 @@ impl GlobalState {
     pub fn note_pressed_link(url: SharedString, cx: &mut App) {
         Self::init(cx);
         Self::global_mut(cx).pressed_link = Some(url);
+    }
+
+    /// Notes that a plain left press went down on the link to `url` at `at`,
+    /// for its release (`link_release`).
+    pub fn note_link_press(url: SharedString, at: Point<Pixels>, cx: &mut App) {
+        Self::init(cx);
+        Self::global_mut(cx).link_press = LinkPress::Down(at, url);
+    }
+
+    /// Notes that the left press went down on a link but is never its click
+    /// (a Shift press, which extends a selection).
+    pub fn note_link_press_not_a_click(cx: &mut App) {
+        Self::init(cx);
+        Self::global_mut(cx).link_press = LinkPress::NotAClick;
+    }
+
+    /// Whether a press on a link is waiting for its release.
+    pub fn has_link_press(cx: &App) -> bool {
+        cx.try_global::<Self>().is_some_and(|state| !matches!(state.link_press, LinkPress::None))
+    }
+
+    /// Forgets the press on a link: as any left press starts, and once its
+    /// release has been handled. One that never got its release on the
+    /// link (dragged off it, or out as a file) mustn't make a later release
+    /// a click. Leaves the global untouched when there's nothing to forget:
+    /// this runs for every link in a window on every press.
+    pub fn forget_link_press(cx: &mut App) {
+        if Self::has_link_press(cx) {
+            Self::global_mut(cx).link_press = LinkPress::None;
+        }
+    }
+
+    /// The pointer moved to `at` with the left button down: past `slop` from
+    /// where it went down on a link, the press is a drag for good, even if
+    /// it comes back before it's let go. Runs for every link in a window on
+    /// every move of a drag, so it only writes the global when that happens.
+    pub fn link_press_moved(at: Point<Pixels>, slop: f64, cx: &mut App) {
+        let strayed = cx.try_global::<Self>().is_some_and(|state| {
+            matches!(&state.link_press, LinkPress::Down(down, _) if (at - *down).magnitude() > slop)
+        });
+        if strayed {
+            Self::global_mut(cx).link_press = LinkPress::NotAClick;
+        }
+    }
+
+    /// What a left release at `at` on the link to `url` is, given the press
+    /// it ends. Once: the press is forgotten as it's asked about.
+    pub fn link_release(url: &str, at: Point<Pixels>, slop: f64, cx: &mut App) -> LinkRelease {
+        Self::init(cx);
+        match std::mem::replace(&mut Self::global_mut(cx).link_press, LinkPress::None) {
+            LinkPress::Down(down, pressed) if pressed.as_ref() == url && (at - down).magnitude() <= slop => LinkRelease::Click,
+            LinkPress::Down(..) | LinkPress::NotAClick => LinkRelease::NotAClick,
+            LinkPress::None => LinkRelease::Unknown,
+        }
     }
 
     /// The link the left press being handled went down on, once: only

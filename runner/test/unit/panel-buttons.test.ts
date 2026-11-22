@@ -1,4 +1,4 @@
-// Panel buttons (docs/protocol.md, "Reply buttons"): a reply's button that
+// Panel buttons (docs/protocol/events.md, "Reply buttons"): a reply's button that
 // opens another folder's patch panel beside the thread. The Daily brief's
 // "Go through comments" opens the YouTube patch's panel from
 // yt-channel-manager (Mike, 18 Nov 2026).

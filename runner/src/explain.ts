@@ -1,4 +1,4 @@
-// Explain (docs/protocol.md, "Explain"): Mike selects a few words in a
+// Explain (docs/protocol/settings.md, "Explain"): Mike selects a few words in a
 // thread's transcript and asks what they mean. It's a little side
 // conversation with the small model about that thread, a mini fork: the
 // model is shown the selection, the message it came from and the last few

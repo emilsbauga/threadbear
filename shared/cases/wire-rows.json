@@ -1,0 +1,1603 @@
+{
+  "about": "A sample of each row the backend's phone API returns (convex/phone.ts), and the fields each app's models must keep from it. input.kind says which row (thread, message, page, detail, runner, identity, project, counts, command, waiting, pocket, account, wake, schedule) and input.row is the row as the backend sends it; expect maps a field path (a.0.b for the first of a list, x.count for a list's length) to its value, with times as milliseconds since 1970 and null for one that must be absent. The iPhone (Models.swift and friends, WireRowsTests.swift) and Android (Models.kt and friends, WireRowsTest.kt) decode each with their own models. A field one app doesn't decode is a differs, not a fix: see docs/parity.md for what each app can do.",
+  "platforms": [
+    "ios",
+    "android"
+  ],
+  "cases": [
+    {
+      "name": "thread row: what every list row shows",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": true,
+          "unread": true,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "model": "claude-opus",
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "lastActivityMs": 1795136400000,
+          "snoozedUntil": "2026-11-21T09:00:00.000Z",
+          "snoozedUntilRestart": false,
+          "wakeNote": "the runner updates",
+          "woke": {
+            "at": "2026-11-20T00:59:30.000Z",
+            "since": "2026-11-19T22:00:00.000Z"
+          },
+          "startedBy": {
+            "kind": "schedule",
+            "label": "Morning check",
+            "icon": "clock",
+            "why": "every weekday"
+          },
+          "asked": "Can you fix the order?",
+          "recap": "old recap text",
+          "keywords": "inbox order sort",
+          "archivedAt": "2026-11-18T05:30:00.000Z",
+          "starredAt": "2026-11-19T22:00:00.000Z",
+          "costUsd": 1.25,
+          "projects": [
+            {
+              "id": "p1",
+              "title": "Threadbear"
+            }
+          ],
+          "working": "Running npm test",
+          "earliestSeq": 3,
+          "share": {
+            "access": "link",
+            "slug": "abc"
+          },
+          "asks": [
+            {
+              "action": "Merge it?",
+              "why": "Tests pass.",
+              "options": [
+                "Merge",
+                "Not yet"
+              ],
+              "optionNotes": [
+                "Lands it",
+                "Waits"
+              ],
+              "suggested": 0,
+              "links": [
+                {
+                  "title": "Open PR",
+                  "url": "https://example.com/pr/1"
+                }
+              ],
+              "ticked": false
+            }
+          ],
+          "asksSeq": 12,
+          "next": [
+            "Ship it"
+          ],
+          "looseEnds": [
+            {
+              "kind": "thread",
+              "text": "A thread it started is still going",
+              "threadId": "th-2"
+            }
+          ],
+          "cardTurn": "abcd1234",
+          "review": {
+            "reviewer": "Codex",
+            "independent": true,
+            "rounds": 2,
+            "threadId": "th-review",
+            "passed": true,
+            "findings": [
+              {
+                "id": 1,
+                "round": 1,
+                "severity": "high",
+                "claim": "The cap can be skipped",
+                "where": "sync.ts:40",
+                "outcome": "fixed",
+                "note": "Checked both ways"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Dashboard",
+              "url": "https://example.com/dash",
+              "icon": "gauge"
+            }
+          ],
+          "needs": "you",
+          "pendingReviews": 1,
+          "waitingForRoom": {
+            "until": "2026-11-20T02:00:00.000Z",
+            "accountId": "claude-2"
+          },
+          "waitingForNetwork": {
+            "since": "2026-11-20T00:40:00.000Z"
+          },
+          "pendingApproval": {
+            "approvalId": "q1",
+            "kind": "question",
+            "questions": [
+              {
+                "question": "Which order?",
+                "header": "Order",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "Newest"
+                  },
+                  {
+                    "label": "Oldest",
+                    "description": "first in"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "threadId": "th-1",
+        "runnerId": "mac",
+        "title": "Fix the inbox order",
+        "cwd": "/Users/alex/dev/app",
+        "accountId": "claude-main",
+        "provider": "claude",
+        "model": "claude-opus",
+        "status": "waiting",
+        "needsYou": true,
+        "unread": true,
+        "preview": "Landed it.",
+        "lastActivityAt": 1795136400000,
+        "snoozedUntil": 1795251600000,
+        "snoozedUntilRestart": false,
+        "wakeNote": "the runner updates",
+        "woke.at": 1795136370000,
+        "woke.since": 1795125600000,
+        "startedBy.kind": "schedule",
+        "startedBy.label": "Morning check",
+        "startedBy.icon": "clock",
+        "startedBy.why": "every weekday",
+        "asked": "Can you fix the order?",
+        "archivedAt": 1794979800000,
+        "starredAt": 1795125600000,
+        "costUsd": 1.25,
+        "projects.count": 1,
+        "projects.0.id": "p1",
+        "projects.0.title": "Threadbear",
+        "working": "Running npm test",
+        "earliestSeq": 3,
+        "asksSeq": 12,
+        "next.count": 1,
+        "next.0": "Ship it",
+        "needs": "you",
+        "pendingReviews": 1,
+        "waitingForRoom.until": "2026-11-20T02:00:00.000Z",
+        "waitingForRoom.accountId": "claude-2",
+        "waitingForNetwork.since": "2026-11-20T00:40:00.000Z",
+        "links.count": 1,
+        "links.0.title": "Dashboard",
+        "links.0.url": "https://example.com/dash",
+        "links.0.icon": "gauge"
+      }
+    },
+    {
+      "name": "thread row: the card of asks under the reply",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": true,
+          "unread": true,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "model": "claude-opus",
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "lastActivityMs": 1795136400000,
+          "snoozedUntil": "2026-11-21T09:00:00.000Z",
+          "snoozedUntilRestart": false,
+          "wakeNote": "the runner updates",
+          "woke": {
+            "at": "2026-11-20T00:59:30.000Z",
+            "since": "2026-11-19T22:00:00.000Z"
+          },
+          "startedBy": {
+            "kind": "schedule",
+            "label": "Morning check",
+            "icon": "clock",
+            "why": "every weekday"
+          },
+          "asked": "Can you fix the order?",
+          "recap": "old recap text",
+          "keywords": "inbox order sort",
+          "archivedAt": "2026-11-18T05:30:00.000Z",
+          "starredAt": "2026-11-19T22:00:00.000Z",
+          "costUsd": 1.25,
+          "projects": [
+            {
+              "id": "p1",
+              "title": "Threadbear"
+            }
+          ],
+          "working": "Running npm test",
+          "earliestSeq": 3,
+          "share": {
+            "access": "link",
+            "slug": "abc"
+          },
+          "asks": [
+            {
+              "action": "Merge it?",
+              "why": "Tests pass.",
+              "options": [
+                "Merge",
+                "Not yet"
+              ],
+              "optionNotes": [
+                "Lands it",
+                "Waits"
+              ],
+              "suggested": 0,
+              "links": [
+                {
+                  "title": "Open PR",
+                  "url": "https://example.com/pr/1"
+                }
+              ],
+              "ticked": false
+            }
+          ],
+          "asksSeq": 12,
+          "next": [
+            "Ship it"
+          ],
+          "looseEnds": [
+            {
+              "kind": "thread",
+              "text": "A thread it started is still going",
+              "threadId": "th-2"
+            }
+          ],
+          "cardTurn": "abcd1234",
+          "review": {
+            "reviewer": "Codex",
+            "independent": true,
+            "rounds": 2,
+            "threadId": "th-review",
+            "passed": true,
+            "findings": [
+              {
+                "id": 1,
+                "round": 1,
+                "severity": "high",
+                "claim": "The cap can be skipped",
+                "where": "sync.ts:40",
+                "outcome": "fixed",
+                "note": "Checked both ways"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Dashboard",
+              "url": "https://example.com/dash",
+              "icon": "gauge"
+            }
+          ],
+          "needs": "you",
+          "pendingReviews": 1,
+          "waitingForRoom": {
+            "until": "2026-11-20T02:00:00.000Z",
+            "accountId": "claude-2"
+          },
+          "waitingForNetwork": {
+            "since": "2026-11-20T00:40:00.000Z"
+          },
+          "pendingApproval": {
+            "approvalId": "q1",
+            "kind": "question",
+            "questions": [
+              {
+                "question": "Which order?",
+                "header": "Order",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "Newest"
+                  },
+                  {
+                    "label": "Oldest",
+                    "description": "first in"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "asks.count": 1,
+        "asks.0.action": "Merge it?",
+        "asks.0.why": "Tests pass.",
+        "asks.0.options.count": 2,
+        "asks.0.optionNotes.count": 2,
+        "asks.0.suggested": 0,
+        "asks.0.links.count": 1,
+        "asks.0.links.0.url": "https://example.com/pr/1",
+        "asks.0.ticked": false
+      }
+    },
+    {
+      "name": "thread row: a question it's waiting on",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": true,
+          "unread": true,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "model": "claude-opus",
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "lastActivityMs": 1795136400000,
+          "snoozedUntil": "2026-11-21T09:00:00.000Z",
+          "snoozedUntilRestart": false,
+          "wakeNote": "the runner updates",
+          "woke": {
+            "at": "2026-11-20T00:59:30.000Z",
+            "since": "2026-11-19T22:00:00.000Z"
+          },
+          "startedBy": {
+            "kind": "schedule",
+            "label": "Morning check",
+            "icon": "clock",
+            "why": "every weekday"
+          },
+          "asked": "Can you fix the order?",
+          "recap": "old recap text",
+          "keywords": "inbox order sort",
+          "archivedAt": "2026-11-18T05:30:00.000Z",
+          "starredAt": "2026-11-19T22:00:00.000Z",
+          "costUsd": 1.25,
+          "projects": [
+            {
+              "id": "p1",
+              "title": "Threadbear"
+            }
+          ],
+          "working": "Running npm test",
+          "earliestSeq": 3,
+          "share": {
+            "access": "link",
+            "slug": "abc"
+          },
+          "asks": [
+            {
+              "action": "Merge it?",
+              "why": "Tests pass.",
+              "options": [
+                "Merge",
+                "Not yet"
+              ],
+              "optionNotes": [
+                "Lands it",
+                "Waits"
+              ],
+              "suggested": 0,
+              "links": [
+                {
+                  "title": "Open PR",
+                  "url": "https://example.com/pr/1"
+                }
+              ],
+              "ticked": false
+            }
+          ],
+          "asksSeq": 12,
+          "next": [
+            "Ship it"
+          ],
+          "looseEnds": [
+            {
+              "kind": "thread",
+              "text": "A thread it started is still going",
+              "threadId": "th-2"
+            }
+          ],
+          "cardTurn": "abcd1234",
+          "review": {
+            "reviewer": "Codex",
+            "independent": true,
+            "rounds": 2,
+            "threadId": "th-review",
+            "passed": true,
+            "findings": [
+              {
+                "id": 1,
+                "round": 1,
+                "severity": "high",
+                "claim": "The cap can be skipped",
+                "where": "sync.ts:40",
+                "outcome": "fixed",
+                "note": "Checked both ways"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Dashboard",
+              "url": "https://example.com/dash",
+              "icon": "gauge"
+            }
+          ],
+          "needs": "you",
+          "pendingReviews": 1,
+          "waitingForRoom": {
+            "until": "2026-11-20T02:00:00.000Z",
+            "accountId": "claude-2"
+          },
+          "waitingForNetwork": {
+            "since": "2026-11-20T00:40:00.000Z"
+          },
+          "pendingApproval": {
+            "approvalId": "q1",
+            "kind": "question",
+            "questions": [
+              {
+                "question": "Which order?",
+                "header": "Order",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "Newest"
+                  },
+                  {
+                    "label": "Oldest",
+                    "description": "first in"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "pendingApproval.id": "q1",
+        "pendingApproval.kind": "question",
+        "pendingApproval.questions.count": 1,
+        "pendingApproval.questions.0.options.count": 2
+      }
+    },
+    {
+      "name": "thread row: an approval for a tool",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": false,
+          "unread": false,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "pendingApproval": {
+            "approvalId": "a1",
+            "kind": "approval",
+            "name": "Bash",
+            "title": "Run npm test",
+            "options": [
+              "allow",
+              "allowAlways",
+              "deny"
+            ],
+            "inputSummary": "npm test",
+            "planSeq": 40
+          }
+        }
+      },
+      "expect": {
+        "pendingApproval.id": "a1",
+        "pendingApproval.kind": "approval",
+        "pendingApproval.options.count": 3,
+        "pendingApproval.planSeq": 40
+      }
+    },
+    {
+      "name": "thread row: a secret it asked for",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": false,
+          "unread": false,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "pendingApproval": {
+            "approvalId": "s1",
+            "kind": "secret",
+            "label": "API key",
+            "reason": "To call the API",
+            "placeholder": "sk-...",
+            "key": "AAAA"
+          }
+        }
+      },
+      "expect": {
+        "pendingApproval.id": "s1",
+        "pendingApproval.kind": "secret"
+      }
+    },
+    {
+      "name": "thread row: a status a newer runner sends",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "dreaming",
+          "needsYou": false,
+          "unread": false,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox"
+        }
+      },
+      "expect": {
+        "status": "unknown"
+      }
+    },
+    {
+      "name": "thread row: the librarian's search words (API 74)",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": true,
+          "unread": true,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "model": "claude-opus",
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "lastActivityMs": 1795136400000,
+          "snoozedUntil": "2026-11-21T09:00:00.000Z",
+          "snoozedUntilRestart": false,
+          "wakeNote": "the runner updates",
+          "woke": {
+            "at": "2026-11-20T00:59:30.000Z",
+            "since": "2026-11-19T22:00:00.000Z"
+          },
+          "startedBy": {
+            "kind": "schedule",
+            "label": "Morning check",
+            "icon": "clock",
+            "why": "every weekday"
+          },
+          "asked": "Can you fix the order?",
+          "recap": "old recap text",
+          "keywords": "inbox order sort",
+          "archivedAt": "2026-11-18T05:30:00.000Z",
+          "starredAt": "2026-11-19T22:00:00.000Z",
+          "costUsd": 1.25,
+          "projects": [
+            {
+              "id": "p1",
+              "title": "Threadbear"
+            }
+          ],
+          "working": "Running npm test",
+          "earliestSeq": 3,
+          "share": {
+            "access": "link",
+            "slug": "abc"
+          },
+          "asks": [
+            {
+              "action": "Merge it?",
+              "why": "Tests pass.",
+              "options": [
+                "Merge",
+                "Not yet"
+              ],
+              "optionNotes": [
+                "Lands it",
+                "Waits"
+              ],
+              "suggested": 0,
+              "links": [
+                {
+                  "title": "Open PR",
+                  "url": "https://example.com/pr/1"
+                }
+              ],
+              "ticked": false
+            }
+          ],
+          "asksSeq": 12,
+          "next": [
+            "Ship it"
+          ],
+          "looseEnds": [
+            {
+              "kind": "thread",
+              "text": "A thread it started is still going",
+              "threadId": "th-2"
+            }
+          ],
+          "cardTurn": "abcd1234",
+          "review": {
+            "reviewer": "Codex",
+            "independent": true,
+            "rounds": 2,
+            "threadId": "th-review",
+            "passed": true,
+            "findings": [
+              {
+                "id": 1,
+                "round": 1,
+                "severity": "high",
+                "claim": "The cap can be skipped",
+                "where": "sync.ts:40",
+                "outcome": "fixed",
+                "note": "Checked both ways"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Dashboard",
+              "url": "https://example.com/dash",
+              "icon": "gauge"
+            }
+          ],
+          "needs": "you",
+          "pendingReviews": 1,
+          "waitingForRoom": {
+            "until": "2026-11-20T02:00:00.000Z",
+            "accountId": "claude-2"
+          },
+          "waitingForNetwork": {
+            "since": "2026-11-20T00:40:00.000Z"
+          },
+          "pendingApproval": {
+            "approvalId": "q1",
+            "kind": "question",
+            "questions": [
+              {
+                "question": "Which order?",
+                "header": "Order",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "Newest"
+                  },
+                  {
+                    "label": "Oldest",
+                    "description": "first in"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "keywords": "inbox order sort"
+      },
+      "differs": {
+        "android": "Android's PhoneThread has no keywords (backend API 74, search everywhere): its search doesn't match the librarian's words. Not ported yet."
+      }
+    },
+    {
+      "name": "thread row: the done card's loose ends (API 73)",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": true,
+          "unread": true,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "model": "claude-opus",
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "lastActivityMs": 1795136400000,
+          "snoozedUntil": "2026-11-21T09:00:00.000Z",
+          "snoozedUntilRestart": false,
+          "wakeNote": "the runner updates",
+          "woke": {
+            "at": "2026-11-20T00:59:30.000Z",
+            "since": "2026-11-19T22:00:00.000Z"
+          },
+          "startedBy": {
+            "kind": "schedule",
+            "label": "Morning check",
+            "icon": "clock",
+            "why": "every weekday"
+          },
+          "asked": "Can you fix the order?",
+          "recap": "old recap text",
+          "keywords": "inbox order sort",
+          "archivedAt": "2026-11-18T05:30:00.000Z",
+          "starredAt": "2026-11-19T22:00:00.000Z",
+          "costUsd": 1.25,
+          "projects": [
+            {
+              "id": "p1",
+              "title": "Threadbear"
+            }
+          ],
+          "working": "Running npm test",
+          "earliestSeq": 3,
+          "share": {
+            "access": "link",
+            "slug": "abc"
+          },
+          "asks": [
+            {
+              "action": "Merge it?",
+              "why": "Tests pass.",
+              "options": [
+                "Merge",
+                "Not yet"
+              ],
+              "optionNotes": [
+                "Lands it",
+                "Waits"
+              ],
+              "suggested": 0,
+              "links": [
+                {
+                  "title": "Open PR",
+                  "url": "https://example.com/pr/1"
+                }
+              ],
+              "ticked": false
+            }
+          ],
+          "asksSeq": 12,
+          "next": [
+            "Ship it"
+          ],
+          "looseEnds": [
+            {
+              "kind": "thread",
+              "text": "A thread it started is still going",
+              "threadId": "th-2"
+            }
+          ],
+          "cardTurn": "abcd1234",
+          "review": {
+            "reviewer": "Codex",
+            "independent": true,
+            "rounds": 2,
+            "threadId": "th-review",
+            "passed": true,
+            "findings": [
+              {
+                "id": 1,
+                "round": 1,
+                "severity": "high",
+                "claim": "The cap can be skipped",
+                "where": "sync.ts:40",
+                "outcome": "fixed",
+                "note": "Checked both ways"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Dashboard",
+              "url": "https://example.com/dash",
+              "icon": "gauge"
+            }
+          ],
+          "needs": "you",
+          "pendingReviews": 1,
+          "waitingForRoom": {
+            "until": "2026-11-20T02:00:00.000Z",
+            "accountId": "claude-2"
+          },
+          "waitingForNetwork": {
+            "since": "2026-11-20T00:40:00.000Z"
+          },
+          "pendingApproval": {
+            "approvalId": "q1",
+            "kind": "question",
+            "questions": [
+              {
+                "question": "Which order?",
+                "header": "Order",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "Newest"
+                  },
+                  {
+                    "label": "Oldest",
+                    "description": "first in"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "looseEnds.count": 1,
+        "looseEnds.0.kind": "thread",
+        "looseEnds.0.text": "A thread it started is still going",
+        "looseEnds.0.threadId": "th-2"
+      },
+      "differs": {
+        "android": "Android's PhoneThread has no looseEnds (API 73): its done card has no Still open list. Not ported yet."
+      }
+    },
+    {
+      "name": "thread row: another lab's review of the last turn (API 76)",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-1",
+          "runnerId": "mac",
+          "title": "Fix the inbox order",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "waiting",
+          "needsYou": true,
+          "unread": true,
+          "preview": "Landed it.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "view": "inbox",
+          "model": "claude-opus",
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "lastActivityMs": 1795136400000,
+          "snoozedUntil": "2026-11-21T09:00:00.000Z",
+          "snoozedUntilRestart": false,
+          "wakeNote": "the runner updates",
+          "woke": {
+            "at": "2026-11-20T00:59:30.000Z",
+            "since": "2026-11-19T22:00:00.000Z"
+          },
+          "startedBy": {
+            "kind": "schedule",
+            "label": "Morning check",
+            "icon": "clock",
+            "why": "every weekday"
+          },
+          "asked": "Can you fix the order?",
+          "recap": "old recap text",
+          "keywords": "inbox order sort",
+          "archivedAt": "2026-11-18T05:30:00.000Z",
+          "starredAt": "2026-11-19T22:00:00.000Z",
+          "costUsd": 1.25,
+          "projects": [
+            {
+              "id": "p1",
+              "title": "Threadbear"
+            }
+          ],
+          "working": "Running npm test",
+          "earliestSeq": 3,
+          "share": {
+            "access": "link",
+            "slug": "abc"
+          },
+          "asks": [
+            {
+              "action": "Merge it?",
+              "why": "Tests pass.",
+              "options": [
+                "Merge",
+                "Not yet"
+              ],
+              "optionNotes": [
+                "Lands it",
+                "Waits"
+              ],
+              "suggested": 0,
+              "links": [
+                {
+                  "title": "Open PR",
+                  "url": "https://example.com/pr/1"
+                }
+              ],
+              "ticked": false
+            }
+          ],
+          "asksSeq": 12,
+          "next": [
+            "Ship it"
+          ],
+          "looseEnds": [
+            {
+              "kind": "thread",
+              "text": "A thread it started is still going",
+              "threadId": "th-2"
+            }
+          ],
+          "cardTurn": "abcd1234",
+          "review": {
+            "reviewer": "Codex",
+            "independent": true,
+            "rounds": 2,
+            "threadId": "th-review",
+            "passed": true,
+            "findings": [
+              {
+                "id": 1,
+                "round": 1,
+                "severity": "high",
+                "claim": "The cap can be skipped",
+                "where": "sync.ts:40",
+                "outcome": "fixed",
+                "note": "Checked both ways"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Dashboard",
+              "url": "https://example.com/dash",
+              "icon": "gauge"
+            }
+          ],
+          "needs": "you",
+          "pendingReviews": 1,
+          "waitingForRoom": {
+            "until": "2026-11-20T02:00:00.000Z",
+            "accountId": "claude-2"
+          },
+          "waitingForNetwork": {
+            "since": "2026-11-20T00:40:00.000Z"
+          },
+          "pendingApproval": {
+            "approvalId": "q1",
+            "kind": "question",
+            "questions": [
+              {
+                "question": "Which order?",
+                "header": "Order",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "Newest"
+                  },
+                  {
+                    "label": "Oldest",
+                    "description": "first in"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "cardTurn": "abcd1234",
+        "review.reviewer": "Codex",
+        "review.passed": true,
+        "review.rounds": 2,
+        "review.findings.count": 1,
+        "review.findings.0.claim": "The cap can be skipped"
+      },
+      "differs": {
+        "android": "Android's PhoneThread has no review or cardTurn (API 76, lab review): no ledger over the reply. Not ported yet."
+      }
+    },
+    {
+      "name": "message row: a reply with its reply buttons",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 12,
+          "role": "assistant",
+          "text": "Done. [Ship it](button:b1)",
+          "origin": "phone",
+          "summary": true,
+          "turn": "abcd1234",
+          "buttons": [
+            {
+              "id": "b1",
+              "title": "Ship it",
+              "kind": "start",
+              "target": "misc",
+              "pressedThreadId": "th-9",
+              "failed": "No room"
+            }
+          ],
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "seq": 12,
+        "role": "assistant",
+        "text": "Done. [Ship it](button:b1)",
+        "origin": "phone",
+        "summary": true,
+        "plan": false,
+        "turn": "abcd1234",
+        "at": 1795136400000,
+        "buttons.count": 1,
+        "buttons.0.id": "b1",
+        "buttons.0.title": "Ship it",
+        "buttons.0.kind": "start",
+        "buttons.0.target": "misc",
+        "buttons.0.pressedThreadId": "th-9",
+        "buttons.0.failed": "No room"
+      }
+    },
+    {
+      "name": "message row: a tool line",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 13.0,
+          "role": "tool",
+          "text": "npm test",
+          "toolKind": "command",
+          "turn": "abcd1234",
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "seq": 13,
+        "role": "tool",
+        "toolKind": "command",
+        "summary": false
+      }
+    },
+    {
+      "name": "message row: a plan in full (API 72)",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 14,
+          "role": "assistant",
+          "text": "# Plan",
+          "plan": true,
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "plan": true
+      }
+    },
+    {
+      "name": "message row: what finished and woke the turn (API 33)",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 15,
+          "role": "assistant",
+          "text": "It finished.",
+          "wokeBy": [
+            {
+              "kind": "job",
+              "description": "npm test"
+            }
+          ],
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "wokeBy.count": 1,
+        "wokeBy.0.kind": "job",
+        "wokeBy.0.description": "npm test"
+      }
+    },
+    {
+      "name": "message row: his answers to a card (API 89)",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 16,
+          "role": "user",
+          "text": "Merge it?\n  Merge",
+          "answers": [
+            {
+              "action": "Merge it?",
+              "answer": "Merge"
+            }
+          ],
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "answers.count": 1,
+        "answers.0.action": "Merge it?",
+        "answers.0.answer": "Merge"
+      },
+      "differs": {
+        "android": "Android's PhoneMessage has no answers (API 89): his answer shows as plain text, not question over pick. Not ported yet."
+      }
+    },
+    {
+      "name": "message row: a login's note (API 79)",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 17,
+          "role": "note",
+          "text": "Moved to alex@example.org: it hit its limit",
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "role": "note"
+      },
+      "differs": {
+        "android": "Android has no note role (login notes, API 79) and doesn't ask phone:messages for them, so it never sees one; a note row would be skipped. Not ported yet."
+      }
+    },
+    {
+      "name": "message page: rows, more to come, and pictures",
+      "input": {
+        "kind": "page",
+        "row": {
+          "messages": [
+            {
+              "seq": 20,
+              "role": "assistant",
+              "text": "Here",
+              "at": "2026-11-20T01:00:00.000Z"
+            },
+            {
+              "seq": 21,
+              "role": "tool",
+              "text": "ls",
+              "toolKind": "command",
+              "at": "2026-11-20T01:00:00.000Z"
+            }
+          ],
+          "hasMore": true,
+          "images": [
+            {
+              "seq": 20,
+              "src": "shot.png",
+              "pinned": true,
+              "url": "https://example.convex.cloud/api/storage/x",
+              "width": 800,
+              "height": 600,
+              "mediaType": "image/png"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "hasMore": true,
+        "messages.count": 2,
+        "images.count": 1,
+        "images.0.seq": 20,
+        "images.0.src": "shot.png",
+        "images.0.pinned": true,
+        "images.0.url": "https://example.convex.cloud/api/storage/x",
+        "images.0.width": 800,
+        "images.0.height": 600,
+        "images.0.mediaType": "image/png"
+      }
+    },
+    {
+      "name": "message page: a row this build can't read is skipped, not the page",
+      "input": {
+        "kind": "page",
+        "row": {
+          "messages": [
+            {
+              "seq": 20,
+              "role": "assistant",
+              "text": "Here",
+              "at": "2026-11-20T01:00:00.000Z"
+            },
+            {
+              "seq": 21,
+              "role": "hologram",
+              "text": "?",
+              "at": "2026-11-20T01:00:00.000Z"
+            }
+          ],
+          "hasMore": false
+        }
+      },
+      "expect": {
+        "hasMore": false,
+        "messages.count": 1,
+        "images.count": 0
+      }
+    },
+    {
+      "name": "thread detail: the row and its newest messages (phone:thread)",
+      "input": {
+        "kind": "detail",
+        "row": {
+          "thread": {
+            "threadId": "th-1",
+            "runnerId": "mac",
+            "title": "Fix the inbox order",
+            "cwd": "/Users/alex/dev/app",
+            "accountId": "claude-main",
+            "provider": "claude",
+            "status": "idle",
+            "needsYou": false,
+            "unread": false,
+            "preview": "Landed it.",
+            "lastActivityAt": "2026-11-20T01:00:00.000Z",
+            "view": "inbox"
+          },
+          "messages": [
+            {
+              "seq": 5,
+              "role": "user",
+              "text": "Hi",
+              "at": "2026-11-20T01:00:00.000Z"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "thread.threadId": "th-1",
+        "messages.count": 1,
+        "messages.0.text": "Hi"
+      }
+    },
+    {
+      "name": "runner row",
+      "input": {
+        "kind": "runner",
+        "row": {
+          "runnerId": "mac",
+          "name": "Alex's MacBook",
+          "version": "2026.11.20",
+          "lastSeenAt": "2026-11-20T01:00:00.000Z",
+          "draining": false,
+          "release": "2026-11-20",
+          "startedAt": "2026-11-19T22:00:00.000Z",
+          "threadCount": 42,
+          "pressure": "nominal",
+          "placed": true,
+          "main": true
+        }
+      },
+      "expect": {
+        "runnerId": "mac",
+        "name": "Alex's MacBook",
+        "version": "2026.11.20",
+        "lastSeenAt": 1795136400000,
+        "draining": false,
+        "placed": true,
+        "main": true
+      }
+    },
+    {
+      "name": "identity (phone:me)",
+      "input": {
+        "kind": "identity",
+        "row": {
+          "name": "pixel",
+          "expiresAt": "2027-02-18T00:00:00.000Z",
+          "apiVersion": 96,
+          "pushOff": true
+        }
+      },
+      "expect": {
+        "name": "pixel",
+        "expiresAt": 1802908800000,
+        "apiVersion": 96,
+        "pushOff": true
+      }
+    },
+    {
+      "name": "project row",
+      "input": {
+        "kind": "project",
+        "row": {
+          "runnerId": "mac",
+          "id": "p1",
+          "title": "Threadbear",
+          "createdBy": "mike",
+          "archived": false,
+          "createdAt": "2026-11-17T04:00:00.000Z",
+          "updatedAt": "2026-11-20T01:00:00.000Z",
+          "threadCount": 7,
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "folders": [],
+          "goals": "",
+          "state": "",
+          "notes": "",
+          "icon": {
+            "url": "https://example.convex.cloud/api/storage/icon",
+            "by": "agent"
+          }
+        }
+      },
+      "expect": {
+        "id": "p1",
+        "runnerId": "mac",
+        "title": "Threadbear",
+        "archived": false,
+        "icon.symbol": null,
+        "icon.url": "https://example.convex.cloud/api/storage/icon",
+        "icon.by": "agent"
+      }
+    },
+    {
+      "name": "project row: an icon that's a symbol",
+      "input": {
+        "kind": "project",
+        "row": {
+          "runnerId": "mac",
+          "id": "p2",
+          "title": "Docs",
+          "archived": true,
+          "icon": {
+            "symbol": "book",
+            "by": "mike"
+          }
+        }
+      },
+      "expect": {
+        "icon.symbol": "book",
+        "icon.url": null,
+        "archived": true
+      }
+    },
+    {
+      "name": "project row: an icon url that isn't a web page is no picture",
+      "input": {
+        "kind": "project",
+        "row": {
+          "runnerId": "mac",
+          "id": "p3",
+          "title": "Odd",
+          "icon": {
+            "url": "file:///etc/passwd"
+          }
+        }
+      },
+      "expect": {
+        "icon.url": null
+      },
+      "differs": {
+        "ios": "The iPhone keeps any URL with a scheme (file:, data:), Android only http and https. phone:projects only sends storage https URLs, so nothing shows today; web only is the safer rule for the iPhone to take."
+      }
+    },
+    {
+      "name": "counts (phone:counts)",
+      "input": {
+        "kind": "counts",
+        "row": {
+          "hibernating": 3.0,
+          "den": 120
+        }
+      },
+      "expect": {
+        "hibernating": 3,
+        "den": 120
+      }
+    },
+    {
+      "name": "command status with a slash command list (API 62)",
+      "input": {
+        "kind": "command",
+        "row": {
+          "state": "done",
+          "note": "ok",
+          "threadId": "th-1",
+          "result": [
+            {
+              "name": "compact",
+              "description": "Compact the context",
+              "source": "cli",
+              "aliases": [
+                "c"
+              ]
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": "done",
+        "note": "ok",
+        "threadId": "th-1",
+        "commands.count": 1,
+        "commands.0.name": "compact",
+        "commands.0.source": "cli"
+      }
+    },
+    {
+      "name": "waiting send (phone:waiting)",
+      "input": {
+        "kind": "waiting",
+        "row": {
+          "commandId": "cmd1",
+          "state": "pending",
+          "text": "And the badge?",
+          "photos": 2,
+          "createdAt": 1795136400000
+        }
+      },
+      "expect": {
+        "commandId": "cmd1",
+        "state": "pending",
+        "text": "And the badge?",
+        "photos": 2,
+        "createdAt": 1795136400000
+      }
+    },
+    {
+      "name": "pocket card (phone:pocket)",
+      "input": {
+        "kind": "pocket",
+        "row": {
+          "id": "dentist",
+          "title": "Dentist",
+          "text": "Tue 3pm, 12 High St",
+          "place": "12 High St",
+          "icon": "tooth",
+          "threadId": "th-1",
+          "source": "Health",
+          "updatedAt": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "id": "dentist",
+        "title": "Dentist",
+        "text": "Tue 3pm, 12 High St",
+        "place": "12 High St",
+        "icon": "tooth",
+        "threadId": "th-1",
+        "source": "Health",
+        "updatedAt": "2026-11-20T01:00:00.000Z"
+      }
+    },
+    {
+      "name": "account (phone:accounts)",
+      "input": {
+        "kind": "account",
+        "row": {
+          "id": "claude-main",
+          "runnerId": "mac",
+          "provider": "claude",
+          "title": "alex@example.org",
+          "email": "alex@example.org",
+          "models": [
+            {
+              "id": "opus",
+              "title": "Opus",
+              "effortLevels": [
+                "low",
+                "high"
+              ],
+              "defaultEffort": "high"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "id": "claude-main",
+        "runnerId": "mac",
+        "provider": "claude",
+        "title": "alex@example.org",
+        "models.count": 1,
+        "models.0.id": "opus",
+        "models.0.title": "Opus",
+        "models.0.effortLevels.count": 2,
+        "models.0.defaultEffort": "high"
+      }
+    },
+    {
+      "name": "account from before API 20: no models, a title from its id",
+      "input": {
+        "kind": "account",
+        "row": {
+          "id": "codex-1"
+        }
+      },
+      "expect": {
+        "id": "codex-1",
+        "provider": "claude",
+        "title": "codex-1",
+        "models.count": 0
+      }
+    },
+    {
+      "name": "wake (phone:wakes)",
+      "input": {
+        "kind": "wake",
+        "row": {
+          "scheduleId": "s1",
+          "threadId": "th-1",
+          "nextRunAt": "2026-11-21T09:00:00.000Z"
+        }
+      },
+      "expect": {
+        "scheduleId": "s1",
+        "threadId": "th-1",
+        "nextRunAt": 1795251600000
+      }
+    },
+    {
+      "name": "schedule (phone:schedules)",
+      "input": {
+        "kind": "schedule",
+        "row": {
+          "id": "s1",
+          "runnerId": "mac",
+          "title": "Morning check",
+          "whenText": "Every weekday at 9:00",
+          "threadId": "th-1",
+          "paused": false,
+          "nextRunAt": "2026-11-21T09:00:00.000Z",
+          "message": "Check the inbox",
+          "cron": "0 9 * * 1-5"
+        }
+      },
+      "expect": {
+        "id": "s1",
+        "runnerId": "mac",
+        "title": "Morning check",
+        "whenText": "Every weekday at 9:00",
+        "threadId": "th-1",
+        "paused": false,
+        "nextRunAt": 1795251600000,
+        "finishedAt": null
+      },
+      "differs": {
+        "android": "Android reads only phone:wakes for its Hibernating section, never phone:schedules, so it has no schedule row."
+      }
+    }
+  ]
+}

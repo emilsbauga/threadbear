@@ -10,8 +10,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
-use threadbear_core::reducer::{ImageRef, Row};
 use crate::tips::Tip as _;
+use threadbear_core::reducer::{ImageRef, Row};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
@@ -24,7 +24,14 @@ pub(crate) struct Frame {
 /// `ImageLayout.frames`: each image fits within `cell_width` by `max_height`,
 /// never scaled up. Images sharing a row are brought to that row's shortest
 /// height, keeping their shapes, so their tops and bottoms line up.
-pub(crate) fn image_frames(sizes: &[(f32, f32)], max_width: f32, max_height: f32, cell_width: f32, gap: f32, align_right: bool) -> (Vec<Frame>, f32) {
+pub(crate) fn image_frames(
+    sizes: &[(f32, f32)],
+    max_width: f32,
+    max_height: f32,
+    cell_width: f32,
+    gap: f32,
+    align_right: bool,
+) -> (Vec<Frame>, f32) {
     const MIN_SIDE: f32 = 24.;
     if sizes.is_empty() {
         return (vec![], 0.);
@@ -34,29 +41,55 @@ pub(crate) fn image_frames(sizes: &[(f32, f32)], max_width: f32, max_height: f32
         .iter()
         .map(|&(w, h)| {
             let scale = 1f32.min(max_height / h.max(1.)).min(cell_width / w.max(1.));
-            (MIN_SIDE.max((w * scale).floor()), MIN_SIDE.max((h * scale).floor()))
+            (
+                MIN_SIDE.max((w * scale).floor()),
+                MIN_SIDE.max((h * scale).floor()),
+            )
         })
         .collect();
     // Rows of indices, filled left to right.
     let mut rows: Vec<Vec<usize>> = vec![];
     let mut x = 0.;
     for (index, &(w, _)) in fitted.iter().enumerate() {
-        if rows.is_empty() || (x > 0. && x + w > max_width) {
-            rows.push(vec![]);
-            x = 0.;
+        match rows.last_mut() {
+            Some(row) if !(x > 0. && x + w > max_width) => row.push(index),
+            _ => {
+                rows.push(vec![index]);
+                x = 0.;
+            }
         }
-        rows.last_mut().unwrap().push(index);
         x += w + gap;
     }
-    let mut frames = vec![Frame { x: 0., y: 0., w: 0., h: 0. }; sizes.len()];
+    let mut frames = vec![
+        Frame {
+            x: 0.,
+            y: 0.,
+            w: 0.,
+            h: 0.
+        };
+        sizes.len()
+    ];
     let mut y = 0.;
     for row in &rows {
-        let height = if row.len() > 1 { row.iter().map(|&i| fitted[i].1).fold(f32::MAX, f32::min) } else { fitted[row[0]].1 };
+        let height = if row.len() > 1 {
+            row.iter().map(|&i| fitted[i].1).fold(f32::MAX, f32::min)
+        } else {
+            fitted[row[0]].1
+        };
         let mut x = 0.;
         for &index in row {
             let (w, h) = fitted[index];
-            let width = if row.len() > 1 && h > height { MIN_SIDE.max((w * height / h).floor()) } else { w };
-            frames[index] = Frame { x, y, w: width, h: height };
+            let width = if row.len() > 1 && h > height {
+                MIN_SIDE.max((w * height / h).floor())
+            } else {
+                w
+            };
+            frames[index] = Frame {
+                x,
+                y,
+                w: width,
+                h: height,
+            };
             x += width + gap;
         }
         if align_right {
@@ -87,39 +120,83 @@ impl ThreadPane {
         if self.rows.list_width <= 0. {
             return MAX_CONTENT_WIDTH;
         }
-        (self.rows.list_width - SIDE_INSET * 2.).min(MAX_CONTENT_WIDTH).max(200.)
+        (self.rows.list_width - SIDE_INSET * 2.).clamp(200., MAX_CONTENT_WIDTH)
     }
 
-    fn image_grid(&self, images: &[ImageRef], frames: Vec<Frame>, height: f32, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    fn image_grid(
+        &self,
+        images: &[ImageRef],
+        frames: Vec<Frame>,
+        height: f32,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         use crate::file_drag::FileDragExt as _;
-        let file_name = |path: &str| std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let file_name = |path: &str| {
+            std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
         let mut grid = div().relative().h(px(height)).w(px(width)).flex_none();
         let all: Vec<ImageRef> = images.to_vec();
         // Another Mac's thread: its pictures are asked of the runner (remote_pictures.rs).
         let remote = self.summary.runner_id.clone();
-        let runner_name = remote.as_deref().and_then(|id| self.composer.read(cx).app.upgrade().map(|app| app.read(cx).runner_name_of(id))).unwrap_or_default();
+        let runner_name = remote
+            .as_deref()
+            .and_then(|id| {
+                self.composer
+                    .read(cx)
+                    .app
+                    .upgrade()
+                    .map(|app| app.read(cx).runner_name_of(id))
+            })
+            .unwrap_or_default();
         for (i, (image, frame)) in images.iter().zip(frames).enumerate() {
             let path = image.path.clone();
             // Its file's name, for VoiceOver and for scripts.
             let label = SharedString::from(file_name(&path));
             let tile_images = all.clone();
-            let tile = div().id(("image", i)).absolute().left(px(frame.x)).top(px(frame.y)).w(px(frame.w)).h(px(frame.h)).rounded(px(8.)).overflow_hidden();
+            let tile = div()
+                .id(("image", i))
+                .absolute()
+                .left(px(frame.x))
+                .top(px(frame.y))
+                .w(px(frame.w))
+                .h(px(frame.h))
+                .rounded(px(8.))
+                .overflow_hidden();
             let Some(runner) = remote.clone() else {
                 grid = grid.child(
                     tile.cursor_pointer()
                         .tip(crate::viewer::TILE_TIP)
                         // The in-app viewer, not the file's default app: only a
                         // real picture opens, and nothing is ever run (viewer.rs).
-                        .on_click(move |_, window, cx| crate::viewer::open_from_tile(&tile_images, i, None, window, cx))
+                        .on_click(move |_, window, cx| {
+                            crate::viewer::open_from_tile(&tile_images, i, None, window, cx)
+                        })
                         // Dragged, it goes out as the file itself (file_drag.rs).
                         .file_drag(Some(path.clone()))
-                        .child(img(super::markdown::file_picture(&path)).w(px(frame.w)).h(px(frame.h)).rounded(px(8.)).object_fit(ObjectFit::Cover))
+                        .child(
+                            img(super::markdown::file_picture(&path))
+                                .w(px(frame.w))
+                                .h(px(frame.h))
+                                .rounded(px(8.))
+                                .object_fit(ObjectFit::Cover),
+                        )
                         .test_support()
-                        .role(Role::Image).aria_label(label),
+                        .role(Role::Image)
+                        .aria_label(label),
                 );
                 continue;
             };
-            let picture = crate::remote_pictures::picture(&runner, &path, &self.client_handle(), cx.entity().downgrade().into(), cx);
+            let picture = crate::remote_pictures::picture(
+                &runner,
+                &path,
+                &self.client_handle(),
+                cx.entity().downgrade().into(),
+                cx,
+            );
             let words = crate::remote_pictures::words(&picture, &runner_name);
             let tile = match picture {
                 // In the viewer on a click, as this Mac's are, from the bytes
@@ -128,8 +205,22 @@ impl ThreadPane {
                     let runner = runner.clone();
                     tile.cursor_pointer()
                         .tip(crate::viewer::TILE_TIP)
-                        .on_click(move |_, window, cx| crate::viewer::open_from_tile(&tile_images, i, Some(&runner), window, cx))
-                        .child(img(bytes).w(px(frame.w)).h(px(frame.h)).rounded(px(8.)).object_fit(ObjectFit::Cover))
+                        .on_click(move |_, window, cx| {
+                            crate::viewer::open_from_tile(
+                                &tile_images,
+                                i,
+                                Some(&runner),
+                                window,
+                                cx,
+                            )
+                        })
+                        .child(
+                            img(bytes)
+                                .w(px(frame.w))
+                                .h(px(frame.h))
+                                .rounded(px(8.))
+                                .object_fit(ObjectFit::Cover),
+                        )
                 }
                 // Why it couldn't be got, on hover; a click asks again.
                 crate::remote_pictures::Picture::Failed(why) => {
@@ -141,15 +232,31 @@ impl ThreadPane {
                 }
                 _ => tile,
             };
-            let (fill, faint) = (crate::style::code_background(cx), crate::style::faint_text(cx));
+            let (fill, faint) = (
+                crate::style::code_background(cx),
+                crate::style::faint_text(cx),
+            );
             grid = grid.child(
                 tile.when_some(words, |s, words| {
-                    s.bg(fill).border(gpui_kit::px(0.5)).border_color(crate::style::card_border(cx)).flex().items_center().justify_center().px(px(4.)).child(
-                        div().min_w_0().truncate().text_size(px(crate::style::size::WORK - 1.)).text_color(faint).child(words),
-                    )
+                    s.bg(fill)
+                        .border(gpui_kit::px(0.5))
+                        .border_color(crate::style::card_border(cx))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .px(px(4.))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(crate::style::size::WORK - 1.))
+                                .text_color(faint)
+                                .child(words),
+                        )
                 })
                 .test_support()
-                .role(Role::Image).aria_label(label),
+                .role(Role::Image)
+                .aria_label(label),
             );
         }
         grid
@@ -157,26 +264,75 @@ impl ThreadPane {
 
     /// A tool's pictures under its row: screenshots stay thumbnails, a
     /// picture the agent made is the point of the step, so it's shown large.
-    pub(crate) fn images_row(&self, row: &Row, images: &[ImageRef], generated: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn images_row(
+        &self,
+        row: &Row,
+        images: &[ImageRef],
+        generated: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let width = self.column_width() - if row.in_group { GROUP_INDENT } else { 0. };
         let sizes: Vec<_> = images.iter().map(pixel_size).collect();
         let (frames, height) = if generated {
-            image_frames(&sizes, width, GENERATED_MAX_SIDE, GENERATED_MAX_SIDE, IMAGE_GAP, false)
+            image_frames(
+                &sizes,
+                width,
+                GENERATED_MAX_SIDE,
+                GENERATED_MAX_SIDE,
+                IMAGE_GAP,
+                false,
+            )
         } else {
-            image_frames(&sizes, width, GRID_MAX_HEIGHT, GRID_MAX_WIDTH, IMAGE_GAP, false)
+            image_frames(
+                &sizes,
+                width,
+                GRID_MAX_HEIGHT,
+                GRID_MAX_WIDTH,
+                IMAGE_GAP,
+                false,
+            )
         };
-        row_wrap(row, div().pt(px(ROW_TOP + 2.)).pb(px(ROW_BOTTOM)).child(self.image_grid(images, frames, height, width, cx)))
+        row_wrap(
+            row,
+            div()
+                .pt(px(ROW_TOP + 2.))
+                .pb(px(ROW_BOTTOM))
+                .child(self.image_grid(images, frames, height, width, cx)),
+        )
     }
 
     /// Attachments sit above the bubble, right-aligned, with no box.
-    pub(crate) fn user_images(&self, images: &[ImageRef], ix: usize, phone: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn user_images(
+        &self,
+        images: &[ImageRef],
+        ix: usize,
+        phone: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let width = (self.column_width() * BUBBLE_SHARE).floor();
         let sizes: Vec<_> = images.iter().map(pixel_size).collect();
-        let (frames, height) = image_frames(&sizes, width, USER_THUMB_HEIGHT, GRID_MAX_WIDTH, IMAGE_GAP, true);
+        let (frames, height) = image_frames(
+            &sizes,
+            width,
+            USER_THUMB_HEIGHT,
+            GRID_MAX_WIDTH,
+            IMAGE_GAP,
+            true,
+        );
         let left = frames.iter().map(|f| f.x).fold(width, f32::min);
-        div().relative().mb(px(IMAGE_GAP))
+        div()
+            .relative()
+            .mb(px(IMAGE_GAP))
             .child(self.image_grid(images, frames, height, width, cx))
-            .when(phone, |d| d.child(div().absolute().left(px(left - 24.)).top(px(height - 26.)).child(super::phone::mark(ix, cx))))
+            .when(phone, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(px(left - 24.))
+                        .top(px(height - 26.))
+                        .child(super::phone::mark(ix, cx)),
+                )
+            })
             .into_any_element()
     }
 }

@@ -1,4 +1,4 @@
-//! An agent's `show_panel` (docs/protocol.md, "Showing panels"): which panel
+//! An agent's `show_panel` (docs/protocol/panels.md, "Showing panels"): which panel
 //! a request names, where it opens, and the gate that shows each one once,
 //! while Mike is looking at its thread (Swift's `PanelRequests` and
 //! `PanelRequestGate`).
@@ -61,14 +61,25 @@ pub const PATCHES: &str = "threadbear.patches";
 pub fn panel(request: &PanelRequest, thread: &ThreadSummary) -> Option<RequestedPanel> {
     match request.panel.as_str() {
         "highlights" => Some(RequestedPanel::Section(HIGHLIGHTS.to_owned())),
-        "patches" => thread.patches.as_ref().is_some_and(|p| !p.is_empty()).then(|| RequestedPanel::Section(PATCHES.to_owned())),
+        "patches" => thread
+            .patches
+            .as_ref()
+            .is_some_and(|p| !p.is_empty())
+            .then(|| RequestedPanel::Section(PATCHES.to_owned())),
         "usage" => Some(RequestedPanel::Usage),
         "updates" => Some(RequestedPanel::Updates),
         "connectors" => Some(RequestedPanel::Connectors),
         // BrowserBear's handoff asks for it: the page the agent handed over
         // is listed there, marked as Mike's turn, with Done.
-        crate::browserbear::PANEL_ID | "browser" => Some(RequestedPanel::Section(crate::browserbear::PANEL_ID.to_owned())),
-        other => thread.panels.iter().flatten().any(|p| p["id"].as_str() == Some(other)).then(|| RequestedPanel::Section(other.to_owned())),
+        crate::browserbear::PANEL_ID | "browser" => Some(RequestedPanel::Section(
+            crate::browserbear::PANEL_ID.to_owned(),
+        )),
+        other => thread
+            .panels
+            .iter()
+            .flatten()
+            .any(|p| p["id"].as_str() == Some(other))
+            .then(|| RequestedPanel::Section(other.to_owned())),
     }
 }
 
@@ -116,34 +127,81 @@ mod tests {
 
     fn thread(over: serde_json::Value) -> ThreadSummary {
         let mut v = json!({ "id": "t1", "title": "T", "status": "idle", "panels": [{ "id": "convex", "title": "Convex" }] });
-        v.as_object_mut().unwrap().extend(over.as_object().unwrap().clone());
+        v.as_object_mut()
+            .unwrap()
+            .extend(over.as_object().unwrap().clone());
         serde_json::from_value(v).unwrap()
     }
 
     #[test]
     fn a_request_names_a_panel_the_thread_has_and_a_place() {
-        let request = |panel: &str, place: Option<&str>| PanelRequest { id: "r1".into(), panel: panel.into(), place: place.map(str::to_owned), ..Default::default() };
+        let request = |panel: &str, place: Option<&str>| PanelRequest {
+            id: "r1".into(),
+            panel: panel.into(),
+            place: place.map(str::to_owned),
+            ..Default::default()
+        };
         let t = thread(json!({}));
-        assert_eq!(panel(&request("highlights", None), &t), Some(RequestedPanel::Section(HIGHLIGHTS.into())));
-        assert_eq!(panel(&request("convex", None), &t), Some(RequestedPanel::Section("convex".into())));
-        assert_eq!(panel(&request("gone", None), &t), None, "a panel the thread hasn't got");
+        assert_eq!(
+            panel(&request("highlights", None), &t),
+            Some(RequestedPanel::Section(HIGHLIGHTS.into()))
+        );
+        assert_eq!(
+            panel(&request("convex", None), &t),
+            Some(RequestedPanel::Section("convex".into()))
+        );
+        assert_eq!(
+            panel(&request("gone", None), &t),
+            None,
+            "a panel the thread hasn't got"
+        );
         assert_eq!(panel(&request("patches", None), &t), None, "no patches");
-        assert_eq!(panel(&request("usage", None), &t), Some(RequestedPanel::Usage));
-        assert_eq!(panel(&request("browser", None), &t), Some(RequestedPanel::Section("threadbear.browser".into())), "the Browser pane");
-        assert_eq!(panel(&request("threadbear.browser", None), &t), Some(RequestedPanel::Section("threadbear.browser".into())));
-        assert_eq!(place(&request("usage", Some("left"))), RequestedPlace::Side("left".into()));
-        assert_eq!(place(&request("usage", Some("sideways"))), RequestedPlace::Usual);
-        assert_eq!(place(&request("usage", Some("window"))), RequestedPlace::Window);
+        assert_eq!(
+            panel(&request("usage", None), &t),
+            Some(RequestedPanel::Usage)
+        );
+        assert_eq!(
+            panel(&request("browser", None), &t),
+            Some(RequestedPanel::Section("threadbear.browser".into())),
+            "the Browser pane"
+        );
+        assert_eq!(
+            panel(&request("threadbear.browser", None), &t),
+            Some(RequestedPanel::Section("threadbear.browser".into()))
+        );
+        assert_eq!(
+            place(&request("usage", Some("left"))),
+            RequestedPlace::Side("left".into())
+        );
+        assert_eq!(
+            place(&request("usage", Some("sideways"))),
+            RequestedPlace::Usual
+        );
+        assert_eq!(
+            place(&request("usage", Some("window"))),
+            RequestedPlace::Window
+        );
     }
 
     #[test]
     fn each_request_is_shown_once_and_only_while_mike_looks() {
-        let t = thread(json!({ "panelRequest": { "id": "r1", "panel": "highlights", "title": "Highlights", "at": "2026-11-11T08:00:00Z" } }));
+        let t = thread(
+            json!({ "panelRequest": { "id": "r1", "panel": "highlights", "title": "Highlights", "at": "2026-11-11T08:00:00Z" } }),
+        );
         let mut gate = Gate::default();
-        assert!(gate.take(Some(&t), false).is_none(), "not while he's elsewhere");
+        assert!(
+            gate.take(Some(&t), false).is_none(),
+            "not while he's elsewhere"
+        );
         assert_eq!(gate.take(Some(&t), true).map(|r| r.id), Some("r1".into()));
-        assert!(gate.take(Some(&t), true).is_none(), "the summary that still has it comes again");
+        assert!(
+            gate.take(Some(&t), true).is_none(),
+            "the summary that still has it comes again"
+        );
         gate.release("r1");
-        assert!(gate.take(Some(&t), true).is_some(), "handed back, it's taken again");
+        assert!(
+            gate.take(Some(&t), true).is_some(),
+            "handed back, it's taken again"
+        );
     }
 }

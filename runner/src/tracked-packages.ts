@@ -1,5 +1,5 @@
 // Files under node_modules that a repo commits, which patch trust hashes
-// like the rest of the repo (docs/protocol.md, "Committed node_modules").
+// like the rest of the repo (docs/protocol/trust.md, "Committed node_modules").
 //
 // A package `npm install` put in node_modules is the folder's dependency,
 // and isn't hashed: that would re-ask after every install. But a repo can

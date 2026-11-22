@@ -39,8 +39,8 @@ function checkout() {
   put('package.json', JSON.stringify({ scripts: { 'convex:typecheck': 'true', 'web:typecheck': 'true', 'web:test': 'true', lint: 'true', 'lint:files': 'true' } }));
   put('node_modules/.keep', '');
   put('app/Tools/ok.mjs', '');
-  put('app/Tools/mock-runner/ok.mjs', '');
-  put('app/Tools/mock-runner/node_modules/.keep', '');
+  put('mock-runner/ok.mjs', '');
+  put('mock-runner/node_modules/.keep', '');
   put('desktop/.keep', '');
   // swift and cargo that only record what they were asked.
   const log = path.join(root, 'calls.log');
@@ -76,7 +76,7 @@ const FILTERED = 'swift test --disable-keychain --filter MockRunnerTests|RunnerA
 test('--quick runs just the mock runner Swift tests when the mock or they changed', () => {
   const c = checkout();
   try {
-    for (const changed of ['app/Tools/mock-runner/server.mjs', 'app/Tools/mock-runner/fixtures/demo-x/thread.json', 'app/Tests/ThreadbearCoreTests/MockRunnerTests.swift', 'app/Tests/ThreadbearCoreTests/GoldenTranscriptTests.swift']) {
+    for (const changed of ['mock-runner/server.mjs', 'mock-runner/fixtures/demo-x/thread.json', 'app/Tests/ThreadbearCoreTests/MockRunnerTests.swift', 'app/Tests/ThreadbearCoreTests/GoldenTranscriptTests.swift']) {
       const r = run(c, ['--quick'], [changed]);
       assert.equal(r.status, 0, `${changed}: ${r.out}`);
       assert.match(r.out, /^ok    app mock tests/m, `${changed}: ${r.out}`);
@@ -104,14 +104,14 @@ test('--quick runs no Swift tests for anything else, nor on main with nothing ch
 test('--runner never does, and the full check runs the whole suite instead when the app changed', () => {
   const c = checkout();
   try {
-    const runner = run(c, ['--runner'], ['app/Tools/mock-runner/server.mjs']);
+    const runner = run(c, ['--runner'], ['mock-runner/server.mjs']);
     assert.deepEqual(runner.swift, [], runner.out);
     // A mock change alone: the full check has no Swift app build, so it
     // runs the filter as --quick does.
-    const mock = run(c, [], ['app/Tools/mock-runner/server.mjs']);
+    const mock = run(c, [], ['mock-runner/server.mjs']);
     assert.ok(mock.swift.includes(FILTERED), mock.out);
     // With the Swift app changed too, its whole suite covers them: no second run.
-    const both = run(c, ['--app'], ['app/Tools/mock-runner/server.mjs', 'app/Sources/Threadbear/X.swift']);
+    const both = run(c, ['--app'], ['mock-runner/server.mjs', 'app/Sources/Threadbear/X.swift']);
     assert.ok(both.swift.includes('swift test --disable-keychain'), both.out);
     assert.ok(!both.swift.includes(FILTERED), both.out);
   } finally {
@@ -122,7 +122,7 @@ test('--runner never does, and the full check runs the whole suite instead when 
 test('with no check host to take it (the fallback on this Mac) they still run, rather than land unchecked', () => {
   const c = checkout();
   try {
-    const r = run(c, ['--quick'], ['app/Tools/mock-runner/server.mjs'], { THREADBEAR_CHECK_FALLBACK: '1' });
+    const r = run(c, ['--quick'], ['mock-runner/server.mjs'], { THREADBEAR_CHECK_FALLBACK: '1' });
     assert.ok(r.swift.includes(FILTERED), r.out);
   } finally {
     fs.rmSync(c.root, { recursive: true, force: true });

@@ -387,7 +387,7 @@ sub refuse {
     print STDERR "perf-lock: Desk Runner $_[0], so this run can't start. macOS may be holding it for a privacy "
         . "permission it can't ask anyone for: on this host, allow Desk Runner in System Settings > "
         . "Privacy & Security > Files & Folders (Removable Volumes), or give it Full Disk Access. An agent does this "
-        . "itself without asking (Mike, 19 Nov): AGENTS.md, \"Tests that need the real screen\".\n";
+        . "itself without asking (Mike, 19 Nov): docs/dev-tools.md, \"Dev runner and one check command\".\n";
     exit 126;
 }
 for my $path (splice(@ARGV, 0, $n)) {

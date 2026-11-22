@@ -18,7 +18,8 @@ use crate::logins::{Account, Pool};
 /// The docs site each card's ⓘ opens a page of.
 pub const DOCS_SITE: &str = "https://threadbear.mikecann.app/docs";
 /// The tour's last step writes this in the new-thread composer.
-pub const FIRST_MESSAGE: &str = "Make me a patch for this folder that adds a button saying hello, then tell me what you did.";
+pub const FIRST_MESSAGE: &str =
+    "Make me a patch for this folder that adds a button saying hello, then tell me what you did.";
 /// Next turns up on a hands-on step after this long, in case the send won't
 /// take, so nobody's stuck.
 pub const PATIENCE_MS: u64 = 20_000;
@@ -58,7 +59,10 @@ impl Target {
     /// when none of them is on screen as the tour starts. The rest turn up as
     /// it goes (the samples' rows, the composer, the chips).
     pub fn may_be_closed(&self) -> bool {
-        matches!(self, Target::Threads | Target::Highlights | Target::HighlightsRail | Target::ActivityBar)
+        matches!(
+            self,
+            Target::Threads | Target::Highlights | Target::HighlightsRail | Target::ActivityBar
+        )
     }
 }
 
@@ -76,7 +80,15 @@ pub enum Intro {
 }
 
 impl Intro {
-    pub const ALL: [Intro; 7] = [Intro::Scheduled, Intro::Projects, Intro::Librarian, Intro::Usage, Intro::Updates, Intro::Connectors, Intro::Pools];
+    pub const ALL: [Intro; 7] = [
+        Intro::Scheduled,
+        Intro::Projects,
+        Intro::Librarian,
+        Intro::Usage,
+        Intro::Updates,
+        Intro::Connectors,
+        Intro::Pools,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -109,7 +121,11 @@ impl Intro {
             // matter, and nothing else would tell you (Mike, 5 Nov).
             Intro::Pools => (Target::Composer, "Pools", "A thread moves to another login in its pool when the one it's on nears its limit.", "accounts"),
         };
-        Step { targets: vec![target], doc: Some(doc), ..Step::new(title, body) }
+        Step {
+            targets: vec![target],
+            doc: Some(doc),
+            ..Step::new(title, body)
+        }
     }
 }
 
@@ -157,7 +173,18 @@ pub struct Step {
 
 impl Step {
     fn new(title: &'static str, body: &'static str) -> Step {
-        Step { targets: vec![], title, body, task: None, fail_body: None, edges: vec![Edge::Right, Edge::Left, Edge::Below, Edge::Above], bear: false, opens_sample: false, hovers: None, doc: None }
+        Step {
+            targets: vec![],
+            title,
+            body,
+            task: None,
+            fail_body: None,
+            edges: vec![Edge::Right, Edge::Left, Edge::Below, Edge::Above],
+            bear: false,
+            opens_sample: false,
+            hovers: None,
+            doc: None,
+        }
     }
 
     /// Its docs page's address, for the ⓘ.
@@ -233,14 +260,26 @@ impl Rect {
     pub fn intersection(&self, other: &Rect) -> Rect {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
-        Rect::new(x, y, (self.max_x().min(other.max_x()) - x).max(0.), (self.max_y().min(other.max_y()) - y).max(0.))
+        Rect::new(
+            x,
+            y,
+            (self.max_x().min(other.max_x()) - x).max(0.),
+            (self.max_y().min(other.max_y()) - y).max(0.),
+        )
     }
 }
 
 /// Where the card goes, and the side of the target it went on (None in the
 /// middle) for its arrow: beside `target` on the first of `edges` with room,
 /// else in the middle of `bounds`. Kept `margin` in from the window's edges.
-pub fn card_placement(target: Option<Rect>, card: (f32, f32), bounds: Rect, edges: &[Edge], gap: f32, margin: f32) -> ((f32, f32), Option<Edge>) {
+pub fn card_placement(
+    target: Option<Rect>,
+    card: (f32, f32),
+    bounds: Rect,
+    edges: &[Edge],
+    gap: f32,
+    margin: f32,
+) -> ((f32, f32), Option<Edge>) {
     let (cw, ch) = card;
     let centred = ((bounds.mid_x() - cw / 2., bounds.mid_y() - ch / 2.), None);
     let Some(t) = target else { return centred };
@@ -248,10 +287,18 @@ pub fn card_placement(target: Option<Rect>, card: (f32, f32), bounds: Rect, edge
     let clamp_y = |y: f32| y.max(bounds.y + margin).min(bounds.max_y() - margin - ch);
     for &edge in edges {
         match edge {
-            Edge::Right if t.max_x() + gap + cw <= bounds.max_x() - margin => return ((t.max_x() + gap, clamp_y(t.mid_y() - ch / 2.)), Some(edge)),
-            Edge::Left if t.x - gap - cw >= bounds.x + margin => return ((t.x - gap - cw, clamp_y(t.mid_y() - ch / 2.)), Some(edge)),
-            Edge::Below if t.max_y() + gap + ch <= bounds.max_y() - margin => return ((clamp_x(t.mid_x() - cw / 2.), t.max_y() + gap), Some(edge)),
-            Edge::Above if t.y - gap - ch >= bounds.y + margin => return ((clamp_x(t.mid_x() - cw / 2.), t.y - gap - ch), Some(edge)),
+            Edge::Right if t.max_x() + gap + cw <= bounds.max_x() - margin => {
+                return ((t.max_x() + gap, clamp_y(t.mid_y() - ch / 2.)), Some(edge))
+            }
+            Edge::Left if t.x - gap - cw >= bounds.x + margin => {
+                return ((t.x - gap - cw, clamp_y(t.mid_y() - ch / 2.)), Some(edge))
+            }
+            Edge::Below if t.max_y() + gap + ch <= bounds.max_y() - margin => {
+                return ((clamp_x(t.mid_x() - cw / 2.), t.max_y() + gap), Some(edge))
+            }
+            Edge::Above if t.y - gap - ch >= bounds.y + margin => {
+                return ((clamp_x(t.mid_x() - cw / 2.), t.y - gap - ch), Some(edge))
+            }
             _ => continue,
         }
     }
@@ -315,7 +362,10 @@ impl Tour {
     /// The first part of `step` that's on screen, by `frame_of`, or None to
     /// put the card in the middle.
     pub fn frame(step: &Step, frame_of: &dyn Fn(&Target) -> Option<Rect>) -> Option<Rect> {
-        step.targets.iter().filter_map(frame_of).find(|r| r.w > 1. && r.h > 1.)
+        step.targets
+            .iter()
+            .filter_map(frame_of)
+            .find(|r| r.w > 1. && r.h > 1.)
     }
 
     /// Starts the tour on its first step, leaving out the steps that point
@@ -323,14 +373,22 @@ impl Tour {
     pub fn start(&mut self, skippable: bool, frame_of: &dyn Fn(&Target) -> Option<Rect>) {
         self.skippable = skippable;
         self.intro = None;
-        self.shown = steps().into_iter().filter(|s| s.task.is_some() || s.targets.is_empty() || s.targets.iter().any(|t| !t.may_be_closed()) || Self::frame(s, frame_of).is_some()).collect();
+        self.shown = steps()
+            .into_iter()
+            .filter(|s| {
+                s.task.is_some()
+                    || s.targets.is_empty()
+                    || s.targets.iter().any(|t| !t.may_be_closed())
+                    || Self::frame(s, frame_of).is_some()
+            })
+            .collect();
         self.step = Some(0);
         self.task_done = false;
     }
 
     /// On to the next step: true if there is one, false when it's the end
     /// (call `finish`).
-    pub fn next(&mut self) -> bool {
+    pub fn forward(&mut self) -> bool {
         match self.step {
             Some(i) if i + 1 < self.shown.len() => {
                 self.step = Some(i + 1);
@@ -446,11 +504,19 @@ impl SetupChecklist {
         self.items.iter().filter(|(_, done)| !done).count()
     }
 
-    pub fn build<'a>(threads: impl IntoIterator<Item = &'a ThreadSummary>, accounts: &[Account], devices: &[Device], can_pair: bool, local_only: bool) -> SetupChecklist {
+    pub fn build<'a>(
+        threads: impl IntoIterator<Item = &'a ThreadSummary>,
+        accounts: &[Account],
+        devices: &[Device],
+        can_pair: bool,
+        local_only: bool,
+    ) -> SetupChecklist {
         // A turn that reached the model (it reported a cost or how full the
         // context is): the login worked. Not the session id, which a thread
         // gets when it's made, the tour's turnless samples too.
-        let ran = threads.into_iter().any(|t| (t.cost_usd.is_some() || t.context_tokens.is_some()) && t.status != "error");
+        let ran = threads
+            .into_iter()
+            .any(|t| (t.cost_usd.is_some() || t.context_tokens.is_some()) && t.status != "error");
         let mut items = vec![(SetupItem::FirstThread, ran)];
         if can_pair {
             let live: Vec<&Device> = devices.iter().filter(|d| !d.expired).collect();
@@ -458,9 +524,15 @@ impl SetupChecklist {
             if !local_only {
                 items.push((SetupItem::Phone, live.iter().any(|d| d.kind == Kind::Phone)));
             }
-            items.push((SetupItem::Website, live.iter().any(|d| d.kind == Kind::Browser)));
+            items.push((
+                SetupItem::Website,
+                live.iter().any(|d| d.kind == Kind::Browser),
+            ));
         }
-        SetupChecklist { items, no_login: accounts.is_empty() }
+        SetupChecklist {
+            items,
+            no_login: accounts.is_empty(),
+        }
     }
 }
 
@@ -476,9 +548,15 @@ mod tests {
     fn leaves_out_closed_panels_but_keeps_what_turns_up_as_it_goes() {
         let mut tour = Tour::default();
         // The threads on screen; the activity bar and Highlights not.
-        tour.start(false, &|t| (*t == Target::Threads).then(|| Rect::new(44., 0., 300., 800.)));
+        tour.start(false, &|t| {
+            (*t == Target::Threads).then(|| Rect::new(44., 0., 300., 800.))
+        });
         let titles: Vec<&str> = tour.shown.iter().map(|s| s.title).collect();
-        let all: Vec<&str> = steps().iter().map(|s| s.title).filter(|t| *t != "Your views" && *t != "Highlights").collect();
+        let all: Vec<&str> = steps()
+            .iter()
+            .map(|s| s.title)
+            .filter(|t| *t != "Your views" && *t != "Highlights")
+            .collect();
         assert_eq!(titles, all);
         assert_eq!(tour.step, Some(0));
     }
@@ -494,30 +572,29 @@ mod tests {
                 assert!(text.chars().count() <= 90, "short: {text}");
                 assert!(!text.contains('\u{2014}'), "no em dashes: {text}");
             }
-            assert!(step.title.chars().count() <= 24, "short title: {}", step.title);
+            assert!(
+                step.title.chars().count() <= 24,
+                "short title: {}",
+                step.title
+            );
         }
     }
 
     #[test]
     fn every_docs_link_is_a_page_the_site_has() {
-        let slugs: Vec<String> = serde_json::from_str(include_str!("../../../site/app-doc-slugs.json")).unwrap();
+        let slugs: Vec<String> =
+            serde_json::from_str(include_str!("../../../site/app-doc-slugs.json")).unwrap();
         let mut cards = steps();
         cards.extend(Intro::ALL.iter().map(|i| i.card()));
         for step in cards.iter().filter(|s| !s.targets.is_empty()) {
-            let doc = step.doc.unwrap_or_else(|| panic!("{} has no docs link", step.title));
-            assert!(slugs.iter().any(|s| s == doc), "{doc} isn't in site/app-doc-slugs.json");
+            let doc = step
+                .doc
+                .unwrap_or_else(|| panic!("{} has no docs link", step.title));
+            assert!(
+                slugs.iter().any(|s| s == doc),
+                "{doc} isn't in site/app-doc-slugs.json"
+            );
         }
-    }
-
-    #[test]
-    fn the_same_words_as_the_swift_app() {
-        // The Swift app's Tour.swift is frozen; these are its steps, in order.
-        let swift = include_str!("../../../app/Sources/Threadbear/Views/Tour.swift");
-        for step in steps().iter().chain(Intro::ALL.map(|i| i.card()).iter()) {
-            assert!(swift.contains(&format!("\"{}\"", step.title)), "Swift has no step called {}", step.title);
-            assert!(swift.contains(&format!("\"{}\"", step.body)), "Swift says something else for {}", step.title);
-        }
-        assert!(swift.contains(FIRST_MESSAGE));
     }
 
     #[test]
@@ -527,17 +604,35 @@ mod tests {
         assert_eq!(tour.current().map(|s| s.title), Some("Projects"));
         assert!(tour.is_last(), "one card");
         assert_eq!(tour.finish(), Some(Finished::Intro(Intro::Projects)));
-        assert!(!tour.introduce(Intro::Projects, true, true), "only the first time");
-        assert!(!tour.introduce(Intro::Usage, false, false), "not while they're off");
+        assert!(
+            !tour.introduce(Intro::Projects, true, true),
+            "only the first time"
+        );
+        assert!(
+            !tour.introduce(Intro::Usage, false, false),
+            "not while they're off"
+        );
         tour.start(false, &none);
-        assert!(!tour.introduce(Intro::Usage, false, true), "not over the tour");
+        assert!(
+            !tour.introduce(Intro::Usage, false, true),
+            "not over the tour"
+        );
     }
 
     #[test]
     fn pools_intro_waits_for_a_second_login_and_the_tour() {
-        let pool = |n: usize| Pool { id: "claude".into(), title: "Claude".into(), account_ids: (0..n).map(|i| i.to_string()).collect(), icon: None, folders: vec![] };
+        let pool = |n: usize| Pool {
+            id: "claude".into(),
+            title: "Claude".into(),
+            account_ids: (0..n).map(|i| i.to_string()).collect(),
+            icon: None,
+            folders: vec![],
+        };
         assert!(!pools_intro_due(&[pool(2)], false), "not before the tour");
-        assert!(!pools_intro_due(&[pool(1), pool(1)], true), "a Claude and a Codex login are two pools of one");
+        assert!(
+            !pools_intro_due(&[pool(1), pool(1)], true),
+            "a Claude and a Codex login are two pools of one"
+        );
         assert!(pools_intro_due(&[pool(2)], true));
     }
 
@@ -553,15 +648,21 @@ mod tests {
     #[test]
     fn highlights_falls_back_to_the_rail_icon() {
         let rail = Rect::new(1140., 40., 32., 32.);
-        let step = steps().into_iter().find(|s| s.title == "Highlights").unwrap();
-        assert_eq!(Tour::frame(&step, &|t| (*t == Target::HighlightsRail).then_some(rail)), Some(rail));
+        let step = steps()
+            .into_iter()
+            .find(|s| s.title == "Highlights")
+            .unwrap();
+        assert_eq!(
+            Tour::frame(&step, &|t| (*t == Target::HighlightsRail).then_some(rail)),
+            Some(rail)
+        );
     }
 
     #[test]
     fn next_on_the_last_step_ends_it() {
         let mut tour = Tour::default();
         tour.start(true, &none);
-        while tour.next() {}
+        while tour.forward() {}
         assert!(tour.is_last());
         assert_eq!(tour.finish(), Some(Finished::Tour));
         assert!(!tour.is_on());
@@ -572,16 +673,41 @@ mod tests {
     fn card_goes_beside_its_target_where_there_is_room() {
         let bounds = Rect::new(0., 0., 1200., 800.);
         let card = (300., 150.);
-        let at = |t: Option<Rect>, edges: &[Edge]| card_placement(t, card, bounds, edges, 14., 12.).0;
-        assert_eq!(at(Some(Rect::new(44., 0., 300., 800.)), &[Edge::Right, Edge::Left]), (358., 325.));
-        assert_eq!(at(Some(Rect::new(900., 0., 300., 800.)), &[Edge::Right, Edge::Left]), (586., 325.));
-        assert_eq!(at(Some(Rect::new(900., 700., 290., 80.)), &[Edge::Above]), (888., 536.));
-        assert_eq!(at(Some(bounds), &[Edge::Right, Edge::Left, Edge::Below, Edge::Above]), (450., 325.));
+        let at =
+            |t: Option<Rect>, edges: &[Edge]| card_placement(t, card, bounds, edges, 14., 12.).0;
+        assert_eq!(
+            at(
+                Some(Rect::new(44., 0., 300., 800.)),
+                &[Edge::Right, Edge::Left]
+            ),
+            (358., 325.)
+        );
+        assert_eq!(
+            at(
+                Some(Rect::new(900., 0., 300., 800.)),
+                &[Edge::Right, Edge::Left]
+            ),
+            (586., 325.)
+        );
+        assert_eq!(
+            at(Some(Rect::new(900., 700., 290., 80.)), &[Edge::Above]),
+            (888., 536.)
+        );
+        assert_eq!(
+            at(
+                Some(bounds),
+                &[Edge::Right, Edge::Left, Edge::Below, Edge::Above]
+            ),
+            (450., 325.)
+        );
         assert_eq!(at(None, &[Edge::Right]), (450., 325.));
     }
 
     fn thread(ran: bool, status: &str) -> ThreadSummary {
-        let mut t: ThreadSummary = serde_json::from_value(serde_json::json!({ "id": "t", "title": "", "cwd": "/tmp", "status": status })).unwrap();
+        let mut t: ThreadSummary = serde_json::from_value(
+            serde_json::json!({ "id": "t", "title": "", "cwd": "/tmp", "status": status }),
+        )
+        .unwrap();
         t.cost_usd = ran.then_some(0.01);
         t
     }
@@ -591,13 +717,19 @@ mod tests {
     }
 
     fn device(kind: &str, expired: bool) -> Device {
-        Device::decode(&serde_json::json!({ "id": kind, "kind": kind, "name": kind, "expired": expired })).unwrap()
+        Device::decode(
+            &serde_json::json!({ "id": kind, "kind": kind, "name": kind, "expired": expired }),
+        )
+        .unwrap()
     }
 
     #[test]
     fn a_new_install_has_everything_left() {
         let list = SetupChecklist::build([], &[account()], &[], true, false);
-        assert_eq!(list.items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![SetupItem::FirstThread, SetupItem::Phone, SetupItem::Website]);
+        assert_eq!(
+            list.items.iter().map(|i| i.0).collect::<Vec<_>>(),
+            vec![SetupItem::FirstThread, SetupItem::Phone, SetupItem::Website]
+        );
         assert_eq!(list.left(), 3);
         assert!(!list.no_login);
     }
@@ -605,13 +737,22 @@ mod tests {
     #[test]
     fn a_backend_on_this_mac_only_leaves_the_phone_off() {
         let list = SetupChecklist::build([], &[account()], &[], true, true);
-        assert_eq!(list.items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![SetupItem::FirstThread, SetupItem::Website]);
+        assert_eq!(
+            list.items.iter().map(|i| i.0).collect::<Vec<_>>(),
+            vec![SetupItem::FirstThread, SetupItem::Website]
+        );
     }
 
     #[test]
     fn each_ticks_itself_off() {
         let t = thread(true, "idle");
-        let list = SetupChecklist::build([&t], &[account()], &[device("phone", false), device("browser", false)], true, false);
+        let list = SetupChecklist::build(
+            [&t],
+            &[account()],
+            &[device("phone", false), device("browser", false)],
+            true,
+            false,
+        );
         assert_eq!(list.left(), 0);
     }
 
@@ -626,13 +767,22 @@ mod tests {
     #[test]
     fn an_expired_phone_needs_pairing_again() {
         let list = SetupChecklist::build([], &[account()], &[device("phone", true)], true, false);
-        assert_eq!(list.items.iter().find(|i| i.0 == SetupItem::Phone).map(|i| i.1), Some(false));
+        assert_eq!(
+            list.items
+                .iter()
+                .find(|i| i.0 == SetupItem::Phone)
+                .map(|i| i.1),
+            Some(false)
+        );
     }
 
     #[test]
     fn without_the_mirror_the_phone_and_website_arent_listed() {
         let list = SetupChecklist::build([], &[], &[], false, false);
-        assert_eq!(list.items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![SetupItem::FirstThread]);
+        assert_eq!(
+            list.items.iter().map(|i| i.0).collect::<Vec<_>>(),
+            vec![SetupItem::FirstThread]
+        );
         assert!(list.no_login);
     }
 }

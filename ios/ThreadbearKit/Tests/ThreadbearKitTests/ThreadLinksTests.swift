@@ -93,4 +93,67 @@ import Testing
         let quick = Turns.fold([message(1, .user, "Hi"), message(2, .assistant, "[Hello](work:nothing)")], busy: false)
         #expect(ThreadLinks.find(quote: "nothing", from: 2, in: quick) == nil)
     }
+
+    /// A shared case file's cases this app runs: those whose `differs` doesn't name the iPhone.
+    private static func shared(_ path: String) throws -> [[String: Any]] {
+        // ios/ThreadbearKit/Tests/ThreadbearKitTests/ -> the repo.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let file = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: repo.appendingPathComponent(path))) as? [String: Any])
+        let cases = try #require(file["cases"] as? [[String: Any]])
+        return cases.filter { ($0["differs"] as? [String: Any])?["ios"] == nil }
+    }
+
+    /// A target as the shared cases write it: null, or its kind and value.
+    private static func neutral(_ target: ThreadLinks.Target?) -> [String: String]? {
+        switch target {
+        case let .step(quote)?: ["kind": "step", "value": quote]
+        case let .thread(id)?: ["kind": "thread", "value": id]
+        case let .review(id)?: ["kind": "review", "value": id]
+        case let .button(id)?: ["kind": "button", "value": id]
+        case nil: nil
+        }
+    }
+
+    /// What a link opens, against the cases the desktop app, Android and the website run too.
+    @Test func linksMatchTheSharedCases() throws {
+        let cases = try Self.shared("shared/cases/thread-links.json")
+        #expect(cases.count > 5)
+        for c in cases {
+            let input = try #require(c["input"] as? String)
+            let target = URL(string: input).flatMap(ThreadLinks.target)
+            #expect(Self.neutral(target) == c["expect"] as? [String: String], "\(c["name"] as? String ?? "?")")
+        }
+    }
+
+    /// Escaping work links and the step one finds, against the cases Android
+    /// and the website run too.
+    @Test func workLinksMatchTheSharedCases() throws {
+        let cases = try Self.shared("shared/cases/work-links.json")
+        #expect(cases.count > 10)
+        let destination = try Regex(#"\]\(((?:[^()\s]|\([^()\s]*\))*)\)"#)
+        for c in cases {
+            let name = c["name"] as? String ?? "?"
+            let input = try #require(c["input"] as? [String: Any])
+            let expect = try #require(c["expect"] as? [String: Any])
+            if input["op"] as? String == "escape" {
+                let escaped = ThreadLinks.escapeDestinations(try #require(input["markdown"] as? String))
+                let got = escaped.matches(of: destination).map { match in
+                    Self.neutral(match.output[1].substring.flatMap { URL(string: String($0)) }.flatMap(ThreadLinks.target))
+                }
+                let want = try #require(expect["links"] as? [Any]).map { $0 as? [String: String] }
+                #expect(got == want, "\(name)")
+            } else {
+                let rows = try #require(input["rows"] as? [[String: Any]])
+                let messages = try rows.map { row in
+                    PhoneMessage(seq: try #require(row["seq"] as? Int), role: try #require(PhoneMessage.Role(rawValue: row["role"] as? String ?? "")),
+                                 text: row["text"] as? String ?? "", summary: row["summary"] as? Bool ?? false,
+                                 at: Date(timeIntervalSince1970: Double(row["seq"] as? Int ?? 0) * 60))
+                }
+                let items = Turns.fold(messages, busy: input["busy"] as? Bool ?? false)
+                let hit = ThreadLinks.find(quote: try #require(input["quote"] as? String), from: input["from"] as? Int, in: items)
+                #expect(hit?.step == expect["step"] as? Int, "\(name)")
+            }
+        }
+    }
 }

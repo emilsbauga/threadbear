@@ -60,3 +60,27 @@ Found a security problem? Please don't open an issue or a PR for it: see
 
 [AGENTS.md](AGENTS.md) has the rest of the rules, and it's what your agent
 should read first.
+
+## How my agents take PRs and forks
+
+This part is for the agents working in my copy.
+
+- Before starting on a GitHub issue, run `gh pr list -R mikecann/threadbear`
+  again: someone may have opened a PR for it since you last looked (Tyler did
+  for #2 while a thread was writing its own fix, 6 Nov), and their hand test
+  may know more than you can find out.
+- Merge a PR with `gh pr merge --rebase`, so it shows as merged and stays
+  theirs, and put anything of your own in a commit on top. A comment to them
+  goes past me first.
+- Work rewritten by hand from someone's PR or fork gets a `Co-Authored-By:`
+  trailer for them, as 434438d9 does for Wayne.
+- A commit on someone's fork isn't an offer. The fork watch schedule
+  (`~/dev/me/misc/schedules/threadbear-fork-watch`) is what brings them in. It
+  takes the small ones it's sure of by itself (a real bug, test or check fix,
+  small enough to read whole, that changes nothing about how Threadbear
+  works), written fresh from what the diff does and credited as above, and
+  asks me about features and anything that changes how something works (19
+  Nov: "for these small things ... you should just automatically pull them
+  in. And leaving it up to me, the bigger decisions"). Outside that schedule,
+  don't take a fork's commit unless I ask for that one by name or its author
+  has opened a PR.

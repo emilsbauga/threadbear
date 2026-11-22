@@ -1,0 +1,31 @@
+{
+  "about": "The slash palette's sizes on a big screen: the category and list columns for a palette so wide (columnWidths, with the detail kept at least 200, the list 120 and the categories 110), its height for a window, and the sizes and column widths a drag leaves. Copies: desktop/core/src/slash.rs (column_widths, palette_height, PaletteLayout) and SlashPalette in ios/ThreadbearKit/Sources/ThreadbearKit/SlashCommands.swift. Android's palette is a sheet with none of this.",
+  "platforms": ["desktop", "ios"],
+  "cases": [
+    {"name": "wide: each column as wide as it needs", "input": {"op": "columnWidths", "total": 900, "categories": 160, "list": 230, "chosen": false}, "expect": {"categories": 160, "list": 230}},
+    {"name": "wide, as the desktop sizes it", "input": {"op": "columnWidths", "total": 780, "categories": 160, "list": 220, "chosen": false}, "expect": {"categories": 160, "list": 220}},
+    {"name": "a very long name takes at most half of what's left", "input": {"op": "columnWidths", "total": 900, "categories": 160, "list": 600, "chosen": false}, "expect": {"categories": 160, "list": 370}},
+    {"name": "narrow: the list gives way first", "input": {"op": "columnWidths", "total": 520, "categories": 160, "list": 230, "chosen": false}, "expect": {"categories": 160, "list": 160}},
+    {"name": "narrower: then the categories", "input": {"op": "columnWidths", "total": 450, "categories": 160, "list": 230, "chosen": false}, "expect": {"categories": 130, "list": 120}},
+    {"name": "narrowest: both at their least", "input": {"op": "columnWidths", "total": 420, "categories": 160, "list": 300, "chosen": false}, "expect": {"categories": 110, "list": 120}},
+    {"name": "a list dragged wide isn't held to half", "input": {"op": "columnWidths", "total": 900, "categories": 160, "list": 450, "chosen": true}, "expect": {"categories": 160, "list": 450}},
+    {"name": "the same width not dragged is held to half", "input": {"op": "columnWidths", "total": 900, "categories": 160, "list": 450, "chosen": false}, "expect": {"categories": 160, "list": 370}},
+    {"name": "height: about half the window", "input": {"op": "height", "window": 1000}, "expect": 500},
+    {"name": "height: half of a middling window", "input": {"op": "height", "window": 800}, "expect": 400},
+    {"name": "height: never below the least", "input": {"op": "height", "window": 400}, "expect": 300},
+    {"name": "height: nor above the most", "input": {"op": "height", "window": 1600}, "expect": 560},
+    {"name": "dragged height: never too short to use", "input": {"op": "layoutHeight", "value": 100, "window": 900}, "expect": 220},
+    {"name": "dragged height: never past 85% of the window", "input": {"op": "layoutHeight", "value": 2000, "window": 900}, "expect": 765},
+    {"name": "dragged height: as dragged", "input": {"op": "layoutHeight", "value": 500, "window": 900}, "expect": 500},
+    {"name": "dragged height: 220 even in a short window", "input": {"op": "layoutHeight", "value": 400, "window": 200}, "expect": 220},
+    {"name": "dragged width: never under 480", "input": {"op": "layoutWidth", "value": 300, "window": 1400}, "expect": 480},
+    {"name": "dragged width: never past the window less 40 a side", "input": {"op": "layoutWidth", "value": 5000, "window": 1400}, "expect": 1320},
+    {"name": "dragged width: never past a smaller window less 40 a side", "input": {"op": "layoutWidth", "value": 2000, "window": 1200}, "expect": 1120},
+    {"name": "dragged width: 480 when the margins don't fit", "input": {"op": "layoutWidth", "value": 500, "window": 520}, "expect": 480},
+    {"name": "dragged width: a window narrower than 480 keeps 8 a side", "input": {"op": "layoutWidth", "value": 600, "window": 380}, "expect": 364, "differs": {"ios": "The Swift palette keeps 480 even off a window too narrow for it; the desktop app keeps 8 in from each side (as its undragged width does). The iPhone never drags its palette, so this only mattered on the frozen Mac app."}},
+    {"name": "dragged width: just over 480 keeps 8 a side", "input": {"op": "layoutWidth", "value": 300, "window": 420}, "expect": 404, "differs": {"ios": "The Swift palette keeps 480 even off a window too narrow for it; the desktop app keeps 8 in from each side (as its undragged width does). The iPhone never drags its palette, so this only mattered on the frozen Mac app."}},
+    {"name": "dragged column: leaving the others theirs", "input": {"op": "column", "value": 600, "least": 110, "others": 500, "total": 900}, "expect": 400},
+    {"name": "dragged column: at least its least", "input": {"op": "column", "value": 50, "least": 110, "others": 500, "total": 900}, "expect": 110},
+    {"name": "dragged column: wide, still leaving the others room", "input": {"op": "column", "value": 700, "least": 110, "others": 400, "total": 900}, "expect": 500}
+  ]
+}

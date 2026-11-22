@@ -16,11 +16,23 @@ use std::ops::Range;
 /// link still reads as one.
 pub fn thread_reference(id: &str, title: &str) -> String {
     // Swift's `split(whereSeparator: \.isNewline)`, which leaves out empty lines.
-    let newline = |c: char| matches!(c, '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}');
-    let words = title.split(newline).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+    let newline = |c: char| {
+        matches!(
+            c,
+            '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+        )
+    };
+    let words = title
+        .split(newline)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     let words = words.trim_matches(|c: char| c == ' ' || c == '\t');
     let name = if words.is_empty() { "Thread" } else { words };
-    format!("[{}](thread:{id})", name.replace('[', "\\[").replace(']', "\\]"))
+    format!(
+        "[{}](thread:{id})",
+        name.replace('[', "\\[").replace(']', "\\]")
+    )
 }
 
 /// The thread a paste names on its own (CardMentions.pastedThreadId): a bare
@@ -29,11 +41,19 @@ pub fn thread_reference(id: &str, title: &str) -> String {
 pub fn pasted_thread_id(pasted: &str, known: impl Fn(&str) -> bool) -> Option<String> {
     let mut text = pasted.trim();
     for prefix in ["threadbear://thread/", "thread:"] {
-        if text.len() >= prefix.len() && text.is_char_boundary(prefix.len()) && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        if text.len() >= prefix.len()
+            && text.is_char_boundary(prefix.len())
+            && text[..prefix.len()].eq_ignore_ascii_case(prefix)
+        {
             text = &text[prefix.len()..];
         }
     }
-    if text.is_empty() || text.chars().count() > 64 || !text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if text.is_empty()
+        || text.chars().count() > 64
+        || !text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return None;
     }
     if known(text) {
@@ -114,7 +134,11 @@ pub enum BoxChip {
 /// it isn't part of the draft yet (Codex's review, 12 Nov).
 pub fn holds_anything(text: &str, chips: &[(Range<usize>, BoxChip)]) -> bool {
     let (words, images) = draft_in(text, chips, 0..text.len());
-    !words.trim().is_empty() || !images.is_empty() || chips.iter().any(|(_, c)| matches!(c, BoxChip::Picture(None)))
+    !words.trim().is_empty()
+        || !images.is_empty()
+        || chips
+            .iter()
+            .any(|(_, c)| matches!(c, BoxChip::Picture(None)))
 }
 
 /// The draft in `range` of the box's `text` (ComposerTextView.draft(in:)):
@@ -123,7 +147,11 @@ pub fn holds_anything(text: &str, chips: &[(Range<usize>, BoxChip)]) -> bool {
 /// their byte ranges, in order; one the range only touches part of counts
 /// whole, as a chip can't be cut in two. A stray U+FFFC among the words
 /// isn't a picture.
-pub fn draft_in(text: &str, chips: &[(Range<usize>, BoxChip)], range: Range<usize>) -> (String, Vec<ImageRef>) {
+pub fn draft_in(
+    text: &str,
+    chips: &[(Range<usize>, BoxChip)],
+    range: Range<usize>,
+) -> (String, Vec<ImageRef>) {
     let end = range.end.min(text.len());
     let mut at = range.start.min(end);
     let mut out = String::new();
@@ -168,7 +196,11 @@ pub struct Clip {
 
 impl Clip {
     pub fn new(text: String, images: Vec<ImageRef>) -> Clip {
-        Clip { plain: message_text(&text, 1), text, images }
+        Clip {
+            plain: message_text(&text, 1),
+            text,
+            images,
+        }
     }
 
     /// What goes beside the words on the clipboard. Marked as this app's,
@@ -184,7 +216,11 @@ impl Clip {
             return None;
         }
         let text = metadata["text"].as_str()?.to_owned();
-        let images: Vec<ImageRef> = metadata["images"].as_array()?.iter().filter_map(ImageRef::decode).collect();
+        let images: Vec<ImageRef> = metadata["images"]
+            .as_array()?
+            .iter()
+            .filter_map(ImageRef::decode)
+            .collect();
         let clip = Clip::new(text, images);
         // A clipboard keeps its words as they came, but Windows writes line
         // ends as \r\n.
@@ -211,8 +247,14 @@ mod tests {
 
     #[test]
     fn a_thread_reference_is_a_link_with_its_title() {
-        assert_eq!(thread_reference("abc-1", "Fix the [share] button"), "[Fix the \\[share\\] button](thread:abc-1)");
-        assert_eq!(thread_reference("abc", "two\nlines "), "[two lines](thread:abc)");
+        assert_eq!(
+            thread_reference("abc-1", "Fix the [share] button"),
+            "[Fix the \\[share\\] button](thread:abc-1)"
+        );
+        assert_eq!(
+            thread_reference("abc", "two\nlines "),
+            "[two lines](thread:abc)"
+        );
         assert_eq!(thread_reference("abc", "  "), "[Thread](thread:abc)");
         // It reads back as the thread's chip, with the title it had.
         let found = find_mentions(&thread_reference("abc", "Fix the [share] button"));
@@ -224,13 +266,37 @@ mod tests {
     #[test]
     fn only_a_known_threads_id_pasted_on_its_own_counts() {
         let known = |id: &str| id == "0cf430ac-f429-4b1c" || id == "demo_upload";
-        assert_eq!(pasted_thread_id("0cf430ac-f429-4b1c", known).as_deref(), Some("0cf430ac-f429-4b1c"));
-        assert_eq!(pasted_thread_id("  demo_upload\n", known).as_deref(), Some("demo_upload"));
-        assert_eq!(pasted_thread_id("thread:demo_upload", known).as_deref(), Some("demo_upload"));
-        assert_eq!(pasted_thread_id("Threadbear://thread/demo_upload", known).as_deref(), Some("demo_upload"));
-        assert_eq!(pasted_thread_id("0CF430AC-F429-4B1C", known).as_deref(), Some("0cf430ac-f429-4b1c"), "an id in capitals is the same thread");
-        assert_eq!(pasted_thread_id("someone-elses-id", known), None, "an id no thread has stays words");
-        assert_eq!(pasted_thread_id("see demo_upload", known), None, "words with an id in them stay words");
+        assert_eq!(
+            pasted_thread_id("0cf430ac-f429-4b1c", known).as_deref(),
+            Some("0cf430ac-f429-4b1c")
+        );
+        assert_eq!(
+            pasted_thread_id("  demo_upload\n", known).as_deref(),
+            Some("demo_upload")
+        );
+        assert_eq!(
+            pasted_thread_id("thread:demo_upload", known).as_deref(),
+            Some("demo_upload")
+        );
+        assert_eq!(
+            pasted_thread_id("Threadbear://thread/demo_upload", known).as_deref(),
+            Some("demo_upload")
+        );
+        assert_eq!(
+            pasted_thread_id("0CF430AC-F429-4B1C", known).as_deref(),
+            Some("0cf430ac-f429-4b1c"),
+            "an id in capitals is the same thread"
+        );
+        assert_eq!(
+            pasted_thread_id("someone-elses-id", known),
+            None,
+            "an id no thread has stays words"
+        );
+        assert_eq!(
+            pasted_thread_id("see demo_upload", known),
+            None,
+            "words with an id in them stay words"
+        );
         assert_eq!(pasted_thread_id("", known), None);
         assert_eq!(pasted_thread_id(&"a".repeat(65), |_| true), None);
     }
@@ -241,7 +307,10 @@ mod tests {
         // Only a picture that's still being copied in: no words, no picture
         // in the draft yet, but a restart would lose it.
         let importing = [(0..chip.len(), BoxChip::Picture(None))];
-        assert_eq!(draft_in(chip, &importing, 0..chip.len()), (String::new(), vec![]));
+        assert_eq!(
+            draft_in(chip, &importing, 0..chip.len()),
+            (String::new(), vec![])
+        );
         assert!(holds_anything(chip, &importing));
         assert!(holds_anything("hello", &[]));
         assert!(!holds_anything("  \n", &[]));
@@ -255,19 +324,31 @@ mod tests {
         assert_eq!(pieces[0], DraftPiece::Words("look ".into()));
         assert_eq!(pieces[1], DraftPiece::Picture(0));
         assert_eq!(pieces[2], DraftPiece::Words(" at ".into()));
-        assert!(matches!(&pieces[3], DraftPiece::Mention(m, link) if m.kind == MentionKind::Card && m.title == "Fix it" && link == "[Fix it](https://www.notion.so/Fix-it-abc)"));
+        assert!(
+            matches!(&pieces[3], DraftPiece::Mention(m, link) if m.kind == MentionKind::Card && m.title == "Fix it" && link == "[Fix it](https://www.notion.so/Fix-it-abc)")
+        );
         assert_eq!(pieces[4], DraftPiece::Words(" and ".into()));
-        assert!(matches!(&pieces[5], DraftPiece::Mention(m, link) if m.kind == MentionKind::Thread && m.thread_id() == Some("t1") && link == "[Brief](thread:t1)"));
+        assert!(
+            matches!(&pieces[5], DraftPiece::Mention(m, link) if m.kind == MentionKind::Thread && m.thread_id() == Some("t1") && link == "[Brief](thread:t1)")
+        );
         // The third mark has no picture left: it goes.
         assert_eq!(pieces[6], DraftPiece::Picture(1));
         assert_eq!(pieces.len(), 7);
         // A paste of words: its marks go, and plain words stay one piece.
-        assert_eq!(draft_pieces("a\u{FFFC}b", 0), vec![DraftPiece::Words("ab".into())]);
+        assert_eq!(
+            draft_pieces("a\u{FFFC}b", 0),
+            vec![DraftPiece::Words("ab".into())]
+        );
         assert!(draft_pieces("", 0).is_empty());
         assert!(has_mentions("[x](thread:abc)"));
-        assert!(has_mentions("look at `/Users/m/clip.mp4`"), "a pasted file's path comes back as its chip");
+        assert!(
+            has_mentions("look at `/Users/m/clip.mp4`"),
+            "a pasted file's path comes back as its chip"
+        );
         let pieces = draft_pieces("see `/Users/m/clip.mp4` ok", 0);
-        assert!(matches!(&pieces[1], DraftPiece::Mention(m, link) if m.kind == MentionKind::File && m.title == "clip.mp4" && link == "`/Users/m/clip.mp4`"));
+        assert!(
+            matches!(&pieces[1], DraftPiece::Mention(m, link) if m.kind == MentionKind::File && m.title == "clip.mp4" && link == "`/Users/m/clip.mp4`")
+        );
         assert!(!has_mentions("[x](https://example.com/abc)"));
     }
 
@@ -279,10 +360,18 @@ mod tests {
         let first = 4..7;
         let mention = text.find(link).unwrap()..text.find(link).unwrap() + link.len();
         let second = mention.end + 1..mention.end + 4;
-        let chips = vec![(first.clone(), BoxChip::Picture(Some(picture.clone()))), (mention.clone(), BoxChip::Mention), (second.clone(), BoxChip::Picture(None))];
+        let chips = vec![
+            (first, BoxChip::Picture(Some(picture.clone()))),
+            (mention.clone(), BoxChip::Mention),
+            (second, BoxChip::Picture(None)),
+        ];
         let (draft, images) = draft_in(&text, &chips, 0..text.len());
-        assert_eq!(draft, format!("see \u{FFFC} and {link} !"), "a picture still copying in isn't in it");
-        assert_eq!(images, vec![picture.clone()]);
+        assert_eq!(
+            draft,
+            format!("see \u{FFFC} and {link} !"),
+            "a picture still copying in isn't in it"
+        );
+        assert_eq!(images, vec![picture]);
         // Part of the way into the first chip counts it whole.
         let (draft, images) = draft_in(&text, &chips, 5..mention.end);
         assert_eq!(draft, format!("\u{FFFC} and {link}"));
@@ -296,13 +385,29 @@ mod tests {
 
     #[test]
     fn a_clip_round_trips_with_its_words() {
-        let picture = ImageRef { path: "/media/a.png".into(), media_type: "image/png".into(), width: Some(40), height: Some(30) };
-        let clip = Clip::new("look \u{FFFC} and \u{FFFC}".into(), vec![picture.clone(), picture.clone()]);
+        let picture = ImageRef {
+            path: "/media/a.png".into(),
+            media_type: "image/png".into(),
+            width: Some(40),
+            height: Some(30),
+        };
+        let clip = Clip::new(
+            "look \u{FFFC} and \u{FFFC}".into(),
+            vec![picture.clone(), picture],
+        );
         assert_eq!(clip.plain, "look [Picture 1] and [Picture 2]");
         let back = Clip::from_clipboard(&clip.plain, &clip.metadata()).expect("a clip");
         assert_eq!(back, clip);
-        assert!(Clip::from_clipboard("other words", &clip.metadata()).is_none(), "words changed since: not this clip");
-        assert!(Clip::from_clipboard(&clip.plain, &json!([{ "indent": 0 }])).is_none(), "another app's note");
-        assert!(Clip::from_clipboard(&clip.plain.replace('\n', "\r\n"), &clip.metadata()).is_some());
+        assert!(
+            Clip::from_clipboard("other words", &clip.metadata()).is_none(),
+            "words changed since: not this clip"
+        );
+        assert!(
+            Clip::from_clipboard(&clip.plain, &json!([{ "indent": 0 }])).is_none(),
+            "another app's note"
+        );
+        assert!(
+            Clip::from_clipboard(&clip.plain.replace('\n', "\r\n"), &clip.metadata()).is_some()
+        );
     }
 }

@@ -247,7 +247,7 @@ function main(argv) {
   }
 
   // Only the main Mac's runner deploys the backend. A Mac with a runner key
-  // of its own (docs/protocol.md, "Runner keys") doesn't, even if an older
+  // of its own (docs/protocol/keys.md, "Runner keys") doesn't, even if an older
   // setup left a deploy key there (tb runner check says to remove it).
   if (hasRunnerKey(home)) {
     say('This Mac has a runner key of its own, so it leaves deploying the backend to the main Mac.');

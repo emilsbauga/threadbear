@@ -1,5 +1,5 @@
 // A thread's events folded into what the transcript draws, by the rules in
-// docs/protocol.md ("Events" and "Transient events"). Events stay as JSON, so
+// docs/protocol/events.md ("Events" and "Transient events"). Events stay as JSON, so
 // a type or field this app doesn't know is simply passed over.
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -29,14 +29,44 @@ pub struct Ask {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
-    User { seq: u64, text: String },
-    Text { item_id: String, text: String, streaming: bool },
-    Reasoning { item_id: String, text: String, streaming: bool },
+    User {
+        seq: u64,
+        text: String,
+    },
+    Text {
+        item_id: String,
+        text: String,
+        streaming: bool,
+    },
+    Reasoning {
+        item_id: String,
+        text: String,
+        streaming: bool,
+    },
     Steps(Vec<Step>),
-    Approval { approval_id: String, title: String, options: Vec<String>, decision: Option<String> },
-    Question { approval_id: String, questions: Vec<Question>, decision: Option<String>, message: Option<String> },
-    Note { text: String, error: bool },
-    TurnEnd { seq: u64, outcome: String, duration_ms: u64, asks: Vec<Ask>, error: Option<String> },
+    Approval {
+        approval_id: String,
+        title: String,
+        options: Vec<String>,
+        decision: Option<String>,
+    },
+    Question {
+        approval_id: String,
+        questions: Vec<Question>,
+        decision: Option<String>,
+        message: Option<String>,
+    },
+    Note {
+        text: String,
+        error: bool,
+    },
+    TurnEnd {
+        seq: u64,
+        outcome: String,
+        duration_ms: u64,
+        asks: Vec<Ask>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -59,14 +89,23 @@ impl ThreadEvents {
     /// Adds what threads.events, threads.subscribe or a thread.event brought.
     pub fn add(&mut self, incoming: &[Value], in_progress: &[Value]) {
         for p in in_progress {
-            let kind = if s(p, "type") == "reasoning" { "reasoning.delta" } else { "assistant.text.delta" };
+            let kind = if s(p, "type") == "reasoning" {
+                "reasoning.delta"
+            } else {
+                "assistant.text.delta"
+            };
             self.set_live(s(p, "itemId"), kind, s(p, "text").to_string());
         }
         for e in incoming {
             let ty = s(e, "type");
             if ty.ends_with(".delta") {
                 let id = s(e, "itemId");
-                let had = self.live.iter().find(|(i, _)| i == id).map(|(_, l)| l.text.clone()).unwrap_or_default();
+                let had = self
+                    .live
+                    .iter()
+                    .find(|(i, _)| i == id)
+                    .map(|(_, l)| l.text.clone())
+                    .unwrap_or_default();
                 self.set_live(id, ty, had + s(e, "text"));
             } else if let Some(seq) = e.get("seq").and_then(Value::as_u64) {
                 if ty == "assistant.text" || ty == "reasoning" {
@@ -79,7 +118,10 @@ impl ThreadEvents {
     }
 
     fn set_live(&mut self, id: &str, kind: &str, text: String) {
-        let live = Live { kind: kind.to_string(), text };
+        let live = Live {
+            kind: kind.to_string(),
+            text,
+        };
         match self.live.iter_mut().find(|(i, _)| i == id) {
             Some((_, l)) => *l = live,
             None => self.live.push((id.to_string(), live)),
@@ -91,11 +133,26 @@ impl ThreadEvents {
             .events
             .values()
             .filter(|e| s(e, "type") == "thread.rewound")
-            .map(|e| (e["fromSeq"].as_u64().unwrap_or(0), e["toSeq"].as_u64().unwrap_or(0)))
+            .map(|e| {
+                (
+                    e["fromSeq"].as_u64().unwrap_or(0),
+                    e["toSeq"].as_u64().unwrap_or(0),
+                )
+            })
             .collect();
         let mut resolved: HashMap<String, (String, Option<String>)> = HashMap::new();
-        for e in self.events.values().filter(|e| s(e, "type") == "approval.resolved") {
-            resolved.insert(s(e, "approvalId").to_string(), (s(e, "decision").to_string(), e.get("message").and_then(Value::as_str).map(String::from)));
+        for e in self
+            .events
+            .values()
+            .filter(|e| s(e, "type") == "approval.resolved")
+        {
+            resolved.insert(
+                s(e, "approvalId").to_string(),
+                (
+                    s(e, "decision").to_string(),
+                    e.get("message").and_then(Value::as_str).map(String::from),
+                ),
+            );
         }
 
         let mut items: Vec<Item> = vec![];
@@ -107,14 +164,25 @@ impl ThreadEvents {
                 continue;
             }
             match s(e, "type") {
-                "user.message" => items.push(Item::User { seq: *seq, text: s(e, "text").to_string() }),
+                "user.message" => items.push(Item::User {
+                    seq: *seq,
+                    text: s(e, "text").to_string(),
+                }),
                 ty @ ("assistant.text" | "reasoning") => {
                     let item_id = s(e, "itemId").to_string();
                     let text = s(e, "text").to_string();
                     let row = if ty == "assistant.text" {
-                        Item::Text { item_id: item_id.clone(), text, streaming: false }
+                        Item::Text {
+                            item_id: item_id.clone(),
+                            text,
+                            streaming: false,
+                        }
                     } else {
-                        Item::Reasoning { item_id: item_id.clone(), text, streaming: false }
+                        Item::Reasoning {
+                            item_id: item_id.clone(),
+                            text,
+                            streaming: false,
+                        }
                     };
                     match by_item.get(&item_id) {
                         Some(&at) => items[at] = row,
@@ -125,7 +193,12 @@ impl ThreadEvents {
                     }
                 }
                 "tool.call" => {
-                    let step = Step { item_id: s(e, "itemId").to_string(), title: s(e, "title").to_string(), kind: s(e, "kind").to_string(), ok: None };
+                    let step = Step {
+                        item_id: s(e, "itemId").to_string(),
+                        title: s(e, "title").to_string(),
+                        kind: s(e, "kind").to_string(),
+                        ok: None,
+                    };
                     if !matches!(items.last(), Some(Item::Steps(_))) {
                         items.push(Item::Steps(vec![]));
                     }
@@ -144,8 +217,20 @@ impl ThreadEvents {
                 }
                 "approval.requested" => {
                     let id = s(e, "approvalId").to_string();
-                    let options = e["options"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-                    items.push(Item::Approval { decision: resolved.get(&id).map(|r| r.0.clone()), approval_id: id, title: s(e, "title").to_string(), options });
+                    let options = e["options"]
+                        .as_array()
+                        .map(|o| {
+                            o.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    items.push(Item::Approval {
+                        decision: resolved.get(&id).map(|r| r.0.clone()),
+                        approval_id: id,
+                        title: s(e, "title").to_string(),
+                        options,
+                    });
                 }
                 "question.requested" => {
                     let id = s(e, "approvalId").to_string();
@@ -156,15 +241,34 @@ impl ThreadEvents {
                         .map(|q| Question {
                             question: s(q, "question").to_string(),
                             multi: q["multiSelect"].as_bool().unwrap_or(false),
-                            options: q["options"].as_array().into_iter().flatten().map(|o| s(o, "label").to_string()).collect(),
+                            options: q["options"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .map(|o| s(o, "label").to_string())
+                                .collect(),
                         })
                         .collect();
                     let r = resolved.get(&id).cloned();
-                    items.push(Item::Question { approval_id: id, questions, decision: r.as_ref().map(|r| r.0.clone()), message: r.and_then(|r| r.1) });
+                    items.push(Item::Question {
+                        approval_id: id,
+                        questions,
+                        decision: r.as_ref().map(|r| r.0.clone()),
+                        message: r.and_then(|r| r.1),
+                    });
                 }
-                "secret.requested" => items.push(Item::Note { text: format!("Asked for {}", s(e, "label")), error: false }),
-                "system.note" => items.push(Item::Note { text: s(e, "text").to_string(), error: false }),
-                "error" => items.push(Item::Note { text: s(e, "message").to_string(), error: true }),
+                "secret.requested" => items.push(Item::Note {
+                    text: format!("Asked for {}", s(e, "label")),
+                    error: false,
+                }),
+                "system.note" => items.push(Item::Note {
+                    text: s(e, "text").to_string(),
+                    error: false,
+                }),
+                "error" => items.push(Item::Note {
+                    text: s(e, "message").to_string(),
+                    error: true,
+                }),
                 "turn.completed" => {
                     let asks = e["asks"]
                         .as_array()
@@ -173,8 +277,16 @@ impl ThreadEvents {
                         .map(|a| Ask {
                             action: s(a, "action").to_string(),
                             why: a.get("why").and_then(Value::as_str).map(String::from),
-                            options: a["options"].as_array().into_iter().flatten().filter_map(|o| o.as_str().map(String::from)).collect(),
-                            suggested: a.get("suggested").and_then(Value::as_u64).map(|n| n as usize),
+                            options: a["options"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|o| o.as_str().map(String::from))
+                                .collect(),
+                            suggested: a
+                                .get("suggested")
+                                .and_then(Value::as_u64)
+                                .map(|n| n as usize),
                         })
                         .collect();
                     items.push(Item::TurnEnd {
@@ -194,9 +306,17 @@ impl ThreadEvents {
                 continue;
             }
             let row = if l.kind == "assistant.text.delta" {
-                Item::Text { item_id: item_id.clone(), text: l.text.clone(), streaming: true }
+                Item::Text {
+                    item_id: item_id.clone(),
+                    text: l.text.clone(),
+                    streaming: true,
+                }
             } else {
-                Item::Reasoning { item_id: item_id.clone(), text: l.text.clone(), streaming: true }
+                Item::Reasoning {
+                    item_id: item_id.clone(),
+                    text: l.text.clone(),
+                    streaming: true,
+                }
             };
             match by_item.get(item_id) {
                 Some(&at) => items[at] = row,
@@ -210,11 +330,19 @@ impl ThreadEvents {
 /// approvals.respond's answers for a question card, as the Mac app makes
 /// them: each question's picks joined with ", ", and the whole lot in one
 /// line, in the order asked.
-pub fn question_answers(questions: &[Question], chosen: &HashMap<usize, Vec<String>>) -> (serde_json::Map<String, Value>, String) {
+pub fn question_answers(
+    questions: &[Question],
+    chosen: &HashMap<usize, Vec<String>>,
+) -> (serde_json::Map<String, Value>, String) {
     let mut answers = serde_json::Map::new();
     let mut line = vec![];
     for (i, q) in questions.iter().enumerate() {
-        let picks: Vec<&str> = q.options.iter().filter(|o| chosen.get(&i).is_some_and(|c| c.contains(o))).map(String::as_str).collect();
+        let picks: Vec<&str> = q
+            .options
+            .iter()
+            .filter(|o| chosen.get(&i).is_some_and(|c| c.contains(o)))
+            .map(String::as_str)
+            .collect();
         if !picks.is_empty() {
             let joined = picks.join(", ");
             answers.insert(q.question.clone(), Value::String(joined.clone()));
@@ -280,29 +408,66 @@ mod tests {
         );
         let items = t.fold();
         assert_eq!(kinds(&items), ["user", "steps", "text", "turnEnd"]);
-        let Item::Steps(steps) = &items[1] else { panic!() };
-        assert_eq!((steps.len(), steps[0].ok, steps[1].ok), (2, Some(false), None));
+        let Item::Steps(steps) = &items[1] else {
+            panic!()
+        };
+        assert_eq!(
+            (steps.len(), steps[0].ok, steps[1].ok),
+            (2, Some(false), None)
+        );
     }
 
     #[test]
     fn deltas_stream_and_the_persisted_text_replaces_them() {
         let mut q = Seq(0);
         let mut t = ThreadEvents::default();
-        t.add(&[q.ev(json!({ "type": "user.message", "text": "hi" }))], &[]);
-        t.add(&[json!({ "type": "assistant.text.delta", "itemId": "m1", "text": "Hel", "seq": 1 }), json!({ "type": "assistant.text.delta", "itemId": "m1", "text": "lo", "seq": 1 })], &[]);
-        assert_eq!(t.fold()[1], Item::Text { item_id: "m1".into(), text: "Hello".into(), streaming: true });
-        t.add(&[q.ev(json!({ "type": "assistant.text", "itemId": "m1", "text": "Hello there" }))], &[]);
+        t.add(
+            &[q.ev(json!({ "type": "user.message", "text": "hi" }))],
+            &[],
+        );
+        t.add(
+            &[
+                json!({ "type": "assistant.text.delta", "itemId": "m1", "text": "Hel", "seq": 1 }),
+                json!({ "type": "assistant.text.delta", "itemId": "m1", "text": "lo", "seq": 1 }),
+            ],
+            &[],
+        );
+        assert_eq!(
+            t.fold()[1],
+            Item::Text {
+                item_id: "m1".into(),
+                text: "Hello".into(),
+                streaming: true
+            }
+        );
+        t.add(
+            &[q.ev(json!({ "type": "assistant.text", "itemId": "m1", "text": "Hello there" }))],
+            &[],
+        );
         assert_eq!(kinds(&t.fold()), ["user", "text"]);
-        assert_eq!(t.fold()[1], Item::Text { item_id: "m1".into(), text: "Hello there".into(), streaming: false });
+        assert_eq!(
+            t.fold()[1],
+            Item::Text {
+                item_id: "m1".into(),
+                text: "Hello there".into(),
+                streaming: false
+            }
+        );
     }
 
     #[test]
     fn reasoning_that_lands_as_text_takes_its_place() {
         let mut q = Seq(0);
         let mut t = ThreadEvents::default();
-        t.add(&[q.ev(json!({ "type": "user.message", "text": "hi" }))], &[json!({ "itemId": "n1", "type": "reasoning", "text": "thinking" })]);
+        t.add(
+            &[q.ev(json!({ "type": "user.message", "text": "hi" }))],
+            &[json!({ "itemId": "n1", "type": "reasoning", "text": "thinking" })],
+        );
         assert_eq!(kinds(&t.fold()), ["user", "reasoning"]);
-        t.add(&[q.ev(json!({ "type": "assistant.text", "itemId": "n1", "text": "the reply" }))], &[]);
+        t.add(
+            &[q.ev(json!({ "type": "assistant.text", "itemId": "n1", "text": "the reply" }))],
+            &[],
+        );
         assert_eq!(kinds(&t.fold()), ["user", "text"]);
     }
 
@@ -336,7 +501,13 @@ mod tests {
             ],
             &[],
         );
-        assert_eq!(t.fold(), [Item::User { seq: 4, text: "second try".into() }]);
+        assert_eq!(
+            t.fold(),
+            [Item::User {
+                seq: 4,
+                text: "second try".into()
+            }]
+        );
     }
 
     #[test]
@@ -356,10 +527,23 @@ mod tests {
         );
         let items = t.fold();
         assert!(matches!(&items[0], Item::Approval { decision: Some(d), .. } if d == "deny"));
-        let Item::Question { questions, decision: None, .. } = &items[1] else { panic!() };
-        let chosen = HashMap::from([(0, vec!["Green".to_string()]), (1, vec!["Menu".to_string(), "Toolbar".to_string()])]);
+        let Item::Question {
+            questions,
+            decision: None,
+            ..
+        } = &items[1]
+        else {
+            panic!()
+        };
+        let chosen = HashMap::from([
+            (0, vec!["Green".to_string()]),
+            (1, vec!["Menu".to_string(), "Toolbar".to_string()]),
+        ]);
         let (answers, line) = question_answers(questions, &chosen);
-        assert_eq!(Value::Object(answers), json!({ "Which colour?": "Green", "Where?": "Toolbar, Menu" }));
+        assert_eq!(
+            Value::Object(answers),
+            json!({ "Which colour?": "Green", "Where?": "Toolbar, Menu" })
+        );
         assert_eq!(line, "Green; Toolbar, Menu");
     }
 

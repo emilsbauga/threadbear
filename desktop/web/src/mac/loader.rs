@@ -4,7 +4,12 @@
 // Each function looks itself up in the framework the first time it's called
 // (loader_support.rs) and calls through. 200 functions; the four the wrapper
 // itself provides (cef_load_library and friends) are in loader_support.rs.
-#![allow(clippy::missing_safety_doc, clippy::too_many_arguments, non_snake_case)]
+#![allow(
+    clippy::missing_safety_doc,
+    clippy::too_many_arguments,
+    non_snake_case,
+    reason = "CEF's C API, forwarded as it is"
+)]
 use super::loader_support::Slot;
 use cef_dll_sys::*;
 
@@ -1381,7 +1386,7 @@ pub unsafe extern "C" fn cef_id_for_command_id_name(name: *const ::std::os::raw:
 }
 
 /// Never called: it only has to compile (see the top of gen-loader.mjs).
-#[allow(dead_code)]
+#[allow(dead_code, reason = "never called: it only has to compile")]
 fn signatures_match_the_bindings() {
     let _ = [super::loader_support::cef_load_library as unsafe extern "C" fn(_) -> _, cef_dll_sys::cef_load_library];
     let _ = [super::loader_support::cef_unload_library as unsafe extern "C" fn() -> _, cef_dll_sys::cef_unload_library];

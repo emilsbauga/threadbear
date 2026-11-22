@@ -12,7 +12,11 @@ pub struct HomeStat {
 
 impl HomeStat {
     pub fn new(value: impl ToString, label: &str, help: &str) -> HomeStat {
-        HomeStat { value: value.to_string(), label: label.to_owned(), help: help.to_owned() }
+        HomeStat {
+            value: value.to_string(),
+            label: label.to_owned(),
+            help: help.to_owned(),
+        }
     }
 }
 
@@ -27,12 +31,25 @@ pub struct PokeLines {
 }
 
 impl PokeLines {
-    pub const LIBRARIAN: &'static [&'static str] = &["Shh.", "Filed under B, for bear.", "Haiku, mostly. It's cheaper.", "I've read all your threads. No comment."];
-    pub const SCHEDULED: &'static [&'static str] = &["Not yet.", "Five more minutes.", "I'll remind you. It's the one thing I'm good at."];
+    pub const LIBRARIAN: &'static [&'static str] = &[
+        "Shh.",
+        "Filed under B, for bear.",
+        "Haiku, mostly. It's cheaper.",
+        "I've read all your threads. No comment.",
+    ];
+    pub const SCHEDULED: &'static [&'static str] = &[
+        "Not yet.",
+        "Five more minutes.",
+        "I'll remind you. It's the one thing I'm good at.",
+    ];
     const FIFTH: &'static str = "Alright, alright.";
 
     pub fn new(lines: &'static [&'static str]) -> PokeLines {
-        PokeLines { lines, next: 0, in_a_row: 0 }
+        PokeLines {
+            lines,
+            next: 0,
+            in_a_row: 0,
+        }
     }
 
     pub fn poke(&mut self) -> Option<&'static str> {
@@ -62,8 +79,21 @@ mod tests {
     fn pokes_go_round_and_the_fifth_in_a_row_is_different() {
         let mut pokes = PokeLines::new(PokeLines::SCHEDULED);
         let said: Vec<&str> = (0..5).filter_map(|_| pokes.poke()).collect();
-        assert_eq!(said, vec!["Not yet.", "Five more minutes.", "I'll remind you. It's the one thing I'm good at.", "Not yet.", "Alright, alright."]);
+        assert_eq!(
+            said,
+            vec![
+                "Not yet.",
+                "Five more minutes.",
+                "I'll remind you. It's the one thing I'm good at.",
+                "Not yet.",
+                "Alright, alright."
+            ]
+        );
         pokes.end_run();
-        assert_eq!(pokes.poke(), Some("Five more minutes."), "the fifth didn't use a line up");
+        assert_eq!(
+            pokes.poke(),
+            Some("Five more minutes."),
+            "the fifth didn't use a line up"
+        );
     }
 }

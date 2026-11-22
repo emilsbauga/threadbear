@@ -6,13 +6,11 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { tmpDir } from '../helpers/fakes.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
 import { firstLookMessage, GPUI_SHARED, scanSwiftChanges, SwiftChanges } from '../../src/swift-changes.ts';
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const ENV = { ...process.env, GIT_AUTHOR_NAME: 'Them', GIT_AUTHOR_EMAIL: 'them@example.com', GIT_COMMITTER_NAME: 'Them', GIT_COMMITTER_EMAIL: 'them@example.com', GIT_CONFIG_GLOBAL: '/dev/null' };
 
 function git(cwd: string, ...args: string[]): string {
@@ -173,10 +171,11 @@ test('Dismiss takes one off the list, and undo brings it back', async () => {
   await assert.rejects(r.s.dismiss('0000000'), /isn't on the list/);
 });
 
-test('what the GPUI app still uses from app/ matches swift-freeze.sh', () => {
-  const r = spawnSync('bash', [path.join(REPO, 'scripts', 'swift-freeze.sh'), '--gpui-shared'], { encoding: 'utf8' });
-  assert.equal(r.status, 0);
-  assert.equal(GPUI_SHARED.source.replace(/\\\//g, '/'), r.stdout.trim());
+test('what the GPUI app used from app/ before it moved out is no change to rebuild', () => {
+  for (const f of ['app/Tools/mock-runner/server.mjs', 'app/Tools/realdrag.swift', 'app/Tests/Fixtures/x.json', 'app/Sources/Threadbear/Resources/Art/librarian.png', 'app/Sources/Threadbear/Resources/Rich/pele.js']) {
+    assert.match(f, GPUI_SHARED, f);
+  }
+  assert.doesNotMatch('app/Sources/Threadbear/Views/ThreadView.swift', GPUI_SHARED);
 });
 
 test('a change is dated the day it was made where it was made, not in UTC', () => {

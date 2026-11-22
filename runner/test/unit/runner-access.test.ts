@@ -1,4 +1,4 @@
-// Per-runner keys (convex/runnerAccess.ts, docs/protocol.md "Runner keys"):
+// Per-runner keys (convex/runnerAccess.ts, docs/protocol/keys.md "Runner keys"):
 // the owner key does everything, a runner key acts as its own runner only.
 // The plain rules, without a deployment, plus a check that every function
 // in convex/sync.ts is sorted and asks the gate under its own name.
@@ -158,8 +158,16 @@ test("BOX_READS is exactly the box calls that are queries", () => {
   assert.deepEqual([...BOX_CALLS].filter((f) => queries.has(f)).sort(), [...BOX_READS].sort());
 });
 
-test("docs/protocol.md's table lists every function as ACCESS sorts it", () => {
-  const doc = fs.readFileSync(path.join(import.meta.dirname, '../../../docs/protocol.md'), 'utf8');
+// The protocol, whole: docs/protocol.md and, once it's split, docs/protocol/.
+function protocolDoc(): string {
+  const docs = path.join(import.meta.dirname, '../../../docs');
+  const dir = path.join(docs, 'protocol');
+  const parts = fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.md')).sort().map((n) => path.join(dir, n)) : [];
+  return [path.join(docs, 'protocol.md'), ...parts].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+}
+
+test("the protocol's table lists every function as ACCESS sorts it", () => {
+  const doc = protocolDoc();
   const label = { owner: 'owner only', own: 'its own', shared: 'any runner' } as const;
   for (const [fn, access] of Object.entries(ACCESS)) {
     assert.ok(new RegExp(`\\| \`${fn}\` \\| ${label[access]} \\|`).test(doc), `${fn} in the table as ${label[access]}`);
@@ -262,9 +270,9 @@ test("a box key takes its own thread's commands and its runner's, never another 
   assert.equal(ownsCard(box, { runnerId: BOX_RUNNER }), false);
 });
 
-test("docs/protocol.md lists what a box key may call", () => {
-  const doc = fs.readFileSync(path.join(import.meta.dirname, '../../../docs/protocol.md'), 'utf8').replace(/\r\n/g, '\n');
+test("the protocol lists what a box key may call", () => {
+  const doc = protocolDoc().replace(/\r\n/g, '\n');
   const listed = /<!-- box-calls -->\n([\s\S]*?)\n<!-- \/box-calls -->/.exec(doc)?.[1];
-  assert.ok(listed, 'docs/protocol.md has the box-calls list');
+  assert.ok(listed, 'the protocol has the box-calls list');
   assert.deepEqual([...listed.matchAll(/`(\w+)`/g)].map((m) => m[1]).sort(), [...BOX_CALLS].sort());
 });

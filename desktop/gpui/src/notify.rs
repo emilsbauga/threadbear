@@ -22,7 +22,12 @@ pub(crate) fn post(thread: &ThreadSummary, cx: &App) {
         return;
     }
     let (title, body) = inbox::notification_words(thread);
-    cx.show_system_notification(SystemNotification { tag: inbox::notification_tag(thread).into(), title: title.into(), body: body.into(), actions: vec![] });
+    cx.show_system_notification(SystemNotification {
+        tag: inbox::notification_tag(thread).into(),
+        title: title.into(),
+        body: body.into(),
+        actions: vec![],
+    });
 }
 
 /// A click on one opens its thread in the main window, once the list has
@@ -32,12 +37,15 @@ pub(crate) fn install(app: WeakEntity<Threadbear>, window: AnyWindowHandle, cx: 
         return;
     }
     cx.on_system_notification_response(move |response, cx| {
-        let Some(id) = inbox::thread_in_tag(&response.tag).map(str::to_owned) else { return };
+        let Some(id) = inbox::thread_in_tag(&response.tag).map(str::to_owned) else {
+            return;
+        };
         cx.activate(true);
         let app = app.clone();
         window
             .update(cx, |_, window, cx| {
-                app.update(cx, |this, cx| this.open_from_outside(id, window, cx)).ok();
+                app.update(cx, |this, cx| this.open_from_outside(id, window, cx))
+                    .ok();
             })
             .ok();
     });
@@ -59,7 +67,9 @@ mod platform {
     use objc2_foundation::NSString;
 
     pub(super) fn set_badge(label: Option<&str>) {
-        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
         let tile = NSApplication::sharedApplication(mtm).dockTile();
         tile.setBadgeLabel(label.map(NSString::from_str).as_deref());
     }

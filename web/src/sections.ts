@@ -64,7 +64,7 @@ export function isSnoozed(r: ThreadRow, now: number): boolean {
 
 // How much an inbox thread wants Mike, lowest first: a copy of the rule the
 // Mac and phone share (app/Sources/ThreadbearCore/Threads/InboxUrgency.swift),
-// kept to it by the cases in app/Tests/Fixtures/inbox-urgency-cases.json.
+// kept to it by the cases in shared/cases/inbox-urgency.json.
 // 0: stuck on his answer. 1: finished, wanting him, failed or stopped. 2:
 // finished, wanting him. 3: read but failed or stopped. 4: done. Unread alone
 // isn't wanting him: a turn that said "nothing" is done (Mike, 9 Nov).

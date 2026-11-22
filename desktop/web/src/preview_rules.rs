@@ -37,6 +37,10 @@ pub struct PreviewSite {
     /// has no DOM, clipboard or WebRTC, and its requests are the view's,
     /// held to `connect-src 'self'` and `may_request` like the page's.
     pub workers: bool,
+    /// A page the app made itself (a design review's, threadbear_core's
+    /// review_page.rs): a click on one of its own links under `ASK_PREFIX`
+    /// is handed to the app (`asked`). Never with scripts.
+    pub asks: bool,
     /// The view's own origin, `https://<token>.preview.threadbear.invalid`.
     pub origin: String,
 }
@@ -44,12 +48,29 @@ pub struct PreviewSite {
 impl PreviewSite {
     /// A fresh origin for `site`: each view gets its own.
     pub fn new(site: Arc<Site>, scripts: bool) -> PreviewSite {
-        PreviewSite { site, scripts, workers: false, origin: format!("https://{}.{PREVIEW_DOMAIN}", token()) }
+        PreviewSite {
+            site,
+            scripts,
+            workers: false,
+            asks: false,
+            origin: format!("https://{}.{PREVIEW_DOMAIN}", token()),
+        }
+    }
+
+    /// A page the app made: scripts off, and its own links reach the app.
+    pub fn made(site: Arc<Site>) -> PreviewSite {
+        PreviewSite {
+            asks: true,
+            ..PreviewSite::new(site, false)
+        }
     }
 
     /// A live page: scripts on, with workers of its own making.
     pub fn live(site: Arc<Site>) -> PreviewSite {
-        PreviewSite { workers: true, ..PreviewSite::new(site, true) }
+        PreviewSite {
+            workers: true,
+            ..PreviewSite::new(site, true)
+        }
     }
 
     /// The page's address.
@@ -60,13 +81,23 @@ impl PreviewSite {
 
 impl std::fmt::Debug for PreviewSite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreviewSite").field("page", &self.site.page).field("scripts", &self.scripts).field("workers", &self.workers).field("origin", &self.origin).finish()
+        f.debug_struct("PreviewSite")
+            .field("page", &self.site.page)
+            .field("scripts", &self.scripts)
+            .field("workers", &self.workers)
+            .field("asks", &self.asks)
+            .field("origin", &self.origin)
+            .finish()
     }
 }
 
 impl PartialEq for PreviewSite {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.site, &other.site) && self.scripts == other.scripts && self.workers == other.workers && self.origin == other.origin
+        Arc::ptr_eq(&self.site, &other.site)
+            && self.scripts == other.scripts
+            && self.workers == other.workers
+            && self.asks == other.asks
+            && self.origin == other.origin
     }
 }
 
@@ -109,9 +140,26 @@ pub fn encode_path(path: &str) -> String {
 /// guards might not be. Workers only for a live page (`PreviewSite::workers`),
 /// and only ones it makes itself.
 pub fn policy(scripts: bool, workers: bool) -> String {
-    let frames = if scripts { "frame-src 'self'" } else { "frame-src 'self' data: blob:" };
-    let workers = if scripts && workers { "worker-src blob:" } else { "worker-src 'none'" };
-    ["default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:", "connect-src 'self'", "form-action 'none'", frames, "base-uri 'none'", "object-src 'none'", workers].join("; ")
+    let frames = if scripts {
+        "frame-src 'self'"
+    } else {
+        "frame-src 'self' data: blob:"
+    };
+    let workers = if scripts && workers {
+        "worker-src blob:"
+    } else {
+        "worker-src 'none'"
+    };
+    [
+        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:",
+        "connect-src 'self'",
+        "form-action 'none'",
+        frames,
+        "base-uri 'none'",
+        "object-src 'none'",
+        workers,
+    ]
+    .join("; ")
 }
 
 /// The Permissions-Policy every answer carries: no clipboard, camera,
@@ -137,11 +185,43 @@ pub fn may_browse(url: &str, site: &PreviewSite, main: bool) -> bool {
     !site.scripts && (lower.starts_with("data:") || lower.starts_with("blob:"))
 }
 
+/// Where a page the app made keeps its links to the app, under its origin
+/// (threadbear_core::review_page::ASK_PREFIX, with the path's slash).
+pub const ASK_PREFIX: &str = "/_threadbear/";
+/// The longest ask: a word and a couple of small numbers.
+pub const MAX_ASK: usize = 48;
+
+/// What a navigation of the view's main frame asks of the app, if it's a
+/// link Mike clicked on a page the app made, to `ASK_PREFIX` on the page's
+/// own origin: what follows the prefix, letters, digits and slashes only.
+/// The navigation is cancelled like any other (`may_browse`); this only
+/// says what to tell the app. Nothing for a page whose scripts run (it
+/// could click its own links), a frame inside the page, a navigation with
+/// no click behind it (a refresh the markup asks for), or an address with
+/// a query, a fragment or an escape in it. What the words mean, and whether
+/// they name anything real, is the app's to check.
+pub fn asked(url: &str, site: &PreviewSite, main: bool, gesture: bool) -> Option<String> {
+    if !site.asks || site.scripts || !main || !gesture || url.contains(['?', '#', '%']) {
+        return None;
+    }
+    let rest = url
+        .strip_prefix(site.origin.as_str())?
+        .strip_prefix(ASK_PREFIX)?;
+    (!rest.is_empty()
+        && rest.len() <= MAX_ASK
+        && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'/'))
+    .then(|| rest.to_owned())
+}
+
 /// Whether a request from the view may start at all: its own origin, or
 /// what's made on the page. Everything else is cancelled.
 pub fn may_request(url: &str, site: &PreviewSite) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
-    own_path(url, &site.origin).is_some() || lower.starts_with("data:") || lower.starts_with("blob:") || lower == "about:blank" || lower == "about:srcdoc"
+    own_path(url, &site.origin).is_some()
+        || lower.starts_with("data:")
+        || lower.starts_with("blob:")
+        || lower == "about:blank"
+        || lower == "about:srcdoc"
 }
 
 /// The path `url` asks for on `origin`, decoded, without its query or
@@ -202,7 +282,8 @@ mod tests {
     use super::*;
 
     fn preview(scripts: bool) -> PreviewSite {
-        let dir = std::env::temp_dir().join(format!("preview-rules-{}-{}", std::process::id(), token()));
+        let dir =
+            std::env::temp_dir().join(format!("preview-rules-{}-{}", std::process::id(), token()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("my page.html"), "<p>hi</p>").unwrap();
         let site = Site::new(&dir.join("my page.html"), None);
@@ -221,7 +302,9 @@ mod tests {
     fn each_view_has_its_own_origin() {
         let (a, b) = (preview(false), preview(false));
         assert_ne!(a.origin, b.origin);
-        assert!(a.origin.starts_with("https://") && a.origin.ends_with(".preview.threadbear.invalid"));
+        assert!(
+            a.origin.starts_with("https://") && a.origin.ends_with(".preview.threadbear.invalid")
+        );
         assert_eq!(a.page_url(), format!("{}/my%20page.html", a.origin));
     }
 
@@ -230,9 +313,20 @@ mod tests {
     fn the_main_frame_shows_its_page_and_nothing_else() {
         let p = preview(false);
         assert!(may_browse(&p.page_url(), &p, true));
-        assert!(may_browse(&format!("{}#section", p.page_url()), &p, true), "a jump to a place on it");
+        assert!(
+            may_browse(&format!("{}#section", p.page_url()), &p, true),
+            "a jump to a place on it"
+        );
         assert!(may_browse("about:blank", &p, true));
-        for away in ["https://example.com/", "file:///etc/passwd", "data:text/html,hi", &format!("{}/other.html", p.origin), &format!("{}?x=1", p.page_url()), "javascript:alert(1)", &format!("{}.evil.com/my%20page.html", p.origin)] {
+        for away in [
+            "https://example.com/",
+            "file:///etc/passwd",
+            "data:text/html,hi",
+            &format!("{}/other.html", p.origin),
+            &format!("{}?x=1", p.page_url()),
+            "javascript:alert(1)",
+            &format!("{}.evil.com/my%20page.html", p.origin),
+        ] {
             assert!(!may_browse(away, &p, true), "{away}");
         }
     }
@@ -243,11 +337,24 @@ mod tests {
         let (off, on) = (preview(false), preview(true));
         assert!(may_browse(&format!("{}/pic.png", off.origin), &off, false));
         assert!(may_browse("about:srcdoc", &off, false));
-        assert!(may_browse("data:text/html,x", &off, false), "scripts off: harmless");
-        assert!(!may_browse("data:text/html,x", &on, false), "scripts on: not a frame the guards might miss");
+        assert!(
+            may_browse("data:text/html,x", &off, false),
+            "scripts off: harmless"
+        );
+        assert!(
+            !may_browse("data:text/html,x", &on, false),
+            "scripts on: not a frame the guards might miss"
+        );
         assert!(!may_browse("blob:https://x/1", &on, false));
         assert!(!may_browse("https://example.com/", &off, false));
-        assert!(!may_browse(&format!("{}/x", on.origin.replace("https://", "https://a")), &on, false), "another token");
+        assert!(
+            !may_browse(
+                &format!("{}/x", on.origin.replace("https://", "https://a")),
+                &on,
+                false
+            ),
+            "another token"
+        );
     }
 
     #[cfg(unix)]
@@ -256,7 +363,15 @@ mod tests {
         let p = preview(false);
         assert!(may_request(&format!("{}/a/b.png?v=1", p.origin), &p));
         assert!(may_request("data:image/png;base64,AA", &p));
-        for away in ["https://example.com/x.png", "http://127.0.0.1:9/", "ws://x/", "file:///etc/hosts", &format!("{}:443/x", p.origin), &format!("{}.x/y", p.origin), "chrome://settings"] {
+        for away in [
+            "https://example.com/x.png",
+            "http://127.0.0.1:9/",
+            "ws://x/",
+            "file:///etc/hosts",
+            &format!("{}:443/x", p.origin),
+            &format!("{}.x/y", p.origin),
+            "chrome://settings",
+        ] {
             assert!(!may_request(away, &p), "{away}");
         }
     }
@@ -264,26 +379,130 @@ mod tests {
     #[test]
     fn paths_are_decoded_and_cut() {
         let origin = "https://abc.preview.threadbear.invalid";
-        assert_eq!(own_path(&format!("{origin}/my%20pic.png?v=2#x"), origin).as_deref(), Some("/my pic.png"));
-        assert_eq!(own_path(&format!("{origin}/a%00.png"), origin).as_deref(), Some("/a\0.png"), "decoded, for the site to refuse");
+        assert_eq!(
+            own_path(&format!("{origin}/my%20pic.png?v=2#x"), origin).as_deref(),
+            Some("/my pic.png")
+        );
+        assert_eq!(
+            own_path(&format!("{origin}/a%00.png"), origin).as_deref(),
+            Some("/a\0.png"),
+            "decoded, for the site to refuse"
+        );
         assert_eq!(own_path(&format!("{origin}/bad%zz.png"), origin), None);
         assert_eq!(own_path(&format!("{origin}.evil/x.png"), origin), None);
         assert_eq!(own_path(&format!("{origin}:8443/x.png"), origin), None);
-        assert_eq!(own_path("https://other.preview.threadbear.invalid/x.png", origin), None);
+        assert_eq!(
+            own_path("https://other.preview.threadbear.invalid/x.png", origin),
+            None
+        );
     }
 
     #[test]
     fn the_policy_keeps_frames_of_its_own_while_scripts_run() {
-        assert!(policy(true, false).contains("frame-src 'self';") || policy(true, false).contains("frame-src 'self'"));
+        assert!(
+            policy(true, false).contains("frame-src 'self';")
+                || policy(true, false).contains("frame-src 'self'")
+        );
         assert!(!policy(true, false).contains("frame-src 'self' data:"));
         assert!(policy(false, false).contains("frame-src 'self' data: blob:"));
         // Workers only for a live page running its scripts, and only blob: ones.
         assert!(policy(true, false).contains("worker-src 'none'"));
         assert!(policy(false, true).contains("worker-src 'none'"));
-        assert!(policy(true, true).contains("worker-src blob:") && !policy(true, true).contains("worker-src 'self'"));
+        assert!(
+            policy(true, true).contains("worker-src blob:")
+                && !policy(true, true).contains("worker-src 'self'")
+        );
         for both in [policy(true, false), policy(false, false)] {
-            assert!(both.contains("connect-src 'self'") && both.contains("form-action 'none'") && both.contains("base-uri 'none'"));
+            assert!(
+                both.contains("connect-src 'self'")
+                    && both.contains("form-action 'none'")
+                    && both.contains("base-uri 'none'")
+            );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_click_on_a_made_pages_own_link_asks_the_app() {
+        let made = PreviewSite::made(preview(false).site);
+        assert!(made.asks && !made.scripts && !made.workers);
+        let at = |rest: &str| format!("{}{rest}", made.origin);
+        assert_eq!(
+            asked(&at("/_threadbear/pick/0"), &made, true, true).as_deref(),
+            Some("pick/0")
+        );
+        assert_eq!(
+            asked(&at("/_threadbear/open/11/7"), &made, true, true).as_deref(),
+            Some("open/11/7")
+        );
+        // The link goes nowhere either way: it isn't the page.
+        assert!(!may_browse(&at("/_threadbear/pick/0"), &made, true));
+        // Not without a click, nor from a frame inside the page.
+        assert_eq!(asked(&at("/_threadbear/pick/0"), &made, true, false), None);
+        assert_eq!(asked(&at("/_threadbear/pick/0"), &made, false, true), None);
+        // Only plain words under the prefix, on its own origin.
+        for odd in [
+            "/_threadbear/",
+            "/_threadbear/pick/0?x=1",
+            "/_threadbear/pick/0#top",
+            "/_threadbear/pick/%30",
+            "/_threadbear/a.b",
+            "/_threadbear/a b",
+            "/_threadbear/../x",
+            "/threadbear/pick/0",
+            "/x/_threadbear/pick/0",
+            "/my%20page.html",
+        ] {
+            assert_eq!(asked(&at(odd), &made, true, true), None, "{odd}");
+        }
+        assert_eq!(
+            asked(
+                &at(&format!("/_threadbear/{}", "a".repeat(MAX_ASK + 1))),
+                &made,
+                true,
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            asked(
+                &format!("{}.evil/_threadbear/pick/0", made.origin),
+                &made,
+                true,
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            asked(
+                "https://other.preview.threadbear.invalid/_threadbear/pick/0",
+                &made,
+                true,
+                true
+            ),
+            None
+        );
+        // A page that isn't the app's own never asks, with its scripts off
+        // or on, and one made to ask can't with scripts.
+        for other in [
+            preview(false),
+            preview(true),
+            PreviewSite {
+                scripts: true,
+                ..PreviewSite::made(preview(false).site)
+            },
+        ] {
+            let url = format!("{}/_threadbear/pick/0", other.origin);
+            assert_eq!(asked(&url, &other, true, true), None);
+        }
+    }
+
+    #[test]
+    fn the_ask_prefix_is_the_one_the_page_writes() {
+        assert_eq!(
+            ASK_PREFIX,
+            format!("/{}", threadbear_core::review_page::ASK_PREFIX)
+        );
     }
 
     #[test]

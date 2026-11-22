@@ -3,7 +3,7 @@
 // same code the runner would have run on its main thread, answered with a
 // plain object.
 import { parentPort } from 'node:worker_threads';
-import { claudeCommands } from './claude-trust.ts';
+import { claudeCommandsKinds } from './claude-trust.ts';
 import { noFifoReads } from './no-fifo-reads.ts';
 import { codeOfUnhashedPatch } from './unhashed-scan.ts';
 import type { TrustRequest, TrustReply } from './trust-off-thread.ts';
@@ -16,7 +16,7 @@ function answer(req: TrustRequest): unknown {
 function look(req: TrustRequest): unknown {
   switch (req.kind) {
     case 'claudeCommands':
-      return req.grants.map((grants) => claudeCommands(req.cwd, req.home, { grants }));
+      return claudeCommandsKinds(req.cwd, req.home, req.grants);
     case 'editsAsk': {
       const scan = codeOfUnhashedPatch(req.file, req.from, req.now);
       return { all: scan.all, ...(scan.why ? { why: scan.why } : {}) };

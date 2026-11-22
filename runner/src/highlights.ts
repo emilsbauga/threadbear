@@ -1,4 +1,4 @@
-// Highlights (docs/protocol.md, "Highlights"): what a thread has made,
+// Highlights (docs/protocol/panels.md, "Highlights"): what a thread has made,
 // shared and pinned for Mike, for the app's right-hand rail. Found in the
 // thread's events with no model: files it wrote that he'd look at, things
 // it `open`ed, links and files named in its replies, PRs it created and
@@ -150,6 +150,9 @@ export function observe(state: HighlightState, events: Iterable<PersistedEvent>,
         }
         break;
       }
+      default:
+        // Other events show nothing here.
+        break;
     }
   }
   return changed;
@@ -300,7 +303,7 @@ export function linksIn(text: string, ctx: { cwd: string; home: string; isFile: 
     return ' ';
   });
   // `path`
-  rest = rest.replace(/`([^`\n]+)`/g, (whole, inner: string) => {
+  rest = rest.replace(/`([^`\n]+)`/g, (_whole, inner: string) => {
     if (/^(~\/|\/|file:\/\/)/.test(inner) && !/\s/.test(inner)) addPath(inner);
     else if (/^https?:\/\/\S+$/i.test(inner)) addUrl(inner);
     return ' ';

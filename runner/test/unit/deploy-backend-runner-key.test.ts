@@ -1,6 +1,6 @@
 // runner/scripts/deploy-backend.mjs on a Mac with a runner key: only the
 // main Mac's runner deploys the backend, even with a deploy key left over
-// from an older setup (docs/protocol.md, "Runner keys").
+// from an older setup (docs/protocol/keys.md, "Runner keys").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

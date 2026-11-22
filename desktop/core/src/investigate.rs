@@ -25,13 +25,18 @@ pub fn now_text() -> String {
 /// The new thread's title: the error's first words.
 pub fn title(r: &Report) -> String {
     let flat = r.message.lines().collect::<Vec<_>>().join(" ");
-    let short = if flat.chars().count() > 50 { format!("{}…", flat.chars().take(49).collect::<String>().trim_end()) } else { flat };
+    let short = if flat.chars().count() > 50 {
+        format!("{}…", flat.chars().take(49).collect::<String>().trim_end())
+    } else {
+        flat
+    };
     format!("Error: {short}")
 }
 
 pub fn prompt(r: &Report) -> String {
     let mut lines = vec![
-        "The Threadbear desktop app (the GPUI one, in desktop/) showed this in its error bar:".to_owned(),
+        "The Threadbear desktop app (the GPUI one, in desktop/) showed this in its error bar:"
+            .to_owned(),
         String::new(),
         format!("> {}", r.message.replace('\n', "\n> ")),
         String::new(),
@@ -78,17 +83,35 @@ mod tests {
         };
         assert_eq!(title(&r), "Error: Couldn't trust kennel: Thread not found");
         let p = prompt(&r);
-        assert!(p.contains("> Couldn't trust kennel:\n> Thread not found"), "{p}");
-        assert!(p.contains("- In thread t1 (\"Kennel\"), folder /Users/x/dev/kennel"), "{p}");
-        assert!(p.contains("- The app 0.1.0\n- Runner 0.1.0+20261111"), "{p}");
-        assert!(p.contains("desktop/gpui/src"), "it points at this app's code: {p}");
-        let none = Report { message: "x".into(), ..Default::default() };
+        assert!(
+            p.contains("> Couldn't trust kennel:\n> Thread not found"),
+            "{p}"
+        );
+        assert!(
+            p.contains("- In thread t1 (\"Kennel\"), folder /Users/x/dev/kennel"),
+            "{p}"
+        );
+        assert!(
+            p.contains("- The app 0.1.0\n- Runner 0.1.0+20261111"),
+            "{p}"
+        );
+        assert!(
+            p.contains("desktop/gpui/src"),
+            "it points at this app's code: {p}"
+        );
+        let none = Report {
+            message: "x".into(),
+            ..Default::default()
+        };
         assert!(prompt(&none).contains("- No thread was open"));
     }
 
     #[test]
     fn a_long_error_is_cut_for_the_title() {
-        let r = Report { message: "a".repeat(80), ..Default::default() };
+        let r = Report {
+            message: "a".repeat(80),
+            ..Default::default()
+        };
         assert_eq!(title(&r), format!("Error: {}…", "a".repeat(49)));
     }
 }

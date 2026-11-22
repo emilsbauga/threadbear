@@ -1,5 +1,5 @@
 // Re-reads a login that says it has no room, so a reset done outside
-// Threadbear is seen (docs/protocol.md, Pools, "Rechecking a login that's
+// Threadbear is seen (docs/protocol/settings.md, Pools, "Rechecking a login that's
 // out").
 //
 // Codex readings only ever came from Threadbear's own Codex turns and its

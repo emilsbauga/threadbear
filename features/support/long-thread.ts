@@ -18,7 +18,7 @@ export function longThreadFolder(): string {
   const making = fs.mkdtempSync(`${dir}-making-`);
   // 250 turns, about 1,750 events: three pages' worth.
   execFileSync(process.execPath, [path.join(root, 'desktop/scripts/make-long-thread.mjs'), making, '250'], { stdio: 'ignore' });
-  fs.cpSync(path.join(root, 'app/Tools/mock-runner/fixtures/demo-dark-mode'), path.join(making, 'demo-dark-mode'), { recursive: true });
+  fs.cpSync(path.join(root, 'mock-runner/fixtures/demo-dark-mode'), path.join(making, 'demo-dark-mode'), { recursive: true });
   try {
     fs.renameSync(making, dir);
   } catch {

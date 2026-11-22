@@ -1,7 +1,7 @@
 //! Saved first prompts. Their text is editing content, so saving never trims it.
+use crate::reducer::ImageRef;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use crate::reducer::ImageRef;
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -34,10 +34,21 @@ pub struct Draft {
 
 fn images<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ImageRef>, D::Error> {
     let value = Value::deserialize(d)?;
-    Ok(value.as_array().into_iter().flatten().filter_map(ImageRef::decode).collect())
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(ImageRef::decode)
+        .collect())
 }
 
-pub fn save_params(id: &str, text: &str, images: &[ImageRef], attachments: &[Attachment], revision: i64) -> Value {
+pub fn save_params(
+    id: &str,
+    text: &str,
+    images: &[ImageRef],
+    attachments: &[Attachment],
+    revision: i64,
+) -> Value {
     json!({"threadId":id,"text":crate::composer::message_text(text,1),"images":images.iter().map(|i| json!({"path":i.path,"mediaType":i.media_type})).collect::<Vec<_>>(),
         "attachments":attachments.iter().map(Attachment::json).collect::<Vec<_>>(),"revision":revision})
 }

@@ -5,10 +5,13 @@
   "description": "Behaviour specs for Threadbear's desktop apps: one set of .feature files, run against the Swift app and the GPUI app.",
   "scripts": {
     "check": "node verify-pairing.mjs && cucumber-js --dry-run --format summary",
-    "test": "cucumber-js"
+    "test": "cucumber-js",
+    "typecheck": "tsc --noEmit -p ."
   },
   "devDependencies": {
-    "@cucumber/cucumber": "^13.3.0"
+    "@cucumber/cucumber": "^13.3.0",
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
   },
   "engines": {
     "node": ">=24"

@@ -16,6 +16,7 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <IOKit/pwr_mgt/IOPMLib.h>
 
 @interface CGVirtualDisplayDescriptor : NSObject
 @property(retain, nonatomic) dispatch_queue_t queue;
@@ -83,25 +84,71 @@ int main(int argc, char **argv) {
       say(@"error: this macOS has no CGVirtualDisplay");
       return 1;
     }
-    CGVirtualDisplayDescriptor *d = [D new];
-    d.queue = dispatch_get_main_queue();
-    d.name = @"Threadbear filming";
-    d.maxPixelsWide = w * 2;
-    d.maxPixelsHigh = h * 2;
-    // About a 27" screen's pixel density at 2x, so macOS offers the HiDPI mode.
-    d.sizeInMillimeters = CGSizeMake(w * 2 * 0.1171, h * 2 * 0.1171);
-    d.vendorID = 0x7462;  // "tb"
-    d.productID = 0x6669; // "fi"
-    d.serialNum = 1;
-    d.terminationHandler = ^(id a, id b) { say(@"error: the virtual display was taken away"); exit(1); };
-    CGVirtualDisplay *display = [[V alloc] initWithDescriptor:d];
+    // A host whose screen has gone to sleep refuses a new display's settings
+    // (21 Nov: a retake straight after a stop failed twice on Tinker Desk
+    // until `caffeinate -u` woke its screen). So wake it first as a key press
+    // would, with the "UserIsActive" assertion `caffeinate -u` makes
+    // (IOPMAssertionDeclareUserActivity didn't always wake it), keep it awake
+    // while the stage is up, and if it still says no, try again with a fresh
+    // display for a while. CGDisplayIsAsleep can't tell: it said awake there
+    // with the screen off.
+    IOPMAssertionID awake = 0, active = 0;
+    IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep, kIOPMAssertionLevelOn,
+                                CFSTR("Threadbear filming stage"), &awake);
     CGVirtualDisplaySettings *settings = [S new];
     settings.hiDPI = 1;
     settings.modes = @[ [[M alloc] initWithWidth:w height:h refreshRate:60] ];
-    if (!display || ![display applySettings:settings]) {
-      say(@"error: couldn't make the virtual display");
+    // Only the display that took its settings may end the stage when it goes:
+    // one dropped after a refusal can say it's gone at any time.
+    static int live = -1;
+    // Precise: ARC could otherwise let it go after its last use, and the
+    // display goes with it.
+    __attribute__((objc_precise_lifetime)) CGVirtualDisplay *display = nil;
+    NSTimeInterval began = NSProcessInfo.processInfo.systemUptime;
+    int tries = 0;
+    BOOL woke = NO, made = NO;
+    while (!made && NSProcessInfo.processInfo.systemUptime - began < 20) {
+      if (active) IOPMAssertionRelease(active);
+      active = 0;
+      if (IOPMAssertionCreateWithName(CFSTR("UserIsActive"), kIOPMAssertionLevelOn, CFSTR("Threadbear filming stage"), &active) ==
+          kIOReturnSuccess)
+        woke = YES;
+      int n = tries++;
+      CGVirtualDisplayDescriptor *d = [D new];
+      d.queue = dispatch_get_main_queue();
+      d.name = @"Threadbear filming";
+      d.maxPixelsWide = w * 2;
+      d.maxPixelsHigh = h * 2;
+      // About a 27" screen's pixel density at 2x, so macOS offers the HiDPI mode.
+      d.sizeInMillimeters = CGSizeMake(w * 2 * 0.1171, h * 2 * 0.1171);
+      d.vendorID = 0x7462;  // "tb"
+      d.productID = 0x6669; // "fi"
+      d.serialNum = 1;
+      d.terminationHandler = ^(id a, id b) {
+        if (live != n) return;
+        say(@"error: the virtual display was taken away");
+        exit(1);
+      };
+      display = [[V alloc] initWithDescriptor:d];
+      made = display && [display applySettings:settings];
+      if (made) {
+        live = n;
+      } else {
+        display = nil;
+        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+      }
+    }
+    // The wake was a nudge; the screen stays on through `awake`.
+    if (active) IOPMAssertionRelease(active);
+    if (!made) {
+      say([NSString stringWithFormat:@"error: couldn't make the virtual display in %d tries over 20 seconds%@", tries,
+                                     woke ? @", though the screen was woken for it"
+                                          : @", and macOS refused the request to wake the screen (asleep?)"]);
       return 1;
     }
+    if (tries > 1)
+      say([NSString stringWithFormat:@"made the display on try %d, after %.1f seconds%@", tries,
+                                     NSProcessInfo.processInfo.systemUptime - began, woke ? @" (woke the screen for it)" : @""]);
     CGDirectDisplayID id_ = display.displayID;
 
     // The window, once the app has one and the display has its mode.

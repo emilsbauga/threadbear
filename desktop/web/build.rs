@@ -4,7 +4,10 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/appkit_hooks.m");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        cc::Build::new().file("native/appkit_hooks.m").flag("-fobjc-arc").compile("threadbear_web_appkit");
+        cc::Build::new()
+            .file("native/appkit_hooks.m")
+            .flag("-fobjc-arc")
+            .compile("threadbear_web_appkit");
         println!("cargo:rustc-link-lib=framework=AppKit");
         println!("cargo:rustc-link-lib=framework=Foundation");
     }

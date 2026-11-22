@@ -1,4 +1,4 @@
-// Pools in the runner (docs/protocol.md, "Pools"), with fake adapters and
+// Pools in the runner (docs/protocol/settings.md, "Pools"), with fake adapters and
 // the fake clock: picking a pool and login on create (the named model's
 // provider decides), the move before a turn, the move after a usageLimit
 // failure and its carry-on, the wait and its timer (across a restart),
@@ -108,6 +108,16 @@ test('naming a model picks its provider: claude-opus-5-5 with no account never l
   const luna = h.runner.create({ text: 'z', model: 'gpt-6-luna' }).thread;
   assert.equal(luna.provider, 'codex');
   assert.equal(luna.model, 'gpt-6-luna');
+});
+
+test("a mixed pool's new thread goes on the provider the picker's pick was under", () => {
+  const h = poolHarness({ pools: [{ id: 'mix', title: 'Mix', accountIds: ['claude-main', 'codex-main'] }] });
+  assert.equal(h.runner.create({ text: 'x', poolId: 'mix' }).thread.provider, 'claude', 'none named: the pool\'s first');
+  const codex = h.runner.create({ text: 'y', poolId: 'mix', provider: 'codex' }).thread;
+  assert.equal(codex.provider, 'codex');
+  assert.equal(codex.accountId, 'codex-main');
+  // Only with a pool: a provider alone doesn't pick one.
+  assert.equal(h.runner.create({ text: 'z', provider: 'codex' }).thread.provider, 'claude');
 });
 
 test("a folder named in a pool's folders starts its threads there; a named pool is remembered", () => {

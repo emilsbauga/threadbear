@@ -1,6 +1,7 @@
 // scripts/check-remote.sh against fake hosts (helpers/check-remote-harness.ts
 // says how, and why it's several files): hosts short of disk: passing them over, and what the check wants free.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { GiB, linuxDf, macDf, setup, test } from '../helpers/check-remote-harness.ts';
@@ -107,12 +108,12 @@ test('a --quick run that touches the Mac app goes past a Linux host to a Mac', (
   assert.deepEqual(r.copies, ['h1']);
 });
 
-test("a --quick run that only touches what the GPUI app uses in app/ can take a Linux host", () => {
-  // The Swift app is frozen, so check.sh doesn't build it for fixtures or
-  // art (scripts/swift-freeze.sh --gpui-shared).
+test("a --quick run that only touches what the GPUI app shares with the Swift app can take a Linux host", () => {
+  // The Swift app is frozen, so check.sh doesn't build it for the art and
+  // Pele it shares with the GPUI app (shared/, outside app/ since 21 Nov).
   const s = setup({ h1: { state: 'free', os: 'Linux' }, h2: { state: 'free' } });
-  fs.mkdirSync(path.join(s.repo, 'app/Tests/Fixtures'), { recursive: true });
-  fs.writeFileSync(path.join(s.repo, 'app/Tests/Fixtures/x.json'), '\n');
+  fs.mkdirSync(path.join(s.repo, 'shared/art'), { recursive: true });
+  fs.writeFileSync(path.join(s.repo, 'shared/art/x.png'), '\n');
   const r = s.run('h1,h2', 3600);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(r.copies, ['h1']);
@@ -121,7 +122,7 @@ test("a --quick run that only touches what the GPUI app uses in app/ can take a 
 test('a --quick run that touches the mock runner or its Swift tests goes to a Mac', () => {
   // check.sh runs the Swift tests that read the mock when either changes
   // (swift-freeze.sh --mock-tests), and swift test needs a Mac.
-  for (const file of ['app/Tools/mock-runner/x.mjs', 'app/Tests/ThreadbearCoreTests/MockRunnerTests.swift']) {
+  for (const file of ['mock-runner/x.mjs', 'app/Tests/ThreadbearCoreTests/MockRunnerTests.swift']) {
     const s = setup({ h1: { state: 'free', os: 'Linux' }, h2: { state: 'free' } });
     fs.mkdirSync(path.dirname(path.join(s.repo, file)), { recursive: true });
     fs.writeFileSync(path.join(s.repo, file), '\n');
@@ -243,4 +244,37 @@ test('a host too full for the probe gets its build folders back and is probed ag
   const r = s.run('h1', 3600);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(r.copies, ['h1']);
+});
+
+// A run that builds desktop/'s Rust wants 8 GiB on Linux too: 2 was all it
+// asked for when a group check ran the cloud box out of disk (20 Nov). What
+// builds Rust is check.sh's own DESKTOP_NEEDS, read from it.
+test('a run that builds Rust wants as much room as one with Swift, on Linux too', () => {
+  const withNeeds = (file: string) => {
+    const s = setup({ h1: { state: 'free', df: linuxDf(3 * GiB), os: 'Linux' } });
+    fs.writeFileSync(path.join(s.repo, 'check.sh'), "#!/bin/bash\nDESKTOP_NEEDS='^desktop/|^runner/src/'\n");
+    execFileSync('git', ['-C', s.repo, 'add', 'check.sh'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', s.repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'check'], { stdio: 'ignore' });
+    fs.mkdirSync(path.dirname(path.join(s.repo, file)), { recursive: true });
+    fs.writeFileSync(path.join(s.repo, file), 'x\n');
+    return s;
+  };
+  const rust = withNeeds('desktop/core/src/x.rs').run('h1', 3600);
+  assert.equal(rust.status, 1, rust.stdout + rust.stderr);
+  assert.match(rust.stderr, /h1 has 3\.0 GiB free, and it wants 8 GiB/);
+  assert.deepEqual(rust.copies, []);
+
+  const node = withNeeds('convex/x.ts').run('h1', 3600);
+  assert.equal(node.status, 0, node.stdout + node.stderr);
+  assert.deepEqual(node.copies, ['h1']);
+
+  // --runner builds no Rust, whatever changed.
+  const runner = withNeeds('runner/src/x.ts').run('h1', 3600, '', {}, ['--runner']);
+  assert.equal(runner.status, 0, runner.stdout + runner.stderr);
+
+  // --only naming a desktop step that builds does; desktop format doesn't.
+  const lint = withNeeds('convex/y.ts').run('h1', 3600, '', {}, ['--only', 'desktop lint']);
+  assert.equal(lint.status, 1, lint.stdout + lint.stderr);
+  const fmt = withNeeds('convex/y.ts').run('h1', 3600, '', {}, ['--only', 'desktop format']);
+  assert.equal(fmt.status, 0, fmt.stdout + fmt.stderr);
 });

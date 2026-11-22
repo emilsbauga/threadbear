@@ -1048,7 +1048,7 @@ public struct LibrarianResult: Sendable, Decodable {
     public var librarian: LibrarianStatus
 }
 
-// MARK: Pools (docs/pools-plan.md, "Protocol")
+// MARK: Pools (docs/archive/pools-plan.md, "Protocol")
 
 /// A runner from before pools answers these with `-32601`; the app then
 /// keeps its account chip and provider rail.

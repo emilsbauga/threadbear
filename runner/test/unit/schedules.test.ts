@@ -10,7 +10,7 @@ import { ErrorCode, RpcError } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import type { CheckResult } from '../../src/schedule-check.ts';
 import { readRunnerJson } from '../../src/config.ts';
-import { convexPoster, toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION } from '../../src/sync.ts';
+import { convexPoster, toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION, SCHEDULE_PROVIDER_API_VERSION } from '../../src/sync.ts';
 import { keptCheckFile } from '../../src/schedule-check.ts';
 import { dropScheduled, scheduledSendMethods, sendScheduled } from '../../src/handover.ts';
 import { DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from '../../src/runner.ts';
@@ -883,6 +883,45 @@ test('a new-thread schedule can run on a pool instead of one login', async () =>
   const row = { ...sched.find(sc.id), poolId: 'claude', runnerId: 'r1' };
   assert.equal(toOwnedScheduleDoc(row, SCHEDULE_POOLS_API_VERSION).poolId, 'claude');
   assert.ok(!('poolId' in toOwnedScheduleDoc(row, SCHEDULE_POOLS_API_VERSION - 1)));
+  sched.stop();
+});
+
+// A pool of Claude and OpenCode logins (Mike, 21 Nov): the picker lists
+// each kind's models under its own heading, and a schedule keeps the one
+// picked under, as a new thread does (threads.create's provider).
+test("a schedule on a pool of several kinds keeps the kind its model was picked under", async () => {
+  const { h, sched } = setup();
+  const m = scheduleMethods(sched);
+  const made: { poolId?: string; provider?: string; model?: string }[] = [];
+  const create = h.runner.create.bind(h.runner);
+  h.runner.create = (p) => {
+    made.push({ poolId: p.poolId, provider: p.provider, model: p.model });
+    return create(p);
+  };
+  await assert.rejects(async () => m['schedules.create']({ text: 'x', cron: '@daily', provider: 'codex' }), /provider is for a schedule with a poolId/);
+  await assert.rejects(async () => m['schedules.create']({ text: 'x', cron: '@daily', poolId: 'claude', provider: 'nope' }), /provider must be one of/);
+
+  const sc = ((await m['schedules.create']({ text: 'Draft the standup', cron: '@daily', poolId: 'claude', provider: 'codex', model: 'gpt-6' })) as { schedule: { id: string; provider?: string } }).schedule;
+  assert.equal(sc.provider, 'codex');
+  await sched.runNow(sc.id);
+  assert.deepEqual(made.at(-1), { poolId: 'claude', provider: 'codex', model: 'gpt-6' });
+
+  // A new model without a kind is the model's kind again, never one kind's
+  // model sent to another's login; picking both together keeps it.
+  assert.equal((await sched.update({ scheduleId: sc.id, model: 'opus' })).provider, undefined);
+  assert.equal((await sched.update({ scheduleId: sc.id, model: 'gpt-6', provider: 'codex' })).provider, 'codex');
+  assert.equal((await sched.update({ scheduleId: sc.id, title: 'Standup' })).provider, 'codex', 'other changes leave it');
+  assert.equal(((await m['schedules.update']({ scheduleId: sc.id, provider: null })) as { schedule: { provider?: string } }).schedule.provider, undefined);
+  await sched.update({ scheduleId: sc.id, provider: 'codex' });
+  assert.equal((await sched.update({ scheduleId: sc.id, accountId: 'claude-3' })).provider, undefined, 'a login has its own kind');
+  await assert.rejects(sched.update({ scheduleId: sc.id, provider: 'codex' }), /provider is for a schedule with a poolId/);
+  await sched.runNow(sc.id);
+  assert.equal(made.at(-1)?.provider, undefined, 'pinned to a login, no kind is sent');
+
+  // A backend older than 97 would turn the whole row down.
+  const row = { ...sched.find(sc.id), poolId: 'claude', provider: 'codex' as const, runnerId: 'r1' };
+  assert.equal(toOwnedScheduleDoc(row, SCHEDULE_PROVIDER_API_VERSION).provider, 'codex');
+  assert.ok(!('provider' in toOwnedScheduleDoc(row, SCHEDULE_PROVIDER_API_VERSION - 1)));
   sched.stop();
 });
 

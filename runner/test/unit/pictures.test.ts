@@ -6,7 +6,7 @@ import type { ImageRef } from '../../src/protocol.ts';
 const red: ImageRef = { path: '/media/red.png', mediaType: 'image/png' };
 const blue: ImageRef = { path: '/media/blue.png', mediaType: 'image/png' };
 
-// docs/protocol.md, "Pictures in a message".
+// docs/protocol/threads.md, "Pictures in a message".
 test('each picture goes straight after the marker naming it, the marker kept in the words', () => {
   assert.deepEqual(placePictures('this [Picture 1] should look like this [Picture 2] please', [red, blue]), [
     { text: 'this [Picture 1]' },

@@ -239,7 +239,12 @@ Copy, change the words and press Done (or ⌘Return). The box says
 version goes on the end of your next message to that thread (an answer
 on its card counts, from the thread or a project page), with a line
 asking the agent to use your words, so picking "Post and close" posts
-what you wrote. The change is kept on your Mac, in the desktop app.
+what you wrote. Until then a chip over the message box says so ("Your
+edited email · 2 lines changed"): View shows the draft in its reply,
+and × puts the agent's back, as Undo does. Once sent, your message
+shows the same chip under your words in place of that line, and Show
+opens the draft you sent; the website and the phone show it that way
+too. The change is kept on your Mac, in the desktop app.
 
 A reply that needs nothing from you ends with a Done card at the top of
 the message box, with an Archive button to put the thread away. When something it talked about is
@@ -708,10 +713,13 @@ The caret stays visible after ten seconds without editing or moving it,
 and starts blinking again when you continue typing or refocus the box.
 
 On a Mac the composer checks your spelling as the Mac's own text boxes do. A
-misspelled word gets a red wavy line once you've finished typing it, and
-with Correct Spelling Automatically on (it starts as your Mac's Keyboard
-settings have it) the Mac's correction and your text replacements go in as
-you start the next word; ⌘Z puts back what you typed. A correction you
+misspelled word gets a red wavy line once you've finished typing it. Words
+aren't changed for you: Correct Spelling Automatically is off to start with,
+whatever your Mac's Keyboard settings say (right-click the box, then Spelling
+and Grammar, to turn it on). With it on, the Mac's correction goes in as you
+start the next word, as your text replacements do either way (those start
+as your Mac's Keyboard settings have them); ⌘Z puts back what you typed. A
+correction you
 take back (⌘Z straight after it, or deleting into the word and typing it
 your way again) isn't made again while the app runs, and the word stops
 being marked. "Threadbear" is never marked or corrected. Right-click a marked
@@ -1212,7 +1220,8 @@ pool the composer was on when you made it, so each run starts on
 whichever of that pool's logins it would pick then; ask an agent to put
 it on another pool or one login. Its model and effort start as the
 composer's too, and you can change them in the schedule's editor (click it
-in the list). Click a heading to fold it away (Done starts folded); a
+in the list). In a pool with logins of several kinds, each run starts on
+the kind you picked its model under. Click a heading to fold it away (Done starts folded); a
 folded one shows how many are under it. Its page
 says what's coming up next with a few numbers: how many are on, due in the
 next day, repeating, set by threads, paused, and how often they've run.
@@ -1324,7 +1333,9 @@ if that's a folder; if no such folder is here, the card says so, and
 Start it sends the request back for the agent to ask again with one that
 is. The new thread is told which thread asked, and can
 message it back. Agents on this Mac start threads on the other Macs
-without asking.
+without asking, and each reply such a thread ends a turn with comes back
+to the thread that started it as a message (the other Macs can't message
+this one's threads themselves).
 To start a thread on another Mac, pick it with the machine chip on the composer: the
 folder, account and model are then that Mac's. New threads start on the
 starred one: change it under Default in that chip's menu, or in
@@ -1521,9 +1532,22 @@ The switch happens only when you click.
 
 OpenCode, Cursor and Grok, and other agent CLIs that speak the Agent Client
 Protocol, get threads of their own too. If one is installed and logged in
-it turns up as a login and a pool, with its models in the picker. OpenCode's
+it turns up as a login and a pool, with its models in the picker. A pool
+with logins of several kinds lists each one's models under its name. OpenCode's
 free models work with no login; Cursor needs `agent login` first, and Grok
 `grok login`.
+Gemini on a Google AI plan (Pro or Ultra) runs through Google's own
+Antigravity agent, the way T3 Code does: download `agy_acp_server.par` for
+your Mac from the [ACP Registry](https://agentclientprotocol.com) (version
+1.4.5 works; 1.5.0 didn't start sessions on a Mac on 20 Nov 2026), set its
+path as `antigravityPath` in `runner.json`, and sign it in once with your
+Google account. Threadbear can't sign it in for you yet: the login shows up
+once `~/.gemini/antigravity-acp/acp_token.json` exists, which signing in
+from an ACP client that uses that folder makes. It then shows as a Gemini
+login with your plan's models.
+Google's FAQ says using an Antigravity login from other software can get the
+account suspended, so that risk is yours. Every tool it uses asks Threadbear
+first, and reads inside the thread's folder go ahead.
 Everything the agent wants to do comes through Threadbear first: on Ask and
 Plan first you get the usual cards, Auto behaves like Ask, and Full access
 goes ahead without them. A folder's own OpenCode config and plugins aren't
@@ -1615,19 +1639,23 @@ to see who spent what. The tokens are read from the Claude and Codex
 transcripts on your Mac, so work done outside Threadbear counts too; the
 first read takes a minute or so after the runner updates.
 
-Below that, each pool has a card for each login in it, with its
-provider's logo, a ring with how much of its week is left, and one line
-saying how it stands: in red, that it's used up and when it's back; in
-orange, when it runs out and how long before the reset; in green, how much
-of the week will go unused, so it's worth leaning on that login; otherwise
-that it's on track, or when it resets. Under that is a small chart of the
-last seven days, rolling, with the days along the bottom: last week's
-readings stay on it after a reset, and your current pace is dashed on to
-the next reset. At the foot is the 5-hour window as a small chip, where
-the login has one, and what it's spent today. Hover the ring, the chart
-or the chip for its rate.
+Below that, each pool has a card with a row for each login in it: a ring
+with how much of its week is left, the provider's logo and the login, and
+one line saying how it stands: in red, that it's used up and when it's
+back; in orange, when it runs out and how long before the reset; in green,
+how much of the week will go unused, so it's worth leaning on that login;
+otherwise that it's on track, or when it resets. At the right is what it's
+spent today.
 
-A login with no number yet says why on its card, with a dashed ring: a
+Click a row to open it. Under it is a small chart of the last seven days,
+rolling, with the days along the bottom: last week's readings stay on it
+after a reset, and your current pace is dashed on to the next reset. Then
+the 5-hour window as a small chip, where the login has one, and the
+login's buttons. Hover the ring, the chart or the chip for its rate. A
+sign-in that's ending or has ended shows under its row even when it's
+shut.
+
+A login with no number yet says why on its row, with a dashed ring: a
 Claude or Codex login that hasn't run a turn here yet; Grok, which shows
 its plan's limit only through its own background service; or OpenCode,
 whose own models spend a balance rather than a weekly limit.
@@ -1667,8 +1695,8 @@ A Claude login with a limit of its own on Fable shows that week too,
 other models, so it never makes a login look full. If you don't use Fable,
 turn off "Show models' own weeks" in Settings › General › Usage.
 
-When a login's week will go partly unused (the green line), its card has
-**Find work for it**. It starts a thread on that login that looks through
+When a login's week will go partly unused (the green line), its open row
+has **Find work for it**. It starts a thread on that login that looks through
 your projects and threads, suggests 2 to 4 jobs worth spending the rest of
 the week on (a deep review, the tests a report said were missing, rough
 options for something you're exploring), and asks before starting any.
@@ -1694,7 +1722,8 @@ provider you have a login for (Grok, say), and pick each one's model and
 effort. The first that isn't the thread's own provider and has a login
 with room does the review, so when one runs out for the week, the next
 takes over. You can list a provider more than once on different models.
-Gemini reviews through OpenCode: give OpenCode a Google AI Studio key
+Gemini reviews through the Gemini login on a Google plan (above), or
+through OpenCode: give OpenCode a Google AI Studio key
 (`opencode auth login google`) and its Gemini models show up under
 OpenCode once the runner restarts.
 
@@ -2225,7 +2254,7 @@ with a Back), so the patch's page stays put; if the page moves on to
 another of its own pages, a Back shows in the panel's bar, and Reload goes
 back to where it started. Closing a panel, or picking another thread,
 pauses anything it's playing. A panel's address can carry the thread
-it's beside, as `{threadId}` (docs/protocol.md, "Patches"), and an agent
+it's beside, as `{threadId}` (docs/protocol/patches.md, "Patches"), and an agent
 that has changed a panel's page can have it load afresh as it shows you
 (`show_panel` with `reload`). The new desktop app shows a panel's page, and the Convex dashboard, with the same
 Chromium it draws diagrams with: until that's installed the panel asks for
@@ -2264,8 +2293,8 @@ panel ("only in my acceptance testing threads").
 You don't need to write one yourself. In a thread in that folder, ask
 "add a button that runs the tests" or "add a panel showing localhost:3000",
 and the agent writes the patch into the folder's `.threadbear/patches/`
-(the format is under "Patches" in `docs/protocol.md`, in your Threadbear
-folder). It shows up within a few seconds. A patch is code that runs on your
+(the format is under "Patches" in `docs/protocol/patches.md`, in your
+Threadbear folder). It shows up within a few seconds. A patch is code that runs on your
 Mac, so keep only the ones you'd be happy to run.
 
 Patches only run once you've trusted them. One the agent writes for you in
@@ -2280,7 +2309,12 @@ cloned or with a `git pull`, waits: a "patch to trust" chip shows above the
 composer, and Patches lists it as "Not run yet" (or "Changed since you
 trusted it") with a Trust button. Open its file to read it first, and
 any files it imports or runs (a setup script, say), which Patches lists
-under it: a change to one of those asks again too. A patch that loads code
+under it: a change to one of those asks again too. When it changed since you
+trusted it, Patches says which files changed, in which commits (or that
+it isn't committed), and shows the changed lines, so a re-ask after your
+own merge reads differently from code you've never seen. In a folder
+last trusted before Threadbear changed how it checks patches (on 6 Nov),
+it says it can't tell what changed. A patch that loads code
 by a name it works out as it runs (`import(name)`) can't be checked, so it
 never runs and Patches says why: import its files by a plain path instead.
 The same goes for a command a patch runs by itself, a worktree's setup or
@@ -2412,6 +2446,12 @@ the new one is up. If one can't be sent, its words go
 back in that thread's box and a note above the thread says which thread,
 until you dismiss it.
 
+If the runner hits an unexpected error, it restarts itself the same way, so
+you may see that restart line with no update behind it; busy threads finish
+their turns first, as in an update. If that happens three times in ten
+minutes it stops restarting for it and says so in the error bar, and carries
+on until an hour goes by without another.
+
 A runner update lets a job a thread left running in the background finish, for
 up to about 4 hours after the thread's last turn. If one goes on longer it's
 stopped, and the thread gets told and wakes by itself to check on it, so you'll
@@ -2433,7 +2473,10 @@ builds the app by being one. With neither set it builds on this Mac in the
 background. With check hosts set but no update build host it builds
 nothing, and its Updates panel says to name one. With update build hosts
 set but none answering, the panel says it's waiting for a Mac and it tries
-again later. A new version waiting to go in that a Mac off that list built
+again later. When that Mac is busy with other builds and tests, the panel
+names it and says how long it's been busy, then, once the build has taken
+its place in that Mac's queue, how many runs are ahead of it and how long
+it's waited; once it starts, how long it's been building. A new version waiting to go in that a Mac off that list built
 is thrown away. An app installed before 12 Nov 2026 built its updates on a
 check host, so it can't update itself past then: install it again once
 (`desktop/scripts/install-app.sh`, with `--build-on <host>` to build on a

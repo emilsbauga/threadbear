@@ -4,6 +4,7 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
+import { runningSession } from '../cli-session.ts';
 import { isCliProvider, type CliStatus, type Provider } from '../protocol.ts';
 import type { AgentAdapter } from '../adapters/types.ts';
 import type { BinaryReporter, CliControl, CliHooks, ThreadState } from '../runner.ts';
@@ -13,7 +14,7 @@ export const clisPart = {
     const { rec, rt } = st;
     rt.idleTimer?.cancel();
     rt.idleTimer = undefined;
-    if (!rt.session || rt.closing || rt.turn || rt.approvals.size) return;
+    if (!runningSession(rt) || rt.turn || rt.approvals.size) return;
     // Snoozed or archived: the CLI goes now, stopping any background work
     // (with a note), as Mike or the agent put the thread away. Before the
     // queue's check: a put-away thread keeps its queue until it's back, and
@@ -70,35 +71,44 @@ export const clisPart = {
     // outlive this release and take the next CLI as its first turn ended
     // (a hibernation after the idle release, thread 8a971407). A CLI still
     // leaving is going anyway; the one after it starts with what it's asked.
-    if (!rt.session) rt.releaseWhenIdle = false;
-    if (!rt.session || rt.closing) return;
-    const session = rt.session;
-    const hard = rt.tasks.length > 0;
+    // `done` is what waits for it (rt.closing): settled once it has gone.
+    let settle!: () => void;
+    const done = new Promise<void>((resolve) => (settle = resolve));
+    const move = this.cli(st, { kind: 'release', done });
+    const end = move.ok ? move.out.end : undefined;
+    if (!end) return;
+    const { session, hard } = end;
     if (hard) {
-      const what = rt.tasks.map((t) => t.description || t.type).join('; ');
+      const what = end.stopped.map((t) => t.description || t.type).join('; ');
       try {
         this.emit(st, { type: 'system.note', text: `Stopped background work when the session was released: ${what}` }, rt.turn?.turnId);
       } catch (e) {
         this.log.error('could not save a note', { threadId: rec.id, error: String(e) });
       }
-      rt.tasks = [];
     }
     rt.finished = [];
-    rt.releaseWhenIdle = false;
-    rt.releasedGen = rt.generation;
-    this.log.info('releasing CLI', { threadId: rec.id, hard });
-    rt.closing = session
-      .end({ hard })
+    // A synchronous throw from end() still settles `done`, or every turn
+    // after it would wait on it for ever (Gemini's review).
+    let ending: Promise<void>;
+    try {
+      this.log.info('releasing CLI', { threadId: rec.id, hard });
+      ending = session.end({ hard });
+    } catch (e) {
+      ending = Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+    ending
       .catch((e: unknown) => this.log.warn('release failed', { threadId: rec.id, error: String(e) }))
       .finally(() => {
-        rt.closing = undefined;
-        if (rt.session === session) {
-          // The adapter didn't report an exit; treat it as gone.
-          rt.session = undefined;
+        try {
+          // The adapter may not have reported an exit; then it's gone now.
+          this.cli(st, { kind: 'closed', session });
+          this.markDirty(st);
+          this.archiveWhenGone(st);
+        } finally {
+          settle();
         }
-        this.markDirty(st);
-        this.archiveWhenGone(st);
-      });
+      })
+      .catch((e: unknown) => this.log.error('could not settle a released CLI', { threadId: rec.id, error: String(e) }));
   },
 
   // The hooks E's CliUpdates calls (restartPending comes from the
@@ -120,12 +130,12 @@ export const clisPart = {
     this.wantedVersion[provider] = keepVersion;
     for (const st of this.threads.values()) {
       const { rec, rt } = st;
-      if (rec.provider !== provider || !rt.session || rt.closing) continue;
+      if (rec.provider !== provider || !runningSession(rt)) continue;
       if (rt.cliVersion === keepVersion) {
-        rt.versionMove = false;
+        this.cli(st, { kind: 'versionMove', move: false });
         continue;
       }
-      rt.versionMove = true;
+      this.cli(st, { kind: 'versionMove', move: true });
       if (this.idleForUpdate(st)) {
         this.log.info('releasing an idle CLI for an update', { threadId: rec.id, version: rt.cliVersion, wanted: keepVersion });
         this.releaseSession(st);

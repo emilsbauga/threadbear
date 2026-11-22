@@ -1,4 +1,4 @@
-// Projects in the app (docs/protocol.md, "Projects"), a port of the Swift app's
+// Projects in the app (docs/protocol/projects.md, "Projects"), a port of the Swift app's
 // Projects.swift: the list the runner keeps (`projects.list`, then
 // `projects.updated`), whose page is open, and what Mike can do to a project
 // by hand. Each change shows at once and goes back, with the runner's reason,
@@ -103,7 +103,10 @@ pub(crate) struct Editing {
 
 impl ProjectsState {
     pub(crate) fn new(open_rows: Option<&[String]>) -> Self {
-        ProjectsState { open_rows: open_rows.unwrap_or_default().iter().cloned().collect(), ..Default::default() }
+        ProjectsState {
+            open_rows: open_rows.unwrap_or_default().iter().cloned().collect(),
+            ..Default::default()
+        }
     }
 }
 
@@ -148,7 +151,10 @@ impl Threadbear {
 
     /// The project whose page is showing, if one is.
     pub(crate) fn open_project(&self) -> Option<&Project> {
-        self.projects.open.as_deref().and_then(|id| self.project(id))
+        self.projects
+            .open
+            .as_deref()
+            .and_then(|id| self.project(id))
     }
 
     /// The thread the pane and the right rail are for (`paneThread`): the open
@@ -157,7 +163,9 @@ impl Threadbear {
     /// only threads have panels, as the runner works them out per thread.
     /// None on a page whose threads have nothing from it.
     pub(crate) fn pane_thread(&self) -> Option<ThreadSummary> {
-        let Some(project) = self.open_project() else { return self.open_thread().cloned() };
+        let Some(project) = self.open_project() else {
+            return self.open_thread().cloned();
+        };
         if let Some((id, made)) = self.projects.pane_cache.borrow().as_ref() {
             if *id == project.id {
                 return made.clone();
@@ -167,8 +175,33 @@ impl Threadbear {
             let patches = rules::project_patches(project, found);
             let panels = rules::project_panels(project, found);
             let mut t = found.clone();
-            t.patches = Some(found.patches.iter().flatten().filter(|v| serde_json::from_value::<threadbear_core::highlights::PatchInfo>((*v).clone()).is_ok_and(|p| patches.contains(&p))).cloned().collect());
-            t.panels = Some(found.panels.iter().flatten().filter(|v| v["id"].as_str().is_some_and(|id| panels.iter().any(|p| p.id == id))).cloned().collect());
+            t.patches = Some(
+                found
+                    .patches
+                    .iter()
+                    .flatten()
+                    .filter(|v| {
+                        serde_json::from_value::<threadbear_core::highlights::PatchInfo>(
+                            (*v).clone(),
+                        )
+                        .is_ok_and(|p| patches.contains(&p))
+                    })
+                    .cloned()
+                    .collect(),
+            );
+            t.panels = Some(
+                found
+                    .panels
+                    .iter()
+                    .flatten()
+                    .filter(|v| {
+                        v["id"]
+                            .as_str()
+                            .is_some_and(|id| panels.iter().any(|p| p.id == id))
+                    })
+                    .cloned()
+                    .collect(),
+            );
             t
         });
         *self.projects.pane_cache.borrow_mut() = Some((project.id.clone(), made.clone()));
@@ -178,7 +211,10 @@ impl Threadbear {
     /// The projectDecisions experiment is on for this Mac's runner (its hello
     /// lists it): the Projects page gathers each project's open cards of asks.
     pub(crate) fn project_decisions_on(&self) -> bool {
-        self.remote.experiments.iter().any(|e| e == "projectDecisions")
+        self.remote
+            .experiments
+            .iter()
+            .any(|e| e == "projectDecisions")
     }
 
     fn replace_project(&mut self, project: Project) {
@@ -246,7 +282,9 @@ impl Threadbear {
 
     /// Asks first: its threads leave it and its notes go (`deleteProject`).
     pub(crate) fn delete_project(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(project) = self.project(id).cloned() else { return };
+        let Some(project) = self.project(id).cloned() else {
+            return;
+        };
         let (entity, id) = (cx.entity().downgrade(), id.to_owned());
         let title = format!("Delete \u{201C}{}\u{201D}?", project.title);
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -264,7 +302,9 @@ impl Threadbear {
 
     /// Gone at once, and back where it was if the runner refuses.
     pub(crate) fn confirmed_delete_project(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(index) = self.projects.list.iter().position(|p| p.id == id) else { return };
+        let Some(index) = self.projects.list.iter().position(|p| p.id == id) else {
+            return;
+        };
         let project = self.projects.list.remove(index);
         let was_open = self.projects.open.as_deref() == Some(id);
         if was_open {
@@ -295,19 +335,37 @@ impl Threadbear {
 
     /// Folders and threads move over, notes are joined, and this one goes
     /// (`mergeProject`), after asking.
-    pub(crate) fn merge_project(&mut self, id: &str, into: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(project), Some(kept)) = (self.project(id).cloned(), self.project(into).cloned()) else { return };
+    pub(crate) fn merge_project(
+        &mut self,
+        id: &str,
+        into: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(project), Some(kept)) = (self.project(id).cloned(), self.project(into).cloned())
+        else {
+            return;
+        };
         let (entity, id, into) = (cx.entity().downgrade(), id.to_owned(), into.to_owned());
-        let title = format!("Merge \u{201C}{}\u{201D} into \u{201C}{}\u{201D}?", project.title, kept.title);
+        let title = format!(
+            "Merge \u{201C}{}\u{201D} into \u{201C}{}\u{201D}?",
+            project.title, kept.title
+        );
         let detail = format!("Its folders and threads move to {kept}, its notes are added to the end of {kept}'s, and {gone} is deleted.", kept = kept.title, gone = project.title);
         window.open_alert_dialog(cx, move |alert, _, _| {
             let (entity, id, into) = (entity.clone(), id.clone(), into.clone());
             alert
                 .title(title.clone())
                 .description(detail.clone())
-                .button_props(DialogButtonProps::default().ok_text("Merge").show_cancel(true))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Merge")
+                        .show_cancel(true),
+                )
                 .on_ok(move |_, _, cx| {
-                    entity.update(cx, |this, cx| this.confirmed_merge_project(&id, &into, cx)).ok();
+                    entity
+                        .update(cx, |this, cx| this.confirmed_merge_project(&id, &into, cx))
+                        .ok();
                     true
                 })
         });
@@ -317,10 +375,21 @@ impl Threadbear {
     /// folders and threads counted there; the reply has the joined notes. A
     /// refusal puts both back.
     pub(crate) fn confirmed_merge_project(&mut self, id: &str, into: &str, cx: &mut Context<Self>) {
-        let (Some(project), Some(kept)) = (self.project(id).cloned(), self.project(into).cloned()) else { return };
-        let Some(index) = self.projects.list.iter().position(|p| p.id == id) else { return };
+        let (Some(project), Some(kept)) = (self.project(id).cloned(), self.project(into).cloned())
+        else {
+            return;
+        };
+        let Some(index) = self.projects.list.iter().position(|p| p.id == id) else {
+            return;
+        };
         let mut guess = kept.clone();
-        guess.folders.extend(project.folders.iter().filter(|f| !kept.folders.contains(f)).cloned());
+        guess.folders.extend(
+            project
+                .folders
+                .iter()
+                .filter(|f| !kept.folders.contains(f))
+                .cloned(),
+        );
         guess.thread_count += project.thread_count;
         let was_open = self.projects.open.as_deref() == Some(id);
         self.projects.list.remove(index);
@@ -331,7 +400,12 @@ impl Threadbear {
         cx.notify();
         let (client, id, into) = (self.client.clone(), id.to_owned(), into.to_owned());
         cx.spawn(async move |this, cx| {
-            let res = call(client, "projects.merge", json!({ "projectId": id, "intoId": into })).await;
+            let res = call(
+                client,
+                "projects.merge",
+                json!({ "projectId": id, "intoId": into }),
+            )
+            .await;
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
@@ -364,7 +438,12 @@ impl Threadbear {
 
     /// Asks for a name and makes a project, with the thread in it when it's
     /// asked from a thread's menu (`newProject`).
-    pub(crate) fn new_project(&mut self, thread: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_project(
+        &mut self,
+        thread: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.projects.busy.contains("new") {
             return;
         }
@@ -373,15 +452,30 @@ impl Threadbear {
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let (entity, field, thread) = (entity.clone(), typed.clone(), thread.clone());
             let dialog = dialog.title("New project").width(px(340.));
-            let dialog = if thread.is_some() { dialog.description("The thread goes in it.") } else { dialog };
-            dialog.child(Input::new(&typed)).button_props(DialogButtonProps::default().ok_text("Make project").show_cancel(true)).on_ok(move |_, window, cx| {
-                let title = field.read(cx).value().trim().to_owned();
-                if !title.is_empty() {
-                    let thread = thread.clone();
-                    entity.update(cx, |this, cx| this.create_project(title, thread, window, cx)).ok();
-                }
-                true
-            })
+            let dialog = if thread.is_some() {
+                dialog.description("The thread goes in it.")
+            } else {
+                dialog
+            };
+            dialog
+                .child(Input::new(&typed))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Make project")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    let title = field.read(cx).value().trim().to_owned();
+                    if !title.is_empty() {
+                        let thread = thread.clone();
+                        entity
+                            .update(cx, |this, cx| {
+                                this.create_project(title, thread, window, cx)
+                            })
+                            .ok();
+                    }
+                    true
+                })
         });
         let handle = field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -393,7 +487,13 @@ impl Threadbear {
     /// than a project's. New project spins until the runner answers; from a
     /// thread's menu there's no button to spin, so a note says it's on its
     /// way, as Swift's does.
-    fn create_project(&mut self, title: String, thread: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn create_project(
+        &mut self,
+        title: String,
+        thread: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.projects.busy.insert("new".to_owned()) {
             return;
         }
@@ -403,7 +503,11 @@ impl Threadbear {
         let mut params = json!({ "title": title });
         if let Some(id) = &thread {
             params["threadIds"] = json!([id]);
-            let cwd = self.threads.get(id).map(|t| t.cwd.clone()).unwrap_or_default();
+            let cwd = self
+                .threads
+                .get(id)
+                .map(|t| t.cwd.clone())
+                .unwrap_or_default();
             let default = &self.logins.defaults.cwd;
             if !cwd.is_empty() && cwd.trim_end_matches('/') != default.trim_end_matches('/') {
                 params["folders"] = json!([cwd]);
@@ -433,25 +537,44 @@ impl Threadbear {
     }
 
     /// Asks for a folder and adds it: the project's patches load from it.
-    pub(crate) fn add_project_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_project_folder(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.project(id).is_none() {
             return;
         }
-        let paths = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Add".into()) });
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add".into()),
+        });
         let id = id.to_owned();
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = paths.await {
                 if let Some(path) = paths.pop() {
                     this.update(cx, |this, cx| {
                         // The project may have changed while the picker was open.
-                        let Some(current) = this.project(&id).cloned() else { return };
+                        let Some(current) = this.project(&id).cloned() else {
+                            return;
+                        };
                         let path = path.to_string_lossy().trim_end_matches('/').to_owned();
                         if current.folders.contains(&path) {
                             return;
                         }
                         let mut folders = current.folders;
                         folders.push(path);
-                        this.update_project(&id, Update { folders: Some(folders), ..Default::default() }, cx);
+                        this.update_project(
+                            &id,
+                            Update {
+                                folders: Some(folders),
+                                ..Default::default()
+                            },
+                            cx,
+                        );
                     })
                     .ok();
                 }
@@ -461,23 +584,50 @@ impl Threadbear {
     }
 
     pub(crate) fn remove_project_folder(&mut self, id: &str, folder: &str, cx: &mut Context<Self>) {
-        let Some(project) = self.project(id) else { return };
-        let folders = project.folders.iter().filter(|f| *f != folder).cloned().collect();
-        self.update_project(id, Update { folders: Some(folders), ..Default::default() }, cx);
+        let Some(project) = self.project(id) else {
+            return;
+        };
+        let folders = project
+            .folders
+            .iter()
+            .filter(|f| *f != folder)
+            .cloned()
+            .collect();
+        self.update_project(
+            id,
+            Update {
+                folders: Some(folders),
+                ..Default::default()
+            },
+            cx,
+        );
     }
 
     /// Asks for a picture and makes it the project's icon, which the librarian
     /// then leaves alone (`chooseProjectIcon`). The icon spins meanwhile.
-    pub(crate) fn choose_project_icon(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn choose_project_icon(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.project(id).is_none() || self.projects.busy.contains(&format!("icon:{id}")) {
             return;
         }
-        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use".into()) });
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use".into()),
+        });
         let id = id.to_owned();
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(mut paths))) = paths.await {
                 if let Some(path) = paths.pop() {
-                    this.update(cx, |this, cx| this.set_project_icon(&id, Some(path.to_string_lossy().into_owned()), cx)).ok();
+                    this.update(cx, |this, cx| {
+                        this.set_project_icon(&id, Some(path.to_string_lossy().into_owned()), cx)
+                    })
+                    .ok();
                 }
             }
         })
@@ -485,7 +635,12 @@ impl Threadbear {
     }
 
     /// `projects.setIcon`: a picture, or none for the librarian's again.
-    pub(crate) fn set_project_icon(&mut self, id: &str, path: Option<String>, cx: &mut Context<Self>) {
+    pub(crate) fn set_project_icon(
+        &mut self,
+        id: &str,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let key = format!("icon:{id}");
         if self.project(id).is_none() || !self.projects.busy.insert(key.clone()) {
             return;
@@ -521,7 +676,8 @@ impl Threadbear {
     /// couldn't be asked.
     pub(crate) fn refresh_project_tasks(&mut self, id: &str, force: bool, cx: &mut Context<Self>) {
         let key = format!("tasks:{id}");
-        if self.project(id).is_none_or(|p| p.notion.is_none()) || self.projects.busy.contains(&key) {
+        if self.project(id).is_none_or(|p| p.notion.is_none()) || self.projects.busy.contains(&key)
+        {
             return;
         }
         if force {
@@ -552,9 +708,20 @@ impl Threadbear {
 
     /// Asks for the Notion page with the project's task board
     /// (`linkProjectNotion`); left empty, it comes off.
-    pub(crate) fn link_project_notion(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(project) = self.project(id).cloned() else { return };
-        let field = cx.new(|cx| InputState::new(window, cx).placeholder("https://www.notion.so/…").default_value(project.notion.clone().unwrap_or_default()));
+    pub(crate) fn link_project_notion(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.project(id).cloned() else {
+            return;
+        };
+        let field = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("https://www.notion.so/…")
+                .default_value(project.notion.clone().unwrap_or_default())
+        });
         let (entity, typed, id) = (cx.entity().downgrade(), field.clone(), id.to_owned());
         let title = format!("Notion page for {}", project.title);
         window.open_alert_dialog(cx, move |dialog, _, _| {
@@ -584,10 +751,23 @@ impl Threadbear {
     /// this also keeps a thread the librarian put somewhere), and a removed one
     /// is never put back. The chips and menus change at once, and change back
     /// if the runner refuses.
-    pub(crate) fn set_projects(&mut self, thread: &str, add: Vec<String>, remove: Vec<String>, cx: &mut Context<Self>) {
+    pub(crate) fn set_projects(
+        &mut self,
+        thread: &str,
+        add: Vec<String>,
+        remove: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let before = self.threads.get(thread).and_then(|t| t.projects.clone());
-        let titles: HashMap<String, String> = self.projects.list.iter().map(|p| (p.id.clone(), p.title.clone())).collect();
-        let guess = rules::changing(before.as_deref().unwrap_or(&[]), &add, &remove, |id| titles.get(id).cloned());
+        let titles: HashMap<String, String> = self
+            .projects
+            .list
+            .iter()
+            .map(|p| (p.id.clone(), p.title.clone()))
+            .collect();
+        let guess = rules::changing(before.as_deref().unwrap_or(&[]), &add, &remove, |id| {
+            titles.get(id).cloned()
+        });
         if let Some(t) = self.threads.get_mut(thread).map(std::sync::Arc::make_mut) {
             t.projects = (!guess.is_empty()).then(|| guess.clone());
         }
@@ -600,13 +780,19 @@ impl Threadbear {
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
-                        if let Ok(mut t) = serde_json::from_value::<ThreadSummary>(v["thread"].clone()) {
-                            t.runner_id = this.threads.get(&t.id).and_then(|old| old.runner_id.clone());
+                        if let Ok(mut t) =
+                            serde_json::from_value::<ThreadSummary>(v["thread"].clone())
+                        {
+                            t.runner_id = this
+                                .threads
+                                .get(&t.id)
+                                .and_then(|old| old.runner_id.clone());
                             this.threads.insert(t.id.clone(), std::sync::Arc::new(t));
                         }
                     }
                     Err(e) => {
-                        if let Some(t) = this.threads.get_mut(&thread).map(std::sync::Arc::make_mut) {
+                        if let Some(t) = this.threads.get_mut(&thread).map(std::sync::Arc::make_mut)
+                        {
                             if same_memberships(t.projects.as_deref().unwrap_or(&[]), &guess) {
                                 t.projects = before;
                             }
@@ -624,7 +810,12 @@ impl Threadbear {
     /// A look at this thread now (`runLibrarian(threadId:)`). From a menu
     /// there's no button to spin, so a note says it's asked, and the line
     /// stays greyed until the runner has queued it.
-    pub(crate) fn ask_librarian_about(&mut self, thread: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ask_librarian_about(
+        &mut self,
+        thread: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = format!("librarian:{thread}");
         if !self.projects.busy.insert(key.clone()) {
             return;
@@ -638,7 +829,10 @@ impl Threadbear {
             this.update(cx, |this, cx| {
                 this.projects.busy.remove(&key);
                 match res {
-                    Ok(v) => this.librarian.status = Some(threadbear_core::librarian::Status::decode(&v["librarian"])),
+                    Ok(v) => {
+                        this.librarian.status =
+                            Some(threadbear_core::librarian::Status::decode(&v["librarian"]))
+                    }
                     Err(e) => this.show_error(e.message, cx),
                 }
                 cx.notify();
@@ -653,7 +847,9 @@ impl Threadbear {
     /// has none), the thread joining the project as it's made. The folder can
     /// still be changed there.
     pub(crate) fn new_thread_in_project(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(project) = self.project(id).cloned() else { return };
+        let Some(project) = self.project(id).cloned() else {
+            return;
+        };
         self.mode = crate::shell::SidebarMode::Inbox;
         self.new_thread(cx);
         // A project is this Mac's runner's: back to it the way the machine
@@ -669,7 +865,12 @@ impl Threadbear {
     /// A thread from a project's page (`openThread`): shown in the inbox,
     /// with Archived or Hibernating unfolded for one that's put away, and
     /// open in place of the page.
-    pub(crate) fn open_thread_from_page(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_thread_from_page(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.reveal_thread(&id, cx);
         self.open(id, window, cx);
     }
@@ -684,19 +885,31 @@ impl Threadbear {
             .into_iter()
             .map(|p| {
                 let in_it = t.projects.iter().flatten().any(|m| m.id == p.id);
-                let action = MenuAction::ThreadProject { thread: t.id.clone(), add: (!in_it).then(|| p.id.clone()), remove: in_it.then(|| p.id.clone()) };
+                let action = MenuAction::ThreadProject {
+                    thread: t.id.clone(),
+                    add: (!in_it).then(|| p.id.clone()),
+                    remove: in_it.then(|| p.id.clone()),
+                };
                 MenuRow::runner(p.title.clone(), "square.stack", in_it, false, action)
             })
             .collect();
         if !rows.is_empty() {
             rows.push(MenuRow::separator());
         }
-        let mut new = MenuRow::item("New project…", "plus", MenuAction::Project(ProjectAction::New(Some(t.id.clone()))));
+        let mut new = MenuRow::item(
+            "New project…",
+            "plus",
+            MenuAction::Project(ProjectAction::New(Some(t.id.clone()))),
+        );
         if self.projects.busy.contains("new") {
             new = new.disabled();
         }
         rows.push(new);
-        let mut ask = MenuRow::item("Ask the librarian to look", "books.vertical", MenuAction::Project(ProjectAction::AskLibrarian(t.id.clone())));
+        let mut ask = MenuRow::item(
+            "Ask the librarian to look",
+            "books.vertical",
+            MenuAction::Project(ProjectAction::AskLibrarian(t.id.clone())),
+        );
         if self.projects.busy.contains(&format!("librarian:{}", t.id)) {
             ask = ask.disabled();
         }
@@ -711,56 +924,142 @@ impl Threadbear {
         let act = |a: ProjectAction| MenuAction::Project(a);
         let mut rows = Vec::new();
         if self.projects.open.as_deref() != Some(id.as_str()) {
-            rows.push(MenuRow::item("Open", "arrow.right.circle", act(ProjectAction::Open(id.clone()))));
+            rows.push(MenuRow::item(
+                "Open",
+                "arrow.right.circle",
+                act(ProjectAction::Open(id.clone())),
+            ));
             rows.push(MenuRow::separator());
         }
         rows.push(if project.archived {
-            MenuRow::item("Unarchive", "tray.and.arrow.up", act(ProjectAction::Archive(id.clone(), false)))
+            MenuRow::item(
+                "Unarchive",
+                "tray.and.arrow.up",
+                act(ProjectAction::Archive(id.clone(), false)),
+            )
         } else {
-            MenuRow::item("Archive", "archivebox", act(ProjectAction::Archive(id.clone(), true)))
+            MenuRow::item(
+                "Archive",
+                "archivebox",
+                act(ProjectAction::Archive(id.clone(), true)),
+            )
         });
-        rows.push(MenuRow::item(if project.notion.is_none() { "Add Notion Page…" } else { "Notion Page…" }, "checklist", act(ProjectAction::Notion(id.clone()))));
+        rows.push(MenuRow::item(
+            if project.notion.is_none() {
+                "Add Notion Page…"
+            } else {
+                "Notion Page…"
+            },
+            "checklist",
+            act(ProjectAction::Notion(id.clone())),
+        ));
         // Parts, one level: only a project with no parts of its own can be
         // one, and only of a project that isn't a part itself.
         if project.parent_id.is_some() {
-            rows.push(MenuRow::item("Make Its Own Project", "square.on.square", act(ProjectAction::Parent(id.clone(), String::new()))));
+            rows.push(MenuRow::item(
+                "Make Its Own Project",
+                "square.on.square",
+                act(ProjectAction::Parent(id.clone(), String::new())),
+            ));
         } else {
             let parents = rules::possible_parents(&self.projects.list, project);
             if !parents.is_empty() {
-                let children = parents.into_iter().map(|p| MenuRow::item(p.title.clone(), "folder", act(ProjectAction::Parent(id.clone(), p.id.clone())))).collect();
+                let children = parents
+                    .into_iter()
+                    .map(|p| {
+                        MenuRow::item(
+                            p.title.clone(),
+                            "folder",
+                            act(ProjectAction::Parent(id.clone(), p.id.clone())),
+                        )
+                    })
+                    .collect();
                 rows.push(MenuRow::submenu("Make a Part of", "square.stack", children));
             }
         }
-        let others: Vec<&Project> = self.projects.list.iter().filter(|p| p.id != id && !p.archived).collect();
+        let others: Vec<&Project> = self
+            .projects
+            .list
+            .iter()
+            .filter(|p| p.id != id && !p.archived)
+            .collect();
         if !others.is_empty() {
-            let children = others.into_iter().map(|p| MenuRow::item(p.title.clone(), "square.stack", act(ProjectAction::Merge(id.clone(), p.id.clone())))).collect();
-            rows.push(MenuRow::submenu("Merge into", "arrow.triangle.merge", children));
+            let children = others
+                .into_iter()
+                .map(|p| {
+                    MenuRow::item(
+                        p.title.clone(),
+                        "square.stack",
+                        act(ProjectAction::Merge(id.clone(), p.id.clone())),
+                    )
+                })
+                .collect();
+            rows.push(MenuRow::submenu(
+                "Merge into",
+                "arrow.triangle.merge",
+                children,
+            ));
         }
         rows.push(MenuRow::separator());
-        rows.push(MenuRow::item("Copy project id", "number", act(ProjectAction::CopyId(id.clone()))));
+        rows.push(MenuRow::item(
+            "Copy project id",
+            "number",
+            act(ProjectAction::CopyId(id.clone())),
+        ));
         rows.push(MenuRow::separator());
-        rows.push(MenuRow::item("Delete…", "trash", act(ProjectAction::Delete(id))));
+        rows.push(MenuRow::item(
+            "Delete…",
+            "trash",
+            act(ProjectAction::Delete(id)),
+        ));
         rows
     }
 
     /// The menu of a project's heading, card or row, where it was clicked.
-    pub(crate) fn open_project_menu(&mut self, id: &str, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_project_menu(
+        &mut self,
+        id: &str,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The project's menu alone: a right-click went on to the dock panel's
         // own menu (Hide Title, Open in New Window), which came up over this
         // one's Open and Archive, as it did on thread rows (12 Nov).
         cx.stop_propagation();
-        let Some(project) = self.project(id).cloned() else { return };
+        let Some(project) = self.project(id).cloned() else {
+            return;
+        };
         let rows = self.project_menu_rows(&project);
         self.open_menu(None, rows, position, false, window, cx);
     }
 
     /// Runs a project menu's line.
-    pub(crate) fn run_project_action(&mut self, action: ProjectAction, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run_project_action(
+        &mut self,
+        action: ProjectAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match action {
             ProjectAction::Open(id) => self.open_project_page(&id, cx),
-            ProjectAction::Archive(id, archived) => self.update_project(&id, Update { archived: Some(archived), ..Default::default() }, cx),
+            ProjectAction::Archive(id, archived) => self.update_project(
+                &id,
+                Update {
+                    archived: Some(archived),
+                    ..Default::default()
+                },
+                cx,
+            ),
             ProjectAction::Notion(id) => self.link_project_notion(&id, window, cx),
-            ProjectAction::Parent(id, parent) => self.update_project(&id, Update { parent_id: Some(parent), ..Default::default() }, cx),
+            ProjectAction::Parent(id, parent) => self.update_project(
+                &id,
+                Update {
+                    parent_id: Some(parent),
+                    ..Default::default()
+                },
+                cx,
+            ),
             ProjectAction::Merge(id, into) => self.merge_project(&id, &into, window, cx),
             ProjectAction::CopyId(id) => cx.write_to_clipboard(ClipboardItem::new_string(id)),
             ProjectAction::Delete(id) => self.delete_project(&id, window, cx),
@@ -769,7 +1068,11 @@ impl Threadbear {
             ProjectAction::ChooseIcon(id) => self.choose_project_icon(&id, window, cx),
             ProjectAction::AutomaticIcon(id) => self.set_project_icon(&id, None, cx),
             ProjectAction::RevealIcon(id) => {
-                if let Some(from) = self.project(&id).and_then(|p| p.icon.as_ref()).and_then(|i| i.from.clone()) {
+                if let Some(from) = self
+                    .project(&id)
+                    .and_then(|p| p.icon.as_ref())
+                    .and_then(|i| i.from.clone())
+                {
                     crate::open_gate::reveal(&from, crate::open_gate::Origin::ThisMac, cx);
                 }
             }
@@ -783,8 +1086,18 @@ impl Threadbear {
     /// The open page's title field, made (or remade for another project) as
     /// the page draws. Return saves it, Escape puts it back, and leaving it
     /// saves too (`TitleField`).
-    pub(crate) fn project_title_field(&mut self, project: &Project, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
-        if let Some(field) = self.projects.title.as_ref().filter(|f| f.project == project.id) {
+    pub(crate) fn project_title_field(
+        &mut self,
+        project: &Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(field) = self
+            .projects
+            .title
+            .as_ref()
+            .filter(|f| f.project == project.id)
+        {
             // The librarian's or an agent's new title shows, unless he's typing.
             let input = field.input.clone();
             let focused = input.read(cx).focus_handle(cx).is_focused(window);
@@ -798,26 +1111,48 @@ impl Threadbear {
             }
             return input;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Title").default_value(project.title.clone()));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Title")
+                .default_value(project.title.clone())
+        });
         // A new title typed and not yet saved: an update's restart waits for it.
         crate::unsent::watch(&input, "a project's new title", cx);
         let id = project.id.clone();
-        let events = cx.subscribe_in(&input, window, move |this, input, ev: &InputEvent, window, cx| match ev {
-            InputEvent::PressEnter { .. } => {
-                this.save_project_title(&id, input.read(cx).value().to_string(), window, cx);
-                window.blur(cx);
-            }
-            InputEvent::Blur => this.save_project_title(&id, input.read(cx).value().to_string(), window, cx),
-            _ => {}
+        let events = cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } => {
+                    this.save_project_title(&id, input.read(cx).value().to_string(), window, cx);
+                    window.blur(cx);
+                }
+                InputEvent::Blur => {
+                    this.save_project_title(&id, input.read(cx).value().to_string(), window, cx)
+                }
+                _ => {}
+            },
+        );
+        self.projects.title = Some(TitleField {
+            project: project.id.clone(),
+            input: input.clone(),
+            _events: events,
         });
-        self.projects.title = Some(TitleField { project: project.id.clone(), input: input.clone(), _events: events });
         input
     }
 
     /// A title that's empty goes back to what it was; one that's changed is
     /// saved.
-    fn save_project_title(&mut self, id: &str, typed: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current) = self.project(id).map(|p| p.title.clone()) else { return };
+    fn save_project_title(
+        &mut self,
+        id: &str,
+        typed: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current) = self.project(id).map(|p| p.title.clone()) else {
+            return;
+        };
         let title = typed.trim().to_owned();
         if title.is_empty() {
             if let Some(field) = self.projects.title.as_ref().filter(|f| f.project == id) {
@@ -827,15 +1162,26 @@ impl Threadbear {
             return;
         }
         if title != current {
-            self.update_project(id, Update { title: Some(title), ..Default::default() }, cx);
+            self.update_project(
+                id,
+                Update {
+                    title: Some(title),
+                    ..Default::default()
+                },
+                cx,
+            );
         }
     }
 
     /// Escape in the title: back as it was.
     pub(crate) fn revert_project_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(field) = self.projects.title.as_ref() else { return };
+        let Some(field) = self.projects.title.as_ref() else {
+            return;
+        };
         let (input, id) = (field.input.clone(), field.project.clone());
-        let Some(current) = self.project(&id).map(|p| p.title.clone()) else { return };
+        let Some(current) = self.project(&id).map(|p| p.title.clone()) else {
+            return;
+        };
         input.update(cx, |s, cx| s.set_value(current, window, cx));
         window.blur(cx);
     }
@@ -843,32 +1189,66 @@ impl Threadbear {
     /// Edit on goals, state or notes: a box with what's there now, the cursor
     /// in it. Not saved as it's typed, so the librarian's or an agent's update
     /// arriving meanwhile doesn't fight the typing.
-    pub(crate) fn start_editing_project(&mut self, id: &str, field: TextField, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = self.project(id).map(|p| field.text(p).to_owned()) else { return };
-        let rows = if field == TextField::Notes { (10, 30) } else { (4, 20) };
-        let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(rows.0, rows.1).default_value(text));
+    pub(crate) fn start_editing_project(
+        &mut self,
+        id: &str,
+        field: TextField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self.project(id).map(|p| field.text(p).to_owned()) else {
+            return;
+        };
+        let rows = if field == TextField::Notes {
+            (10, 30)
+        } else {
+            (4, 20)
+        };
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(rows.0, rows.1)
+                .default_value(text)
+        });
         // Changes not yet saved (they're saved with Save, not as typed): an
         // update's restart waits for them.
         crate::unsent::watch(&input, "a project's goals, state or notes being edited", cx);
         let events = cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| {
             // ⌘Return saves, as the Swift box's Save shortcut does.
-            if let InputEvent::PressEnter { secondary: true, .. } = ev {
+            if let InputEvent::PressEnter {
+                secondary: true, ..
+            } = ev
+            {
                 this.finish_editing_project(true, window, cx);
             }
         });
         input.update(cx, |s, cx| s.focus(window, cx));
         crate::web_panels::keyboard_to_app(window);
-        self.projects.editing = Some(Editing { project: id.to_owned(), field, input, _events: events });
+        self.projects.editing = Some(Editing {
+            project: id.to_owned(),
+            field,
+            input,
+            _events: events,
+        });
         cx.notify();
     }
 
     /// Save or Cancel. A save that changes nothing sends nothing.
-    pub(crate) fn finish_editing_project(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editing) = self.projects.editing.take() else { return };
+    pub(crate) fn finish_editing_project(
+        &mut self,
+        save: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editing) = self.projects.editing.take() else {
+            return;
+        };
         let _ = window;
         if save {
             let draft = editing.input.read(cx).value().to_string();
-            if self.project(&editing.project).is_some_and(|p| editing.field.text(p) != draft) {
+            if self
+                .project(&editing.project)
+                .is_some_and(|p| editing.field.text(p) != draft)
+            {
                 self.update_project(&editing.project, editing.field.update(draft), cx);
             }
         }
@@ -880,9 +1260,15 @@ impl Threadbear {
     /// The open page in the dump (`AppDump.project`).
     #[cfg(feature = "automation")]
     pub(crate) fn project_page_dump(&self) -> Value {
-        let Some(project) = self.open_project() else { return Value::Null };
+        let Some(project) = self.open_project() else {
+            return Value::Null;
+        };
         let threads = rules::threads_in(&project.id, self.threads.values().map(|t| &**t));
-        let sections = rules::Sections::build(&self.projects.list, self.threads.values().map(|t| &**t), now_ms());
+        let sections = rules::Sections::build(
+            &self.projects.list,
+            self.threads.values().map(|t| &**t),
+            now_ms(),
+        );
         json!({
             "id": project.id,
             "title": project.title,
@@ -901,16 +1287,26 @@ impl Threadbear {
 /// Two thread memberships say the same thing (the guess is still what's
 /// there, so a refusal can put back what was).
 fn same_memberships(a: &[Membership], b: &[Membership]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.id == y.id && x.pinned == y.pinned && x.by == y.by)
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.id == y.id && x.pinned == y.pinned && x.by == y.by)
 }
 
 /// `ProjectIconView`: the project's picture, else its symbol, else the title's
 /// first letter on a quiet tile. `size` is in points before zoom; `title`
 /// gives the letter for a project the list hasn't caught up with yet.
-pub(crate) fn project_icon(project: Option<&Project>, title: &str, size: f32, cx: &App) -> AnyElement {
+pub(crate) fn project_icon(
+    project: Option<&Project>,
+    title: &str,
+    size: f32,
+    cx: &App,
+) -> AnyElement {
     let secondary = style::secondary_text(cx);
     let fill = style::primary_opacity(cx, 0.08);
-    let letter: SharedString = threadbear_core::sidebar::project_letter(project.map_or(title, |p| p.title.as_str())).into();
+    let letter: SharedString =
+        threadbear_core::sidebar::project_letter(project.map_or(title, |p| p.title.as_str()))
+            .into();
     let letter_tile = move || {
         div()
             .size(px(size))
@@ -931,11 +1327,31 @@ pub(crate) fn project_icon(project: Option<&Project>, title: &str, size: f32, cx
     if let Some(path) = icon.and_then(|i| i.image_path.clone()) {
         // The letter stands in if the file can't be read (a project on
         // another Mac's disk, or a picture this app can't draw).
-        let fallback = letter_tile.clone();
-        return img(PathBuf::from(path)).size(px(size)).flex_none().rounded(px(size * 0.22)).object_fit(ObjectFit::Contain).with_fallback(fallback).into_any_element();
+        let fallback = letter_tile;
+        return img(PathBuf::from(path))
+            .size(px(size))
+            .flex_none()
+            .rounded(px(size * 0.22))
+            .object_fit(ObjectFit::Contain)
+            .with_fallback(fallback)
+            .into_any_element();
     }
-    if let Some(symbol) = icon.and_then(|i| i.symbol.clone()).filter(|s| icons::try_symbol(s).is_some()) {
-        return div().size(px(size)).flex_none().flex().items_center().justify_center().child(icons::symbol(&symbol).with_size(px(size * 0.78)).text_color(secondary)).into_any_element();
+    if let Some(symbol) = icon
+        .and_then(|i| i.symbol.clone())
+        .filter(|s| icons::try_symbol(s).is_some())
+    {
+        return div()
+            .size(px(size))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                icons::symbol(&symbol)
+                    .with_size(px(size * 0.78))
+                    .text_color(secondary),
+            )
+            .into_any_element();
     }
     letter_tile()
 }
@@ -946,9 +1362,29 @@ pub(crate) fn project_icon(project: Option<&Project>, title: &str, size: f32, cx
 /// makes one a part of another; `search` with `projects` types in the
 /// Projects page's search and says the cards it leaves.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
-    let find = |cx: &App, key: &str| -> Option<String> { app.read(cx).projects.list.iter().find(|p| p.id == key || p.title == key).map(|p| p.id.clone()) };
-    let ids = |cx: &App| app.read(cx).projects.list.iter().map(|p| p.id.clone()).collect::<Vec<_>>().join(", ");
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
+    let find = |cx: &App, key: &str| -> Option<String> {
+        app.read(cx)
+            .projects
+            .list
+            .iter()
+            .find(|p| p.id == key || p.title == key)
+            .map(|p| p.id.clone())
+    };
+    let ids = |cx: &App| {
+        app.read(cx)
+            .projects
+            .list
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     match cmd["cmd"].as_str().unwrap_or("") {
         "project" => {
             if cmd["close"].as_bool() == Some(true) {
@@ -959,24 +1395,59 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
                 });
                 return Ok(json!("ok"));
             }
-            let key = cmd["id"].as_str().or(cmd["title"].as_str()).ok_or_else(|| format!("give an id: {}", ids(cx)))?;
-            let id = find(cx, key).ok_or_else(|| format!("no project {key}; there are {}", ids(cx)))?;
+            let key = cmd["id"]
+                .as_str()
+                .or(cmd["title"].as_str())
+                .ok_or_else(|| format!("give an id: {}", ids(cx)))?;
+            let id =
+                find(cx, key).ok_or_else(|| format!("no project {key}; there are {}", ids(cx)))?;
             app.update(cx, |t, cx| t.open_project_page(&id, cx));
             if cmd["newThread"].as_bool() == Some(true) {
                 app.update(cx, |t, cx| t.new_thread_in_project(&id, cx));
                 let t = app.read(cx);
-                return Ok(json!(format!("ok new thread in {}, folder {}", t.new_thread.picks.project.clone().unwrap_or_else(|| "no project".into()), t.new_thread.picks.cwd.clone().unwrap_or_else(|| "default".into()))));
+                return Ok(json!(format!(
+                    "ok new thread in {}, folder {}",
+                    t.new_thread
+                        .picks
+                        .project
+                        .clone()
+                        .unwrap_or_else(|| "no project".into()),
+                    t.new_thread
+                        .picks
+                        .cwd
+                        .clone()
+                        .unwrap_or_else(|| "default".into())
+                )));
             }
             let _ = window;
             Ok(json!("ok"))
         }
         "projectParent" => {
-            let key = cmd["title"].as_str().ok_or("give a project's title or id as title")?;
+            let key = cmd["title"]
+                .as_str()
+                .ok_or("give a project's title or id as title")?;
             let id = find(cx, key).ok_or("give a project's title or id as title")?;
             let wanted = cmd["parent"].as_str().unwrap_or("");
-            let parent = if wanted.is_empty() { String::new() } else { find(cx, wanted).ok_or_else(|| format!("no project {wanted}"))? };
-            app.update(cx, |t, cx| t.update_project(&id, Update { parent_id: Some(parent), ..Default::default() }, cx));
-            let now = app.read(cx).project(&id).and_then(|p| p.parent_id.clone()).unwrap_or_else(|| "its own".into());
+            let parent = if wanted.is_empty() {
+                String::new()
+            } else {
+                find(cx, wanted).ok_or_else(|| format!("no project {wanted}"))?
+            };
+            app.update(cx, |t, cx| {
+                t.update_project(
+                    &id,
+                    Update {
+                        parent_id: Some(parent),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            let now = app
+                .read(cx)
+                .project(&id)
+                .and_then(|p| p.parent_id.clone())
+                .unwrap_or_else(|| "its own".into());
             Ok(json!(format!("ok {now}")))
         }
         "search" => {
@@ -984,8 +1455,15 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
             let search = app.update(cx, |t, cx| t.projects_search(window, cx));
             search.update(cx, |s, cx| s.set_value(words, window, cx));
             let t = app.read(cx);
-            let titles = t.shown_project_cards(cx).into_iter().map(|(title, _)| title).collect::<Vec<_>>();
-            Ok(json!(format!("ok {}", serde_json::to_string(&titles).unwrap_or_default())))
+            let titles = t
+                .shown_project_cards(cx)
+                .into_iter()
+                .map(|(title, _)| title)
+                .collect::<Vec<_>>();
+            Ok(json!(format!(
+                "ok {}",
+                serde_json::to_string(&titles).unwrap_or_default()
+            )))
         }
         other => Err(format!("unknown projects command {other}")),
     }

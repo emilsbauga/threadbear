@@ -1,6 +1,6 @@
 // The Librarian view's model and words, ported from the Swift app: the
 // runner's background job that files threads in projects, keeps their notes
-// and renames threads that have wandered off (docs/protocol.md, "Projects").
+// and renames threads that have wandered off (docs/protocol/projects.md, "Projects").
 // LibrarianStatus is Project.swift's, the words ProjectSections.swift's
 // LibrarianText, the page's tiles LibrarianHome.swift's LibrarianStats.
 use crate::home::HomeStat;
@@ -130,7 +130,10 @@ fn text(v: &Value, key: &str) -> String {
 }
 
 fn int(v: &Value, key: &str) -> i64 {
-    v[key].as_i64().or_else(|| v[key].as_f64().map(|f| f as i64)).unwrap_or(0)
+    v[key]
+        .as_i64()
+        .or_else(|| v[key].as_f64().map(|f| f as i64))
+        .unwrap_or(0)
 }
 
 fn job(v: &Value) -> Option<Job> {
@@ -153,8 +156,20 @@ fn entry(v: &Value) -> Option<Entry> {
         reason: Reason::from_raw(v["reason"].as_str().unwrap_or("")),
         outcome: Outcome::from_raw(v["outcome"].as_str().unwrap_or("")),
         text: text(v, "text"),
-        project_ids: v["projectIds"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(str::to_owned)).collect(),
-        reasons: v["reasons"].as_object().map(|m| m.iter().filter_map(|(k, why)| Some((k.clone(), why.as_str()?.to_owned()))).collect()).unwrap_or_default(),
+        project_ids: v["projectIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(str::to_owned))
+            .collect(),
+        reasons: v["reasons"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, why)| Some((k.clone(), why.as_str()?.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default(),
         cost_usd: v["costUsd"].as_f64(),
     })
 }
@@ -178,8 +193,18 @@ impl Status {
             reason: v["reason"].as_str().map(str::to_owned),
             paused,
             current: job(&v["current"]),
-            queue: v["queue"].as_array().into_iter().flatten().filter_map(job).collect(),
-            recent: v["recent"].as_array().into_iter().flatten().filter_map(entry).collect(),
+            queue: v["queue"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(job)
+                .collect(),
+            recent: v["recent"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(entry)
+                .collect(),
             looks_today: int(v, "looksToday"),
             skipped_today: int(v, "skippedToday"),
             tokens_today: int(v, "tokensToday"),
@@ -217,7 +242,9 @@ pub fn state_text(status: &Status) -> String {
         State::Idle if status.paused => "Paused".into(),
         State::Idle => "Idle".into(),
         State::Working => match &status.current {
-            Some(current) if !current.thread_title.is_empty() => format!("Looking at \u{201C}{}\u{201D}", current.thread_title),
+            Some(current) if !current.thread_title.is_empty() => {
+                format!("Looking at \u{201C}{}\u{201D}", current.thread_title)
+            }
             Some(_) => "Looking at a thread".into(),
             None => "Working".into(),
         },
@@ -255,7 +282,11 @@ pub fn why(job: &Job) -> String {
 /// Claude login, which uses its room, and what they'd have cost on the API
 /// read as a bill Mike wasn't paying.
 pub fn today(status: &Status) -> String {
-    let mut parts = vec![if status.looks_today == 1 { "1 look today".to_owned() } else { format!("{} looks today", status.looks_today) }];
+    let mut parts = vec![if status.looks_today == 1 {
+        "1 look today".to_owned()
+    } else {
+        format!("{} looks today", status.looks_today)
+    }];
     if status.skipped_today > 0 {
         parts.push(format!("{} skipped", status.skipped_today));
     }
@@ -279,7 +310,9 @@ pub fn tokens(n: i64) -> String {
 /// "in 4m", "now", or "waiting" for one more than a minute overdue: looks
 /// wait while it's paused, off or busy with another.
 pub fn due(due_ms: Option<i64>, now_ms: i64) -> String {
-    let Some(at) = due_ms else { return String::new() };
+    let Some(at) = due_ms else {
+        return String::new();
+    };
     if at - now_ms > -60_000 {
         crate::highlights::schedule_relative(at, now_ms)
     } else {
@@ -327,14 +360,51 @@ pub fn entry_help(entry: &Entry) -> String {
 /// threads (`LibrarianStats.tiles`). `projects_made` is the projects the
 /// librarian started that aren't archived.
 pub fn stats(status: &Status, projects_made: usize, threads: &[&ThreadSummary]) -> Vec<HomeStat> {
-    let filed = threads.iter().filter(|t| t.archived_at.is_none() && t.projects.iter().flatten().any(|p| p.by == "librarian")).count();
+    let filed = threads
+        .iter()
+        .filter(|t| {
+            t.archived_at.is_none() && t.projects.iter().flatten().any(|p| p.by == "librarian")
+        })
+        .count();
     vec![
-        HomeStat::new(status.looks_today, "Looks today", "Threads it has looked at since midnight"),
-        HomeStat::new(status.skipped_today, "Skipped today", "Catch-ups after only a quick reply, skipped without asking the model"),
-        HomeStat::new(tokens(status.tokens_today), "Tokens today", "What today's looks sent and got back"),
-        HomeStat::new(projects_made, if projects_made == 1 { "Project it made" } else { "Projects it made" }, "Projects the librarian started that aren't archived"),
-        HomeStat::new(filed, if filed == 1 { "Thread it filed" } else { "Threads it filed" }, "Open threads the librarian put in a project"),
-        HomeStat::new(status.queue.len(), "Waiting", "Threads queued for a look, listed in the sidebar"),
+        HomeStat::new(
+            status.looks_today,
+            "Looks today",
+            "Threads it has looked at since midnight",
+        ),
+        HomeStat::new(
+            status.skipped_today,
+            "Skipped today",
+            "Catch-ups after only a quick reply, skipped without asking the model",
+        ),
+        HomeStat::new(
+            tokens(status.tokens_today),
+            "Tokens today",
+            "What today's looks sent and got back",
+        ),
+        HomeStat::new(
+            projects_made,
+            if projects_made == 1 {
+                "Project it made"
+            } else {
+                "Projects it made"
+            },
+            "Projects the librarian started that aren't archived",
+        ),
+        HomeStat::new(
+            filed,
+            if filed == 1 {
+                "Thread it filed"
+            } else {
+                "Threads it filed"
+            },
+            "Open threads the librarian put in a project",
+        ),
+        HomeStat::new(
+            status.queue.len(),
+            "Waiting",
+            "Threads queued for a look, listed in the sidebar",
+        ),
     ]
 }
 
@@ -352,21 +422,32 @@ mod tests {
             "recent": [{ "id": "e1", "threadId": "t1", "outcome": "joined", "projectIds": ["p1"], "reasons": { "p1": "Plans the release" } }, { "id": "e2", "outcome": "brand-new" }],
             "looksToday": 14, "skippedToday": 3, "tokensToday": 52_400,
         }));
-        assert_eq!(state_text(&status), "Looking at \u{201C}Rename the Settings tabs\u{201D}");
+        assert_eq!(
+            state_text(&status),
+            "Looking at \u{201C}Rename the Settings tabs\u{201D}"
+        );
         assert_eq!(status.queue.len(), 1, "a job with no thread is left out");
         assert_eq!(status.pending_count(), 2);
         assert_eq!(why(&status.queue[0]), "More turns since the last look");
         assert_eq!(status.recent[1].outcome, Outcome::Other);
         assert_eq!(today(&status), "14 looks today · 3 skipped · 52k tokens");
-        assert_eq!(filing_reasons(&status.recent[0], |_| Some("Threadbear".into())), vec!["Threadbear: Plans the release"]);
-        let off = Status::decode(&json!({ "state": "off", "reason": "Needs a Claude pool to run on" }));
+        assert_eq!(
+            filing_reasons(&status.recent[0], |_| Some("Threadbear".into())),
+            vec!["Threadbear: Plans the release"]
+        );
+        let off =
+            Status::decode(&json!({ "state": "off", "reason": "Needs a Claude pool to run on" }));
         assert_eq!(state_text(&off), "Off: Needs a Claude pool to run on");
-        assert_eq!(state_text(&Status::decode(&json!({ "paused": true }))), "Paused");
+        assert_eq!(
+            state_text(&Status::decode(&json!({ "paused": true }))),
+            "Paused"
+        );
     }
 
     #[test]
     fn pausing_shows_at_once_but_off_stays_off() {
-        let working = Status::decode(&json!({ "state": "working", "current": { "threadId": "t1" } }));
+        let working =
+            Status::decode(&json!({ "state": "working", "current": { "threadId": "t1" } }));
         assert_eq!(working.setting(true).state, State::Paused);
         assert_eq!(working.setting(true).setting(false).state, State::Working);
         let off = Status::decode(&json!({ "state": "off" }));

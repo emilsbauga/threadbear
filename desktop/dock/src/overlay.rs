@@ -28,23 +28,48 @@ pub struct SpringRun {
 /// is the period of the undamped spring, so ω = 2π / response.
 fn spring_config(spring: dl::Spring) -> SpringConfig {
     let omega = (2.0 * std::f64::consts::PI) / spring.response;
-    SpringConfig::new((omega * omega) as f32, (2.0 * spring.damping_fraction * omega) as f32, 1.0)
+    SpringConfig::new(
+        (omega * omega) as f32,
+        (2.0 * spring.damping_fraction * omega) as f32,
+        1.0,
+    )
 }
 
 impl SpringRun {
     pub fn new(spring: dl::Spring, from: f32, to: f32) -> Self {
-        Self { config: spring_config(spring), from, to, started: Instant::now() }
+        Self {
+            config: spring_config(spring),
+            from,
+            to,
+            started: Instant::now(),
+        }
     }
 
     /// Where it is now. Computed from the elapsed time in one analytic step.
     pub fn value(&self, now: Instant) -> f32 {
         let t = now.saturating_duration_since(self.started).as_secs_f32();
-        self.config.step(SpringState { position: self.from, velocity: 0. }, self.to, t).position
+        self.config
+            .step(
+                SpringState {
+                    position: self.from,
+                    velocity: 0.,
+                },
+                self.to,
+                t,
+            )
+            .position
     }
 
     pub fn settled(&self, now: Instant) -> bool {
         let t = now.saturating_duration_since(self.started).as_secs_f32();
-        let s = self.config.step(SpringState { position: self.from, velocity: 0. }, self.to, t);
+        let s = self.config.step(
+            SpringState {
+                position: self.from,
+                velocity: 0.,
+            },
+            self.to,
+            t,
+        );
         (s.position - self.to).abs() < 0.002 && s.velocity.abs() < 0.02
     }
 }
@@ -61,7 +86,12 @@ pub struct Tween {
 
 impl Tween {
     pub fn new(from: dl::Rect, to: dl::Rect, seconds: f64) -> Self {
-        Self { from, to, started: Instant::now(), seconds }
+        Self {
+            from,
+            to,
+            started: Instant::now(),
+            seconds,
+        }
     }
 
     pub fn value(&self, now: Instant) -> dl::Rect {
@@ -84,7 +114,12 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 fn lerp_rect(a: dl::Rect, b: dl::Rect, t: f64) -> dl::Rect {
-    dl::Rect::new(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.width, b.width, t), lerp(a.height, b.height, t))
+    dl::Rect::new(
+        lerp(a.x, b.x, t),
+        lerp(a.y, b.y, t),
+        lerp(a.width, b.width, t),
+        lerp(a.height, b.height, t),
+    )
 }
 
 /// The ghost flying to where the panel landed, or home.
@@ -101,7 +136,14 @@ pub struct LandingRun {
 
 impl LandingRun {
     pub fn new(from: dl::Rect, to: dl::Rect, panel: String, source_size: dl::Size) -> Self {
-        Self { from, to, panel, source_size, spring: SpringRun::new(dl::SETTLE, 0., 1.), fading_since: None }
+        Self {
+            from,
+            to,
+            panel,
+            source_size,
+            spring: SpringRun::new(dl::SETTLE, 0., 1.),
+            fading_since: None,
+        }
     }
 
     fn progress(&self, now: Instant) -> f64 {
@@ -138,13 +180,30 @@ impl Element for RemScaled {
         None
     }
 
-    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         let rem = window.rem_size() * self.scale;
         let child = &mut self.child;
-        (window.with_rem_size(Some(rem), |window| child.request_layout(window, cx)), ())
+        (
+            window.with_rem_size(Some(rem), |window| child.request_layout(window, cx)),
+            (),
+        )
     }
 
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let rem = window.rem_size() * self.scale;
         let child = &mut self.child;
         window.with_rem_size(Some(rem), |window| {
@@ -152,7 +211,16 @@ impl Element for RemScaled {
         });
     }
 
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let rem = window.rem_size() * self.scale;
         let child = &mut self.child;
         window.with_rem_size(Some(rem), |window| child.paint(window, cx));
@@ -160,60 +228,118 @@ impl Element for RemScaled {
 }
 
 /// The drop preview, ghost and compass, positioned in the dock's coordinates.
-pub fn overlay(view: &mut DockView, theme: &DockTheme, window: &mut Window, cx: &mut Context<DockView>) -> AnyElement {
+pub fn overlay(
+    view: &mut DockView,
+    theme: &DockTheme,
+    window: &mut Window,
+    cx: &mut Context<DockView>,
+) -> AnyElement {
     let now = Instant::now();
     let controller = view.model.read(cx).controller.clone();
     let mut any_running = false;
     let mut root = div().absolute().top_0().left_0().size_full();
 
     // The accent-tinted space the panel would take.
-    if let (Some(tween), Some(target)) = (&view.preview, controller.drag.as_ref().and_then(|d| d.target.as_ref()).filter(|t| t.drop.is_some())) {
+    if let (Some(tween), Some(target)) = (
+        &view.preview,
+        controller
+            .drag
+            .as_ref()
+            .and_then(|d| d.target.as_ref())
+            .filter(|t| t.drop.is_some()),
+    ) {
         any_running |= !tween.settled(now);
         let rect = tween.value(now);
         let is_tab = matches!(target.drop, Some(DockDrop::Tab { .. }));
         let panel = controller.drag.as_ref().map(|d| d.panel.clone());
-        root = root.child(drop_preview(view, rect, is_tab, target.in_bar, panel.as_deref(), theme, window, cx));
+        root = root.child(drop_preview(
+            view,
+            rect,
+            is_tab,
+            target.in_bar,
+            panel.as_deref(),
+            theme,
+            window,
+            cx,
+        ));
     }
 
     // The ghost: the panel under the pointer, or flying to where it landed.
-    let ghost: Option<(String, dl::Size, dl::Rect, f32, f32, Option<f32>)> = if let Some(d) = controller.drag.as_ref().filter(|d| d.window.is_none()) {
-        let lift = view.lift.as_ref().map(|r| r.value(now)).unwrap_or(1.);
-        any_running |= view.lift.as_ref().is_some_and(|r| !r.settled(now));
-        // See-through over the compass, so its choices stay readable, and
-        // gone while it would open as a window: the window's outline shows
-        // where instead.
-        let target = d.target.as_ref();
-        let opacity = if target.is_some_and(|t| t.compass.is_some()) {
-            0.45
-        } else if target.is_some_and(|t| t.float.is_some()) {
-            0.
+    let ghost: Option<(String, dl::Size, dl::Rect, f32, f32, Option<f32>)> =
+        if let Some(d) = controller.drag.as_ref().filter(|d| d.window.is_none()) {
+            let lift = view.lift.as_ref().map(|r| r.value(now)).unwrap_or(1.);
+            any_running |= view.lift.as_ref().is_some_and(|r| !r.settled(now));
+            // See-through over the compass, so its choices stay readable, and
+            // gone while it would open as a window: the window's outline shows
+            // where instead.
+            let target = d.target.as_ref();
+            let opacity = if target.is_some_and(|t| t.compass.is_some()) {
+                0.45
+            } else if target.is_some_and(|t| t.float.is_some()) {
+                0.
+            } else {
+                1.
+            };
+            Some((
+                d.panel.clone(),
+                d.source_frame.size(),
+                dl::DockController::ghost_rect(d, lift as f64),
+                lift,
+                opacity,
+                None,
+            ))
+        } else if let Some(run) = &view.landing {
+            let progress = run.progress(now);
+            // The spring's overshoot carries a little past the spot; that's the settle.
+            let rect = lerp_rect(run.from, run.to, progress);
+            let fade = run
+                .fading_since
+                .map(|since| {
+                    (now.saturating_duration_since(since).as_secs_f64() / dl::LANDING_FADE_SECONDS)
+                        .min(1.) as f32
+                })
+                .unwrap_or(0.);
+            any_running = true;
+            // The text grows back to its own size as it lands, so the landing
+            // matches the real panel it cross-fades into, even when the new spot
+            // is a different width from the one it left.
+            let start_scale = dl::DockController::ghost_scale(run.source_size) as f32;
+            let content_scale = start_scale + (1. - start_scale) * (progress as f32).clamp(0., 1.);
+            Some((
+                run.panel.clone(),
+                run.source_size,
+                rect,
+                0.,
+                1. - fade,
+                Some(content_scale),
+            ))
         } else {
-            1.
+            None
         };
-        Some((d.panel.clone(), d.source_frame.size(), dl::DockController::ghost_rect(d, lift as f64), lift, opacity, None))
-    } else if let Some(run) = &view.landing {
-        let progress = run.progress(now) as f64;
-        // The spring's overshoot carries a little past the spot; that's the settle.
-        let rect = lerp_rect(run.from, run.to, progress);
-        let fade = run.fading_since.map(|since| (now.saturating_duration_since(since).as_secs_f64() / dl::LANDING_FADE_SECONDS).min(1.) as f32).unwrap_or(0.);
-        any_running = true;
-        // The text grows back to its own size as it lands, so the landing
-        // matches the real panel it cross-fades into, even when the new spot
-        // is a different width from the one it left.
-        let start_scale = dl::DockController::ghost_scale(run.source_size) as f32;
-        let content_scale = start_scale + (1. - start_scale) * (progress as f32).clamp(0., 1.);
-        Some((run.panel.clone(), run.source_size, rect, 0., 1. - fade, Some(content_scale)))
-    } else {
-        None
-    };
     if let Some((panel, source, rect, lift, opacity, content_scale)) = ghost {
         if opacity > 0.001 {
-            root = root.child(ghost_element(view, &panel, source, rect, lift, opacity, content_scale, theme, window, cx));
+            root = root.child(ghost_element(
+                view,
+                &panel,
+                source,
+                rect,
+                lift,
+                opacity,
+                content_scale,
+                theme,
+                window,
+                cx,
+            ));
         }
     }
 
     // Over the ghost: the pointer is on it, so the ghost would hide it.
-    if let Some(compass) = controller.drag.as_ref().and_then(|d| d.target.as_ref()).and_then(|t| t.compass.as_ref()) {
+    if let Some(compass) = controller
+        .drag
+        .as_ref()
+        .and_then(|d| d.target.as_ref())
+        .and_then(|t| t.compass.as_ref())
+    {
         root = root.child(compass_element(compass, theme));
     }
 
@@ -226,13 +352,25 @@ pub fn overlay(view: &mut DockView, theme: &DockTheme, window: &mut Window, cx: 
 /// A rounded card tilted about its centre, for the ghost's plate. GPUI can
 /// rotate a path but not a subtree of elements, so only the plate tilts; the
 /// content sits inside it, inset a little, level.
-fn paint_tilted_card(bounds: Bounds<Pixels>, radius: f32, degrees: f32, fill: Hsla, stroke: Hsla, window: &mut Window) {
+fn paint_tilted_card(
+    bounds: Bounds<Pixels>,
+    radius: f32,
+    degrees: f32,
+    fill: Hsla,
+    stroke: Hsla,
+    window: &mut Window,
+) {
     let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
     let (hw, hh) = (w / 2., h / 2.);
     let r = radius.min(hw).min(hh);
     let mut points = Vec::with_capacity(4 * 9);
     let steps = 8;
-    let corners = [(hw - r, -hh + r, -90f32), (hw - r, hh - r, 0.), (-hw + r, hh - r, 90.), (-hw + r, -hh + r, 180.)];
+    let corners = [
+        (hw - r, -hh + r, -90f32),
+        (hw - r, hh - r, 0.),
+        (-hw + r, hh - r, 90.),
+        (-hw + r, -hh + r, 180.),
+    ];
     for (cx_, cy, start) in corners {
         for i in 0..=steps {
             let a = (start + 90. * i as f32 / steps as f32).to_radians();
@@ -258,7 +396,22 @@ fn paint_tilted_card(bounds: Bounds<Pixels>, radius: f32, degrees: f32, fill: Hs
 
 /// The panel itself, picked up: drawn at its real size and scaled, so it
 /// shrinks rather than reflowing, with the grab point under the pointer.
-fn ghost_element(view: &DockView, panel: &str, source: dl::Size, rect: dl::Rect, lift: f32, opacity: f32, content_scale: Option<f32>, theme: &DockTheme, window: &mut Window, cx: &mut Context<DockView>) -> AnyElement {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn ghost_element(
+    view: &DockView,
+    panel: &str,
+    source: dl::Size,
+    rect: dl::Rect,
+    lift: f32,
+    opacity: f32,
+    content_scale: Option<f32>,
+    theme: &DockTheme,
+    window: &mut Window,
+    cx: &mut Context<DockView>,
+) -> AnyElement {
     let lift = lift.clamp(0., 1.2);
     let s = content_scale.unwrap_or((rect.width / source.width.max(1.)) as f32);
     let header_h = view.options.header_height * s;
@@ -280,8 +433,25 @@ fn ghost_element(view: &DockView, panel: &str, source: dl::Size, rect: dl::Rect,
         .h(px(rect.height as f32))
         .opacity(opacity)
         .rounded(px(10.))
-        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., shadow_alpha), offset: point(px(0.), px(12. * lift)), blur_radius: px(24. * lift), spread_radius: px(0.), inset: false }])
-        .child(canvas(|_, _, _| {}, move |bounds, _, window, _| paint_tilted_card(bounds, 10., degrees, plate_fill, plate_edge, window)).absolute().top_0().left_0().size_full())
+        .shadow(vec![BoxShadow {
+            color: hsla(0., 0., 0., shadow_alpha),
+            offset: point(px(0.), px(12. * lift)),
+            blur_radius: px(24. * lift),
+            spread_radius: px(0.),
+            inset: false,
+        }])
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    paint_tilted_card(bounds, 10., degrees, plate_fill, plate_edge, window)
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
         .child(
             div()
                 .absolute()
@@ -295,27 +465,56 @@ fn ghost_element(view: &DockView, panel: &str, source: dl::Size, rect: dl::Rect,
                 .flex()
                 .flex_col()
                 .child(
-            div()
-                .flex()
-                .flex_none()
-                .flex_row()
-                .items_center()
-                .gap(px(6. * s))
-                .h(px(header_h))
-                .px(px(14. * s))
-                .border_b_1()
-                .border_color(theme.bar_line)
-                .text_color(theme.secondary)
-                .when_some(icon, |d, i| d.child(RemScaled { child: i, scale: s }))
-                .child(div().text_size(px(title_size)).font_weight(FontWeight::SEMIBOLD).text_color(theme.header_text).child(title)),
+                    div()
+                        .flex()
+                        .flex_none()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6. * s))
+                        .h(px(header_h))
+                        .px(px(14. * s))
+                        .border_b_1()
+                        .border_color(theme.bar_line)
+                        .text_color(theme.secondary)
+                        .when_some(icon, |d, i| d.child(RemScaled { child: i, scale: s }))
+                        .child(
+                            div()
+                                .text_size(px(title_size))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.header_text)
+                                .child(title),
+                        ),
                 )
-                .child(div().flex_1().min_h(px(0.)).overflow_hidden().relative().child(RemScaled { child: body, scale: s })),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_hidden()
+                        .relative()
+                        .child(RemScaled {
+                            child: body,
+                            scale: s,
+                        }),
+                ),
         )
         .into_any_element()
 }
 
 /// The accent-tinted space the panel would take, or the new tab itself, in a bar.
-fn drop_preview(view: &DockView, rect: dl::Rect, is_tab: bool, in_bar: bool, panel: Option<&str>, theme: &DockTheme, window: &mut Window, cx: &mut Context<DockView>) -> AnyElement {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn drop_preview(
+    view: &DockView,
+    rect: dl::Rect,
+    is_tab: bool,
+    in_bar: bool,
+    panel: Option<&str>,
+    theme: &DockTheme,
+    window: &mut Window,
+    cx: &mut Context<DockView>,
+) -> AnyElement {
     if in_bar {
         let content = view.content.clone();
         let icon = panel.and_then(|p| content.icon(p, window, cx));
@@ -337,7 +536,15 @@ fn drop_preview(view: &DockView, rect: dl::Rect, is_tab: bool, in_bar: bool, pan
             .border_color(theme.accent.opacity(0.85))
             .text_color(theme.header_text)
             .when_some(icon, |d, i| d.child(i))
-            .when_some(title, |d, t| d.child(div().text_size(px(view.options.title_size)).font_weight(FontWeight::SEMIBOLD).truncate().child(t)))
+            .when_some(title, |d, t| {
+                d.child(
+                    div()
+                        .text_size(px(view.options.title_size))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .truncate()
+                        .child(t),
+                )
+            })
             .into_any_element();
     }
     let r = rect.inset(4., 4.);
@@ -387,11 +594,24 @@ fn compass_element(state: &CompassState, theme: &DockTheme) -> AnyElement {
             .bg(theme.plate)
             .border_1()
             .border_color(theme.plate_border)
-            .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.45), offset: point(px(0.), px(8.)), blur_radius: px(18.), spread_radius: px(0.), inset: false }]),
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.45),
+                offset: point(px(0.), px(8.)),
+                blur_radius: px(18.),
+                spread_radius: px(0.),
+                inset: false,
+            }]),
     );
     for (item, rect) in items {
-        let hovered = state.hovered == Some(item) || (state.hovered.is_none() && item == CompassItem::Tab);
-        root = root.child(compass_button(item, rect, hovered, state.disabled.contains(&item), theme));
+        let hovered =
+            state.hovered == Some(item) || (state.hovered.is_none() && item == CompassItem::Tab);
+        root = root.child(compass_button(
+            item,
+            rect,
+            hovered,
+            state.disabled.contains(&item),
+            theme,
+        ));
     }
     root = root.child(
         div()
@@ -409,10 +629,24 @@ fn compass_element(state: &CompassState, theme: &DockTheme) -> AnyElement {
     root.into_any_element()
 }
 
-fn compass_button(item: CompassItem, rect: dl::Rect, hovered: bool, disabled: bool, theme: &DockTheme) -> AnyElement {
+fn compass_button(
+    item: CompassItem,
+    rect: dl::Rect,
+    hovered: bool,
+    disabled: bool,
+    theme: &DockTheme,
+) -> AnyElement {
     let lit = hovered && !disabled;
-    let fg = if lit { hsla(0., 0., 1., 1.) } else { theme.secondary };
-    let fill = if lit { theme.accent.opacity(0.9) } else { theme.header_text.opacity(0.07) };
+    let fg = if lit {
+        hsla(0., 0., 1., 1.)
+    } else {
+        theme.secondary
+    };
+    let fill = if lit {
+        theme.accent.opacity(0.9)
+    } else {
+        theme.header_text.opacity(0.07)
+    };
     let glyph: AnyElement = match item {
         CompassItem::Swap => label_glyph("Swap", Lucide::Replace, fg),
         CompassItem::Window => label_glyph("Window", Lucide::ExternalLink, fg),
@@ -455,8 +689,27 @@ fn tab_glyph(color: Hsla) -> AnyElement {
         .relative()
         .w(px(18.))
         .h(px(18.))
-        .child(div().absolute().left_0().top(px(4.)).w(px(18.)).h(px(14.)).rounded(px(2.5)).border(px(1.4)).border_color(color))
-        .child(div().absolute().left(px(1.)).top_0().w(px(8.)).h(px(5.)).rounded(px(1.5)).bg(color))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(4.))
+                .w(px(18.))
+                .h(px(14.))
+                .rounded(px(2.5))
+                .border(px(1.4))
+                .border_color(color),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(1.))
+                .top_0()
+                .w(px(8.))
+                .h(px(5.))
+                .rounded(px(1.5))
+                .bg(color),
+        )
         .into_any_element()
 }
 
@@ -468,7 +721,23 @@ fn split_glyph(edge: DockEdge, color: Hsla) -> AnyElement {
         .relative()
         .w(px(w as f32))
         .h(px(h as f32))
-        .child(div().absolute().size_full().rounded(px(2.5)).border(px(1.4)).border_color(color))
-        .child(div().absolute().left(px(r.x as f32)).top(px(r.y as f32)).w(px(r.width as f32)).h(px(r.height as f32)).rounded(px(1.)).bg(color))
+        .child(
+            div()
+                .absolute()
+                .size_full()
+                .rounded(px(2.5))
+                .border(px(1.4))
+                .border_color(color),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(r.x as f32))
+                .top(px(r.y as f32))
+                .w(px(r.width as f32))
+                .h(px(r.height as f32))
+                .rounded(px(1.))
+                .bg(color),
+        )
         .into_any_element()
 }

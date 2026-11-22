@@ -1,5 +1,5 @@
 // Someone's own changes to the old Swift Mac app, for rebuilding in the
-// GPUI one (docs/protocol.md, "Your changes to the old app").
+// GPUI one (docs/protocol/updates.md, "Your changes to the old app").
 //
 // Other people run forks of Threadbear, and some changed the Swift app
 // (app/, dock/) before it froze. GPUI is different code, so those changes
@@ -33,9 +33,10 @@ import { untrustedGitEnv } from './safe-git.ts';
 import { bareRepoArgs, repoKey } from './upstream.ts';
 
 const MIKES_REPO = 'github.com/mikecann/threadbear';
-// What of app/ the GPUI app still uses, so a change there isn't one to
-// rebuild: the same as scripts/swift-freeze.sh --gpui-shared, which
-// swift-changes.test.ts checks.
+// What of app/ the GPUI app used, so a fork's change there isn't one to
+// rebuild. It moved out on 21 Nov 2026 (mock-runner/, shared/,
+// features/tools), so this only matters for older commits, and stays as it
+// was then.
 export const GPUI_SHARED = /^app\/Tools\/mock-runner\/|^app\/Tools\/(droptarget|post-gesture|realdrag)\.swift$|^app\/Tests\/Fixtures\/|^app\/Sources\/Threadbear\/Resources\/(Art|Rich)\//;
 const MAX_CHANGES = 100;
 const MAX_FILES = 12;

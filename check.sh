@@ -25,7 +25,8 @@
 #                 desktop/ changed, the public site's build (site/)
 #                 when it or the guide changed, and the GPUI specs'
 #                 pairing check (features/verify-pairing.mjs) when a
-#                 spec, its steps or docs/gpui-port/features.md changed
+#                 spec, its steps or docs/gpui-port/features.md changed,
+#                 and their steps' typecheck when features/ changed
 #   --runner      only the runner's typecheck and unit tests, nothing else
 #                 that --quick adds (Convex, web, app tools, iPhone kit), on
 #                 main too: the runner's self-update runs this (deploy.mjs),
@@ -42,15 +43,16 @@
 # The deploy tests (a few minutes) only run when something they cover
 # changed from main: runner/scripts/, launch.mjs, the launcher or the tests
 # themselves. The Swift Mac app is frozen (scripts/swift-freeze.sh), so its
-# build and tests only run when something in app/ or dock/ it builds from
-# changed: not the parts the GPUI app uses (the mock runner, fixtures, art),
+# build and tests only run when something it builds from changed (app/ and
+# dock/, and the iPhone kit's files app/ links to: SWIFT_NEEDS, below): not
+# what it shares with the GPUI app (the mock runner, shared/'s art and Pele),
 # whose own checks are the desktop app's. Except that a change to the mock
 # runner, or to the Swift tests that read it, runs just those tests
 # (swift test --filter, swift-freeze.sh --mock-tests), --quick included,
 # so it needs a Mac. BearDock's tests only run when
 # dock/ changed (the app's own build and tests cover how it uses it). The iPhone app's ThreadbearKit
-# tests run with any of the options when ios/ changed, or a Mac app file
-# ThreadbearKit links to (IOS_NEEDS, below), --quick included, so
+# tests run with any of the options when ios/ or shared/cases changed
+# (IOS_NEEDS, below), --quick included, so
 # `tb land` runs them (MicTapTests guards a crash the phone hit twice). On
 # main itself, with nothing changed, everything but the Swift app runs.
 #
@@ -270,36 +272,48 @@ needed() {
 }
 
 # swift_needed [<regex>]: whether the frozen Swift app's build and tests
-# should run: with --app or --all, or when something it builds from (app/
-# and dock/, or <regex>) changed beyond what the GPUI app shares. Unlike
-# needed, not on main with nothing changed, nor for a change to this file.
+# should run: with --app or --all, or when something it builds from changed
+# (<regex>, else SWIFT_NEEDS). Unlike needed, not on main with nothing
+# changed, nor for a change to this file.
 # grep to /dev/null rather than -q: -q stops reading at the first match, and
 # with pipefail the grep -v before it then fails on the closed pipe (Codex's
 # review, 12 Nov: a few thousand changed files said "nothing changed").
-GPUI_SHARED="$("$ROOT/scripts/swift-freeze.sh" --gpui-shared 2>/dev/null)"
-# Without it, nothing counts as shared: an empty pattern would match every
-# line, and every change would look like none.
-[ -n "$GPUI_SHARED" ] || GPUI_SHARED='^$'
+#
+# What it builds from: app/ and dock/, and the iPhone kit's Swift files and
+# Sentry's package that app/ links to (found from its links, as below). Not
+# what the GPUI app shares with it (the mock runner, shared/'s art and Pele):
+# the Swift app is frozen, and a change to those doesn't build it. The mock
+# runner's own Swift tests still run (swift-freeze.sh --mock-tests).
+ROOT_REAL="$(cd "$ROOT" && pwd -P)"
+# links_out <folder> <into-regex>: the files and folders <folder>'s links
+# lead to outside it, matching <into-regex>, as a regex of paths.
+links_out() {
+  local from="$1" into="$2" link to dir out=""
+  while IFS= read -r link; do
+    to="$(readlink "$link")"
+    dir="$(cd "$(dirname "$link")" && cd "$(dirname "$to")" 2>/dev/null && pwd -P)" || continue
+    case "$dir/" in "$ROOT_REAL/$from"/*|"$ROOT_REAL/$from/") continue ;; "$ROOT_REAL"/*) ;; *) continue ;; esac
+    to="$dir/$(basename "$to")"
+    to="${to#"$ROOT_REAL"/}"
+    printf '%s\n' "$to" | grep -E "$into" >/dev/null || continue
+    out="$out|^$(printf '%s' "$to" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
+    [ -d "$ROOT_REAL/$to" ] && out="$out/"
+  done < <(find "$ROOT_REAL/$from" -type l -not -path '*/.build/*' 2>/dev/null)
+  printf '%s' "$out"
+}
+SWIFT_NEEDS="^(app|dock)/$(links_out app '^ios/')"
 swift_needed() {
   [ "$ALL" = 1 ] || [ "$APP_ONLY" = 1 ] \
-    || printf '%s\n' "$CHANGED" | grep -vE "$GPUI_SHARED" | grep -E "${1:-^(app|dock)/}" >/dev/null
+    || printf '%s\n' "$CHANGED" | grep -E "${1:-$SWIFT_NEEDS}" >/dev/null
 }
 
-# What the iPhone kit's tests cover: ios/, and the Mac app's files that
-# ThreadbearKit builds through links (SlashCommands.swift and the like). On
-# 9 Nov a change to one under app/ used a type the kit didn't have, the
-# kit's tests didn't run as nothing under ios/ had changed, and the iPhone
-# app stopped building on main.
-IOS_NEEDS='^ios/'
-ROOT_REAL="$(cd "$ROOT" && pwd -P)"
-while IFS= read -r link; do
-  to="$(readlink "$link")"
-  dir="$(cd "$(dirname "$link")" && cd "$(dirname "$to")" 2>/dev/null && pwd -P)" || continue
-  case "$dir/$(basename "$to")" in
-    "$ROOT_REAL"/ios/*) ;;
-    "$ROOT_REAL"/*) IOS_NEEDS="$IOS_NEEDS|^$(printf '%s' "${dir#"$ROOT_REAL"/}/$(basename "$to")" | sed 's/[][\\.*^$()+?{}|]/\\&/g')" ;;
-  esac
-done < <(find "$ROOT_REAL/ios" -type l -not -path '*/.build/*' 2>/dev/null)
+# What the iPhone kit's tests cover: ios/, the shared cases, and anything
+# outside ios/ that ThreadbearKit builds through links (none since 21 Nov
+# 2026, when the Swift files it linked from app/ moved into it; the Mac app
+# links to them now). On 9 Nov a change to one under app/ used a type the
+# kit didn't have, the kit's tests didn't run as nothing under ios/ had
+# changed, and the iPhone app stopped building on main.
+IOS_NEEDS="^ios/|^shared/cases/$(links_out ios '.')"
 
 skip() {
   printf 'skip  %-20s (%s; --all runs it)\n' "$1" "$2"
@@ -492,7 +506,7 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   # The app's Node tools (the tour's end-to-end test, the mock runner)
   # aren't typechecked or run here: at least they have to parse. A quote
   # slip in tour-e2e.mjs went unnoticed until it was next run (2 Nov).
-  step "app tools parse" "$ROOT/app/Tools" bash -c 'for f in *.mjs mock-runner/*.mjs; do node --check "$f" || exit 1; done'
+  step "app tools parse" "$ROOT" bash -c 'for f in app/Tools/*.mjs mock-runner/*.mjs; do node --check "$f" || exit 1; done'
   # The Convex functions (convex/), against the generated types in git.
   if [ ! -d "$ROOT/node_modules" ]; then
     step "convex packages" "$ROOT" npm ci --no-audit --no-fund
@@ -542,6 +556,17 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   else
     skip "feature pairing" "no spec, step file or features.md changed"
   fi
+  # The specs' steps and tools are TypeScript Node runs as it is, so a type
+  # error in one showed up only when the Desktop workflow ran that spec
+  # (features/tsconfig.json). A few seconds.
+  if needed '^features/|^desktop/scripts/own-folder\.ts$'; then
+    if [ ! -d "$ROOT/features/node_modules" ]; then
+      step "features packages" "$ROOT/features" npm ci --no-audit --no-fund
+    fi
+    step "features typecheck" "$ROOT/features" npm run typecheck
+  else
+    skip "features typecheck" "nothing under features/ changed"
+  fi
 fi
 if [ "$APP_ONLY" = 0 ]; then
   runner_unit_tests
@@ -555,9 +580,9 @@ if [ "$APP_ONLY" = 0 ]; then
 fi
 # The desktop app's Rust (desktop/, the GPUI port), when something it reads
 # changed: desktop/ itself, the mock runner its client's tests start and the
-# runner code that mock imports, the Mac app's test fixtures core's tests
-# share, and the app's art and diagram library (Pele) the GPUI app builds
-# in. Nothing ran it before, and
+# runner code that mock imports (and the icon it serves), the shared cases
+# core's tests read, and the art and diagram library (Pele) the GPUI app
+# builds in. Nothing ran it before, and
 # on 11 Nov a GPUI change that built a file:// URL outside the open gate
 # landed on main, exactly what core's open_gate_source test is there to catch.
 # --quick runs the small crates' tests (the core logic, the golden
@@ -567,10 +592,10 @@ fi
 # (cargo check of the GPUI app, the dock and every test), a few minutes from
 # cold. On a check host cargo's target folder is kept between runs
 # (scripts/check-remote.sh), so --quick stays about a minute.
-DESKTOP_NEEDS='^desktop/|^features/support/sample\.png$|^site/app-doc-slugs\.json$|^app/Tools/mock-runner/|^runner/src/|^app/Tests/Fixtures/|^app/Sources/Threadbear/Resources/Art/|^app/Sources/Threadbear/Resources/Rich/'
+DESKTOP_NEEDS='^desktop/|^rust-toolchain\.toml$|^features/support/sample\.png$|^site/app-doc-slugs\.json$|^mock-runner/|^runner/src/|^shared/cases/|^shared/art/|^shared/rich/|^shared/icons/'
 # What cargo builds from outside desktop/ (include_bytes!, include_str!), folders
 # or files, for the hashing below.
-DESKTOP_BUILT_IN=(app/Sources/Threadbear/Resources/Art app/Sources/Threadbear/Resources/Rich site/app-doc-slugs.json features/support/sample.png)
+DESKTOP_BUILT_IN=(shared/art shared/rich site/app-doc-slugs.json features/support/sample.png)
 #
 # That kept target is shared by every checkout that sends a run, and cargo
 # calls a crate fresh when none of its files is newer than its last build: a
@@ -619,6 +644,30 @@ cargo_step() {
   step "$name" "$ROOT/desktop" "${LIMITED[@]}" "$CARGO" "$@"
   [ -z "$record" ] || [ "$FAILED" != "$before" ] || mv "$sums" "$record"
 }
+# desktop/'s Rust as cargo fmt writes it (desktop/rustfmt.toml, with the
+# rustfmt of rust-toolchain.toml), --quick included: no build, a few seconds,
+# so it runs wherever this does, this Mac included. The log ends with the fix.
+if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
+  if needed '^desktop/|^rust-toolchain\.toml$'; then
+    FMT_CARGO="$(command -v cargo || true)"
+    [ -n "$FMT_CARGO" ] || [ ! -x "$HOME/.cargo/bin/cargo" ] || FMT_CARGO="$HOME/.cargo/bin/cargo"
+    if [ -n "$FMT_CARGO" ]; then
+      step "desktop format" "$ROOT/desktop" bash -c '"$1" fmt --all -- --check && exit 0
+        printf "\ndesktop/ is not formatted as cargo fmt writes it (the diff is above).\nFix: cd desktop && cargo fmt --all, then commit what it changed.\n"
+        exit 1' _ "$FMT_CARGO"
+    elif [ -n "${THREADBEAR_CHECK_CHANGED_FILE:-}" ]; then
+      log="$LOGS/desktop-format.log"
+      echo "No cargo on this check host, and desktop/ changed: rustup.rs installs it." >"$log"
+      printf 'FAIL  %-20s       %s\n' "desktop format" "$log"
+      FAILED="${FAILED}desktop format|$log
+"
+    else
+      skip "desktop format" "no cargo here: rustup.rs installs it"
+    fi
+  else
+    skip "desktop format" "nothing in desktop/ changed"
+  fi
+fi
 if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   if ! needed "$DESKTOP_NEEDS"; then
     skip "desktop core tests" "nothing desktop/ reads changed"
@@ -643,10 +692,23 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
     CARGO="$(command -v cargo || true)"
     [ -n "$CARGO" ] || [ ! -x "$HOME/.cargo/bin/cargo" ] || CARGO="$HOME/.cargo/bin/cargo"
     # The client's tests start the mock runner, which needs its packages.
-    if [ -n "$CARGO" ] && [ ! -d "$ROOT/app/Tools/mock-runner/node_modules" ]; then
-      step "mock runner packages" "$ROOT/app/Tools/mock-runner" npm ci --no-audit --no-fund
+    if [ -n "$CARGO" ] && [ ! -d "$ROOT/mock-runner/node_modules" ]; then
+      step "mock runner packages" "$ROOT/mock-runner" npm ci --no-audit --no-fund
     fi
     cargo_step "desktop core tests" test --locked --no-fail-fast -p threadbear-core -p threadbear-client
+    # Clippy over the whole workspace, with desktop/Cargo.toml's
+    # [workspace.lints] (each says why it's there) and desktop/clippy.toml,
+    # --quick included, when the Rust or the toolchain changed: a warning
+    # fails it.
+    if needed '^desktop/|^rust-toolchain\.toml$'; then
+      lint_before="$FAILED"
+      cargo_step "desktop lint" clippy --locked --workspace --all-targets -- -D warnings
+      if [ "$FAILED" != "$lint_before" ] && [ -f "$LOGS/desktop-lint.log" ]; then
+        printf '\nClippy found the problems above. To see them: cd desktop && cargo clippy --workspace --all-targets -- -D warnings\n(desktop/Cargo.toml says what each lint is for; an exception needs #[expect(clippy::..., reason = "...")]).\n' >>"$LOGS/desktop-lint.log"
+      fi
+    else
+      skip "desktop lint" "nothing in desktop/ changed"
+    fi
     # The GPUI app itself, which the core tests never build: main's app
     # stopped compiling twice in the week to 13 Nov (tour.rs's
     # panel_available, fixed in 92c48ee73) with every landing's --quick
@@ -654,7 +716,7 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
     # tests, so a test module that stopped compiling fails here too. Only
     # when something it builds from changed: the runner code the mock
     # imports can't break it.
-    if [ "$QUICK" = 1 ] && needed '^desktop/|^app/Sources/Threadbear/Resources/(Art|Rich)/|^features/support/sample\.png$'; then
+    if [ "$QUICK" = 1 ] && needed '^desktop/|^shared/(art|rich)/|^features/support/sample\.png$'; then
       cargo_step "desktop app check" check --locked -p threadbear-gpui --features automation --all-targets
       # And as it's installed (install-app.sh, stage-update.sh: frame-stats,
       # no automation), so code that slips out of its automation cfg fails
@@ -697,8 +759,8 @@ if [ "$RUNNER_ONLY" = 0 ] && [ -n "$SWIFT_MOCK_NEEDS" ] && [ -n "$SWIFT_MOCK_FIL
   if [ "$E2E" = 1 ] && [ "$FALLBACK" != 1 ]; then
     skip "app mock tests" "--e2e runs on this Mac; ./check.sh --quick runs them on a check host"
   else
-  if [ ! -d "$ROOT/app/Tools/mock-runner/node_modules" ]; then
-    step "mock runner packages" "$ROOT/app/Tools/mock-runner" npm ci --no-audit --no-fund
+  if [ ! -d "$ROOT/mock-runner/node_modules" ]; then
+    step "mock runner packages" "$ROOT/mock-runner" npm ci --no-audit --no-fund
   fi
   swift_test_step "app mock tests" "$ROOT/app" env THREADBEAR_REQUIRE_MOCK=1 "${LIMITED[@]}" swift test --disable-keychain --filter "$SWIFT_MOCK_FILTER"
   fi
@@ -709,8 +771,8 @@ elif [ "$QUICK" = 0 ]; then
   # The app's MockRunnerTests run the real WebSocket client (and the
   # runner restart) against the mock, and skip without its packages: in a
   # fresh checkout or worktree they used to skip while this said ok.
-  if [ ! -d "$ROOT/app/Tools/mock-runner/node_modules" ]; then
-    step "mock runner packages" "$ROOT/app/Tools/mock-runner" npm ci --no-audit --no-fund
+  if [ ! -d "$ROOT/mock-runner/node_modules" ]; then
+    step "mock runner packages" "$ROOT/mock-runner" npm ci --no-audit --no-fund
   fi
   step "app build" "$ROOT/app" "${LIMITED[@]}" swift build --disable-keychain
   swift_test_step "app tests" "$ROOT/app" env THREADBEAR_REQUIRE_MOCK=1 "${LIMITED[@]}" swift test --disable-keychain

@@ -112,7 +112,7 @@ struct ThreadView: View {
                         }.accessibilityHint("Read the pending design reviews and answer")
                     }
                 }
-                menu(thread)
+                menu(model.shown(thread))
             }
         }
         .sheet(item: $designReviewShown) { target in
@@ -140,7 +140,7 @@ struct ThreadView: View {
         .task(id: "\(threadId):\(history.lateImagesFrom ?? -1):\(model.connection):\(model.apiVersion ?? 0)") { await followLateImages() }
         .task(id: "\(sent?.id ?? ""):\(model.connection)") { await followCommand() }
         .task(id: answeredCommand) {
-            guard let id = answeredCommand, let status = await model.commandOutcome(id), status.state == .failed,
+            guard let id = answeredCommand, await model.commands.outcome(.answer(threadId), commandId: id, throughTimeOuts: true).isFailed,
                   answeredCommand == id else { return }
             // Refused, even after the runner took it: its card comes back.
             answeredAsks = nil
@@ -327,13 +327,9 @@ struct ThreadView: View {
                     VStack(spacing: 0) {
                         RecapBox(thread: thread)
                         Composer(text: $draft, placeholder: thread.backlog != nil ? "First prompt" : composerPlaceholder(thread), links: thread.links ?? [], threadId: thread.id, provider: thread.provider,
-                                 running: thread.isBusy, stopping: model.stopping.contains(thread.threadId),
+                                 running: thread.isBusy, stopping: model.isStopping(thread.threadId),
                                  onStop: model.canStop ? { model.stop(threadId: thread.threadId) } : nil) { text, photos in
                             await send(text, photos: photos, to: thread)
-                        }
-                        // The turn is over (stopped, or finished first): Stop's spinner goes.
-                        .onChange(of: thread.isBusy) { _, busy in
-                            if !busy { model.stopped(thread.threadId) }
                         }
                     }
                     .onChange(of: thread.backlog, initial: true) {
@@ -760,11 +756,9 @@ struct ThreadView: View {
         dismiss()
     }
 
+    /// Shown at once (AppModel.shown), back with why if it's refused.
     private func change(_ change: ThreadChange) {
-        Task {
-            guard let backend = model.backend else { return }
-            do { _ = try await backend.update(threadId: threadId, change: change) } catch { model.report(error) }
-        }
+        model.change(threadId, change)
     }
 }
 
@@ -924,6 +918,8 @@ struct MessageView: View {
         switch message.role {
         case .user where message.agentHeader != nil:
             AgentMessageCard(header: message.agentHeader!, seq: message.seq)
+        case .user where message.scheduledCard != nil:
+            ScheduledMessageCard(card: message.scheduledCard!, seq: message.seq)
         case .user:
             VStack(alignment: .trailing, spacing: 4) {
                 // The photos he sent, over his words as the Mac shows them,
@@ -940,6 +936,11 @@ struct MessageView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(BubbleBackground().clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous)))
+                }
+                // Drafts he changed on the Mac, sent on the end of his words:
+                // a chip each, opening to the draft he sent.
+                ForEach(Array(edited.drafts.enumerated()), id: \.offset) { _, draft in
+                    EditedDraftChip(draft: draft)
                 }
                 if message.origin == "phone" {
                     PhoneMark()
@@ -968,7 +969,7 @@ struct MessageView: View {
     /// An answer to a review reads as the Mac shows it: the review's icon
     /// and title small, then what he picked and his notes (Mike, 29 Oct).
     @ViewBuilder private var userText: some View {
-        if let review = ReviewAnswer.parse(message.text) {
+        if let review = ReviewAnswer.parse(edited.words) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(review.lines.enumerated()), id: \.offset) { i, line in
                     VStack(alignment: .leading, spacing: 2) {
@@ -1010,14 +1011,47 @@ struct MessageView: View {
     }
 
     /// Without the "[2 pictures]" line once the photos are over it.
-    private var shownText: String { pictures.words(of: message.text, seq: message.seq) }
+    /// His words and the drafts he changed (`DraftBlock.splitEdited`).
+    private var edited: (words: String, drafts: [DraftBlock]) {
+        DraftBlock.splitEdited(message.text) ?? (message.text, [])
+    }
+
+    private var shownText: String { pictures.words(of: edited.words, seq: message.seq) }
 
     private var originText: String? {
         switch message.origin {
-        case "schedule": "Scheduled"
         case "runner": "From the runner"
         default: nil
         }
+    }
+}
+
+/// A message a schedule sent: the same quiet card, a clock with the
+/// schedule's name and when it runs on top, then its words as a reply's
+/// (code blocks and all), not his bubble with the raw `[Scheduled: ...]`
+/// line (Mike, 20 Nov).
+struct ScheduledMessageCard: View {
+    var card: (label: String, body: String)
+    var seq: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text(card.label).lineLimit(2)
+            } icon: {
+                Image(systemName: "clock")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            if !card.body.isEmpty {
+                MarkdownText(card.body, seq: seq)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Look.tile.opacity(0.5), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Look.tile))
     }
 }
 
@@ -1380,5 +1414,36 @@ private struct MarkdownTable: View {
 
     private func frameAlignment(_ i: Int) -> Alignment {
         switch alignment(i) { case .leading: .leading; case .center: .center; case .trailing: .trailing }
+    }
+}
+
+/// A draft Mike changed on the Mac and sent with a message: "Your edited
+/// email", which opens to the draft he sent (the Mac's bubble chip).
+struct EditedDraftChip: View {
+    let draft: DraftBlock
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            Button {
+                open.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: draft.kind == .email ? "envelope" : draft.kind == .slack ? "bubble.left" : "doc.text")
+                        .foregroundStyle(.secondary)
+                    Text(draft.editedLabel).foregroundStyle(.primary)
+                    Text(open ? "Hide" : "Show").foregroundStyle(.tint)
+                }
+                .font(.footnote)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.quaternary))
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Your version of the agent's draft, sent with this message for it to use")
+            if open {
+                DraftBlockView(draft: draft)
+            }
+        }
     }
 }

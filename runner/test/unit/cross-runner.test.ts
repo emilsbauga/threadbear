@@ -1,10 +1,10 @@
-// Starting a thread on another runner (src/cross-runner.ts, docs/protocol.md
+// Starting a thread on another runner (src/cross-runner.ts, docs/protocol/runners.md
 // "Asking another runner"): the main Mac starts it at once; a runner key
 // files a request and waits on a card; the main Mac starts exactly what was
 // filed, only while the card is open, and marks it before answering.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CrossRunner, askedHeader, fingerprint, folderHere, type CrossRunnerDeps, type RequestAnswer, type RunnerRef } from '../../src/cross-runner.ts';
+import { CrossRunner, askedHeader, startedHeader, starterIn, fingerprint, folderHere, type CrossRunnerDeps, type RequestAnswer, type RunnerRef } from '../../src/cross-runner.ts';
 import type { RunnerRequestRow } from '../../src/sync.ts';
 import { ErrorCode, RpcError } from '../../src/protocol.ts';
 import { notSent } from '../../src/relay.ts';
@@ -90,6 +90,7 @@ function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: str
       log.push(`there ${runnerId} ${JSON.stringify(p)}`);
       return { id: 'new-there' };
     },
+    startedThere: (p) => log.push(`watch ${p.threadId} on ${p.runnerName} for ${p.starter}`),
     card: (_threadId, c) => {
       cardCheck = c.check;
       cardInput = c.input;
@@ -112,8 +113,12 @@ function fake(opts: { owner: boolean; loseClaimAnswer?: number; self?: { id: str
 test('on the main Mac: another runner by name starts there straight away; this one is left to the usual create', async () => {
   const f = fake({ owner: true });
   const said = await f.cross.start('t1', { runner: 'cloud box', text: 'hi', cwd: '/root' });
-  assert.match(said!, /Started thread new-there on Cloud box/);
-  assert.deepEqual(f.log, ['there cloud1 {"text":"hi","cwd":"/root"}']);
+  assert.match(said!, /Started thread new-there on Cloud box\. Each reply it ends a turn with comes back here/);
+  // Its first line names the thread that started it, whose replies go back
+  // to it from here (far-reports.ts): a runner key can't send_message it.
+  assert.deepEqual(f.log, [`there cloud1 ${JSON.stringify({ text: `${startedHeader('t1', 'Laptop')}hi`, cwd: '/root' })}`, 'watch new-there on Cloud box for t1']);
+  assert.equal(starterIn(startedHeader('t1', 'Laptop') + 'hi'), 't1');
+  assert.equal(starterIn('[Started by thread t1"] on x'), undefined);
   assert.equal(await f.cross.start('t1', { runner: 'Laptop', text: 'hi' }), undefined);
   assert.equal(await f.cross.start('t1', { runner: 'main', text: 'hi' }), undefined);
   await assert.rejects(f.cross.start('t1', { runner: 'nope', text: 'hi' }), /No runner called nope/);

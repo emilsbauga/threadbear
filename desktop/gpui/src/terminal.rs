@@ -39,7 +39,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use threadbear_core::terminal::{self as rules, KeyAction, Line, ShellBlock, Step, Target, TerminalKey};
+use threadbear_core::terminal::{
+    self as rules, KeyAction, Line, ShellBlock, Step, Target, TerminalKey,
+};
 use threadbear_dock::{DockDrop, DockEdge, DockNode, DockSplit};
 
 // ---------------------------------------------------------------- hooking in
@@ -75,7 +77,10 @@ pub(crate) fn own_keys() -> Vec<KeyBinding> {
     } else {
         chords.extend(["ctrl-c", "ctrl-shift-c", "ctrl-shift-v", "ctrl-shift-a"]);
     }
-    chords.into_iter().map(|chord| KeyBinding::new(chord, NoAction, Some(KEY_CONTEXT))).collect()
+    chords
+        .into_iter()
+        .map(|chord| KeyBinding::new(chord, NoAction, Some(KEY_CONTEXT)))
+        .collect()
 }
 
 pub(crate) const KEY_CONTEXT: &str = "Terminal";
@@ -88,14 +93,22 @@ fn terminals(cx: &App) -> Option<Entity<Terminals>> {
 /// keyboard focus must suppress an older reply selection in text services.
 /// This only reads existing focus handles; it never starts a shell.
 pub(crate) fn has_focus(window: &Window, cx: &App) -> bool {
-    terminals(cx).is_some_and(|terminals| terminals.read(cx).sessions.values().any(|session| session.read(cx).focus.is_focused(window)))
+    terminals(cx).is_some_and(|terminals| {
+        terminals
+            .read(cx)
+            .sessions
+            .values()
+            .any(|session| session.read(cx).focus.is_focused(window))
+    })
 }
 
 /// Whether any shell has something an update's restart would lose, as
 /// quitting ends every shell: a program running in it, or words at its
 /// prompt (core's `holds_a_restart`). Asked once a second (app_update.rs).
 pub(crate) fn holds_a_restart(cx: &App) -> bool {
-    let Some(terminals) = terminals(cx) else { return false };
+    let Some(terminals) = terminals(cx) else {
+        return false;
+    };
     terminals.read(cx).sessions.values().any(|s| {
         let s = s.read(cx);
         rules::holds_a_restart(s.running(), s.shell_alone_in_front(), &s.line)
@@ -106,7 +119,9 @@ pub(crate) fn holds_a_restart(cx: &App) -> bool {
 /// draws again only when it or its shell changes, not with the whole app.
 pub(crate) fn panel_view(cx: &mut App) -> AnyElement {
     match terminals(cx) {
-        Some(t) => AnyView::from(t).cached(StyleRefinement::default().size_full()).into_any_element(),
+        Some(t) => AnyView::from(t)
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element(),
         None => div().into_any_element(),
     }
 }
@@ -115,8 +130,14 @@ pub(crate) fn panel_view(cx: &mut App) -> AnyElement {
 /// up under the thread (a third of its height, as VS Code opens its own) with
 /// the thread's shell, started if it has none, and gives it the keyboard.
 pub(crate) fn toggle(app: &mut Threadbear, window: &mut Window, cx: &mut Context<Threadbear>) {
-    if app.dock.read(cx).controller.is_showing(crate::shell::TERMINAL) {
-        app.dock.update(cx, |m, cx| m.close(crate::shell::TERMINAL, cx));
+    if app
+        .dock
+        .read(cx)
+        .controller
+        .is_showing(crate::shell::TERMINAL)
+    {
+        app.dock
+            .update(cx, |m, cx| m.close(crate::shell::TERMINAL, cx));
         return;
     }
     bring_up(app, cx);
@@ -133,7 +154,12 @@ pub(crate) fn toggle(app: &mut Threadbear, window: &mut Window, cx: &mut Context
 /// Shows the panel with nothing started in it (the automation's `show`, for
 /// what the panel says before a shell is asked for).
 fn show_panel(app: &mut Threadbear, cx: &mut Context<Threadbear>) {
-    if !app.dock.read(cx).controller.is_showing(crate::shell::TERMINAL) {
+    if !app
+        .dock
+        .read(cx)
+        .controller
+        .is_showing(crate::shell::TERMINAL)
+    {
         bring_up(app, cx);
     }
 }
@@ -144,16 +170,22 @@ fn bring_up(app: &mut Threadbear, cx: &mut Context<Threadbear>) {
     use crate::shell::{MAIN, TERMINAL};
     let layout = app.dock.read(cx).layout().clone();
     if layout.contains(TERMINAL) {
-        app.dock.update(cx, |m, cx| m.show(TERMINAL, &[], DockDrop::window(DockEdge::Bottom), cx));
+        app.dock.update(cx, |m, cx| {
+            m.show(TERMINAL, &[], DockDrop::window(DockEdge::Bottom), cx)
+        });
         return;
     }
     let Some(main) = layout.group_containing(MAIN) else {
-        app.dock.update(cx, |m, cx| m.open(TERMINAL, DockDrop::window(DockEdge::Bottom), cx));
+        app.dock.update(cx, |m, cx| {
+            m.open(TERMINAL, DockDrop::window(DockEdge::Bottom), cx)
+        });
         return;
     };
     let mut layout = layout;
     layout.add(TERMINAL, DockDrop::edge(main.id, DockEdge::Bottom));
-    if let Some((id, 2)) = split_around(TERMINAL, &layout.root).map(|s| (s.id.clone(), s.children.len())) {
+    if let Some((id, 2)) =
+        split_around(TERMINAL, &layout.root).map(|s| (s.id.clone(), s.children.len()))
+    {
         layout.set_fractions(&id, &[0.68, 0.32]);
     }
     app.dock.update(cx, |m, cx| m.set_layout(layout, cx));
@@ -161,7 +193,9 @@ fn bring_up(app: &mut Threadbear, cx: &mut Context<Threadbear>) {
 
 /// The split a panel's group sits directly in.
 fn split_around<'a>(panel: &str, node: &'a DockNode) -> Option<&'a DockSplit> {
-    let DockNode::Split(split) = node else { return None };
+    let DockNode::Split(split) = node else {
+        return None;
+    };
     for child in &split.children {
         if let DockNode::Group(group) = child {
             if group.panels.iter().any(|p| p == panel) {
@@ -178,8 +212,18 @@ fn split_around<'a>(panel: &str, node: &'a DockNode) -> Option<&'a DockSplit> {
 /// The shell the open thread's Terminal is (`TerminalTarget.for`).
 fn target_of(app: &Threadbear) -> Target {
     let thread = app.open_thread();
-    let runner = thread.and_then(|t| t.runner_id.as_deref()).map(|id| app.runner_name_of(id));
-    rules::target_for(thread, &crate::files::home_dir(), runner.as_deref(), |path| threadbear_core::open_policy::local_metadata(std::path::Path::new(path)).is_ok_and(|m| m.is_dir()))
+    let runner = thread
+        .and_then(|t| t.runner_id.as_deref())
+        .map(|id| app.runner_name_of(id));
+    rules::target_for(
+        thread,
+        &crate::files::home_dir(),
+        runner.as_deref(),
+        |path| {
+            threadbear_core::open_policy::local_metadata(std::path::Path::new(path))
+                .is_ok_and(|m| m.is_dir())
+        },
+    )
 }
 
 /// The runner said a thread changed (`thread.updated`): an archive it's agreed
@@ -200,8 +244,13 @@ pub(crate) fn thread_deleted(id: &str, cx: &mut App) {
 /// The runner's whole list came back (on connecting): a shell whose thread
 /// isn't in it was deleted while the app wasn't listening, and one whose
 /// thread is archived there goes too (`stopAll(except:)`, `stopArchived`).
-pub(crate) fn list_loaded(threads: &HashMap<String, std::sync::Arc<threadbear_core::inbox::ThreadSummary>>, cx: &mut App) {
-    let Some(terminals) = terminals(cx) else { return };
+pub(crate) fn list_loaded(
+    threads: &HashMap<String, std::sync::Arc<threadbear_core::inbox::ThreadSummary>>,
+    cx: &mut App,
+) {
+    let Some(terminals) = terminals(cx) else {
+        return;
+    };
     let keys: Vec<TerminalKey> = terminals.read(cx).sessions.keys().cloned().collect();
     let keeping: HashSet<&str> = threads.keys().map(String::as_str).collect();
     let mut going = rules::gone(&keys, &keeping);
@@ -235,10 +284,18 @@ pub(crate) fn can_put(app: &Threadbear, block_thread: &str) -> bool {
 /// The same for drawing a play icon, from the target the panel last worked
 /// out, so a frame doesn't look for the thread's folder on disk.
 pub(crate) fn shows_put(block_thread: &str, cx: &App) -> bool {
-    let Some(terminals) = terminals(cx) else { return false };
+    let Some(terminals) = terminals(cx) else {
+        return false;
+    };
     let t = terminals.read(cx);
-    let Some(app) = t.app.upgrade() else { return false };
-    rules::can_put(Some(block_thread), app.read(cx).selected.as_deref(), &t.target)
+    let Some(app) = t.app.upgrade() else {
+        return false;
+    };
+    rules::can_put(
+        Some(block_thread),
+        app.read(cx).selected.as_deref(),
+        &t.target,
+    )
 }
 
 /// The app, for a shell block's icons, which are drawn where there's none to hand.
@@ -261,12 +318,23 @@ pub(crate) enum PutOutcome {
 /// A shell block's play icon (`putInTerminal`): the command at its thread's
 /// prompt, checked again here against the thread it came from, with the panel
 /// brought up for it. None when it can't go there (or one is on its way).
-pub(crate) fn put_in_terminal(app: &mut Threadbear, block: ShellBlock, block_thread: &str, window: &mut Window, cx: &mut Context<Threadbear>) -> Option<Task<Option<PutOutcome>>> {
+pub(crate) fn put_in_terminal(
+    app: &mut Threadbear,
+    block: ShellBlock,
+    block_thread: &str,
+    window: &mut Window,
+    cx: &mut Context<Threadbear>,
+) -> Option<Task<Option<PutOutcome>>> {
     if !can_put(app, block_thread) {
         return None;
     }
     let target = target_of(app);
-    if !app.dock.read(cx).controller.is_showing(crate::shell::TERMINAL) {
+    if !app
+        .dock
+        .read(cx)
+        .controller
+        .is_showing(crate::shell::TERMINAL)
+    {
         bring_up(app, cx);
     }
     let terminals = terminals(cx)?;
@@ -304,7 +372,12 @@ impl Terminals {
         let watching = cx.observe(app, |this: &mut Terminals, app, cx| {
             let a = app.read(cx);
             let thread = a.open_thread();
-            let seen = (a.selected.clone(), thread.map(|t| t.cwd.clone()).unwrap_or_default(), thread.is_some_and(|t| t.is_archived()), thread.and_then(|t| t.runner_id.clone()));
+            let seen = (
+                a.selected.clone(),
+                thread.map(|t| t.cwd.clone()).unwrap_or_default(),
+                thread.is_some_and(|t| t.is_archived()),
+                thread.and_then(|t| t.runner_id.clone()),
+            );
             if this.seen.as_ref() != Some(&seen) {
                 let target = target_of(a);
                 this.seen = Some(seen);
@@ -317,24 +390,59 @@ impl Terminals {
             {
                 // Those still being ended after their thread went too: the
                 // thread that would finish them goes with the app.
-                let mut shells: Vec<(i32, Born)> = this.sessions.values().filter_map(|s| s.read(cx).process()).collect();
-                shells.extend(ENDING.lock().unwrap_or_else(|e| e.into_inner()).iter().copied());
+                let mut shells: Vec<(i32, Born)> = this
+                    .sessions
+                    .values()
+                    .filter_map(|s| s.read(cx).process())
+                    .collect();
+                shells.extend(
+                    ENDING
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .copied(),
+                );
                 end_shells_now(&shells);
             }
             #[cfg(not(unix))]
             {
-                let closing: Vec<_> = this.sessions.values().map(|s| s.update(cx, |s, _| { s.shut_down(); s.shared.clone() })).collect();
+                let closing: Vec<_> = this
+                    .sessions
+                    .values()
+                    .map(|s| {
+                        s.update(cx, |s, _| {
+                            s.shut_down();
+                            s.shared.clone()
+                        })
+                    })
+                    .collect();
                 // GPUI gives returned quit futures only 200ms. Like the Unix
                 // branch, finish closing here before returning that future.
                 let deadline = Instant::now() + Duration::from_secs(5);
-                while closing.iter().any(|s| !s.reader_closed.load(Ordering::Acquire)) && Instant::now() < deadline {
+                while closing
+                    .iter()
+                    .any(|s| !s.reader_closed.load(Ordering::Acquire))
+                    && Instant::now() < deadline
+                {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
             async {}
         });
         let home = crate::files::home_dir();
-        Terminals { app: app.downgrade(), sessions: HashMap::new(), target: Target { key: TerminalKey::Home, cwd: home, note: None }, seen: None, putting: HashSet::new(), last_size: None, _subs: vec![watching, quitting] }
+        Terminals {
+            app: app.downgrade(),
+            sessions: HashMap::new(),
+            target: Target {
+                key: TerminalKey::Home,
+                cwd: home,
+                note: None,
+            },
+            seen: None,
+            putting: HashSet::new(),
+            last_size: None,
+            _subs: vec![watching, quitting],
+        }
     }
 
     fn set_target(&mut self, target: Target, cx: &mut Context<Self>) {
@@ -375,7 +483,9 @@ impl Terminals {
 
     /// A new shell in place of one that has exited (New Shell).
     fn restart(&mut self, key: &TerminalKey, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(old) = self.sessions.remove(key) else { return };
+        let Some(old) = self.sessions.remove(key) else {
+            return;
+        };
         let target = old.read(cx).target.clone();
         old.update(cx, |s, _| s.shut_down());
         let session = self.open(&target, cx);
@@ -385,11 +495,21 @@ impl Terminals {
     /// Types `block` at the target's prompt, starting a shell if it needs one,
     /// and gives it the keyboard (`Terminals.put`). Never presses Return: the
     /// command came out of a reply, so a person gets to read it first.
-    fn put(&mut self, block: ShellBlock, target: Target, window: &mut Window, cx: &mut Context<Self>) -> Task<Option<PutOutcome>> {
+    fn put(
+        &mut self,
+        block: ShellBlock,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<PutOutcome>> {
         if !self.putting.insert(target.key.clone()) {
             return Task::ready(None);
         }
-        if self.sessions.get(&target.key).is_some_and(|s| s.read(cx).exited) {
+        if self
+            .sessions
+            .get(&target.key)
+            .is_some_and(|s| s.read(cx).exited)
+        {
             if let Some(old) = self.sessions.remove(&target.key) {
                 old.update(cx, |s, _| s.shut_down());
             }
@@ -408,7 +528,11 @@ impl Terminals {
                     step
                 });
                 match step {
-                    Step::Wait => cx.background_executor().timer(Duration::from_millis(50)).await,
+                    Step::Wait => {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(50))
+                            .await
+                    }
                     Step::Type => break Some(PutOutcome::Typed),
                     Step::AlreadyThere => break Some(PutOutcome::AlreadyThere),
                     Step::Occupied => break Some(PutOutcome::Occupied),
@@ -425,7 +549,8 @@ impl Render for Terminals {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let target = self.target.clone();
         let session = self.sessions.get(&target.key).cloned();
-        let folder = threadbear_core::new_thread::abbreviate_home(&target.cwd, &crate::files::home_dir());
+        let folder =
+            threadbear_core::new_thread::abbreviate_home(&target.cwd, &crate::files::home_dir());
         let mut panel = v_flex().id("terminal-panel").size_full();
         if let Some(note) = target.note.clone() {
             // Over the terminal, when its folder isn't the thread's.
@@ -441,19 +566,26 @@ impl Render for Terminals {
                     .text_color(style::secondary_text(cx))
                     .line_clamp(2)
                     .child(note.clone()),
-                note, gpui_kit::Role::GenericContainer,
+                note,
+                gpui_kit::Role::GenericContainer,
             ));
         }
         let body = match session {
-            Some(session) => div().flex_1().min_h_0().w_full().child(session).into_any_element(),
+            Some(session) => div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(session)
+                .into_any_element(),
             // No shell for this thread yet: one starts on a click here or ⌘J,
             // not just from looking.
             None => {
-                let key = target.key.clone();
+                let key = target.key;
                 // Its tip is what a spec presses it by, as in the Swift app.
                 let tip = format!("Start your login shell in {folder}");
                 let start = div()
-                    .id("terminal-start").role(Role::Button)
+                    .id("terminal-start")
+                    .role(Role::Button)
                     .flex_1()
                     .min_h_0()
                     .w_full()
@@ -475,7 +607,11 @@ impl Render for Terminals {
                             .text_size(px(style::size::LABEL))
                             .line_height(px(style::natural_line(style::size::LABEL)))
                             .text_color(style::secondary_text(cx))
-                            .child(crate::icons::symbol("terminal").with_size(px(14.)).text_color(style::secondary_text(cx)))
+                            .child(
+                                crate::icons::symbol("terminal")
+                                    .with_size(px(14.))
+                                    .text_color(style::secondary_text(cx)),
+                            )
                             .child("Start a shell"),
                     );
                 crate::highlights::tipped(start, tip).into_any_element()
@@ -498,7 +634,12 @@ pub(crate) struct GridSize {
 
 impl Default for GridSize {
     fn default() -> Self {
-        GridSize { cols: 80, rows: 24, cell_width: 8., cell_height: 17. }
+        GridSize {
+            cols: 80,
+            rows: 24,
+            cell_width: 8.,
+            cell_height: 17.,
+        }
     }
 }
 
@@ -516,7 +657,12 @@ impl Dimensions for GridSize {
 
 impl GridSize {
     fn window_size(self) -> WindowSize {
-        WindowSize { num_lines: self.rows, num_cols: self.cols, cell_width: self.cell_width.round() as u16, cell_height: self.cell_height.round() as u16 }
+        WindowSize {
+            num_lines: self.rows,
+            num_cols: self.cols,
+            cell_width: self.cell_width.round() as u16,
+            cell_height: self.cell_height.round() as u16,
+        }
     }
 }
 
@@ -536,7 +682,10 @@ enum Note {
     /// A program put this on the clipboard (OSC 52; reading it back is off).
     Copy(String),
     /// A program asked what colour one of its numbered colours is.
-    Colour(usize, Arc<dyn Fn(alacritty_terminal::vte::ansi::Rgb) -> String + Sync + Send + 'static>),
+    Colour(
+        usize,
+        Arc<dyn Fn(alacritty_terminal::vte::ansi::Rgb) -> String + Sync + Send + 'static>,
+    ),
 }
 
 /// Shared between the shell's reader thread and the app.
@@ -652,16 +801,29 @@ impl Session {
     fn start(target: Target, size: GridSize, cx: &mut Context<Self>) -> Self {
         let (notes, mut incoming) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
-            dirty: AtomicBool::new(false), exited: AtomicBool::new(false),
+            dirty: AtomicBool::new(false),
+            exited: AtomicBool::new(false),
             #[cfg(not(unix))]
             reader_closed: AtomicBool::new(false),
-            sender: OnceLock::new(), size: Mutex::new(size.window_size()), notes
+            sender: OnceLock::new(),
+            size: Mutex::new(size.window_size()),
+            notes,
         });
         // SwiftTerm keeps 500 lines back, which loses a build's errors, so
         // this keeps alacritty's 10,000. The cursor blinks, as SwiftTerm's
         // does, unless a program asks for a steady one.
-        let config = Config { default_cursor_style: CursorStyle { shape: CursorShape::Block, blinking: true }, ..Config::default() };
-        let term = Arc::new(FairMutex::new(Term::new(config, &size, Listener(shared.clone()))));
+        let config = Config {
+            default_cursor_style: CursorStyle {
+                shape: CursorShape::Block,
+                blinking: true,
+            },
+            ..Config::default()
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &size,
+            Listener(shared.clone()),
+        )));
         let events = cx.spawn(async move |this, cx| {
             while let Some(note) = incoming.recv().await {
                 if this.update(cx, |s, cx| s.heard(note, cx)).is_err() {
@@ -672,7 +834,9 @@ impl Session {
         // A beat every 0.7 s that only redraws while the terminal has the
         // keyboard: an idle terminal behind others costs nothing.
         let blink = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_millis(700)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(700))
+                .await;
             let alive = this.update(cx, |s, cx| {
                 if std::mem::take(&mut s.blink_kept) || !s.focused {
                     if !s.blink_shown {
@@ -729,6 +893,10 @@ impl Session {
         let shell = std::env::var("SHELL").ok();
         let lang = std::env::var("LANG").ok();
         let launch = rules::launch(rules::Os::current(), shell.as_deref(), lang.as_deref());
+        #[allow(
+            clippy::needless_update,
+            reason = "Windows' tty::Options has a field more than the others"
+        )]
         let options = tty::Options {
             shell: Some(tty::Shell::new(launch.program, launch.args)),
             working_directory: Some(std::path::PathBuf::from(&self.target.cwd)),
@@ -748,7 +916,13 @@ impl Session {
             self.born = born(pid);
             self.pty = pty.file().as_fd().try_clone_to_owned().ok();
         }
-        let event_loop = EventLoop::new(self.term.clone(), Listener(self.shared.clone()), pty, true, false)?;
+        let event_loop = EventLoop::new(
+            self.term.clone(),
+            Listener(self.shared.clone()),
+            pty,
+            true,
+            false,
+        )?;
         let _ = self.shared.sender.set(event_loop.channel());
         // Its thread runs until the shell ends or is told to stop; nothing
         // waits for it.
@@ -838,7 +1012,8 @@ impl Session {
     /// The shell's process, while it's running.
     #[cfg(unix)]
     fn process(&self) -> Option<(i32, Born)> {
-        Some((self.pid?, self.born?)).filter(|_| self.running())
+        let (pid, born) = (self.pid?, self.born?);
+        self.running().then_some((pid, born))
     }
 
     fn running(&self) -> bool {
@@ -850,14 +1025,22 @@ impl Session {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd as _;
-            let (Some(pid), Some(pty), Some(shell)) = (self.pid, self.pty.as_ref(), self.shell.as_ref()) else { return false };
+            let (Some(pid), Some(pty), Some(shell)) =
+                (self.pid, self.pty.as_ref(), self.shell.as_ref())
+            else {
+                return false;
+            };
             if !self.running() {
                 return false;
             }
+            // SAFETY: takes a descriptor by value and touches no memory of
+            // ours; `pty` is borrowed from self, so the fd is open.
             let group = unsafe { libc::tcgetpgrp(pty.as_raw_fd()) };
             // Its own group has the terminal, and it's still the shell:
             // `exec ssh` and `exec vim` keep both its pid and its group.
-            group > 0 && group == pid && program_of(pid).is_some_and(|now| rules::is_the_shell(shell, &now))
+            group > 0
+                && group == pid
+                && program_of(pid).is_some_and(|now| rules::is_the_shell(shell, &now))
         }
         #[cfg(not(unix))]
         false
@@ -888,7 +1071,13 @@ impl Session {
             return Step::Busy;
         }
         let starting = self.started.elapsed().as_secs_f64() < rules::STARTING_FOR_SECS;
-        rules::step(block, self.shell_alone_in_front(), self.mode().contains(TermMode::BRACKETED_PASTE), starting, &self.line)
+        rules::step(
+            block,
+            self.shell_alone_in_front(),
+            self.mode().contains(TermMode::BRACKETED_PASTE),
+            starting,
+            &self.line,
+        )
     }
 
     /// Pasted as the terminal's own paste is, in brackets (only ever typed
@@ -952,7 +1141,10 @@ impl Session {
             // typed after its letter rides on that letter's cell.
             for c in 0..cols {
                 let cell = &row[Column(c)];
-                if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
                     continue;
                 }
                 line.push(cell.c);
@@ -971,11 +1163,20 @@ impl Session {
 
     // ---- Keys and text ----
 
-    pub(crate) fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let k = &event.keystroke;
         let m = k.modifiers;
         // ⌘ on the Mac, Control and Shift elsewhere, as terminals there have it.
-        let command = if cfg!(target_os = "macos") { m.platform } else { m.control && m.shift };
+        let command = if cfg!(target_os = "macos") {
+            m.platform
+        } else {
+            m.control && m.shift
+        };
         if command {
             match k.key.as_str() {
                 "c" => {
@@ -1000,9 +1201,20 @@ impl Session {
         }
         let modes = {
             let mode = self.mode();
-            rules::Modes { app_cursor: mode.contains(TermMode::APP_CURSOR), alt_screen: mode.contains(TermMode::ALT_SCREEN), option_is_meta: true }
+            rules::Modes {
+                app_cursor: mode.contains(TermMode::APP_CURSOR),
+                alt_screen: mode.contains(TermMode::ALT_SCREEN),
+                option_is_meta: true,
+            }
         };
-        let key = rules::Key { key: &k.key, typed: k.key_char.as_deref(), shift: m.shift, control: m.control, alt: m.alt, command: m.platform };
+        let key = rules::Key {
+            key: &k.key,
+            typed: k.key_char.as_deref(),
+            shift: m.shift,
+            control: m.control,
+            alt: m.alt,
+            command: m.platform,
+        };
         match rules::encode_key(&key, modes) {
             KeyAction::Send(bytes) => {
                 self.note_key(&k.key, m);
@@ -1011,7 +1223,11 @@ impl Session {
             }
             KeyAction::ScrollPage(direction) => {
                 let mut term = self.term.lock();
-                term.scroll_display(if direction < 0 { Scroll::PageUp } else { Scroll::PageDown });
+                term.scroll_display(if direction < 0 {
+                    Scroll::PageUp
+                } else {
+                    Scroll::PageDown
+                });
                 drop(term);
                 cx.notify();
                 cx.stop_propagation();
@@ -1028,7 +1244,8 @@ impl Session {
     /// Keys for a running program (vim's `q`) say nothing about the prompt.
     fn note_key(&mut self, key: &str, m: Modifiers) {
         if self.shell_in_front() {
-            self.line = rules::line_after_key(&self.line, key, m.control, m.alt, m.shift, m.platform);
+            self.line =
+                rules::line_after_key(&self.line, key, m.control, m.alt, m.shift, m.platform);
         }
     }
 
@@ -1132,7 +1349,11 @@ impl Session {
         let top = term.grid().topmost_line();
         let bottom = term.grid().bottommost_line();
         let last = term.grid().last_column();
-        let mut selection = Selection::new(SelectionType::Simple, GridPoint::new(top, Column(0)), Side::Left);
+        let mut selection = Selection::new(
+            SelectionType::Simple,
+            GridPoint::new(top, Column(0)),
+            Side::Left,
+        );
         selection.update(GridPoint::new(bottom, last), Side::Right);
         term.selection = Some(selection);
         drop(term);
@@ -1153,7 +1374,11 @@ impl Session {
         }
         let col = (x / w).floor().clamp(0., cols - 1.);
         let row = (y / h).floor().clamp(0., rows - 1.);
-        let side = if x - col * w < w / 2. { Side::Left } else { Side::Right };
+        let side = if x - col * w < w / 2. {
+            Side::Left
+        } else {
+            Side::Right
+        };
         Some((col as usize, row as usize, side))
     }
 
@@ -1174,16 +1399,26 @@ impl Session {
         let term = self.term.lock();
         let grid = term.grid();
         let cols = term.columns();
-        if col >= cols || row >= term.screen_lines() { return None; }
+        if col >= cols || row >= term.screen_lines() {
+            return None;
+        }
         // Output can clear scrollback between two locks. Map the click and
         // inspect its cells under this one lock, so it stays the same row.
-        let point = GridPoint::new(GridLine(row as i32 - grid.display_offset() as i32), Column(col));
+        let point = GridPoint::new(
+            GridLine(row as i32 - grid.display_offset() as i32),
+            Column(col),
+        );
         let cell = &grid[point];
         if let Some(link) = cell.hyperlink() {
             return (link.uri().len() <= 4096).then(|| link.uri().to_owned());
         }
         let mut first = point.line;
-        while first > grid.topmost_line() && ((point.line.0 - first.0 + 2) as usize) * cols <= 4096 && grid[GridLine(first.0 - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+        while first > grid.topmost_line()
+            && ((point.line.0 - first.0 + 2) as usize) * cols <= 4096
+            && grid[GridLine(first.0 - 1)][Column(cols - 1)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        {
             first = GridLine(first.0 - 1);
         }
         let mut chars = Vec::new();
@@ -1192,51 +1427,106 @@ impl Session {
         loop {
             for column in 0..cols {
                 let cell = &grid[line][Column(column)];
-                if line == point.line && column == col { clicked = Some(chars.len()); }
-                if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                    if line == point.line && column == col { clicked = chars.len().checked_sub(1); }
+                if line == point.line && column == col {
+                    clicked = Some(chars.len());
+                }
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    if line == point.line && column == col {
+                        clicked = chars.len().checked_sub(1);
+                    }
                     continue;
                 }
                 chars.push(cell.c);
                 chars.extend(cell.zerowidth().into_iter().flatten());
-                if chars.len() > 4096 { return None; }
+                if chars.len() > 4096 {
+                    return None;
+                }
             }
-            if line >= grid.bottommost_line() || !grid[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE) { break; }
+            if line >= grid.bottommost_line()
+                || !grid[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE)
+            {
+                break;
+            }
             line = GridLine(line.0 + 1);
         }
         rules::link_word(&chars, clicked?)
     }
 
     fn open_link_at(&self, col: usize, row: usize, cx: &mut App) -> bool {
-        let Some(link) = self.link_at(col, row) else { return false };
-        let link = if link.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("file://")) {
+        let Some(link) = self.link_at(col, row) else {
+            return false;
+        };
+        let link = if link
+            .get(..7)
+            .is_some_and(|s| s.eq_ignore_ascii_case("file://"))
+        {
             rules::local_file_url(&link, &system_hostname()).unwrap_or(link)
-        } else { link };
+        } else {
+            link
+        };
         let home = crate::files::home_dir();
-        let target = rules::link_target(&link, &self.target.cwd, &home, |p| threadbear_core::open_policy::local_metadata(std::path::Path::new(p)).is_ok());
+        let target = rules::link_target(&link, &self.target.cwd, &home, |p| {
+            threadbear_core::open_policy::local_metadata(std::path::Path::new(p)).is_ok()
+        });
         match target {
-            Some(rules::Link::File(path)) => crate::open_gate::open_file(&path, crate::open_gate::Origin::ThisMac, cx),
-            Some(rules::Link::Url(url)) => crate::open_gate::open_link(&url, crate::open_gate::Origin::ThisMac, &self.target.cwd, cx),
+            Some(rules::Link::File(path)) => {
+                crate::open_gate::open_file(&path, crate::open_gate::Origin::ThisMac, cx)
+            }
+            Some(rules::Link::Url(url)) => crate::open_gate::open_link(
+                &url,
+                crate::open_gate::Origin::ThisMac,
+                &self.target.cwd,
+                cx,
+            ),
             None => return false,
         }
         true
     }
 
-    fn report(&self, button: rules::MouseButton, pressed: bool, motion: bool, col: usize, row: usize, m: Modifiers) {
+    fn report(
+        &self,
+        button: rules::MouseButton,
+        pressed: bool,
+        motion: bool,
+        col: usize,
+        row: usize,
+        m: Modifiers,
+    ) {
         let sgr = self.mode().contains(TermMode::SGR_MOUSE);
-        if let Some(bytes) = rules::mouse_report(button, pressed, motion, col, row, m.shift, m.alt, m.control, sgr) {
+        if let Some(bytes) = rules::mouse_report(
+            button, pressed, motion, col, row, m.shift, m.alt, m.control, sgr,
+        ) {
             self.write(bytes);
         }
     }
 
-    pub(crate) fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus, cx);
         crate::web_panels::keyboard_to_app(window);
-        let Some((col, row, side)) = self.cell_at(event.position, false) else { return };
+        let Some((col, row, side)) = self.cell_at(event.position, false) else {
+            return;
+        };
         // Command-click (Control-click off the Mac) follows a link; ordinary
         // drags and the program's mouse reporting keep their usual behavior.
-        let follow = if cfg!(target_os = "macos") { event.modifiers.platform } else { event.modifiers.control };
-        if follow && !event.modifiers.shift && event.button == MouseButton::Left && event.click_count == 1 && self.open_link_at(col, row, cx) {
+        let follow = if cfg!(target_os = "macos") {
+            event.modifiers.platform
+        } else {
+            event.modifiers.control
+        };
+        if follow
+            && !event.modifiers.shift
+            && event.button == MouseButton::Left
+            && event.click_count == 1
+            && self.open_link_at(col, row, cx)
+        {
             cx.stop_propagation();
             return;
         }
@@ -1256,7 +1546,11 @@ impl Session {
         }
         let point = self.grid_point(col, row);
         let mut term = self.term.lock();
-        match (event.click_count, event.modifiers.shift, term.selection.as_mut()) {
+        match (
+            event.click_count,
+            event.modifiers.shift,
+            term.selection.as_mut(),
+        ) {
             // Shift-click carries the selection on to here.
             (1, true, Some(selection)) => selection.update(point, side),
             (n, _, _) => {
@@ -1279,11 +1573,23 @@ impl Session {
             self.dragging = None;
             return;
         }
-        let Some((col, row, side)) = self.cell_at(event.position, true) else { return };
+        let Some((col, row, side)) = self.cell_at(event.position, true) else {
+            return;
+        };
         match drag {
             Drag::Reporting => {
-                if self.mode().intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
-                    self.report(rules::MouseButton::Left, true, true, col, row, event.modifiers);
+                if self
+                    .mode()
+                    .intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+                {
+                    self.report(
+                        rules::MouseButton::Left,
+                        true,
+                        true,
+                        col,
+                        row,
+                        event.modifiers,
+                    );
                 }
             }
             Drag::Selecting => {
@@ -1299,7 +1605,9 @@ impl Session {
     pub(crate) fn mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         // Every button let go in the window comes here; only a drag that
         // started in the terminal is its business.
-        let Some(drag) = self.dragging.take() else { return };
+        let Some(drag) = self.dragging.take() else {
+            return;
+        };
         if drag == Drag::Reporting {
             if let Some((col, row, _)) = self.cell_at(event.position, true) {
                 let button = match event.button {
@@ -1333,8 +1641,14 @@ impl Session {
         self.scroll_rest -= lines as f32;
         let mode = self.mode();
         if self.reports_mouse(event.modifiers.shift) {
-            let (col, row, _) = self.cell_at(event.position, true).unwrap_or((0, 0, Side::Left));
-            let button = if lines > 0 { rules::MouseButton::WheelUp } else { rules::MouseButton::WheelDown };
+            let (col, row, _) = self
+                .cell_at(event.position, true)
+                .unwrap_or((0, 0, Side::Left));
+            let button = if lines > 0 {
+                rules::MouseButton::WheelUp
+            } else {
+                rules::MouseButton::WheelDown
+            };
             for _ in 0..lines.unsigned_abs().min(20) {
                 self.report(button, true, false, col, row, event.modifiers);
             }
@@ -1345,7 +1659,11 @@ impl Session {
                 (false, true) => "\x1bOB",
                 (false, false) => "\x1b[B",
             };
-            self.write(arrow.repeat(lines.unsigned_abs().min(20) as usize).into_bytes());
+            self.write(
+                arrow
+                    .repeat(lines.unsigned_abs().min(20) as usize)
+                    .into_bytes(),
+            );
         } else {
             self.term.lock().scroll_display(Scroll::Delta(lines));
             cx.notify();
@@ -1356,7 +1674,12 @@ impl Session {
     // ---- For the automation ----
 
     fn summary(&self) -> String {
-        format!("{} {} in {}", self.target.key, if self.exited { "exited" } else { "running" }, self.target.cwd)
+        format!(
+            "{} {} in {}",
+            self.target.key,
+            if self.exited { "exited" } else { "running" },
+            self.target.cwd
+        )
     }
 }
 
@@ -1364,22 +1687,37 @@ impl Session {
 #[cfg(unix)]
 fn system_hostname() -> String {
     let mut name = [0u8; 256];
-    if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 { return String::new(); }
-    std::ffi::CStr::from_bytes_until_nul(&name).ok().and_then(|s| s.to_str().ok()).unwrap_or("").to_owned()
+    // SAFETY: gethostname writes at most `name.len()` bytes into `name`.
+    if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
+        return String::new();
+    }
+    std::ffi::CStr::from_bytes_until_nul(&name)
+        .ok()
+        .and_then(|s| s.to_str().ok())
+        .unwrap_or("")
+        .to_owned()
 }
 
 #[cfg(windows)]
 fn system_hostname() -> String {
     #[link(name = "kernel32")]
-    extern "system" { fn GetComputerNameExW(kind: i32, buffer: *mut u16, size: *mut u32) -> i32; }
+    extern "system" {
+        fn GetComputerNameExW(kind: i32, buffer: *mut u16, size: *mut u32) -> i32;
+    }
     let mut name = [0u16; 256];
     let mut size = name.len() as u32;
-    if unsafe { GetComputerNameExW(1, name.as_mut_ptr(), &mut size) } == 0 { return String::new(); }
+    // SAFETY: `size` holds the buffer's length in u16s, and the call writes
+    // no more than that into `name`.
+    if unsafe { GetComputerNameExW(1, name.as_mut_ptr(), &mut size) } == 0 {
+        return String::new();
+    }
     String::from_utf16_lossy(&name[..(size as usize).min(name.len())])
 }
 
 #[cfg(not(any(unix, windows)))]
-fn system_hostname() -> String { String::new() }
+fn system_hostname() -> String {
+    String::new()
+}
 
 impl Focusable for Session {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -1401,13 +1739,22 @@ impl Render for Session {
             .track_focus(&self.focus)
             .key_context(KEY_CONTEXT)
             .on_key_down(cx.listener(Self::key_down))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                window.focus(&this.focus, cx);
-                crate::web_panels::keyboard_to_app(window);
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    window.focus(&this.focus, cx);
+                    crate::web_panels::keyboard_to_app(window);
+                }),
+            )
             // A little in from the panel's edges, on the terminal's own
             // background (TerminalHost.Container.inset).
-            .child(div().size_full().px(px(10.)).py(px(6.)).child(TerminalElement::new(me, focused, self.blink_shown)));
+            .child(
+                div()
+                    .size_full()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .child(TerminalElement::new(me, focused, self.blink_shown)),
+            );
         if self.waiting_for_return() {
             // Over whatever's in the terminal's top corner.
             view = view.child(
@@ -1426,25 +1773,35 @@ impl Render for Session {
             );
         }
         if self.exited {
-            let folder = threadbear_core::new_thread::abbreviate_home(&self.target.cwd, &crate::files::home_dir());
+            let folder = threadbear_core::new_thread::abbreviate_home(
+                &self.target.cwd,
+                &crate::files::home_dir(),
+            );
             let words = match &self.failed {
                 Some(why) => format!("The shell couldn't start: {why}"),
                 None => "The shell has exited.".to_owned(),
             };
             let key = self.target.key.clone();
             view = view.child(
-                div().absolute().bottom_0().left_0().right_0().flex().justify_center().child(
-                    h_flex()
-                        .m(px(10.))
-                        .p(px(8.))
-                        .gap(px(8.))
-                        .rounded(px(8.))
-                        .bg(material(cx))
-                        .text_size(px(style::size::LABEL))
-                        .line_height(px(style::natural_line(style::size::LABEL)))
-                        .child(div().text_color(style::secondary_text(cx)).child(words))
-                        .child(new_shell_button(key, &folder, cx)),
-                ),
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        h_flex()
+                            .m(px(10.))
+                            .p(px(8.))
+                            .gap(px(8.))
+                            .rounded(px(8.))
+                            .bg(material(cx))
+                            .text_size(px(style::size::LABEL))
+                            .line_height(px(style::natural_line(style::size::LABEL)))
+                            .child(div().text_color(style::secondary_text(cx)).child(words))
+                            .child(new_shell_button(key, &folder, cx)),
+                    ),
             );
         }
         view
@@ -1453,7 +1810,12 @@ impl Render for Session {
 
 /// New Shell: a SwiftUI push button.
 fn new_shell_button(key: TerminalKey, folder: &str, cx: &App) -> AnyElement {
-    crate::push_button::PushButton::new("terminal-new-shell", "New Shell", format!("Start a new shell in {folder}")).render(cx, move |_, window, cx| {
+    crate::push_button::PushButton::new(
+        "terminal-new-shell",
+        "New Shell",
+        format!("Start a new shell in {folder}"),
+    )
+    .render(cx, move |_, window, cx| {
         if let Some(terminals) = terminals(cx) {
             let key = key.clone();
             terminals.update(cx, |t, cx| t.restart(&key, window, cx));
@@ -1474,19 +1836,37 @@ fn material(cx: &App) -> Hsla {
 // ---------------------------------------------------------------- the input method
 
 impl EntityInputHandler for Session {
-    fn text_for_range(&mut self, range: std::ops::Range<usize>, adjusted: &mut Option<std::ops::Range<usize>>, _window: &mut Window, _cx: &mut Context<Self>) -> Option<String> {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
         let utf16: Vec<u16> = self.marked.encode_utf16().collect();
         let range = range.start.min(utf16.len())..range.end.min(utf16.len());
         *adjusted = Some(range.clone());
         Some(String::from_utf16_lossy(&utf16[range]))
     }
 
-    fn selected_text_range(&mut self, _ignore_disabled_input: bool, _window: &mut Window, _cx: &mut Context<Self>) -> Option<UTF16Selection> {
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
         let end = self.marked.encode_utf16().count();
-        Some(UTF16Selection { range: end..end, reversed: false })
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
     }
 
-    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<std::ops::Range<usize>> {
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
         (!self.marked.is_empty()).then(|| 0..self.marked.encode_utf16().count())
     }
 
@@ -1495,25 +1875,55 @@ impl EntityInputHandler for Session {
         cx.notify();
     }
 
-    fn replace_text_in_range(&mut self, _range: Option<std::ops::Range<usize>>, text: &str, _window: &mut Window, cx: &mut Context<Self>) {
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.insert_text(text, cx);
     }
 
-    fn replace_and_mark_text_in_range(&mut self, _range: Option<std::ops::Range<usize>>, new_text: &str, _new_selected: Option<std::ops::Range<usize>>, _window: &mut Window, cx: &mut Context<Self>) {
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.set_marked(new_text, cx);
     }
 
     /// The cursor's cell, so the input method's window opens beside it.
-    fn bounds_for_range(&mut self, _range: std::ops::Range<usize>, _element_bounds: Bounds<Pixels>, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+    fn bounds_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
         let at = self.drawn_at?;
         let term = self.term.lock();
         let cursor = term.grid().cursor.point;
         let row = cursor.line.0 + term.grid().display_offset() as i32;
-        let origin = point(at.origin.x + at.cell_width * cursor.column.0 as f32, at.origin.y + at.cell_height * row.max(0) as f32);
-        Some(Bounds { origin, size: size(at.cell_width, at.cell_height) })
+        let origin = point(
+            at.origin.x + at.cell_width * cursor.column.0 as f32,
+            at.origin.y + at.cell_height * row.max(0) as f32,
+        );
+        Some(Bounds {
+            origin,
+            size: size(at.cell_width, at.cell_height),
+        })
     }
 
-    fn character_index_for_point(&mut self, _point: Point<Pixels>, _window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
         None
     }
 
@@ -1528,7 +1938,9 @@ impl EntityInputHandler for Session {
 /// the open thread's shell and its screen, and every shell.
 #[cfg(feature = "automation")]
 pub(crate) fn dump(app: &Threadbear, cx: &App) -> Value {
-    let Some(terminals) = terminals(cx) else { return Value::Null };
+    let Some(terminals) = terminals(cx) else {
+        return Value::Null;
+    };
     let t = terminals.read(cx);
     let target = target_of(app);
     let session = t.sessions.get(&target.key).map(|s| s.read(cx));
@@ -1559,16 +1971,31 @@ pub(crate) fn dump(app: &Threadbear, cx: &App) -> Value {
 /// the signal a pid could in theory be reaped and handed on, but both
 /// systems give pids out in turn, so that needs every pid used in between.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only Unix reads when a process was born")
+)]
 struct Born(u64, u64);
 
 #[cfg(target_os = "macos")]
 fn born(pid: i32) -> Option<Born> {
+    // SAFETY: proc_bsdinfo is a plain C struct of integers and char arrays,
+    // for which all zero bytes is a valid value.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-    let read = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    // SAFETY: `info` is `size` bytes, and proc_pidinfo writes no more.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
     // 5 is SZOMB: it has ended and is waiting to be reaped.
-    (read == size && info.pbi_status != 5).then_some(Born(info.pbi_start_tvsec, info.pbi_start_tvusec))
+    (read == size && info.pbi_status != 5)
+        .then_some(Born(info.pbi_start_tvsec, info.pbi_start_tvusec))
 }
 
 #[cfg(target_os = "linux")]
@@ -1594,6 +2021,7 @@ fn born(_pid: i32) -> Option<Born> {
 fn alone_in_group(pid: i32) -> bool {
     let mut pids = [0 as libc::pid_t; 64];
     let size = std::mem::size_of_val(&pids) as i32;
+    // SAFETY: `pids` is `size` bytes, and proc_listpgrppids writes no more.
     let read = unsafe { libc::proc_listpgrppids(pid, pids.as_mut_ptr().cast(), size) };
     // Read from what's filled in rather than the count, so a group too big
     // for the list still has someone else in it.
@@ -1602,12 +2030,26 @@ fn alone_in_group(pid: i32) -> bool {
 
 #[cfg(target_os = "linux")]
 fn alone_in_group(pid: i32) -> bool {
-    let Ok(dir) = std::fs::read_dir("/proc") else { return false };
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return false;
+    };
     !dir.flatten().any(|entry| {
-        let Some(other) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()).filter(|&o| o != pid) else { return false };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{other}/stat")) else { return false };
+        let Some(other) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<i32>().ok())
+            .filter(|&o| o != pid)
+        else {
+            return false;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{other}/stat")) else {
+            return false;
+        };
         // The group is the 5th field: the 3rd after the name in brackets.
-        stat.rfind(')').and_then(|at| stat[at + 1..].split_whitespace().nth(2)).and_then(|g| g.parse::<i32>().ok()) == Some(pid)
+        stat.rfind(')')
+            .and_then(|at| stat[at + 1..].split_whitespace().nth(2))
+            .and_then(|g| g.parse::<i32>().ok())
+            == Some(pid)
     })
 }
 
@@ -1621,6 +2063,7 @@ fn alone_in_group(_pid: i32) -> bool {
 fn program_of(pid: i32) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt as _;
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `path` is `path.len()` bytes, and proc_pidpath writes no more.
     let read = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
     if read <= 0 {
         return None;
@@ -1642,6 +2085,8 @@ fn program_of(_pid: i32) -> Option<PathBuf> {
 /// `signal` to the shell, if `pid` is still it.
 #[cfg(unix)]
 fn signal(pid: i32, when: Born, signal: i32) -> bool {
+    // SAFETY: kill takes plain numbers and touches no memory; the start-time
+    // check above is what keeps it to the same process.
     born(pid) == Some(when) && unsafe { libc::kill(pid, signal) } == 0
 }
 
@@ -1657,7 +2102,10 @@ fn end_shell(pid: i32, when: Born) {
     if !signal(pid, when, libc::SIGHUP) {
         return;
     }
-    ENDING.lock().unwrap_or_else(|e| e.into_inner()).push((pid, when));
+    ENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((pid, when));
     std::thread::spawn(move || {
         for next in [libc::SIGTERM, libc::SIGKILL] {
             std::thread::sleep(Duration::from_secs(2));
@@ -1666,7 +2114,10 @@ fn end_shell(pid: i32, when: Born) {
             }
         }
         // Gone, or told to with SIGKILL, which it can't refuse.
-        ENDING.lock().unwrap_or_else(|e| e.into_inner()).retain(|&shell| shell != (pid, when));
+        ENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|&shell| shell != (pid, when));
     });
 }
 
@@ -1684,7 +2135,11 @@ static ENDING: Mutex<Vec<(i32, Born)>> = Mutex::new(Vec::new());
 #[cfg(unix)]
 fn end_shells_now(shells: &[(i32, Born)]) {
     let alive = || shells.iter().any(|&(pid, when)| born(pid) == Some(when));
-    for (next, wait) in [(libc::SIGHUP, 400), (libc::SIGTERM, 200), (libc::SIGKILL, 100)] {
+    for (next, wait) in [
+        (libc::SIGHUP, 400),
+        (libc::SIGTERM, 200),
+        (libc::SIGKILL, 100),
+    ] {
         for &(pid, when) in shells {
             signal(pid, when, next);
         }
@@ -1707,14 +2162,19 @@ fn end_shells_now(shells: &[(i32, Born)]) {
 /// "text"}` is an input method's text all at once, and `{"wait": ms}` waits
 /// after. Each answers with what the dump's `terminal` says.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     use gpui_kit::test::TestWindowExt as _;
     let terminals = terminals(cx).ok_or("no terminals")?;
     if cmd["toggle"].as_bool() == Some(true) {
         app.update(cx, |a, cx| toggle(a, window, cx));
     }
     if cmd["show"].as_bool() == Some(true) {
-        app.update(cx, |a, cx| show_panel(a, cx));
+        app.update(cx, show_panel);
     }
     let target = target_of(app.read(cx));
     terminals.update(cx, |t, cx| t.set_target(target.clone(), cx));
@@ -1755,7 +2215,10 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
     if let Some(session) = &session {
         window.render_frame(cx);
         let handle = session.read(cx).focus.clone();
-        if cmd["select"].as_str() == Some("all") || cmd["copy"].as_bool() == Some(true) || cmd["paste"].is_string() {
+        if cmd["select"].as_str() == Some("all")
+            || cmd["copy"].as_bool() == Some(true)
+            || cmd["paste"].is_string()
+        {
             window.focus(&handle, cx);
             crate::web_panels::keyboard_to_app(window);
             window.render_frame(cx);
@@ -1764,7 +2227,13 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         // Control-Shift elsewhere, as Control-C there is the shell's
         // interrupt. `secondary-` is Control alone off the Mac, so on Linux
         // the copy went to the shell as ^A and ^C and nothing was copied.
-        let key = |letter: &str| if cfg!(target_os = "macos") { format!("cmd-{letter}") } else { format!("ctrl-shift-{letter}") };
+        let key = |letter: &str| {
+            if cfg!(target_os = "macos") {
+                format!("cmd-{letter}")
+            } else {
+                format!("ctrl-shift-{letter}")
+            }
+        };
         if cmd["select"].as_str() == Some("all") {
             window.press(&key("a"), cx);
         }
@@ -1777,10 +2246,22 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         }
         if let Some(lines) = cmd["scroll"].as_f64() {
             // A real wheel turn over the middle of the grid, through hit testing.
-            let drawn = session.read(cx).drawn_at.ok_or("the terminal hasn't been drawn")?;
+            let drawn = session
+                .read(cx)
+                .drawn_at
+                .ok_or("the terminal hasn't been drawn")?;
             let size = session.read(cx).size;
-            let at = point(drawn.origin.x + drawn.cell_width * (size.cols as f32 / 2.), drawn.origin.y + drawn.cell_height * (size.rows as f32 / 2.));
-            let event = ScrollEvent { position: at, delta: ScrollDelta::Lines(point(0., -(lines as f32))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved, source: ScrollSource::Pointer };
+            let at = point(
+                drawn.origin.x + drawn.cell_width * (size.cols as f32 / 2.),
+                drawn.origin.y + drawn.cell_height * (size.rows as f32 / 2.),
+            );
+            let event = ScrollEvent {
+                position: at,
+                delta: ScrollDelta::Lines(point(0., -(lines as f32))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+                source: ScrollSource::Pointer,
+            };
             window.dispatch_event(event.to_platform_input(), cx);
         }
     }
@@ -1789,11 +2270,43 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         let session = session.as_ref().ok_or("no shell")?;
         let s = session.read(cx);
         let at = s.drawn_at.ok_or("the terminal hasn't been drawn")?;
-        let (row, col) = s.screen_lines().iter().enumerate().rev().find_map(|(r, line)| line.find(words).map(|i| (r, line[..i].chars().count()))).ok_or("that link isn't visible")?;
-        let position = point(at.origin.x + at.cell_width * (col as f32 + 0.5), at.origin.y + at.cell_height * (row as f32 + 0.5));
-        let modifiers = Modifiers { platform: cfg!(target_os = "macos"), control: !cfg!(target_os = "macos"), ..Default::default() };
-        window.dispatch_event(MouseDownEvent { button: MouseButton::Left, position, modifiers, click_count: 1, first_mouse: false }.to_platform_input(), cx);
-        window.dispatch_event(MouseUpEvent { button: MouseButton::Left, position, modifiers, click_count: 1 }.to_platform_input(), cx);
+        let (row, col) = s
+            .screen_lines()
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(r, line)| line.find(words).map(|i| (r, line[..i].chars().count())))
+            .ok_or("that link isn't visible")?;
+        let position = point(
+            at.origin.x + at.cell_width * (col as f32 + 0.5),
+            at.origin.y + at.cell_height * (row as f32 + 0.5),
+        );
+        let modifiers = Modifiers {
+            platform: cfg!(target_os = "macos"),
+            control: !cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
     }
     window.render_frame(cx);
     Ok(dump(app.read(cx), cx))

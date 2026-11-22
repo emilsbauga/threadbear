@@ -42,7 +42,15 @@ fn command_held(modifiers: &Modifiers) -> bool {
 /// ⌘ on its own, with nothing else held.
 fn command_alone(modifiers: &Modifiers) -> bool {
     let mac = cfg!(target_os = "macos");
-    command_held(modifiers) && !modifiers.shift && !modifiers.alt && !modifiers.function && if mac { !modifiers.control } else { !modifiers.platform }
+    command_held(modifiers)
+        && !modifiers.shift
+        && !modifiers.alt
+        && !modifiers.function
+        && if mac {
+            !modifiers.control
+        } else {
+            !modifiers.platform
+        }
 }
 
 /// Watches every key the app takes, before it's acted on: a shortcut is
@@ -51,14 +59,20 @@ fn command_alone(modifiers: &Modifiers) -> bool {
 pub(crate) fn install(app: WeakEntity<Threadbear>, cx: &mut App) {
     cx.intercept_keystrokes(move |event, _, cx| {
         let modifiers = event.keystroke.modifiers;
-        app.update(cx, |this, cx| this.hints_used(&modifiers, cx)).ok();
+        app.update(cx, |this, cx| this.hints_used(&modifiers, cx))
+            .ok();
     })
     .detach();
 }
 
 impl Threadbear {
     /// A modifier went down or up (`ShortcutHints.handle`'s flagsChanged).
-    pub(crate) fn hints_modifiers_changed(&mut self, modifiers: &Modifiers, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn hints_modifiers_changed(
+        &mut self,
+        modifiers: &Modifiers,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         if !command_held(modifiers) {
             SPENT.with(|s| s.set(false));
             self.set_hints(false, cx);
@@ -141,7 +155,11 @@ impl Threadbear {
 
     #[cfg(feature = "automation")]
     fn composer_is_empty(&self, cx: &App) -> bool {
-        self.composers.get(self.selected.as_deref().unwrap_or_default()).is_some_and(|c| c.read(cx).draft_text(cx).trim().is_empty() && c.read(cx).draft_images(cx) == 0)
+        self.composers
+            .get(self.selected.as_deref().unwrap_or_default())
+            .is_some_and(|c| {
+                c.read(cx).draft_text(cx).trim().is_empty() && c.read(cx).draft_images(cx) == 0
+            })
     }
 }
 
@@ -158,7 +176,11 @@ pub(crate) fn hint(key: Option<String>, placement: Placement) -> Option<AnyEleme
         Placement::After => holder.left_full().pl(px(4.)),
         Placement::Before => holder.right_full().pr(px(4.)),
     };
-    Some(deferred(holder.child(badge(key))).with_priority(3).into_any_element())
+    Some(
+        deferred(holder.child(badge(key)))
+            .with_priority(3)
+            .into_any_element(),
+    )
 }
 
 /// A key as the hints draw it: dark text on amber, Tandem's colours, so it
@@ -178,6 +200,11 @@ fn badge(key: String) -> impl IntoElement {
         .line_height(px(style::natural_line(10.5)))
         .font_weight(FontWeight::SEMIBOLD)
         .whitespace_nowrap()
-        .shadow(vec![BoxShadow::new(gpui_kit::px(0.), px(1.), hsla(0., 0., 0., 0.35)).blur_radius(px(2.))])
+        .shadow(vec![BoxShadow::new(
+            gpui_kit::px(0.),
+            px(1.),
+            hsla(0., 0., 0., 0.35),
+        )
+        .blur_radius(px(2.))])
         .child(key)
 }

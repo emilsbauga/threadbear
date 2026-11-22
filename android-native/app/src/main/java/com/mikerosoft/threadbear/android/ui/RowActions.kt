@@ -70,7 +70,7 @@ fun HibernateDialog(thread: PhoneThread, dismiss: () -> Unit) {
 @Composable
 fun RenameDialog(thread: PhoneThread, dismiss: () -> Unit) {
     val model = LocalModel.current
-    var text by remember { mutableStateOf(model.renamed.value[thread.threadId] ?: thread.title) }
+    var text by remember { mutableStateOf(model.shown(thread, model.commands.entries.value).title) }
     AlertDialog(
         onDismissRequest = dismiss,
         title = { Text("Rename thread") },

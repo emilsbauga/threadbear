@@ -3,7 +3,7 @@ package com.mikerosoft.threadbear.kit
 import kotlinx.serialization.json.JsonObject
 
 /**
- * A command the composer's palette offers (docs/protocol.md, "Slash
+ * A command the composer's palette offers (docs/protocol/threads.md, "Slash
  * commands"; SlashCommands.swift), as `threads.commands` lists it for a thread.
  *
  * `source`: "threadbear", "cli" or "skill"; anything newer counts as the CLI's.

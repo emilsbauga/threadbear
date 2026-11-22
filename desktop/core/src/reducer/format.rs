@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 /// `Int(checked:)`: rounding toward zero as `as` does, or nil where Swift's
 /// `Int(_:)` would stop the app.
 pub fn int_checked(value: f64) -> Option<i64> {
-    if value.is_finite() && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&value) {
+    if value.is_finite()
+        && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&value)
+    {
         Some(value as i64)
     } else {
         None
@@ -74,14 +76,21 @@ impl TurnTokens {
     /// includes its cachedInputTokens. None with no tokens at all.
     pub fn from_usage(usage: Option<&Value>) -> Option<TurnTokens> {
         let usage = usage?.as_object()?;
-        let count = |key: &str| int_saturating(usage.get(key).and_then(Value::as_f64).unwrap_or(0.0)).max(0);
+        let count = |key: &str| {
+            int_saturating(usage.get(key).and_then(Value::as_f64).unwrap_or(0.0)).max(0)
+        };
         let (input, cache_read) = if usage.contains_key("cachedInputTokens") {
             let cached = count("cachedInputTokens");
             ((count("inputTokens") - cached).max(0), cached)
         } else {
             (count("inputTokens"), count("cacheReadTokens"))
         };
-        let tokens = TurnTokens { input, output: count("outputTokens"), cache_read, cache_write: count("cacheWriteTokens") };
+        let tokens = TurnTokens {
+            input,
+            output: count("outputTokens"),
+            cache_read,
+            cache_write: count("cacheWriteTokens"),
+        };
         if tokens.read() > 0 || tokens.output > 0 {
             Some(tokens)
         } else {
@@ -91,7 +100,9 @@ impl TurnTokens {
 
     /// Everything the model read, the cache included.
     pub fn read(self) -> i64 {
-        self.input.saturating_add(self.cache_read).saturating_add(self.cache_write)
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
     }
 
     /// Claude's shape, which `from_usage` reads back the same.
@@ -108,12 +119,20 @@ impl TurnTokens {
     /// cache reads, 44k cache writes, 16 uncached). $0.45 at API prices, not
     /// what a subscription charges."
     pub fn tip(self, cost_usd: Option<f64>) -> String {
-        let parts: Vec<String> = [(self.cache_read, "cache reads"), (self.cache_write, "cache writes"), (self.input, "uncached")]
-            .into_iter()
-            .filter(|(n, _)| *n > 0)
-            .map(|(n, what)| format!("{} {what}", short_tokens(n)))
-            .collect();
-        let mut text = format!("{} tokens out, {} in", short_tokens(self.output), short_tokens(self.read()));
+        let parts: Vec<String> = [
+            (self.cache_read, "cache reads"),
+            (self.cache_write, "cache writes"),
+            (self.input, "uncached"),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{} {what}", short_tokens(n)))
+        .collect();
+        let mut text = format!(
+            "{} tokens out, {} in",
+            short_tokens(self.output),
+            short_tokens(self.read())
+        );
         if parts.len() > 1 {
             text += &format!(" ({})", parts.join(", "));
         }
@@ -123,8 +142,13 @@ impl TurnTokens {
         }
         text
     }
+}
 
-    pub fn add(self, other: TurnTokens) -> TurnTokens {
+/// A stretch's footer adds its turns up, each count saturating.
+impl std::ops::Add for TurnTokens {
+    type Output = TurnTokens;
+
+    fn add(self, other: TurnTokens) -> TurnTokens {
         TurnTokens {
             input: self.input.saturating_add(other.input),
             output: self.output.saturating_add(other.output),
@@ -138,7 +162,11 @@ impl TurnTokens {
 pub fn short_tokens(n: i64) -> String {
     let value = n as f64;
     let short = |v: f64, suffix: &str| {
-        let text = if v < 10. { format!("{v:.1}") } else { format!("{}", v.round() as i64) };
+        let text = if v < 10. {
+            format!("{v:.1}")
+        } else {
+            format!("{}", v.round() as i64)
+        };
         format!("{}{suffix}", text.strip_suffix(".0").unwrap_or(&text))
     };
     if value >= 1e9 {
@@ -156,7 +184,12 @@ pub fn short_tokens(n: i64) -> String {
 /// from either provider's `usage`.
 pub fn token_line(usage: Option<&Value>) -> Option<String> {
     let usage = usage?;
-    let count = |key: &str| usage.get(key).and_then(Value::as_f64).and_then(|v| whole_count(v, MAX_SAFE_INTEGER));
+    let count = |key: &str| {
+        usage
+            .get(key)
+            .and_then(Value::as_f64)
+            .and_then(|v| whole_count(v, MAX_SAFE_INTEGER))
+    };
     let mut parts = Vec::new();
     if let Some(input) = count("inputTokens") {
         let mut part = format!("{} in", thousands(input));
@@ -210,9 +243,22 @@ mod tip_tests {
 
     #[test]
     fn the_footer_tip_breaks_the_tokens_out_with_the_dollars() {
-        let t = TurnTokens { input: 16, output: 1_700, cache_read: 337_000, cache_write: 44_000 };
+        let t = TurnTokens {
+            input: 16,
+            output: 1_700,
+            cache_read: 337_000,
+            cache_write: 44_000,
+        };
         assert_eq!(t.tip(Some(0.45)), "1.7k tokens out, 381k in (337k cache reads, 44k cache writes, 16 uncached). $0.45 at API prices, not what a subscription charges.");
-        let plain = TurnTokens { input: 900, output: 40, ..TurnTokens::default() };
-        assert_eq!(plain.tip(None), "40 tokens out, 900 in.", "one kind of input isn't broken out");
+        let plain = TurnTokens {
+            input: 900,
+            output: 40,
+            ..TurnTokens::default()
+        };
+        assert_eq!(
+            plain.tip(None),
+            "40 tokens out, 900 in.",
+            "one kind of input isn't broken out"
+        );
     }
 }

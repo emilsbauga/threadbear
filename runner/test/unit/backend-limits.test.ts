@@ -791,6 +791,83 @@ test('pruneFiles starts the migration itself when no Mac has heartbeated', async
   assert.ok(s.rows('backendMarks').some((m) => m.name === 'limits-2026-11-07-done'));
 });
 
+// A run that throws schedules nothing (Convex rolls it back), so before the
+// fix the migration stopped there for good: pruneFiles returned early for
+// ever and storageInUse stayed on its slow path (code review, 20 Nov 2026).
+test('a migration run that throws partway is started again from where it got to, and finishes', async () => {
+  const s = await setup();
+  await unmigrated(s);
+  for (let i = 0; i < 20; i++) await s.ctx.db.insert('shareImages', { threadId: 'O', seq: i, path: 'p'.repeat(20 * 1024), storageId: s.file(`f${i}`), mediaType: 'image/png' });
+  await call(s.ctx, sync.pruneFiles, {});
+  // Two runs go through (heldPictures, then shareImages' first page), then the third throws: nothing follows it.
+  for (let runs = 0; runs < 2; runs++) {
+    const i = s.scheduled.findIndex((x: any) => /limitsMigration/.test(x.fn));
+    const [next] = s.scheduled.splice(i, 1) as { args: Record<string, unknown> }[];
+    await call(s.ctx, sync.limitsMigration, next!.args);
+  }
+  const thrown = s.scheduled.findIndex((x: any) => /limitsMigration/.test(x.fn));
+  assert.ok(thrown >= 0);
+  const [failing] = s.scheduled.splice(thrown, 1) as { args: Record<string, unknown> }[];
+  // Its first write throws (as a transient failure would), before anything else is written.
+  const db = (s.ctx as any).db;
+  const throwing = { ...s.ctx, db: new Proxy(db, { get: (t, p) => (p === 'patch' ? () => Promise.reject(new Error('boom')) : typeof t[p] === 'function' ? t[p].bind(t) : t[p]) }) };
+  await assert.rejects(call(throwing, sync.limitsMigration, failing!.args), /boom/);
+  assert.ok(!s.scheduled.some((x: any) => /limitsMigration/.test(x.fn)), 'nothing came after it');
+  // Soon after, the cron and heartbeats leave it be: it may only be slow.
+  await call(s.ctx, sync.pruneFiles, {});
+  await call(s.ctx, sync.heartbeat, { key: OWNER, runner: { runnerId: LAPTOP, name: 'laptop', version: 'v', startedAt: 'x', draining: false, threadCount: 1 } });
+  assert.ok(!s.scheduled.some((x: any) => /limitsMigration/.test(x.fn)), 'not started twice');
+  // Once it has stalled, the next cron run starts it again, past the pages already done.
+  await later(11 * 60_000, () => call(s.ctx, sync.pruneFiles, {}));
+  const restarted = s.scheduled.find((x: any) => /limitsMigration/.test(x.fn)) as { args: { step: number; cursor: string | null } };
+  assert.ok(restarted, 'started again');
+  assert.equal(restarted.args.step, 1, 'from the step it had got to');
+  assert.notEqual(restarted.args.cursor, null, 'and the page, not the first');
+  await later(11 * 60_000, () => drain(s, 'limitsMigration', sync.limitsMigration));
+  assert.ok(s.rows('backendMarks').some((m) => m.name === 'limits-2026-11-07-done'));
+  assert.ok(s.rows('shareImages').every((r) => r.path.length < 20 * 1024), 'every row was cut');
+});
+
+// A deployment updated while its migration was running (a mark from before
+// restarts had no time), or one whose run threw before then: the old chain and
+// the restart don't both carry on.
+test('a migration started before restarts existed is started again once, and only one chain goes on', async () => {
+  const s = await setup();
+  await unmigrated(s);
+  for (let i = 0; i < 20; i++) await s.ctx.db.insert('heldPictures', { threadId: 'O', seq: i, index: 0, storageId: s.file(`h${i}`), mediaType: 'image/png', at: Date.now() });
+  await s.ctx.db.insert('backendMarks', { name: 'limits-2026-11-07' });
+  await call(s.ctx, sync.pruneFiles, {});
+  assert.equal(s.scheduled.filter((x: any) => /limitsMigration/.test(x.fn)).length, 1, 'started again');
+  // The old chain's next run, still queued from before the update, finds it's been taken over and stops.
+  await call(s.ctx, sync.limitsMigration, { step: 0, cursor: 'old-chain-cursor' });
+  assert.equal(s.scheduled.filter((x: any) => /limitsMigration/.test(x.fn)).length, 1, 'the old chain ended');
+  await drain(s, 'limitsMigration', sync.limitsMigration);
+  assert.ok(s.rows('backendMarks').some((m) => m.name === 'limits-2026-11-07-done'));
+});
+
+test("a stalled migration's mark that isn't a position it wrote starts it from the beginning", async () => {
+  for (const cursor of ['null', '{"step":99,"cursor":null}', '{}', 'not json', '{"step":1,"cursor":5}']) {
+    const s = await setup();
+    await unmigrated(s);
+    await s.ctx.db.insert('backendMarks', { name: 'limits-2026-11-07', at: 1, cursor });
+    await call(s.ctx, sync.heartbeat, { key: OWNER, runner: { runnerId: LAPTOP, name: 'laptop', version: 'v', startedAt: 'x', draining: false, threadCount: 1 } });
+    const started = s.scheduled.find((x: any) => /limitsMigration/.test(x.fn)) as { args: unknown };
+    assert.deepEqual(started?.args, { step: 0, cursor: null }, cursor);
+    await drain(s, 'limitsMigration', sync.limitsMigration);
+    assert.ok(s.rows('backendMarks').some((m) => m.name === 'limits-2026-11-07-done'), cursor);
+  }
+});
+
+test('the migration gets past an old command whose image names no stored file', async () => {
+  const s = await setup();
+  await unmigrated(s);
+  await s.ctx.db.insert('commands', { runnerId: LAPTOP, kind: 'create', args: { text: 'x', images: [{ storageId: 'not:a-file', url: 'u' }, { storageId: 42 }] }, state: 'pending', createdAt: Date.now() });
+  const real = s.file('real-photo');
+  const c = await s.ctx.db.insert('commands', { runnerId: LAPTOP, kind: 'create', args: { text: 'y', images: [{ storageId: real, url: 'u' }] }, state: 'pending', createdAt: Date.now() });
+  await migrate(s);
+  assert.deepEqual(s.rows('commandFiles').map((f) => [f.storageId, f.commandId]), [[real, c]]);
+});
+
 test('before the migration, a photo two old commands share stays until both are done', async () => {
   const s = await setup();
   await unmigrated(s);

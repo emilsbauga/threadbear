@@ -24,7 +24,9 @@ use threadbear_core::handover::{self as rules, Go, Incoming};
 /// This launch's handover, if it's the incoming side.
 fn incoming() -> Option<&'static Incoming> {
     static INCOMING: OnceLock<Option<Incoming>> = OnceLock::new();
-    INCOMING.get_or_init(|| rules::incoming(&std::env::args().collect::<Vec<_>>())).as_ref()
+    INCOMING
+        .get_or_init(|| rules::incoming(&std::env::args().collect::<Vec<_>>()))
+        .as_ref()
 }
 
 /// Taken over: from then on it's the app, as any launch is.
@@ -69,7 +71,11 @@ fn alive(_pid: u32) -> bool {
 pub(crate) fn announce_start() {
     if let Some(from) = incoming() {
         let dir = channel(from.from);
-        let _ = rules::write_message(&dir, "started.json", &rules::ready_message(std::process::id()));
+        let _ = rules::write_message(
+            &dir,
+            "started.json",
+            &rules::ready_message(std::process::id()),
+        );
         log(&format!("incoming from {}", from.from));
     }
 }
@@ -90,7 +96,9 @@ mod mac {
     pub(super) fn ns_window(window: &gpui_kit::Window) -> Option<Retained<NSWindow>> {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let handle = HasWindowHandle::window_handle(window).ok()?;
-        let RawWindowHandle::AppKit(h) = handle.as_raw() else { return None };
+        let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+            return None;
+        };
         // SAFETY: the window's own NSView, alive while the window is.
         let view: &objc2_app_kit::NSView = unsafe { &*h.ns_view.as_ptr().cast() };
         view.window()
@@ -100,9 +108,24 @@ mod mac {
     pub(super) fn spot(window: &NSWindow) -> Option<(i64, Frame)> {
         let mtm = MainThreadMarker::new()?;
         let hidden = NSApplication::sharedApplication(mtm).isHidden();
-        let ok = threadbear_core::handover::can_hand_over(window.isVisible(), window.isMiniaturized(), window.styleMask().contains(NSWindowStyleMask::FullScreen), hidden);
+        let ok = threadbear_core::handover::can_hand_over(
+            window.isVisible(),
+            window.isMiniaturized(),
+            window.styleMask().contains(NSWindowStyleMask::FullScreen),
+            hidden,
+        );
         let f = window.frame();
-        ok.then(|| (window.windowNumber() as i64, Frame { x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height }))
+        ok.then(|| {
+            (
+                window.windowNumber() as i64,
+                Frame {
+                    x: f.origin.x,
+                    y: f.origin.y,
+                    width: f.size.width,
+                    height: f.size.height,
+                },
+            )
+        })
     }
 
     /// Unseen, taking no clicks, in the outgoing window's place and just
@@ -111,6 +134,8 @@ mod mac {
         window.setAlphaValue(0.);
         window.setIgnoresMouseEvents(true);
         // NSWindowAnimationBehaviorNone: no zoom in or out as it shows or goes.
+        // SAFETY: `window` is a live NSWindow we borrow, and
+        // setAnimationBehavior: takes one NSInteger and returns void.
         let _: () = unsafe { msg_send![window, setAnimationBehavior: 2isize] };
         if let Some(f) = frame {
             let rect = NSRect::new(NSPoint::new(f.x, f.y), NSSize::new(f.width, f.height));
@@ -123,7 +148,11 @@ mod mac {
         match below {
             // NSWindowBelow (-1) relative to the outgoing app's window.
             Some(n) => {
-                let _: () = unsafe { msg_send![window, orderWindow: -1isize, relativeTo: n as isize] };
+                // SAFETY: `window` is a live NSWindow we borrow, and
+                // orderWindow:relativeTo: takes two NSIntegers and returns void;
+                // an unknown window number is just ignored by AppKit.
+                let _: () =
+                    unsafe { msg_send![window, orderWindow: -1isize, relativeTo: n as isize] };
             }
             None => window.orderBack(None),
         }
@@ -145,10 +174,15 @@ mod mac {
             window.orderFront(None);
         }
         // Back to the default (NSWindowAnimationBehaviorDefault).
+        // SAFETY: `window` is a live NSWindow we borrow, and
+        // setAnimationBehavior: takes one NSInteger and returns void.
         let _: () = unsafe { msg_send![window, setAnimationBehavior: 0isize] };
         if activate {
             if let Some(mtm) = MainThreadMarker::new() {
-                #[allow(deprecated)]
+                #[allow(
+                    deprecated,
+                    reason = "activateIgnoringOtherApps still brings the app forward; activate() only asks to"
+                )]
                 NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
             }
             window.makeKeyAndOrderFront(None);
@@ -163,18 +197,31 @@ mod mac {
     /// in front, so the new one is (yieldActivation, macOS 14 and on; it
     /// activates itself at "go" too).
     pub(super) fn yield_to(pid: u32) {
-        let Some(mtm) = MainThreadMarker::new() else { return };
-        let Some(other) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32) else { return };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(other) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32)
+        else {
+            return;
+        };
         let app = NSApplication::sharedApplication(mtm);
-        let can: bool = unsafe { msg_send![&*app, respondsToSelector: objc2::sel!(yieldActivationToApplication:)] };
+        // SAFETY: respondsToSelector: is an NSObject method taking a SEL and
+        // returning BOOL, sent to the live shared app on the main thread.
+        let can: bool = unsafe {
+            msg_send![&*app, respondsToSelector: objc2::sel!(yieldActivationToApplication:)]
+        };
         if can {
+            // SAFETY: the app just said it responds to this selector, which
+            // takes one NSRunningApplication (held by `other`) and returns void.
             let _: () = unsafe { msg_send![&*app, yieldActivationToApplication: &*other] };
         }
     }
 
     /// The old window's last moment: clicks pass to the new one under it.
     pub(super) fn stop_taking_clicks() {
-        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
         for window in NSApplication::sharedApplication(mtm).windows().iter() {
             window.setIgnoresMouseEvents(true);
         }
@@ -183,9 +230,13 @@ mod mac {
     /// Every window of this app off the screen, without the closing
     /// animation, so the incoming one under them is what shows.
     pub(super) fn hide_all() {
-        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
         for window in NSApplication::sharedApplication(mtm).windows().iter() {
             if window.isVisible() {
+                // SAFETY: a live window from the app's own list, on the main
+                // thread; setAnimationBehavior: takes an NSInteger, returns void.
                 let _: () = unsafe { msg_send![&*window, setAnimationBehavior: 2isize] };
                 window.orderOut(None);
             }
@@ -228,7 +279,10 @@ fn open_command(bundle: &Path, arguments: &[String]) -> std::process::Command {
         command.arg("--env").arg(pair);
     }
     command.arg(bundle).arg("--args").args(arguments);
-    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     command
 }
 
@@ -236,12 +290,21 @@ impl Threadbear {
     /// The outgoing side: `bundle` (the new build, swapped in already) as a
     /// second copy, this one quitting once it's showing. `fallback` is the
     /// old way, for when it can't start.
-    pub(crate) fn hand_over(&mut self, bundle: PathBuf, spot: (i64, rules::Frame), fallback: impl FnOnce(&mut Threadbear, &mut Context<Self>) + 'static, cx: &mut Context<Self>) {
+    pub(crate) fn hand_over(
+        &mut self,
+        bundle: PathBuf,
+        spot: (i64, rules::Frame),
+        fallback: impl FnOnce(&mut Threadbear, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let pid = std::process::id();
         let dir = channel(pid);
         let _ = std::fs::remove_dir_all(&dir);
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            log(&format!("couldn't make {}: {e}; restarting the old way", dir.display()));
+            log(&format!(
+                "couldn't make {}: {e}; restarting the old way",
+                dir.display()
+            ));
             return fallback(self, cx);
         }
         let current: Vec<String> = std::env::args().skip(1).collect();
@@ -249,7 +312,9 @@ impl Threadbear {
         log(&format!("starting {} to hand over to", bundle.display()));
         let started = open_command(&bundle, &arguments).status();
         if !started.as_ref().is_ok_and(|s| s.success()) {
-            log(&format!("couldn't start the new app ({started:?}); restarting the old way"));
+            log(&format!(
+                "couldn't start the new app ({started:?}); restarting the old way"
+            ));
             let _ = std::fs::remove_dir_all(&dir);
             return fallback(self, cx);
         }
@@ -264,7 +329,10 @@ impl Threadbear {
                 // started meanwhile (a shell, a menu, a field being typed
                 // in) holds the go, as it held the restart (Codex's review).
                 let windows = cx.update(|cx| crate::app_update::windows_now(main, cx));
-                if this.update(cx, |t, cx| t.handover_held(windows, cx)).unwrap_or(false) {
+                if this
+                    .update(cx, |t, cx| t.handover_held(windows, cx))
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 if let Some(ready) = rules::read_message(&dir, rules::READY_FILE) {
@@ -279,11 +347,14 @@ impl Threadbear {
                         }
                         break;
                     }
-                    this.update(cx, |t, cx| t.say_go(incoming_pid, &dir, cx)).ok();
+                    this.update(cx, |t, cx| t.say_go(incoming_pid, &dir, cx))
+                        .ok();
                     break;
                 }
                 if began.elapsed() >= rules::READY_TIMEOUT {
-                    let started = rules::read_message(&dir, "started.json").as_ref().and_then(rules::ready_pid);
+                    let started = rules::read_message(&dir, "started.json")
+                        .as_ref()
+                        .and_then(rules::ready_pid);
                     if started.is_some_and(alive) {
                         // It takes over when it sees this app go.
                         log("no ready after 20 s; quitting for it");
@@ -331,7 +402,12 @@ impl Threadbear {
         // Where each open thread is scrolled to now, as he may have scrolled
         // while the new copy loaded (Codex's review, 13 Nov).
         let scroll = crate::rows::live_scroll_json(&self.live_scroll_memories(cx));
-        let go = Go { active, mode: Some(self.mode.name().to_owned()), selection: Some(selection), scroll };
+        let go = Go {
+            active,
+            mode: Some(self.mode.name().to_owned()),
+            selection: Some(selection),
+            scroll,
+        };
         if let Err(e) = rules::write_message(dir, rules::GO_FILE, &go.to_json()) {
             log(&format!("couldn't say go: {e}"));
         }
@@ -382,7 +458,9 @@ impl Threadbear {
     /// The incoming side, from `Threadbear::new`: shows itself under the old
     /// window once it's loaded, then waits for "go" (or for the old app to go).
     pub(crate) fn start_incoming(&mut self, cx: &mut Context<Self>) {
-        let Some(from) = incoming().cloned() else { return };
+        let Some(from) = incoming().cloned() else {
+            return;
+        };
         let dir = channel(from.from);
         // Never taken over from here: the window's made, and concealed, only
         // after `Threadbear::new` returns (Codex's review, 13 Nov). The first
@@ -396,16 +474,36 @@ impl Threadbear {
                     break;
                 }
                 if !alive(from.from) {
-                    this.update(cx, |t, cx| t.take_over(false, "the outgoing app is gone", &dir, cx)).ok();
+                    this.update(cx, |t, cx| {
+                        t.take_over(false, "the outgoing app is gone", &dir, cx)
+                    })
+                    .ok();
                     break;
                 }
                 if !ready {
-                    let Ok(loaded) = this.update(cx, |t, cx| rules::loaded(t.sidebar.loaded, t.connected(), t.selection_loaded(cx), began.elapsed())) else { break };
+                    let Ok(loaded) = this.update(cx, |t, cx| {
+                        rules::loaded(
+                            t.sidebar.loaded,
+                            t.connected(),
+                            t.selection_loaded(cx),
+                            began.elapsed(),
+                        )
+                    }) else {
+                        break;
+                    };
                     if loaded {
                         cx.background_executor().timer(rules::SETTLE_TIME).await;
-                        this.update(cx, |t, cx| t.show_under_outgoing(&from, cx)).ok();
-                        let _ = rules::write_message(&dir, rules::READY_FILE, &rules::ready_message(std::process::id()));
-                        log(&format!("ready after {:.2} s", began.elapsed().as_secs_f64()));
+                        this.update(cx, |t, cx| t.show_under_outgoing(&from, cx))
+                            .ok();
+                        let _ = rules::write_message(
+                            &dir,
+                            rules::READY_FILE,
+                            &rules::ready_message(std::process::id()),
+                        );
+                        log(&format!(
+                            "ready after {:.2} s",
+                            began.elapsed().as_secs_f64()
+                        ));
                         ready = true;
                     }
                     continue;
@@ -420,22 +518,21 @@ impl Threadbear {
         .detach();
     }
 
-    fn connected(&self) -> bool {
-        matches!(self.status, threadbear_client::runner::Status::Connected { .. })
-    }
-
     /// The thread that was open has its first page (a project page, the
     /// schedules or nothing open count as loaded).
     fn selection_loaded(&self, cx: &App) -> bool {
         if self.pending_restore.is_some() {
             return false;
         }
-        let Some(id) = self.selected.as_deref() else { return true };
+        let Some(id) = self.selected.as_deref() else {
+            return true;
+        };
         if !self.threads.contains_key(id) {
             return true;
         }
         // And its place, if that's in an older page still on its way.
-        self.pane_for(id, cx).is_some_and(|p| p.read(cx).is_loaded() && !p.read(cx).restoring_place())
+        self.pane_for(id, cx)
+            .is_some_and(|p| p.read(cx).is_loaded() && !p.read(cx).restoring_place())
     }
 
     fn show_under_outgoing(&mut self, from: &Incoming, cx: &mut Context<Self>) {
@@ -451,7 +548,9 @@ impl Threadbear {
     #[cfg(target_os = "macos")]
     fn main_ns_window(&self, cx: &mut App) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
         let main = self.main_window;
-        main.update(cx, |_, window, _| mac::ns_window(window)).ok().flatten()
+        main.update(cx, |_, window, _| mac::ns_window(window))
+            .ok()
+            .flatten()
     }
 
     /// "go": what Mike did in the outgoing window while this one loaded, the
@@ -491,7 +590,10 @@ impl Threadbear {
         if let Some(ns) = self.main_ns_window(cx) {
             mac::take_over(&ns, activate);
         }
-        log(&format!("took over ({reason}){}", if activate { ", in front" } else { "" }));
+        log(&format!(
+            "took over ({reason}){}",
+            if activate { ", in front" } else { "" }
+        ));
         // What only the app that's showing runs.
         self.start_updater(cx);
         cx.notify();

@@ -12,6 +12,11 @@
 // scripts, or a backdrop a click dismisses, says so with
 // `.a11y_role(Role::GenericContainer)` (gpui/src/a11y.rs): still no node, as what's inside is what
 // VoiceOver reads.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test: a panic is its failure, with the line"
+)]
 use std::path::{Path, PathBuf};
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -53,7 +58,10 @@ fn code_only(text: &str) -> String {
                 i += 1;
             }
             i += 2;
-        } else if c == b'r' && (b.get(i + 1) == Some(&b'"') || b.get(i + 1) == Some(&b'#')) && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')) {
+        } else if c == b'r'
+            && (b.get(i + 1) == Some(&b'"') || b.get(i + 1) == Some(&b'#'))
+            && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+        {
             // A raw string: r"..." or r#"..."#.
             let mut j = i + 1;
             let mut hashes = 0;
@@ -71,7 +79,14 @@ fn code_only(text: &str) -> String {
                 if j >= b.len() {
                     break;
                 }
-                if b[j] == b'"' && b[j + 1..].iter().take(hashes).filter(|&&h| h == b'#').count() == hashes {
+                if b[j] == b'"'
+                    && b[j + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|&&h| h == b'#')
+                        .count()
+                        == hashes
+                {
                     j += 1 + hashes;
                     break;
                 }
@@ -119,7 +134,10 @@ fn code_only(text: &str) -> String {
         }
     }
     let code = String::from_utf8(out).unwrap();
-    match code.find("#[cfg(test)]\nmod ").or_else(|| code.find("#[cfg(all(test")) {
+    match code
+        .find("#[cfg(test)]\nmod ")
+        .or_else(|| code.find("#[cfg(all(test"))
+    {
         Some(at) => code[..at].to_owned(),
         None => code,
     }
@@ -134,7 +152,10 @@ fn is_close(c: u8) -> bool {
 
 /// Whether the `=` at `i` is an assignment (not `==`, `=>`, `<=`, `>=`, `!=`).
 fn assignment(b: &[u8], i: usize) -> bool {
-    b[i] == b'=' && b.get(i + 1) != Some(&b'=') && b.get(i + 1) != Some(&b'>') && (i == 0 || !matches!(b[i - 1], b'=' | b'<' | b'>' | b'!'))
+    b[i] == b'='
+        && b.get(i + 1) != Some(&b'=')
+        && b.get(i + 1) != Some(&b'>')
+        && (i == 0 || !matches!(b[i - 1], b'=' | b'<' | b'>' | b'!'))
 }
 
 /// The builder chain around offset `at`, with what's inside its own
@@ -209,7 +230,9 @@ fn unroled(code: &str, rel: &str) -> Vec<String> {
     }
     for (at, _) in code.match_indices(".on_click(") {
         let chain = chain_at(code, at);
-        let custom = ["div()", "h_flex()", "v_flex()"].iter().any(|start| chain.trim_start().starts_with(start));
+        let custom = ["div()", "h_flex()", "v_flex()"]
+            .iter()
+            .any(|start| chain.trim_start().starts_with(start));
         if custom && !has_role(&chain) {
             let line = code[..at].matches('\n').count() + 1;
             found.push(format!("{rel}:{line} (a click)"));
@@ -220,19 +243,32 @@ fn unroled(code: &str, rel: &str) -> Vec<String> {
 
 #[test]
 fn every_labelled_element_has_a_role() {
-    let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_owned();
+    let desktop = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_owned();
     let mut files = Vec::new();
     rust_files(&desktop.join("gpui/src"), &mut files);
-    assert!(files.iter().any(|f| f.ends_with("gpui/src/composer.rs")), "the composer wasn't found, so this test isn't looking in the right place");
+    assert!(
+        files.iter().any(|f| f.ends_with("gpui/src/composer.rs")),
+        "the composer wasn't found, so this test isn't looking in the right place"
+    );
     let mut found = Vec::new();
     let mut labels = 0;
     for file in &files {
-        let rel = file.strip_prefix(&desktop).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = file
+            .strip_prefix(&desktop)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let code = code_only(&std::fs::read_to_string(file).unwrap());
         labels += code.matches(".aria_label(").count();
         found.extend(unroled(&code, &rel));
     }
-    assert!(labels > 50, "only {labels} labels found, so this test isn't reading the app's controls");
+    assert!(
+        labels > 50,
+        "only {labels} labels found, so this test isn't reading the app's controls"
+    );
     assert!(
         found.is_empty(),
         "these have an accessibility label, or take a click, but have no role, so VoiceOver never sees them. Give each `.role(Role::Button)` (or ListItem, CheckBox, Tab...) and the state Swift's control has (`.aria_selected`, `.aria_toggled`, `.aria_expanded`); a wrapper naming a kit control for scripts gets `.a11y_role(Role::GenericContainer)`, never `.role(` with it, which panics in a debug build:\n{}",
@@ -245,16 +281,26 @@ fn every_labelled_element_has_a_role() {
 /// spec with a done turn's footer, a banner or the Terminal's note.
 #[test]
 fn no_plain_container_goes_through_gpuis_own_role() {
-    let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_owned();
+    let desktop = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_owned();
     let mut files = Vec::new();
     rust_files(&desktop.join("gpui/src"), &mut files);
     let mut found = Vec::new();
     for file in &files {
-        let rel = file.strip_prefix(&desktop).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = file
+            .strip_prefix(&desktop)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let code = std::fs::read_to_string(file).unwrap();
         for (n, line) in code.lines().enumerate() {
             let squashed: String = line.split_whitespace().collect();
-            if squashed.contains(".role(Role::GenericContainer)") || squashed.contains(".role(gpui_kit::Role::GenericContainer)") || squashed.contains(".role($role)") {
+            if squashed.contains(".role(Role::GenericContainer)")
+                || squashed.contains(".role(gpui_kit::Role::GenericContainer)")
+                || squashed.contains(".role($role)")
+            {
                 found.push(format!("{rel}:{}", n + 1));
             }
         }
@@ -285,5 +331,8 @@ fn a() {
 }
 "#,
     );
-    assert_eq!(unroled(&code, "f.rs"), vec!["f.rs:4".to_owned(), "f.rs:9 (a click)".to_owned()]);
+    assert_eq!(
+        unroled(&code, "f.rs"),
+        vec!["f.rs:4".to_owned(), "f.rs:9 (a click)".to_owned()]
+    );
 }

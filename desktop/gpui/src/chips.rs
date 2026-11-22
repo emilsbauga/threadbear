@@ -11,7 +11,9 @@ use crate::open_gate::{self, Origin};
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
 use crate::tips::Tip as _;
-use gpui_kit::base::text::{InlineElement, InlineRenderContext, MarkdownNode, MarkdownParseContext, MarkdownPlugin};
+use gpui_kit::base::text::{
+    InlineElement, InlineRenderContext, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
+};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -49,12 +51,20 @@ pub(crate) const SLOWER: Duration = Duration::from_millis(500);
 /// it's been there a moment, and goes when it leaves.
 static HOVERED: Mutex<Option<(SharedString, Instant)>> = Mutex::new(None);
 
-pub(crate) fn hover(key: &SharedString, on: bool, delay: Duration, window: &mut Window, cx: &mut App) {
+pub(crate) fn hover(
+    key: &SharedString,
+    on: bool,
+    delay: Duration,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let mut hovered = HOVERED.lock().unwrap_or_else(|e| e.into_inner());
     if on {
         *hovered = Some((key.clone(), Instant::now()));
         cx.spawn(async move |cx| {
-            cx.background_executor().timer(delay + Duration::from_millis(20)).await;
+            cx.background_executor()
+                .timer(delay + Duration::from_millis(20))
+                .await;
             cx.update(|cx| cx.refresh_windows());
         })
         .detach();
@@ -65,14 +75,26 @@ pub(crate) fn hover(key: &SharedString, on: bool, delay: Duration, window: &mut 
 }
 
 pub(crate) fn card_shown(key: &str, delay: Duration) -> bool {
-    HOVERED.lock().ok().and_then(|h| h.as_ref().map(|(k, at)| k.as_ref() == key && at.elapsed() >= delay)).unwrap_or(false)
+    HOVERED
+        .lock()
+        .ok()
+        .and_then(|h| {
+            h.as_ref()
+                .map(|(k, at)| k.as_ref() == key && at.elapsed() >= delay)
+        })
+        .unwrap_or(false)
 }
 
 /// Shows `key`'s card now, as a script's `peek` does.
 #[cfg(feature = "automation")]
 pub(crate) fn show_card(key: Option<&str>) {
     let mut hovered = HOVERED.lock().unwrap_or_else(|e| e.into_inner());
-    *hovered = key.map(|k| (SharedString::from(k.to_owned()), Instant::now() - Duration::from_secs(10)));
+    *hovered = key.map(|k| {
+        (
+            SharedString::from(k.to_owned()),
+            Instant::now() - Duration::from_secs(10),
+        )
+    });
 }
 
 /// A card under a chip `height` tall (ChipCardWindow): its left edge on the
@@ -82,7 +104,14 @@ pub(crate) fn under(height: f32, card: AnyElement) -> AnyElement {
         .absolute()
         .left_0()
         .top(px(height + 4.))
-        .child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(div().occlude().child(card))).with_priority(2))
+        .child(
+            deferred(
+                anchored()
+                    .snap_to_window_with_margin(px(8.))
+                    .child(div().occlude().child(card)),
+            )
+            .with_priority(2),
+        )
         .into_any_element()
 }
 
@@ -93,7 +122,12 @@ fn under_chip(card: AnyElement) -> AnyElement {
 /// The card's look: a small rounded window's (ChipCardWindow), 8 round with
 /// a hairline edge.
 pub(crate) fn card_frame(cx: &App) -> Div {
-    div().rounded(px(8.)).bg(cx.theme().popover).border(gpui_kit::px(0.5)).border_color(style::card_border(cx)).shadow_lg()
+    div()
+        .rounded(px(8.))
+        .bg(cx.theme().popover)
+        .border(gpui_kit::px(0.5))
+        .border_color(style::card_border(cx))
+        .shadow_lg()
 }
 
 /// A thread's or a page's card (ThreadChipCard, LinkPeekCard): its title,
@@ -106,9 +140,31 @@ pub(crate) fn words_card(title: &str, detail: &str, cx: &App) -> AnyElement {
         .child(
             v_flex()
                 .gap(px(3.))
-                .child(div().text_size(px(size::LABEL)).line_height(px(style::natural_line(size::LABEL))).font_weight(FontWeight::SEMIBOLD).text_color(style::label_text(cx)).line_clamp(2).child(title.to_owned()))
-                .child(div().text_size(px(size::DETAIL)).line_height(px(style::natural_line(size::DETAIL))).text_color(style::secondary_label(cx)).truncate().child(detail.to_owned()))
-                .child(div().pt(px(3.)).text_size(px(size::SMALL)).line_height(px(style::natural_line(size::SMALL))).text_color(style::tertiary_label(cx)).child("Click to open")),
+                .child(
+                    div()
+                        .text_size(px(size::LABEL))
+                        .line_height(px(style::natural_line(size::LABEL)))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(style::label_text(cx))
+                        .line_clamp(2)
+                        .child(title.to_owned()),
+                )
+                .child(
+                    div()
+                        .text_size(px(size::DETAIL))
+                        .line_height(px(style::natural_line(size::DETAIL)))
+                        .text_color(style::secondary_label(cx))
+                        .truncate()
+                        .child(detail.to_owned()),
+                )
+                .child(
+                    div()
+                        .pt(px(3.))
+                        .text_size(px(size::SMALL))
+                        .line_height(px(style::natural_line(size::SMALL)))
+                        .text_color(style::tertiary_label(cx))
+                        .child("Click to open"),
+                ),
         )
         .into_any_element()
 }
@@ -134,18 +190,39 @@ fn picture_card(image: &ImageRef, cx: &App) -> AnyElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(img(crate::rows::markdown::file_picture(&image.path)).w(px((w * scale).floor())).h(px((h * scale).floor())).rounded(px(3.)).object_fit(ObjectFit::Contain)),
+                .child(
+                    img(crate::rows::markdown::file_picture(&image.path))
+                        .w(px((w * scale).floor()))
+                        .h(px((h * scale).floor()))
+                        .rounded(px(3.))
+                        .object_fit(ObjectFit::Contain),
+                ),
         )
         .into_any_element()
 }
 
 /// The card for a thread, or None if it's gone (ThreadChipCard.make).
-pub(crate) fn thread_card(thread_id: &str, threads: &HashMap<String, Arc<ThreadSummary>>, accounts: &[threadbear_core::logins::Account], cx: &App) -> Option<AnyElement> {
+pub(crate) fn thread_card(
+    thread_id: &str,
+    threads: &HashMap<String, Arc<ThreadSummary>>,
+    accounts: &[threadbear_core::logins::Account],
+    cx: &App,
+) -> Option<AnyElement> {
     let thread = threads.get(thread_id)?;
-    let title = if thread.title.is_empty() { "Untitled thread" } else { thread.title.as_str() };
-    let account = (!thread.account_id.is_empty()).then(|| threadbear_core::logins::short_account_name(&thread.account_id, accounts));
-    let status = threadbear_core::highlights::thread_status(thread, &threadbear_core::chrono::Local::now());
-    let detail = found::thread_detail(&threadbear_core::new_thread::short_folder(&thread.cwd), account.as_deref(), &status);
+    let title = if thread.title.is_empty() {
+        "Untitled thread"
+    } else {
+        thread.title.as_str()
+    };
+    let account = (!thread.account_id.is_empty())
+        .then(|| threadbear_core::logins::short_account_name(&thread.account_id, accounts));
+    let status =
+        threadbear_core::highlights::thread_status(thread, &threadbear_core::chrono::Local::now());
+    let detail = found::thread_detail(
+        &threadbear_core::new_thread::short_folder(&thread.cwd),
+        account.as_deref(),
+        &status,
+    );
     Some(words_card(title, &detail, cx))
 }
 
@@ -156,10 +233,19 @@ pub(crate) fn thread_card(thread_id: &str, threads: &HashMap<String, Arc<ThreadS
 enum ChipKind {
     /// The message's picture at this index.
     Picture(usize),
-    Card { title: String, url: String },
-    Thread { title: String, id: String },
+    Card {
+        title: String,
+        url: String,
+    },
+    Thread {
+        title: String,
+        id: String,
+    },
     /// A file on the Mac that isn't uploaded, by its path (`find_files`).
-    File { name: String, path: String },
+    File {
+        name: String,
+        path: String,
+    },
 }
 
 impl ChipKind {
@@ -203,9 +289,18 @@ enum Token {
 
 fn chip_kind(mention: &Mention) -> ChipKind {
     match (mention.kind, mention.thread_id()) {
-        (MentionKind::Thread, Some(id)) => ChipKind::Thread { title: mention.title.clone(), id: id.to_owned() },
-        (MentionKind::File, _) => ChipKind::File { name: mention.title.clone(), path: mention.url.clone() },
-        _ => ChipKind::Card { title: mention.title.clone(), url: mention.url.clone() },
+        (MentionKind::Thread, Some(id)) => ChipKind::Thread {
+            title: mention.title.clone(),
+            id: id.to_owned(),
+        },
+        (MentionKind::File, _) => ChipKind::File {
+            name: mention.title.clone(),
+            path: mention.url.clone(),
+        },
+        _ => ChipKind::Card {
+            title: mention.title.clone(),
+            url: mention.url.clone(),
+        },
     }
 }
 
@@ -228,8 +323,18 @@ pub(crate) fn described(message: &UserMessage) -> Option<Vec<String>> {
 
 fn text_width(text: &str, font_size: f32, window: &Window) -> Pixels {
     let style = window.text_style();
-    let run = TextRun { len: text.len(), font: style.font(), color: style.color, background_color: None, underline: None, strikethrough: None };
-    window.text_system().shape_line(text.to_owned().into(), px(font_size), &[run], None).width
+    let run = TextRun {
+        len: text.len(),
+        font: style.font(),
+        color: style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(text.to_owned().into(), px(font_size), &[run], None)
+        .width
 }
 
 /// A chip's width: its picture and gap, its label (a card's cut short), the
@@ -240,7 +345,11 @@ fn chip_width(kind: &ChipKind, window: &Window) -> Pixels {
         label = label.min(px(CARD_LABEL_MAX));
     }
     // A file's dot, after the same gap.
-    let dot = if matches!(kind, ChipKind::File { .. }) { CHIP_GAP + crate::composer_inline::FILE_DOT } else { 0. };
+    let dot = if matches!(kind, ChipKind::File { .. }) {
+        CHIP_GAP + crate::composer_inline::FILE_DOT
+    } else {
+        0.
+    };
     px(CHIP_INSET + CHIP_ICON + CHIP_GAP + CHIP_TRAILING + dot) + label
 }
 
@@ -252,7 +361,15 @@ fn lay_out(pieces: Vec<Piece>, max: Pixels, window: &Window) -> Vec<Vec<Token>> 
     // What the line's taken up to its last piece's end, its trailing spaces
     // counted (they hang past the edge when it wraps).
     let mut used = Pixels::ZERO;
-    let add = |lines: &mut Vec<Vec<Token>>, used: &mut Pixels, token: Token, ink: Pixels, full: Pixels| {
+    #[expect(
+        clippy::expect_used,
+        reason = "the list starts with a line and only grows"
+    )]
+    let add = |lines: &mut Vec<Vec<Token>>,
+               used: &mut Pixels,
+               token: Token,
+               ink: Pixels,
+               full: Pixels| {
         if lines.last().is_some_and(|l| !l.is_empty()) && *used + ink > max {
             lines.push(Vec::new());
             *used = Pixels::ZERO;
@@ -271,7 +388,13 @@ fn lay_out(pieces: Vec<Piece>, max: Pixels, window: &Window) -> Vec<Vec<Token>> 
                     for word in paragraph.split_inclusive(' ') {
                         let full = text_width(word, size::BODY, window);
                         let ink = text_width(word.trim_end_matches(' '), size::BODY, window);
-                        add(&mut lines, &mut used, Token::Words(word.to_owned()), ink, full);
+                        add(
+                            &mut lines,
+                            &mut used,
+                            Token::Words(word.to_owned()),
+                            ink,
+                            full,
+                        );
                     }
                 }
             }
@@ -297,8 +420,16 @@ fn drawn_width(tokens: &[Token], window: &Window) -> Pixels {
     let mut width = Pixels::ZERO;
     let mut run = String::new();
     let measure = |run: &mut String, last: bool| -> Pixels {
-        let text = if last { run.trim_end_matches(' ') } else { run.as_str() };
-        let width = if text.is_empty() { Pixels::ZERO } else { text_width(text, size::BODY, window) };
+        let text = if last {
+            run.trim_end_matches(' ')
+        } else {
+            run.as_str()
+        };
+        let width = if text.is_empty() {
+            Pixels::ZERO
+        } else {
+            text_width(text, size::BODY, window)
+        };
         run.clear();
         width
     };
@@ -318,13 +449,25 @@ impl ThreadPane {
     /// The bubble's words with its chips among them, laid out line by line,
     /// and how wide its widest line is; None for a message with no chips,
     /// which stays one piece of selectable text.
-    pub(crate) fn chip_lines(&mut self, ix: usize, row_id: &str, message: &UserMessage, max: Pixels, window: &Window, cx: &mut Context<Self>) -> Option<(Pixels, AnyElement)> {
+    pub(crate) fn chip_lines(
+        &mut self,
+        ix: usize,
+        row_id: &str,
+        message: &UserMessage,
+        max: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Pixels, AnyElement)> {
         let pieces = found::message_pieces(&message.text, message.images.len());
         if pieces.iter().all(|p| matches!(p, Piece::Words(_))) {
             return None;
         }
         let lines = lay_out(pieces, max, window);
-        let widest = lines.iter().map(|l| drawn_width(l, window).min(max)).fold(Pixels::ZERO, Pixels::max).ceil();
+        let widest = lines
+            .iter()
+            .map(|l| drawn_width(l, window).min(max))
+            .fold(Pixels::ZERO, Pixels::max)
+            .ceil();
         let mut body = v_flex();
         for (n, tokens) in lines.into_iter().enumerate() {
             let mut line = h_flex().min_h(px(size::BODY_LINE)).items_center();
@@ -332,13 +475,23 @@ impl ThreadPane {
             // web addresses links (`bubble_words`).
             let mut words = String::new();
             let (mut runs, mut chips) = (0, 0);
-            let flush = |this: &Self, line: Div, words: &mut String, runs: &mut usize, cx: &mut Context<Self>| -> Div {
+            let flush = |this: &Self,
+                         line: Div,
+                         words: &mut String,
+                         runs: &mut usize,
+                         cx: &mut Context<Self>|
+             -> Div {
                 if words.is_empty() {
                     return line;
                 }
                 *runs += 1;
                 let id = ("user-chip-text", ix * 100_000 + n * 100 + *runs);
-                line.child(div().flex_none().child(this.bubble_words(id, std::mem::take(words), row_id, cx)))
+                line.child(div().flex_none().child(this.bubble_words(
+                    id,
+                    std::mem::take(words),
+                    row_id,
+                    cx,
+                )))
             };
             for token in tokens {
                 match token {
@@ -346,7 +499,15 @@ impl ThreadPane {
                     Token::Chip(kind) => {
                         line = flush(self, line, &mut words, &mut runs, cx);
                         chips += 1;
-                        line = line.child(self.bubble_chip(ix, n, chips, kind, &message.images, window.scale_factor() >= 2., cx));
+                        line = line.child(self.bubble_chip(
+                            ix,
+                            n,
+                            chips,
+                            kind,
+                            &message.images,
+                            window.scale_factor() >= 2.,
+                            cx,
+                        ));
                     }
                 }
             }
@@ -359,16 +520,50 @@ impl ThreadPane {
     /// One chip in the bubble (PictureChip.draw, CardChip.draw): a small
     /// rounded tag with its symbol and label, which opens what it stands
     /// for and shows its card after a moment.
-    fn bubble_chip(&self, ix: usize, line: usize, at: usize, kind: ChipKind, images: &[ImageRef], retina: bool, cx: &mut Context<Self>) -> AnyElement {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+    )]
+    fn bubble_chip(
+        &self,
+        ix: usize,
+        line: usize,
+        at: usize,
+        kind: ChipKind,
+        images: &[ImageRef],
+        retina: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (fill, secondary) = (style::chip_fill(cx), style::secondary_label(cx));
         // Its half-point edge (NSColor.separatorColor): a pixel on a Retina
         // screen; on a 1x one AppKit's comes out at half strength, so this
         // does too.
-        let edge = if retina { style::hairline(cx) } else { style::hairline(cx).opacity(0.5) };
+        let edge = if retina {
+            style::hairline(cx)
+        } else {
+            style::hairline(cx).opacity(0.5)
+        };
         let key = SharedString::from(format!("bubble-chip-{ix}-{line}-{at}-{}", kind.label()));
-        let label = div().text_size(px(CHIP_LABEL)).line_height(px(16.)).text_color(secondary).whitespace_nowrap().when(!matches!(kind, ChipKind::Picture(_)), |d| d.max_w(px(CARD_LABEL_MAX)).truncate()).child(kind.label());
+        let label = div()
+            .text_size(px(CHIP_LABEL))
+            .line_height(px(16.))
+            .text_color(secondary)
+            .whitespace_nowrap()
+            .when(!matches!(kind, ChipKind::Picture(_)), |d| {
+                d.max_w(px(CARD_LABEL_MAX)).truncate()
+            })
+            .child(kind.label());
         // SF's symbols fill the 14-point box; Lucide's draw a little inside theirs.
-        let symbol = div().size(px(CHIP_ICON)).flex().items_center().justify_center().child(crate::icons::symbol(kind.symbol()).size(px(13.)).text_color(secondary));
+        let symbol = div()
+            .size(px(CHIP_ICON))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                crate::icons::symbol(kind.symbol())
+                    .size(px(13.))
+                    .text_color(secondary),
+            );
         let chip = div()
             .id(ElementId::Name(key.clone()))
             .relative()
@@ -386,7 +581,9 @@ impl ThreadPane {
             .cursor_pointer()
             .child(symbol)
             .child(label)
-            .when(matches!(kind, ChipKind::File { .. }), |d| d.child(crate::composer_inline::file_dot(cx)))
+            .when(matches!(kind, ChipKind::File { .. }), |d| {
+                d.child(crate::composer_inline::file_dot(cx))
+            })
             // Not the start of a selection in the words round it.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         let origin = self.origin();
@@ -400,22 +597,35 @@ impl ThreadPane {
             ChipKind::Picture(index) if origin != Origin::ThisMac => {
                 let runner = self.summary.runner_id.clone();
                 let images = images.to_vec();
-                chip.tip(crate::viewer::TILE_TIP).on_click(move |_, window, cx| crate::viewer::open_from_tile(&images, index, runner.as_deref(), window, cx))
+                chip.tip(crate::viewer::TILE_TIP)
+                    .on_click(move |_, window, cx| {
+                        crate::viewer::open_from_tile(&images, index, runner.as_deref(), window, cx)
+                    })
             }
             ChipKind::Picture(index) => {
                 let picture = images.get(index);
-                let shown = picture.filter(|_| card_shown(&key, QUICK)).map(|p| under_chip(picture_card(p, cx)));
+                let shown = picture
+                    .filter(|_| card_shown(&key, QUICK))
+                    .map(|p| under_chip(picture_card(p, cx)));
                 let images = images.to_vec();
-                let hover_key = key.clone();
+                let hover_key = key;
                 chip.on_hover(move |on, window, cx| hover(&hover_key, *on, QUICK, window, cx))
                     // The in-app viewer, as a click on the picture over the words does.
-                    .on_click(move |_, window, cx| crate::viewer::open_from_tile(&images, index, None, window, cx))
+                    .on_click(move |_, window, cx| {
+                        crate::viewer::open_from_tile(&images, index, None, window, cx)
+                    })
                     .children(shown)
             }
             ChipKind::Card { title, url } => {
-                let shown = card_shown(&key, SLOWER).then(|| under_chip(words_card(&page_title(&title, &url), &threadbear_core::highlights::text::address(&url), cx)));
+                let shown = card_shown(&key, SLOWER).then(|| {
+                    under_chip(words_card(
+                        &page_title(&title, &url),
+                        &threadbear_core::highlights::text::address(&url),
+                        cx,
+                    ))
+                });
                 let cwd = self.summary.cwd.clone();
-                let hover_key = key.clone();
+                let hover_key = key;
                 chip.on_hover(move |on, window, cx| hover(&hover_key, *on, SLOWER, window, cx))
                     // Through the open gate, as the reply's links go.
                     .on_click(move |_, _, cx| open_gate::open_link(&url, origin, &cwd, cx))
@@ -424,27 +634,45 @@ impl ThreadPane {
             // Another Mac's file is on that Mac, so it opens nothing here.
             ChipKind::File { .. } if origin != Origin::ThisMac => {
                 let runner = self.summary.runner_id.clone().unwrap_or_default();
-                let mac = self.composer.read(cx).app.upgrade().map_or_else(|| "another Mac".to_owned(), |app| app.read(cx).runner_name_of(&runner));
-                chip.cursor_default().tip(format!("Not uploaded: this file is on {mac}"))
+                let mac = self.composer.read(cx).app.upgrade().map_or_else(
+                    || "another Mac".to_owned(),
+                    |app| app.read(cx).runner_name_of(&runner),
+                );
+                chip.cursor_default()
+                    .tip(format!("Not uploaded: this file is on {mac}"))
             }
             ChipKind::File { path, .. } => {
                 let path = threadbear_core::reducer::text::expanding_tilde(&path);
-                let shown = card_shown(&key, SLOWER).then(|| under_chip(words_card(&name, &crate::composer_inline::short_path(&path), cx)));
-                let hover_key = key.clone();
+                let shown = card_shown(&key, SLOWER).then(|| {
+                    under_chip(words_card(
+                        &name,
+                        &crate::composer_inline::short_path(&path),
+                        cx,
+                    ))
+                });
+                let hover_key = key;
                 chip.on_hover(move |on, window, cx| hover(&hover_key, *on, SLOWER, window, cx))
                     .on_click(move |_, _, cx| open_gate::open_file(&path, origin, cx))
                     .children(shown)
             }
             ChipKind::Thread { id, .. } => {
-                let shown = card_shown(&key, QUICK).then(|| self.thread_card_for(&id, cx)).flatten().map(under_chip);
-                let hover_key = key.clone();
+                let shown = card_shown(&key, QUICK)
+                    .then(|| self.thread_card_for(&id, cx))
+                    .flatten()
+                    .map(under_chip);
+                let hover_key = key;
                 chip.on_hover(move |on, window, cx| hover(&hover_key, *on, QUICK, window, cx))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_thread_link(&id, window, cx)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_thread_link(&id, window, cx)
+                    }))
                     .children(shown)
             }
         };
         // Its label is what it's called to a screen reader, and to a script.
-        chip.test_support().role(Role::Link).aria_label(name).into_any_element()
+        chip.test_support()
+            .role(Role::Link)
+            .aria_label(name)
+            .into_any_element()
     }
 
     /// The thread's hover card, from the app's thread list.
@@ -474,7 +702,12 @@ pub(crate) fn bubble_links(message: &UserMessage) -> Vec<String> {
     found::message_pieces(&message.text, message.images.len())
         .into_iter()
         .filter_map(|p| match p {
-            Piece::Words(words) => Some(found::web_links(&words).into_iter().map(|r| words[r].to_owned()).collect::<Vec<_>>()),
+            Piece::Words(words) => Some(
+                found::web_links(&words)
+                    .into_iter()
+                    .map(|r| words[r].to_owned())
+                    .collect::<Vec<_>>(),
+            ),
             _ => None,
         })
         .flatten()
@@ -489,7 +722,12 @@ pub(crate) fn bubble_links(message: &UserMessage) -> Vec<String> {
 /// opened, as the Swift command says what Quick Look would ("ok quicklook
 /// <index> of [paths]").
 #[cfg(feature = "automation")]
-pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn peek_command(
+    app: &Entity<crate::app::Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     use serde_json::json;
     use threadbear_core::reducer::RowContent;
@@ -503,10 +741,18 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
     let (ix, prefix, message) = {
         let rows = pane.read(cx).feed.model().rows();
         let ix = match cmd["row"].as_str() {
-            Some(prefix) => rows.iter().position(|r| r.id.starts_with(prefix)).ok_or_else(|| format!("no row starting {prefix:?}"))?,
-            None => rows.iter().rposition(|r| matches!(&r.content, RowContent::User(m) if described(m).is_some())).ok_or("no message with chips")?,
+            Some(prefix) => rows
+                .iter()
+                .position(|r| r.id.starts_with(prefix))
+                .ok_or_else(|| format!("no row starting {prefix:?}"))?,
+            None => rows
+                .iter()
+                .rposition(|r| matches!(&r.content, RowContent::User(m) if described(m).is_some()))
+                .ok_or("no message with chips")?,
         };
-        let RowContent::User(message) = &rows[ix].content else { return Err(format!("{} isn't a message", rows[ix].id)) };
+        let RowContent::User(message) = &rows[ix].content else {
+            return Err(format!("{} isn't a message", rows[ix].id));
+        };
         (ix, rows[ix].id.clone(), message.clone())
     };
     let chips: Vec<ChipKind> = found::message_pieces(&message.text, message.images.len())
@@ -521,15 +767,24 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
         let lines: Vec<String> = chips
             .iter()
             .filter_map(|kind| match kind {
-                ChipKind::Picture(i) => message.images.get(*i).map(|image| format!("{}={}", kind.label(), image.path)),
+                ChipKind::Picture(i) => message
+                    .images
+                    .get(*i)
+                    .map(|image| format!("{}={}", kind.label(), image.path)),
                 ChipKind::Card { url, .. } => Some(format!("{}={url}", kind.label())),
                 ChipKind::File { path, .. } => Some(format!("{}={path}", kind.label())),
                 ChipKind::Thread { .. } => None,
             })
             .collect();
-        return Ok(json!(if lines.is_empty() { "ok none".to_owned() } else { format!("ok {}", lines.join(" | ")) }));
+        return Ok(json!(if lines.is_empty() {
+            "ok none".to_owned()
+        } else {
+            format!("ok {}", lines.join(" | "))
+        }));
     };
-    let Some(kind) = chips.iter().find(|k| k.label().contains(words)).cloned() else { return Err(format!("no chip with {words} in {prefix}")) };
+    let Some(kind) = chips.iter().find(|k| k.label().contains(words)).cloned() else {
+        return Err(format!("no chip with {words} in {prefix}"));
+    };
     // On screen first, as a person would see it.
     pane.update(cx, |p, cx| p.scroll_command(None, Some(&prefix), 120., cx))?;
     window.render_frame(cx);
@@ -537,10 +792,17 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
     let element = window
         .find_all_by_label(&kind.label())
         .into_iter()
-        .find(|e| e.visible() && e.path().iter().any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine))))
+        .find(|e| {
+            e.visible()
+                && e.path()
+                    .iter()
+                    .any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine)))
+        })
         .ok_or_else(|| format!("the chip {words} isn't on screen"))?;
     if cmd["press"].as_bool() == Some(true) {
-        let ChipKind::Picture(index) = kind else { return Err(format!("{words} isn't a picture's chip")) };
+        let ChipKind::Picture(index) = kind else {
+            return Err(format!("{words} isn't a picture's chip"));
+        };
         let at = element.visible_bounds().center();
         window.pointer_move(at, None, cx);
         window.pointer_down(at, MouseButton::Left, cx);
@@ -551,7 +813,10 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
             return Err("nothing opened".into());
         }
         let paths: Vec<&str> = message.images.iter().map(|i| i.path.as_str()).collect();
-        return Ok(json!(format!("ok quicklook {index} of {}", serde_json::to_string(&paths).unwrap_or_default())));
+        return Ok(json!(format!(
+            "ok quicklook {index} of {}",
+            serde_json::to_string(&paths).unwrap_or_default()
+        )));
     }
     // Its card, as resting the pointer on it shows it.
     let key = element.path().iter().rev().find_map(|id| match id {
@@ -570,7 +835,8 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
 /// thread list (ThreadChips.update). Made again when the list changes
 /// size, or a couple of seconds on, as a thread gone while another comes
 /// leaves the size the same.
-static INDEX: LazyLock<Mutex<Option<(usize, Instant, Arc<ThreadIndex>)>>> = LazyLock::new(|| Mutex::new(None));
+static INDEX: LazyLock<Mutex<Option<(usize, Instant, Arc<ThreadIndex>)>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 pub(crate) fn thread_index(threads: &HashMap<String, Arc<ThreadSummary>>) -> Arc<ThreadIndex> {
     let mut cached = INDEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -599,13 +865,21 @@ const CHIP_SCHEME: &str = "tbchip:";
 /// own destination. A code span that's just an id is the chip instead, as
 /// the Mac draws its chip in place of the code's pill; an id inside longer
 /// code stays code.
-pub(crate) fn link_thread_ids<'a>(text: &'a str, resolve: &dyn Fn(&str) -> Option<String>) -> (std::borrow::Cow<'a, str>, Vec<(String, String)>) {
+pub(crate) fn link_thread_ids<'a>(
+    text: &'a str,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> (std::borrow::Cow<'a, str>, Vec<(String, String)>) {
     use std::borrow::Cow;
     let mut chips = Vec::new();
-    if !found::thread_ref_candidates(text).into_iter().any(|r| resolve(&text[r]).is_some()) {
+    if !found::thread_ref_candidates(text)
+        .into_iter()
+        .any(|r| resolve(&text[r]).is_some())
+    {
         return (Cow::Borrowed(text), chips);
     }
-    let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else { return (Cow::Borrowed(text), chips) };
+    let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else {
+        return (Cow::Borrowed(text), chips);
+    };
     let mut ids: Vec<(Range<usize>, String, String, bool)> = Vec::new();
     collect_ids(&root, text, resolve, &mut ids);
     ids.sort_by_key(|(range, ..)| range.start);
@@ -621,7 +895,10 @@ pub(crate) fn link_thread_ids<'a>(text: &'a str, resolve: &dyn Fn(&str) -> Optio
             continue;
         }
         out.push_str(&text[at..range.start]);
-        out.push_str(&format!("[{word}]({CHIP_SCHEME}{id}{})", if code { "?code" } else { "" }));
+        out.push_str(&format!(
+            "[{word}]({CHIP_SCHEME}{id}{})",
+            if code { "?code" } else { "" }
+        ));
         chips.push((word, id));
         at = range.end;
     }
@@ -631,27 +908,51 @@ pub(crate) fn link_thread_ids<'a>(text: &'a str, resolve: &dyn Fn(&str) -> Optio
 
 /// The ids in the reply's words, where they are in its text, and whether
 /// each was a code span of its own.
-fn collect_ids(node: &markdown::mdast::Node, text: &str, resolve: &dyn Fn(&str) -> Option<String>, out: &mut Vec<(Range<usize>, String, String, bool)>) {
+fn collect_ids(
+    node: &markdown::mdast::Node,
+    text: &str,
+    resolve: &dyn Fn(&str) -> Option<String>,
+    out: &mut Vec<(Range<usize>, String, String, bool)>,
+) {
     use markdown::mdast::Node;
     match node {
         Node::Text(words) => {
-            let Some(at) = words.position.as_ref() else { return };
-            let Some(source) = text.get(at.start.offset..at.end.offset) else { return };
+            let Some(at) = words.position.as_ref() else {
+                return;
+            };
+            let Some(source) = text.get(at.start.offset..at.end.offset) else {
+                return;
+            };
             for found in found::thread_ref_candidates(source) {
                 if let Some(id) = resolve(&source[found.clone()]) {
-                    out.push((at.start.offset + found.start..at.start.offset + found.end, source[found].to_owned(), id, false));
+                    out.push((
+                        at.start.offset + found.start..at.start.offset + found.end,
+                        source[found].to_owned(),
+                        id,
+                        false,
+                    ));
                 }
             }
         }
         Node::InlineCode(code) => {
-            let Some(at) = code.position.as_ref() else { return };
-            let whole = found::thread_ref_candidates(&code.value).first().is_some_and(|r| r.start == 0 && r.end == code.value.len());
+            let Some(at) = code.position.as_ref() else {
+                return;
+            };
+            let whole = found::thread_ref_candidates(&code.value)
+                .first()
+                .is_some_and(|r| r.start == 0 && r.end == code.value.len());
             if let Some(id) = whole.then(|| resolve(&code.value)).flatten() {
                 out.push((at.start.offset..at.end.offset, code.value.clone(), id, true));
             }
         }
         // A link keeps its own destination; code blocks and the rest aren't words.
-        Node::Link(_) | Node::LinkReference(_) | Node::Code(_) | Node::Html(_) | Node::Image(_) | Node::ImageReference(_) | Node::Definition(_) => {}
+        Node::Link(_)
+        | Node::LinkReference(_)
+        | Node::Code(_)
+        | Node::Html(_)
+        | Node::Image(_)
+        | Node::ImageReference(_)
+        | Node::Definition(_) => {}
         _ => {
             for child in node.children().into_iter().flatten() {
                 collect_ids(child, text, resolve, out);
@@ -664,13 +965,21 @@ fn collect_ids(node: &markdown::mdast::Node, text: &str, resolve: &dyn Fn(&str) 
 /// (Theme.chipBackground, chipText).
 fn chip_colours(cx: &App) -> (Hsla, Hsla) {
     let accent = style::control_accent(cx);
-    (accent.opacity(if cx.theme().is_dark() { 0.2 } else { 0.12 }), accent)
+    (
+        accent.opacity(if cx.theme().is_dark() { 0.2 } else { 0.12 }),
+        accent,
+    )
 }
 
 /// Opens a thread by its id from a chip, as a `thread:` link in the
 /// transcript does (the app's own handling of OpenThreadRequest).
 fn open_thread(id: &str, window: &mut Window, cx: &mut App) {
-    let Some(app) = cx.try_global::<crate::open_gate::GateNotices>().and_then(|n| n.0.upgrade()) else { return };
+    let Some(app) = cx
+        .try_global::<crate::open_gate::GateNotices>()
+        .and_then(|n| n.0.upgrade())
+    else {
+        return;
+    };
     let id = id.to_owned();
     app.update(cx, |t, cx| {
         if t.threads.contains_key(&id) {
@@ -720,8 +1029,14 @@ impl MarkdownPlugin for ThreadChipPills {
         "thread-chip"
     }
 
-    fn parse(&self, node: &markdown::mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
-        let markdown::mdast::Node::Link(link) = node else { return None };
+    fn parse(
+        &self,
+        node: &markdown::mdast::Node,
+        _cx: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
+        let markdown::mdast::Node::Link(link) = node else {
+            return None;
+        };
         let target = link.url.strip_prefix(CHIP_SCHEME)?;
         let (id, code) = match target.strip_suffix("?code") {
             Some(id) => (id, true),
@@ -729,31 +1044,78 @@ impl MarkdownPlugin for ThreadChipPills {
         };
         let word = node.to_string();
         // Copied, it's the id as the agent wrote it.
-        Some(MarkdownNode::new("thread-chip", ChipRef { word: word.clone(), id: id.to_owned(), code }).text(word.clone()).markdown(if code { format!("`{word}`") } else { word }))
+        Some(
+            MarkdownNode::new(
+                "thread-chip",
+                ChipRef {
+                    word: word.clone(),
+                    id: id.to_owned(),
+                    code,
+                },
+            )
+            .text(word.clone())
+            .markdown(if code { format!("`{word}`") } else { word }),
+        )
     }
 
-    fn render_inline(&self, node: &MarkdownNode, _context: &InlineRenderContext, _window: &mut Window, cx: &mut App) -> Option<InlineElement> {
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        _context: &InlineRenderContext,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<InlineElement> {
         let chip = node.data::<ChipRef>()?.clone();
-        let app = cx.try_global::<crate::open_gate::GateNotices>().and_then(|n| n.0.upgrade());
+        let app = cx
+            .try_global::<crate::open_gate::GateNotices>()
+            .and_then(|n| n.0.upgrade());
         // A thread that's gone since shows its words.
-        if !app.as_ref().is_some_and(|a| a.read(cx).threads.contains_key(&chip.id)) {
+        if !app
+            .as_ref()
+            .is_some_and(|a| a.read(cx).threads.contains_key(&chip.id))
+        {
             return Some(InlineElement::new(div().child(chip.word)));
         }
-        let key = SharedString::from(format!("reply-chip-{}-{}", self.row, node.source_range().map_or(0, |r| r.start)));
+        let key = SharedString::from(format!(
+            "reply-chip-{}-{}",
+            self.row,
+            node.source_range().map_or(0, |r| r.start)
+        ));
         // Its words' own font: the body's, or the code's for an id that was
         // a code span, with the pill 1.5 past the glyphs above and below.
-        let (font, height, baseline) = if chip.code { (size::CODE, 18.5, 13.9) } else { (size::BODY, 21., 15.85) };
-        let card = card_shown(&key, QUICK).then(|| app.as_ref().and_then(|a| thread_card(&chip.id, &a.read(cx).threads, &a.read(cx).logins.accounts, cx))).flatten().map(|card| under(height, card));
+        let (font, height, baseline) = if chip.code {
+            (size::CODE, 18.5, 13.9)
+        } else {
+            (size::BODY, 21., 15.85)
+        };
+        let card = card_shown(&key, QUICK)
+            .then(|| {
+                app.as_ref().and_then(|a| {
+                    thread_card(
+                        &chip.id,
+                        &a.read(cx).threads,
+                        &a.read(cx).logins.accounts,
+                        cx,
+                    )
+                })
+            })
+            .flatten()
+            .map(|card| under(height, card));
         let (hover_key, id) = (key.clone(), chip.id.clone());
         let pill = chip_pill(key, chip.word.clone(), height, cx)
             .text_size(px(font))
-            .when(chip.code, |d| d.font_family(cx.theme().mono_font_family.clone()))
+            .when(chip.code, |d| {
+                d.font_family(cx.theme().mono_font_family.clone())
+            })
             .on_hover(move |on, window, cx| hover(&hover_key, *on, QUICK, window, cx))
             // Not the start of a selection in the reply round it.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| open_thread(&id, window, cx))
             .children(card);
-        Some(InlineElement::new(pill.test_support().role(Role::Link).aria_label(chip.word)).with_baseline(px(baseline)))
+        Some(
+            InlineElement::new(pill.test_support().role(Role::Link).aria_label(chip.word))
+                .with_baseline(px(baseline)),
+        )
     }
 }
 
@@ -785,9 +1147,13 @@ impl ThreadPane {
     /// a PR too (pr_view.rs's `PrMarks`), its state asked of the runner the
     /// first time.
     pub(crate) fn with_link_marks(&self, text: String, cx: &mut App) -> String {
-        let Some(app) = self.composer.read(cx).app.upgrade() else { return text };
+        let Some(app) = self.composer.read(cx).app.upgrade() else {
+            return text;
+        };
         let threads = &app.read(cx).threads;
-        let text = match threadbear_core::link_marks::with_marks(&text, &|id| threadbear_core::link_marks::resolve_in(id, threads.keys())) {
+        let text = match threadbear_core::link_marks::with_marks(&text, &|id| {
+            threadbear_core::link_marks::resolve_in(id, threads.keys())
+        }) {
             std::borrow::Cow::Owned(marked) => marked,
             std::borrow::Cow::Borrowed(_) => text,
         };
@@ -806,40 +1172,86 @@ impl ThreadPane {
     /// `agentMessageText`'s first line: where the message came from, small
     /// and faint, the sending thread as a chip that opens it while it's
     /// still there (a move's note names the folder instead).
-    pub(crate) fn agent_header_line(&self, row: &str, header: &threadbear_core::reducer::AgentHeader, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn agent_header_line(
+        &self,
+        row: &str,
+        header: &threadbear_core::reducer::AgentHeader,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let faint = style::faint_text(cx);
-        let symbol = |name: &str| div().flex_none().mr(px(3.)).child(crate::icons::symbol(name).size(px(size::SMALL)).text_color(faint));
-        let line = h_flex().min_h(px(17.)).items_center().text_size(px(size::SMALL)).line_height(px(17.)).text_color(faint);
+        let symbol = |name: &str| {
+            div().flex_none().mr(px(3.)).child(
+                crate::icons::symbol(name)
+                    .size(px(size::SMALL))
+                    .text_color(faint),
+            )
+        };
+        let line = h_flex()
+            .min_h(px(17.))
+            .items_center()
+            .text_size(px(size::SMALL))
+            .line_height(px(17.))
+            .text_color(faint);
         if let Some(folder) = &header.moved_to {
             let home = threadbear_core::reducer::text::home_directory();
             let folder = threadbear_core::new_thread::abbreviate_home(folder, &home);
-            return line.child(symbol("folder")).child(format!("Left by this thread's agent when it moved to {folder}")).into_any_element();
+            return line
+                .child(symbol("folder"))
+                .child(format!(
+                    "Left by this thread's agent when it moved to {folder}"
+                ))
+                .into_any_element();
         }
-        let name = if header.title.is_empty() { header.thread_id.clone() } else { header.title.clone() };
-        let line = line.child(symbol("arrow.turn.down.right")).child(div().flex_none().whitespace_nowrap().child("From the agent in "));
+        let name = if header.title.is_empty() {
+            header.thread_id.clone()
+        } else {
+            header.title.clone()
+        };
+        let line = line.child(symbol("arrow.turn.down.right")).child(
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .child("From the agent in "),
+        );
         // The runner's header carries the sender's 8-character prefix
         // (threadbear-mcp.ts `from`), not its whole id, so it's looked up
         // through the index that knows prefixes, as the Swift app did.
-        let Some(id) = self.thread_ids(cx).resolve(&header.thread_id).map(str::to_owned) else {
-            return line.child(div().min_w_0().truncate().child(name)).into_any_element();
+        let Some(id) = self
+            .thread_ids(cx)
+            .resolve(&header.thread_id)
+            .map(str::to_owned)
+        else {
+            return line
+                .child(div().min_w_0().truncate().child(name))
+                .into_any_element();
         };
         let key = SharedString::from(format!("agent-chip-{row}"));
-        let card = card_shown(&key, QUICK).then(|| self.thread_card_for(&id, cx)).flatten().map(|card| under(16., card));
+        let card = card_shown(&key, QUICK)
+            .then(|| self.thread_card_for(&id, cx))
+            .flatten()
+            .map(|card| under(16., card));
         let hover_key = key.clone();
         let pill = chip_pill(key, name.clone(), 16., cx)
             .min_w_0()
             .truncate()
             .on_hover(move |on, window, cx| hover(&hover_key, *on, QUICK, window, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_thread_link(&id, window, cx)))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.open_thread_link(&id, window, cx)
+            }))
             .children(card);
-        line.child(pill.test_support().role(Role::Link).aria_label(name)).into_any_element()
+        line.child(pill.test_support().role(Role::Link).aria_label(name))
+            .into_any_element()
     }
 
     /// The thread chips a row draws, each one's words and thread: the
     /// sending thread's at the head of an agent's message and the ids in
     /// its words, or the ids in a reply.
-    fn thread_chips_of(&self, row: &threadbear_core::reducer::Row, cx: &App) -> Vec<(String, String)> {
+    fn thread_chips_of(
+        &self,
+        row: &threadbear_core::reducer::Row,
+        cx: &App,
+    ) -> Vec<(String, String)> {
         use threadbear_core::reducer::RowContent;
         let index = self.thread_ids(cx);
         let resolve = |word: &str| index.resolve(word).map(str::to_owned);
@@ -848,15 +1260,35 @@ impl ThreadPane {
             RowContent::Assistant(item) => {
                 use crate::rows::markdown::{dead_file_links, pictures, prepare};
                 let local = self.summary.runner_id.is_none();
-                link_thread_ids(&dead_file_links(&prepare(&pictures(&item.text, local), &self.summary.id), local), &resolve).1
+                link_thread_ids(
+                    &dead_file_links(
+                        &prepare(&pictures(&item.text, local), &self.summary.id),
+                        local,
+                    ),
+                    &resolve,
+                )
+                .1
             }
             RowContent::User(message) => match message.agent_header() {
                 Some(header) => {
                     let mut chips = Vec::new();
-                    if let Some(id) = index.resolve(&header.thread_id).filter(|_| header.moved_to.is_none()) {
-                        chips.push((if header.title.is_empty() { header.thread_id.clone() } else { header.title.clone() }, id.to_owned()));
+                    if let Some(id) = index
+                        .resolve(&header.thread_id)
+                        .filter(|_| header.moved_to.is_none())
+                    {
+                        chips.push((
+                            if header.title.is_empty() {
+                                header.thread_id.clone()
+                            } else {
+                                header.title.clone()
+                            },
+                            id.to_owned(),
+                        ));
                     }
-                    let body = crate::rows::markdown::pictures(header.body.trim(), self.summary.runner_id.is_none());
+                    let body = crate::rows::markdown::pictures(
+                        header.body.trim(),
+                        self.summary.runner_id.is_none(),
+                    );
                     chips.extend(link_thread_ids(&body, &resolve).1);
                     chips
                 }
@@ -873,14 +1305,22 @@ impl ThreadPane {
 /// `chips`): Mike's bubble's, the thread an agent's message came from, and
 /// the thread ids in a reply ("thread: 85735a8f").
 #[cfg(feature = "automation")]
-pub(crate) fn row_chips(pane: &ThreadPane, row: &threadbear_core::reducer::Row, cx: &App) -> Option<Vec<String>> {
+pub(crate) fn row_chips(
+    pane: &ThreadPane,
+    row: &threadbear_core::reducer::Row,
+    cx: &App,
+) -> Option<Vec<String>> {
     use threadbear_core::reducer::RowContent;
     if let RowContent::User(message) = &row.content {
         if let Some(chips) = described(message) {
             return Some(chips);
         }
     }
-    let chips: Vec<String> = pane.thread_chips_of(row, cx).into_iter().map(|(word, _)| format!("thread: {word}")).collect();
+    let chips: Vec<String> = pane
+        .thread_chips_of(row, cx)
+        .into_iter()
+        .map(|(word, _)| format!("thread: {word}"))
+        .collect();
     (!chips.is_empty()).then_some(chips)
 }
 
@@ -890,7 +1330,12 @@ pub(crate) fn row_chips(pane: &ThreadPane, row: &threadbear_core::reducer::Row, 
 /// `click: true` clicks it through real pointer events and says what
 /// opened ("ok opened <id>").
 #[cfg(feature = "automation")]
-pub(crate) fn chip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn chip_command(
+    app: &Entity<crate::app::Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     use serde_json::json;
     use threadbear_core::reducer::RowContent;
@@ -898,13 +1343,23 @@ pub(crate) fn chip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
     let pane = app.read(cx).pane.clone().ok_or("no thread open")?;
     let (ix, row) = {
         let rows = pane.read(cx).feed.model().rows();
-        let ix = rows.iter().position(|r| r.id.starts_with(prefix)).ok_or_else(|| format!("no row starting {prefix:?}"))?;
+        let ix = rows
+            .iter()
+            .position(|r| r.id.starts_with(prefix))
+            .ok_or_else(|| format!("no row starting {prefix:?}"))?;
         (ix, rows[ix].clone())
     };
     let chips = pane.read(cx).thread_chips_of(&row, cx);
     let Some(word) = cmd["word"].as_str() else {
-        let listed: Vec<String> = chips.iter().map(|(word, id)| format!("{word}={id}")).collect();
-        return Ok(json!(if listed.is_empty() { "ok none".to_owned() } else { format!("ok {}", listed.join(" ")) }));
+        let listed: Vec<String> = chips
+            .iter()
+            .map(|(word, id)| format!("{word}={id}"))
+            .collect();
+        return Ok(json!(if listed.is_empty() {
+            "ok none".to_owned()
+        } else {
+            format!("ok {}", listed.join(" "))
+        }));
     };
     if !chips.iter().any(|(w, _)| w == word) {
         return Err(format!("{word} isn't a chip in {}", row.id));
@@ -919,7 +1374,14 @@ pub(crate) fn chip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
     window.render_frame(cx);
     // A reply's chips carry its row's id; an agent's message is drawn by its place.
     let agent = matches!(&row.content, RowContent::User(m) if m.agent_header().is_some());
-    let mine = if agent { vec![format!("reply-chip-agent-{ix}-"), format!("agent-chip-agent-{ix}")] } else { vec![format!("reply-chip-{}-", row.id)] };
+    let mine = if agent {
+        vec![
+            format!("reply-chip-agent-{ix}-"),
+            format!("agent-chip-agent-{ix}"),
+        ]
+    } else {
+        vec![format!("reply-chip-{}-", row.id)]
+    };
     let element = window
         .find_all_by_label(word)
         .into_iter()
@@ -930,7 +1392,13 @@ pub(crate) fn chip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
         window.pointer_move(at, None, cx);
         window.pointer_down(at, MouseButton::Left, cx);
         window.pointer_up(at, MouseButton::Left, cx);
-        return Ok(json!(format!("ok opened {}", app.read(cx).selected.clone().unwrap_or_else(|| "nothing".into()))));
+        return Ok(json!(format!(
+            "ok opened {}",
+            app.read(cx)
+                .selected
+                .clone()
+                .unwrap_or_else(|| "nothing".into())
+        )));
     }
     let key = element.path().iter().rev().find_map(|id| match id {
         ElementId::Name(n) if mine.iter().any(|m| n.starts_with(m.as_str())) => Some(n.to_string()),
@@ -949,7 +1417,9 @@ mod tests {
 
     fn linked(text: &str) -> (String, Vec<(String, String)>) {
         let resolve = |word: &str| match word {
-            "85735a8f" | "85735a8f-0000-4000-8000-000000000001" => Some("85735a8f-0000-4000-8000-000000000001".to_owned()),
+            "85735a8f" | "85735a8f-0000-4000-8000-000000000001" => {
+                Some("85735a8f-0000-4000-8000-000000000001".to_owned())
+            }
             _ => None,
         };
         let (text, chips) = link_thread_ids(text, &resolve);
@@ -959,11 +1429,21 @@ mod tests {
     #[test]
     fn a_thread_id_in_a_replys_words_is_a_chip() {
         let id = "85735a8f-0000-4000-8000-000000000001";
-        let (text, chips) = linked("See 85735a8f, and **85735a8f-0000-4000-8000-000000000001** too.");
-        assert_eq!(text, format!("See [85735a8f](tbchip:{id}), and **[{id}](tbchip:{id})** too."));
-        assert_eq!(chips.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>(), ["85735a8f", id]);
+        let (text, chips) =
+            linked("See 85735a8f, and **85735a8f-0000-4000-8000-000000000001** too.");
+        assert_eq!(
+            text,
+            format!("See [85735a8f](tbchip:{id}), and **[{id}](tbchip:{id})** too.")
+        );
+        assert_eq!(
+            chips.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>(),
+            ["85735a8f", id]
+        );
         // A code span that's just the id is the chip, kept looking like code.
-        assert_eq!(linked("in `85735a8f`").0, format!("in [85735a8f](tbchip:{id}?code)"));
+        assert_eq!(
+            linked("in `85735a8f`").0,
+            format!("in [85735a8f](tbchip:{id}?code)")
+        );
     }
 
     /// Daybreak 102: an id another runner made up, found by its hex
@@ -971,7 +1451,9 @@ mod tests {
     /// too: threadbear_core's remote_ids_tests).
     #[test]
     fn an_id_that_isnt_a_thread_ids_shape_writes_no_markdown() {
-        let resolve = |word: &str| (word == "deadbeef").then(|| "deadbeef) ![local](/tmp/private.png".to_owned());
+        let resolve = |word: &str| {
+            (word == "deadbeef").then(|| "deadbeef) ![local](/tmp/private.png".to_owned())
+        };
         let (text, chips) = link_thread_ids("see deadbeef here", &resolve);
         assert_eq!(text, "see deadbeef here");
         assert!(chips.is_empty());

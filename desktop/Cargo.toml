@@ -6,6 +6,29 @@ members = ["client", "core", "gpui", "dock", "dock/layout", "web"]
 # A copy of a published crate, built as a dependency only (below).
 exclude = ["vendor"]
 
+# Clippy's default lints plus these, for every member (each has `[lints]
+# workspace = true`). ../check.sh and the Desktop workflow run clippy with
+# -D warnings, so a warning fails a landing too. clippy.toml has the settings.
+[workspace.lints.clippy]
+# Denied outright:
+dbg_macro = "deny" # Debug printing left in; the log is the place for it.
+todo = "deny" # Unfinished code that panics when reached.
+unimplemented = "deny" # The same, under another name.
+await_holding_lock = "deny" # A std lock held across an .await can stall the runtime or deadlock.
+await_holding_refcell_ref = "deny" # A RefCell borrow held across an .await panics when another task borrows it.
+rc_mutex = "deny" # Rc<Mutex<_>> pays for a lock that no other thread can reach; RefCell does it.
+redundant_clone = "deny" # A clone of something never used again.
+allow_attributes_without_reason = "deny" # Every exception to a lint says why, in its reason.
+undocumented_unsafe_blocks = "deny" # Every unsafe block says why it's sound, in a // SAFETY: comment.
+# Warned, with the sites there were marked #[expect(..., reason = "...")], so
+# the list only shrinks (a site that's fixed fails its expect):
+unwrap_used = "warn" # A panic with no message where an error could be handled or said.
+expect_used = "warn" # A panic where an error could be handled; tests may (clippy.toml).
+too_many_lines = "warn" # A function past clippy.toml's threshold wants splitting.
+# Allowed, as Zed allows them:
+type_complexity = "allow" # GPUI's callback types are long by nature; aliases would only hide them.
+large_enum_variant = "allow" # Boxing to even out variants costs an allocation for little gain here.
+
 # gpui-kit's components, as published at 0.9.0, with this app's changes on
 # top: its popup menus drawn as macOS draws its own (the tick column beside
 # the icon, the metrics, the highlight), which nothing outside the crate can
@@ -47,6 +70,13 @@ gpui-base = { path = "vendor/gpui-base" }
 # last item (following the tail, before the next layout) as the end of the
 # range, not a viewport beyond it: ScrollBounce took that gap for a pull past
 # the transcript's bottom and stretched it the wrong way (Ian, 17 Nov).
+# And an `img` with an id steps a GIF's frames whether or not its window is
+# the key one (elements/img.rs): upstream played them only in the active
+# window, so a GIF beside another app stayed still. It wakes its view when the
+# next frame is due rather than drawing at every display frame (one timer
+# kept across draws), on the executor's clock, starts its clock again after a
+# long gap, and shows a 0 ms frame for 100 ms, as browsers do
+# (gpui/tests/gif_frames.rs).
 gpui-pre = { path = "vendor/gpui-pre" }
 # gpui-pre-macos 0.3.11 as published, except that with a native view inside
 # the window holding the keyboard (a web panel's page), a key without ⌘ or

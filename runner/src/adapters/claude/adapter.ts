@@ -224,7 +224,7 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
-  // An edit of an earlier message (docs/protocol.md, "Editing a message").
+  // An edit of an earlier message (docs/protocol/threads.md, "Editing a message").
   // The conversation is cut by the next start (resumeAt); here the
   // transcript says where, and a CLI started on the session with no turn
   // rewinds the files its checkpoints cover to how they were when the
@@ -346,7 +346,7 @@ export function cardClosedMessage(why: string | undefined): string {
 }
 
 // Tools that ask in Ask mode unless a rule allows them, for guessing which
-// of a reply's calls will ask (docs/protocol.md, "Queued calls"). Another
+// of a reply's calls will ask (docs/protocol/threads.md, "Queued calls"). Another
 // server's tools ask too (wouldAsk). A guess that's wrong costs little: a
 // listed call a rule lets through runs as it would have if Mike allowed
 // it, and one he denied is refused all the same (onQueuedCall).
@@ -398,7 +398,7 @@ class ClaudeSession implements AgentSession {
   private stderrTail: string[] = [];
   private seenTools = new Set<string>();
   // The agent's own tool calls that have no result yet, as the CLI sent
-  // them, in order: what can queue behind a card (docs/protocol.md,
+  // them, in order: what can queue behind a card (docs/protocol/threads.md,
   // "Queued calls").
   private openCalls = new Map<string, { name: string; input: Record<string, unknown> }>();
   // The cards the agent's own calls are waiting on (one at a time, but a
@@ -1255,7 +1255,7 @@ export function commandFile(name: string, base: string): string | undefined {
 // rules on the thread and passes them back as allowedTools after a resume.
 //
 // tb gets one rule for exactly the command that was allowed, and never the
-// CLI's suggested prefix (docs/protocol.md, "A thread's own key"): allowing
+// CLI's suggested prefix (docs/protocol/connection.md, "A thread's own key"): allowing
 // `tb new --ask x` shouldn't allow `tb new --full y` the next time.
 export function alwaysAllow(name: string, suggestions: PermissionUpdate[] | undefined, input?: Record<string, unknown>): { updates: PermissionUpdate[]; rules: string[] } {
   const updates: PermissionUpdate[] = [];

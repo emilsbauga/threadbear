@@ -10,7 +10,7 @@ provider has "a minimum set of functionality that we would require".
 
 This replaces the sandboxed-threads experiment (a container around Claude
 Code on a shared runner, taken out on 16 Nov) and is the "cloud sandboxes"
-half of step 6 (docs/plan.md). Coordinators are a separate experiment and
+half of step 6 (docs/archive/plan.md). Coordinators are a separate experiment and
 out of scope here.
 
 Status: the spike passed (Order, 1), and the backend is built in two
@@ -270,7 +270,7 @@ The backend's first slice (18 Nov 2026), with tests in
   failing and archiving clear it too, and an asleep box keeps its key so
   a paused box can resume (unless the provider lost it). WAKE is taken
   once, so two quick messages make one wake.
-- **Box keys** (decision 4; docs/protocol.md, "Box keys"): a third
+- **Box keys** (decision 4; docs/protocol/boxes.md, "Box keys"): a third
   `Caller`, `{ owner: false, runnerId, box: { id, threadId, keyHash } }`,
   found by `boxes.boxKeyHash`, never a `runnerKeys` row. `BOX_CALLS` in
   `convex/runnerAccess.ts` is what it may call, and `ownThreadOnly` holds
@@ -345,7 +345,7 @@ API, never the real one), `box-fly.test.ts` (the adapter) and
   (no command waiting, its thread not starting, running or waiting on an
   answer) or up `maxAwakeHoursPerDay` today (busy or not, unless a
   command waits) gets `IDLE` and a `save` command; every 10, the reaper
-  (above, and protocol.md "Virtual runners"); every 6 hours, archived
+  (above, and protocol/keys.md "Virtual runners"); every 6 hours, archived
   threads' saves and box rows past `deleteAfterDays`.
 - **Archiving**: a box's thread put in the den or removed has its box
   deleted after a minute (`boxHooks.ts archiveSoon`), unless it's out of
@@ -680,7 +680,7 @@ refused, as is any exchange that doesn't name its machine while one of its
 attempt is condemned, and a heartbeat naming it gives it nothing.
 
 The third slice (19 Nov 2026), the runner's **box mode**
-(`runner/src/box-mode.ts`, `box-save.ts`, `clock-jump.ts`; docs/protocol.md
+(`runner/src/box-mode.ts`, `box-save.ts`, `clock-jump.ts`; docs/protocol/boxes.md
 "Box mode"), with tests in `runner/test/unit/box-mode.test.ts` (the real
 runner entry point among them), `box-save.test.ts` and
 `clock-jump.test.ts`:
@@ -1018,7 +1018,7 @@ Not built yet, in about the order they're needed:
 5. **Move to** and from a virtual runner, GitHub tokens from Convex,
    limits and costs in Settings.
 
-Everything here goes through the cross-lab review in AGENTS.md before
+Everything here goes through the cross-lab review in Mike's global instructions before
 it's called done.
 
 ## Faster starts

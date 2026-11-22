@@ -41,6 +41,7 @@ const KNOWN: Record<string, { everywhere: true } | { linux: string; files: strin
   '/usr/sbin/taskpolicy': { linux: 'behind a darwin check: the secret check is Mac only, and inBackground skips it off a Mac', files: ['secret-check.ts', 'background.ts'] },
   '/usr/bin/xcrun': { linux: 'behind a darwin check: the secret check is Mac only', files: ['secret-check.ts'] },
   '/usr/bin/pmset': { linux: 'behind darwin checks: the secret check and keeping awake are Mac only', files: ['secret-check.ts', 'keep-awake.ts'] },
+  '/usr/bin/codesign': { linux: 'behind a darwin check: only a Mac checks who signed a binary', files: ['agents.ts'] },
   '/usr/bin/caffeinate': { linux: 'behind a darwin check: keeping awake is Mac only', files: ['keep-awake.ts'] },
   '/usr/bin/lockf': { linux: 'behind a darwin check; flock on Linux', files: ['worktrees.ts'] },
   '/usr/bin/python3': { linux: 'only when it exists (fs.existsSync), else python3 on the PATH', files: ['year-token-maker.ts'] },

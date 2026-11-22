@@ -26,7 +26,12 @@ pub struct PendingMessage {
 
 impl PendingMessage {
     pub fn new(id: &str, text: &str, after_seq: i64) -> PendingMessage {
-        PendingMessage { id: id.to_owned(), text: text.to_owned(), after_seq, ..PendingMessage::default() }
+        PendingMessage {
+            id: id.to_owned(),
+            text: text.to_owned(),
+            after_seq,
+            ..PendingMessage::default()
+        }
     }
 
     /// Whether `event` is the runner showing this message. Matched on the
@@ -39,7 +44,13 @@ impl PendingMessage {
             return false;
         }
         match &event.payload {
-            EventPayload::UserMessage { text, images, origin: None, edit_of: None, .. } => *text == self.text && images.len() == self.images.len(),
+            EventPayload::UserMessage {
+                text,
+                images,
+                origin: None,
+                edit_of: None,
+                ..
+            } => *text == self.text && images.len() == self.images.len(),
             _ => false,
         }
     }
@@ -53,13 +64,27 @@ impl PendingMessage {
         } else {
             Pending::Sending
         };
-        let message = UserMessage { text: self.text.clone(), images: self.images.clone(), answers: self.answers.clone(), pending: Some(pending), ..UserMessage::default() };
-        Row::new(&format!("p:{}", self.id), self.after_seq, None, RowContent::User(message))
+        let message = UserMessage {
+            text: self.text.clone(),
+            images: self.images.clone(),
+            answers: self.answers.clone(),
+            pending: Some(pending),
+            ..UserMessage::default()
+        };
+        Row::new(
+            &format!("p:{}", self.id),
+            self.after_seq,
+            None,
+            RowContent::User(message),
+        )
     }
 
     /// Takes out the messages that `events` show, each event standing for
     /// one message (two sends of "yes" need two). Returns whether any went.
-    pub fn remove_landed<'a>(events: impl IntoIterator<Item = &'a Event>, list: &mut Vec<PendingMessage>) -> bool {
+    pub fn remove_landed<'a>(
+        events: impl IntoIterator<Item = &'a Event>,
+        list: &mut Vec<PendingMessage>,
+    ) -> bool {
         if list.is_empty() {
             return false;
         }
@@ -74,7 +99,10 @@ impl PendingMessage {
                 // can only be landed by a later one, however often the list
                 // is checked again (the app's outbox gives it after every
                 // change, and to a transcript opened later on these events).
-                for other in list.iter_mut().filter(|m| m.text == landed.text && m.images.len() == landed.images.len()) {
+                for other in list
+                    .iter_mut()
+                    .filter(|m| m.text == landed.text && m.images.len() == landed.images.len())
+                {
                     other.after_seq = other.after_seq.max(event.seq);
                 }
                 removed = true;

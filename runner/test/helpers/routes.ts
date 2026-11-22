@@ -1,5 +1,3 @@
-import path from 'node:path';
-import fs from 'node:fs';
 // One thread, read three ways, to check they agree (scenarios.test.ts):
 //
 //   here    this runner's own events and summary, as the Mac app reads them
@@ -14,6 +12,8 @@ import fs from 'node:fs';
 // rebuild of a card) shows as the routes disagreeing, not as a bug on Alex's
 // backend. Nothing here touches the network or a model, so it's as quick and
 // steady as a unit test.
+import fs from 'node:fs';
+import path from 'node:path';
 import { makeHarness } from './fakes.ts';
 import { call, load, memoryBackend } from './convex-memory.ts';
 import { ConvexSync } from '../../src/sync.ts';

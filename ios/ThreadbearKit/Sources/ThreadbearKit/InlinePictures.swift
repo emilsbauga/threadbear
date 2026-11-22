@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pictures among a message's words, as on the Mac (docs/protocol.md,
+/// Pictures among a message's words, as on the Mac (docs/protocol/threads.md,
 /// "Pictures in a message"; the Mac's copy is app/Sources/ThreadbearCore/
 /// Threads/InlinePictures.swift). In the composer each photo is a mark in
 /// the text, U+FFFC, the character its chip attachment is, the k-th mark

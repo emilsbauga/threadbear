@@ -7,10 +7,17 @@
 use std::path::{Path, PathBuf};
 
 /// What makes a tooltip without the helper.
-const OTHER_WAYS: &[&str] = &["Tooltip::new(", ".tooltip(|", ".tooltip(move |", ".hoverable_tooltip("];
+const OTHER_WAYS: &[&str] = &[
+    "Tooltip::new(",
+    ".tooltip(|",
+    ".tooltip(move |",
+    ".hoverable_tooltip(",
+];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -23,10 +30,16 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn every_tooltip_goes_through_the_tip_helper() {
-    let gpui = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("gpui/src");
+    let gpui = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("gpui/src");
     let mut files = Vec::new();
     rust_files(&gpui, &mut files);
-    assert!(files.iter().any(|f| f.ends_with("tips.rs")), "tips.rs wasn't found, so this test isn't looking in the right place");
+    assert!(
+        files.iter().any(|f| f.ends_with("tips.rs")),
+        "tips.rs wasn't found, so this test isn't looking in the right place"
+    );
     let mut found = Vec::new();
     for file in files.iter().filter(|f| !f.ends_with("tips.rs")) {
         let text = std::fs::read_to_string(file).unwrap();
@@ -35,8 +48,16 @@ fn every_tooltip_goes_through_the_tip_helper() {
                 continue;
             }
             let squeezed: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
-            if OTHER_WAYS.iter().any(|w| squeezed.contains(w) || line.contains(w)) {
-                found.push(format!("{}:{}: {}", file.strip_prefix(&gpui).unwrap().display(), n + 1, line.trim()));
+            if OTHER_WAYS
+                .iter()
+                .any(|w| squeezed.contains(w) || line.contains(w))
+            {
+                found.push(format!(
+                    "{}:{}: {}",
+                    file.strip_prefix(&gpui).unwrap().display(),
+                    n + 1,
+                    line.trim()
+                ));
             }
         }
     }

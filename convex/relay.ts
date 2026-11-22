@@ -1,12 +1,12 @@
 // Other runners' threads read and steered through the backend (API 44,
-// docs/protocol.md "Other runners' threads through the backend"): the main
+// docs/protocol/runners.md "Other runners' threads through the backend"): the main
 // Mac's runner reads another runner's thread from its messages and threads
 // rows, and asks that runner to act on it with a `commands` row, as the
 // phone does. The Mac app talks only to its own runner; runners never talk
 // to each other. All owner only (runnerAccess.ts ACCESS): a runner key
 // can't read another runner's threads or queue work for it.
 //
-// Read rules (docs/full-convex.md): the live tail is a few rows, older pages
+// Read rules (docs/convex-backend.md, "Read rules"): the live tail is a few rows, older pages
 // are read once and kept on the runner, a thread's row is one document, and
 // a command's state is one get by id.
 import { ConvexError, v } from 'convex/values';
@@ -557,7 +557,7 @@ export const remoteAccounts = query({
 
 // ------------------------------------------------------------ requests
 // A runner on a runner key asking for a new thread on another runner
-// (docs/protocol.md, "Asking another runner"; schema.ts runnerRequests). It
+// (docs/protocol/runners.md, "Asking another runner"; schema.ts runnerRequests). It
 // files the request here and shows a card in its own thread; the main Mac's
 // app reads the request back through its runner, shows Mike all of it, and
 // on Allow its runner (the owner key) starts the thread and marks the row.

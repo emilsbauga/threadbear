@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Config } from './config.ts';
 import { expandHome, peekRunnerJson, readRunnerJson, writeRunnerJson } from './config.ts';
-import type { Clock } from './clock.ts';
 import { ErrorCode, RpcError } from './protocol.ts';
 import type { Notification } from './runner.ts';
 import type { Models } from './models/index.ts';
@@ -47,7 +46,7 @@ export type Settings = {
   // A thread suggesting work when a login's week is about to go unused
   // (spare-week.ts). runner.json `spareWeek`, on unless it's false.
   spareWeek: boolean;
-  // Full sync (docs/full-convex.md): tool output goes to Convex too. What
+  // Full sync (docs/convex-backend.md, "Full sync"): tool output goes to Convex too. What
   // runner.json says, which takes effect when the runner next starts.
   fullSync: boolean;
   models: {

@@ -8,7 +8,7 @@ import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { Projects, projectMethods } from '../../src/projects.ts';
 import { Librarian, ICON_SOON_MS, ICON_SWEEP_MS } from '../../src/librarian.ts';
 import { findIcon, imageSize, phonePicture, storeIcon, SYMBOLS } from '../../src/project-icons.ts';
-import { magickCommand, pictureKind, svgToPng, winCommand } from '../../src/images.ts';
+import { magickCommand, pictureKind, winCommand } from '../../src/images.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';

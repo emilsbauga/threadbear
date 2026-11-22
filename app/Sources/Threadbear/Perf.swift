@@ -283,7 +283,7 @@ final class PerfRunner: NSObject {
 
         // The plan's bars, judged from the numbers above.
         log("")
-        log("Bars (plan.md, Performance bar)")
+        log("Bars (app/README.md, Perf runs)")
         let switchSorted = switches.sorted()
         let switchP95 = switchSorted.isEmpty ? 0 : switchSorted[min(switchSorted.count - 1, Int(Double(switchSorted.count) * 0.95))]
         let upMatchesDown = fling.downDistance > 0 && fling.upDistance / fling.downDistance > 0.9

@@ -97,8 +97,9 @@ struct Composer: View {
                     .accessibilityLabel(stopping ? "Stopping" : "Stop")
                 } else {
                     Button(action: send) {
-                        // A photo can take a while to go up on mobile data.
-                        if sending && !photos.isEmpty {
+                        // Spinning until the backend has it: a photo can take a while
+                        // to go up on mobile data, and words alone wait on the server.
+                        if sending {
                             ProgressView().frame(width: 30, height: 30)
                         } else {
                             Image(systemName: "arrow.up.circle.fill")

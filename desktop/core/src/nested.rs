@@ -1,4 +1,4 @@
-// Nested threads (docs/protocol.md, "Nested threads"; the nestedThreads
+// Nested threads (docs/protocol/threads.md, "Nested threads"; the nestedThreads
 // experiment): a thread another thread started sits indented under the thread
 // that started it in the sidebar, like a sub-agent, rather than with a row of
 // its own in the Inbox or Running. Mike picked this on 13 Nov 2026 after
@@ -45,7 +45,10 @@ fn started_by_thread_id(t: &ThreadSummary) -> Option<&str> {
 /// it's detached, its starter is gone or archived, or the line goes round in
 /// a circle. A finished (archived) thread in the middle of the line doesn't
 /// break it: what it started is still the top thread's work.
-pub fn top_starter<'a>(t: &ThreadSummary, find: &dyn Fn(&str) -> Option<&'a ThreadSummary>) -> Option<&'a ThreadSummary> {
+pub fn top_starter<'a>(
+    t: &ThreadSummary,
+    find: &dyn Fn(&str) -> Option<&'a ThreadSummary>,
+) -> Option<&'a ThreadSummary> {
     let mut seen: HashSet<&str> = HashSet::new();
     seen.insert(t.id.as_str());
     let mut top: Option<&'a ThreadSummary> = None;
@@ -69,7 +72,12 @@ pub fn top_starter<'a>(t: &ThreadSummary, find: &dyn Fn(&str) -> Option<&'a Thre
 /// Waits on Mike: the Inbox's reasons, less a thread that's just idle there
 /// (`section_of`'s first Inbox clause), and not while it hibernates.
 pub fn needs_mike(t: &ThreadSummary, now_ms: i64) -> bool {
-    !t.is_archived() && !t.snoozed(now_ms) && (t.review_waiting() || t.status == "waiting" || t.waiting_on_mike() || (t.needs_you && !t.working_in_background()))
+    !t.is_archived()
+        && !t.snoozed(now_ms)
+        && (t.review_waiting()
+            || t.status == "waiting"
+            || t.waiting_on_mike()
+            || (t.needs_you && !t.working_in_background()))
 }
 
 /// Working: a turn under way or background work, not hibernating, or
@@ -125,11 +133,18 @@ pub struct Nesting {
 impl Nesting {
     /// `threads` is every thread the app has, archived ones included (they
     /// make the "N finished" line). `wakes` as for `sections_ordered`.
-    pub fn build<'a, T: Borrow<ThreadSummary> + 'a>(threads: impl IntoIterator<Item = &'a T>, now_ms: i64, wakes: &HashMap<String, Wake>) -> Nesting {
-        let by_id: HashMap<&str, &ThreadSummary> = threads.into_iter().map(|row| {
-            let t = crate::inbox::summary(row);
-            (t.id.as_str(), t)
-        }).collect();
+    pub fn build<'a, T: Borrow<ThreadSummary> + 'a>(
+        threads: impl IntoIterator<Item = &'a T>,
+        now_ms: i64,
+        wakes: &HashMap<String, Wake>,
+    ) -> Nesting {
+        let by_id: HashMap<&str, &ThreadSummary> = threads
+            .into_iter()
+            .map(|row| {
+                let t = crate::inbox::summary(row);
+                (t.id.as_str(), t)
+            })
+            .collect();
         let find = |id: &str| by_id.get(id).copied();
         let mut under = HashMap::new();
         let mut members: HashMap<&str, (Vec<&ThreadSummary>, Vec<&ThreadSummary>)> = HashMap::new();
@@ -139,12 +154,26 @@ impl Nesting {
             if starter_id(t).is_none() {
                 continue;
             }
-            let Some(top) = top_starter(t, &find) else { continue };
+            let Some(top) = top_starter(t, &find) else {
+                continue;
+            };
             under.insert(t.id.clone(), top.id.clone());
             let entry = members.entry(top.id.as_str()).or_default();
-            if t.is_archived() { entry.1.push(t) } else { entry.0.push(t) }
+            if t.is_archived() {
+                entry.1.push(t)
+            } else {
+                entry.0.push(t)
+            }
         }
-        let rank = |t: &ThreadSummary| if needs_mike(t, now_ms) { 0 } else if working(t, now_ms) { 1 } else { 2 };
+        let rank = |t: &ThreadSummary| {
+            if needs_mike(t, now_ms) {
+                0
+            } else if working(t, now_ms) {
+                1
+            } else {
+                2
+            }
+        };
         let mut groups = HashMap::new();
         for (starter_id, (mut live, mut done)) in members {
             let starter = by_id[starter_id];
@@ -165,9 +194,18 @@ impl Nesting {
                 own
             };
             let awake = live.iter().filter(|t| !t.snoozed(now_ms));
-            let urgency = awake.clone().map(|t| t.urgency()).chain([starter.urgency()]).min().unwrap_or(4);
+            let urgency = awake
+                .clone()
+                .map(|t| t.urgency())
+                .chain([starter.urgency()])
+                .min()
+                .unwrap_or(4);
             let card = awake.clone().any(|t| t.on_card()) || starter.on_card();
-            let activity_ms = awake.map(|t| t.activity_ms()).chain([starter.activity_ms()]).max().unwrap_or(0);
+            let activity_ms = awake
+                .map(|t| t.activity_ms())
+                .chain([starter.activity_ms()])
+                .max()
+                .unwrap_or(0);
             groups.insert(
                 starter_id.to_owned(),
                 Group {
@@ -217,7 +255,11 @@ pub fn group_words(g: &Group) -> String {
     if parts.is_empty() {
         let n = g.children.len();
         if n > 0 {
-            parts.push(if n == 1 { "1 thread".into() } else { format!("{n} threads") });
+            parts.push(if n == 1 {
+                "1 thread".into()
+            } else {
+                format!("{n} threads")
+            });
         } else {
             parts.push(finished_words(g.finished.len()));
         }
@@ -233,8 +275,16 @@ pub fn finished_words(n: usize) -> String {
 /// The open-or-folded button's tooltip.
 pub fn toggle_tip(open: bool, g: &Group) -> String {
     let n = g.children.len() + g.finished.len();
-    let what = if n == 1 { "the thread it started".to_string() } else { format!("the {n} threads it started") };
-    if open { format!("Fold {what}") } else { format!("Show {what}") }
+    let what = if n == 1 {
+        "the thread it started".to_string()
+    } else {
+        format!("the {n} threads it started")
+    };
+    if open {
+        format!("Fold {what}")
+    } else {
+        format!("Show {what}")
+    }
 }
 
 /// Mike's own open or fold of a group, kept while the app runs, and whether
@@ -261,7 +311,10 @@ pub fn group_open(choice: Option<FoldChoice>, g: &Group) -> (bool, bool) {
 /// The choice a click on the group's toggle makes.
 pub fn toggled(choice: Option<FoldChoice>, g: &Group) -> FoldChoice {
     let (open, _) = group_open(choice, g);
-    FoldChoice { open: !open, opened_itself: g.opens_itself() }
+    FoldChoice {
+        open: !open,
+        opened_itself: g.opens_itself(),
+    }
 }
 
 /// A nested thread's second line: its question while it waits on Mike (drawn
@@ -270,12 +323,30 @@ pub fn toggled(choice: Option<FoldChoice>, g: &Group) -> FoldChoice {
 /// reply, else its place.
 pub fn child_line(t: &ThreadSummary, now_ms: i64) -> (String, bool) {
     if needs_mike(t, now_ms) {
-        let ask = t.asks.iter().flatten().find(|a| a.ticked != Some(true) && !a.action.trim().is_empty()).map(|a| a.action.trim().to_string());
-        let said = ask.or_else(|| first_line(&t.preview)).unwrap_or_else(|| "Needs you".into());
+        let ask = t
+            .asks
+            .iter()
+            .flatten()
+            .find(|a| a.ticked != Some(true) && !a.action.trim().is_empty())
+            .map(|a| a.action.trim().to_string());
+        let said = ask
+            .or_else(|| first_line(&t.preview))
+            .unwrap_or_else(|| "Needs you".into());
         return (said, true);
     }
-    let why = t.started_by.as_ref().and_then(|b| b.get("why")).and_then(|w| w.as_str()).map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
-    (why.or_else(|| first_line(&t.preview)).unwrap_or_else(|| t.place()), false)
+    let why = t
+        .started_by
+        .as_ref()
+        .and_then(|b| b.get("why"))
+        .and_then(|w| w.as_str())
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned);
+    (
+        why.or_else(|| first_line(&t.preview))
+            .unwrap_or_else(|| t.place()),
+        false,
+    )
 }
 
 fn first_line(text: &str) -> Option<String> {
@@ -309,23 +380,49 @@ pub fn started_line(t: &ThreadSummary, starter: Option<&ThreadSummary>) -> Optio
     if by.get("kind")?.as_str()? != "thread" {
         return None;
     }
-    let text = |key: &str| by.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+    let text = |key: &str| {
+        by.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
     let starter = starter.filter(|s| Some(s.id.as_str()) == started_by_thread_id(t));
-    let title = starter.map(|s| s.title.trim().to_owned()).filter(|s| !s.is_empty()).or_else(|| text("threadTitle")).unwrap_or_else(|| "another thread".into());
-    Some(StartedLine { thread_id: starter.map(|s| s.id.clone()), title, why: text("why") })
+    let title = starter
+        .map(|s| s.title.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .or_else(|| text("threadTitle"))
+        .unwrap_or_else(|| "another thread".into());
+    Some(StartedLine {
+        thread_id: starter.map(|s| s.id.clone()),
+        title,
+        why: text("why"),
+    })
 }
 
 /// The row menu's line for a thread a thread started: Move Out From Under
 /// the thread it sits under, or Put Back Under the one that started it when
 /// it was moved out and would nest again. The title, and the value for
 /// `threads.update`'s `detached`.
-pub fn menu_line<'a>(t: &ThreadSummary, find: &dyn Fn(&str) -> Option<&'a ThreadSummary>) -> Option<(String, bool)> {
-    let titled = |s: &ThreadSummary| if s.title.trim().is_empty() { "Untitled".to_string() } else { s.title.trim().to_string() };
+pub fn menu_line<'a>(
+    t: &ThreadSummary,
+    find: &dyn Fn(&str) -> Option<&'a ThreadSummary>,
+) -> Option<(String, bool)> {
+    let titled = |s: &ThreadSummary| {
+        if s.title.trim().is_empty() {
+            "Untitled".to_string()
+        } else {
+            s.title.trim().to_string()
+        }
+    };
     if t.detached == Some(true) || t.backlog.is_some() || t.backlogged == Some(true) {
         let mut back = t.clone();
         back.detached = None;
         let top = top_starter(&back, find)?;
-        let starter = started_by_thread_id(t).and_then(find).filter(|s| !s.is_archived()).unwrap_or(top);
+        let starter = started_by_thread_id(t)
+            .and_then(find)
+            .filter(|s| !s.is_archived())
+            .unwrap_or(top);
         return Some((format!("Put Back Under {}", titled(starter)), false));
     }
     if t.is_archived() {
@@ -379,9 +476,22 @@ mod tests {
         let nesting = Nesting::build(threads.iter(), now(), &wakes);
         assert!(!nesting.is_nested("deferred"));
         assert!(!nesting.is_nested("dependent"));
-        let sections = crate::inbox::sections_nested(threads.iter(), now(), crate::inbox::InboxOrder::NeedsYou, &wakes, &nesting);
+        let sections = crate::inbox::sections_nested(
+            threads.iter(),
+            now(),
+            crate::inbox::InboxOrder::NeedsYou,
+            &wakes,
+            &nesting,
+        );
         let backlog = sections.iter().find(|s| s.key == "backlog").unwrap();
-        assert_eq!(backlog.rows.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["deferred"]);
+        assert_eq!(
+            backlog
+                .rows
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["deferred"]
+        );
     }
 
     fn asks() -> Value {
@@ -389,7 +499,10 @@ mod tests {
     }
 
     fn ids<T: Borrow<ThreadSummary>>(s: &[crate::inbox::Section<T>], key: &str) -> Vec<String> {
-        s.iter().find(|s| s.key == key).map(|s| s.rows.iter().map(|t| t.borrow().id.clone()).collect()).unwrap_or_default()
+        s.iter()
+            .find(|s| s.key == key)
+            .map(|s| s.rows.iter().map(|t| t.borrow().id.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn build(all: &[ThreadSummary]) -> Nesting {
@@ -397,28 +510,55 @@ mod tests {
     }
 
     fn sections(all: &[ThreadSummary]) -> Vec<crate::inbox::Section> {
-        sections_nested(all, now(), InboxOrder::NeedsYou, &HashMap::new(), &build(all))
+        sections_nested(
+            all,
+            now(),
+            InboxOrder::NeedsYou,
+            &HashMap::new(),
+            &build(all),
+        )
     }
 
     #[test]
     fn a_thread_a_thread_started_nests_under_it_and_nowhere_else() {
-        let all = [thread("boss", json!({})), child("a", "boss", json!({ "status": "running" })), child("b", "boss", json!({})), thread("loose", json!({}))];
+        let all = [
+            thread("boss", json!({})),
+            child("a", "boss", json!({ "status": "running" })),
+            child("b", "boss", json!({})),
+            thread("loose", json!({})),
+        ];
         let n = build(&all);
         assert_eq!(n.top_of("a"), Some("boss"));
         assert_eq!(n.top_of("b"), Some("boss"));
         assert_eq!(n.top_of("loose"), None);
-        assert_eq!(n.group("boss").unwrap().children, ["a", "b"], "the working one first");
+        assert_eq!(
+            n.group("boss").unwrap().children,
+            ["a", "b"],
+            "the working one first"
+        );
         let s = sections(&all);
-        assert_eq!(ids(&s, "running"), ["boss"], "the group, under Running for its working thread");
+        assert_eq!(
+            ids(&s, "running"),
+            ["boss"],
+            "the group, under Running for its working thread"
+        );
         assert_eq!(ids(&s, "inbox"), ["loose"], "no rows of their own");
     }
 
     #[test]
     fn a_group_whose_thread_waits_on_its_own_work_is_under_running() {
         let waiting = json!({ "needs": "nothing", "snoozedUntil": "2026-11-14T12:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] });
-        let all = [thread("boss", json!({})), child("a", "boss", waiting.clone()), thread("solo", waiting)];
+        let all = [
+            thread("boss", json!({})),
+            child("a", "boss", waiting.clone()),
+            thread("solo", waiting),
+        ];
         let n = build(&all);
-        assert_eq!(n.group("boss").unwrap().working, 1, "counted as working, so the group doesn't fold it away");
+        assert_eq!(
+            n.group("boss").unwrap().working,
+            1,
+            "counted as working, so the group doesn't fold it away"
+        );
         let s = sections(&all);
         assert_eq!(ids(&s, "running"), ["boss", "solo"]);
     }
@@ -438,7 +578,8 @@ mod tests {
             child("under_archived", "gone_boss", json!({})),
             {
                 let mut t = thread("remote", json!({}));
-                t.started_by = Some(json!({ "kind": "thread", "label": "Agent", "threadTitle": "On bruce" }));
+                t.started_by =
+                    Some(json!({ "kind": "thread", "label": "Agent", "threadTitle": "On bruce" }));
                 t
             },
             tool,
@@ -462,7 +603,11 @@ mod tests {
         ];
         let n = build(&all);
         assert_eq!(n.top_of("grand"), Some("boss"), "one level deep");
-        assert_eq!(n.top_of("grand2"), Some("boss"), "a finished thread in the middle doesn't break the line");
+        assert_eq!(
+            n.top_of("grand2"),
+            Some("boss"),
+            "a finished thread in the middle doesn't break the line"
+        );
         assert!(n.group("mid").is_none());
         let g = n.group("boss").unwrap();
         assert_eq!(g.children, ["grand", "grand2", "mid"]);
@@ -471,7 +616,11 @@ mod tests {
 
     #[test]
     fn a_detached_middle_heads_its_own_group() {
-        let all = [thread("boss", json!({})), child("mid", "boss", json!({ "detached": true })), child("grand", "mid", json!({}))];
+        let all = [
+            thread("boss", json!({})),
+            child("mid", "boss", json!({ "detached": true })),
+            child("grand", "mid", json!({})),
+        ];
         let n = build(&all);
         assert_eq!(n.top_of("grand"), Some("mid"));
         assert!(!n.is_nested("mid"));
@@ -487,7 +636,11 @@ mod tests {
     fn the_group_goes_where_its_most_urgent_member_would() {
         // A child waiting on Mike takes a hibernating starter to the Inbox.
         let asleep = json!({ "snoozedUntil": at(-600) });
-        let all = [thread("boss", asleep.clone()), child("q", "boss", asks()), child("w", "boss", json!({ "status": "running" }))];
+        let all = [
+            thread("boss", asleep.clone()),
+            child("q", "boss", asks()),
+            child("w", "boss", json!({ "status": "running" })),
+        ];
         let s = sections(&all);
         assert_eq!(ids(&s, "inbox"), ["boss"]);
         assert!(ids(&s, "hibernating").is_empty());
@@ -496,11 +649,17 @@ mod tests {
         assert_eq!(g.children, ["q", "w"], "the question first");
 
         // Working children, nothing for Mike: Running.
-        let all = [thread("boss", json!({})), child("w", "boss", json!({ "status": "running" }))];
+        let all = [
+            thread("boss", json!({})),
+            child("w", "boss", json!({ "status": "running" })),
+        ];
         assert_eq!(ids(&sections(&all), "running"), ["boss"]);
 
         // The starter itself waiting on Mike: Inbox.
-        let all = [thread("boss", asks()), child("w", "boss", json!({ "status": "running" }))];
+        let all = [
+            thread("boss", asks()),
+            child("w", "boss", json!({ "status": "running" })),
+        ];
         assert_eq!(ids(&sections(&all), "inbox"), ["boss"]);
 
         // Nothing doing: where the starter is.
@@ -508,13 +667,26 @@ mod tests {
         assert_eq!(ids(&sections(&all), "hibernating"), ["boss"]);
 
         // A hibernating child waiting on Mike doesn't count.
-        let all = [thread("boss", json!({})), child("q", "boss", { let mut a = asks(); a["snoozedUntil"] = json!(at(-60)); a })];
+        let all = [
+            thread("boss", json!({})),
+            child("q", "boss", {
+                let mut a = asks();
+                a["snoozedUntil"] = json!(at(-60));
+                a
+            }),
+        ];
         let g = build(&all).group("boss").cloned().unwrap();
         assert_eq!(g.needs_you, 0);
-        assert_eq!(g.section, "inbox", "the starter's own place: idle, so the Inbox");
+        assert_eq!(
+            g.section, "inbox",
+            "the starter's own place: idle, so the Inbox"
+        );
 
         // Starred stays starred.
-        let all = [thread("boss", json!({ "starredAt": at(100) })), child("q", "boss", asks())];
+        let all = [
+            thread("boss", json!({ "starredAt": at(100) })),
+            child("q", "boss", asks()),
+        ];
         assert_eq!(ids(&sections(&all), "starred"), ["boss"]);
     }
 
@@ -523,16 +695,28 @@ mod tests {
         let all = [
             thread("plain", json!({ "lastActivityAt": at(1) })),
             thread("boss", json!({ "lastActivityAt": at(500) })),
-            child("q", "boss", { let mut a = asks(); a["lastActivityAt"] = json!(at(2)); a }),
+            child("q", "boss", {
+                let mut a = asks();
+                a["lastActivityAt"] = json!(at(2));
+                a
+            }),
         ];
-        assert_eq!(ids(&sections(&all), "inbox"), ["boss", "plain"], "its child's question ranks it");
+        assert_eq!(
+            ids(&sections(&all), "inbox"),
+            ["boss", "plain"],
+            "its child's question ranks it"
+        );
     }
 
     #[test]
     fn heading_counts_leave_nested_threads_out() {
         let mut all = vec![thread("boss", json!({ "status": "running" }))];
         for i in 0..6 {
-            all.push(child(&format!("c{i}"), "boss", json!({ "status": "running" })));
+            all.push(child(
+                &format!("c{i}"),
+                "boss",
+                json!({ "status": "running" }),
+            ));
         }
         all.push(thread("other", json!({ "status": "running" })));
         assert_eq!(ids(&sections(&all), "running"), ["boss", "other"]);
@@ -555,11 +739,18 @@ mod tests {
 
     #[test]
     fn it_opens_itself_while_a_child_waits_on_mike() {
-        let quiet = [thread("boss", json!({})), child("w", "boss", json!({ "status": "running" }))];
+        let quiet = [
+            thread("boss", json!({})),
+            child("w", "boss", json!({ "status": "running" })),
+        ];
         let asking = [thread("boss", json!({})), child("w", "boss", asks())];
         let quiet = build(&quiet).group("boss").cloned().unwrap();
         let asking = build(&asking).group("boss").cloned().unwrap();
-        assert_eq!(group_open(None, &quiet), (false, true), "folded while nothing waits");
+        assert_eq!(
+            group_open(None, &quiet),
+            (false, true),
+            "folded while nothing waits"
+        );
         assert_eq!(group_open(None, &asking), (true, true));
         // Mike folds the one with a question: it stays folded while that waits.
         let folded = toggled(None, &asking);
@@ -573,27 +764,69 @@ mod tests {
 
     #[test]
     fn the_starter_row_counts_what_needs_mike_and_what_works() {
-        let all = [thread("boss", json!({})), child("q", "boss", asks()), child("w1", "boss", json!({ "status": "running" })), child("w2", "boss", json!({ "status": "starting" }))];
+        let all = [
+            thread("boss", json!({})),
+            child("q", "boss", asks()),
+            child("w1", "boss", json!({ "status": "running" })),
+            child("w2", "boss", json!({ "status": "starting" })),
+        ];
         let g = build(&all).group("boss").cloned().unwrap();
         assert_eq!(group_words(&g), "1 needs you \u{b7} 2 working");
-        let all = [thread("boss", json!({})), child("w", "boss", json!({ "status": "running" }))];
+        let all = [
+            thread("boss", json!({})),
+            child("w", "boss", json!({ "status": "running" })),
+        ];
         assert_eq!(group_words(build(&all).group("boss").unwrap()), "1 working");
-        let all = [thread("boss", json!({})), child("i", "boss", json!({})), child("j", "boss", json!({}))];
+        let all = [
+            thread("boss", json!({})),
+            child("i", "boss", json!({})),
+            child("j", "boss", json!({})),
+        ];
         assert_eq!(group_words(build(&all).group("boss").unwrap()), "2 threads");
-        let all = [thread("boss", json!({})), child("i", "boss", json!({ "archivedAt": at(3) }))];
-        assert_eq!(group_words(build(&all).group("boss").unwrap()), "1 finished");
-        assert_eq!(toggle_tip(false, build(&all).group("boss").unwrap()), "Show the thread it started");
+        let all = [
+            thread("boss", json!({})),
+            child("i", "boss", json!({ "archivedAt": at(3) })),
+        ];
+        assert_eq!(
+            group_words(build(&all).group("boss").unwrap()),
+            "1 finished"
+        );
+        assert_eq!(
+            toggle_tip(false, build(&all).group("boss").unwrap()),
+            "Show the thread it started"
+        );
     }
 
     #[test]
     fn a_child_row_shows_its_question_or_where_its_up_to() {
         let q = child("q", "boss", asks());
-        assert_eq!(child_line(&q, now()), ("Should the sign-in window come in front of yours?".into(), true));
-        let w = child("w", "boss", json!({ "status": "running", "preview": "Landing, 4th in the queue" }));
-        assert_eq!(child_line(&w, now()), ("building the Browser pane".into(), false), "its byline first");
-        let mut plain = child("p", "boss", json!({ "preview": "**Done**: merged #12\nmore" }));
+        assert_eq!(
+            child_line(&q, now()),
+            (
+                "Should the sign-in window come in front of yours?".into(),
+                true
+            )
+        );
+        let w = child(
+            "w",
+            "boss",
+            json!({ "status": "running", "preview": "Landing, 4th in the queue" }),
+        );
+        assert_eq!(
+            child_line(&w, now()),
+            ("building the Browser pane".into(), false),
+            "its byline first"
+        );
+        let mut plain = child(
+            "p",
+            "boss",
+            json!({ "preview": "**Done**: merged #12\nmore" }),
+        );
         plain.started_by = Some(json!({ "kind": "thread", "threadId": "boss" }));
-        assert_eq!(child_line(&plain, now()), ("Done: merged #12".into(), false));
+        assert_eq!(
+            child_line(&plain, now()),
+            ("Done: merged #12".into(), false)
+        );
     }
 
     #[test]
@@ -601,7 +834,10 @@ mod tests {
         let boss = thread("boss", json!({ "title": "GPUI Port Coordinator" }));
         let t = child("c", "boss", json!({}));
         let line = started_line(&t, Some(&boss)).unwrap();
-        assert_eq!(line.text(), "Started by GPUI Port Coordinator \u{b7} building the Browser pane");
+        assert_eq!(
+            line.text(),
+            "Started by GPUI Port Coordinator \u{b7} building the Browser pane"
+        );
         assert_eq!(line.thread_id.as_deref(), Some("boss"));
         // The starter gone: its title as it was, and no link.
         let line = started_line(&t, None).unwrap();
@@ -616,22 +852,38 @@ mod tests {
 
     #[test]
     fn the_menu_moves_a_thread_out_and_back() {
-        let all = [thread("boss", json!({ "title": "GPUI Port Coordinator" })), child("c", "boss", json!({})), child("d", "boss", json!({ "detached": true })), thread("x", json!({}))];
+        let all = [
+            thread("boss", json!({ "title": "GPUI Port Coordinator" })),
+            child("c", "boss", json!({})),
+            child("d", "boss", json!({ "detached": true })),
+            thread("x", json!({})),
+        ];
         let find = |id: &str| all.iter().find(|t| t.id == id);
-        assert_eq!(menu_line(&all[1], &find), Some(("Move Out From Under GPUI Port Coordinator".into(), true)));
-        assert_eq!(menu_line(&all[2], &find), Some(("Put Back Under GPUI Port Coordinator".into(), false)));
+        assert_eq!(
+            menu_line(&all[1], &find),
+            Some(("Move Out From Under GPUI Port Coordinator".into(), true))
+        );
+        assert_eq!(
+            menu_line(&all[2], &find),
+            Some(("Put Back Under GPUI Port Coordinator".into(), false))
+        );
         assert_eq!(menu_line(&all[3], &find), None);
         // A detached one whose starter's archived has nowhere to go back to.
-        let gone = [thread("boss", json!({ "archivedAt": at(1) })), child("d", "boss", json!({ "detached": true }))];
+        let gone = [
+            thread("boss", json!({ "archivedAt": at(1) })),
+            child("d", "boss", json!({ "detached": true })),
+        ];
         let find = |id: &str| gone.iter().find(|t| t.id == id);
         assert_eq!(menu_line(&gone[1], &find), None);
     }
 
     #[test]
     fn detached_reads_tolerantly() {
-        let t: ThreadSummary = serde_json::from_value(json!({ "id": "a", "detached": "yes" })).unwrap();
+        let t: ThreadSummary =
+            serde_json::from_value(json!({ "id": "a", "detached": "yes" })).unwrap();
         assert_eq!(t.detached, None, "a value it can't read is left out");
-        let t: ThreadSummary = serde_json::from_value(json!({ "id": "a", "detached": true })).unwrap();
+        let t: ThreadSummary =
+            serde_json::from_value(json!({ "id": "a", "detached": true })).unwrap();
         assert_eq!(t.detached, Some(true));
         let t: ThreadSummary = serde_json::from_value(json!({ "id": "a" })).unwrap();
         assert_eq!(t.detached, None);

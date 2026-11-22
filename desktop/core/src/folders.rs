@@ -31,27 +31,57 @@ impl FolderContents {
     /// `files.list`'s answer. Tolerant, like the rest of the protocol: an entry
     /// with no name is dropped, and anything else it doesn't say is left out.
     pub fn decode(value: &Value) -> FolderContents {
-        let path = value.get("path").and_then(Value::as_str).unwrap_or("").to_owned();
+        let path = value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
         let entries = value
             .get("entries")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(|item| {
-                let name = item.get("name").and_then(Value::as_str).filter(|n| !n.is_empty())?.to_owned();
+                let name = item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.is_empty())?
+                    .to_owned();
                 Some(FolderEntry {
                     path: join(&path, &name),
-                    is_folder: item.get("isFolder").and_then(Value::as_bool).unwrap_or(false),
-                    hidden: item.get("hidden").and_then(Value::as_bool).unwrap_or_else(|| name.starts_with('.')),
+                    is_folder: item
+                        .get("isFolder")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    hidden: item
+                        .get("hidden")
+                        .and_then(Value::as_bool)
+                        .unwrap_or_else(|| name.starts_with('.')),
                     // Another runner sends it: a size that isn't a whole number
                     // of bytes is none (Daybreak, 7 Nov).
-                    size: item.get("size").and_then(|s| s.as_i64().or_else(|| s.as_f64().filter(|v| v.fract() == 0. && *v >= 0. && *v < 9.0e15).map(|v| v as i64))),
-                    modified_ms: item.get("modifiedAt").and_then(Value::as_str).and_then(parse_ms),
+                    size: item.get("size").and_then(|s| {
+                        s.as_i64().or_else(|| {
+                            s.as_f64()
+                                .filter(|v| v.fract() == 0. && *v >= 0. && *v < 9.0e15)
+                                .map(|v| v as i64)
+                        })
+                    }),
+                    modified_ms: item
+                        .get("modifiedAt")
+                        .and_then(Value::as_str)
+                        .and_then(parse_ms),
                     name,
                 })
             })
             .collect();
-        FolderContents { path, entries, truncated: value.get("truncated").and_then(Value::as_bool).unwrap_or(false) }
+        FolderContents {
+            path,
+            entries,
+            truncated: value
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
     }
 }
 
@@ -74,7 +104,9 @@ impl SortKey {
     }
 
     pub fn from_name(name: &str) -> Option<SortKey> {
-        [SortKey::Name, SortKey::Modified, SortKey::Size].into_iter().find(|k| k.name() == name)
+        [SortKey::Name, SortKey::Modified, SortKey::Size]
+            .into_iter()
+            .find(|k| k.name() == name)
     }
 
     /// The column's title and its row in the Sort by menu.
@@ -96,7 +128,10 @@ pub struct FolderSort {
 
 impl Default for FolderSort {
     fn default() -> Self {
-        FolderSort { key: SortKey::Name, ascending: true }
+        FolderSort {
+            key: SortKey::Name,
+            ascending: true,
+        }
     }
 }
 
@@ -113,7 +148,11 @@ impl FolderSort {
 
     fn compare(self, a: &FolderEntry, b: &FolderEntry) -> Ordering {
         if a.is_folder != b.is_folder {
-            return if a.is_folder { Ordering::Less } else { Ordering::Greater };
+            return if a.is_folder {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
         }
         let column = match self.key {
             SortKey::Name => None,
@@ -128,7 +167,11 @@ impl FolderSort {
             return a.path.cmp(&b.path);
         }
         // Only the name column's own direction flips the names.
-        if self.key == SortKey::Name && !self.ascending { names.reverse() } else { names }
+        if self.key == SortKey::Name && !self.ascending {
+            names.reverse()
+        } else {
+            names
+        }
     }
 }
 
@@ -186,7 +229,11 @@ pub struct Crumb {
 
 fn trimmed(path: &str) -> &str {
     let t = path.trim_end_matches('/');
-    if t.is_empty() { "/" } else { t }
+    if t.is_empty() {
+        "/"
+    } else {
+        t
+    }
 }
 
 /// The path bar's steps to `path`: from the home folder when it's under there
@@ -198,20 +245,37 @@ pub fn crumbs(path: &str, home: &str) -> Vec<Crumb> {
     let home = trimmed(&home);
     let path = trimmed(&path);
     let mut out = Vec::new();
-    let (mut at, rest) = if !home.is_empty() && home != "/" && (path == home || path.starts_with(&format!("{home}/"))) {
-        out.push(Crumb { name: name_of(home).to_owned(), path: home.to_owned() });
+    let (mut at, rest) = if !home.is_empty()
+        && home != "/"
+        && (path == home || path.starts_with(&format!("{home}/")))
+    {
+        out.push(Crumb {
+            name: name_of(home).to_owned(),
+            path: home.to_owned(),
+        });
         (home.to_owned(), &path[home.len()..])
-    } else if crate::reducer::text::is_windows_path(path) || (path.len() == 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.ends_with(':')) {
-        out.push(Crumb { name: path[..2].to_owned(), path: format!("{}/", &path[..2]) });
+    } else if crate::reducer::text::is_windows_path(path)
+        || (path.len() == 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.ends_with(':'))
+    {
+        out.push(Crumb {
+            name: path[..2].to_owned(),
+            path: format!("{}/", &path[..2]),
+        });
         (path[..2].to_owned(), &path[2..])
     } else {
-        out.push(Crumb { name: "/".into(), path: "/".into() });
+        out.push(Crumb {
+            name: "/".into(),
+            path: "/".into(),
+        });
         (String::new(), path)
     };
     for part in rest.split('/').filter(|p| !p.is_empty()) {
         at.push('/');
         at.push_str(part);
-        out.push(Crumb { name: part.to_owned(), path: at.clone() });
+        out.push(Crumb {
+            name: part.to_owned(),
+            path: at.clone(),
+        });
     }
     out
 }
@@ -228,16 +292,30 @@ pub fn parent(path: &str) -> Option<String> {
         return None;
     }
     let up = path.rsplit_once('/').map_or("", |(up, _)| up);
-    Some(if up.is_empty() { "/".to_owned() } else if up.len() == 2 && up.ends_with(':') { format!("{up}/") } else { up.to_owned() })
+    Some(if up.is_empty() {
+        "/".to_owned()
+    } else if up.len() == 2 && up.ends_with(':') {
+        format!("{up}/")
+    } else {
+        up.to_owned()
+    })
 }
 
 // A runner's Windows paths can be browsed from another system too.
 fn separators(path: &str) -> String {
-    if crate::reducer::text::is_windows_path(path) { path.replace('\\', "/") } else { path.to_owned() }
+    if crate::reducer::text::is_windows_path(path) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    }
 }
 
 pub fn join(folder: &str, name: &str) -> String {
-    if folder.ends_with('/') { format!("{folder}{name}") } else { format!("{folder}/{name}") }
+    if folder.ends_with('/') {
+        format!("{folder}{name}")
+    } else {
+        format!("{folder}/{name}")
+    }
 }
 
 /// A file's size in the Finder's words (`ByteCountFormatter`, file style):
@@ -246,7 +324,11 @@ pub fn size_words(bytes: i64) -> String {
     const KB: f64 = 1000.;
     let b = bytes as f64;
     if b < KB {
-        return if bytes == 1 { "1 byte".to_owned() } else { format!("{bytes} bytes") };
+        return if bytes == 1 {
+            "1 byte".to_owned()
+        } else {
+            format!("{bytes} bytes")
+        };
     }
     if b < KB * KB {
         return format!("{} KB", (b / KB).round() as i64);
@@ -278,7 +360,9 @@ impl FolderMode {
     }
 
     pub fn from_name(name: &str) -> Option<FolderMode> {
-        [FolderMode::List, FolderMode::Icons].into_iter().find(|m| m.name() == name)
+        [FolderMode::List, FolderMode::Icons]
+            .into_iter()
+            .find(|m| m.name() == name)
     }
 
     pub fn other(self) -> FolderMode {
@@ -313,7 +397,11 @@ pub fn tucked_count(widths: &[f32], gap: f32, more: f32, room: f32) -> usize {
     if widths.is_empty() {
         return 0;
     }
-    let needed = |start: usize| -> f32 { widths[start..].iter().sum::<f32>() + gap * (widths.len() - start - 1) as f32 + if start > 0 { more } else { 0. } };
+    let needed = |start: usize| -> f32 {
+        widths[start..].iter().sum::<f32>()
+            + gap * (widths.len() - start - 1) as f32
+            + if start > 0 { more } else { 0. }
+    };
     let mut start = 0;
     while start < widths.len() - 1 && needed(start) > room {
         start += 1;
@@ -360,8 +448,15 @@ pub fn thumbnails(entry: &FolderEntry) -> bool {
     if entry.is_folder || !entry.size.is_some_and(|s| (0..=MOST).contains(&s)) {
         return false;
     }
-    let ext = entry.name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico")
+    let ext = entry
+        .name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"
+    )
 }
 
 /// Rows picked in the list or the icons, as NSTableView keeps them: a click
@@ -380,7 +475,11 @@ pub struct Selection {
 impl Selection {
     pub fn of(paths: Vec<String>) -> Self {
         let last = paths.last().cloned();
-        Selection { paths, anchor: last.clone(), lead: last }
+        Selection {
+            paths,
+            anchor: last.clone(),
+            lead: last,
+        }
     }
 
     pub fn contains(&self, path: &str) -> bool {
@@ -423,7 +522,10 @@ impl Selection {
         if rows.is_empty() {
             return;
         }
-        let at = self.lead.as_ref().and_then(|lead| rows.iter().position(|r| r == lead));
+        let at = self
+            .lead
+            .as_ref()
+            .and_then(|lead| rows.iter().position(|r| r == lead));
         let next = match at {
             None => {
                 if by > 0 {
@@ -436,7 +538,10 @@ impl Selection {
         };
         let path = rows[next].clone();
         if extend && at.is_some() {
-            let anchor = self.anchor.clone().unwrap_or_else(|| rows[at.unwrap_or(next)].clone());
+            let anchor = self
+                .anchor
+                .clone()
+                .unwrap_or_else(|| rows[at.unwrap_or(next)].clone());
             self.paths = run(rows, &anchor, &path);
             self.anchor = Some(anchor);
         } else {
@@ -467,7 +572,10 @@ impl Selection {
 
 /// The rows from `a` to `b`, either way round, in the order they're drawn.
 fn run(rows: &[String], a: &str, b: &str) -> Vec<String> {
-    match (rows.iter().position(|r| r == a), rows.iter().position(|r| r == b)) {
+    match (
+        rows.iter().position(|r| r == a),
+        rows.iter().position(|r| r == b),
+    ) {
         (Some(i), Some(j)) => rows[i.min(j)..=i.max(j)].to_vec(),
         _ => vec![b.to_owned()],
     }
@@ -497,12 +605,18 @@ pub const EMPTY_WORDS: &str = "Nothing in this folder";
 /// (`FolderPaneView.words`).
 pub fn failure_words(code: i64, message: &str, away: Option<&str>) -> String {
     if code == -32601 {
-        return format!("{}'s runner needs updating to show folders.", away.unwrap_or("That Mac"));
+        return format!(
+            "{}'s runner needs updating to show folders.",
+            away.unwrap_or("That Mac")
+        );
     }
     if away.is_none() && message.starts_with("No such folder") {
         return "This folder isn't there any more.".to_owned();
     }
-    format!("Couldn't read this folder{}.", away.map(|a| format!(" on {a}")).unwrap_or_default())
+    format!(
+        "Couldn't read this folder{}.",
+        away.map(|a| format!(" on {a}")).unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
@@ -510,18 +624,34 @@ mod tests {
     #[test]
     fn windows_breadcrumbs_start_at_the_drive_and_keep_each_folder() {
         let got = super::crumbs(r"C:\work\site\logs", r"C:\Users\alex");
-        assert_eq!(got.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["C:", "work", "site", "logs"]);
+        assert_eq!(
+            got.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["C:", "work", "site", "logs"]
+        );
         assert_eq!(got.last().unwrap().path, "C:/work/site/logs");
-        assert_eq!(super::parent(r"C:\work\site\logs").as_deref(), Some("C:/work/site"));
+        assert_eq!(
+            super::parent(r"C:\work\site\logs").as_deref(),
+            Some("C:/work/site")
+        );
         assert_eq!(super::parent("C:/"), None);
         let home = super::crumbs(r"C:\Users\alex\site\logs", "C:/Users/alex");
-        assert_eq!(home.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["alex", "site", "logs"]);
+        assert_eq!(
+            home.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["alex", "site", "logs"]
+        );
     }
     use super::*;
     use serde_json::json;
 
     fn entry(name: &str, folder: bool, size: Option<i64>, at: Option<i64>) -> FolderEntry {
-        FolderEntry { name: name.into(), path: format!("/f/{name}"), is_folder: folder, hidden: false, size, modified_ms: at }
+        FolderEntry {
+            name: name.into(),
+            path: format!("/f/{name}"),
+            is_folder: folder,
+            hidden: false,
+            size,
+            modified_ms: at,
+        }
     }
 
     fn names(rows: &[FolderEntry]) -> Vec<String> {
@@ -530,40 +660,120 @@ mod tests {
 
     #[test]
     fn name_sort_keeps_folders_first_and_numbers_in_order() {
-        let rows = [entry("clip 10.mp4", false, None, None), entry("zed", true, None, None), entry("clip 2.mp4", false, None, None), entry("alpha", true, None, None)];
-        assert_eq!(names(&FolderSort::default().apply(&rows)), ["alpha", "zed", "clip 2.mp4", "clip 10.mp4"]);
-        assert_eq!(names(&FolderSort { key: SortKey::Name, ascending: false }.apply(&rows)), ["zed", "alpha", "clip 10.mp4", "clip 2.mp4"]);
+        let rows = [
+            entry("clip 10.mp4", false, None, None),
+            entry("zed", true, None, None),
+            entry("clip 2.mp4", false, None, None),
+            entry("alpha", true, None, None),
+        ];
+        assert_eq!(
+            names(&FolderSort::default().apply(&rows)),
+            ["alpha", "zed", "clip 2.mp4", "clip 10.mp4"]
+        );
+        assert_eq!(
+            names(
+                &FolderSort {
+                    key: SortKey::Name,
+                    ascending: false
+                }
+                .apply(&rows)
+            ),
+            ["zed", "alpha", "clip 10.mp4", "clip 2.mp4"]
+        );
     }
 
     /// Newest first is how Mike finds what an agent just made.
     #[test]
     fn date_sort_puts_the_undated_last_both_ways() {
-        let rows = [entry("old", false, None, Some(1)), entry("none", false, None, None), entry("new", false, None, Some(9)), entry("mid", false, None, Some(5))];
-        assert_eq!(names(&FolderSort { key: SortKey::Modified, ascending: false }.apply(&rows)), ["new", "mid", "old", "none"]);
-        assert_eq!(names(&FolderSort { key: SortKey::Modified, ascending: true }.apply(&rows)), ["old", "mid", "new", "none"]);
+        let rows = [
+            entry("old", false, None, Some(1)),
+            entry("none", false, None, None),
+            entry("new", false, None, Some(9)),
+            entry("mid", false, None, Some(5)),
+        ];
+        assert_eq!(
+            names(
+                &FolderSort {
+                    key: SortKey::Modified,
+                    ascending: false
+                }
+                .apply(&rows)
+            ),
+            ["new", "mid", "old", "none"]
+        );
+        assert_eq!(
+            names(
+                &FolderSort {
+                    key: SortKey::Modified,
+                    ascending: true
+                }
+                .apply(&rows)
+            ),
+            ["old", "mid", "new", "none"]
+        );
     }
 
     #[test]
     fn ties_go_by_name_whichever_way_the_column_runs() {
-        let rows = [entry("b", false, Some(5), None), entry("a", false, Some(5), None), entry("c", false, Some(9), None)];
-        assert_eq!(names(&FolderSort { key: SortKey::Size, ascending: false }.apply(&rows)), ["c", "a", "b"]);
-        assert_eq!(names(&FolderSort { key: SortKey::Size, ascending: true }.apply(&rows)), ["a", "b", "c"]);
+        let rows = [
+            entry("b", false, Some(5), None),
+            entry("a", false, Some(5), None),
+            entry("c", false, Some(9), None),
+        ];
+        assert_eq!(
+            names(
+                &FolderSort {
+                    key: SortKey::Size,
+                    ascending: false
+                }
+                .apply(&rows)
+            ),
+            ["c", "a", "b"]
+        );
+        assert_eq!(
+            names(
+                &FolderSort {
+                    key: SortKey::Size,
+                    ascending: true
+                }
+                .apply(&rows)
+            ),
+            ["a", "b", "c"]
+        );
     }
 
     fn crumb(name: &str, path: &str) -> Crumb {
-        Crumb { name: name.into(), path: path.into() }
+        Crumb {
+            name: name.into(),
+            path: path.into(),
+        }
     }
 
     #[test]
     fn crumbs_start_at_home_when_under_it() {
-        assert_eq!(crumbs("/Users/me/dev/clips/", "/Users/me"), [crumb("me", "/Users/me"), crumb("dev", "/Users/me/dev"), crumb("clips", "/Users/me/dev/clips")]);
+        assert_eq!(
+            crumbs("/Users/me/dev/clips/", "/Users/me"),
+            [
+                crumb("me", "/Users/me"),
+                crumb("dev", "/Users/me/dev"),
+                crumb("clips", "/Users/me/dev/clips")
+            ]
+        );
         assert_eq!(crumbs("/Users/me", "/Users/me"), [crumb("me", "/Users/me")]);
     }
 
     #[test]
     fn crumbs_start_at_the_disk_outside_home() {
         // A sibling that only shares the prefix isn't under home.
-        assert_eq!(crumbs("/Users/merle/x", "/Users/me"), [crumb("/", "/"), crumb("Users", "/Users"), crumb("merle", "/Users/merle"), crumb("x", "/Users/merle/x")]);
+        assert_eq!(
+            crumbs("/Users/merle/x", "/Users/me"),
+            [
+                crumb("/", "/"),
+                crumb("Users", "/Users"),
+                crumb("merle", "/Users/merle"),
+                crumb("x", "/Users/merle/x")
+            ]
+        );
         assert_eq!(crumbs("/", "/Users/me"), [crumb("/", "/")]);
     }
 
@@ -592,7 +802,10 @@ mod tests {
         assert_eq!(folder.entries[0].path, "/w/site/docs");
         assert!(folder.entries[0].is_folder);
         assert_eq!(folder.entries[0].size, None);
-        assert!(folder.entries[1].hidden, "a dotfile with no hidden flag is hidden");
+        assert!(
+            folder.entries[1].hidden,
+            "a dotfile with no hidden flag is hidden"
+        );
         assert_eq!(folder.entries[1].size, Some(12));
         assert_eq!(folder.entries[2].size, None, "a size of 1e100 isn't a size");
     }
@@ -622,7 +835,10 @@ mod tests {
         assert_eq!(read.data, b"Hello");
         assert_eq!(read.media_type.as_deref(), Some("text/markdown"));
         assert!(read.truncated);
-        let same = FileRead::decode(&json!({ "path": "/w/a.md", "unchanged": true, "size": 5, "modifiedAt": "x" })).unwrap();
+        let same = FileRead::decode(
+            &json!({ "path": "/w/a.md", "unchanged": true, "size": 5, "modifiedAt": "x" }),
+        )
+        .unwrap();
         assert!(same.unchanged);
         assert!(same.data.is_empty());
         // Neither bytes nor "unchanged" is no answer at all.
@@ -635,7 +851,11 @@ mod tests {
         assert_eq!(tucked_count(&widths, 10., 20., 500.), 0);
         assert_eq!(tucked_count(&widths, 10., 20., 190.), 0, "exactly fits");
         assert_eq!(tucked_count(&widths, 10., 20., 189.), 1);
-        assert_eq!(tucked_count(&widths, 10., 20., 100.), 3, "the last always stays");
+        assert_eq!(
+            tucked_count(&widths, 10., 20., 100.),
+            3,
+            "the last always stays"
+        );
         assert_eq!(tucked_count(&widths, 10., 20., 10.), 3);
         assert_eq!(tucked_count(&[], 10., 20., 10.), 0);
     }
@@ -686,14 +906,22 @@ mod tests {
         let rows = paths(&["a", "b", "c", "d"]);
         let mut picked = Selection::default();
         picked.step(&rows, 1, false);
-        assert_eq!(picked.paths, paths(&["a"]), "down with nothing picked is the first");
+        assert_eq!(
+            picked.paths,
+            paths(&["a"]),
+            "down with nothing picked is the first"
+        );
         picked.step(&rows, 1, false);
         assert_eq!(picked.paths, paths(&["b"]));
         picked.step(&rows, 1, true);
         picked.step(&rows, 1, true);
         assert_eq!(picked.in_order(&rows), paths(&["b", "c", "d"]));
         picked.step(&rows, 1, true);
-        assert_eq!(picked.in_order(&rows), paths(&["b", "c", "d"]), "stops at the end");
+        assert_eq!(
+            picked.in_order(&rows),
+            paths(&["b", "c", "d"]),
+            "stops at the end"
+        );
         picked.step(&rows, -1, false);
         assert_eq!(picked.paths, paths(&["c"]));
         // A row of tiles at a time in the icons.
@@ -701,7 +929,11 @@ mod tests {
         assert_eq!(picked.paths, paths(&["a"]));
         let mut none = Selection::default();
         none.step(&rows, -1, false);
-        assert_eq!(none.paths, paths(&["d"]), "up with nothing picked is the last");
+        assert_eq!(
+            none.paths,
+            paths(&["d"]),
+            "up with nothing picked is the last"
+        );
         none.select_all(&rows);
         assert_eq!(none.in_order(&rows), rows);
     }
@@ -721,32 +953,65 @@ mod tests {
     fn typing_picks_the_row_its_name_starts_with() {
         let names = ["docs", "logs", "mockups", "screens", "src"];
         assert_eq!(type_select(&names, "s", None), Some(3));
-        assert_eq!(type_select(&names, "Sr", None), Some(4), "case doesn't matter");
+        assert_eq!(
+            type_select(&names, "Sr", None),
+            Some(4),
+            "case doesn't matter"
+        );
         // More of the picked row's name keeps it; another letter goes on from it.
         assert_eq!(type_select(&names, "lo", Some(1)), Some(1));
         assert_eq!(type_select(&names, "s", Some(4)), Some(4));
-        assert_eq!(type_select(&names, "d", Some(4)), Some(0), "round from the top");
+        assert_eq!(
+            type_select(&names, "d", Some(4)),
+            Some(0),
+            "round from the top"
+        );
         assert_eq!(type_select(&names, "z", Some(1)), None);
         assert_eq!(type_select(&names, "", Some(1)), None);
     }
 
     #[test]
     fn a_folder_that_cant_be_read_says_why() {
-        assert_eq!(failure_words(-32602, "No such folder: /a/b", None), "This folder isn't there any more.");
-        assert_eq!(failure_words(-32602, "Not a folder: /a/b", None), "Couldn't read this folder.");
-        assert_eq!(failure_words(-32601, "Method not found", Some("mac-mini")), "mac-mini's runner needs updating to show folders.");
-        assert_eq!(failure_words(-32602, "No such folder: /a/b", Some("mac-mini")), "Couldn't read this folder on mac-mini.");
+        assert_eq!(
+            failure_words(-32602, "No such folder: /a/b", None),
+            "This folder isn't there any more."
+        );
+        assert_eq!(
+            failure_words(-32602, "Not a folder: /a/b", None),
+            "Couldn't read this folder."
+        );
+        assert_eq!(
+            failure_words(-32601, "Method not found", Some("mac-mini")),
+            "mac-mini's runner needs updating to show folders."
+        );
+        assert_eq!(
+            failure_words(-32602, "No such folder: /a/b", Some("mac-mini")),
+            "Couldn't read this folder on mac-mini."
+        );
     }
 
     #[test]
     fn thumbnails_are_for_pictures_this_app_can_draw() {
-        let picture = |name: &str, size: i64| FolderEntry { name: name.into(), path: format!("/f/{name}"), size: Some(size), ..Default::default() };
+        let picture = |name: &str, size: i64| FolderEntry {
+            name: name.into(),
+            path: format!("/f/{name}"),
+            size: Some(size),
+            ..Default::default()
+        };
         assert!(thumbnails(&picture("pricing-before.png", 6000)));
         assert!(thumbnails(&picture("Photo.JPG", 6000)));
         assert!(!thumbnails(&picture("clip.mov", 6000)));
         assert!(!thumbnails(&picture("huge.png", 200 * 1024 * 1024)));
-        assert!(!thumbnails(&FolderEntry { name: "x.png".into(), is_folder: true, ..Default::default() }));
-        assert!(!thumbnails(&FolderEntry { name: "refused-link.png".into(), size: None, ..Default::default() }));
+        assert!(!thumbnails(&FolderEntry {
+            name: "x.png".into(),
+            is_folder: true,
+            ..Default::default()
+        }));
+        assert!(!thumbnails(&FolderEntry {
+            name: "refused-link.png".into(),
+            size: None,
+            ..Default::default()
+        }));
         assert_eq!(settle_ms(10), 300);
         assert_eq!(settle_ms(5000), 3000);
     }
@@ -781,7 +1046,10 @@ pub struct FileRead {
 impl FileRead {
     /// Neither the bytes nor "unchanged" is no answer at all.
     pub fn decode(value: &Value) -> Option<FileRead> {
-        let unchanged = value.get("unchanged").and_then(Value::as_bool).unwrap_or(false);
+        let unchanged = value
+            .get("unchanged")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let data = value.get("data").and_then(Value::as_str).map(base64_decode);
         let data = match data {
             Some(bytes) => bytes?,
@@ -789,12 +1057,26 @@ impl FileRead {
             None => return None,
         };
         Some(FileRead {
-            path: value.get("path").and_then(Value::as_str).unwrap_or("").to_owned(),
+            path: value
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
             size: value.get("size").and_then(Value::as_i64).unwrap_or(0),
-            modified_at: value.get("modifiedAt").and_then(Value::as_str).unwrap_or("").to_owned(),
-            media_type: value.get("mediaType").and_then(Value::as_str).map(str::to_owned),
+            modified_at: value
+                .get("modifiedAt")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            media_type: value
+                .get("mediaType")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             data,
-            truncated: value.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+            truncated: value
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             unchanged,
         })
     }
@@ -844,12 +1126,24 @@ pub fn picture_size(bytes: &[u8]) -> Option<(u32, u32)> {
     }
     if bytes.len() >= 30 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         return match &bytes[12..16] {
-            b"VP8 " => Some((u16::from_le_bytes([bytes[26], bytes[27]]) as u32 & 0x3fff, u16::from_le_bytes([bytes[28], bytes[29]]) as u32 & 0x3fff)),
+            b"VP8 " => Some((
+                u16::from_le_bytes([bytes[26], bytes[27]]) as u32 & 0x3fff,
+                u16::from_le_bytes([bytes[28], bytes[29]]) as u32 & 0x3fff,
+            )),
             b"VP8L" => {
                 let b = &bytes[21..25];
-                Some((((b[1] as u32 & 0x3f) << 8 | b[0] as u32) + 1, (((b[3] as u32 & 0xf) << 10) | ((b[2] as u32) << 2) | ((b[1] as u32 & 0xc0) >> 6)) + 1))
+                Some((
+                    ((b[1] as u32 & 0x3f) << 8 | b[0] as u32) + 1,
+                    (((b[3] as u32 & 0xf) << 10)
+                        | ((b[2] as u32) << 2)
+                        | ((b[1] as u32 & 0xc0) >> 6))
+                        + 1,
+                ))
             }
-            b"VP8X" => Some((1 + (bytes[24] as u32 | (bytes[25] as u32) << 8 | (bytes[26] as u32) << 16), 1 + (bytes[27] as u32 | (bytes[28] as u32) << 8 | (bytes[29] as u32) << 16))),
+            b"VP8X" => Some((
+                1 + (bytes[24] as u32 | (bytes[25] as u32) << 8 | (bytes[26] as u32) << 16),
+                1 + (bytes[27] as u32 | (bytes[28] as u32) << 8 | (bytes[29] as u32) << 16),
+            )),
             _ => None,
         };
     }

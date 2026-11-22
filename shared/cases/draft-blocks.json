@@ -1,0 +1,909 @@
+{
+  "about": "A ```slack, ```email or ```draft block in a reply: text the agent wrote for Mike to send elsewhere, shown line for line in a box with a Copy button. Copies: desktop/core/src/draft_block.rs, ios/ThreadbearKit/Sources/ThreadbearKit/DraftBlock.swift (and the frozen Mac app's), android-native/kit/.../DraftBlock.kt, web/src/draft.ts. input.op says what's asked: from (a fence's info string and code: the draft, or null), lines (a draft's lines: quote, and spans), spans (one Slack line's spans), plainText and html (what Copy puts on the clipboard), bareLinks (an email or plain draft's text with its http(s) addresses linked, as drawn), closed (a reply's text: whether its fence is closed, so it's drawn as a draft; the phones answer by parsing it as Markdown). A span lists only the looks it has (bold, italic, strike, code) and link when it's a link.",
+  "platforms": [
+    "desktop",
+    "ios",
+    "android",
+    "web"
+  ],
+  "cases": [
+    {
+      "name": "a slack fence is a Slack draft, its last line break dropped",
+      "input": {
+        "op": "from",
+        "language": "slack",
+        "code": "hi\n"
+      },
+      "expect": {
+        "kind": "slack",
+        "source": "hi",
+        "label": "Slack draft"
+      }
+    },
+    {
+      "name": "only the info string's first word counts, in any case",
+      "input": {
+        "op": "from",
+        "language": "Email subject=x",
+        "code": "hi"
+      },
+      "expect": {
+        "kind": "email",
+        "source": "hi",
+        "label": "Email draft"
+      }
+    },
+    {
+      "name": "a draft fence is a plain draft",
+      "input": {
+        "op": "from",
+        "language": "draft",
+        "code": "hi"
+      },
+      "expect": {
+        "kind": "draft",
+        "source": "hi",
+        "label": "Draft"
+      }
+    },
+    {
+      "name": "the word ends at a brace",
+      "input": {
+        "op": "from",
+        "language": "slack{.x}",
+        "code": "hi"
+      },
+      "expect": {
+        "kind": "slack",
+        "source": "hi",
+        "label": "Slack draft"
+      }
+    },
+    {
+      "name": "a longer word isn't a draft",
+      "input": {
+        "op": "from",
+        "language": "slackbot",
+        "code": "hi"
+      },
+      "expect": null
+    },
+    {
+      "name": "a fence with no info string isn't a draft",
+      "input": {
+        "op": "from",
+        "language": null,
+        "code": "hi"
+      },
+      "expect": null
+    },
+    {
+      "name": "a blank draft stays code",
+      "input": {
+        "op": "from",
+        "language": "slack",
+        "code": " \n\n"
+      },
+      "expect": null
+    },
+    {
+      "name": "CRLF line ends become LF and trailing blank lines go",
+      "input": {
+        "op": "from",
+        "language": "slack",
+        "code": "a\r\nb\n\n"
+      },
+      "expect": {
+        "kind": "slack",
+        "source": "a\nb",
+        "label": "Slack draft"
+      }
+    },
+    {
+      "name": "every line of a plain draft stays a line, Slack's marks left as written",
+      "input": {
+        "op": "lines",
+        "kind": "draft",
+        "source": "*Threadbear, 6 Nov*\n• one\n• two\n\nThanks"
+      },
+      "expect": [
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": "*Threadbear, 6 Nov*"
+            }
+          ]
+        },
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": "• one"
+            }
+          ]
+        },
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": "• two"
+            }
+          ]
+        },
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": ""
+            }
+          ]
+        },
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": "Thanks"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a Slack draft's lines are formatted, and a \"> \" line is a quote",
+      "input": {
+        "op": "lines",
+        "kind": "slack",
+        "source": "*Done* <https://x.dev/pr/1|the PR>\n<https://x.dev>\n> quoted &lt;tag&gt;"
+      },
+      "expect": [
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": "Done",
+              "bold": true
+            },
+            {
+              "text": " "
+            },
+            {
+              "text": "the PR",
+              "link": "https://x.dev/pr/1"
+            }
+          ]
+        },
+        {
+          "quote": false,
+          "spans": [
+            {
+              "text": "https://x.dev",
+              "link": "https://x.dev"
+            }
+          ]
+        },
+        {
+          "quote": true,
+          "spans": [
+            {
+              "text": "quoted <tag>"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "an escaped \"&gt; \" and a lone \">\" are quotes too",
+      "input": {
+        "op": "lines",
+        "kind": "slack",
+        "source": "&gt; hi\n>"
+      },
+      "expect": [
+        {
+          "quote": true,
+          "spans": [
+            {
+              "text": "hi"
+            }
+          ]
+        },
+        {
+          "quote": true,
+          "spans": []
+        }
+      ]
+    },
+    {
+      "name": "Slack's bold, italic, strike and code, nested too",
+      "input": {
+        "op": "spans",
+        "line": "*Shipped* _today_: ~old~ `tb land` and *_both_*"
+      },
+      "expect": [
+        {
+          "text": "Shipped",
+          "bold": true
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "today",
+          "italic": true
+        },
+        {
+          "text": ": "
+        },
+        {
+          "text": "old",
+          "strike": true
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "tb land",
+          "code": true
+        },
+        {
+          "text": " and "
+        },
+        {
+          "text": "both",
+          "bold": true,
+          "italic": true
+        }
+      ]
+    },
+    {
+      "name": "markers stay as written: stars inside a number",
+      "input": {
+        "op": "spans",
+        "line": "2*3*4"
+      },
+      "expect": [
+        {
+          "text": "2*3*4"
+        }
+      ]
+    },
+    {
+      "name": "markers stay as written: underscores inside a word",
+      "input": {
+        "op": "spans",
+        "line": "snake_case_name"
+      },
+      "expect": [
+        {
+          "text": "snake_case_name"
+        }
+      ]
+    },
+    {
+      "name": "markers stay as written: stars with spaces round them",
+      "input": {
+        "op": "spans",
+        "line": "a * b * c"
+      },
+      "expect": [
+        {
+          "text": "a * b * c"
+        }
+      ]
+    },
+    {
+      "name": "markers stay as written: a star never closed",
+      "input": {
+        "op": "spans",
+        "line": "*open only"
+      },
+      "expect": [
+        {
+          "text": "*open only"
+        }
+      ]
+    },
+    {
+      "name": "markers stay as written: an underscore closing on nothing",
+      "input": {
+        "op": "spans",
+        "line": "price: $5_000_"
+      },
+      "expect": [
+        {
+          "text": "price: $5_000_"
+        }
+      ]
+    },
+    {
+      "name": "Markdown's **bold** is Slack bold with a star either side",
+      "input": {
+        "op": "spans",
+        "line": "**x**"
+      },
+      "expect": [
+        {
+          "text": "*"
+        },
+        {
+          "text": "x",
+          "bold": true
+        },
+        {
+          "text": "*"
+        }
+      ]
+    },
+    {
+      "name": "links, mail links and mentions; other angle brackets stay as written",
+      "input": {
+        "op": "spans",
+        "line": "See <https://example.com/a?b=1|the docs>, <https://x.dev> or <mailto:m@x.dev>; cc <@U123> in <#C9|general> <!here> & 1 < 2 &amp; <b>"
+      },
+      "expect": [
+        {
+          "text": "See "
+        },
+        {
+          "text": "the docs",
+          "link": "https://example.com/a?b=1"
+        },
+        {
+          "text": ", "
+        },
+        {
+          "text": "https://x.dev",
+          "link": "https://x.dev"
+        },
+        {
+          "text": " or "
+        },
+        {
+          "text": "m@x.dev",
+          "link": "mailto:m@x.dev"
+        },
+        {
+          "text": "; cc "
+        },
+        {
+          "text": "@U123",
+          "bold": true
+        },
+        {
+          "text": " in "
+        },
+        {
+          "text": "#general",
+          "bold": true
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "@here",
+          "bold": true
+        },
+        {
+          "text": " & 1 < 2 & <b>"
+        }
+      ]
+    },
+    {
+      "name": "other schemes aren't links",
+      "input": {
+        "op": "spans",
+        "line": "<javascript:alert(1)|x>"
+      },
+      "expect": [
+        {
+          "text": "<javascript:alert(1)|x>"
+        }
+      ]
+    },
+    {
+      "name": "a link with an empty label shows its address",
+      "input": {
+        "op": "spans",
+        "line": "<https://x.dev|>"
+      },
+      "expect": [
+        {
+          "text": "https://x.dev",
+          "link": "https://x.dev"
+        }
+      ]
+    },
+    {
+      "name": "a subteam mention names the group",
+      "input": {
+        "op": "spans",
+        "line": "<!subteam^S1>"
+      },
+      "expect": [
+        {
+          "text": "@subteam",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "name": "a special mention starting with ^ names the part after it",
+      "input": {
+        "op": "spans",
+        "line": "<!^S1>"
+      },
+      "expect": [
+        {
+          "text": "@S1",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "name": "a web address with no host isn't a link",
+      "input": {
+        "op": "spans",
+        "line": "<https://>"
+      },
+      "expect": [
+        {
+          "text": "<https://>"
+        }
+      ]
+    },
+    {
+      "name": "a mail link with no address isn't a link",
+      "input": {
+        "op": "spans",
+        "line": "<mailto:>"
+      },
+      "expect": [
+        {
+          "text": "<mailto:>"
+        }
+      ]
+    },
+    {
+      "name": "tokens inside code stay as written",
+      "input": {
+        "op": "spans",
+        "line": "`<@U123>` and `a < b`"
+      },
+      "expect": [
+        {
+          "text": "<@U123>",
+          "code": true
+        },
+        {
+          "text": " and "
+        },
+        {
+          "text": "a < b",
+          "code": true
+        }
+      ]
+    },
+    {
+      "name": "a link can be bold",
+      "input": {
+        "op": "spans",
+        "line": "*See <https://x.dev|docs>*"
+      },
+      "expect": [
+        {
+          "text": "See ",
+          "bold": true
+        },
+        {
+          "text": "docs",
+          "bold": true,
+          "link": "https://x.dev"
+        }
+      ]
+    },
+    {
+      "name": "a link right before italics",
+      "input": {
+        "op": "spans",
+        "line": "<https://x.dev|a>_b_"
+      },
+      "expect": [
+        {
+          "text": "a",
+          "link": "https://x.dev"
+        },
+        {
+          "text": "b",
+          "italic": true
+        }
+      ]
+    },
+    {
+      "name": "bold, a link and code on one line",
+      "input": {
+        "op": "spans",
+        "line": "*Hi* <https://x.dev|there> `x`"
+      },
+      "expect": [
+        {
+          "text": "Hi",
+          "bold": true
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "there",
+          "link": "https://x.dev"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "x",
+          "code": true
+        }
+      ]
+    },
+    {
+      "name": "a placeholder character in the text turns formatting off for the line",
+      "input": {
+        "op": "spans",
+        "line": "*a* \ue000"
+      },
+      "expect": [
+        {
+          "text": "*a* \ue000"
+        }
+      ]
+    },
+    {
+      "name": "a plain draft copies as written",
+      "input": {
+        "op": "plainText",
+        "kind": "draft",
+        "source": "*Threadbear, 6 Nov*\n• one"
+      },
+      "expect": "*Threadbear, 6 Nov*\n• one"
+    },
+    {
+      "name": "an email copies its bare addresses as written",
+      "input": {
+        "op": "plainText",
+        "kind": "email",
+        "source": "See https://x.dev"
+      },
+      "expect": "See https://x.dev"
+    },
+    {
+      "name": "a Slack draft copies its markers but spells out links",
+      "input": {
+        "op": "plainText",
+        "kind": "slack",
+        "source": "*Done* <https://x.dev/pr/1|the PR>\n<https://x.dev>\n> quoted &lt;tag&gt;"
+      },
+      "expect": "*Done* the PR (https://x.dev/pr/1)\nhttps://x.dev\n> quoted <tag>"
+    },
+    {
+      "name": "code copies its tokens as typed",
+      "input": {
+        "op": "plainText",
+        "kind": "slack",
+        "source": "`<@U1>` <@U1> `<https://x.dev|docs>` <https://x.dev|docs>"
+      },
+      "expect": "`<@U1>` @U1 `<https://x.dev|docs>` docs (https://x.dev)"
+    },
+    {
+      "name": "a Slack draft's HTML has its bold, links and quotes",
+      "input": {
+        "op": "html",
+        "kind": "slack",
+        "source": "*Done* <https://x.dev/pr/1|the PR>\n<https://x.dev>\n> quoted &lt;tag&gt;"
+      },
+      "expect": "<meta charset=\"utf-8\"><div><b>Done</b> <a href=\"https://x.dev/pr/1\">the PR</a><br><a href=\"https://x.dev\">https://x.dev</a><blockquote>quoted &lt;tag&gt;</blockquote></div>"
+    },
+    {
+      "name": "HTML nests italic, strike and code",
+      "input": {
+        "op": "html",
+        "kind": "slack",
+        "source": "*Shipped* _today_: ~old~ `tb land`"
+      },
+      "expect": "<meta charset=\"utf-8\"><div><b>Shipped</b> <i>today</i>: <s>old</s> <code>tb land</code></div>"
+    },
+    {
+      "name": "HTML is escaped",
+      "input": {
+        "op": "html",
+        "kind": "email",
+        "source": "Hi <script>alert(\"x\")</script> & bye"
+      },
+      "expect": "<meta charset=\"utf-8\"><div>Hi &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; bye</div>"
+    },
+    {
+      "name": "copied HTML keeps indents, lined-up spaces and tabs",
+      "input": {
+        "op": "html",
+        "kind": "email",
+        "source": "    • nested\nA    B\na\tb"
+      },
+      "expect": "<meta charset=\"utf-8\"><div>&nbsp;&nbsp;&nbsp;&nbsp;• nested<br>A &nbsp;&nbsp;&nbsp;B<br>a&nbsp;&nbsp;&nbsp;&nbsp;b</div>"
+    },
+    {
+      "name": "an email's bare address isn't a link in its HTML",
+      "input": {
+        "op": "html",
+        "kind": "email",
+        "source": "See https://x.dev"
+      },
+      "expect": "<meta charset=\"utf-8\"><div>See https://x.dev</div>"
+    },
+    {
+      "name": "bare addresses are links, the punctuation after them isn't",
+      "input": {
+        "op": "bareLinks",
+        "text": "See https://x.dev/pr/1. Or http://a.b/c?d=1), ftp://no"
+      },
+      "expect": [
+        {
+          "text": "See "
+        },
+        {
+          "text": "https://x.dev/pr/1",
+          "link": "https://x.dev/pr/1"
+        },
+        {
+          "text": ". Or "
+        },
+        {
+          "text": "http://a.b/c?d=1",
+          "link": "http://a.b/c?d=1"
+        },
+        {
+          "text": "), ftp://no"
+        }
+      ],
+      "differs": {
+        "ios": "The phone kits don't link bare addresses: the app's view does (NSDataDetector in ios/Threadbear/DraftBlockView.swift), out of the kit's tests' reach.",
+        "android": "The phone kits don't link bare addresses: the app's view does (android-native/app/.../ui/DraftBlockView.kt), out of the kit's tests' reach."
+      }
+    },
+    {
+      "name": "text with no address is one span",
+      "input": {
+        "op": "bareLinks",
+        "text": "no links here"
+      },
+      "expect": [
+        {
+          "text": "no links here"
+        }
+      ],
+      "differs": {
+        "ios": "The phone kits don't link bare addresses: the app's view does (NSDataDetector in ios/Threadbear/DraftBlockView.swift), out of the kit's tests' reach.",
+        "android": "The phone kits don't link bare addresses: the app's view does (android-native/app/.../ui/DraftBlockView.kt), out of the kit's tests' reach."
+      }
+    },
+    {
+      "name": "empty text has no spans",
+      "input": {
+        "op": "bareLinks",
+        "text": ""
+      },
+      "expect": [],
+      "differs": {
+        "ios": "The phone kits don't link bare addresses: the app's view does (NSDataDetector in ios/Threadbear/DraftBlockView.swift), out of the kit's tests' reach.",
+        "android": "The phone kits don't link bare addresses: the app's view does (android-native/app/.../ui/DraftBlockView.kt), out of the kit's tests' reach."
+      }
+    },
+    {
+      "name": "a scheme alone isn't a link",
+      "input": {
+        "op": "bareLinks",
+        "text": "just https:// alone"
+      },
+      "expect": [
+        {
+          "text": "just https:// alone"
+        }
+      ],
+      "differs": {
+        "ios": "The phone kits don't link bare addresses: the app's view does (NSDataDetector in ios/Threadbear/DraftBlockView.swift), out of the kit's tests' reach.",
+        "android": "The phone kits don't link bare addresses: the app's view does (android-native/app/.../ui/DraftBlockView.kt), out of the kit's tests' reach."
+      }
+    },
+    {
+      "name": "closed: a plain closed fence",
+      "input": {
+        "op": "closed",
+        "text": "```slack\nhello\n```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: a longer closing fence",
+      "input": {
+        "op": "closed",
+        "text": "````slack\nhello\n`````"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: tildes, with spaces after the closing fence",
+      "input": {
+        "op": "closed",
+        "text": "~~~email\nhi\n~~~  "
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: CRLF line ends",
+      "input": {
+        "op": "closed",
+        "text": "```slack\r\nhello\r\n```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: CRLF line ends and one after the fence",
+      "input": {
+        "op": "closed",
+        "text": "```slack\r\nhello\r\n```\r\n"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: in a list item",
+      "input": {
+        "op": "closed",
+        "text": "- ```slack\n  hello\n  ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: in a quote",
+      "input": {
+        "op": "closed",
+        "text": "> ```slack\n> hello\n> ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: in a quote in a list",
+      "input": {
+        "op": "closed",
+        "text": "1. a\n\n   > ```slack\n   > hi\n   > ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: closing fence indented",
+      "input": {
+        "op": "closed",
+        "text": "```slack\nhello\n   ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: opening fence indented",
+      "input": {
+        "op": "closed",
+        "text": "  ```slack\n  hello\n```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: in a numbered item",
+      "input": {
+        "op": "closed",
+        "text": "1. ```slack\n   hello\n   ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: in a quote with no space after >",
+      "input": {
+        "op": "closed",
+        "text": ">```slack\n>hello\n>```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: in a list in a quote",
+      "input": {
+        "op": "closed",
+        "text": "> - ```slack\n>   héllo\n>   ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: under a nested list item",
+      "input": {
+        "op": "closed",
+        "text": "- parent\n  - child\n\n    ```slack\n    hello\n    ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: a line separator inside",
+      "input": {
+        "op": "closed",
+        "text": "```slack\none\u2028two\n```"
+      },
+      "expect": true
+    },
+    {
+      "name": "closed: indent isn't checked, so a code-indented fence closes it (harmless)",
+      "input": {
+        "op": "closed",
+        "text": "```slack\nhello\n    ```"
+      },
+      "expect": true
+    },
+    {
+      "name": "not closed: the closing fence is quoted but the opening isn't",
+      "input": {
+        "op": "closed",
+        "text": "```slack\nhello\n> ```"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: the opening is quoted but the closing isn't",
+      "input": {
+        "op": "closed",
+        "text": "> ```slack\n> hello\n```"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: still streaming",
+      "input": {
+        "op": "closed",
+        "text": "```slack\n*unfinished"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: still streaming a list",
+      "input": {
+        "op": "closed",
+        "text": "```slack\n• one\n• tw"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: tildes don't close backticks",
+      "input": {
+        "op": "closed",
+        "text": "```slack\nhello\n~~~"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: a shorter fence doesn't close a longer one",
+      "input": {
+        "op": "closed",
+        "text": "````slack\nhello\n```"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: only the opening line",
+      "input": {
+        "op": "closed",
+        "text": "```slack"
+      },
+      "expect": false
+    },
+    {
+      "name": "not closed: two backticks aren't a fence",
+      "input": {
+        "op": "closed",
+        "text": "```slack\nhello\n``"
+      },
+      "expect": false
+    }
+  ]
+}

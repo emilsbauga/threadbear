@@ -1,4 +1,4 @@
-// Explain (docs/protocol.md, "Explain"): words Mike selected in a thread,
+// Explain (docs/protocol/settings.md, "Explain"): words Mike selected in a thread,
 // explained by the small model in the pane beside it, with follow-ups. A mini
 // fork of the thread that lives in the app alone, one per thread: nothing
 // from it goes into the thread, so the agent never sees it and its context
@@ -32,7 +32,12 @@ pub struct ExplainSession {
 
 impl ExplainSession {
     pub fn new(id: u64, selection: &str, message: Option<String>) -> ExplainSession {
-        ExplainSession { id, selection: selection.trim().to_owned(), message, turns: vec![ExplainTurn::default()] }
+        ExplainSession {
+            id,
+            selection: selection.trim().to_owned(),
+            message,
+            turns: vec![ExplainTurn::default()],
+        }
     }
 
     pub fn is_busy(&self) -> bool {
@@ -42,7 +47,11 @@ impl ExplainSession {
     /// The selection, short and on one line, in quotes.
     pub fn title(&self) -> String {
         let line = self.selection.lines().next().unwrap_or(&self.selection);
-        let short = if line.chars().count() > 40 { format!("{}…", line.chars().take(39).collect::<String>().trim_end()) } else { line.to_owned() };
+        let short = if line.chars().count() > 40 {
+            format!("{}…", line.chars().take(39).collect::<String>().trim_end())
+        } else {
+            line.to_owned()
+        };
         format!("\u{201C}{short}\u{201D}")
     }
 
@@ -53,7 +62,10 @@ impl ExplainSession {
         if question.is_empty() || self.is_busy() {
             return None;
         }
-        self.turns.push(ExplainTurn { question: Some(question.to_owned()), ..Default::default() });
+        self.turns.push(ExplainTurn {
+            question: Some(question.to_owned()),
+            ..Default::default()
+        });
         Some(self.turns.len() - 1)
     }
 
@@ -103,7 +115,16 @@ impl ExplainSession {
     /// What a script reads (the Swift dump's preview line): what was asked
     /// and where each answer is up to.
     pub fn summary(&self) -> String {
-        let turns: Vec<String> = self.turns.iter().map(|t| t.answer.clone().or_else(|| t.error.as_ref().map(|e| format!("error: {e}"))).unwrap_or_else(|| "pending".to_owned())).collect();
+        let turns: Vec<String> = self
+            .turns
+            .iter()
+            .map(|t| {
+                t.answer
+                    .clone()
+                    .or_else(|| t.error.as_ref().map(|e| format!("error: {e}")))
+                    .unwrap_or_else(|| "pending".to_owned())
+            })
+            .collect();
         format!("{} | {}", self.title(), turns.join(" | "))
     }
 }
@@ -117,15 +138,25 @@ mod tests {
 
     #[test]
     fn a_session_asks_once_then_follows_up() {
-        let mut s = ExplainSession::new(1, "  the smallest piece  ", Some("the whole reply".into()));
+        let mut s =
+            ExplainSession::new(1, "  the smallest piece  ", Some("the whole reply".into()));
         assert!(s.is_busy());
-        assert_eq!(s.params("t1", 0), json!({ "threadId": "t1", "selection": "the smallest piece", "message": "the whole reply" }));
+        assert_eq!(
+            s.params("t1", 0),
+            json!({ "threadId": "t1", "selection": "the smallest piece", "message": "the whole reply" })
+        );
         assert_eq!(s.ask("why?"), None, "not while the first answer is coming");
         s.turns[0].answer = Some("It means this.".into());
         assert_eq!(s.ask("  "), None);
         assert_eq!(s.ask("and then?"), Some(1));
-        assert_eq!(s.params("t1", 1), json!({ "threadId": "t1", "selection": "the smallest piece", "message": "the whole reply", "earlier": [{ "answer": "It means this." }], "question": "and then?" }));
-        assert_eq!(s.summary(), "\u{201C}the smallest piece\u{201D} | It means this. | pending");
+        assert_eq!(
+            s.params("t1", 1),
+            json!({ "threadId": "t1", "selection": "the smallest piece", "message": "the whole reply", "earlier": [{ "answer": "It means this." }], "question": "and then?" })
+        );
+        assert_eq!(
+            s.summary(),
+            "\u{201C}the smallest piece\u{201D} | It means this. | pending"
+        );
     }
 
     #[test]
@@ -134,7 +165,9 @@ mod tests {
         assert!(!s.retry(0), "nothing failed");
         s.turns[0].error = Some(NOT_YET.into());
         assert!(!s.is_busy());
-        assert!(s.summary().ends_with("error: The runner doesn't know Explain yet. It will once it updates."));
+        assert!(s
+            .summary()
+            .ends_with("error: The runner doesn't know Explain yet. It will once it updates."));
         assert!(s.retry(0));
         assert!(s.is_busy());
         assert!(!s.retry(5));
@@ -142,8 +175,18 @@ mod tests {
 
     #[test]
     fn the_title_is_the_selections_first_line_kept_short() {
-        assert_eq!(ExplainSession::new(1, "one line\nand more", None).title(), "\u{201C}one line\u{201D}");
-        let long = ExplainSession::new(1, "a b c d e f g h i j k l m n o p q r s t u v w x y z", None);
-        assert_eq!(long.title(), "\u{201C}a b c d e f g h i j k l m n o p q r s t\u{2026}\u{201D}");
+        assert_eq!(
+            ExplainSession::new(1, "one line\nand more", None).title(),
+            "\u{201C}one line\u{201D}"
+        );
+        let long = ExplainSession::new(
+            1,
+            "a b c d e f g h i j k l m n o p q r s t u v w x y z",
+            None,
+        );
+        assert_eq!(
+            long.title(),
+            "\u{201C}a b c d e f g h i j k l m n o p q r s t\u{2026}\u{201D}"
+        );
     }
 }

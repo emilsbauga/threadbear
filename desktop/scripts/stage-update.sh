@@ -74,7 +74,16 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   mkdir "$LOCK" 2>/dev/null || { echo "Another update build has just started." >&2; exit 3; }
 fi
 echo $$ >"$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
+# What the app's Updates panel says of this run (app_update.rs, BuildPhase):
+# one line, `busy <host> <since>` (every host busy, tried again later),
+# `queued <host> <since> <ahead>` or `building <host> <since>`, since in
+# Unix seconds. Gone when the run ends, except for busy, which the app shows
+# while it waits for its next try.
+PHASE="$CACHE/phase"
+rm -f "$PHASE"
+KEEP_PHASE=""
+set_phase() { printf '%s\n' "$*" >"$PHASE.tmp" && mv -f "$PHASE.tmp" "$PHASE"; }
+trap '[[ -n "$KEEP_PHASE" ]] || rm -f "$PHASE"; rm -rf "$LOCK"' EXIT
 
 MAIN="$(git -C "$CHECKOUT" rev-parse --verify -q refs/heads/main)" || { echo "$CHECKOUT has no main branch." >&2; exit 2; }
 echo "Staging main ($(git -C "$CHECKOUT" rev-parse --short "$MAIN")) from $CHECKOUT into $NEXT_DIR"
@@ -151,6 +160,25 @@ if [[ -n "$HOSTS" ]]; then
   # still builds (it ignores the request) instead of running an unknown flag.
   BUILT_ON=""
   BUSY_HOST=""
+  # watch_phase <host> <try>: keeps the phase file up to date from what the
+  # run says. A queued run (try 0) is queued until the host starts it, with
+  # how many runs the host's lock says are ahead; a try is building at once,
+  # as it either has the host or gives up.
+  watch_phase() {
+    local started="" ahead line
+    while :; do
+      if [[ -z "$started" ]] && { [[ "$2" == 1 ]] || grep -q '^BUILD_STARTED' "$out" 2>/dev/null; }; then
+        started=1
+        set_phase building "$1" "$(date +%s)"
+      elif [[ -z "$started" ]]; then
+        line="$(grep -E '^(Still waiting|Waiting for)' "$out" 2>/dev/null | tail -1 || true)"
+        ahead="$(grep -oE '[0-9]+ other runs? waiting' <<<"$line" | grep -oE '^[0-9]+' || true)"
+        [[ -f "$PHASE" ]] && read -r _ _ since _ <"$PHASE" 2>/dev/null || since="$(date +%s)"
+        set_phase queued "$1" "${since:-$(date +%s)}" "${ahead:-0}"
+      fi
+      sleep 5
+    done
+  }
   # build_on <host> <try>: 1 tries the leases and gives up (75) if busy, 0
   # queues for them. Sets rc.
   build_on() {
@@ -162,14 +190,22 @@ if [[ -n "$HOSTS" ]]; then
     # here would go while an orphan still queued for a build nobody stages.
     # A build only, so it can go beside another on a host that allows that
     # (remote.sh --build), asked for by environment as TRY is.
-    THREADBEAR_REMOTE_BUILD=1 THREADBEAR_REMOTE_TRY="$2" "$SRC/desktop/scripts/remote.sh" "$1" -- bash -c "set -o pipefail; cd desktop && nice cargo build --release -p threadbear-gpui --features $FEATURES 2>&1 | tail -3 && echo \"BUILT_IN=\$CARGO_TARGET_DIR\"" </dev/null > "$out" 2>&1 &
+    # BUILD_STARTED is the host's first word once the run has its turn.
+    : >"$out"
+    THREADBEAR_REMOTE_BUILD=1 THREADBEAR_REMOTE_TRY="$2" "$SRC/desktop/scripts/remote.sh" "$1" -- bash -c "set -o pipefail; echo BUILD_STARTED; cd desktop && nice cargo build --release -p threadbear-gpui --features $FEATURES 2>&1 | tail -3 && echo \"BUILT_IN=\$CARGO_TARGET_DIR\"" </dev/null > "$out" 2>&1 &
     REMOTE_PID=$!
+    watch_phase "$1" "$2" &
+    WATCH_PID=$!
     wait "$REMOTE_PID" || rc=$?
     REMOTE_PID=""
+    kill "$WATCH_PID" 2>/dev/null || true
+    wait "$WATCH_PID" 2>/dev/null || true
+    WATCH_PID=""
     cat "$out"
   }
   REMOTE_PID=""
-  trap '[[ -z "$REMOTE_PID" ]] || { kill -TERM "$REMOTE_PID" 2>/dev/null; wait "$REMOTE_PID" 2>/dev/null; }; exit 143' TERM
+  WATCH_PID=""
+  trap '[[ -z "$WATCH_PID" ]] || kill "$WATCH_PID" 2>/dev/null; [[ -z "$REMOTE_PID" ]] || { kill -TERM "$REMOTE_PID" 2>/dev/null; wait "$REMOTE_PID" 2>/dev/null; }; exit 143' TERM
   while IFS= read -r HOST; do
     # A Mac that answers within a few seconds, with no prompt to wait on.
     [[ "$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" uname -s </dev/null 2>/dev/null || true)" == Darwin ]] || continue
@@ -202,6 +238,7 @@ if [[ -n "$HOSTS" ]]; then
     fi
   fi
   if [[ -z "$BUILT_ON" ]]; then
+    [[ -z "$BUSY_HOST" ]] || { set_phase busy "$BUSY_HOST" "$since"; KEEP_PHASE=1; }
     echo "None of the update build hosts ($(tr '\n' ' ' <<<"$HOSTS")) is a Mac that answered and was free, so nothing was built; the app tries again later." >&2
     exit 4
   fi

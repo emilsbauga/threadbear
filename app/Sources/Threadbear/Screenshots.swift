@@ -277,7 +277,7 @@ enum ScreenshotRunner {
             app.remember(effort: nil, provider: "codex")
             app.newThreadAccount = nil
         }
-        // 15. Pools (docs/pools-plan.md). The new-thread composer on the
+        // 15. Pools (docs/archive/pools-plan.md). The new-thread composer on the
         // Claude pool and its picker, the picker on a mixed pool (models
         // under each provider), a thread pinned to one login with the
         // picker's login list open, a thread waiting for room, and

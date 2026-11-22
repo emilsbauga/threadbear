@@ -37,7 +37,12 @@ pub struct Rect {
 
 impl Rect {
     pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub const ZERO: Rect = Rect::new(0., 0., 0., 0.);
@@ -86,7 +91,12 @@ impl Rect {
 
     /// `insetBy(dx:dy:)`: positive shrinks, negative grows.
     pub fn inset(&self, dx: f64, dy: f64) -> Rect {
-        Rect::new(self.x + dx, self.y + dy, self.width - dx * 2., self.height - dy * 2.)
+        Rect::new(
+            self.x + dx,
+            self.y + dy,
+            self.width - dx * 2.,
+            self.height - dy * 2.,
+        )
     }
 
     /// Moved so its origin is at `by` added to where it was.

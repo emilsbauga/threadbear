@@ -79,6 +79,35 @@ test("a phone row names a function the phone and the website really have", () =>
   }
 });
 
+// The phone functions the Android app calls ("phone:send" in its kit or app).
+function androidCalls(): Set<string> {
+  const out = new Set<string>();
+  const walk = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.kt')) for (const m of fs.readFileSync(p, 'utf8').matchAll(/"phone:(\w+)"/g)) out.add(m[1]!);
+    }
+  };
+  for (const dir of ['android-native/kit/src/main', 'android-native/app/src/main']) walk(path.join(import.meta.dirname, '../../..', dir));
+  return out;
+}
+
+test('an Android "no" is a phone function its kit really lacks, and every other phone function it calls', () => {
+  const calls = androidCalls();
+  assert.ok(calls.has('send') && calls.has('messages'), 'the scan finds what Android calls');
+  for (const [method, row] of Object.entries(THREAD_REQUESTS)) {
+    if (row.android) {
+      assert.ok('via' in row.phone, `${method}: an Android "no" only where the phone has it`);
+      assert.ok(row.android.no.trim().endsWith('.'), `${method}: an Android "no" says why, as a sentence`);
+      assert.ok(!calls.has(row.phone.via), `${method}: Android calls phone:${row.phone.via} now, so take out its "no"`);
+    } else if ('via' in row.phone) {
+      assert.ok(calls.has(row.phone.via), `${method}: Android doesn't call phone:${row.phone.via}; port it or give the row an android "no"`);
+    }
+  }
+});
+
 test('docs/parity.md is made from the rows (npm run parity-docs)', () => {
   const file = path.join(import.meta.dirname, '../../../docs/parity.md');
   if (process.env.UPDATE_PARITY_DOCS === '1') fs.writeFileSync(file, parityDoc());

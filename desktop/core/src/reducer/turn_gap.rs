@@ -28,10 +28,13 @@ impl TurnGap {
     /// "6 min later · Mine the repo finished".
     pub fn label(&self) -> String {
         let time = Self::later(self.milliseconds());
-        let runner = self.runner_wake.as_deref().map(|why| match text::trim_ws_nl(why) {
-            "" => "Threadbear woke it".to_owned(),
-            why => why.to_owned(),
-        });
+        let runner = self
+            .runner_wake
+            .as_deref()
+            .map(|why| match text::trim_ws_nl(why) {
+                "" => "Threadbear woke it".to_owned(),
+                why => why.to_owned(),
+            });
         match runner.or_else(|| Self::cause(&self.woke_by)) {
             Some(cause) => format!("{time} · {cause}"),
             None => time,
@@ -47,7 +50,9 @@ impl TurnGap {
     pub fn label_line(&self) -> String {
         let label = self.label();
         match label.split_once(text::is_newline) {
-            Some((first, rest)) if !text::trim_ws_nl(rest).is_empty() => format!("{}…", first.trim_end()),
+            Some((first, rest)) if !text::trim_ws_nl(rest).is_empty() => {
+                format!("{}…", first.trim_end())
+            }
             Some((first, _)) => first.trim_end().to_owned(),
             None => label,
         }
@@ -57,7 +62,11 @@ impl TurnGap {
     pub fn later(milliseconds: f64) -> String {
         let seconds = int_saturating((milliseconds / 1000.0).round()).max(0);
         if seconds < 60 {
-            return if seconds < 2 { "Moments later".to_owned() } else { format!("{seconds}s later") };
+            return if seconds < 2 {
+                "Moments later".to_owned()
+            } else {
+                format!("{seconds}s later")
+            };
         }
         let minutes = (seconds as f64 / 60.0).round() as i64;
         if minutes < 60 {
@@ -66,7 +75,11 @@ impl TurnGap {
         let hours = minutes / 60;
         let rest = minutes % 60;
         if hours < 24 {
-            return if rest == 0 { format!("{hours} h later") } else { format!("{hours} h {rest} min later") };
+            return if rest == 0 {
+                format!("{hours} h later")
+            } else {
+                format!("{hours} h {rest} min later")
+            };
         }
         let days = hours / 24;
         if days == 1 {
@@ -83,10 +96,25 @@ impl TurnGap {
         if tasks.is_empty() {
             return None;
         }
-        let agents: Vec<&BackgroundTask> = tasks.iter().filter(|t| t.kind == BackgroundKind::Agent).collect();
-        let shown: Vec<&BackgroundTask> = if agents.is_empty() { tasks.iter().collect() } else { agents.clone() };
-        let names: Vec<String> = shown.iter().map(|t| text::trim_ws_nl(&t.description).to_owned()).filter(|n| !n.is_empty()).collect();
-        let noun = if agents.is_empty() { "background job" } else { "sub-agent" };
+        let agents: Vec<&BackgroundTask> = tasks
+            .iter()
+            .filter(|t| t.kind == BackgroundKind::Agent)
+            .collect();
+        let shown: Vec<&BackgroundTask> = if agents.is_empty() {
+            tasks.iter().collect()
+        } else {
+            agents.clone()
+        };
+        let names: Vec<String> = shown
+            .iter()
+            .map(|t| text::trim_ws_nl(&t.description).to_owned())
+            .filter(|n| !n.is_empty())
+            .collect();
+        let noun = if agents.is_empty() {
+            "background job"
+        } else {
+            "sub-agent"
+        };
         Some(match (names.len(), shown.len()) {
             (0, 1) => format!("A {noun} finished"),
             (0, n) => format!("{n} {noun}s finished"),
@@ -136,7 +164,13 @@ pub(crate) fn parse_iso8601(ts: &str) -> Option<f64> {
     // Each part held to its range, so a crafted time from another runner's
     // transcript (an hour of i64::MAX, a year of 19 digits) can't overflow
     // the sums below (the cross-lab review of Daybreak 147).
-    if !(0..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) || !(0..=24).contains(&hour) || !(0..=59).contains(&minute) || !(0..=60).contains(&second) {
+    if !(0..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=24).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
         return None;
     }
     // Fractional seconds, then the zone.
@@ -160,12 +194,19 @@ pub(crate) fn parse_iso8601(ts: &str) -> Option<f64> {
         Some(sign @ (b'+' | b'-')) => {
             let sign = if *sign == b'+' { 1 } else { -1 };
             pos += 1;
-            let zone: Vec<u8> = bytes[pos..].iter().filter(|b| **b != b':').copied().collect();
+            let zone: Vec<u8> = bytes[pos..]
+                .iter()
+                .filter(|b| **b != b':')
+                .copied()
+                .collect();
             let hours_minutes = match (zone.len(), zone.iter().all(u8::is_ascii_digit)) {
                 (2, true) => (std::str::from_utf8(&zone).ok()?.parse::<i64>().ok()?, 0),
                 (4, true) => {
                     let text = std::str::from_utf8(&zone).ok()?;
-                    (text[..2].parse::<i64>().ok()?, text[2..].parse::<i64>().ok()?)
+                    (
+                        text[..2].parse::<i64>().ok()?,
+                        text[2..].parse::<i64>().ok()?,
+                    )
                 }
                 _ => return None,
             };
@@ -201,9 +242,21 @@ mod tests {
     #[test]
     fn times_out_of_range_are_not_times() {
         assert_eq!(parse_iso8601("1970-01-01T00:00:01Z"), Some(1.));
-        assert_eq!(parse_iso8601("2026-11-17T09:30:00.500+01:00"), Some(1_794_904_200.5));
-        assert_eq!(parse_iso8601("0001-01-01T00:00:00.000Z"), Some(-62_135_596_800.));
-        for bad in ["2026-11-17T9223372036854775807:00:00Z", "2026-11-17T00:99:00Z", "2026-11-17T00:00:61Z", "922337203685477580-01-01T00:00:00Z", "2026-11-17T25:00:00Z"] {
+        assert_eq!(
+            parse_iso8601("2026-11-17T09:30:00.500+01:00"),
+            Some(1_794_904_200.5)
+        );
+        assert_eq!(
+            parse_iso8601("0001-01-01T00:00:00.000Z"),
+            Some(-62_135_596_800.)
+        );
+        for bad in [
+            "2026-11-17T9223372036854775807:00:00Z",
+            "2026-11-17T00:99:00Z",
+            "2026-11-17T00:00:61Z",
+            "922337203685477580-01-01T00:00:00Z",
+            "2026-11-17T25:00:00Z",
+        ] {
             assert_eq!(parse_iso8601(bad), None, "{bad}");
         }
     }

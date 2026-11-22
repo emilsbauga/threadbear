@@ -3,7 +3,7 @@ import XCTest
 @testable import Threadbear
 @testable import ThreadbearCore
 
-/// The composer with pools (docs/pools-plan.md): which pool a new thread
+/// The composer with pools (docs/archive/pools-plan.md): which pool a new thread
 /// starts on, what the picker lists and does, pinning, and the fallback to
 /// accounts with a runner older than pools.
 @MainActor

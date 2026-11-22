@@ -59,8 +59,8 @@ const design = join(repo, "docs/threadbear-design");
 webp(join(design, "mascot-c.png"), join(img, "workbench.webp"), 1200, 80);
 for (const pose of ["wave", "sleep", "dizzy"]) webp(join(design, "sprites-full", `${pose}.png`), join(img, `bear-${pose}.webp`), 280, 85);
 
-// Icons from the app icon (app/icons/threadbear.png, 1024 px).
-const icon = join(repo, "app/icons/threadbear.png");
+// Icons from the app icon (shared/icons/threadbear.png, 1024 px).
+const icon = join(repo, "shared/icons/threadbear.png");
 for (const [name, size] of [["icon-512", 512], ["icon-192", 192], ["apple-touch-icon", 180], ["favicon-32", 32]]) {
   execFileSync("sips", ["-z", String(size), String(size), icon, "--out", join(img, `${name}.png`)], { stdio: "ignore" });
   console.log(`public/img/${name}.png`);

@@ -32,9 +32,15 @@ pub fn state(r: &RunnerInfo) -> State {
 /// "Offline, last seen 2d ago".
 pub fn state_line(r: &RunnerInfo, now_ms: i64) -> String {
     match state(r) {
-        State::Online => r.started_ms.map_or_else(|| "Online".to_owned(), |at| format!("Online, up {}", span(at, now_ms))),
+        State::Online => r.started_ms.map_or_else(
+            || "Online".to_owned(),
+            |at| format!("Online, up {}", span(at, now_ms)),
+        ),
         State::Updating => "Updating".to_owned(),
-        State::Offline => r.last_seen_ms.map_or_else(|| "Offline".to_owned(), |at| format!("Offline, last seen {} ago", span(at, now_ms))),
+        State::Offline => r.last_seen_ms.map_or_else(
+            || "Offline".to_owned(),
+            |at| format!("Offline, last seen {} ago", span(at, now_ms)),
+        ),
     }
 }
 
@@ -44,7 +50,13 @@ pub fn state_line(r: &RunnerInfo, now_ms: i64) -> String {
 pub fn build(r: &RunnerInfo) -> Option<String> {
     if let Some(release) = r.release.as_deref().filter(|s| !s.is_empty()) {
         // Swift's `split` leaves out empty pieces, so "abc-" is still "abc".
-        return Some(release.split('-').filter(|s| !s.is_empty()).last().unwrap_or(release).to_owned());
+        return Some(
+            release
+                .split('-')
+                .rfind(|s| !s.is_empty())
+                .unwrap_or(release)
+                .to_owned(),
+        );
     }
     r.version.clone()
 }
@@ -52,16 +64,38 @@ pub fn build(r: &RunnerInfo) -> Option<String> {
 /// The icon's tooltip: "Runners", then how many are up and which aren't.
 pub fn tooltip(runners: &[RunnerInfo]) -> String {
     let mut lines = vec!["Runners".to_owned()];
-    let names = |want: State| runners.iter().filter(|r| state(r) == want).map(|r| r.name.as_str()).collect::<Vec<_>>();
+    let names = |want: State| {
+        runners
+            .iter()
+            .filter(|r| state(r) == want)
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>()
+    };
     let (down, updating) = (names(State::Offline), names(State::Updating));
     if down.is_empty() {
-        lines.push(if runners.len() == 2 { "Both online".to_owned() } else { format!("All {} online", runners.len()) });
+        lines.push(if runners.len() == 2 {
+            "Both online".to_owned()
+        } else {
+            format!("All {} online", runners.len())
+        });
     } else {
-        lines.push(format!("{} of {} online", runners.len() - down.len(), runners.len()));
+        lines.push(format!(
+            "{} of {} online",
+            runners.len() - down.len(),
+            runners.len()
+        ));
         lines.push(format!("{} offline", list(&down)));
     }
     if !updating.is_empty() {
-        lines.push(format!("{}{}", list(&updating), if updating.len() == 1 { " is updating" } else { " are updating" }));
+        lines.push(format!(
+            "{}{}",
+            list(&updating),
+            if updating.len() == 1 {
+                " is updating"
+            } else {
+                " are updating"
+            }
+        ));
     }
     lines.join("\n")
 }
@@ -69,7 +103,10 @@ pub fn tooltip(runners: &[RunnerInfo]) -> String {
 /// The panel's first line: "All online", or "1 of 2 online" (an updating
 /// one counts as up).
 pub fn summary(runners: &[RunnerInfo]) -> String {
-    let up = runners.iter().filter(|r| state(r) != State::Offline).count();
+    let up = runners
+        .iter()
+        .filter(|r| state(r) != State::Offline)
+        .count();
     if up == runners.len() {
         "All online".to_owned()
     } else {
@@ -189,7 +226,12 @@ impl MachineStats {
 /// appear twice), leaving out rows that don't read.
 pub fn decode_stats(value: &Value) -> Vec<MachineStats> {
     let mut out: Vec<MachineStats> = Vec::new();
-    for s in value["stats"].as_array().into_iter().flatten().filter_map(MachineStats::decode) {
+    for s in value["stats"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(MachineStats::decode)
+    {
         match out.iter_mut().find(|o| o.runner_id == s.runner_id) {
             Some(old) if s.at_ms > old.at_ms => *old = s,
             Some(_) => {}
@@ -215,13 +257,28 @@ const GIB: f64 = 1024. * 1024. * 1024.;
 /// Orange only past the runner's own warning lines: 90% memory, under 10 GB
 /// of disk, and 90% CPU.
 pub fn gauges(s: &MachineStats) -> Vec<Gauge> {
-    let mut out = vec![Gauge { title: "CPU", fraction: (s.cpu_percent / 100.).clamp(0., 1.), text: format!("{}%", s.cpu_percent.round() as i64), high: s.cpu_percent >= 90. }];
+    let mut out = vec![Gauge {
+        title: "CPU",
+        fraction: (s.cpu_percent / 100.).clamp(0., 1.),
+        text: format!("{}%", s.cpu_percent.round() as i64),
+        high: s.cpu_percent >= 90.,
+    }];
     if s.mem_total > 0. {
         let used = s.mem_used / s.mem_total;
-        out.push(Gauge { title: "Memory", fraction: used.min(1.), text: format!("{} of {}", number(s.mem_used), gb(s.mem_total)), high: used >= 0.9 });
+        out.push(Gauge {
+            title: "Memory",
+            fraction: used.min(1.),
+            text: format!("{} of {}", number(s.mem_used), gb(s.mem_total)),
+            high: used >= 0.9,
+        });
     }
     if s.disk_total > 0. {
-        out.push(Gauge { title: "Disk", fraction: (1. - s.disk_free / s.disk_total).clamp(0., 1.), text: format!("{} free", gb(s.disk_free)), high: s.disk_free < 10. * GIB });
+        out.push(Gauge {
+            title: "Disk",
+            fraction: (1. - s.disk_free / s.disk_total).clamp(0., 1.),
+            text: format!("{} free", gb(s.disk_free)),
+            high: s.disk_free < 10. * GIB,
+        });
     }
     out
 }
@@ -231,7 +288,10 @@ pub fn gauges(s: &MachineStats) -> Vec<Gauge> {
 /// as the state line above says how long the runner has been up).
 pub fn machine_lines(s: &MachineStats) -> Vec<String> {
     let mut lines = Vec::new();
-    let what: Vec<&str> = [s.machine.as_deref(), s.os.as_deref()].into_iter().flatten().collect();
+    let what: Vec<&str> = [s.machine.as_deref(), s.os.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
     if !what.is_empty() {
         lines.push(what.join(", "));
     }
@@ -316,7 +376,12 @@ fn list(names: &[&str]) -> String {
 /// has them.
 pub fn ordered(runners: &[RunnerInfo], order: Option<&[String]>) -> Vec<RunnerInfo> {
     let order = order.unwrap_or(&[]);
-    let rank = |r: &RunnerInfo| order.iter().position(|id| *id == r.id).unwrap_or(order.len() + usize::from(!r.is_self));
+    let rank = |r: &RunnerInfo| {
+        order
+            .iter()
+            .position(|id| *id == r.id)
+            .unwrap_or(order.len() + usize::from(!r.is_self))
+    };
     let mut placed: Vec<(usize, &RunnerInfo)> = runners.iter().enumerate().collect();
     placed.sort_by_key(|(i, r)| (rank(r), *i));
     placed.into_iter().map(|(_, r)| r.clone()).collect()
@@ -325,9 +390,17 @@ pub fn ordered(runners: &[RunnerInfo], order: Option<&[String]>) -> Vec<RunnerIn
 /// `orderedRunnerIds`: every runner as Settings › Runners lists them, this
 /// Mac's and the backend's others (`remoteRunners`), in Mike's order, then
 /// any he hasn't placed.
-pub fn ordered_ids(self_id: Option<&str>, others: &[String], order: Option<&[String]>) -> Vec<String> {
+pub fn ordered_ids(
+    self_id: Option<&str>,
+    others: &[String],
+    order: Option<&[String]>,
+) -> Vec<String> {
     let order = order.unwrap_or(&[]);
-    let all: Vec<String> = self_id.map(str::to_owned).into_iter().chain(others.iter().cloned()).collect();
+    let all: Vec<String> = self_id
+        .map(str::to_owned)
+        .into_iter()
+        .chain(others.iter().cloned())
+        .collect();
     let rank = |id: &str| order.iter().position(|o| o == id).unwrap_or(order.len());
     let mut placed: Vec<(usize, &String)> = all.iter().enumerate().collect();
     placed.sort_by_key(|(i, id)| (rank(id), *i));
@@ -350,13 +423,27 @@ pub fn moving(ids: &[String], from: usize, to: usize) -> Vec<String> {
 /// the rest stay put.
 pub fn merged(part: &[String], order: &[String]) -> Vec<String> {
     let mut queue = part.iter();
-    order.iter().map(|id| if part.contains(id) { queue.next().cloned().unwrap_or_else(|| id.clone()) } else { id.clone() }).collect()
+    order
+        .iter()
+        .map(|id| {
+            if part.contains(id) {
+                queue.next().cloned().unwrap_or_else(|| id.clone())
+            } else {
+                id.clone()
+            }
+        })
+        .collect()
 }
 
 /// `setRunnerOrder(part:)`: the panel lists `runners.list`'s runners, which
 /// may be only some of the order; they swap places among themselves and the
 /// rest of the order stays.
-pub fn order_after_drop(part: &[String], self_id: Option<&str>, others: &[String], order: Option<&[String]>) -> Vec<String> {
+pub fn order_after_drop(
+    part: &[String],
+    self_id: Option<&str>,
+    others: &[String],
+    order: Option<&[String]>,
+) -> Vec<String> {
     let mut full = ordered_ids(self_id, others, order);
     for id in part {
         if !full.contains(id) {
@@ -385,7 +472,13 @@ pub struct SettingsRow {
 /// Mike's order once it can be changed (`orderedRunnerIds`), else this Mac
 /// first and the rest as the backend has them. `default` is this Mac's own
 /// choice, None for itself.
-pub fn settings_rows(this_mac: Option<&RunnerInfo>, others: &[crate::remote::RemoteRunner], order: Option<&[String]>, default: Option<&str>, orderable: bool) -> Vec<SettingsRow> {
+pub fn settings_rows(
+    this_mac: Option<&RunnerInfo>,
+    others: &[crate::remote::RemoteRunner],
+    order: Option<&[String]>,
+    default: Option<&str>,
+    orderable: bool,
+) -> Vec<SettingsRow> {
     let own = SettingsRow {
         id: this_mac.map(|r| r.id.clone()).unwrap_or_default(),
         // Its own name, as other machines see it ("m5").
@@ -413,14 +506,23 @@ pub fn settings_rows(this_mac: Option<&RunnerInfo>, others: &[crate::remote::Rem
     let ids: Vec<String> = others.iter().map(|r| r.id.clone()).collect();
     ordered_ids(this_mac.map(|r| r.id.as_str()), &ids, order)
         .into_iter()
-        .map(|id| others.iter().find(|r| r.id == id).map_or_else(|| own.clone(), row))
+        .map(|id| {
+            others
+                .iter()
+                .find(|r| r.id == id)
+                .map_or_else(|| own.clone(), row)
+        })
         .collect()
 }
 
 /// The order can be changed once the backend has one (API 58) and this Mac's
 /// own runner is known: without it a move would save an order that leaves
 /// this Mac out (`canOrderRunners`).
-pub fn can_order(order_known: bool, others: &[crate::remote::RemoteRunner], all: &[RunnerInfo]) -> bool {
+pub fn can_order(
+    order_known: bool,
+    others: &[crate::remote::RemoteRunner],
+    all: &[RunnerInfo],
+) -> bool {
     order_known && !others.is_empty() && all.iter().any(|r| r.is_self)
 }
 
@@ -429,14 +531,18 @@ pub fn can_order(order_known: bool, others: &[crate::remote::RemoteRunner], all:
 pub fn default_title(default: Option<&str>, others: &[crate::remote::RemoteRunner]) -> String {
     match default {
         None => "This Mac".to_owned(),
-        Some(id) => others.iter().find(|r| r.id == id).map_or_else(|| id.to_owned(), |r| r.name.clone()),
+        Some(id) => others
+            .iter()
+            .find(|r| r.id == id)
+            .map_or_else(|| id.to_owned(), |r| r.name.clone()),
     }
 }
 
 /// Behind the sections' ⓘs, as the Swift view has them.
 pub const DEFAULT_ABOUT: &str = "Where a new thread runs unless you pick another machine on the composer. This is this Mac's own choice.";
 pub const DEFAULT_ASK: &str = "change it, or to set up another machine to run threads on.";
-pub const DEFAULT_TIP: &str = "Where a new thread runs unless you pick another machine on the composer";
+pub const DEFAULT_TIP: &str =
+    "Where a new thread runs unless you pick another machine on the composer";
 pub const RUNNERS_ASK: &str = "add one, rename one or change how it runs. It knows how, and a Linux server's steps are in INSTALL.md.";
 
 pub fn runners_about(orderable: bool) -> &'static str {
@@ -450,7 +556,12 @@ pub fn runners_about(orderable: bool) -> &'static str {
 /// A row in the dump: "m5 *: This Mac", "bruce: Online", with " *" after the
 /// name where new threads start, as the Runners panel's lines have it.
 pub fn settings_line(row: &SettingsRow) -> String {
-    format!("{}{}: {}", row.name, if row.is_default { " *" } else { "" }, row.status)
+    format!(
+        "{}{}: {}",
+        row.name,
+        if row.is_default { " *" } else { "" },
+        row.status
+    )
 }
 
 #[cfg(test)]
@@ -461,7 +572,12 @@ mod tests {
     const MIN: i64 = 60_000;
 
     fn runner(id: &str, name: &str) -> RunnerInfo {
-        RunnerInfo { id: id.into(), name: name.into(), online: true, ..Default::default() }
+        RunnerInfo {
+            id: id.into(),
+            name: name.into(),
+            online: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -504,23 +620,51 @@ mod tests {
         assert_eq!(tooltip(&list), "Runners\nAll 3 online");
         list[1].online = false;
         list[2].online = false;
-        assert_eq!(tooltip(&list), "Runners\n1 of 3 online\nmac-mini and cloud offline");
+        assert_eq!(
+            tooltip(&list),
+            "Runners\n1 of 3 online\nmac-mini and cloud offline"
+        );
         assert_eq!(summary(&list), "1 of 3 online");
         list[1].online = true;
         list[1].draining = true;
-        assert_eq!(tooltip(&list), "Runners\n2 of 3 online\ncloud offline\nmac-mini is updating");
+        assert_eq!(
+            tooltip(&list),
+            "Runners\n2 of 3 online\ncloud offline\nmac-mini is updating"
+        );
         assert_eq!(summary(&list), "2 of 3 online", "an updating runner is up");
     }
 
     #[test]
     fn each_runner_lists_its_own_running_threads() {
-        let me = RunnerInfo { is_self: true, ..runner("m", "laptop") };
+        let me = RunnerInfo {
+            is_self: true,
+            ..runner("m", "laptop")
+        };
         let mini = runner("b", "mac-mini");
-        let mine = ThreadSummary { id: "t1".into(), ..Default::default() };
-        let theirs = ThreadSummary { id: "t2".into(), runner_id: Some("b".into()), ..Default::default() };
+        let mine = ThreadSummary {
+            id: "t1".into(),
+            ..Default::default()
+        };
+        let theirs = ThreadSummary {
+            id: "t2".into(),
+            runner_id: Some("b".into()),
+            ..Default::default()
+        };
         let rows = vec![mine, theirs];
-        assert_eq!(running(&me, &rows).iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t1"]);
-        assert_eq!(running(&mini, &rows).iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t2"]);
+        assert_eq!(
+            running(&me, &rows)
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["t1"]
+        );
+        assert_eq!(
+            running(&mini, &rows)
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["t2"]
+        );
     }
 
     #[test]
@@ -536,13 +680,45 @@ mod tests {
             { "cpuPercent": 3 },
         ]});
         let stats = decode_stats(&answer);
-        assert_eq!(stats.iter().map(|s| s.runner_id.as_str()).collect::<Vec<_>>(), ["m", "b"], "out of range rows go, and the older of two goes");
+        assert_eq!(
+            stats
+                .iter()
+                .map(|s| s.runner_id.as_str())
+                .collect::<Vec<_>>(),
+            ["m", "b"],
+            "out of range rows go, and the older of two goes"
+        );
         let m = &stats[0];
         let g = gauges(m);
-        assert_eq!(g.iter().map(|g| (g.title, g.text.as_str(), g.high)).collect::<Vec<_>>(), [("CPU", "35%", false), ("Memory", "17.4 of 24 GB", false), ("Disk", "212 GB free", false)]);
-        assert_eq!(machine_lines(m), ["Apple M5, macOS 27.2", "Machine up 4d, load 3.4 on 10 cores"]);
+        assert_eq!(
+            g.iter()
+                .map(|g| (g.title, g.text.as_str(), g.high))
+                .collect::<Vec<_>>(),
+            [
+                ("CPU", "35%", false),
+                ("Memory", "17.4 of 24 GB", false),
+                ("Disk", "212 GB free", false)
+            ]
+        );
+        assert_eq!(
+            machine_lines(m),
+            [
+                "Apple M5, macOS 27.2",
+                "Machine up 4d, load 3.4 on 10 cores"
+            ]
+        );
         let b = &stats[1];
-        assert_eq!(gauges(b).iter().map(|g| (g.title, g.text.as_str(), g.high)).collect::<Vec<_>>(), [("CPU", "8%", false), ("Memory", "7.4 of 8 GB", true), ("Disk", "9 GB free", true)]);
+        assert_eq!(
+            gauges(b)
+                .iter()
+                .map(|g| (g.title, g.text.as_str(), g.high))
+                .collect::<Vec<_>>(),
+            [
+                ("CPU", "8%", false),
+                ("Memory", "7.4 of 8 GB", true),
+                ("Disk", "9 GB free", true)
+            ]
+        );
         assert_eq!(machine_lines(b), ["Machine up 19d"], "no load, no cores");
         let now = parse_ms("2026-11-11T01:00:30.000Z").unwrap();
         assert_eq!(stale_line(m, now), None);
@@ -563,37 +739,76 @@ mod tests {
 
     #[test]
     fn the_order_puts_mikes_first_then_this_mac() {
-        let me = RunnerInfo { is_self: true, ..runner("m", "laptop") };
+        let me = RunnerInfo {
+            is_self: true,
+            ..runner("m", "laptop")
+        };
         let list = vec![me, runner("b", "mac-mini"), runner("c", "cloud")];
         let names = |l: Vec<RunnerInfo>| l.into_iter().map(|r| r.name).collect::<Vec<_>>();
         assert_eq!(names(ordered(&list, None)), ["laptop", "mac-mini", "cloud"]);
         let order = ["c".to_string(), "m".to_string()];
-        assert_eq!(names(ordered(&list, Some(&order))), ["cloud", "laptop", "mac-mini"]);
+        assert_eq!(
+            names(ordered(&list, Some(&order))),
+            ["cloud", "laptop", "mac-mini"]
+        );
         let others = ["b".to_string(), "c".to_string(), "p".to_string()];
-        assert_eq!(ordered_ids(Some("m"), &others, Some(&order)), ["c", "m", "b", "p"]);
+        assert_eq!(
+            ordered_ids(Some("m"), &others, Some(&order)),
+            ["c", "m", "b", "p"]
+        );
     }
 
     #[test]
     fn settings_lists_this_mac_and_the_others_in_mikes_order() {
         use crate::remote::RemoteRunner;
-        let me = RunnerInfo { is_self: true, icon: Some("laptopcomputer".into()), ..runner("m", "laptop") };
-        let mini = RemoteRunner { id: "b".into(), name: "mac-mini".into(), icon: Some("macmini".into()), online: true, ..Default::default() };
-        let cloud = RemoteRunner { id: "c".into(), name: "cloud".into(), online: false, ..Default::default() };
-        let others = [mini.clone(), cloud.clone()];
+        let me = RunnerInfo {
+            is_self: true,
+            icon: Some("laptopcomputer".into()),
+            ..runner("m", "laptop")
+        };
+        let mini = RemoteRunner {
+            id: "b".into(),
+            name: "mac-mini".into(),
+            icon: Some("macmini".into()),
+            online: true,
+            ..Default::default()
+        };
+        let cloud = RemoteRunner {
+            id: "c".into(),
+            name: "cloud".into(),
+            online: false,
+            ..Default::default()
+        };
+        let others = [mini, cloud];
         let lines = |rows: Vec<SettingsRow>| rows.iter().map(settings_line).collect::<Vec<_>>();
         // Not orderable yet: this Mac first, the rest as the backend has them.
-        assert_eq!(lines(settings_rows(Some(&me), &others, None, None, false)), ["laptop *: This Mac", "mac-mini: Online", "cloud: Offline"]);
+        assert_eq!(
+            lines(settings_rows(Some(&me), &others, None, None, false)),
+            ["laptop *: This Mac", "mac-mini: Online", "cloud: Offline"]
+        );
         // In Mike's order, with the star on another default.
         let order = ["c".to_string(), "m".to_string(), "b".to_string()];
         let rows = settings_rows(Some(&me), &others, Some(&order), Some("b"), true);
-        assert_eq!(lines(rows.clone()), ["cloud: Offline", "laptop: This Mac", "mac-mini *: Online"]);
+        assert_eq!(
+            lines(rows.clone()),
+            ["cloud: Offline", "laptop: This Mac", "mac-mini *: Online"]
+        );
         assert_eq!(rows[1].icon.as_deref(), Some("laptopcomputer"));
         assert!(rows[1].is_self && !rows[0].is_self);
         // This Mac before runners.list has said its name.
-        assert_eq!(settings_rows(None, &[], None, None, false)[0].name, "This Mac");
-        assert!(can_order(true, &others, &[me.clone()]));
-        assert!(!can_order(false, &others, &[me.clone()]), "no order from the backend yet");
-        assert!(!can_order(true, &others, &[]), "this Mac's id isn't known yet");
+        assert_eq!(
+            settings_rows(None, &[], None, None, false)[0].name,
+            "This Mac"
+        );
+        assert!(can_order(true, &others, std::slice::from_ref(&me)));
+        assert!(
+            !can_order(false, &others, std::slice::from_ref(&me)),
+            "no order from the backend yet"
+        );
+        assert!(
+            !can_order(true, &others, &[]),
+            "this Mac's id isn't known yet"
+        );
         assert_eq!(default_title(None, &others), "This Mac");
         assert_eq!(default_title(Some("b"), &others), "mac-mini");
         assert!(runners_about(true).contains("Drag a runner"));
@@ -610,6 +825,14 @@ mod tests {
         let part = ["c".to_string(), "a".to_string()];
         assert_eq!(merged(&part, &ids), ["c", "b", "a", "d"]);
         let others = ["b".to_string(), "c".to_string()];
-        assert_eq!(order_after_drop(&["c".to_string(), "m".to_string()], Some("m"), &others, None), ["c", "b", "m"]);
+        assert_eq!(
+            order_after_drop(
+                &["c".to_string(), "m".to_string()],
+                Some("m"),
+                &others,
+                None
+            ),
+            ["c", "b", "m"]
+        );
     }
 }

@@ -23,6 +23,8 @@ const HOSTS: Partial<Record<Provider, string>> = {
   opencode: 'opencode.ai',
   // Its CLI's requests go through Grok's own chat proxy.
   grok: 'cli-chat-proxy.grok.com',
+  // Gemini on a Google plan goes through Google's Code Assist service.
+  antigravity: 'cloudcode-pa.googleapis.com',
 };
 
 // How long a probe may take in all, whatever arrives meanwhile: a proxy

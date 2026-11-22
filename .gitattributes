@@ -13,5 +13,12 @@
 # conflict (run `npm run experiment-docs` in runner/), never stale lines.
 docs/experiments.md merge=lines
 
-# Log entries from threads arrive at once; keep them all.
-docs/gpui-port/PARITY.md merge=union
+# Log entries from threads arrive at once; keep them all. (PARITY.md is the
+# generated table now, so an entry still written there conflicts and moves here.)
+docs/gpui-port/LOG.md merge=union
+
+# The lint problems recorded as exempt, a count per file and rule: two
+# landings that each change some merge by count rather than conflicting on
+# neighbouring lines (scripts/merge-suppressions.mjs, set up by
+# worktree-setup.sh as merge-lines is).
+eslint-suppressions.json merge=suppressions

@@ -20,6 +20,13 @@ Then('the transcript is a spinner with no rows', async function (this: Threadbea
   assert.notEqual(d.transcript.spinner, false, 'no spinner');
 });
 
+Then('the transcript is still a spinner with no rows', async function (this: ThreadbearWorld) {
+  const d = await this.app.dump();
+  assert.equal(d.transcript.state, 'loading', `the read answered too soon to tell:\n${describe(d)}`);
+  assert.equal(d.transcript.rows.length, 0, `rows while it's read:\n${describe(d)}`);
+  assert.equal(d.transcript.spinner, true, `no spinner beside the error line:\n${describe(d)}`);
+});
+
 // Within a second, where a read takes three.
 Then('straight away the transcript shows my message {string}', async function (this: ThreadbearWorld, words: string) {
   await this.until(`my message "${words}" without the thread being read again`, (d) => d.transcript.state === 'loaded' && d.transcript.rows.some((r) => r.kind === 'user' && r.text.startsWith(words)), 1000);

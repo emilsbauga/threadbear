@@ -1,6 +1,6 @@
 use crate::{
     AnyElement, AnyImageCache, App, Asset, AssetLogger, Bounds, DefiniteLength, Element, ElementId,
-    Entity, GlobalElementId, Hitbox, Image, ImageCache, InspectorElementId, InteractiveElement,
+    Entity, EntityId, GlobalElementId, Hitbox, Image, ImageCache, InspectorElementId, InteractiveElement,
     Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, Resource,
     SharedString, SharedUri, StyleRefinement, Styled, Task, Window, decode_static_image,
     decode_static_image_from_decoder, px,
@@ -16,10 +16,12 @@ use image::{
 use scheduler::Instant;
 use smallvec::SmallVec;
 use std::{
+    cell::Cell,
     fs,
     io::{self, Cursor},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
+    rc::Rc,
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -254,6 +256,30 @@ struct ImgState {
     frame_index: usize,
     last_frame_time: Option<Instant>,
     started_loading: Option<(Instant, Task<()>)>,
+    /// Wakes the view when the frame shown is due to change (Threadbear).
+    next_frame: Option<NextFrame>,
+}
+
+/// An animated image's wake for its next frame: kept across draws while
+/// it's for the same time and view and hasn't gone off, so a view drawn for
+/// other reasons doesn't make a timer each time (Threadbear).
+struct NextFrame {
+    at: Instant,
+    view: EntityId,
+    gone_off: Rc<Cell<bool>>,
+    _task: Task<()>,
+}
+
+/// How long an animated image's frame shows. Ten milliseconds or less
+/// counts as a tenth of a second, as browsers have it, so a GIF that says
+/// 0 doesn't step at every draw (Threadbear).
+fn frame_delay(data: &RenderImage, frame_index: usize) -> Duration {
+    let delay = Duration::from(data.delay(frame_index));
+    if delay <= Duration::from_millis(10) {
+        Duration::from_millis(100)
+    } else {
+        delay
+    }
 }
 
 /// The image layout state between frames
@@ -292,6 +318,7 @@ impl Element for Img {
                     frame_index: 0,
                     last_frame_time: None,
                     started_loading: None,
+                    next_frame: None,
                 })
             });
 
@@ -318,27 +345,63 @@ impl Element for Img {
 
                             if let Some(state) = &mut state {
                                 state.frame_index = state.frame_index.min(max_frame_index);
+                                // Threadbear: played whether or not the window is
+                                // the key one, as in a browser (upstream stepped
+                                // only in the active window, so a GIF beside
+                                // another app's stayed on its first frame). The
+                                // view is woken when the frame is due, at the
+                                // GIF's own pace, rather than drawn at every
+                                // display frame; a window that isn't drawing (on
+                                // macOS, a covered or hidden one) doesn't step.
                                 if frame_count > 1 && !cx.reduce_motion() {
-                                    if window.is_window_active() {
-                                        let current_time = Instant::now();
-                                        if let Some(last_frame_time) = state.last_frame_time {
-                                            let elapsed = current_time - last_frame_time;
-                                            let frame_duration =
-                                                Duration::from(data.delay(state.frame_index));
-
-                                            if elapsed >= frame_duration {
-                                                state.frame_index =
-                                                    (state.frame_index + 1) % frame_count;
-                                                state.last_frame_time =
-                                                    Some(current_time - (elapsed - frame_duration));
+                                    // The executor's clock, which tests can move.
+                                    let now = cx.background_executor().now();
+                                    let last = *state.last_frame_time.get_or_insert(now);
+                                    let elapsed = now - last;
+                                    let wait = frame_delay(&data, state.frame_index);
+                                    if elapsed >= wait {
+                                        state.frame_index = (state.frame_index + 1) % frame_count;
+                                        let over = elapsed - wait;
+                                        // A long gap (the window hidden, a slow draw)
+                                        // starts the clock again rather than racing
+                                        // through the frames it missed.
+                                        let next_wait = frame_delay(&data, state.frame_index);
+                                        state.last_frame_time =
+                                            Some(if over >= next_wait { now } else { now - over });
+                                    }
+                                    let at = state.last_frame_time.unwrap_or(now)
+                                        + frame_delay(&data, state.frame_index);
+                                    let view = window.current_view();
+                                    let armed = state.next_frame.as_ref().is_some_and(|next| {
+                                        next.at == at && next.view == view && !next.gone_off.get()
+                                    });
+                                    if !armed {
+                                        let due = at.saturating_duration_since(now);
+                                        let gone_off = Rc::new(Cell::new(false));
+                                        let flag = gone_off.clone();
+                                        let task = window.spawn(cx, async move |cx| {
+                                            cx.background_executor().timer(due).await;
+                                            flag.set(true);
+                                            // Tried until it lands while the app is
+                                            // busy (a nested event loop: a menu, a
+                                            // sheet), so a refused update doesn't stop
+                                            // the GIF for good. The task goes with the
+                                            // element, and with its window.
+                                            let mut backoff = Duration::from_millis(16);
+                                            while cx.update(move |_, cx| cx.notify(view)).is_err() {
+                                                cx.background_executor().timer(backoff).await;
+                                                backoff = (backoff * 2).min(Duration::from_millis(250));
                                             }
-                                        } else {
-                                            state.last_frame_time = Some(current_time);
-                                        }
-                                    } else {
-                                        state.last_frame_time = None;
+                                        });
+                                        state.next_frame = Some(NextFrame {
+                                            at,
+                                            view,
+                                            gone_off,
+                                            _task: task,
+                                        });
                                     }
                                 } else {
+                                    state.next_frame = None;
                                     state.last_frame_time = None;
                                 }
                                 state.started_loading = None;
@@ -379,13 +442,6 @@ impl Element for Img {
                                 };
                             }
 
-                            if global_id.is_some()
-                                && data.frame_count() > 1
-                                && window.is_window_active()
-                                && !cx.reduce_motion()
-                            {
-                                window.request_animation_frame();
-                            }
                         }
                         Some(_err) => {
                             if let Some(fallback) = self.style.fallback.as_ref() {
@@ -395,10 +451,14 @@ impl Element for Img {
                             }
                             if let Some(state) = &mut state {
                                 state.started_loading = None;
+                                state.next_frame = None;
+                                state.last_frame_time = None;
                             }
                         }
                         None => {
                             if let Some(state) = &mut state {
+                                state.next_frame = None;
+                                state.last_frame_time = None;
                                 if let Some((started_loading, _)) = state.started_loading {
                                     if started_loading.elapsed() > LOADING_DELAY
                                         && let Some(loading) = self.style.loading.as_ref()

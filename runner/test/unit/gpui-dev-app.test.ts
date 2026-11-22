@@ -17,7 +17,7 @@ import { alive, dumpText, pick, refuseHome, since, type Instance } from '../../.
 const DEV_APP = path.join(import.meta.dirname, '..', '..', '..', 'desktop', 'scripts', 'dev-app.sh');
 // The runner's own release build (update.ts) reruns these tests in a clone
 // with only runner/node_modules installed, so the mock can't start there.
-const MOCK = path.join(import.meta.dirname, '..', '..', '..', 'app', 'Tools', 'mock-runner');
+const MOCK = path.join(import.meta.dirname, '..', '..', '..', 'mock-runner');
 const NO_MOCK = !fs.existsSync(path.join(MOCK, 'node_modules', 'ws')) && 'mock runner has no node_modules';
 
 test('start refuses the real data folder, however it is named, unless told', () => {

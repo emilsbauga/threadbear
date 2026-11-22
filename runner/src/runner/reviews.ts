@@ -9,6 +9,7 @@ import type { ImageRef } from '../protocol.ts';
 import type { DesignReview, ReviewDraft } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import type { QueuedSend } from '../store.ts';
+import { parkRecord } from '../place.ts';
 import { copyImageInto, extForMediaType, imageRefFor, readImageInfo } from '../media.ts';
 import { paths } from '../config.ts';
 import { copyReviewMedia } from '../review-media.ts';
@@ -96,7 +97,7 @@ export const reviewsPart = {
     // The answer and outbox live in one atomic thread.json write. Publish
     // the card only after it succeeds, then start the queued reply.
     this.persistReview(st, next, [...st.rec.queue, message], true);
-    st.rt.releaseWhenIdle = false;
+    this.cli(st, { kind: 'stay' });
     this.markDirty(st);
     this.kickQueue(st);
     return {review: structuredClone(next), turnId};
@@ -219,25 +220,10 @@ export const reviewsPart = {
       ? previous.map(r => r.id === review.id ? review : r)
       : [...previous, review];
     const next = {...st.rec, reviews, queue};
-    if (wake) {
-      delete next.snoozedUntil;
-      delete next.snoozedUntilRestart;
-      delete next.untilRelease;
-      delete next.wakeWhen;
-      delete next.waitingOn;
-      delete next.hibernatedForApp;
-      delete next.archivedAt;
-    }
+    // Mike's answer brings it back from a snooze or the archive (place.ts).
+    if (wake) parkRecord(next, {kind: 'reviewAnswered'}, this.clock.now());
     this.store.save(next);
-    if (wake) {
-      delete st.rec.snoozedUntil;
-      delete st.rec.snoozedUntilRestart;
-      delete st.rec.untilRelease;
-      delete st.rec.wakeWhen;
-      delete st.rec.waitingOn;
-      delete st.rec.hibernatedForApp;
-      delete st.rec.archivedAt;
-    }
+    if (wake) parkRecord(st.rec, {kind: 'reviewAnswered'}, this.clock.now());
     // An answer queued is new work: its last finish no longer counts for
     // threads waiting on it (runner/hibernation.ts).
     if (queue.length > st.rec.queue.length) {

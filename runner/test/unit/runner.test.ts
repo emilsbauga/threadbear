@@ -6,7 +6,7 @@ import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/f
 import { checkSequence, checkSummary } from '../helpers/protocol-check.ts';
 import { makePng } from '../helpers/png.ts';
 import { RpcError } from '../../src/protocol.ts';
-import { askedLine, UNTIL_RESTART, WROTE_INSTEAD } from '../../src/runner.ts';
+import { askedLine, requestLine, UNTIL_RESTART, WROTE_INSTEAD } from '../../src/runner.ts';
 import { PATIENCE_MS } from '../helpers/patience.ts';
 
 const MIN = 60_000;
@@ -501,7 +501,7 @@ test('ask mode: approval card, waiting status, allow resolves the CLI callback',
   assert.throws(() => h.runner.respondApproval({ threadId: thread.id, approvalId: req.approvalId, decision: 'allow' }), /no longer pending/);
 });
 
-// docs/protocol.md, "Queued calls".
+// docs/protocol/threads.md, "Queued calls".
 test('calls queued on a card: listed by approval.queued, grown, and answered in the same click, only those it listed', async () => {
   const h = makeHarness();
   const { thread } = create(h, { permissionMode: 'ask' });
@@ -2199,7 +2199,7 @@ test('hooks don\'t run after an interrupted or failed turn, or a turn the runner
   assert.equal(h.events(thread.id).filter((e) => e.type === 'action.run').length, 1);
 });
 
-// docs/protocol.md, "Needs you".
+// docs/protocol/needs-you.md, "Needs you".
 const END_TURN = 'mcp__threadbear__end_turn';
 
 function endTurnCall(s: ReturnType<typeof makeHarness>['adapter']['last'], itemId: string, input: Record<string, unknown>) {
@@ -2640,4 +2640,140 @@ test('asked: a thread from before it learns it from its log on restart', () => {
   delete rec.asked;
   fs.writeFileSync(file, JSON.stringify(rec));
   assert.equal(h.restart().runner.get(thread.id).asked, 'Fix the tests more detail here');
+});
+
+test('request: the summary carries Alex\'s first message, and keeps it as he sends more', () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  assert.equal(thread.request, 'Fix the tests more detail here');
+  h.adapter.last.init();
+  h.adapter.last.result();
+  h.runner.send(thread.id, 'And the lint too', [], { origin: 'phone' });
+  const t = h.runner.get(thread.id);
+  assert.equal(t.asked, 'And the lint too');
+  assert.equal(t.request, 'Fix the tests more detail here');
+  assert.deepEqual(checkSummary(t), []);
+});
+
+test('request: a schedule\'s, the runner\'s or another agent\'s message isn\'t it; his first one after is', () => {
+  const h = makeHarness();
+  const { thread } = create(h, { text: 'Nightly check', origin: 'schedule', scheduleId: 'sc1', title: 'Nightly' });
+  assert.equal(thread.request, undefined);
+  h.adapter.last.init();
+  h.adapter.last.result();
+  h.runner.send(thread.id, '[Sent by the agent in the thread abc] hello');
+  assert.equal(h.runner.get(thread.id).request, undefined);
+  h.adapter.last.result();
+  h.runner.send(thread.id, 'Carry on', [], { origin: 'runner' });
+  assert.equal(h.runner.get(thread.id).request, undefined);
+  h.adapter.last.result();
+  h.runner.send(thread.id, 'Why did it fail?');
+  assert.equal(h.runner.get(thread.id).request, 'Why did it fail?');
+});
+
+test('request: one line of at most 200 characters, by the same rules as asked', () => {
+  const long = `Look at\n\nthe ${'x'.repeat(300)}`;
+  const line = requestLine({ text: long })!;
+  assert.equal(line.length, 200);
+  assert.ok(line.startsWith('Look at the x'));
+  assert.ok(!line.includes('\n'));
+  assert.equal(askedLine({ text: long })!.length, 140);
+  assert.equal(requestLine({ text: 'Carry on', origin: 'runner' }), undefined);
+  const review = { id: 'r1', title: 'Grey line', status: 'answered', options: [{ id: 'C', title: 'What you asked', path: '/c.png' }] } as never;
+  assert.equal(requestLine({ text: 'Review: Grey line (r1)\n\nPicked C. What you asked.', reviewId: 'r1', reviewResponse: { pickedId: 'C', notes: {} } }, [review]), 'Picked What you asked');
+});
+
+test('request: a thread from before it learns it from the start of its log on restart', () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  h.adapter.last.init();
+  h.adapter.last.result();
+  h.runner.send(thread.id, 'And the lint too');
+  h.adapter.last.result();
+  h.runner.flush();
+  const file = path.join(h.home, 'threads', thread.id, 'thread.json');
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete rec.request;
+  fs.writeFileSync(file, JSON.stringify(rec));
+  const t = h.restart().runner.get(thread.id);
+  assert.equal(t.request, 'Fix the tests more detail here', 'his first, not his last');
+  assert.equal(t.asked, 'And the lint too');
+});
+
+test('request: one whose first message of his is past the first 300 events has none, and his next isn\'t it', () => {
+  const h = makeHarness();
+  const { thread } = create(h, { text: 'Nightly check', origin: 'schedule', scheduleId: 'sc1', title: 'Nightly' });
+  h.adapter.last.init();
+  h.adapter.last.result();
+  for (let i = 0; i < 300; i++) h.runner.note(thread.id, `note ${i}`);
+  h.runner.send(thread.id, 'Why did it fail?');
+  h.adapter.last.result();
+  h.runner.flush();
+  const file = path.join(h.home, 'threads', thread.id, 'thread.json');
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete rec.request;
+  fs.writeFileSync(file, JSON.stringify(rec));
+  const h2 = h.restart();
+  assert.equal(h2.runner.get(thread.id).request, undefined);
+  h2.runner.send(thread.id, 'Try again');
+  assert.equal(h2.runner.get(thread.id).request, undefined, 'not his first');
+});
+
+// Found by the CLI session table (cli-session.ts): a setting the CLI refused
+// asked for a fresh CLI whenever the refusal landed, so one that came after
+// that CLI had gone and another had started asked the new one, which had
+// started with the setting, to go too: the next message restarted it (a
+// model or effort), or it was released at once (a permission mode).
+test('a setting an old CLI refuses late leaves the next CLI alone', async () => {
+  for (const which of ['model', 'mode'] as const) {
+    const h = makeHarness();
+    const { thread } = create(h);
+    const first = h.adapter.last;
+    first.init();
+    first.result();
+    let refuse!: (e: Error) => void;
+    const late = new Promise<void>((_, reject) => (refuse = reject));
+    if (which === 'model') first.setModel = () => late;
+    else first.setPermissionMode = () => late;
+    h.runner.update(which === 'model' ? { threadId: thread.id, model: 'claude-opus-5-5' } : { threadId: thread.id, permissionMode: 'ask' });
+    // The CLI dies before it answers; the next message starts another.
+    first.kill();
+    await tick();
+    h.runner.send(thread.id, 'carry on');
+    await tick();
+    const next = h.adapter.last;
+    assert.notEqual(next, first, which);
+    next.init();
+    next.result();
+    await tick();
+    refuse(new Error('the CLI went'));
+    await tick();
+    assert.equal(next.ended, false, `${which}: the new CLI kept`);
+    // The next message goes to it, not to a third CLI.
+    h.runner.send(thread.id, 'and again');
+    await tick();
+    assert.equal(h.adapter.last, next, `${which}: no third CLI`);
+    assert.equal(next.sent.length, 2, which);
+  }
+});
+
+// From Gemini's review of cli-session.ts: a release whose end() throws
+// straight away still settles, so the next message isn't left waiting on it.
+test('a CLI whose end throws at once is still let go', async () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  const first = h.adapter.last;
+  first.init();
+  first.result();
+  first.end = () => {
+    throw new Error('broken pipe');
+  };
+  h.runner.update({ threadId: thread.id, archived: true });
+  await tick();
+  const st = h.runner.threads.get(thread.id)!;
+  assert.equal(st.rt.closing, undefined, 'not left closing');
+  assert.equal(st.rt.session, undefined);
+  h.runner.send(thread.id, 'back again');
+  await tick();
+  assert.notEqual(h.adapter.last, first, 'a new CLI took the message');
 });

@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import Security
 
-// The phone's half of a secret card (docs/protocol.md, "Secrets"): the
+// The phone's half of a secret card (docs/protocol/threads.md, "Secrets"): the
 // value is sealed here to the runner's X25519 key, so the Convex mirror in
 // between only ever carries ciphertext. Nothing in this file logs, keeps or
 // returns the value in the clear.
@@ -35,7 +35,7 @@ public enum SecretSealError: Error, Equatable {
     case badKey
 }
 
-/// The seal (docs/protocol.md, "The seal"): an ephemeral X25519 key agrees a
+/// The seal (docs/protocol/threads.md, "The seal"): an ephemeral X25519 key agrees a
 /// shared secret with the runner's, HKDF-SHA256 (salt epk ‖ key, info
 /// "threadbear secret v1 <approvalId>") makes a 32-byte key, and
 /// AES-256-GCM seals the UTF-8 value with a random 12-byte nonce. The
@@ -87,7 +87,7 @@ public protocol RunnerKeyStore: Sendable {
     func saveRunner(_ runnerId: String, forThread threadId: String)
 }
 
-/// Which runner keys a secret may be sealed to (docs/protocol.md,
+/// Which runner keys a secret may be sealed to (docs/protocol/threads.md,
 /// "Trusting the key"). Everything on a secret card (the thread's runner
 /// id and the key) comes from the Convex mirror, which anyone holding the
 /// shared runner key can write. So trust has to come from outside it:

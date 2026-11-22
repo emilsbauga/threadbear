@@ -32,9 +32,21 @@ pub(crate) fn bind_keys(cx: &mut App) {
     let mac = cfg!(target_os = "macos");
     BOUND.call_once(|| {
         cx.bind_keys([
-            KeyBinding::new(if mac { "cmd-f" } else { "ctrl-f" }, gpui_kit::component::input::Search, Some(CONTEXT)),
-            KeyBinding::new(if mac { "cmd-g" } else { "ctrl-g" }, FindNext, Some(CONTEXT)),
-            KeyBinding::new(if mac { "cmd-shift-g" } else { "ctrl-shift-g" }, FindPrevious, Some(CONTEXT)),
+            KeyBinding::new(
+                if mac { "cmd-f" } else { "ctrl-f" },
+                gpui_kit::component::input::Search,
+                Some(CONTEXT),
+            ),
+            KeyBinding::new(
+                if mac { "cmd-g" } else { "ctrl-g" },
+                FindNext,
+                Some(CONTEXT),
+            ),
+            KeyBinding::new(
+                if mac { "cmd-shift-g" } else { "ctrl-shift-g" },
+                FindPrevious,
+                Some(CONTEXT),
+            ),
         ]);
     });
 }
@@ -64,7 +76,10 @@ fn target(open: &OpenFile) -> Option<Target> {
         return Some(Target::Editor(editor));
     }
     match &open.body {
-        FileBody::Text { editor: Some(editor), .. } => Some(Target::Editor(editor.clone())),
+        FileBody::Text {
+            editor: Some(editor),
+            ..
+        } => Some(Target::Editor(editor.clone())),
         FileBody::Markdown { doc, .. } => Some(Target::Page(doc.clone())),
         _ => None,
     }
@@ -79,23 +94,40 @@ fn editor_count(editor: &Entity<EditorState>, cx: &App) -> (Option<usize>, usize
 impl SidePane {
     /// ⌘F: the bar over the file, its words picked to type over, or put in
     /// front again if it's up.
-    pub(crate) fn open_find(&mut self, thread_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(open) = self.files.open.get(thread_id) else { return };
+    pub(crate) fn open_find(
+        &mut self,
+        thread_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.files.open.get(thread_id) else {
+            return;
+        };
         if target(open).is_none() {
             return;
         }
         if open.find.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx));
             let id = thread_id.to_owned();
-            let sub = cx.subscribe_in(&input, window, move |this, _, ev: &InputEvent, _, cx| match ev {
-                InputEvent::Change => this.find_changed(&id, cx),
-                InputEvent::PressEnter { shift, .. } => this.find_step(&id, *shift, cx),
-                _ => {}
-            });
+            let sub =
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, _, ev: &InputEvent, _, cx| match ev {
+                        InputEvent::Change => this.find_changed(&id, cx),
+                        InputEvent::PressEnter { shift, .. } => this.find_step(&id, *shift, cx),
+                        _ => {}
+                    },
+                );
             let query = self.files.last_query.clone();
             input.update(cx, |s, cx| s.set_value(query, window, cx));
             if let Some(open) = self.files.open.get_mut(thread_id) {
-                open.find = Some(FindBar { input, finder: Finder::default(), searched: None, _subs: vec![sub] });
+                open.find = Some(FindBar {
+                    input,
+                    finder: Finder::default(),
+                    searched: None,
+                    _subs: vec![sub],
+                });
             }
             self.find_changed(thread_id, cx);
         }
@@ -111,9 +143,13 @@ impl SidePane {
 
     /// The words changed: find them again, from the match picked.
     pub(crate) fn find_changed(&mut self, thread_id: &str, cx: &mut Context<Self>) {
-        let Some(open) = self.files.open.get_mut(thread_id) else { return };
+        let Some(open) = self.files.open.get_mut(thread_id) else {
+            return;
+        };
         let Some(target) = target(open) else { return };
-        let Some(bar) = open.find.as_mut() else { return };
+        let Some(bar) = open.find.as_mut() else {
+            return;
+        };
         let query = bar.input.read(cx).value().to_string();
         self.files.last_query = query.clone();
         match target {
@@ -138,9 +174,13 @@ impl SidePane {
 
     /// Return, ⌘G, ›; with `back`, Shift-Return, ⇧⌘G, ‹.
     pub(crate) fn find_step(&mut self, thread_id: &str, back: bool, cx: &mut Context<Self>) {
-        let Some(open) = self.files.open.get_mut(thread_id) else { return };
+        let Some(open) = self.files.open.get_mut(thread_id) else {
+            return;
+        };
         let Some(target) = target(open) else { return };
-        let Some(bar) = open.find.as_mut() else { return };
+        let Some(bar) = open.find.as_mut() else {
+            return;
+        };
         match target {
             Target::Editor(editor) => editor.update(cx, |s, cx| {
                 if back {
@@ -151,9 +191,9 @@ impl SidePane {
             }),
             Target::Page(doc) => {
                 if back {
-                    bar.finder.previous();
+                    bar.finder.previous_match();
                 } else {
-                    bar.finder.next();
+                    bar.finder.next_match();
                 }
                 let finder = bar.finder.clone();
                 mark_page(&doc, &finder, cx);
@@ -164,8 +204,18 @@ impl SidePane {
 
     /// ⌘G or ⇧⌘G with the bar down finds the last words again, as AppKit's
     /// do from the find pasteboard, putting the bar up to say where.
-    pub(crate) fn find_again(&mut self, thread_id: &str, back: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let up = self.files.open.get(thread_id).is_some_and(|o| o.find.is_some());
+    pub(crate) fn find_again(
+        &mut self,
+        thread_id: &str,
+        back: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let up = self
+            .files
+            .open
+            .get(thread_id)
+            .is_some_and(|o| o.find.is_some());
         if !up {
             if self.files.last_query.is_empty() {
                 return;
@@ -177,8 +227,15 @@ impl SidePane {
 
     /// Done or Escape: the bar goes, its marks with it, and the text has the
     /// keys again.
-    pub(crate) fn close_find(&mut self, thread_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(open) = self.files.open.get_mut(thread_id) else { return };
+    pub(crate) fn close_find(
+        &mut self,
+        thread_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.files.open.get_mut(thread_id) else {
+            return;
+        };
         let searched = target(open);
         if open.find.take().is_none() {
             return;
@@ -205,9 +262,15 @@ impl SidePane {
     /// The drawn page changed under the bar (its parse landed, the file was
     /// read again): the same words found in what it says now.
     pub(crate) fn page_changed(&mut self, thread_id: &str, cx: &mut Context<Self>) {
-        let Some(open) = self.files.open.get_mut(thread_id) else { return };
-        let Some(Target::Page(doc)) = target(open) else { return };
-        let Some(bar) = open.find.as_mut() else { return };
+        let Some(open) = self.files.open.get_mut(thread_id) else {
+            return;
+        };
+        let Some(Target::Page(doc)) = target(open) else {
+            return;
+        };
+        let Some(bar) = open.find.as_mut() else {
+            return;
+        };
         let rendered = doc.read(cx).rendered_text();
         if bar.searched.as_ref() == Some(&rendered) {
             return;
@@ -237,13 +300,22 @@ impl SidePane {
 
     /// `dump`'s `previewFind`: "the: 2 of 8", "the: not found", while the bar is up.
     pub(crate) fn find_line(&self, thread_id: &str, cx: &App) -> Option<String> {
-        self.find_state(thread_id, cx).map(|(query, current, total)| core_find::dump_line(&query, current, total))
+        self.find_state(thread_id, cx)
+            .map(|(query, current, total)| core_find::dump_line(&query, current, total))
     }
 
     /// The scripted `find`: the bar up with `query` typed in it.
-    pub(crate) fn find_typed(&mut self, thread_id: &str, query: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn find_typed(
+        &mut self,
+        thread_id: &str,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_find(thread_id, window, cx);
-        let Some(bar) = self.files.open.get(thread_id).and_then(|o| o.find.as_ref()) else { return };
+        let Some(bar) = self.files.open.get(thread_id).and_then(|o| o.find.as_ref()) else {
+            return;
+        };
         let input = bar.input.clone();
         // Setting the value says nothing to the subscription, as typing does.
         input.update(cx, |s, cx| s.set_value(query.to_owned(), window, cx));
@@ -253,7 +325,11 @@ impl SidePane {
     /// The bar, over the text (`NSTextFinder`'s, measured on the Swift app's
     /// pictures): a 30 point strip with a hairline under it, the field taking
     /// the room, then ‹ › and Done.
-    pub(crate) fn render_find_bar(&self, thread_id: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_find_bar(
+        &self,
+        thread_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let bar = self.files.open.get(thread_id)?.find.as_ref()?;
         let p = palette(cx);
         let input = bar.input.clone();
@@ -272,34 +348,77 @@ impl SidePane {
             .rounded_full()
             .bg(field_fill)
             .child(icon("magnifyingglass", 12., p.secondary).flex_none())
-            .child(div().flex_1().min_w_0().child(Input::new(&input).appearance(false).small().cleanable(true).pl(px(0.)).text_size(px(style::size::LABEL))))
-            .when(!count.is_empty(), |s| s.child(div().flex_none().text_size(px(style::size::SMALL)).text_color(p.secondary).child(count)));
-        let (back_id, next_id, done_id) = (id.clone(), id.clone(), id.clone());
-        let step = |this_id: &'static str, symbol: &'static str, tip: &'static str, back: bool, thread: String, cx: &mut Context<Self>| {
-            let hover = p.hover;
-            tipped(
-                div()
-                    .id(this_id)
-                    .w(px(16.))
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(has_matches, |s| s.cursor_pointer().hover(move |s| s.bg(hover)))
-                    .child(icon(symbol, 12., if has_matches { p.fg } else { p.faint })),
-                tip,
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&input)
+                        .appearance(false)
+                        .small()
+                        .cleanable(true)
+                        .pl(px(0.))
+                        .text_size(px(style::size::LABEL)),
+                ),
             )
-            .when(has_matches, |s| s.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.find_step(&thread, back, cx))))
-        };
+            .when(!count.is_empty(), |s| {
+                s.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(style::size::SMALL))
+                        .text_color(p.secondary)
+                        .child(count),
+                )
+            });
+        let (back_id, next_id, done_id) = (id.clone(), id.clone(), id.clone());
+        let step =
+            |this_id: &'static str,
+             symbol: &'static str,
+             tip: &'static str,
+             back: bool,
+             thread: String,
+             cx: &mut Context<Self>| {
+                let hover = p.hover;
+                tipped(
+                    div()
+                        .id(this_id)
+                        .w(px(16.))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(has_matches, |s| {
+                            s.cursor_pointer().hover(move |s| s.bg(hover))
+                        })
+                        .child(icon(symbol, 12., if has_matches { p.fg } else { p.faint })),
+                    tip,
+                )
+                .when(has_matches, |s| {
+                    s.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.find_step(&thread, back, cx)
+                    }))
+                })
+            };
         let steps = h_flex()
             .flex_none()
             .h(px(21.))
             .rounded(px(6.))
             .overflow_hidden()
             .bg(field_fill)
-            .child(step("find-previous", "chevron.left", "Find the match before (⇧⌘G)", true, back_id, cx))
+            .child(step(
+                "find-previous",
+                "chevron.left",
+                "Find the match before (⇧⌘G)",
+                true,
+                back_id,
+                cx,
+            ))
             .child(div().w(gpui_kit::px(1.)).h(px(12.)).bg(p.hairline))
-            .child(step("find-next", "chevron.right", "Find the match after (⌘G)", false, next_id, cx));
+            .child(step(
+                "find-next",
+                "chevron.right",
+                "Find the match after (⌘G)",
+                false,
+                next_id,
+                cx,
+            ));
         let done = tipped(
             div()
                 .id("find-done")
@@ -317,8 +436,10 @@ impl SidePane {
                 .child("Done"),
             "Close the find bar (Escape)",
         )
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_find(&done_id, window, cx)));
-        let escape_id = id.clone();
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            this.close_find(&done_id, window, cx)
+        }));
+        let escape_id = id;
         Some(
             h_flex()
                 .id("find-bar")
@@ -350,9 +471,25 @@ impl SidePane {
 /// that one scrolled to: the code editor's look for its own matches.
 fn mark_page(doc: &Entity<TextViewState>, finder: &Finder, cx: &mut App) {
     let selection = cx.theme().selection;
-    let faint = Hsla { s: 0.1, ..selection };
+    let faint = Hsla {
+        s: 0.1,
+        ..selection
+    };
     let current = finder.current_range();
-    let marks: Vec<RangeHighlight> = finder.matches.iter().map(|m| RangeHighlight::new(m.clone(), if Some(m) == current.as_ref() { selection } else { faint })).collect();
+    let marks: Vec<RangeHighlight> = finder
+        .matches
+        .iter()
+        .map(|m| {
+            RangeHighlight::new(
+                m.clone(),
+                if Some(m) == current.as_ref() {
+                    selection
+                } else {
+                    faint
+                },
+            )
+        })
+        .collect();
     doc.update(cx, |s, cx| {
         if marks.is_empty() {
             s.clear_range_highlights(cx);

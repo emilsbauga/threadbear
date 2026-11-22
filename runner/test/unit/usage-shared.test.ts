@@ -1,5 +1,5 @@
-// Readings other runners took of the same login (docs/protocol.md,
-// "Accounts", "Shared readings"): a subscription is one limit wherever it's
+// Readings other runners took of the same login (docs/protocol/settings.md,
+// "Shared readings"): a subscription is one limit wherever it's
 // signed in, so the newest reading from any machine counts, window by
 // window, as with Token Stats and the runner's own turns.
 import { test } from 'node:test';

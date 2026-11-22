@@ -1,5 +1,5 @@
 // Pictures sent to another runner's thread from the main Mac (backend API
-// 63; docs/protocol.md, "Other runners' threads through the backend"). Mike
+// 63; docs/protocol/runners.md, "Other runners' threads through the backend"). Mike
 // pasted a picture into a new thread on Hetzner Cloud on 8 Nov and the app
 // said "Pictures can't go to Hetzner Cloud from this Mac yet." The main Mac's
 // runner now uploads each one (the owner's upload URL) and names it in the

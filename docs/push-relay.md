@@ -40,8 +40,11 @@ each person's own Mac and their own Convex deployment.
 2. When a thread needs Mike, `convex/push.ts` seals `{title, body}` with that
    phone's key (AES-256-GCM: nonce, ciphertext, tag, base64) and posts it to
    the relay's `/send` with the backend's install id and key (registered once
-   through `/register` and kept in the `relayInstall` table; see
-   "Registering" below).
+   through `/register` and kept in the `relayRegistrations` table; see
+   "Registering" below). Each registration gives the install a new key and
+   kills the old one, so one send registers at a time and the others wait
+   for its key; a send whose key the relay refuses (401) registers again and
+   sends that push once more (`convex/relayInstallMachine.ts`).
 3. The relay sends Apple a stand-in ("Threadbear: A thread needs you") with
    `mutable-content` and the sealed text in `e`.
 4. The app's notification extension (`ios/NotificationService`) opens `e`
@@ -219,7 +222,7 @@ hosts (self-hosted, a custom domain) can't use this relay: run your own
 - A backend hears when its pushes stop getting through: each send's
   outcome goes in its `pushHealth` row (`convex/pushHealth.ts`), and the
   owner runner's heartbeat carries `pushFailing` to `tb status` and a
-  notice in the app (docs/protocol.md, "Sync").
+  notice in the app (docs/protocol/moves.md, "Sync").
 - Deploy: `npm ci` then `npx convex deploy` in `relay/`, signed in to the
   Convex CLI as Mike (it isn't part of the runner's backend deploy, which
   is for each person's own deployment).

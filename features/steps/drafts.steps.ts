@@ -185,3 +185,24 @@ Then('my message says {string} then my Slack draft {string}', async function (th
 Then('the transcript shows my message {string} and nothing after it', async function (this: ThreadbearWorld, words: string) {
   await this.until(`my message "${words}" alone`, (d) => lastMine(d)?.text === words);
 });
+
+Then('the box shows the draft chip {string}', async function (this: ThreadbearWorld, chip: string) {
+  await this.until(`the draft chip "${chip}" over the box`, (d) => JSON.stringify(d.composer.drafts ?? []) === JSON.stringify([chip]));
+});
+
+Then('the box shows no draft chips', async function (this: ThreadbearWorld) {
+  await this.until('no draft chips over the box', (d) => !(d.composer.drafts ?? []).length);
+});
+
+Then('my message shows {string} with the draft chip {string}', async function (this: ThreadbearWorld, words: string, chip: string) {
+  let seen: unknown;
+  try {
+    await this.until(`my message "${words}" with the chip "${chip}"`, (d) => {
+      seen = lastMine(d)?.editedDrafts;
+      const edited = lastMine(d)?.editedDrafts;
+      return edited?.words === words && JSON.stringify(edited.chips) === JSON.stringify([chip]);
+    });
+  } catch (error) {
+    assert.fail(`${(error as Error).message.split('\n')[0]}; my last message showed ${JSON.stringify(seen)}`);
+  }
+});

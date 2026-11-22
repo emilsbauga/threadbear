@@ -24,7 +24,7 @@ use gpui::{
 };
 
 use crate::{
-    GlobalState, TextSelection,
+    GlobalState, TextSelection, global_state::LinkRelease,
     async_util::Sender,
     input::Selection,
     text::TextViewMultiClickKind,
@@ -1111,9 +1111,9 @@ impl Inline {
 
 impl Inline {
     /// Paints the sheen of a link that was just pressed over its words, and
-    /// asks for the next frame until it has crossed (`link_glint`).
+    /// asks for the next frame until it has rippled off (`link_glint`).
     fn paint_link_glint(&self, text_layout: &TextLayout, window: &mut Window, cx: &mut App) {
-        let Some((range, t)) = super::link_glint::playing(&self.state, cx) else {
+        let Some((range, pressed, t)) = super::link_glint::playing(&self.state, cx) else {
             return;
         };
         if range.end > self.text.len() {
@@ -1134,7 +1134,8 @@ impl Inline {
         let runs = text_runs(self.text.len(), &text_style, &self.highlights);
         let origin = text_layout.bounds().origin;
         let line_height = text_layout.line_height();
-        let (whole, strips) = super::link_glint::frame(t, width);
+        let at = super::link_glint::along(&rows, origin, line_height, pressed);
+        let (whole, strips) = super::link_glint::frame(t, width, at);
 
         // Each row of the link, with its own words shaped again lighter.
         let mut along = Pixels::ZERO;
@@ -1518,6 +1519,39 @@ impl Element for Inline {
         }
 
         if !self.links.is_empty() {
+            // Threadbear's: every left press starts by forgetting the last
+            // press on a link, and a press that moves past the slop is a
+            // drag for good (`GlobalState::link_press_moved`). Capture
+            // phase, the whole window: before the press is noted below, and
+            // wherever the pointer has gone. Every link's text listens, so
+            // these leave the global alone unless something changes.
+            window.on_mouse_event(|event: &MouseDownEvent, phase, _, cx| {
+                if phase.capture() && event.button == MouseButton::Left {
+                    GlobalState::forget_link_press(cx);
+                }
+            });
+            window.on_mouse_event(|event: &MouseMoveEvent, phase, _, cx| {
+                if phase.capture() && event.pressed_button == Some(MouseButton::Left) {
+                    GlobalState::link_press_moved(event.position, LINK_CLICK_SLOP, cx);
+                }
+            });
+            // Its release ends the press: forgotten once the release has
+            // been handled (deferred, so the link's own handler below sees
+            // it first), wherever it was let go (Gemini's review). A left
+            // press let go with Control held comes back as the right
+            // button's release. Not the app's hover probe (another button),
+            // and only with a press to forget.
+            window.on_mouse_event(|event: &MouseUpEvent, phase, _, cx| {
+                if phase.capture()
+                    && matches!(event.button, MouseButton::Left | MouseButton::Right)
+                    && GlobalState::has_link_press(cx)
+                {
+                    cx.defer(GlobalState::forget_link_press);
+                }
+            });
+        }
+
+        if !self.links.is_empty() {
             // Threadbear's: a plain left press on a link says which link it
             // went down on, for a handler further out that may drag the link
             // out (`GlobalState::take_pressed_link`). Bubble phase, so it's
@@ -1539,20 +1573,29 @@ impl Element for Inline {
                     if let Some(link) =
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
+                        // A Shift press extends a selection: never a click.
+                        if event.modifiers.shift {
+                            GlobalState::note_link_press_not_a_click(cx);
+                        } else {
+                            GlobalState::note_link_press(link.url.clone(), event.position, cx);
+                        }
                         GlobalState::note_pressed_link(link.url, cx);
                     }
                     if let Some(range) =
                         Self::link_range_for_position(&text_layout, &links, event.position)
                     {
-                        super::link_glint::start(&glint_state, range, cx);
+                        super::link_glint::start(&glint_state, range, event.position, cx);
                         cx.notify(current_view);
                     }
                 }
             });
         }
 
-        if !is_selection {
-            // click to open link
+        // Click to open a link. Listened for even with words selected here:
+        // a press on a link that slipped a point or two starts selecting
+        // (and has this text drawn again with it), and the release that ends
+        // it is still the link's click (`LINK_CLICK_SLOP`).
+        if !self.links.is_empty() {
             window.on_mouse_event({
                 let links = self.links.clone();
                 let text_layout = text_layout.clone();
@@ -1566,30 +1609,50 @@ impl Element for Inline {
                     if !phase.bubble() || !hitbox.is_hovered(window) || cx.has_active_drag() {
                         return;
                     }
-                    if text_view_state
-                        .as_ref()
-                        .is_some_and(|state| state.read(cx).has_selection(cx))
+                    let Some(link) =
+                        Self::link_for_position(&text_layout, &links, event.position)
+                    else {
+                        return;
+                    };
+                    // Threadbear's: let go on the link it went down on, near
+                    // where it went down, it's a click, whatever the slip
+                    // selected on the way. A hand's press often moves a
+                    // point, and that was taken for selecting, so a link took
+                    // two or three clicks to open (Mike, 20 Nov 2026).
+                    // A drag that came back to where it went down, or a Shift
+                    // press there, can leave nothing selected: it still isn't
+                    // a click (Codex's review).
+                    let release = if event.button == MouseButton::Left {
+                        GlobalState::link_release(&link.url, event.position, LINK_CLICK_SLOP, cx)
+                    } else {
+                        LinkRelease::Unknown
+                    };
+                    let clicked = release == LinkRelease::Click;
+                    if release == LinkRelease::NotAClick
+                        || (!clicked
+                            && text_view_state
+                                .as_ref()
+                                .is_some_and(|state| state.read(cx).has_selection(cx)))
                     {
                         return;
                     }
-
-                    if let Some(link) =
-                        Self::link_for_position(&text_layout, &links, event.position)
-                    {
+                    if clicked {
+                        TextSelection::clear(window, cx);
+                    } else {
                         TextSelection::end(window, cx);
-                        cx.stop_propagation();
-                        let click = ClickEvent::Mouse(MouseClickEvent {
-                            down: MouseDownEvent {
-                                button: event.button,
-                                position: event.position,
-                                modifiers: event.modifiers,
-                                click_count: event.click_count,
-                                first_mouse: false,
-                            },
-                            up: event.clone(),
-                        });
-                        handle_link_click(&link_click_handler, link.url, click, window, cx);
                     }
+                    cx.stop_propagation();
+                    let click = ClickEvent::Mouse(MouseClickEvent {
+                        down: MouseDownEvent {
+                            button: event.button,
+                            position: event.position,
+                            modifiers: event.modifiers,
+                            click_count: event.click_count,
+                            first_mouse: false,
+                        },
+                        up: event.clone(),
+                    });
+                    handle_link_click(&link_click_handler, link.url, click, window, cx);
                 }
             });
         }
@@ -1598,6 +1661,11 @@ impl Element for Inline {
         self.retain_styled_text(cx);
     }
 }
+
+/// How far a press on a link can slip before its release isn't the link's
+/// click: a hand's press often moves a point or two. A file link becomes a
+/// drag past about the same (`DRAG_AFTER` in Threadbear's reply_links.rs).
+const LINK_CLICK_SLOP: f64 = 4.;
 
 /// Where one glyph of laid-out text paints: its row, and its horizontal
 /// extent past the text's origin, alignment applied. `text` is the byte range

@@ -33,7 +33,9 @@ use crate::style::px;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use threadbear_core::open_anything::{self as rules, Catalog, Group, Item, Kind, Page, PageEntry, Target};
+use threadbear_core::open_anything::{
+    self as rules, Catalog, Group, Item, Kind, Page, PageEntry, Target,
+};
 use threadbear_core::shortcuts::ShortcutCommand;
 use threadbear_dock::{DockDrop, DockEdge};
 
@@ -78,7 +80,13 @@ pub(crate) struct AnythingBox {
 }
 
 impl AnythingBox {
-    fn new(app: &Entity<Threadbear>, catalog: Catalog, recent: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        app: &Entity<Threadbear>,
+        catalog: Catalog,
+        recent: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(rules::PROMPT));
         let typing = cx.subscribe(&input, |this, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
@@ -122,7 +130,9 @@ impl AnythingBox {
     fn search(&mut self, cx: &mut Context<Self>) {
         let query = self.query(cx);
         let (catalog, recent, words) = (self.catalog.clone(), self.recent.clone(), query.clone());
-        let working = cx.background_executor().spawn(async move { catalog.groups(&words, &recent) });
+        let working = cx
+            .background_executor()
+            .spawn(async move { catalog.groups(&words, &recent) });
         // Replacing the task drops the one before, and its search with it.
         self.searching = Some(cx.spawn(async move |this, cx| {
             let groups = working.await;
@@ -171,7 +181,9 @@ impl AnythingBox {
             cx.background_executor().timer(REBUILD_EVERY).await;
             let _ = this.update(cx, |this, cx| {
                 this.rebuilding = None;
-                let Some(app) = this.app.upgrade() else { return };
+                let Some(app) = this.app.upgrade() else {
+                    return;
+                };
                 this.catalog = Arc::new(app.read(cx).anything_catalog());
                 this.search(cx);
             });
@@ -233,8 +245,15 @@ impl Threadbear {
     }
 
     /// Down, and the keyboard back where it was if nothing was opened.
-    pub(crate) fn close_open_anything(&mut self, give_back: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(open) = self.anything.take() else { return };
+    pub(crate) fn close_open_anything(
+        &mut self,
+        give_back: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.anything.take() else {
+            return;
+        };
         if give_back {
             if let Some(before) = open.before {
                 window.focus(&before, cx);
@@ -246,16 +265,40 @@ impl Threadbear {
 
     /// The app's pages as it has them now, each with its key.
     fn anything_pages(&self) -> Vec<PageEntry> {
-        let entry = |page: Page, title: &str, key: Option<ShortcutCommand>| PageEntry { page, title: title.to_owned(), shortcut: key.and_then(|k| self.shortcut_display(k)) };
-        let mut pages = vec![entry(Page::Inbox, "Inbox", Some(ShortcutCommand::ShowInbox))];
+        let entry = |page: Page, title: &str, key: Option<ShortcutCommand>| PageEntry {
+            page,
+            title: title.to_owned(),
+            shortcut: key.and_then(|k| self.shortcut_display(k)),
+        };
+        let mut pages = vec![entry(
+            Page::Inbox,
+            "Inbox",
+            Some(ShortcutCommand::ShowInbox),
+        )];
         if self.schedules_supported {
-            pages.push(entry(Page::Scheduled, "Scheduled", Some(ShortcutCommand::ShowScheduled)));
+            pages.push(entry(
+                Page::Scheduled,
+                "Scheduled",
+                Some(ShortcutCommand::ShowScheduled),
+            ));
         }
         if self.projects_supported {
-            pages.push(entry(Page::Projects, "Projects", Some(ShortcutCommand::ShowProjects)));
-            pages.push(entry(Page::Librarian, "Librarian", Some(ShortcutCommand::ShowLibrarian)));
+            pages.push(entry(
+                Page::Projects,
+                "Projects",
+                Some(ShortcutCommand::ShowProjects),
+            ));
+            pages.push(entry(
+                Page::Librarian,
+                "Librarian",
+                Some(ShortcutCommand::ShowLibrarian),
+            ));
         }
-        pages.push(entry(Page::Settings(None), "Settings", Some(ShortcutCommand::Settings)));
+        pages.push(entry(
+            Page::Settings(None),
+            "Settings",
+            Some(ShortcutCommand::Settings),
+        ));
         pages.push(entry(Page::Usage, "Usage", None));
         pages.push(entry(Page::Updates, "Updates", None));
         if self.connectors_on() {
@@ -268,14 +311,29 @@ impl Threadbear {
     }
 
     fn anything_catalog(&self) -> Catalog {
-        let tabs: Vec<(String, String)> = crate::settings_window::Tab::ALL.iter().map(|t| (t.name().to_owned(), t.title().to_owned())).collect();
-        Catalog::new(self.threads.values().map(|t| &**t), &self.projects.list, self.anything_pages(), &tabs, &threadbear_core::sidebar::local_now())
+        let tabs: Vec<(String, String)> = crate::settings_window::Tab::ALL
+            .iter()
+            .map(|t| (t.name().to_owned(), t.title().to_owned()))
+            .collect();
+        Catalog::new(
+            self.threads.values().map(|t| &**t),
+            &self.projects.list,
+            self.anything_pages(),
+            &tabs,
+            &threadbear_core::sidebar::local_now(),
+        )
     }
 
     /// Something picked: the box goes and the thing opens, straight away.
     /// Beside is a thread in a panel of its own, or a panel next to the main
     /// one; for anything else it's the same as Return.
-    pub(crate) fn open_anything_item(&mut self, item: Item, beside: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_anything_item(
+        &mut self,
+        item: Item,
+        beside: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_open_anything(false, window, cx);
         let key = item.kept_key().to_owned();
         self.note_recent(key.clone(), cx);
@@ -287,7 +345,13 @@ impl Threadbear {
             Kind::Project => "a project",
             Kind::App => "a page",
         };
-        crate::activity::menu_chosen(Some(format!("Open Anything > {kind}{}", if beside { " beside" } else { "" })), self.selected.clone());
+        crate::activity::menu_chosen(
+            Some(format!(
+                "Open Anything > {kind}{}",
+                if beside { " beside" } else { "" }
+            )),
+            self.selected.clone(),
+        );
         match item.target {
             Target::Thread(id) if beside => self.open_thread_in_panel(id, cx),
             Target::Thread(id) => {
@@ -296,7 +360,11 @@ impl Threadbear {
             }
             Target::Project(id) => self.open_project_page(&id, cx),
             Target::Page(page) => self.open_anything_page(page, window, cx),
-            Target::Panel { id, thread, project } => self.open_anything_panel(&key, &id, thread, project, beside, window, cx),
+            Target::Panel {
+                id,
+                thread,
+                project,
+            } => self.open_anything_panel(&key, &id, thread, project, beside, window, cx),
         }
         cx.notify();
     }
@@ -308,7 +376,11 @@ impl Threadbear {
             Page::Projects => Command::ShowProjects,
             Page::Librarian => Command::ShowLibrarian,
             Page::Settings(tab) => {
-                self.open_settings(tab.as_deref().and_then(crate::settings_window::Tab::from_name), cx);
+                self.open_settings(
+                    tab.as_deref()
+                        .and_then(crate::settings_window::Tab::from_name),
+                    cx,
+                );
                 return;
             }
             Page::Usage => return self.show_activity_panel(shell::USAGE, cx),
@@ -324,7 +396,9 @@ impl Threadbear {
     /// click on the button would).
     fn show_activity_panel(&mut self, panel: &str, cx: &mut Context<Self>) {
         if self.dock.read(cx).layout().contains(panel) {
-            self.dock.update(cx, |m, cx| m.show(panel, &[], DockDrop::window(DockEdge::Left), cx));
+            self.dock.update(cx, |m, cx| {
+                m.show(panel, &[], DockDrop::window(DockEdge::Left), cx)
+            });
         } else {
             self.toggle_under_threads(panel, cx);
         }
@@ -334,9 +408,27 @@ impl Threadbear {
     /// page) has it from that place; otherwise on the project's page if its
     /// folder is in a project, which has its folders' panels on the rail,
     /// else on the newest thread that has it.
-    #[allow(clippy::too_many_arguments)]
-    fn open_anything_panel(&mut self, key: &str, id: &str, thread: String, project: Option<String>, beside: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let here = |this: &Self| this.pane_thread().is_some_and(|t| t.panels().iter().any(|p| p.id == id && rules::panel_key(p, &t) == key));
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+    )]
+    fn open_anything_panel(
+        &mut self,
+        key: &str,
+        id: &str,
+        thread: String,
+        project: Option<String>,
+        beside: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let here = |this: &Self| {
+            this.pane_thread().is_some_and(|t| {
+                t.panels()
+                    .iter()
+                    .any(|p| p.id == id && rules::panel_key(p, &t) == key)
+            })
+        };
         if !here(self) {
             if let Some(project) = project.filter(|p| self.project(p).is_some()) {
                 self.open_project_page(&project, cx);
@@ -355,7 +447,9 @@ impl Threadbear {
             };
             self.dock.update(cx, |m, cx| m.open(id, drop, cx));
         } else if shown {
-            self.dock.update(cx, |m, cx| m.show(id, &[], DockDrop::window(DockEdge::Right), cx));
+            self.dock.update(cx, |m, cx| {
+                m.show(id, &[], DockDrop::window(DockEdge::Right), cx)
+            });
         } else {
             // Where its rail button puts it. A page still loading shows its
             // own spinner there.
@@ -375,12 +469,20 @@ impl Threadbear {
 
     /// A patch panel that's come into sight (its rail button, an agent's
     /// show_panel, the box) goes in Recent too.
-    pub(crate) fn note_panels_shown(&mut self, layout: &threadbear_dock::DockLayout, cx: &mut Context<Self>) {
+    pub(crate) fn note_panels_shown(
+        &mut self,
+        layout: &threadbear_dock::DockLayout,
+        cx: &mut Context<Self>,
+    ) {
         let Some(thread) = self.pane_thread() else {
             self.anything_panels_shown.clear();
             return;
         };
-        let showing: std::collections::HashSet<String> = layout.panels().into_iter().filter(|p| Self::is_pane_section(p)).collect();
+        let showing: std::collections::HashSet<String> = layout
+            .panels()
+            .into_iter()
+            .filter(|p| Self::is_pane_section(p))
+            .collect();
         for panel in thread.panels() {
             if showing.contains(&panel.id) && !self.anything_panels_shown.contains(&panel.id) {
                 self.note_recent(rules::panel_key(&panel, &thread), cx);
@@ -392,17 +494,27 @@ impl Threadbear {
     /// The box over the window, or None while it's down: the box's own view,
     /// which draws itself.
     pub(crate) fn render_open_anything(&mut self) -> Option<AnyElement> {
-        self.anything.as_ref().map(|open| open.view.clone().into_any_element())
+        self.anything
+            .as_ref()
+            .map(|open| open.view.clone().into_any_element())
     }
 }
 
 impl Render for AnythingBox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (input, scroll, catalog, groups) = (self.input.clone(), self.scroll.clone(), self.catalog.clone(), self.groups.clone());
+        let (input, scroll, catalog, groups) = (
+            self.input.clone(),
+            self.scroll.clone(),
+            self.catalog.clone(),
+            self.groups.clone(),
+        );
         let picked = rules::picked(&groups, self.selected.as_deref()).map(|i| i.key.clone());
         let viewport = window.viewport_size();
         let zoom = style::zoomed(1.);
-        let (window_w, window_h) = (f32::from(viewport.width) / zoom, f32::from(viewport.height) / zoom);
+        let (window_w, window_h) = (
+            f32::from(viewport.width) / zoom,
+            f32::from(viewport.height) / zoom,
+        );
         let width = WIDTH.min(window_w - 48.).max(280.);
         let top = (window_h * TOP_SHARE).clamp(24., 140.);
         // The list scrolls past what fits above the window's bottom edge.
@@ -411,7 +523,11 @@ impl Render for AnythingBox {
         // Spelled out, as the picture viewer's backdrop is: `black().opacity()`
         // came out clear here.
         let dim = gpui_kit::hsla(0., 0., 0., if cx.theme().is_dark() { 0.45 } else { 0.18 });
-        let fill = if cx.theme().is_dark() { style::over_background(style::primary_opacity(cx, 0.06), cx) } else { cx.theme().background };
+        let fill = if cx.theme().is_dark() {
+            style::over_background(style::primary_opacity(cx, 0.06), cx)
+        } else {
+            cx.theme().background
+        };
 
         let query_row = div()
             .id("anything-query")
@@ -437,7 +553,12 @@ impl Render for AnythingBox {
                 this.close(window, cx);
                 cx.stop_propagation();
             }))
-            .child(Input::new(&input).appearance(false).pl(px(0.)).text_size(px(size::BODY + 1.)));
+            .child(
+                Input::new(&input)
+                    .appearance(false)
+                    .pl(px(0.))
+                    .text_size(px(size::BODY + 1.)),
+            );
 
         let list = self.render_list(&catalog, &groups, picked.as_deref(), &scroll, list_max, cx);
         let footer = h_flex()
@@ -471,52 +592,116 @@ impl Render for AnythingBox {
         // backdrop is: a bare absolute layer in a deferred element has
         // nothing to sit in, and its dim never showed.
         deferred(
-            anchored().position(point(gpui_kit::px(0.), gpui_kit::px(0.))).child(
-                div()
-                    .id("open-anything-dim")
-                    .relative()
-                    .w(viewport.width)
-                    .h(viewport.height)
-                    .bg(dim)
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.close(window, cx)))
-                    .child(div().absolute().top(px(top)).left_0().right_0().flex().justify_center().child(panel)),
-            ),
+            anchored()
+                .position(point(gpui_kit::px(0.), gpui_kit::px(0.)))
+                .child(
+                    div()
+                        .id("open-anything-dim")
+                        .relative()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(dim)
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| this.close(window, cx)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(top))
+                                .left_0()
+                                .right_0()
+                                .flex()
+                                .justify_center()
+                                .child(panel),
+                        ),
+                ),
         )
         .with_priority(3)
     }
 }
 
 impl AnythingBox {
-    fn render_list(&mut self, catalog: &Catalog, groups: &[Group], picked: Option<&str>, scroll: &ScrollHandle, max: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn render_list(
+        &mut self,
+        catalog: &Catalog,
+        groups: &[Group],
+        picked: Option<&str>,
+        scroll: &ScrollHandle,
+        max: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if groups.is_empty() {
-            return div().px(px(16.)).py(px(14.)).text_size(px(size::LABEL)).text_color(style::secondary_text(cx)).child("Nothing by that name. Try fewer letters.").into_any_element();
+            return div()
+                .px(px(16.))
+                .py(px(14.))
+                .text_size(px(size::LABEL))
+                .text_color(style::secondary_text(cx))
+                .child("Nothing by that name. Try fewer letters.")
+                .into_any_element();
         }
         // Headings and rows are the list's children in turn, so a row's place
         // among them is what the scroll handle goes to (`row_index`).
         let mut children: Vec<AnyElement> = Vec::new();
         for group in groups {
-            children.push(div().px(px(16.)).pt(px(10.)).pb(px(4.)).text_size(px(size::DETAIL)).font_weight(FontWeight::SEMIBOLD).text_color(style::secondary_text(cx)).child(group.title).into_any_element());
+            children.push(
+                div()
+                    .px(px(16.))
+                    .pt(px(10.))
+                    .pb(px(4.))
+                    .text_size(px(size::DETAIL))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(style::secondary_text(cx))
+                    .child(group.title)
+                    .into_any_element(),
+            );
             for item in &group.items {
                 let on = picked == Some(item.key.as_str());
                 children.push(self.render_row(catalog, item, on, cx));
             }
         }
-        div().id("anything-list").flex_none().max_h(px(max)).pb(px(6.)).overflow_y_scroll().track_scroll(scroll).children(children).into_any_element()
+        div()
+            .id("anything-list")
+            .flex_none()
+            .max_h(px(max))
+            .pb(px(6.))
+            .overflow_y_scroll()
+            .track_scroll(scroll)
+            .children(children)
+            .into_any_element()
     }
 
-    fn render_row(&mut self, catalog: &Catalog, item: &Item, on: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(
+        &mut self,
+        catalog: &Catalog,
+        item: &Item,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Grey, not the accent: Mike asked for a quiet pick.
-        let (selected_fill, hover) = (style::primary_opacity(cx, 0.09), style::primary_opacity(cx, 0.05));
+        let (selected_fill, hover) = (
+            style::primary_opacity(cx, 0.09),
+            style::primary_opacity(cx, 0.05),
+        );
         let secondary = style::secondary_text(cx);
         let icon = match (&item.target, catalog.panel_thread(item.kept_key())) {
-            (Target::Panel { id, .. }, Some(thread)) => match thread.panels().into_iter().find(|p| &p.id == id) {
-                Some(panel) => match self.app.upgrade() {
-                    Some(app) => crate::patch_icons::panel_face(&panel, thread, &app.read(cx).sidebar.project_icons, 12., 9., cx),
+            (Target::Panel { id, .. }, Some(thread)) => {
+                match thread.panels().into_iter().find(|p| &p.id == id) {
+                    Some(panel) => match self.app.upgrade() {
+                        Some(app) => crate::patch_icons::panel_face(
+                            &panel,
+                            thread,
+                            &app.read(cx).sidebar.project_icons,
+                            12.,
+                            9.,
+                            cx,
+                        ),
+                        None => crate::patch_icons::glyph(item.symbol, 12., Some(secondary)),
+                    },
                     None => crate::patch_icons::glyph(item.symbol, 12., Some(secondary)),
-                },
-                None => crate::patch_icons::glyph(item.symbol, 12., Some(secondary)),
-            },
+                }
+            }
             _ => crate::patch_icons::glyph(item.symbol, 12., Some(secondary)),
         };
         let tip: SharedString = row_tip(item).into();
@@ -525,7 +710,9 @@ impl AnythingBox {
         h_flex()
             .id(SharedString::from(format!("anything-row-{}", item.key)))
             .test_support()
-            .role(Role::ListItem).aria_selected(on).aria_label(tip.clone())
+            .role(Role::ListItem)
+            .aria_selected(on)
+            .aria_label(tip.clone())
             .h(px(ROW_HEIGHT + 4.))
             .px(px(16.))
             .gap(px(10.))
@@ -533,17 +720,60 @@ impl AnythingBox {
             .when(on, |s| s.bg(selected_fill))
             .when(!on, |s| s.hover(move |s| s.bg(hover)))
             .tip(tip)
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open(picked.clone(), false, window, cx)))
-            .child(div().flex_none().size(px(20.)).rounded(px(5.)).flex().items_center().justify_center().bg(style::primary_opacity(cx, 0.07)).child(icon))
-            .child(div().min_w_0().truncate().text_size(px(size::LABEL + 1.)).text_color(cx.theme().foreground).child(item.title.clone()))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.open(picked.clone(), false, window, cx)
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(20.))
+                    .rounded(px(5.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(style::primary_opacity(cx, 0.07))
+                    .child(icon),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(size::LABEL + 1.))
+                    .text_color(cx.theme().foreground)
+                    .child(item.title.clone()),
+            )
             .children(item.badge.map(|n| {
-                div().flex_none().px(px(6.)).h(px(17.)).flex().items_center().rounded_full().bg(style::primary_opacity(cx, 0.08)).text_size(px(size::SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(secondary).child(if n > 99 { "99+".to_owned() } else { n.to_string() })
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .h(px(17.))
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .bg(style::primary_opacity(cx, 0.08))
+                    .text_size(px(size::SMALL))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(secondary)
+                    .child(if n > 99 {
+                        "99+".to_owned()
+                    } else {
+                        n.to_string()
+                    })
             }))
             .child(div().flex_1().min_w(px(8.)))
-            .when(!detail.is_empty(), |s| s.child(div().flex_none().max_w(px(260.)).truncate().text_size(px(size::DETAIL)).text_color(secondary).child(detail)))
+            .when(!detail.is_empty(), |s| {
+                s.child(
+                    div()
+                        .flex_none()
+                        .max_w(px(260.))
+                        .truncate()
+                        .text_size(px(size::DETAIL))
+                        .text_color(secondary)
+                        .child(detail),
+                )
+            })
             .into_any_element()
     }
-
 }
 
 impl Threadbear {
@@ -551,7 +781,9 @@ impl Threadbear {
     /// entries as each line reads, and the pick.
     #[cfg(feature = "automation")]
     pub(crate) fn open_anything_dump(&self, cx: &App) -> Value {
-        let Some(open) = &self.anything else { return Value::Null };
+        let Some(open) = &self.anything else {
+            return Value::Null;
+        };
         // What the box is showing, so a spec waits for the search to come
         // back rather than reading matches worked out here.
         let b = open.view.read(cx);
@@ -559,7 +791,7 @@ impl Threadbear {
         json!({
             "query": b.query(cx),
             "matched": b.matched,
-            "groups": b.groups.iter().map(|g| json!({ "title": g.title, "items": g.items.iter().map(|i| line(i)).collect::<Vec<_>>() })).collect::<Vec<_>>(),
+            "groups": b.groups.iter().map(|g| json!({ "title": g.title, "items": g.items.iter().map(line).collect::<Vec<_>>() })).collect::<Vec<_>>(),
             "picked": picked.map(|i| i.title.clone()),
             "recent": self.anything_recent,
         })
@@ -583,7 +815,10 @@ fn line(item: &Item) -> String {
 fn row_tip(item: &Item) -> String {
     match item.kind {
         Kind::Thread => format!("Open {} (⌘Return: in a panel of its own)", item.title),
-        Kind::Panel => format!("Show the {} panel (⌘Return: beside this thread)", item.title),
+        Kind::Panel => format!(
+            "Show the {} panel (⌘Return: beside this thread)",
+            item.title
+        ),
         Kind::Project => format!("Open the {} project's page", item.title),
         Kind::App => format!("Go to {}", item.title),
     }
@@ -609,7 +844,17 @@ fn row_index(groups: &[Group], selected: Option<&str>) -> Option<usize> {
 fn key_note(key: &'static str, words: &'static str, cx: &App) -> impl IntoElement {
     h_flex()
         .gap(px(6.))
-        .child(div().px(px(5.)).py(px(1.)).rounded(px(4.)).border_1().border_color(style::hairline(cx)).bg(style::primary_opacity(cx, 0.05)).text_size(px(size::SMALL)).child(key))
+        .child(
+            div()
+                .px(px(5.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(style::hairline(cx))
+                .bg(style::primary_opacity(cx, 0.05))
+                .text_size(px(size::SMALL))
+                .child(key),
+        )
         .child(words)
 }
 
@@ -617,24 +862,42 @@ fn key_note(key: &'static str, words: &'static str, cx: &App) -> impl IntoElemen
 /// down), `"text"` types in it as a person would, replacing what's there,
 /// and `"pick": "<title>"` clicks that entry (`"beside": true` for ⌘Return).
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     if let Some(open) = cmd["open"].as_bool() {
         if open != app.read(cx).anything.is_some() {
             app.update(cx, |t, cx| t.toggle_open_anything(window, cx));
         }
     }
     if let Some(text) = cmd["text"].as_str() {
-        let view = app.read(cx).anything.as_ref().map(|o| o.view.clone()).ok_or("the box isn't up")?;
+        let view = app
+            .read(cx)
+            .anything
+            .as_ref()
+            .map(|o| o.view.clone())
+            .ok_or("the box isn't up")?;
         let input = view.read(cx).input.clone();
         input.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx));
         // set_value doesn't say Change, as a person's typing does.
         view.update(cx, |b, cx| b.typed(cx));
     }
     if let Some(title) = cmd["pick"].as_str() {
-        let view = app.read(cx).anything.as_ref().map(|o| o.view.clone()).ok_or("the box isn't up")?;
+        let view = app
+            .read(cx)
+            .anything
+            .as_ref()
+            .map(|o| o.view.clone())
+            .ok_or("the box isn't up")?;
         let item = view.update(cx, |b, cx| {
             let groups = b.groups_now(cx);
-            rules::flat(&groups).into_iter().find(|i| i.title == title).cloned()
+            rules::flat(&groups)
+                .into_iter()
+                .find(|i| i.title == title)
+                .cloned()
         });
         let item = item.ok_or_else(|| format!("nothing called {title:?} in the box"))?;
         let beside = cmd["beside"].as_bool().unwrap_or(false);

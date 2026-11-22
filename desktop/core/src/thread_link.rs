@@ -30,7 +30,9 @@ pub fn thread_id(url: &str) -> Option<String> {
     if !host.eq_ignore_ascii_case("thread") {
         return None;
     }
-    let id = crate::open_policy::percent_decode(path.trim_start_matches('/').split('/').next().unwrap_or(""));
+    let id = crate::open_policy::percent_decode(
+        path.trim_start_matches('/').split('/').next().unwrap_or(""),
+    );
     // Thread ids are UUIDs and the like: nothing that could be a path.
     if !is_thread_id(&id) {
         return None;
@@ -47,7 +49,10 @@ pub fn thread_id(url: &str) -> Option<String> {
 /// one with a quote, a space, a `)` or a `$(` would otherwise end up in a
 /// shell line (Copy debug info) or markdown (a thread chip).
 pub fn is_thread_id(id: &str) -> bool {
-    (1..=64).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
 /// The last thread among links the system handed over at once, as the Swift
@@ -74,17 +79,34 @@ mod tests {
     #[test]
     fn a_link_that_opens_nothing_says_why() {
         assert!(unopened_link_message(0).starts_with("That thread isn't in your sidebar"));
-        assert_eq!(unopened_link_message(3), "That link matches 3 threads, so none was opened.");
+        assert_eq!(
+            unopened_link_message(3),
+            "That link matches 3 threads, so none was opened."
+        );
     }
 
     #[test]
     fn a_thread_link_names_its_thread() {
         let id = "0cf430ac-f429-4b2e-9c1d-2f6a8b7c9d0e";
         assert_eq!(thread_id(&url(id)).as_deref(), Some(id));
-        assert_eq!(thread_id("THREADBEAR://Thread/abc_1").as_deref(), Some("abc_1"), "scheme and host in any case");
-        assert_eq!(thread_id("threadbear://thread/abc/more").as_deref(), Some("abc"), "the path's first part");
-        assert_eq!(thread_id("threadbear://thread/abc?from=pill#top").as_deref(), Some("abc"));
-        assert_eq!(thread_id("threadbear://thread/abc/").as_deref(), Some("abc"));
+        assert_eq!(
+            thread_id("THREADBEAR://Thread/abc_1").as_deref(),
+            Some("abc_1"),
+            "scheme and host in any case"
+        );
+        assert_eq!(
+            thread_id("threadbear://thread/abc/more").as_deref(),
+            Some("abc"),
+            "the path's first part"
+        );
+        assert_eq!(
+            thread_id("threadbear://thread/abc?from=pill#top").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            thread_id("threadbear://thread/abc/").as_deref(),
+            Some("abc")
+        );
     }
 
     #[test]
@@ -105,14 +127,26 @@ mod tests {
 
     #[test]
     fn nothing_that_could_be_a_path_or_more_gets_through() {
-        for link in ["threadbear://thread/..", "threadbear://thread/a%2Fb", "threadbear://thread/a%20b", "threadbear://thread/a.b", "threadbear://thread/%2e%2e", "threadbear://thread/a;rm"] {
+        for link in [
+            "threadbear://thread/..",
+            "threadbear://thread/a%2Fb",
+            "threadbear://thread/a%20b",
+            "threadbear://thread/a.b",
+            "threadbear://thread/%2e%2e",
+            "threadbear://thread/a;rm",
+        ] {
             assert_eq!(thread_id(link), None, "{link}");
         }
     }
 
     #[test]
     fn the_last_thread_link_of_several_wins() {
-        let links = ["threadbear://thread/one", "https://example.com", "threadbear://thread/two", "threadbear://pair?x"];
+        let links = [
+            "threadbear://thread/one",
+            "https://example.com",
+            "threadbear://thread/two",
+            "threadbear://pair?x",
+        ];
         assert_eq!(last_thread(links).as_deref(), Some("two"));
         assert_eq!(last_thread(["https://example.com"]), None);
     }

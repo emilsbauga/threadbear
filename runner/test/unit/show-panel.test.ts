@@ -9,7 +9,7 @@ import { PANEL_ACK_WAIT_MS, resolvePanel } from '../../src/panel-requests.ts';
 import { AGENT_MESSAGE_PREFIX } from '../../src/protocol.ts';
 import type { Panel } from '../../src/protocol.ts';
 
-// docs/protocol.md, "Showing panels".
+// docs/protocol/panels.md, "Showing panels".
 
 const convex: Panel = { id: 'convex.dashboard', title: 'Convex', kind: 'url', url: 'https://dashboard.convex.dev', patch: 'convex' };
 const sim: Panel = { id: 'xcode.simulator', title: 'Simulator', kind: 'image', patch: 'xcode' };

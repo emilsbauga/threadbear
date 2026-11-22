@@ -31,11 +31,17 @@ impl FileIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
-            Some(FileIdentity { real, node: (meta.dev(), meta.ino()) })
+            Some(FileIdentity {
+                real,
+                node: (meta.dev(), meta.ino()),
+            })
         }
         #[cfg(windows)]
         {
-            Some(FileIdentity { real, node: _local.identity().ok()? })
+            Some(FileIdentity {
+                real,
+                node: _local.identity().ok()?,
+            })
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -76,6 +82,11 @@ mod windows_tests {
 }
 
 #[cfg(all(test, unix))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests: a panic is the test's failure, with the line"
+)]
 mod tests {
     use super::*;
 
@@ -84,7 +95,8 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let dir = std::env::temp_dir().join(format!("tb-file-identity-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir()
+                .join(format!("tb-file-identity-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Scratch(dir)

@@ -1,4 +1,4 @@
-// What fills a thread's context (docs/protocol.md, "Context breakdown"):
+// What fills a thread's context (docs/protocol/threads.md, "Context breakdown"):
 // the composer ring's popover asks when it opens. Claude's CLI answers it
 // with its own /context rows, so it's asked of the thread's live CLI and the
 // answer kept with the thread for when the CLI has gone (idle CLIs stop
@@ -8,6 +8,7 @@
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import type { ContextUsage } from '../protocol.ts';
+import { runningSession } from '../cli-session.ts';
 
 // A CLI busy with a turn still answers control requests straight away;
 // one that hasn't in this long isn't going to.
@@ -35,12 +36,12 @@ export const contextUsagePart = {
       const usage = kept();
       return { ...(usage ? { usage } : {}), live, ...(note ? { note } : {}) };
     };
-    const session = rt.session;
+    const session = runningSession(rt);
     // Going away (released, or /clear's old session waiting to go): it
     // would describe a conversation the thread has left.
     // Only Claude's CLI says: a thread moved to Codex has nothing to show.
     if (rec.provider !== 'claude') return { live: false };
-    if (!session?.contextUsage || rt.closing || rt.releaseWhenIdle) return keptOnly(false);
+    if (!session?.contextUsage || rt.releaseWhenIdle) return keptOnly(false);
     const already = this.contextAsks.get(threadId);
     if (already) return already;
     const sessionId = rec.nativeSessionId;

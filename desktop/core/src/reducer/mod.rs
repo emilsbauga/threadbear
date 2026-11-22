@@ -7,7 +7,7 @@
 //
 // Each file below says which Swift type or function it ports. Events stay as
 // serde_json::Value right up to `Event::decode`, whose lenient decoders
-// mirror the Swift ones field for field (docs/protocol.md: "keep both sides
+// mirror the Swift ones field for field (AGENTS.md: "keep both sides
 // tolerant of unknown fields and event types").
 pub mod card_text;
 pub mod diff;
@@ -28,12 +28,20 @@ pub use card_text::{ApprovalText, PlanCardText, PlanSummary};
 pub use diff::{DiffBuilder, DiffDisplayLine, DiffLineKind};
 pub use event::*;
 pub use feed::{FeedAction, ThreadFeed};
-pub use format::{cost_text, duration, token_line, TurnTokens, short_tokens};
-pub use groups::{BackgroundStatus, BackgroundWork, ChangedFile, ChangedFiles, DiffPreview, WorkGroup, WorkSummary, WorkingStatus};
+pub use format::{cost_text, duration, short_tokens, token_line, TurnTokens};
+pub use groups::{
+    BackgroundStatus, BackgroundWork, ChangedFile, ChangedFiles, DiffPreview, WorkGroup,
+    WorkSummary, WorkingStatus,
+};
 pub use model::{PrependResult, TranscriptChange, TranscriptModel};
 pub use pending::PendingMessage;
-pub use row::{AgentHeader, ApprovalItem, AskNote, AsksCard, Pending, PlanCard, PlanCardState, QuestionItem, Row, RowContent, RowKind, ScheduledHeader, SecretItem, TextItem, ToolItem, UserMessage};
+pub use row::{
+    AgentHeader, ApprovalItem, AskNote, AsksCard, Pending, PlanCard, PlanCardState, QuestionItem,
+    Row, RowContent, RowKind, ScheduledHeader, SecretItem, TextItem, ToolItem, UserMessage,
+};
 pub use row_debug::RowDebug;
-pub use tool_presentation::{Detail, Field, FileTitle, NumberedLine, PathDisplay, ToolPresentation};
+pub use tool_presentation::{
+    Detail, Field, FileTitle, NumberedLine, PathDisplay, ToolPresentation,
+};
 pub use turn_gap::TurnGap;
 pub use work_links::WorkLinks;

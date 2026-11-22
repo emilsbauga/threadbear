@@ -15,7 +15,7 @@
 //
 // start    gets a debug build with the scripted control (`automation`), starts
 //          the mock runner (its demo threads, or only the --fixtures folders:
-//          `tb export` puts a thread in app/.fixtures/threads/<id>) or points at
+//          `tb export` puts a thread in .fixtures/threads/<id>) or points at
 //          a dev runner's --home (runner/scripts/dev-runner.sh), launches the
 //          app headless: out of the Dock and the app switcher, its windows
 //          fully transparent, letting clicks through and at the back, so
@@ -437,7 +437,7 @@ async function supervise(id: string): Promise<void> {
     const ready = path.join(dir, 'mock-ready');
     const out = fs.openSync(path.join(dir, 'mock.log'), 'a');
     const fixtures = i.fixtures.flatMap((f) => ['--fixtures', f]);
-    mock = spawn(process.execPath, [path.join(CHECKOUT, 'app/Tools/mock-runner/server.mjs'), '--data-dir', i.home, '--port', '0', '--ready-file', ready, ...fixtures], { stdio: ['ignore', out, out], detached: true, env: { ...process.env, TB_MOCK_NO_REMOTE: process.env.TB_MOCK_NO_REMOTE ?? '1' } });
+    mock = spawn(process.execPath, [path.join(CHECKOUT, 'mock-runner/server.mjs'), '--data-dir', i.home, '--port', '0', '--ready-file', ready, ...fixtures], { stdio: ['ignore', out, out], detached: true, env: { ...process.env, TB_MOCK_NO_REMOTE: process.env.TB_MOCK_NO_REMOTE ?? '1' } });
     kids.push(mock);
     mock.on('exit', (code) => void end(`the mock runner exited (${code})`));
     if (!(await waitForFile(ready, 20_000, () => mock?.exitCode === null))) return end("the mock runner didn't start");

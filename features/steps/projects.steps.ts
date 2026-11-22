@@ -55,7 +55,7 @@ Then('the sidebar lists {string} under {string}', async function (this: Threadbe
     d.sidebar.sections.some((s) => s.name === title && s.collapsed === false && s.threads.some((t) => t.title === thread)));
 });
 
-// Parts (docs/protocol.md, Projects, "Parts"): the open page's `project`
+// Parts (docs/protocol/projects.md, Projects, "Parts"): the open page's `project`
 // in the dump names its parent and parts by title.
 type WithPage = Dump & { project?: { title: string; parent?: string | null; parts?: string[] } | null };
 

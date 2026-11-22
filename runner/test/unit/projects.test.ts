@@ -422,7 +422,7 @@ test('merge moves threads, folders and notes over; delete takes threads out', ()
 });
 
 test('the RPC methods: list, get, create, update, setProjects, archive', () => {
-  const { h, projects, create } = setup();
+  const { projects, create } = setup();
   const m = projectMethods(projects);
   const { thread } = create();
   const { project } = m['projects.create']({ title: 'Gamma', goals: 'Do it', threadIds: [thread.id] }) as any;
@@ -1057,7 +1057,7 @@ test("the librarian never gives a project another project's repo, a folder holdi
   const s = setup({ models: () => reply(answer) });
   const { h, repo, root, create, finish, librarian, projects } = s;
   const tb = repo('dev/threadbear');
-  const videos = repo('dev/videos');
+  repo('dev/videos');
   const interview = repo('dev/videos/interview');
   const fresh = repo('dev/browserbear');
   const wtMain = repo('dev/app');

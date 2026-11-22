@@ -37,15 +37,33 @@ pub(crate) struct PinnedPanelView {
 }
 
 impl PinnedPanelView {
-    fn new(app: &Entity<Threadbear>, side: Entity<SidePane>, thread: String, panel: String, cx: &mut Context<Self>) -> Self {
-        let subs = vec![cx.observe(&side, |_, _, cx| cx.notify()), cx.observe(app, |_, _, cx| cx.notify())];
-        PinnedPanelView { app: app.downgrade(), side, thread, panel, _subs: subs }
+    fn new(
+        app: &Entity<Threadbear>,
+        side: Entity<SidePane>,
+        thread: String,
+        panel: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subs = vec![
+            cx.observe(&side, |_, _, cx| cx.notify()),
+            cx.observe(app, |_, _, cx| cx.notify()),
+        ];
+        PinnedPanelView {
+            app: app.downgrade(),
+            side,
+            thread,
+            panel,
+            _subs: subs,
+        }
     }
 }
 
 impl Render for PinnedPanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let thread = self.app.upgrade().and_then(|a| a.read(cx).threads.get(&self.thread).cloned());
+        let thread = self
+            .app
+            .upgrade()
+            .and_then(|a| a.read(cx).threads.get(&self.thread).cloned());
         let body = match thread {
             Some(thread) => {
                 let (panel, side) = (self.panel.clone(), self.side.clone());
@@ -54,7 +72,10 @@ impl Render for PinnedPanelView {
                     s.render_panel(&thread, &panel, window, cx)
                 })
             }
-            None => crate::files::pane_note("This thread has gone.", crate::highlights::palette(cx)).into_any_element(),
+            None => {
+                crate::files::pane_note("This thread has gone.", crate::highlights::palette(cx))
+                    .into_any_element()
+            }
         };
         div().size_full().bg(cx.theme().background).child(body)
     }
@@ -62,7 +83,10 @@ impl Render for PinnedPanelView {
 
 impl Threadbear {
     /// The thread and panel a pinned panel shows, while the thread has it.
-    pub(crate) fn pinned_owner(&self, panel: &str) -> Option<(ThreadSummary, threadbear_core::highlights::Panel)> {
+    pub(crate) fn pinned_owner(
+        &self,
+        panel: &str,
+    ) -> Option<(ThreadSummary, threadbear_core::highlights::Panel)> {
         let (thread, id) = pinned(panel)?;
         let thread = self.threads.get(thread)?;
         let found = thread.panels().into_iter().find(|p| p.id == id)?;
@@ -73,7 +97,11 @@ impl Threadbear {
     /// patch panels (not on a project's page, where the panels are borrowed
     /// from whichever of its threads has them).
     pub(crate) fn can_pin(&self, panel: &str) -> bool {
-        self.projects.open.is_none() && pinned(panel).is_none() && self.pane_thread().is_some_and(|t| t.panels().iter().any(|p| p.id == panel))
+        self.projects.open.is_none()
+            && pinned(panel).is_none()
+            && self
+                .pane_thread()
+                .is_some_and(|t| t.panels().iter().any(|p| p.id == panel))
     }
 
     /// The item a panel's right-click menu gets: "Unpin" on a pinned panel,
@@ -107,7 +135,14 @@ impl Threadbear {
             .iter()
             .filter_map(|id| {
                 let (thread, panel) = pinned(id)?;
-                let rows: Option<Vec<String>> = self.side.read(cx).panels.renders.get(&format!("{thread}/{panel}")).and_then(|r| r.items.as_ref()).map(|items| items.iter().map(|i| i.title.clone()).collect());
+                let rows: Option<Vec<String>> = self
+                    .side
+                    .read(cx)
+                    .panels
+                    .renders
+                    .get(&format!("{thread}/{panel}"))
+                    .and_then(|r| r.items.as_ref())
+                    .map(|items| items.iter().map(|i| i.title.clone()).collect());
                 Some(serde_json::json!({
                     "id": id,
                     "thread": thread,
@@ -130,7 +165,9 @@ impl Threadbear {
         if !self.can_pin(panel) {
             return;
         }
-        let Some(thread) = self.pane_thread() else { return };
+        let Some(thread) = self.pane_thread() else {
+            return;
+        };
         let pin = pinned_panel(&thread.id, panel);
         if self.dock.read(cx).layout().contains(&pin) {
             self.dock.update(cx, |m, cx| {
@@ -146,7 +183,9 @@ impl Threadbear {
     /// follows the selection again; just closed if the ordinary one's open
     /// already.
     pub(crate) fn unpin_panel(&mut self, pin: &str, cx: &mut Context<Self>) {
-        let Some((owner, id)) = pinned(pin) else { return };
+        let Some((owner, id)) = pinned(pin) else {
+            return;
+        };
         let (owner, id) = (owner.to_owned(), id.to_owned());
         if self.dock.read(cx).layout().contains(&id) {
             self.dock.update(cx, |m, cx| m.close(pin, cx));
@@ -160,7 +199,10 @@ impl Threadbear {
         // pinned thread opened on Highlights though Unpin had just put
         // Previews back (13 Nov, pinned-panels.feature).
         let mut threads = vec![owner.clone()];
-        if let Some(t) = self.pane_thread().filter(|t| t.id != owner && t.panels().iter().any(|p| p.id == id)) {
+        if let Some(t) = self
+            .pane_thread()
+            .filter(|t| t.id != owner && t.panels().iter().any(|p| p.id == id))
+        {
             threads.push(t.id);
         }
         self.side.update(cx, |side, cx| {
@@ -182,28 +224,48 @@ impl Threadbear {
         pinned(panel)?;
         Some(match self.pinned_owner(panel) {
             Some((_, found)) => found.title,
-            None => pinned(panel).map(|(_, id)| id.to_owned()).unwrap_or_default(),
+            None => pinned(panel)
+                .map(|(_, id)| id.to_owned())
+                .unwrap_or_default(),
         })
     }
 
     /// The tab's tip: whose it is.
     pub(crate) fn pinned_tip(&self, panel: &str) -> Option<String> {
         let (thread, _) = pinned(panel)?;
-        let title = self.threads.get(thread).map(|t| if t.title.is_empty() { "Untitled".to_owned() } else { t.title.clone() })?;
+        let title = self.threads.get(thread).map(|t| {
+            if t.title.is_empty() {
+                "Untitled".to_owned()
+            } else {
+                t.title.clone()
+            }
+        })?;
         Some(format!("Pinned to “{title}”"))
     }
 
     /// What a pinned panel shows: its thread's page, list or picture.
-    pub(crate) fn pinned_panel_view(&mut self, panel: &str, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn pinned_panel_view(
+        &mut self,
+        panel: &str,
+        ghost: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some((thread, found)) = self.pinned_owner(panel) else {
-            return crate::files::pane_note("Nothing to show here now.", crate::highlights::palette(cx)).into_any_element();
+            return crate::files::pane_note(
+                "Nothing to show here now.",
+                crate::highlights::palette(cx),
+            )
+            .into_any_element();
         };
         if found.kind == "url" {
             // A page can only be in one place: a drag's ghost is an empty panel.
             if ghost {
                 return div().size_full().into_any_element();
             }
-            if let Some(page) = crate::web_panels::section(self, &thread, &found.id, true, window, cx) {
+            if let Some(page) =
+                crate::web_panels::section(self, &thread, &found.id, true, window, cx)
+            {
                 return page;
             }
         }
@@ -213,14 +275,20 @@ impl Threadbear {
             .thread_panels
             .pinned
             .entry(panel.to_owned())
-            .or_insert_with(|| cx.new(|cx| PinnedPanelView::new(&app, side, thread.id.clone(), found.id.clone(), cx)))
+            .or_insert_with(|| {
+                cx.new(|cx| {
+                    PinnedPanelView::new(&app, side, thread.id.clone(), found.id.clone(), cx)
+                })
+            })
             .clone();
         AnyView::from(view).into_any_element()
     }
 
     /// Lets go of the views of pinned panels that have closed.
     pub(crate) fn pinned_panels_layout_changed(&mut self, layout: &threadbear_dock::DockLayout) {
-        self.thread_panels.pinned.retain(|id, _| layout.contains(id));
+        self.thread_panels
+            .pinned
+            .retain(|id, _| layout.contains(id));
     }
 }
 
@@ -228,7 +296,14 @@ impl Threadbear {
 /// still sits on the panel's icon's corner.
 pub(crate) fn tab_icon(icon: AnyElement, cx: &App) -> AnyElement {
     let color = style::secondary_text(cx);
-    h_flex_row().child(crate::icons::symbol("pin").with_size(px(10.)).text_color(color)).child(icon).into_any_element()
+    h_flex_row()
+        .child(
+            crate::icons::symbol("pin")
+                .with_size(px(10.))
+                .text_color(color),
+        )
+        .child(icon)
+        .into_any_element()
 }
 
 fn h_flex_row() -> Div {

@@ -261,7 +261,7 @@ export class CodexAdapter implements AgentAdapter {
     this.children.delete(nativeSessionId);
   }
 
-  // An edit of an earlier message (docs/protocol.md, "Editing a message"):
+  // An edit of an earlier message (docs/protocol/threads.md, "Editing a message"):
   // Codex drops the turn that message started, and every later one, from
   // the thread's history with thread/revert. It never touches files; the
   // runner reverses the thread's diffs. Every turn the runner starts
@@ -337,7 +337,7 @@ export function codexModelChoices(rows: unknown[]): ModelChoice[] {
   return out;
 }
 
-// Threadbear's two permission modes in Codex's terms (step4-plan.md,
+// Threadbear's two permission modes in Codex's terms (docs/archive/step4-plan.md,
 // "Permission modes"). approvalsReviewer is always sent: another account's
 // config.toml could route approvals to Codex's auto-reviewer instead.
 export function threadPolicy(mode: PermissionMode): Pick<ThreadStartParams, 'approvalPolicy' | 'approvalsReviewer' | 'sandbox'> {
@@ -357,7 +357,7 @@ export function threadConfig(threadId: string, key?: string): Record<string, unk
   return {
     // Adds to config.toml's own [shell_environment_policy.set] rather than
     // replacing it (spike 3), so the commands Codex runs know their thread
-    // and tb in them is limited to it (docs/protocol.md, "A thread's own key").
+    // and tb in them is limited to it (docs/protocol/connection.md, "A thread's own key").
     'shell_environment_policy.set.THREADBEAR_THREAD_ID': threadId,
     ...(key ? { 'shell_environment_policy.set.THREADBEAR_THREAD_KEY': key } : {}),
     'tools.update_plan.enabled': true,
@@ -767,7 +767,9 @@ export class CodexSession implements AgentSession {
       return;
     }
     this.unknown.set(tid, [[method, p]]);
-    this.proc
+    // Nothing below can reject: .catch turns a failed read into false, and
+    // enqueue catches what its handler throws.
+    void this.proc
       .request<{ thread?: { parentThreadId?: unknown } }>('thread/read', { threadId: tid })
       .then((r) => {
         const parent = r?.thread?.parentThreadId;
@@ -950,7 +952,7 @@ export class CodexSession implements AgentSession {
   }
 
   // A slash command Codex's terminal app would run, as the app-server call
-  // that does it (docs/protocol.md, "Slash commands"). Each still runs as a
+  // that does it (docs/protocol/threads.md, "Slash commands"). Each still runs as a
   // turn: Codex sends turn/started and turn/completed for it. Anything else
   // is a turn/start, with the skill a /<skill> names added to it.
   // sentBefore: a folder move this turn would have carried isn't carried

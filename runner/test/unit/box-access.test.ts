@@ -1,5 +1,5 @@
 // A box key against the backend (docs/virtual-runners.md, decision 4;
-// docs/protocol.md, "Box keys"): a box runs its one thread as its own
+// docs/protocol/boxes.md, "Box keys"): a box runs its one thread as its own
 // runner, and every other row, thread, runner and function is refused.
 // The plain rules are in runner-access.test.ts; this plays them through
 // the real functions.

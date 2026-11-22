@@ -43,6 +43,14 @@ Then('the patch {string} is waiting to be trusted, saying {string}', async funct
   await this.until(`${id} waiting`, (d) => patch(d, id)?.waiting === words);
 });
 
+Then('the patch {string} says {string}', async function (this: ThreadbearWorld, id: string, line: string) {
+  await this.until(`${id} saying "${line}"`, (d) => (patch(d, id)?.changes ?? []).includes(line));
+});
+
+Then('the patch {string} shows the changed lines of {string}', async function (this: ThreadbearWorld, id: string, file: string) {
+  await this.until(`${id} showing ${file}'s lines`, (d) => (patch(d, id)?.diffs ?? []).includes(file));
+});
+
 When('I trust the patch {string}', async function (this: ThreadbearWorld, id: string) {
   await this.app.do({ cmd: 'trust', id });
 });

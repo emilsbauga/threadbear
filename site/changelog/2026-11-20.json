@@ -1,0 +1,126 @@
+{
+  "release": "2026-11-20",
+  "highlights": [
+    {
+      "kind": "changed",
+      "title": "Code links open at the lines they name",
+      "text": "A link in a reply to a code, data or log file opens in the side pane instead of its app. One with lines after it, like upload.ts:41-53, scrolls to them and tints them. ⌘-click still opens the app.",
+      "credit": "David Clark",
+      "media": {
+        "type": "clip",
+        "src": "code-link-lines.mp4",
+        "poster": "code-link-lines.webp",
+        "width": 1240,
+        "height": 1170,
+        "alt": "A reply says \"It's in upload.ts:41-53\". Clicking the link opens upload.ts in the side pane, scrolled to line 41, with lines 41 to 53 tinted and a blue bar beside them."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "A glint on the link you press",
+      "text": "Pressing a link in a reply sends a quick shine across its words, so you can see it took before anything opens. Reduce Motion turns it off.",
+      "media": {
+        "type": "clip",
+        "src": "link-glint.mp4",
+        "poster": "link-glint.webp",
+        "width": 1160,
+        "height": 240,
+        "alt": "The link upload.ts:41-53 in a reply is pressed three times, and each time a quick band of light sweeps across its words."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Another lab's review folds away",
+      "text": "When another lab reviews a change, the transcript shows one line saying how it went, folded like the line of work. Click it for every finding. Anything still open for you stays in sight.",
+      "media": {
+        "type": "clip",
+        "src": "review-fold.mp4",
+        "poster": "review-fold.webp",
+        "width": 1232,
+        "height": 1000,
+        "alt": "A reply finishes with a line saying \"Reviewed by Codex and Grok, 2 rounds: 1 open\", showing only the finding left for you. Opening it shows all four findings: three marked fixed with what was done, and the chunk cache one left for you."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Waiting threads stay under Running",
+      "text": "A thread waiting on other threads it started, or for the app to restart onto what it landed, stays under Running with a grey spinner and what it's waiting on, instead of saying Done.",
+      "media": {
+        "type": "image",
+        "src": "waiting-running.webp",
+        "width": 760,
+        "height": 640,
+        "alt": "The sidebar's Running section. Tidy the imports in the uploader says \"Waiting for the app update\" and Ship the beta to TestFlight says \"Waiting on 'Why is the build slow on CI?'\", each with a grey spinner."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Two lists for code review",
+      "text": "Settings > General > Code review has Every change, one reviewer with the next one down taking over when it's out of room, and Big or risky changes, where everyone on the list reviews at once. Each reviewer has its own model and effort.",
+      "media": {
+        "type": "image",
+        "src": "code-review-lists.webp",
+        "width": 1260,
+        "height": 760,
+        "alt": "The Code review section of Settings. Under Every change, Codex on GPT-6.1-Sol at High and Claude at Extra high. Under Big or risky changes, which says all of these review at once on 150+ lines or code touching sign-in, payments or secrets, Codex and Claude at High."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Switches on a patch's list rows",
+      "text": "A row in a patch's list panel can have a switch at the end of its line, like watching a preview or turning auto-fix on for a PR. It flips as you press it and goes back with the error if the patch says no.",
+      "credit": "Ville Lahdenvuo-Malta",
+      "media": {
+        "type": "clip",
+        "src": "row-switch.mp4",
+        "poster": "row-switch.webp",
+        "width": 1880,
+        "height": 500,
+        "alt": "A Previews panel from a patch. Pressing the eye at the end of the Pricing row lights it up. Pressing the one on Docs lights it, then it goes back off and a bar says \"Couldn't switch it: the Docs build has no preview to watch\"."
+      }
+    }
+  ],
+  "added": [
+    {
+      "text": "Thread panels have a close button at the end of their title bar",
+      "credit": "Wayne Sutton"
+    },
+    "Get emails to threads: an email can wake a thread, start one or wait in a pile for one (an experiment)",
+    "Start a thread on a cloud box of its own, picked in Runs on, with a cloud token for its login made from the Mac (an experiment)",
+    "A page an agent shows in its reply runs in a card, on the Mac and the iPhone, and Full size opens it in the side pane (an experiment)",
+    "A new thread's agent starts while you're still writing its first message, so the first reply comes sooner (an experiment)",
+    "An Android build for F-Droid, with its own notifications that don't need Google"
+  ],
+  "changed": [
+    "On Auto, the reviewer that looks at approval cards first is on for everyone now",
+    "A long Claude thread woken after an hour or more compacts first, so the turn costs less, with a quiet line saying so",
+    "A Codex update held back now starts a thread that works out why, and the Updates panel links to it",
+    "Opening a kind of file Threadbear doesn't know asks \"Open in Tandem?\" (or whichever app), and Always remembers that app for that kind",
+    "Pull request tabs open sooner: they're read while you rest on the link, a copy from before shows at once, and grey shapes fill in while they load (an experiment)",
+    {
+      "text": "A project update waiting for your OK names the project",
+      "credit": "Ian Macartney"
+    },
+    "An idle runner uses about 30 MB less memory",
+    "On Windows nothing uses WSL any more, and pictures are shrunk with Windows' own tools"
+  ],
+  "fixed": [
+    "Very tall or wide pictures and screenshots show, shrunk to fit, instead of blank boxes",
+    "Typing in a message box no longer holds up an app update, and your words come back after it",
+    "Clicking anywhere in the message box puts the cursor in it",
+    {
+      "text": "Right-clicking a project shows Archive again",
+      "credit": "Wayne Sutton"
+    },
+    "Backspace and the arrow keys work inside web panels, like YouTube's reply box",
+    "Deleting a schedule also drops its messages still waiting for a busy thread",
+    "A thread that started another with work going in the background no longer says that one's done",
+    "A message a slow runner took late no longer says it wasn't sent",
+    "Words typed in a card's Something else box are kept across a restart",
+    {
+      "text": "A thread moved to another machine is forgotten on the old one, never deleted",
+      "credit": "David Clark"
+    },
+    "Uploads no longer keep a file type that could open as a web page on the backend"
+  ]
+}

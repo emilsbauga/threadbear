@@ -62,11 +62,24 @@ pub(crate) fn watch<T: Typed>(input: &Entity<T>, label: impl Into<String>, cx: &
 
 /// `watch` for a field on a thread: the hold names the thread, as
 /// "{label} in “title”".
-pub(crate) fn watch_in<T: Typed>(input: &Entity<T>, label: impl Into<String>, thread: Option<String>, cx: &App) {
+pub(crate) fn watch_in<T: Typed>(
+    input: &Entity<T>,
+    label: impl Into<String>,
+    thread: Option<String>,
+    cx: &App,
+) {
     let saved = input.read(cx).typed();
     let weak = input.downgrade();
     let now = Box::new(move |cx: &App| weak.upgrade().map(|i| i.read(cx).typed()));
-    WATCHED.with(|w| w.borrow_mut().push(Watched { id: input.entity_id(), label: label.into(), thread, now, saved }));
+    WATCHED.with(|w| {
+        w.borrow_mut().push(Watched {
+            id: input.entity_id(),
+            label: label.into(),
+            thread,
+            now,
+            saved,
+        })
+    });
 }
 
 /// What the field holds now is saved (or is what's there to begin with):
@@ -74,7 +87,11 @@ pub(crate) fn watch_in<T: Typed>(input: &Entity<T>, label: impl Into<String>, th
 pub(crate) fn saved<T: Typed>(input: &Entity<T>, cx: &App) {
     let text = input.read(cx).typed();
     WATCHED.with(|w| {
-        if let Some(entry) = w.borrow_mut().iter_mut().find(|e| e.id == input.entity_id()) {
+        if let Some(entry) = w
+            .borrow_mut()
+            .iter_mut()
+            .find(|e| e.id == input.entity_id())
+        {
             entry.saved = text;
         }
     });

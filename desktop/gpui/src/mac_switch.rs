@@ -31,7 +31,13 @@ pub(crate) struct MacSwitch {
 
 impl MacSwitch {
     pub(crate) fn new(id: impl Into<ElementId>, checked: bool) -> Self {
-        MacSwitch { id: id.into(), checked, disabled: false, outside_form: false, on_change: None }
+        MacSwitch {
+            id: id.into(),
+            checked,
+            disabled: false,
+            outside_form: false,
+            on_change: None,
+        }
     }
 
     /// Swift's `.controlSize(.small)` outside a grouped Form has a 44×20
@@ -49,7 +55,10 @@ impl MacSwitch {
     }
 
     /// Called with the value a click asks for; the owner sets it and redraws.
-    pub(crate) fn on_change(mut self, handler: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+    pub(crate) fn on_change(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_change = Some(Rc::new(handler));
         self
     }
@@ -59,16 +68,36 @@ impl RenderOnce for MacSwitch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let dark = cx.theme().is_dark();
         let on = self.checked;
-        let (track_w, track_h, knob_w, knob_h, inset) = if self.outside_form { (44., 20., 26., 16., 2.) } else { (TRACK_W, TRACK_H, KNOB_W, KNOB_H, INSET) };
-        let track = if on { style::control_accent(cx) } else { style::primary_opacity(cx, if dark { 0.1 } else { 0.09 }) };
-        let knob = if dark { hsla(0., 0., 0.88, 1.) } else { hsla(0., 0., 1., 1.) };
+        let (track_w, track_h, knob_w, knob_h, inset) = if self.outside_form {
+            (44., 20., 26., 16., 2.)
+        } else {
+            (TRACK_W, TRACK_H, KNOB_W, KNOB_H, INSET)
+        };
+        let track = if on {
+            style::control_accent(cx)
+        } else {
+            style::primary_opacity(cx, if dark { 0.1 } else { 0.09 })
+        };
+        let knob = if dark {
+            hsla(0., 0., 0.88, 1.)
+        } else {
+            hsla(0., 0., 1., 1.)
+        };
         let travel = px(track_w - knob_w - inset * 2.);
-        let x = spring((self.id.clone(), "knob"), if on { travel } else { gpui_kit::px(0.) }, cx.theme().motion_tokens().spring_move, window, cx);
+        let x = spring(
+            (self.id.clone(), "knob"),
+            if on { travel } else { gpui_kit::px(0.) },
+            cx.theme().motion_tokens().spring_move,
+            window,
+            cx,
+        );
         let on_change = self.on_change.clone();
         BaseSwitch::new(self.id.clone())
             .checked(on)
             .disabled(self.disabled)
-            .when_some(on_change.filter(|_| !self.disabled), |s, f| s.on_change(move |next, _, window, cx| f(next, window, cx)))
+            .when_some(on_change.filter(|_| !self.disabled), |s, f| {
+                s.on_change(move |next, _, window, cx| f(next, window, cx))
+            })
             .flex_none()
             .when(self.outside_form, |s| s.px(px(5.)).py(px(2.)))
             .child(
@@ -92,7 +121,15 @@ impl RenderOnce for MacSwitch {
                             .rounded_full()
                             .bg(knob)
                             // A light knob on a light track needs its edge.
-                            .when(!dark, |s| s.shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.25), offset: point(gpui_kit::px(0.), gpui_kit::px(0.5)), blur_radius: gpui_kit::px(1.5), spread_radius: gpui_kit::px(0.), inset: false }])),
+                            .when(!dark, |s| {
+                                s.shadow(vec![BoxShadow {
+                                    color: hsla(0., 0., 0., 0.25),
+                                    offset: point(gpui_kit::px(0.), gpui_kit::px(0.5)),
+                                    blur_radius: gpui_kit::px(1.5),
+                                    spread_radius: gpui_kit::px(0.),
+                                    inset: false,
+                                }])
+                            }),
                     ),
             )
     }

@@ -23,9 +23,15 @@ pub struct Burst {
 }
 
 /// A login getting its year-long token: a burst from its row.
-pub const TOKEN_BURST: Burst = Burst { count: 46, spread: 0.75 };
+pub const TOKEN_BURST: Burst = Burst {
+    count: 46,
+    spread: 0.75,
+};
 /// The last thread leaving the inbox: a bigger one from the empty inbox.
-pub const INBOX_BURST: Burst = Burst { count: 90, spread: 1.1 };
+pub const INBOX_BURST: Burst = Burst {
+    count: 90,
+    spread: 1.1,
+};
 /// A thread milestone (100 threads, then each thousand): from its note.
 pub const MILESTONE_BURST: Burst = INBOX_BURST;
 /// A login signed back in after being signed out: from its row, as a token.
@@ -94,12 +100,24 @@ pub fn bits(seed: u64, burst: Burst) -> Vec<Bit> {
             let width = 2. + r.next() * 2.2;
             let height = width * (1. + r.next() * 1.4);
             let round = r.next() < 0.3;
-            let angle = -std::f32::consts::FRAC_PI_2 + (r.next() - 0.5) * std::f32::consts::PI * 1.25;
+            let angle =
+                -std::f32::consts::FRAC_PI_2 + (r.next() - 0.5) * std::f32::consts::PI * 1.25;
             let speed = (60. + r.next() * 110.) * burst.spread;
             let spin = (r.next() - 0.5) * 1440.;
             let life = 1.1 + r.next() * 0.5;
             let delay = r.next() * 0.04;
-            Bit { vx: angle.cos() * speed, vy: angle.sin() * speed, gravity: 260. * burst.spread, spin, width, height, colour: i % COLOURS.len(), round, delay, life }
+            Bit {
+                vx: angle.cos() * speed,
+                vy: angle.sin() * speed,
+                gravity: 260. * burst.spread,
+                spin,
+                width,
+                height,
+                colour: i % COLOURS.len(),
+                round,
+                delay,
+                life,
+            }
         })
         .collect()
 }
@@ -112,8 +130,17 @@ pub fn bit_at(bit: &Bit, t: f32) -> Option<BitAt> {
         return None;
     }
     let fade_from = bit.life * 2. / 3.;
-    let opacity = if t < fade_from { 1. } else { 1. - (t - fade_from) / (bit.life - fade_from) };
-    Some(BitAt { x: bit.vx * t, y: bit.vy * t + 0.5 * bit.gravity * t * t, angle: bit.spin * t, opacity })
+    let opacity = if t < fade_from {
+        1.
+    } else {
+        1. - (t - fade_from) / (bit.life - fade_from)
+    };
+    Some(BitAt {
+        x: bit.vx * t,
+        y: bit.vy * t + 0.5 * bit.gravity * t * t,
+        angle: bit.spin * t,
+        opacity,
+    })
 }
 
 /// Whether a burst `t` seconds in still has anything to draw.
@@ -147,7 +174,10 @@ mod tests {
             assert!(bit_at(b, CONFETTI.as_secs_f32()).is_none());
         }
         // By the end, gravity has them on their way down.
-        let falling = all.iter().filter(|b| b.vy + b.gravity * b.life * 0.9 > 0.).count();
+        let falling = all
+            .iter()
+            .filter(|b| b.vy + b.gravity * b.life * 0.9 > 0.)
+            .count();
         assert_eq!(falling, all.len());
         assert!(!going(CONFETTI.as_secs_f32()));
     }
@@ -162,8 +192,13 @@ mod tests {
 
     #[test]
     fn the_token_burst_is_smaller_than_the_inbox_one() {
-        let reach = |burst: Burst| bits(3, burst).iter().map(|b| b.vx.hypot(b.vy)).fold(0., f32::max);
+        let reach = |burst: Burst| {
+            bits(3, burst)
+                .iter()
+                .map(|b| b.vx.hypot(b.vy))
+                .fold(0., f32::max)
+        };
         assert!(reach(TOKEN_BURST) < reach(INBOX_BURST));
-        assert!(TOKEN_BURST.count < INBOX_BURST.count);
+        const { assert!(TOKEN_BURST.count < INBOX_BURST.count) };
     }
 }

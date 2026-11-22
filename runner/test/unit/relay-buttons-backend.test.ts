@@ -1,5 +1,5 @@
 // Reply buttons and slash commands on another runner's thread from the Mac,
-// through Convex (backend API 68; docs/protocol.md, "Other runners' threads
+// through Convex (backend API 68; docs/protocol/runners.md, "Other runners' threads
 // through the backend"). docs/parity.md showed both working from the phone
 // and not from the Mac on a Cloud box or mac-mini thread. The relay reads a
 // message row's buttons as the phone does, and the main Mac queues `press`

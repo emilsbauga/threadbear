@@ -1,4 +1,4 @@
-// Real end-to-end check for pools (docs/protocol.md, "Pools"): does the
+// Real end-to-end check for pools (docs/protocol/settings.md, "Pools"): does the
 // Claude CLI resume a session another login wrote, thinking signatures and
 // all? A thread is told a code word on one login (TB_E2E_ACCOUNT), moved to
 // another (TB_E2E_OTHER_ACCOUNT, claude-1) with threads.update, and asked for the word back. It

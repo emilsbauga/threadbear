@@ -35,25 +35,51 @@ thread_local! {
     static LOADERS: RefCell<std::collections::HashMap<WindowId, LoaderPaints>> = RefCell::new(std::collections::HashMap::new());
 }
 #[cfg(feature = "automation")]
-struct LoaderPaints { paints: u64, changes: u64, phase: Option<f32>, last_change: Instant, max_gap: Duration }
+struct LoaderPaints {
+    paints: u64,
+    changes: u64,
+    phase: Option<f32>,
+    last_change: Instant,
+    max_gap: Duration,
+}
 #[cfg(feature = "automation")]
 impl LoaderPaints {
-    fn new(now: Instant) -> Self { Self { paints: 0, changes: 0, phase: None, last_change: now, max_gap: Duration::ZERO } }
+    fn new(now: Instant) -> Self {
+        Self {
+            paints: 0,
+            changes: 0,
+            phase: None,
+            last_change: now,
+            max_gap: Duration::ZERO,
+        }
+    }
     fn note(&mut self, phase: f32, now: Instant) {
         self.paints += 1;
         if self.phase.is_none_or(|old| (old - phase).abs() > 0.0001) {
-            self.max_gap = self.max_gap.max(now.saturating_duration_since(self.last_change));
+            self.max_gap = self
+                .max_gap
+                .max(now.saturating_duration_since(self.last_change));
             self.last_change = now;
             self.phase = Some(phase);
             self.changes += 1;
         }
     }
-    fn reset(&mut self, now: Instant) { self.paints = 0; self.changes = 0; self.max_gap = Duration::ZERO; self.last_change = now; }
+    fn reset(&mut self, now: Instant) {
+        self.paints = 0;
+        self.changes = 0;
+        self.max_gap = Duration::ZERO;
+        self.last_change = now;
+    }
 }
 #[cfg(feature = "automation")]
 pub(crate) fn loader_painted(window: &Window, phase: f32) {
     let now = Instant::now();
-    LOADERS.with(|all| all.borrow_mut().entry(window.window_handle().window_id()).or_insert_with(|| LoaderPaints::new(now)).note(phase, now));
+    LOADERS.with(|all| {
+        all.borrow_mut()
+            .entry(window.window_handle().window_id())
+            .or_insert_with(|| LoaderPaints::new(now))
+            .note(phase, now)
+    });
 }
 #[cfg(feature = "automation")]
 fn loader_sample(window: &Window, reset: bool) -> Value {
@@ -75,13 +101,21 @@ mod loader_probe_tests {
     fn repeated_paints_do_not_count_as_animation_and_a_frozen_tail_is_visible() {
         let now = Instant::now();
         let mut sample = LoaderPaints::new(now);
-        sample.note(0., now); sample.reset(now);
-        for i in 1..=120 { sample.note(0., now + Duration::from_millis(i * 16)); }
-        assert_eq!(sample.paints, 120); assert_eq!(sample.changes, 0);
+        sample.note(0., now);
+        sample.reset(now);
+        for i in 1..=120 {
+            sample.note(0., now + Duration::from_millis(i * 16));
+        }
+        assert_eq!(sample.paints, 120);
+        assert_eq!(sample.changes, 0);
         sample.note(0.25, now + Duration::from_secs(2));
-        assert_eq!(sample.changes, 1); assert_eq!(sample.max_gap, Duration::from_secs(2));
+        assert_eq!(sample.changes, 1);
+        assert_eq!(sample.max_gap, Duration::from_secs(2));
         sample.reset(now + Duration::from_secs(2));
-        assert_eq!((sample.paints, sample.changes, sample.max_gap), (0, 0, Duration::ZERO));
+        assert_eq!(
+            (sample.paints, sample.changes, sample.max_gap),
+            (0, 0, Duration::ZERO)
+        );
         assert_eq!(sample.phase, Some(0.25));
     }
 }
@@ -94,7 +128,10 @@ mod loader_probe_tests {
 /// in turns under the same load (features/tools/render-ab.mjs).
 #[cfg(all(feature = "automation", unix))]
 pub(crate) fn thread_cpu_nanos() -> u64 {
-    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: a valid timespec to write into, and a clock every Unix has.
     if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
         return 0;
@@ -123,7 +160,9 @@ fn counts(frames: &RefreshIntervalFrames) -> Counts {
 }
 
 fn hz(frames: &RefreshIntervalFrames) -> Option<f64> {
-    frames.refresh_interval.map(|i| (1. / i.as_secs_f64()).round())
+    frames
+        .refresh_interval
+        .map(|i| (1. / i.as_secs_f64()).round())
 }
 
 fn ms(nanos: u64) -> f64 {
@@ -131,11 +170,18 @@ fn ms(nanos: u64) -> f64 {
 }
 
 /// The same displays' frames in `now`, less what `before` had of them.
-fn since(now: &FrameDurationSnapshot, before: Option<&FrameDurationSnapshot>) -> Vec<(RefreshIntervalFrames, Counts)> {
+fn since(
+    now: &FrameDurationSnapshot,
+    before: Option<&FrameDurationSnapshot>,
+) -> Vec<(RefreshIntervalFrames, Counts)> {
     now.by_refresh_interval
         .iter()
         .map(|frames| {
-            let earlier = before.and_then(|b| b.by_refresh_interval.iter().find(|f| f.refresh_interval == frames.refresh_interval));
+            let earlier = before.and_then(|b| {
+                b.by_refresh_interval
+                    .iter()
+                    .find(|f| f.refresh_interval == frames.refresh_interval)
+            });
             let mut frames = frames.clone();
             let mut c = counts(&frames);
             if let Some(earlier) = earlier {
@@ -206,11 +252,18 @@ impl FrameRate {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sampler = cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(SAMPLE_EVERY).await;
-            if this.update_in(cx, |this, window, cx| this.sample(window, cx)).is_err() {
+            if this
+                .update_in(cx, |this, window, cx| this.sample(window, cx))
+                .is_err()
+            {
                 break;
             }
         });
-        Self { last: None, text: "Measuring…".into(), _sampler: sampler }
+        Self {
+            last: None,
+            text: "Measuring…".into(),
+            _sampler: sampler,
+        }
     }
 
     fn sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -225,7 +278,10 @@ impl FrameRate {
                 missed: a.missed + c.missed,
             });
             // The rate of the screen it drew most of those frames on.
-            let screen = screens.iter().max_by_key(|(_, c)| c.presented).and_then(|(f, _)| hz(f));
+            let screen = screens
+                .iter()
+                .max_by_key(|(_, c)| c.presented)
+                .and_then(|(f, _)| hz(f));
             let slowest = screens.iter().map(|(f, _)| f.work.max()).max().unwrap_or(0);
             let fps = c.presented as f64 / seconds;
             let of = screen.map(|hz| format!(" of {hz:.0}")).unwrap_or_default();
@@ -235,7 +291,12 @@ impl FrameRate {
                     None => "Nothing moving".into(),
                 }
             } else {
-                format!("{fps:.0} fps{of} · {} late · slowest {:.1} ms", c.late, ms(slowest)).into()
+                format!(
+                    "{fps:.0} fps{of} · {} late · slowest {:.1} ms",
+                    c.late,
+                    ms(slowest)
+                )
+                .into()
             };
             cx.notify();
         }

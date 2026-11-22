@@ -1,5 +1,5 @@
 // Replacing and revoking the key Mike's releases are signed with
-// (docs/protocol.md, "Mike's releases"; security review finding 3, 9 Nov
+// (docs/protocol/updates.md, "Mike's releases"; security review finding 3, 9 Nov
 // 2026). Setup pins the key once (<home>/upstream-signers) and a change to
 // the repo's copy never replaces it, so a new key has to come the way a
 // release does: signed by a key the fork already trusts.

@@ -1,4 +1,4 @@
-// Slash commands typed in the message box (docs/protocol.md, "Slash
+// Slash commands typed in the message box (docs/protocol/threads.md, "Slash
 // commands"). Claude Code runs its own when they arrive as the message's
 // text, so most go straight through. Codex's app-server doesn't: it hands
 // "/compact" to the model as words. So each command is one of:
@@ -21,7 +21,7 @@ export type SlashCommand = {
   argumentHint?: string;
   source: SlashCommandSource;
   aliases?: string[];
-  // Where it was defined (docs/protocol.md, "Slash commands"): user,
+  // Where it was defined (docs/protocol/threads.md, "Slash commands"): user,
   // project, plugin (with `plugin`), claude.ai or system.
   scope?: string;
   plugin?: string;

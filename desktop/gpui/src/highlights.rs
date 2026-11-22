@@ -16,16 +16,19 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).
 use crate::style::px;
+use crate::tips::Tip as _;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use threadbear_client::runner::Client;
-use threadbear_core::highlights::{self as core, fold, Highlight, HighlightKind, HighlightSections, Panel, ProjectInfo, ProjectRow, Schedule, ThreadHighlights};
+use threadbear_core::highlights::{
+    self as core, fold, Highlight, HighlightKind, HighlightSections, Panel, ProjectInfo,
+    ProjectRow, Schedule, ThreadHighlights,
+};
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::sidebar as side;
-use crate::tips::Tip as _;
 
 pub(crate) const HIGHLIGHTS: &str = "threadbear.highlights";
 pub(crate) const PATCHES: &str = "threadbear.patches";
@@ -52,6 +55,8 @@ pub(crate) enum Target {
     Page(String),
     /// A GitHub pull request's tab, by its own URL (pr_view.rs).
     Pr(String),
+    /// A design review's page, by the review's id (review_pane.rs).
+    Review(String),
 }
 
 /// A folder's selection and open rows, kept so coming Back to it finds it as
@@ -88,7 +93,17 @@ pub(crate) struct PanePreview {
 
 impl PanePreview {
     pub(crate) fn new(target: Target, title: String, from: String) -> Self {
-        PanePreview { target, title, from, opened: 0, back: vec![], memory: Default::default(), editing: false, live: false, lines: None }
+        PanePreview {
+            target,
+            title,
+            from,
+            opened: 0,
+            back: vec![],
+            memory: Default::default(),
+            editing: false,
+            live: false,
+            lines: None,
+        }
     }
 
     pub(crate) fn file_path(&self) -> Option<&str> {
@@ -107,17 +122,32 @@ fn remembered_open(p: &PanePreview) -> Option<crate::pane_store::Open> {
         Target::File(path) => (path.clone(), false),
         Target::Folder(path) => (path.clone(), true),
         // A PR is read from GitHub again each launch, so isn't kept.
-        Target::Page(_) | Target::Pr(_) => return None,
+        // A review opens again from its card.
+        Target::Page(_) | Target::Pr(_) | Target::Review(_) => return None,
     };
     let back = p.back.iter().filter_map(remembered_open).collect();
-    Some(crate::pane_store::Open { path, folder, title: p.title.clone(), from: p.from.clone(), back })
+    Some(crate::pane_store::Open {
+        path,
+        folder,
+        title: p.title.clone(),
+        from: p.from.clone(),
+        back,
+    })
 }
 
 /// A remembered preview opened again over `from`, Back's steps included.
 fn restored_preview(open: &crate::pane_store::Open, from: &str) -> PanePreview {
-    let target = if open.folder { Target::Folder(open.path.clone()) } else { Target::File(open.path.clone()) };
+    let target = if open.folder {
+        Target::Folder(open.path.clone())
+    } else {
+        Target::File(open.path.clone())
+    };
     let mut preview = PanePreview::new(target, open.title.clone(), from.to_owned());
-    preview.back = open.back.iter().map(|b| restored_preview(b, from)).collect();
+    preview.back = open
+        .back
+        .iter()
+        .map(|b| restored_preview(b, from))
+        .collect();
     preview
 }
 
@@ -150,20 +180,55 @@ pub(crate) struct MenuItem {
 }
 
 impl MenuItem {
-    pub(crate) fn action(title: impl Into<String>, symbol: &'static str, action: MenuAction) -> Self {
-        Self { title: title.into(), symbol: Some(symbol), action: Some(action), checked: false, children: vec![] }
+    pub(crate) fn action(
+        title: impl Into<String>,
+        symbol: &'static str,
+        action: MenuAction,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            symbol: Some(symbol),
+            action: Some(action),
+            checked: false,
+            children: vec![],
+        }
     }
     pub(crate) fn separator() -> Self {
-        Self { title: "---".into(), symbol: None, action: None, checked: false, children: vec![] }
+        Self {
+            title: "---".into(),
+            symbol: None,
+            action: None,
+            checked: false,
+            children: vec![],
+        }
     }
-    pub(crate) fn submenu(title: impl Into<String>, symbol: &'static str, children: Vec<MenuItem>) -> Self {
-        Self { title: title.into(), symbol: Some(symbol), action: None, checked: false, children }
+    pub(crate) fn submenu(
+        title: impl Into<String>,
+        symbol: &'static str,
+        children: Vec<MenuItem>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            symbol: Some(symbol),
+            action: None,
+            checked: false,
+            children,
+        }
     }
     /// Shown, greyed: a choice that's coming but isn't here yet. None just
     /// now (the folder's Show as icons was the last).
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "none just now; kept for the next choice that's coming"
+    )]
     pub(crate) fn disabled(title: impl Into<String>, symbol: &'static str) -> Self {
-        Self { title: title.into(), symbol: Some(symbol), action: None, checked: false, children: vec![] }
+        Self {
+            title: title.into(),
+            symbol: Some(symbol),
+            action: None,
+            checked: false,
+            children: vec![],
+        }
     }
     pub(crate) fn picture_copy() -> Self {
         Self::action("Copy Image", "doc.on.doc", MenuAction::CopyPicture)
@@ -171,7 +236,13 @@ impl MenuItem {
 }
 
 /// Builds the kit's popup menu from `items`, submenus included.
-fn fill_menu(mut menu: PopupMenu, items: &[MenuItem], entity: WeakEntity<SidePane>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+fn fill_menu(
+    mut menu: PopupMenu,
+    items: &[MenuItem],
+    entity: WeakEntity<SidePane>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
     for item in items {
         if item.title == "---" {
             menu = menu.separator();
@@ -180,22 +251,31 @@ fn fill_menu(mut menu: PopupMenu, items: &[MenuItem], entity: WeakEntity<SidePan
         let symbol = item.symbol.map(icons::symbol);
         if !item.children.is_empty() {
             let (children, entity2) = (item.children.clone(), entity.clone());
-            menu = menu.submenu_with_icon(symbol, item.title.clone(), window, cx, move |sub, window, cx| fill_menu(sub, &children, entity2.clone(), window, cx));
+            menu = menu.submenu_with_icon(
+                symbol,
+                item.title.clone(),
+                window,
+                cx,
+                move |sub, window, cx| fill_menu(sub, &children, entity2.clone(), window, cx),
+            );
             continue;
         }
         let action = item.action.clone();
         let target = entity.clone();
-        let mut row = PopupMenuItem::new(item.title.clone()).checked(item.checked).disabled(action.is_none()).on_click(move |_, window, cx| {
-            if let Some(action) = action.clone() {
-                target
-                    .update(cx, |this, cx| {
-                        if let Some(thread) = this.thread(cx) {
-                            this.run_menu_action(action, &thread, window, cx);
-                        }
-                    })
-                    .ok();
-            }
-        });
+        let mut row = PopupMenuItem::new(item.title.clone())
+            .checked(item.checked)
+            .disabled(action.is_none())
+            .on_click(move |_, window, cx| {
+                if let Some(action) = action.clone() {
+                    target
+                        .update(cx, |this, cx| {
+                            if let Some(thread) = this.thread(cx) {
+                                this.run_menu_action(action, &thread, window, cx);
+                            }
+                        })
+                        .ok();
+                }
+            });
         if let Some(symbol) = symbol {
             row = row.icon(symbol);
         }
@@ -207,40 +287,96 @@ fn fill_menu(mut menu: PopupMenu, items: &[MenuItem], entity: WeakEntity<SidePan
 /// What choosing a menu item does.
 #[derive(Clone, Debug)]
 pub(crate) enum MenuAction {
-    PreviewFile { path: String, title: String },
-    PreviewPage { url: String },
-    OpenFile { path: String },
-    OpenUrl { url: String },
-    Reveal { path: String },
-    Copy { text: String },
-    Remove { id: String, title: String },
+    PreviewFile {
+        path: String,
+        title: String,
+    },
+    PreviewPage {
+        url: String,
+    },
+    OpenFile {
+        path: String,
+    },
+    OpenUrl {
+        url: String,
+    },
+    Reveal {
+        path: String,
+    },
+    Copy {
+        text: String,
+    },
+    Remove {
+        id: String,
+        title: String,
+    },
     /// A picture's right-click, the file's own bytes (`copyImage`).
     CopyPicture,
-    MentionCard { task: threadbear_core::projects::Task, thread_id: String },
+    MentionCard {
+        task: threadbear_core::projects::Task,
+        thread_id: String,
+    },
     // The folder browser's (`FolderPaneView.menu`).
-    OpenFolderRow { key: String, entry: threadbear_core::folders::FolderEntry },
-    SortFolder { key: String, sort: threadbear_core::folders::FolderSort },
-    FolderHidden { hidden: bool },
-    FolderMode { mode: threadbear_core::folders::FolderMode },
+    OpenFolderRow {
+        key: String,
+        entry: threadbear_core::folders::FolderEntry,
+    },
+    SortFolder {
+        key: String,
+        sort: threadbear_core::folders::FolderSort,
+    },
+    FolderHidden {
+        hidden: bool,
+    },
+    FolderMode {
+        mode: threadbear_core::folders::FolderMode,
+    },
     /// Each of the rows picked, in its app, or shown in its folder.
-    OpenEach { paths: Vec<String> },
-    RevealEach { paths: Vec<String> },
+    OpenEach {
+        paths: Vec<String>,
+    },
+    RevealEach {
+        paths: Vec<String>,
+    },
     /// A folder from the path bar's "…" menu, picking the one below it.
-    FolderCrumb { key: String, path: String, selecting: Option<String> },
+    FolderCrumb {
+        key: String,
+        path: String,
+        selecting: Option<String>,
+    },
     // A Scheduled row's (`scheduleRow`).
-    EditSchedule { id: String },
+    EditSchedule {
+        id: String,
+    },
     ShowSchedules,
     // A link row's (`LinkMenu`): a page in one of Chrome's profiles, and
     // what a click on a web link does.
-    OpenInProfile { url: String, directory: String },
-    SetWebClick { action: threadbear_core::reply_links::WebLinkAction },
+    OpenInProfile {
+        url: String,
+        directory: String,
+    },
+    SetWebClick {
+        action: threadbear_core::reply_links::WebLinkAction,
+    },
     // A row of Threads it started (`startedRow`'s menu).
-    OpenThread { id: String },
-    OpenThreadInPanel { id: String },
+    OpenThread {
+        id: String,
+    },
+    OpenThreadInPanel {
+        id: String,
+    },
     // A PR tab's Merge and Review menus (pr_view.rs).
-    PrMerge { url: String, method: String },
-    PrMergeDefault { method: String },
-    PrReview { url: String, action: String },
+    PrMerge {
+        url: String,
+        method: String,
+    },
+    PrMergeDefault {
+        method: String,
+    },
+    PrReview {
+        url: String,
+        action: String,
+    },
 }
 
 /// The app's window of files read so far and folders looked at lives in
@@ -296,12 +432,19 @@ pub(crate) struct SidePane {
     pub(crate) browser: crate::agent_browser::BrowserPaneState,
     /// The PRs open as tabs (pr_view.rs).
     pub(crate) prs: crate::pr_view::PrPanes,
+    /// The reviews open as pages (review_pane.rs).
+    pub(crate) reviews: crate::review_pane::ReviewPanes,
     _subs: Vec<Subscription>,
 }
 
 impl SidePane {
     /// `app` is the window's model, `client` its runner connection.
-    pub(crate) fn new(app: WeakEntity<Threadbear>, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        app: WeakEntity<Threadbear>,
+        client: Arc<Client>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut pane = SidePane {
             app,
             client,
@@ -335,17 +478,26 @@ impl SidePane {
             explain: Default::default(),
             browser: Default::default(),
             prs: Default::default(),
+            reviews: Default::default(),
             _subs: vec![],
         };
-        pane.chosen = pane.places.iter().filter_map(|(id, p)| Some((id.clone(), p.section.clone()?))).collect();
+        pane.chosen = pane
+            .places
+            .iter()
+            .filter_map(|(id, p)| Some((id.clone(), p.section.clone()?)))
+            .collect();
         // The pane follows the window's model: what's selected, and each
         // summary's seq and highlight stamp for "fetch again".
         if let Some(app) = pane.app.upgrade() {
-            pane._subs.push(cx.observe_in(&app, window, |this, app, _window, cx| this.app_changed(&app, cx)));
+            pane._subs
+                .push(cx.observe_in(&app, window, |this, app, _window, cx| {
+                    this.app_changed(&app, cx)
+                }));
         }
         // The Browser pane's pages and stills, as BrowserBear changes them.
         if let Some(browser) = crate::agent_browser::model(cx) {
-            pane._subs.push(cx.observe(&browser, |_, _, cx| cx.notify()));
+            pane._subs
+                .push(cx.observe(&browser, |_, _, cx| cx.notify()));
         }
         pane.load_projects(cx);
         pane.load_schedules(cx);
@@ -379,7 +531,13 @@ impl SidePane {
                 }
                 // Files opened while the runner was away: read now, or when
                 // their thread is next shown (reread_file puts that off).
-                let waiting: Vec<String> = this.files.open.iter().filter(|(_, f)| f.waiting_for_runner).map(|(id, _)| id.clone()).collect();
+                let waiting: Vec<String> = this
+                    .files
+                    .open
+                    .iter()
+                    .filter(|(_, f)| f.waiting_for_runner)
+                    .map(|(id, _)| id.clone())
+                    .collect();
                 for id in waiting {
                     if let Some(open) = this.files.open.get_mut(&id) {
                         open.waiting_for_runner = false;
@@ -393,7 +551,10 @@ impl SidePane {
     }
 
     pub(crate) fn projects_updated(&mut self, projects: &Value, cx: &mut Context<Self>) {
-        self.projects = ProjectInfo::list(projects).into_iter().map(|p| (p.id.clone(), p)).collect();
+        self.projects = ProjectInfo::list(projects)
+            .into_iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
         cx.notify();
     }
 
@@ -417,16 +578,29 @@ impl SidePane {
         if let Some(shown) = self.thread(cx) {
             self.restore_preview(&shown.id, cx);
         }
+        // Another thread on show: the pane's only wide for a review's page.
+        self.sync_review_width(cx);
         let t = app.read(cx);
-        let Some(thread) = t.selected.as_ref().and_then(|id| t.threads.get(id)) else { return };
-        let key = (thread.id.clone(), thread.last_seq, thread.highlights_at.clone());
+        let Some(thread) = t.selected.as_ref().and_then(|id| t.threads.get(id)) else {
+            return;
+        };
+        let key = (
+            thread.id.clone(),
+            thread.last_seq,
+            thread.highlights_at.clone(),
+        );
         if self.seen.as_ref() == Some(&key) {
             return;
         }
         let new_thread = self.seen.as_ref().map(|k| &k.0) != Some(&key.0);
         let id = key.0.clone();
         // Leaving a thread whose file was being worked on: what's typed is saved.
-        if let Some(left) = self.seen.as_ref().map(|k| k.0.clone()).filter(|_| new_thread) {
+        if let Some(left) = self
+            .seen
+            .as_ref()
+            .map(|k| k.0.clone())
+            .filter(|_| new_thread)
+        {
             self.leave_edit(&left, cx);
         }
         self.seen = Some(key);
@@ -435,7 +609,15 @@ impl SidePane {
             // Show-all and the edited files don't stick to a thread we leave (HighlightsView's @State per thread).
             self.flags.clear();
             self.project_why = None;
-            self.refresh_highlights(id.clone(), if fetched { Duration::from_secs(1) } else { Duration::ZERO }, cx);
+            self.refresh_highlights(
+                id.clone(),
+                if fetched {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::ZERO
+                },
+                cx,
+            );
             self.file_shown(&id, cx);
         } else {
             self.refresh_highlights(id, Duration::from_secs(1), cx);
@@ -477,7 +659,12 @@ impl SidePane {
     /// Asks for a thread's highlights after `delay`, once however many times
     /// it's asked meanwhile (`refreshHighlights`): a busy turn moves `lastSeq`
     /// many times a second, and this keeps it to about one fetch a second.
-    pub(crate) fn refresh_highlights(&mut self, id: String, delay: Duration, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_highlights(
+        &mut self,
+        id: String,
+        delay: Duration,
+        cx: &mut Context<Self>,
+    ) {
         if self.highlights_unsupported {
             return;
         }
@@ -493,12 +680,21 @@ impl SidePane {
             let mut fetched = 0;
             let mut retry_delay = Duration::from_secs(1);
             loop {
-                let Ok(Some(wanted)) = this.update(cx, |t, _| (!t.highlights_unsupported).then(|| t.wanted.get(&id).copied().unwrap_or(0))) else { break };
+                let Ok(Some(wanted)) = this.update(cx, |t, _| {
+                    (!t.highlights_unsupported).then(|| t.wanted.get(&id).copied().unwrap_or(0))
+                }) else {
+                    break;
+                };
                 if wanted == fetched {
                     break;
                 }
                 fetched = wanted;
-                let res = call(client.clone(), "threads.highlights", json!({ "threadId": id })).await;
+                let res = call(
+                    client.clone(),
+                    "threads.highlights",
+                    json!({ "threadId": id }),
+                )
+                .await;
                 let id2 = id.clone();
                 let retry = this.update(cx, |t, cx| {
                     match res {
@@ -527,7 +723,10 @@ impl SidePane {
                     // A quiet thread has no next event to retry its shown pin.
                     // Back off, and stop when Mike leaves or the request goes.
                     cx.background_executor().timer(retry_delay).await;
-                    if !this.update(cx, |t, cx| t.waiting_for_pin(&id, cx)).unwrap_or(false) {
+                    if !this
+                        .update(cx, |t, cx| t.waiting_for_pin(&id, cx))
+                        .unwrap_or(false)
+                    {
                         // Still honor a newer ordinary refresh queued while
                         // waiting, without retrying this failed snapshot.
                         retry_delay = Duration::from_secs(1);
@@ -552,7 +751,11 @@ impl SidePane {
     }
 
     pub(crate) fn highlights_answered(&self, id: &str, target: u64) -> bool {
-        self.highlights_unsupported || self.answered.get(id).is_some_and(|answer| *answer >= target)
+        self.highlights_unsupported
+            || self
+                .answered
+                .get(id)
+                .is_some_and(|answer| *answer >= target)
     }
 
     pub(crate) fn highlights_fetching(&self, id: &str) -> bool {
@@ -560,12 +763,18 @@ impl SidePane {
     }
 
     fn waiting_for_pin(&self, id: &str, cx: &App) -> bool {
-        let Some(app) = self.app.upgrade() else { return false };
+        let Some(app) = self.app.upgrade() else {
+            return false;
+        };
         let app = app.read(cx);
         !app.shows_home
             && crate::thread::is_looking()
             && app.open_thread().is_some_and(|thread| {
-                thread.id == id && thread.panel_request.as_ref().is_some_and(|request| request.highlight.is_some())
+                thread.id == id
+                    && thread
+                        .panel_request
+                        .as_ref()
+                        .is_some_and(|request| request.highlight.is_some())
             })
     }
 
@@ -574,8 +783,16 @@ impl SidePane {
     /// The thread's section showing: the one last chosen while it's still
     /// there, else Highlights (`paneSection`). Previews open over it.
     pub(crate) fn section_for(&self, thread: &ThreadSummary) -> String {
-        let remembered = self.chosen.get(&thread.id).cloned().unwrap_or_else(|| HIGHLIGHTS.to_owned());
-        let exists = remembered == HIGHLIGHTS || remembered == FILES || remembered == BROWSER || (remembered == PATCHES && thread.patches.as_ref().is_some_and(|p| !p.is_empty())) || thread.panels().iter().any(|p| p.id == remembered);
+        let remembered = self
+            .chosen
+            .get(&thread.id)
+            .cloned()
+            .unwrap_or_else(|| HIGHLIGHTS.to_owned());
+        let exists = remembered == HIGHLIGHTS
+            || remembered == FILES
+            || remembered == BROWSER
+            || (remembered == PATCHES && thread.patches.as_ref().is_some_and(|p| !p.is_empty()))
+            || thread.panels().iter().any(|p| p.id == remembered);
         if exists {
             remembered
         } else {
@@ -600,7 +817,13 @@ impl SidePane {
     pub(crate) fn choose_section(&mut self, thread_id: &str, id: &str, cx: &mut Context<Self>) {
         if self.previews.get(thread_id).is_some_and(|p| p.from != id) {
             self.leave_edit(thread_id, cx);
-            self.previews.remove(thread_id);
+            if self
+                .previews
+                .remove(thread_id)
+                .is_some_and(|p| matches!(p.target, Target::Review(_)))
+            {
+                self.review_closed(thread_id, cx);
+            }
         }
         self.chosen.insert(thread_id.to_owned(), id.to_owned());
         self.remember(thread_id);
@@ -613,10 +836,21 @@ impl SidePane {
     fn remember(&mut self, thread_id: &str) {
         let open = self.previews.get(thread_id).and_then(remembered_open);
         let section = self.chosen.get(thread_id).cloned();
-        if self.places.get(thread_id).is_some_and(|p| p.section == section && p.open == open) {
+        if self
+            .places
+            .get(thread_id)
+            .is_some_and(|p| p.section == section && p.open == open)
+        {
             return;
         }
-        self.places.insert(thread_id.to_owned(), crate::pane_store::Place { section, open, at: crate::pane_store::now() });
+        self.places.insert(
+            thread_id.to_owned(),
+            crate::pane_store::Place {
+                section,
+                open,
+                at: crate::pane_store::now(),
+            },
+        );
         crate::pane_store::save(&self.places);
     }
 
@@ -629,12 +863,16 @@ impl SidePane {
             return;
         }
         // Not on show yet: its first section drawn tries again.
-        let Some(thread) = self.thread(cx).filter(|t| t.id == thread_id) else { return };
+        let Some(thread) = self.thread(cx).filter(|t| t.id == thread_id) else {
+            return;
+        };
         self.restored.insert(thread_id.to_owned());
         if self.previews.contains_key(thread_id) {
             return;
         }
-        let Some(open) = self.places.get(thread_id).and_then(|p| p.open.clone()) else { return };
+        let Some(open) = self.places.get(thread_id).and_then(|p| p.open.clone()) else {
+            return;
+        };
         // Opened over a panel the thread no longer has: there's nowhere for it
         // to show (another section may not be open in the dock either), so
         // it's left closed. A preview draws over its own section whichever
@@ -660,7 +898,12 @@ impl SidePane {
         }
         // Its previewed file changed while another thread showed (files.rs
         // reread_file put the read off): read it now.
-        if let Some(open) = self.files.open.get_mut(thread_id).filter(|f| f.changed_away) {
+        if let Some(open) = self
+            .files
+            .open
+            .get_mut(thread_id)
+            .filter(|f| f.changed_away)
+        {
             open.changed_away = false;
             self.reread_file(thread_id, cx);
         }
@@ -670,7 +913,12 @@ impl SidePane {
 
     /// A click on a highlight: a file previews in the pane (a project file opens
     /// in its app), a page goes to the browser for now (`AppModel.open`).
-    pub(crate) fn open_highlight(&mut self, item: &Highlight, thread: &ThreadSummary, cx: &mut Context<Self>) {
+    pub(crate) fn open_highlight(
+        &mut self,
+        item: &Highlight,
+        thread: &ThreadSummary,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(path) = &item.path {
             if core::is_app_project(path) && !thread.is_remote() {
                 self.open_externally(path, cx);
@@ -696,7 +944,11 @@ impl SidePane {
         }
         // A PR opens as its own tab here, with the inlinePrs experiment.
         if let (Some(_), Some(thread)) = (crate::pr_view::pr_url(url), self.thread(cx)) {
-            if self.app.upgrade().is_some_and(|app| crate::pr_view::on(app.read(cx))) {
+            if self
+                .app
+                .upgrade()
+                .is_some_and(|app| crate::pr_view::on(app.read(cx)))
+            {
                 self.open_pr(url, &thread, cx);
                 return;
             }
@@ -704,10 +956,19 @@ impl SidePane {
         if core::is_web_page(url) {
             // Where Default says, as a web link in a reply goes: the browser
             // unless Mike picked the pane (`openLink`).
-            if crate::reply_links::web_click() == threadbear_core::reply_links::WebLinkAction::Panel {
+            if crate::reply_links::web_click() == threadbear_core::reply_links::WebLinkAction::Panel
+            {
                 if let Some(thread) = self.thread(cx) {
                     let from = self.section_for(&thread);
-                    self.show_preview(PanePreview::new(Target::Page(url.to_owned()), core::text::address(url), from), &thread.id, cx);
+                    self.show_preview(
+                        PanePreview::new(
+                            Target::Page(url.to_owned()),
+                            core::text::address(url),
+                            from,
+                        ),
+                        &thread.id,
+                        cx,
+                    );
                     return;
                 }
             }
@@ -731,36 +992,75 @@ impl SidePane {
         }
     }
 
-    pub(crate) fn preview_path(&mut self, path: &str, title: Option<String>, thread: &ThreadSummary, cx: &mut Context<Self>) {
+    pub(crate) fn preview_path(
+        &mut self,
+        path: &str,
+        title: Option<String>,
+        thread: &ThreadSummary,
+        cx: &mut Context<Self>,
+    ) {
         self.preview_path_at(path, title, None, thread, cx);
     }
 
     /// `preview_path`, with lines of its text to tint and scroll to.
-    pub(crate) fn preview_path_at(&mut self, path: &str, title: Option<String>, lines: Option<(usize, usize)>, thread: &ThreadSummary, cx: &mut Context<Self>) {
+    pub(crate) fn preview_path_at(
+        &mut self,
+        path: &str,
+        title: Option<String>,
+        lines: Option<(usize, usize)>,
+        thread: &ThreadSummary,
+        cx: &mut Context<Self>,
+    ) {
         let section = self.section_for(thread);
         // A folder browsed in place of its picture; the runner says which it is.
-        let target = if self.files.is_known_folder(path) { Target::Folder(path.to_owned()) } else { Target::File(path.to_owned()) };
+        let target = if self.files.is_known_folder(path) {
+            Target::Folder(path.to_owned())
+        } else {
+            Target::File(path.to_owned())
+        };
         let title = title.unwrap_or_else(|| core::last_component(path).to_owned());
         let mut preview = PanePreview::new(target, title, section);
         preview.lines = lines;
         self.show_preview(preview, &thread.id.clone(), cx);
     }
 
-    pub(crate) fn show_preview(&mut self, mut preview: PanePreview, thread_id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn show_preview(
+        &mut self,
+        mut preview: PanePreview,
+        thread_id: &str,
+        cx: &mut Context<Self>,
+    ) {
         // It takes an explanation's place, as a preview of its own would.
         self.stop_explaining(thread_id);
         // A file being worked on is saved before anything takes its place.
         self.leave_edit(thread_id, cx);
+        // Anything but a review's page takes one's place for good.
+        let leaves_review = !matches!(preview.target, Target::Review(_))
+            && self
+                .previews
+                .get(thread_id)
+                .is_some_and(|p| matches!(p.target, Target::Review(_)));
         preview.opened = self.previews.get(thread_id).map_or(0, |p| p.opened) + 1;
         // A Markdown file opens as its bar's menu last left it, and code and
         // plain text ready to type in, on this runner's machine
         // (`MarkdownView.opensRaw`).
-        let here = self.thread(cx).is_some_and(|t| t.id == thread_id && !t.is_remote());
+        let here = self
+            .thread(cx)
+            .is_some_and(|t| t.id == thread_id && !t.is_remote());
         if let Some(path) = preview.file_path() {
-            preview.editing = here && threadbear_core::text_file::MarkdownView::opens_raw(path, self.files.prefs.markdown_view);
+            preview.editing = here
+                && threadbear_core::text_file::MarkdownView::opens_raw(
+                    path,
+                    self.files.prefs.markdown_view,
+                );
         }
-        self.chosen.entry(thread_id.to_owned()).or_insert_with(|| preview.from.clone());
+        self.chosen
+            .entry(thread_id.to_owned())
+            .or_insert_with(|| preview.from.clone());
         self.previews.insert(thread_id.to_owned(), preview);
+        if leaves_review {
+            self.review_closed(thread_id, cx);
+        }
         self.remember(thread_id);
         self.menu = None;
         if let Some(thread) = self.thread(cx) {
@@ -772,8 +1072,11 @@ impl SidePane {
     /// Back: through the folders and files Mike came through in the browser,
     /// then out to the section (`previewBack`).
     pub(crate) fn preview_back(&mut self, thread_id: &str, cx: &mut Context<Self>) {
-        let Some(current) = self.previews.get(thread_id).cloned() else { return };
+        let Some(current) = self.previews.get(thread_id).cloned() else {
+            return;
+        };
         self.leave_edit(thread_id, cx);
+        let was_review = matches!(current.target, Target::Review(_));
         match current.back.split_last() {
             None => {
                 self.previews.remove(thread_id);
@@ -788,25 +1091,45 @@ impl SidePane {
                 }
             }
         }
+        if was_review {
+            self.review_closed(thread_id, cx);
+        }
         self.remember(thread_id);
         cx.notify();
     }
 
     pub(crate) fn close_preview(&mut self, thread_id: &str, cx: &mut Context<Self>) {
         self.leave_edit(thread_id, cx);
-        self.previews.remove(thread_id);
+        let was_review = self
+            .previews
+            .remove(thread_id)
+            .is_some_and(|p| matches!(p.target, Target::Review(_)));
+        if was_review {
+            self.review_closed(thread_id, cx);
+        }
         self.remember(thread_id);
         cx.notify();
     }
 
-    pub(crate) fn remove_highlight(&mut self, id: String, title: String, thread_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn remove_highlight(
+        &mut self,
+        id: String,
+        title: String,
+        thread_id: String,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(list) = self.highlights.get_mut(&thread_id) {
             list.highlights.retain(|h| h.id != id);
         }
         cx.notify();
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.removeHighlight", json!({ "threadId": thread_id, "highlightId": id })).await;
+            let res = call(
+                client,
+                "threads.removeHighlight",
+                json!({ "threadId": thread_id, "highlightId": id }),
+            )
+            .await;
             this.update(cx, |t, cx| {
                 if let Err(e) = res {
                     t.note_error(format!("Couldn't remove {title}: {}", e.message), cx);
@@ -830,14 +1153,27 @@ impl SidePane {
 
     /// The same `threads.tickAsk` the transcript's card uses: the tick shows at
     /// once, and the runner's answer (or its `thread.updated`) puts it right.
-    pub(crate) fn tick_ask(&mut self, thread_id: String, seq: u64, index: usize, ticked: bool, cx: &mut Context<Self>) {
+    pub(crate) fn tick_ask(
+        &mut self,
+        thread_id: String,
+        seq: u64,
+        index: usize,
+        ticked: bool,
+        cx: &mut Context<Self>,
+    ) {
         let key = format!("{thread_id}/{seq}/{index}");
         if !self.ticking.insert(key.clone()) {
             return;
         }
         if let Some(app) = self.app.upgrade() {
             app.update(cx, |t, cx| {
-                if let Some(ask) = t.threads.get_mut(&thread_id).map(std::sync::Arc::make_mut).and_then(|t| t.asks.as_mut()).and_then(|a| a.get_mut(index)) {
+                if let Some(ask) = t
+                    .threads
+                    .get_mut(&thread_id)
+                    .map(std::sync::Arc::make_mut)
+                    .and_then(|t| t.asks.as_mut())
+                    .and_then(|a| a.get_mut(index))
+                {
                     ask.ticked = Some(ticked);
                 }
                 cx.notify();
@@ -846,13 +1182,24 @@ impl SidePane {
         cx.notify();
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.tickAsk", json!({ "threadId": thread_id, "asksSeq": seq, "index": index, "ticked": ticked })).await;
+            let res = call(
+                client,
+                "threads.tickAsk",
+                json!({ "threadId": thread_id, "asksSeq": seq, "index": index, "ticked": ticked }),
+            )
+            .await;
             this.update(cx, |t, cx| {
                 t.ticking.remove(&key);
                 if let Err(e) = res {
                     if let Some(app) = t.app.upgrade() {
                         app.update(cx, |app, cx| {
-                            if let Some(ask) = app.threads.get_mut(&thread_id).map(std::sync::Arc::make_mut).and_then(|t| t.asks.as_mut()).and_then(|a| a.get_mut(index)) {
+                            if let Some(ask) = app
+                                .threads
+                                .get_mut(&thread_id)
+                                .map(std::sync::Arc::make_mut)
+                                .and_then(|t| t.asks.as_mut())
+                                .and_then(|a| a.get_mut(index))
+                            {
                                 ask.ticked = Some(!ticked);
                             }
                             cx.notify();
@@ -868,9 +1215,17 @@ impl SidePane {
     }
 
     /// A menu item chosen.
-    pub(crate) fn run_menu_action(&mut self, action: MenuAction, thread: &ThreadSummary, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run_menu_action(
+        &mut self,
+        action: MenuAction,
+        thread: &ThreadSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match action {
-            MenuAction::PreviewFile { path, title } => self.preview_path(&path, Some(title), thread, cx),
+            MenuAction::PreviewFile { path, title } => {
+                self.preview_path(&path, Some(title), thread, cx)
+            }
             MenuAction::PreviewPage { url } => crate::files::open_web(&url, cx),
             MenuAction::OpenFile { path } => self.open_externally(&path, cx),
             MenuAction::OpenUrl { url } => {
@@ -878,31 +1233,61 @@ impl SidePane {
                     crate::files::open_web(&url, cx);
                 }
             }
-            MenuAction::Reveal { path } => crate::files::reveal(&path, if thread.is_remote() { crate::open_gate::Origin::OtherMac } else { crate::open_gate::Origin::ThisMac }, cx),
-            MenuAction::MentionCard { task, thread_id } => self.mention_board_card(&task, &thread_id, window, cx),
+            MenuAction::Reveal { path } => crate::files::reveal(
+                &path,
+                if thread.is_remote() {
+                    crate::open_gate::Origin::OtherMac
+                } else {
+                    crate::open_gate::Origin::ThisMac
+                },
+                cx,
+            ),
+            MenuAction::MentionCard { task, thread_id } => {
+                self.mention_board_card(&task, &thread_id, window, cx)
+            }
             MenuAction::Copy { text } => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-            MenuAction::Remove { id, title } => self.remove_highlight(id, title, thread.id.clone(), cx),
+            MenuAction::Remove { id, title } => {
+                self.remove_highlight(id, title, thread.id.clone(), cx)
+            }
             MenuAction::EditSchedule { id } => self.edit_schedule(&id, window, cx),
             MenuAction::ShowSchedules => {
                 if let Some(app) = self.app.upgrade() {
-                    app.update(cx, |app, cx| app.set_mode(crate::shell::SidebarMode::Scheduled, cx));
+                    app.update(cx, |app, cx| {
+                        app.set_mode(crate::shell::SidebarMode::Scheduled, cx)
+                    });
                 }
             }
             MenuAction::CopyPicture => {
                 self.copy_open_picture(cx);
             }
-            MenuAction::OpenInProfile { url, directory } => crate::open_gate::open_in_chrome_profile(&url, &directory, cx),
+            MenuAction::OpenInProfile { url, directory } => {
+                crate::open_gate::open_in_chrome_profile(&url, &directory, cx)
+            }
             MenuAction::SetWebClick { action } => crate::reply_links::set_web_click(action),
-            MenuAction::OpenFolderRow { key, entry } => self.run_folder_row_action(&key, entry, thread, cx),
+            MenuAction::OpenFolderRow { key, entry } => {
+                self.run_folder_row_action(&key, entry, thread, cx)
+            }
             MenuAction::SortFolder { key, sort } => self.set_folder_sort(&key, sort, cx),
             MenuAction::FolderHidden { hidden } => self.set_folder_hidden(hidden, cx),
             MenuAction::FolderMode { mode } => self.set_folder_mode(mode, cx),
-            MenuAction::OpenEach { paths } => paths.iter().for_each(|path| self.open_externally(path, cx)),
-            MenuAction::RevealEach { paths } => {
-                let origin = if thread.is_remote() { crate::open_gate::Origin::OtherMac } else { crate::open_gate::Origin::ThisMac };
-                paths.iter().for_each(|path| crate::files::reveal(path, origin, cx));
+            MenuAction::OpenEach { paths } => {
+                paths.iter().for_each(|path| self.open_externally(path, cx))
             }
-            MenuAction::FolderCrumb { key, path, selecting } => self.run_folder_crumb_action(&key, path, selecting, thread, cx),
+            MenuAction::RevealEach { paths } => {
+                let origin = if thread.is_remote() {
+                    crate::open_gate::Origin::OtherMac
+                } else {
+                    crate::open_gate::Origin::ThisMac
+                };
+                paths
+                    .iter()
+                    .for_each(|path| crate::files::reveal(path, origin, cx));
+            }
+            MenuAction::FolderCrumb {
+                key,
+                path,
+                selecting,
+            } => self.run_folder_crumb_action(&key, path, selecting, thread, cx),
             // A row of Threads it started: the thread, in the main panel or a
             // panel of its own (thread_panels.rs).
             MenuAction::OpenThread { id } => {
@@ -910,13 +1295,17 @@ impl SidePane {
                     app.update(cx, |app, cx| app.open(id, window, cx));
                 }
             }
-            MenuAction::PrMerge { url, method } => self.pr_menu_action(&url, "merge", Some(&method), window, cx),
+            MenuAction::PrMerge { url, method } => {
+                self.pr_menu_action(&url, "merge", Some(&method), window, cx)
+            }
             MenuAction::PrMergeDefault { method } => {
                 if let Some(m) = threadbear_core::pull_requests::MergeMethod::parse(&method) {
                     crate::reply_links::set_pr_merge_method(m);
                 }
             }
-            MenuAction::PrReview { url, action } => self.pr_menu_action(&url, &action, None, window, cx),
+            MenuAction::PrReview { url, action } => {
+                self.pr_menu_action(&url, &action, None, window, cx)
+            }
             MenuAction::OpenThreadInPanel { id } => {
                 if let Some(app) = self.app.upgrade() {
                     app.update(cx, |app, cx| app.open_thread_in_panel(id, cx));
@@ -927,18 +1316,35 @@ impl SidePane {
         cx.notify();
     }
 
-    pub(crate) fn open_menu(&mut self, items: Vec<MenuItem>, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let entity = cx.entity().downgrade();
-        let build = items.clone();
-        let view = PopupMenu::build(window, cx, move |menu, window, cx| fill_menu(menu, &build, entity.clone(), window, cx));
-        let (menu_focus, before) = crate::sidebar::focus_menu(&view, self.menu.as_ref().map(|m| &m.view), window, cx);
-        // The menu closes itself on Escape, a click outside or a choice.
-        let dismissed = cx.subscribe_in(&view, window, move |this, _, _: &DismissEvent, window, cx| {
-            this.menu = None;
-            crate::sidebar::give_back_focus(&menu_focus, before.as_ref(), window, cx);
-            cx.notify();
+        let build = items;
+        let view = PopupMenu::build(window, cx, move |menu, window, cx| {
+            fill_menu(menu, &build, entity.clone(), window, cx)
         });
-        self.menu = Some(OpenMenu { position, view, _dismissed: dismissed });
+        let (menu_focus, before) =
+            crate::sidebar::focus_menu(&view, self.menu.as_ref().map(|m| &m.view), window, cx);
+        // The menu closes itself on Escape, a click outside or a choice.
+        let dismissed = cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, _: &DismissEvent, window, cx| {
+                this.menu = None;
+                crate::sidebar::give_back_focus(&menu_focus, before.as_ref(), window, cx);
+                cx.notify();
+            },
+        );
+        self.menu = Some(OpenMenu {
+            position,
+            view,
+            _dismissed: dismissed,
+        });
         cx.notify();
     }
 
@@ -946,13 +1352,38 @@ impl SidePane {
 
     /// A file row's menu (`FileMenu`).
     pub(crate) fn file_menu(path: &str, title: &str, thread: &ThreadSummary) -> Vec<MenuItem> {
-        let mut items = vec![MenuItem::action("Preview here", "sidebar.right", MenuAction::PreviewFile { path: path.to_owned(), title: title.to_owned() })];
+        let mut items = vec![MenuItem::action(
+            "Preview here",
+            "sidebar.right",
+            MenuAction::PreviewFile {
+                path: path.to_owned(),
+                title: title.to_owned(),
+            },
+        )];
         // Another Mac's file has no copy here to open or reveal (yet).
         if !thread.is_remote() {
-            items.push(MenuItem::action("Open", "arrow.up.forward.app", MenuAction::OpenFile { path: path.to_owned() }));
-            items.push(MenuItem::action(crate::files::REVEAL_TITLE, "folder", MenuAction::Reveal { path: path.to_owned() }));
+            items.push(MenuItem::action(
+                "Open",
+                "arrow.up.forward.app",
+                MenuAction::OpenFile {
+                    path: path.to_owned(),
+                },
+            ));
+            items.push(MenuItem::action(
+                crate::files::REVEAL_TITLE,
+                "folder",
+                MenuAction::Reveal {
+                    path: path.to_owned(),
+                },
+            ));
         }
-        items.push(MenuItem::action("Copy path", "doc.on.doc", MenuAction::Copy { text: path.to_owned() }));
+        items.push(MenuItem::action(
+            "Copy path",
+            "doc.on.doc",
+            MenuAction::Copy {
+                text: path.to_owned(),
+            },
+        ));
         items
     }
 
@@ -966,31 +1397,81 @@ impl SidePane {
         let browser = crate::reply_links::browser_name();
         if let Some(path) = url.strip_prefix("file://") {
             let path = crate::files::percent_decode(path);
-            items.push(MenuItem::action("Preview here", "sidebar.right", MenuAction::PreviewFile { path: path.clone(), title: core::last_component(&path).to_owned() }));
-            items.push(MenuItem::action("Open", "arrow.up.forward.app", MenuAction::OpenFile { path }));
+            items.push(MenuItem::action(
+                "Preview here",
+                "sidebar.right",
+                MenuAction::PreviewFile {
+                    path: path.clone(),
+                    title: core::last_component(&path).to_owned(),
+                },
+            ));
+            items.push(MenuItem::action(
+                "Open",
+                "arrow.up.forward.app",
+                MenuAction::OpenFile { path },
+            ));
         } else {
             let profiles = crate::reply_links::offered_profiles();
             if profiles.is_empty() {
                 // The browser by name where the system says ("Open in Safari").
-                let title = if browser.is_some() { WebLinkAction::Browser.title(browser.as_deref()) } else { crate::files::OPEN_IN_BROWSER.to_owned() };
-                items.push(MenuItem::action(title, WebLinkAction::Browser.symbol(), MenuAction::OpenUrl { url: url.to_owned() }));
+                let title = if browser.is_some() {
+                    WebLinkAction::Browser.title(browser.as_deref())
+                } else {
+                    crate::files::OPEN_IN_BROWSER.to_owned()
+                };
+                items.push(MenuItem::action(
+                    title,
+                    WebLinkAction::Browser.symbol(),
+                    MenuAction::OpenUrl {
+                        url: url.to_owned(),
+                    },
+                ));
             }
             for profile in &profiles {
-                items.push(MenuItem::action(profile.title(), WebLinkAction::Browser.symbol(), MenuAction::OpenInProfile { url: url.to_owned(), directory: profile.directory.clone() }));
+                items.push(MenuItem::action(
+                    profile.title(),
+                    WebLinkAction::Browser.symbol(),
+                    MenuAction::OpenInProfile {
+                        url: url.to_owned(),
+                        directory: profile.directory.clone(),
+                    },
+                ));
             }
             if core::is_web_page(url) {
-                items.push(MenuItem::action("Open in Panel", "sidebar.right", MenuAction::PreviewPage { url: url.to_owned() }));
+                items.push(MenuItem::action(
+                    "Open in Panel",
+                    "sidebar.right",
+                    MenuAction::PreviewPage {
+                        url: url.to_owned(),
+                    },
+                ));
             }
         }
-        items.push(MenuItem::action("Copy link", "link", MenuAction::Copy { text: url.to_owned() }));
+        items.push(MenuItem::action(
+            "Copy link",
+            "link",
+            MenuAction::Copy {
+                text: url.to_owned(),
+            },
+        ));
         if core::is_web_page(url) {
             items.push(MenuItem::separator());
             let click = crate::reply_links::web_click();
             let choices = WebLinkAction::ALL
                 .into_iter()
-                .map(|action| MenuItem { title: action.title(browser.as_deref()), symbol: Some(action.symbol()), action: Some(MenuAction::SetWebClick { action }), checked: action == click, children: vec![] })
+                .map(|action| MenuItem {
+                    title: action.title(browser.as_deref()),
+                    symbol: Some(action.symbol()),
+                    action: Some(MenuAction::SetWebClick { action }),
+                    checked: action == click,
+                    children: vec![],
+                })
                 .collect();
-            items.push(MenuItem::submenu(threadbear_core::reply_links::DEFAULT_TITLE, threadbear_core::reply_links::DEFAULT_SYMBOL, choices));
+            items.push(MenuItem::submenu(
+                threadbear_core::reply_links::DEFAULT_TITLE,
+                threadbear_core::reply_links::DEFAULT_SYMBOL,
+                choices,
+            ));
         }
         items
     }
@@ -1002,28 +1483,61 @@ impl SidePane {
         } else if let Some(url) = &item.url {
             Self::link_menu(url)
         } else if let Some(sha) = &item.sha {
-            vec![MenuItem::action("Copy sha", "number", MenuAction::Copy { text: sha.clone() })]
+            vec![MenuItem::action(
+                "Copy sha",
+                "number",
+                MenuAction::Copy { text: sha.clone() },
+            )]
         } else {
             vec![]
         };
         items.push(MenuItem::separator());
-        items.push(MenuItem::action("Remove", "pin.slash", MenuAction::Remove { id: item.id.clone(), title: item.title.clone() }));
+        items.push(MenuItem::action(
+            "Remove",
+            "pin.slash",
+            MenuAction::Remove {
+                id: item.id.clone(),
+                title: item.title.clone(),
+            },
+        ));
         items
     }
 
-    fn open_highlight_menu(&mut self, item: &Highlight, thread: &ThreadSummary, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_highlight_menu(
+        &mut self,
+        item: &Highlight,
+        thread: &ThreadSummary,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let items = Self::highlight_menu(item, thread);
         self.open_menu(items, position, window, cx);
     }
 
-    fn open_file_row_menu(&mut self, path: &str, title: &str, thread: &ThreadSummary, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_file_row_menu(
+        &mut self,
+        path: &str,
+        title: &str,
+        thread: &ThreadSummary,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let items = Self::file_menu(path, title, thread);
         self.open_menu(items, position, window, cx);
     }
 
     /// A Scheduled row's right-click menu (`scheduleRow`'s `iconContextMenu`).
     pub(crate) fn schedule_menu(id: &str) -> Vec<MenuItem> {
-        vec![MenuItem::action("Edit", "pencil", MenuAction::EditSchedule { id: id.to_owned() }), MenuItem::action("Show all schedules", "clock", MenuAction::ShowSchedules)]
+        vec![
+            MenuItem::action(
+                "Edit",
+                "pencil",
+                MenuAction::EditSchedule { id: id.to_owned() },
+            ),
+            MenuItem::action("Show all schedules", "clock", MenuAction::ShowSchedules),
+        ]
     }
 
     /// A Scheduled row's click: the schedule in the app's editor (`editSchedule`).
@@ -1033,7 +1547,13 @@ impl SidePane {
         }
     }
 
-    fn open_link_row_menu(&mut self, url: &str, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_link_row_menu(
+        &mut self,
+        url: &str,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let items = Self::link_menu(url);
         self.open_menu(items, position, window, cx);
     }
@@ -1087,7 +1607,10 @@ pub(crate) fn palette(cx: &App) -> Palette {
 pub(crate) fn icon(name: &str, size: f32, color: Hsla) -> Icon {
     // A patch can name any SF Symbol; one with no bundled twin gets a plain
     // square rather than `icons::symbol`'s question mark.
-    icons::try_symbol(name).unwrap_or_else(|| Icon::new(gpui_kit::assets::IconName::SquareDashed)).with_size(px(size)).text_color(color)
+    icons::try_symbol(name)
+        .unwrap_or_else(|| Icon::new(gpui_kit::assets::IconName::SquareDashed))
+        .with_size(px(size))
+        .text_color(color)
 }
 
 /// One of the pane's scrolling lists or pages with the kit's scroll bar over
@@ -1097,26 +1620,45 @@ pub(crate) fn icon(name: &str, size: f32, color: Hsla) -> Icon {
 /// same. The list fills what comes back, which the caller sizes. `bar` is the
 /// bar's own id: two lists side by side share a parent, and so would share a
 /// bar's fade if both took their id from this line.
-pub(crate) fn with_scroll_bar(list: Stateful<Div>, scroll: &ScrollHandle, bar: impl Into<ElementId>) -> Div {
+pub(crate) fn with_scroll_bar(
+    list: Stateful<Div>,
+    scroll: &ScrollHandle,
+    bar: impl Into<ElementId>,
+) -> Div {
     div()
         .relative()
         .child(list.size_full().track_scroll(scroll))
-        .child(div().id(bar).absolute().inset_0().child(div().size_full().vertical_scrollbar(scroll)))
+        .child(
+            div()
+                .id(bar)
+                .absolute()
+                .inset_0()
+                .child(div().size_full().vertical_scrollbar(scroll)),
+        )
 }
 
 /// A control's tooltip and the label scripts find it by, as Swift's `.tip`:
 /// a button to VoiceOver. Anything else uses `tipped_as` with its own role.
-pub(crate) fn tipped(el: Stateful<Div>, tip: impl Into<SharedString>) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
+pub(crate) fn tipped(
+    el: Stateful<Div>,
+    tip: impl Into<SharedString>,
+) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
     tipped_as(el, tip, Role::Button)
 }
 
 /// `tipped` for what isn't a button: `Role::Image` for an icon that only
 /// explains, `Role::GenericContainer` for words or a holder round a kit
 /// control (no node of its own, so VoiceOver reads what's inside).
-pub(crate) fn tipped_as(el: Stateful<Div>, tip: impl Into<SharedString>, role: Role) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
+pub(crate) fn tipped_as(
+    el: Stateful<Div>,
+    tip: impl Into<SharedString>,
+    role: Role,
+) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
     let text: SharedString = tip.into();
     let shown = text.clone();
-    crate::a11y::A11yRole::a11y_role(el.test_support(), role).aria_label(text).tip(shown)
+    crate::a11y::A11yRole::a11y_role(el.test_support(), role)
+        .aria_label(text)
+        .tip(shown)
 }
 
 /// One row in the pane's lists (`PaneRow`): a grey icon, the title with a word
@@ -1137,7 +1679,8 @@ pub(crate) struct PaneRow {
     pub detail_lines: usize,
     pub tip: Option<String>,
     pub on_click: Option<Rc<dyn Fn(&mut SidePane, &mut Window, &mut Context<SidePane>)>>,
-    pub on_menu: Option<Rc<dyn Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>)>>,
+    pub on_menu:
+        Option<Rc<dyn Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>)>>,
     /// A file on this Mac it drags out as (file_drag.rs).
     pub drag: Option<String>,
     /// A Files row's preview, drawn in place of its symbol (file_thumbs.rs).
@@ -1252,12 +1795,18 @@ impl PaneRow {
         self
     }
 
-    pub(crate) fn on_click(mut self, f: impl Fn(&mut SidePane, &mut Window, &mut Context<SidePane>) + 'static) -> Self {
+    pub(crate) fn on_click(
+        mut self,
+        f: impl Fn(&mut SidePane, &mut Window, &mut Context<SidePane>) + 'static,
+    ) -> Self {
         self.on_click = Some(Rc::new(f));
         self
     }
 
-    pub(crate) fn on_menu(mut self, f: impl Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>) + 'static) -> Self {
+    pub(crate) fn on_menu(
+        mut self,
+        f: impl Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>) + 'static,
+    ) -> Self {
         self.on_menu = Some(Rc::new(f));
         self
     }
@@ -1291,21 +1840,69 @@ impl PaneRow {
             .items_baseline()
             .gap(px(6.))
             .min_w_0()
-            .when_some(self.lead, |s, lead| s.child(div().flex_none().font_family(cx.theme().mono_font_family.clone()).text_size(px(style::size::DETAIL)).text_color(p.secondary).child(lead)))
-            .child(div().min_w_0().truncate().text_size(px(style::size::LABEL)).line_height(px(style::natural_line(style::size::LABEL))).text_color(label_color).child(self.title.clone()))
+            .when_some(self.lead, |s, lead| {
+                s.child(
+                    div()
+                        .flex_none()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(p.secondary)
+                        .child(lead),
+                )
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(style::size::LABEL))
+                    .line_height(px(style::natural_line(style::size::LABEL)))
+                    .text_color(label_color)
+                    .child(self.title.clone()),
+            )
             .child(div().flex_1().min_w(px(4.)))
-            .when_some(self.trailing, |s, t| s.child(div().flex_none().text_size(px(style::size::SMALL)).line_height(px(style::natural_line(style::size::SMALL))).text_color(p.faint).child(t)))
-            .when_some(self.trailing_symbol, |s, symbol| s.child(icon(&symbol, 11., self.icon_color.unwrap_or(p.secondary))))
+            .when_some(self.trailing, |s, t| {
+                s.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(style::size::SMALL))
+                        .line_height(px(style::natural_line(style::size::SMALL)))
+                        .text_color(p.faint)
+                        .child(t),
+                )
+            })
+            .when_some(self.trailing_symbol, |s, symbol| {
+                s.child(icon(&symbol, 11., self.icon_color.unwrap_or(p.secondary)))
+            })
             .when_some(self.switch, |s, switch| s.child(row_switch(switch, p, cx)));
         let body = v_flex()
             .flex_1()
             .min_w_0()
             .gap(px(2.))
             .child(title_row)
-            .when_some(self.note.filter(|n| !n.is_empty()), |s, note| s.child(div().text_size(px(style::size::DETAIL)).line_height(px(style::natural_line(style::size::DETAIL))).text_color(p.secondary).line_clamp(4).overflow_hidden().text_ellipsis().child(note)))
+            .when_some(self.note.filter(|n| !n.is_empty()), |s, note| {
+                s.child(
+                    div()
+                        .text_size(px(style::size::DETAIL))
+                        .line_height(px(style::natural_line(style::size::DETAIL)))
+                        .text_color(p.secondary)
+                        .line_clamp(4)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(note),
+                )
+            })
             .when_some(self.detail.filter(|d| !d.is_empty()), |s, detail| {
-                let mut d = div().text_size(px(style::size::SMALL)).line_height(px(style::natural_line(style::size::SMALL))).text_color(p.faint);
-                d = if self.detail_lines > 1 { d.line_clamp(self.detail_lines).overflow_hidden().text_ellipsis() } else { d.truncate() };
+                let mut d = div()
+                    .text_size(px(style::size::SMALL))
+                    .line_height(px(style::natural_line(style::size::SMALL)))
+                    .text_color(p.faint);
+                d = if self.detail_lines > 1 {
+                    d.line_clamp(self.detail_lines)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                } else {
+                    d.truncate()
+                };
                 s.child(d.child(detail))
             });
         let needs_blank_icon = self.reserves_icon && self.icon.is_none() && self.thumb.is_none();
@@ -1316,44 +1913,77 @@ impl PaneRow {
             .when(!has_thumb, |s| s.items_start())
             .when(has_thumb, |s| s.items_center())
             .gap(px(if has_thumb { 10. } else { 8. }))
-            .pl(px(LEADING - OUTER_INSET + if self.indent { 24. } else { 0. }))
+            .pl(px(
+                LEADING - OUTER_INSET + if self.indent { 24. } else { 0. }
+            ))
             .pr(px(TRAILING))
             .py(px(6.))
             .rounded(px(CORNER))
             .when_some(self.thumb, |s, thumb| s.child(thumb))
             .when_some(symbol, |s, symbol| {
                 let color = self.icon_color.unwrap_or(p.icon);
-                let mark = if self.turning { crate::spinner::TurningArc::new(12., color).layered().into_any_element() } else { icon(&symbol, 12., color).into_any_element() };
-                s.child(div().w(px(16.)).flex_none().flex().justify_center().pt(px(1.)).child(mark))
+                let mark = if self.turning {
+                    crate::spinner::TurningArc::new(12., color)
+                        .layered()
+                        .into_any_element()
+                } else {
+                    icon(&symbol, 12., color).into_any_element()
+                };
+                s.child(
+                    div()
+                        .w(px(16.))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .pt(px(1.))
+                        .child(mark),
+                )
             })
             .when(needs_blank_icon, |s| s.child(div().w(px(16.)).flex_none()))
             .child(body);
-        let row = row.when(self.on_click.is_some(), |s| s.hover(move |st| st.bg(hover)).cursor_pointer());
+        let row = row.when(self.on_click.is_some(), |s| {
+            s.hover(move |st| st.bg(hover)).cursor_pointer()
+        });
         let mut wrapper = div().id(self.id).px(px(OUTER_INSET)).child(row);
         if let Some(tip) = self.tip {
-            wrapper = wrapper.tip(tip.clone());
+            wrapper = wrapper.tip(tip);
         }
-        let mut wrapper = wrapper.test_support().role(Role::ListItem).aria_label(SharedString::from(self.title));
+        let mut wrapper = wrapper
+            .test_support()
+            .role(Role::ListItem)
+            .aria_label(SharedString::from(self.title));
         if let Some(click) = self.on_click {
-            wrapper = wrapper.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| (click)(this, window, cx)));
+            wrapper = wrapper.on_click(
+                cx.listener(move |this, _: &ClickEvent, window, cx| (click)(this, window, cx)),
+            );
         }
         if let Some(menu) = self.on_menu {
-            wrapper = wrapper.on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                // A row's own menu takes the press before the dock's panel
-                // menu sees it. This covers links, files, pins and schedules.
-                cx.stop_propagation();
-                (menu)(this, ev.position, window, cx);
-            }));
+            wrapper = wrapper.on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    // A row's own menu takes the press before the dock's panel
+                    // menu sees it. This covers links, files, pins and schedules.
+                    cx.stop_propagation();
+                    (menu)(this, ev.position, window, cx);
+                }),
+            );
         }
         crate::file_drag::FileDragExt::file_drag(wrapper, self.drag)
     }
-
 }
 
 /// A row's switch: its icon on a soft fill when on, faint when off. Its
 /// press is its own, so the row's click (opening the link) doesn't fire.
-fn row_switch(switch: RowSwitch, p: Palette, cx: &mut Context<SidePane>) -> impl IntoElement + use<> {
-    let (fill, color) = if switch.on { (style::primary_opacity(cx, 0.14), p.accent) } else { (gpui_kit::transparent_black(), p.faint) };
+fn row_switch(
+    switch: RowSwitch,
+    p: Palette,
+    cx: &mut Context<SidePane>,
+) -> impl IntoElement + use<> {
+    let (fill, color) = if switch.on {
+        (style::primary_opacity(cx, 0.14), p.accent)
+    } else {
+        (gpui_kit::transparent_black(), p.faint)
+    };
     let hover = style::primary_opacity(cx, 0.22);
     let (pending, press) = (switch.pending, switch.press.clone());
     tipped(
@@ -1367,7 +1997,9 @@ fn row_switch(switch: RowSwitch, p: Palette, cx: &mut Context<SidePane>) -> impl
             .rounded(px(5.))
             .bg(fill)
             .when(pending, |s| s.opacity(0.6))
-            .when(!pending, |s| s.hover(move |st| st.bg(hover)).cursor_pointer())
+            .when(!pending, |s| {
+                s.hover(move |st| st.bg(hover)).cursor_pointer()
+            })
             .child(icon(&switch.symbol, 12., color)),
         switch.tip,
     )
@@ -1393,30 +2025,92 @@ pub(crate) struct Heading {
 }
 
 impl SidePane {
-    pub(crate) fn heading(&self, h: Heading, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn heading(
+        &self,
+        h: Heading,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let group = SharedString::from(format!("hl-heading-{}", h.key));
         let key = h.key.clone();
         let (fg, secondary, faint, hairline) = (p.fg, p.secondary, p.faint, p.hairline);
         let hover_group = group.clone();
         let chevron_group = group.clone();
-        let title_el = style::group_hover_text(div().id(SharedString::from(format!("hl-heading-title-{}", h.key))).flex_none().text_size(px(style::size::LABEL)).line_height(px(style::natural_line(style::size::LABEL))).font_semibold().text_color(secondary), hover_group, fg).child(h.title.clone());
-        let mut label = h_flex().group(group.clone()).flex_1().min_w_0().gap(px(6.)).pl(px(LEADING)).pt(px(18.)).pb(px(6.)).items_center();
+        let title_el = style::group_hover_text(
+            div()
+                .id(SharedString::from(format!("hl-heading-title-{}", h.key)))
+                .flex_none()
+                .text_size(px(style::size::LABEL))
+                .line_height(px(style::natural_line(style::size::LABEL)))
+                .font_semibold()
+                .text_color(secondary),
+            hover_group,
+            fg,
+        )
+        .child(h.title.clone());
+        let mut label = h_flex()
+            .group(group)
+            .flex_1()
+            .min_w_0()
+            .gap(px(6.))
+            .pl(px(LEADING))
+            .pt(px(18.))
+            .pb(px(6.))
+            .items_center();
         if let Some(leading) = h.icon {
             label = label.child(leading);
         }
         let label = label
             .child(title_el)
             .child(div().flex_1().min_w_0().h(px(1.)).mx(px(4.)).bg(hairline))
-            .when(h.folded && h.count.unwrap_or(0) > 0, |s| s.child(div().flex_none().text_size(px(style::size::SMALL)).text_color(faint).child(h.count.unwrap_or(0).to_string())))
-            .when(h.foldable, |s| s.child(div().flex_none().when(!h.folded, |d| d.invisible()).group_hover(chevron_group, |d| d.visible()).child(icon(if h.folded { "chevron.right" } else { "chevron.down" }, 9., faint))));
+            .when(h.folded && h.count.unwrap_or(0) > 0, |s| {
+                s.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(style::size::SMALL))
+                        .text_color(faint)
+                        .child(h.count.unwrap_or(0).to_string()),
+                )
+            })
+            .when(h.foldable, |s| {
+                s.child(
+                    div()
+                        .flex_none()
+                        .when(!h.folded, |d| d.invisible())
+                        .group_hover(chevron_group, |d| d.visible())
+                        .child(icon(
+                            if h.folded {
+                                "chevron.right"
+                            } else {
+                                "chevron.down"
+                            },
+                            9.,
+                            faint,
+                        )),
+                )
+            });
         let mut row = h_flex().pr(px(TRAILING)).items_center();
         if h.foldable {
             let tip = format!("{} {}", if h.folded { "Show" } else { "Hide" }, h.title);
-            row = row.child(tipped(div().id(SharedString::from(format!("hl-fold-{key}"))).flex_1().min_w_0().child(label), tip).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_fold(&key, cx))));
+            row = row.child(
+                tipped(
+                    div()
+                        .id(SharedString::from(format!("hl-fold-{key}")))
+                        .flex_1()
+                        .min_w_0()
+                        .child(label),
+                    tip,
+                )
+                .on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_fold(&key, cx)),
+                ),
+            );
         } else {
             row = row.child(label);
         }
-        row.when_some(h.accessory, |s, a| s.child(div().pt(px(18.)).pb(px(6.)).child(a)))
+        row.when_some(h.accessory, |s, a| {
+            s.child(div().pt(px(18.)).pb(px(6.)).child(a))
+        })
     }
 
     pub(crate) fn toggle_fold(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1431,30 +2125,61 @@ impl SidePane {
         self.collapsed.contains(key)
     }
 
-    fn project_block(&mut self, row: &ProjectRow, thread: &ThreadSummary, p: Palette, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn project_block(
+        &mut self,
+        row: &ProjectRow,
+        thread: &ThreadSummary,
+        p: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let key = fold::project(&row.project.id);
         let folded = self.is_folded(&key);
         let count = row.project.links.len() + row.project.open_task_count();
         let project_id = row.project.id.clone();
         let accessory = crate::highlights_project::why_button(row, p, cx).into_any_element();
         let mut list = v_flex();
-        list = list.child(self.heading(Heading { key: key.clone(), title: row.project.title.clone(), icon: Some(crate::highlights_project::project_icon(&row.project, cx).into_any_element()), count: Some(count), folded: folded && count > 0, foldable: count > 0, accessory: Some(accessory) }, p, cx));
+        list = list.child(self.heading(
+            Heading {
+                key,
+                title: row.project.title.clone(),
+                icon: Some(
+                    crate::highlights_project::project_icon(&row.project, cx).into_any_element(),
+                ),
+                count: Some(count),
+                folded: folded && count > 0,
+                foldable: count > 0,
+                accessory: Some(accessory),
+            },
+            p,
+            cx,
+        ));
         if !(folded && count > 0) {
             for (i, link) in row.project.links.iter().enumerate() {
                 let address = core::text::address(&link.url);
                 let url = link.url.clone();
                 let menu_url = link.url.clone();
-                let mut pr = PaneRow::new(SharedString::from(format!("hl-plink-{project_id}-{i}")), link.title.clone())
-                    .icon("globe")
-                    .tip(format!("Open {address}"))
-                    .on_click(move |this, _window, cx| this.follow_link(&url.clone(), cx))
-                    .on_menu(move |this, pos, window, cx| this.open_link_row_menu(&menu_url.clone(), pos, window, cx));
+                let mut pr = PaneRow::new(
+                    SharedString::from(format!("hl-plink-{project_id}-{i}")),
+                    link.title.clone(),
+                )
+                .icon("globe")
+                .tip(format!("Open {address}"))
+                .on_click(move |this, _window, cx| this.follow_link(&url.clone(), cx))
+                .on_menu(move |this, pos, window, cx| {
+                    this.open_link_row_menu(&menu_url.clone(), pos, window, cx)
+                });
                 if address != link.title {
                     pr = pr.detail(Some(address));
                 }
                 list = list.child(pr.render(p, cx));
             }
-            if let Some(tasks) = row.project.tasks.as_ref().and_then(threadbear_core::projects::Tasks::decode) {
+            if let Some(tasks) = row
+                .project
+                .tasks
+                .as_ref()
+                .and_then(threadbear_core::projects::Tasks::decode)
+            {
                 list = list.child(self.task_board(&project_id, &tasks, thread, p, window, cx));
             }
         }
@@ -1462,43 +2187,96 @@ impl SidePane {
     }
 
     /// `row`, a highlight (`HighlightsView.row`).
-    fn highlight_row(&mut self, item: &Highlight, thread: &ThreadSummary, index: &str, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn highlight_row(
+        &mut self,
+        item: &Highlight,
+        thread: &ThreadSummary,
+        index: &str,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.highlight_row_with(item, thread, index, None, p, cx)
     }
 
     /// A Files row's preview (file_thumbs.rs): only for a file of this Mac's,
     /// as another Mac's paths name nothing here.
-    fn file_thumb(&self, item: &Highlight, thread: &ThreadSummary, p: Palette, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn file_thumb(
+        &self,
+        item: &Highlight,
+        thread: &ThreadSummary,
+        p: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let path = item.path.as_deref().filter(|_| !thread.is_remote())?;
         let thumb = crate::file_thumbs::current(path, item.last_seq, window, cx);
-        Some(crate::file_thumbs::element(path, thumb.as_ref(), core::highlight_symbol(item), p, cx))
+        Some(crate::file_thumbs::element(
+            path,
+            thumb.as_ref(),
+            core::highlight_symbol(item),
+            p,
+            cx,
+        ))
     }
 
-    fn highlight_row_with(&mut self, item: &Highlight, thread: &ThreadSummary, index: &str, thumb: Option<AnyElement>, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn highlight_row_with(
+        &mut self,
+        item: &Highlight,
+        thread: &ThreadSummary,
+        index: &str,
+        thumb: Option<AnyElement>,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let is_commit = item.is_commit();
         let detail = if let Some(path) = &item.path {
-            Some(core::text::folder(path, Some(&thread.cwd), &crate::files::home_dir()))
+            Some(core::text::folder(
+                path,
+                Some(&thread.cwd),
+                &crate::files::home_dir(),
+            ))
         } else if is_commit {
             Some(core::text::commit_line(item))
         } else {
             // Not when it says the same as the title (a bare localhost link).
-            item.url.as_deref().map(core::text::address).filter(|a| *a != item.title)
+            item.url
+                .as_deref()
+                .map(core::text::address)
+                .filter(|a| *a != item.title)
         };
         // A pin says why in its note; the rest say how they turned up.
-        let how = if item.is_pinned() || is_commit { None } else { Some(item.how.word()).filter(|w| !w.is_empty()).map(str::to_owned) };
+        let how = if item.is_pinned() || is_commit {
+            None
+        } else {
+            Some(item.how.word())
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+        };
         // A PR's symbol in its state's colour, with the inlinePrs experiment.
-        let pr_tint = match (&item.url, item.kind == HighlightKind::Pr && self.app.upgrade().is_some_and(|app| crate::pr_view::on(app.read(cx)))) {
-            (Some(url), true) => self.pr_link_state(url, cx).map(|s| crate::pr_view::state_colour(s, cx)),
+        let pr_tint = match (
+            &item.url,
+            item.kind == HighlightKind::Pr
+                && self
+                    .app
+                    .upgrade()
+                    .is_some_and(|app| crate::pr_view::on(app.read(cx))),
+        ) {
+            (Some(url), true) => self
+                .pr_link_state(url, cx)
+                .map(|s| crate::pr_view::state_colour(s, cx)),
             _ => None,
         };
-        let mut pr = PaneRow::new(SharedString::from(format!("hl-row-{index}-{}", item.id)), item.title.clone())
-            .icon(core::highlight_symbol(item))
-            .tinted(pr_tint)
-            .lead(is_commit.then(|| item.sha.clone()).flatten())
-            .trailing(how)
-            .note(item.note.clone())
-            .detail(detail)
-            .thumb(thumb);
+        let mut pr = PaneRow::new(
+            SharedString::from(format!("hl-row-{index}-{}", item.id)),
+            item.title.clone(),
+        )
+        .icon(core::highlight_symbol(item))
+        .tinted(pr_tint)
+        .lead(is_commit.then(|| item.sha.clone()).flatten())
+        .trailing(how)
+        .note(item.note.clone())
+        .detail(detail)
+        .thumb(thumb);
         if !is_commit {
             let (open, thread2) = (item.clone(), thread.clone());
             pr = pr.on_click(move |this, _window, cx| {
@@ -1506,41 +2284,101 @@ impl SidePane {
             });
         }
         let (menu_item, menu_thread) = (item.clone(), thread.clone());
-        pr = pr.on_menu(move |this, pos, window, cx| this.open_highlight_menu(&menu_item, &menu_thread, pos, window, cx));
+        pr = pr.on_menu(move |this, pos, window, cx| {
+            this.open_highlight_menu(&menu_item, &menu_thread, pos, window, cx)
+        });
         // A file of this Mac's drags out as itself (`fileDrag`).
         pr = pr.drag(item.path.clone().filter(|_| !thread.is_remote()));
         pr.render(p, cx).into_any_element()
     }
 
-    fn render_highlights(&mut self, thread: &ThreadSummary, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "baselined at 395 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
+    )]
+    fn render_highlights(
+        &mut self,
+        thread: &ThreadSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         if self.highlights_unsupported {
-            return crate::files::pane_note("This runner doesn't keep highlights yet.", p).into_any_element();
+            return crate::files::pane_note("This runner doesn't keep highlights yet.", p)
+                .into_any_element();
         }
         // The first fetch is quick; a spinner would only flash.
-        let Some(sections) = self.highlights.get(&thread.id).map(HighlightSections::build) else { return div().size_full().into_any_element() };
+        let Some(sections) = self
+            .highlights
+            .get(&thread.id)
+            .map(HighlightSections::build)
+        else {
+            return div().size_full().into_any_element();
+        };
         let projects = core::project_rows(thread, |id| self.projects.get(id).cloned());
         let scheduled = self.schedule_rows(thread, cx);
         let clock = side::local_now();
         let now = now_ms();
         let started = match self.app.upgrade() {
-            Some(app) => core::started_rows(thread, app.read(cx).threads.values().map(|t| &**t), now),
+            Some(app) => {
+                core::started_rows(thread, app.read(cx).threads.values().map(|t| &**t), now)
+            }
             None => vec![],
         };
         let subagents = core::subagents_for_highlights(thread);
         let asks = thread.asks.clone().unwrap_or_default();
-        let tools: HashSet<String> = thread.patches().into_iter().filter(|p| !p.matched.clone().unwrap_or_default().is_empty()).map(|p| p.id).collect();
-        let tool_panels: Vec<Panel> = thread.panels().into_iter().filter(|panel| tools.contains(&panel.patch)).collect();
-        let task_context = thread.backlog.as_ref().and_then(|d| d.context.as_deref()).filter(|c| !c.trim().is_empty());
-        if task_context.is_none() && sections.is_empty() && asks.is_empty() && projects.is_empty() && tool_panels.is_empty() && scheduled.is_empty() && subagents.is_empty() && started.is_empty() {
+        let tools: HashSet<String> = thread
+            .patches()
+            .into_iter()
+            .filter(|p| !p.matched.clone().unwrap_or_default().is_empty())
+            .map(|p| p.id)
+            .collect();
+        let tool_panels: Vec<Panel> = thread
+            .panels()
+            .into_iter()
+            .filter(|panel| tools.contains(&panel.patch))
+            .collect();
+        let task_context = thread
+            .backlog
+            .as_ref()
+            .and_then(|d| d.context.as_deref())
+            .filter(|c| !c.trim().is_empty());
+        if task_context.is_none()
+            && sections.is_empty()
+            && asks.is_empty()
+            && projects.is_empty()
+            && tool_panels.is_empty()
+            && scheduled.is_empty()
+            && subagents.is_empty()
+            && started.is_empty()
+        {
             return crate::files::pane_note("Nothing here yet. Files, links and commits from this thread show up here as it works.", p).into_any_element();
         }
         let flags = self.flags.get(&thread.id).copied().unwrap_or_default();
         let mut list = v_flex().pb(px(16.));
         if let Some(context) = task_context {
-            list = list.child(v_flex().gap(px(4.)).px(px(LEADING)).pt(px(14.))
-                .child(div().id("backlog-context-heading").test_support().role(Role::Heading).aria_label("Context for this task").text_size(px(style::size::LABEL)).text_color(p.fg).child("Context for this task"))
-                .child(div().text_size(px(style::size::LABEL)).text_color(p.secondary).child(context.to_owned())));
+            list = list.child(
+                v_flex()
+                    .gap(px(4.))
+                    .px(px(LEADING))
+                    .pt(px(14.))
+                    .child(
+                        div()
+                            .id("backlog-context-heading")
+                            .test_support()
+                            .role(Role::Heading)
+                            .aria_label("Context for this task")
+                            .text_size(px(style::size::LABEL))
+                            .text_color(p.fg)
+                            .child("Context for this task"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(style::size::LABEL))
+                            .text_color(p.secondary)
+                            .child(context.to_owned()),
+                    ),
+            );
         }
 
         for panel in tool_panels {
@@ -1556,8 +2394,24 @@ impl SidePane {
                         .items_start()
                         .gap(px(6.))
                         // An old paragraph brief is one point: no bullet.
-                        .when(many, |s| s.child(div().flex_none().text_size(px(style::size::LABEL)).text_color(p.secondary).child("•")))
-                        .child(div().flex_1().min_w_0().text_size(px(style::size::LABEL)).line_height(px(17.)).text_color(p.secondary).child(point)),
+                        .when(many, |s| {
+                            s.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(style::size::LABEL))
+                                    .text_color(p.secondary)
+                                    .child("•"),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(style::size::LABEL))
+                                .line_height(px(17.))
+                                .text_color(p.secondary)
+                                .child(point),
+                        ),
                 );
             }
             list = list.child(block);
@@ -1567,7 +2421,19 @@ impl SidePane {
         if let Some(seq) = thread.asks_seq.filter(|_| !asks.is_empty()) {
             let open = asks.iter().filter(|a| a.ticked != Some(true)).count();
             let folded = self.is_folded(fold::NEEDS_YOU);
-            list = list.child(self.heading(Heading { key: fold::NEEDS_YOU.to_owned(), title: "Needs you".into(), icon: Some(icon("hand.raised", 11., p.secondary).into_any_element()), count: Some(open), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::NEEDS_YOU.to_owned(),
+                    title: "Needs you".into(),
+                    icon: Some(icon("hand.raised", 11., p.secondary).into_any_element()),
+                    count: Some(open),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
                 for (index, ask) in asks.iter().enumerate() {
                     list = list.child(self.ask_row(ask, index, seq, thread.id.clone(), p, cx));
@@ -1581,27 +2447,60 @@ impl SidePane {
         }
         if !scheduled.is_empty() {
             let folded = self.is_folded(fold::SCHEDULED);
-            list = list.child(self.heading(Heading { key: fold::SCHEDULED.to_owned(), title: "Scheduled".into(), icon: Some(icon("clock", 11., p.secondary).into_any_element()), count: Some(scheduled.len()), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::SCHEDULED.to_owned(),
+                    title: "Scheduled".into(),
+                    icon: Some(icon("clock", 11., p.secondary).into_any_element()),
+                    count: Some(scheduled.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
                 for row in scheduled {
                     let (edit_id, menu_id) = (row.id.clone(), row.id.clone());
-                    let pr = PaneRow::new(SharedString::from(format!("hl-sched-{}", row.id)), row.title)
-                        .icon(if row.paused { "pause.circle" } else { "clock" })
-                        .trailing(row.when)
-                        .detail(Some(row.detail))
-                        .tip("Edit the schedule")
-                        .on_click(move |this, window, cx| this.edit_schedule(&edit_id, window, cx))
-                        .on_menu(move |this, pos, window, cx| this.open_menu(Self::schedule_menu(&menu_id), pos, window, cx));
+                    let pr = PaneRow::new(
+                        SharedString::from(format!("hl-sched-{}", row.id)),
+                        row.title,
+                    )
+                    .icon(if row.paused { "pause.circle" } else { "clock" })
+                    .trailing(row.when)
+                    .detail(Some(row.detail))
+                    .tip("Edit the schedule")
+                    .on_click(move |this, window, cx| this.edit_schedule(&edit_id, window, cx))
+                    .on_menu(move |this, pos, window, cx| {
+                        this.open_menu(Self::schedule_menu(&menu_id), pos, window, cx)
+                    });
                     list = list.child(pr.render(p, cx));
                 }
             }
         }
         if !subagents.is_empty() {
             let folded = self.is_folded(fold::SUBAGENTS);
-            list = list.child(self.heading(Heading { key: fold::SUBAGENTS.to_owned(), title: "Sub-agents".into(), icon: Some(icon("person.2", 11., p.secondary).into_any_element()), count: Some(subagents.len()), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::SUBAGENTS.to_owned(),
+                    title: "Sub-agents".into(),
+                    icon: Some(icon("person.2", 11., p.secondary).into_any_element()),
+                    count: Some(subagents.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
                 let total = subagents.len();
-                let (shown, more) = HighlightSections::capped(&subagents, core::SUBAGENT_LIMIT, flags.all_subagents);
+                let (shown, more) = HighlightSections::capped(
+                    &subagents,
+                    core::SUBAGENT_LIMIT,
+                    flags.all_subagents,
+                );
                 for s in shown {
                     let (symbol, color) = match s.status.as_str() {
                         "running" => ("circle.dashed", None),
@@ -1610,35 +2509,55 @@ impl SidePane {
                         _ => ("minus", None),
                     };
                     let id = thread.id.clone();
-                    let pr = PaneRow::new(SharedString::from(format!("hl-sub-{}", s.id)), side::subagent_title(s))
-                        .icon(symbol)
-                        .tinted(color)
-                        .trailing(Some(side::subagent_duration(s, now)))
-                        .detail(Some(side::subagent_detail(s)))
-                        .tip(format!("{}. Click to read its transcript.", side::subagent_status_text(s)))
-                        .on_click({
-                            let sub_id = s.id.clone();
-                            move |this, window, cx| {
-                                let (id, sub_id) = (id.clone(), sub_id.clone());
-                                if let Some(app) = this.app.upgrade() {
-                                    app.update(cx, |t, cx| t.open_subagent(id, sub_id, window, cx));
-                                }
+                    let pr = PaneRow::new(
+                        SharedString::from(format!("hl-sub-{}", s.id)),
+                        side::subagent_title(s),
+                    )
+                    .icon(symbol)
+                    .tinted(color)
+                    .trailing(Some(side::subagent_duration(s, now)))
+                    .detail(Some(side::subagent_detail(s)))
+                    .tip(format!(
+                        "{}. Click to read its transcript.",
+                        side::subagent_status_text(s)
+                    ))
+                    .on_click({
+                        let sub_id = s.id.clone();
+                        move |this, window, cx| {
+                            let (id, sub_id) = (id.clone(), sub_id.clone());
+                            if let Some(app) = this.app.upgrade() {
+                                app.update(cx, |t, cx| t.open_subagent(id, sub_id, window, cx));
                             }
-                        });
+                        }
+                    });
                     list = list.child(pr.render(p, cx));
                 }
                 if more > 0 {
-                    list = list.child(self.show_all_row("subagents", total, thread.id.clone(), p, cx));
+                    list =
+                        list.child(self.show_all_row("subagents", total, thread.id.clone(), p, cx));
                 }
             }
         }
         // The threads it handed work to, or is waiting on, with where each is up to.
         if !started.is_empty() {
             let folded = self.is_folded(fold::STARTED_THREADS);
-            list = list.child(self.heading(Heading { key: fold::STARTED_THREADS.to_owned(), title: "Threads it started".into(), icon: Some(icon("pawprint", 11., p.secondary).into_any_element()), count: Some(started.len()), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::STARTED_THREADS.to_owned(),
+                    title: "Threads it started".into(),
+                    icon: Some(icon("pawprint", 11., p.secondary).into_any_element()),
+                    count: Some(started.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
                 let total = started.len();
-                let (shown, more) = HighlightSections::capped(&started, core::SUBAGENT_LIMIT, flags.all_started);
+                let (shown, more) =
+                    HighlightSections::capped(&started, core::SUBAGENT_LIMIT, flags.all_started);
                 for row in shown {
                     let color = match row.state {
                         core::StartedState::NeedsYou => Some(p.accent),
@@ -1661,32 +2580,70 @@ impl SidePane {
                         // Open, or Open in New Panel (`startedRow`'s menu).
                         .on_menu(move |this, pos, window, cx| {
                             let items = vec![
-                                MenuItem::action("Open", "arrow.up.forward", MenuAction::OpenThread { id: menu_id.clone() }),
-                                MenuItem::action("Open in New Panel", "rectangle.split.2x1", MenuAction::OpenThreadInPanel { id: menu_id.clone() }),
+                                MenuItem::action(
+                                    "Open",
+                                    "arrow.up.forward",
+                                    MenuAction::OpenThread {
+                                        id: menu_id.clone(),
+                                    },
+                                ),
+                                MenuItem::action(
+                                    "Open in New Panel",
+                                    "rectangle.split.2x1",
+                                    MenuAction::OpenThreadInPanel {
+                                        id: menu_id.clone(),
+                                    },
+                                ),
                             ];
                             this.open_menu(items, pos, window, cx);
                         });
                     list = list.child(pr.render(p, cx));
                 }
                 if more > 0 {
-                    list = list.child(self.show_all_row("started", total, thread.id.clone(), p, cx));
+                    list =
+                        list.child(self.show_all_row("started", total, thread.id.clone(), p, cx));
                 }
             }
         }
         if !sections.pinned.is_empty() {
             let folded = self.is_folded(fold::PINNED);
-            list = list.child(self.heading(Heading { key: fold::PINNED.to_owned(), title: "Pinned".into(), icon: Some(icon("pin", 11., p.secondary).into_any_element()), count: Some(sections.pinned.len()), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::PINNED.to_owned(),
+                    title: "Pinned".into(),
+                    icon: Some(icon("pin", 11., p.secondary).into_any_element()),
+                    count: Some(sections.pinned.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
                 for item in &sections.pinned {
                     // A pinned file gets its preview too; a pinned link has none.
                     let thumb = self.file_thumb(item, thread, p, window, cx);
-                    list = list.child(self.highlight_row_with(item, thread, "pinned", thumb, p, cx));
+                    list =
+                        list.child(self.highlight_row_with(item, thread, "pinned", thumb, p, cx));
                 }
             }
         }
         if !sections.files.is_empty() {
             let folded = self.is_folded(fold::FILES);
-            list = list.child(self.heading(Heading { key: fold::FILES.to_owned(), title: "Files".into(), icon: Some(icon("doc", 11., p.secondary).into_any_element()), count: Some(sections.files.len()), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::FILES.to_owned(),
+                    title: "Files".into(),
+                    icon: Some(icon("doc", 11., p.secondary).into_any_element()),
+                    count: Some(sections.files.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
                 for item in &sections.files {
                     let thumb = self.file_thumb(item, thread, p, window, cx);
@@ -1696,37 +2653,90 @@ impl SidePane {
         }
         if !sections.links.is_empty() {
             let folded = self.is_folded(fold::LINKS);
-            list = list.child(self.heading(Heading { key: fold::LINKS.to_owned(), title: "Links".into(), icon: Some(icon("link", 11., p.secondary).into_any_element()), count: Some(sections.links.len()), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::LINKS.to_owned(),
+                    title: "Links".into(),
+                    icon: Some(icon("link", 11., p.secondary).into_any_element()),
+                    count: Some(sections.links.len()),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
-                let (shown, more) = HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
+                let (shown, more) =
+                    HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
                 for item in shown {
                     list = list.child(self.highlight_row(item, thread, "links", p, cx));
                 }
                 if more > 0 {
-                    list = list.child(self.show_all_row("links", sections.links.len(), thread.id.clone(), p, cx));
+                    list = list.child(self.show_all_row(
+                        "links",
+                        sections.links.len(),
+                        thread.id.clone(),
+                        p,
+                        cx,
+                    ));
                 }
             }
         }
         if !sections.commits.is_empty() || !sections.edited.is_empty() {
             let folded = self.is_folded(fold::CHANGES);
             let count = sections.commits.len() + sections.edited.len();
-            list = list.child(self.heading(Heading { key: fold::CHANGES.to_owned(), title: "Changes".into(), icon: Some(icon("arrow.triangle.branch", 11., p.secondary).into_any_element()), count: Some(count), folded, foldable: true, accessory: None }, p, cx));
+            list = list.child(self.heading(
+                Heading {
+                    key: fold::CHANGES.to_owned(),
+                    title: "Changes".into(),
+                    icon: Some(icon("arrow.triangle.branch", 11., p.secondary).into_any_element()),
+                    count: Some(count),
+                    folded,
+                    foldable: true,
+                    accessory: None,
+                },
+                p,
+                cx,
+            ));
             if !folded {
-                let (shown, more) = HighlightSections::capped(&sections.commits, core::COMMIT_LIMIT, flags.all_commits);
+                let (shown, more) = HighlightSections::capped(
+                    &sections.commits,
+                    core::COMMIT_LIMIT,
+                    flags.all_commits,
+                );
                 for item in shown {
                     list = list.child(self.highlight_row(item, thread, "changes", p, cx));
                 }
                 if more > 0 {
-                    list = list.child(self.show_all_row("commits", sections.commits.len(), thread.id.clone(), p, cx));
+                    list = list.child(self.show_all_row(
+                        "commits",
+                        sections.commits.len(),
+                        thread.id.clone(),
+                        p,
+                        cx,
+                    ));
                 }
                 if !sections.edited.is_empty() {
-                    list = list.child(self.edited_rows(&sections.edited, flags.edited_open, thread, p, cx));
+                    list = list.child(self.edited_rows(
+                        &sections.edited,
+                        flags.edited_open,
+                        thread,
+                        p,
+                        cx,
+                    ));
                 }
             }
         }
         let _ = window;
-        let list = div().id("highlights-scroll").overflow_y_scroll().restrict_scroll_to_axis().child(list);
-        with_scroll_bar(list, &self.scroll, "highlights-scroll-bar").size_full().into_any_element()
+        let list = div()
+            .id("highlights-scroll")
+            .overflow_y_scroll()
+            .restrict_scroll_to_axis()
+            .child(list);
+        with_scroll_bar(list, &self.scroll, "highlights-scroll-bar")
+            .size_full()
+            .into_any_element()
     }
 
     pub(crate) fn schedule_rows(&self, thread: &ThreadSummary, cx: &App) -> Vec<core::ScheduleRow> {
@@ -1734,23 +2744,61 @@ impl SidePane {
         // drew, was most of the pane's time in a frame (Mike has 1,400).
         let app = self.app.upgrade();
         let threads = app.as_ref().map(|a| &a.read(cx).threads);
-        core::schedule_rows(thread, &self.schedules, now_ms(), |s| match s.thread_id.as_deref() {
-            Some(id) => threads.and_then(|t| t.get(id)).map_or_else(|| "A thread that's gone".to_owned(), |t| if t.title.is_empty() { "Untitled".to_owned() } else { t.title.clone() }),
-            None => format!("New thread in {}", threadbear_core::inbox::folder_name(s.cwd.as_deref().unwrap_or(""))),
+        core::schedule_rows(thread, &self.schedules, now_ms(), |s| {
+            match s.thread_id.as_deref() {
+                Some(id) => threads.and_then(|t| t.get(id)).map_or_else(
+                    || "A thread that's gone".to_owned(),
+                    |t| {
+                        if t.title.is_empty() {
+                            "Untitled".to_owned()
+                        } else {
+                            t.title.clone()
+                        }
+                    },
+                ),
+                None => format!(
+                    "New thread in {}",
+                    threadbear_core::inbox::folder_name(s.cwd.as_deref().unwrap_or(""))
+                ),
+            }
         })
     }
 
-    fn ask_row(&mut self, ask: &threadbear_core::inbox::OpenAsk, index: usize, seq: u64, thread_id: String, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn ask_row(
+        &mut self,
+        ask: &threadbear_core::inbox::OpenAsk,
+        index: usize,
+        seq: u64,
+        thread_id: String,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ticked = ask.ticked == Some(true);
         let tip = if ticked { "Not done" } else { "Done" };
         let where_text = ask.where_text();
         let tick_color = if ticked { p.accent } else { p.icon };
         let label_color = if ticked { p.secondary } else { p.fg };
-        let symbol = if ticked { "checkmark.square.fill" } else { "square" };
+        let symbol = if ticked {
+            "checkmark.square.fill"
+        } else {
+            "square"
+        };
         let action = crate::files::plain_markdown(&ask.action);
-        let (key, id2) = (format!("{thread_id}-{index}"), thread_id.clone());
-        let button = tipped(div().id(SharedString::from(format!("hl-tick-{key}"))).flex_none().w(px(16.)).flex().justify_center().cursor_pointer().child(icon(symbol, 13., tick_color)), tip)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.tick_ask(id2.clone(), seq, index, !ticked, cx)));
+        let (key, id2) = (format!("{thread_id}-{index}"), thread_id);
+        let button = tipped(
+            div()
+                .id(SharedString::from(format!("hl-tick-{key}")))
+                .flex_none()
+                .w(px(16.))
+                .flex()
+                .justify_center()
+                .cursor_pointer()
+                .child(icon(symbol, 13., tick_color)),
+            tip,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.tick_ask(id2.clone(), seq, index, !ticked, cx)
+        }));
         h_flex()
             .items_start()
             .gap(px(8.))
@@ -1763,13 +2811,36 @@ impl SidePane {
                     .flex_1()
                     .min_w_0()
                     .gap(px(2.))
-                    .child(div().text_size(px(style::size::LABEL)).line_height(px(style::natural_line(style::size::LABEL))).text_color(label_color).when(ticked, |s| s.line_through()).child(action))
-                    .when_some(where_text, |s, place| s.child(div().text_size(px(style::size::SMALL)).line_height(px(style::natural_line(style::size::SMALL))).text_color(p.faint).line_clamp(2).child(place))),
+                    .child(
+                        div()
+                            .text_size(px(style::size::LABEL))
+                            .line_height(px(style::natural_line(style::size::LABEL)))
+                            .text_color(label_color)
+                            .when(ticked, |s| s.line_through())
+                            .child(action),
+                    )
+                    .when_some(where_text, |s, place| {
+                        s.child(
+                            div()
+                                .text_size(px(style::size::SMALL))
+                                .line_height(px(style::natural_line(style::size::SMALL)))
+                                .text_color(p.faint)
+                                .line_clamp(2)
+                                .child(place),
+                        )
+                    }),
             )
             .into_any_element()
     }
 
-    fn show_all_row(&mut self, which: &'static str, count: usize, thread_id: String, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn show_all_row(
+        &mut self,
+        which: &'static str,
+        count: usize,
+        thread_id: String,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id: SharedString = format!("hl-showall-{which}").into();
         PaneRow::new(id, format!("Show all {count}"))
             .icon("ellipsis")
@@ -1788,12 +2859,23 @@ impl SidePane {
             .into_any_element()
     }
 
-    fn edited_rows(&mut self, paths: &[String], open: bool, thread: &ThreadSummary, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn edited_rows(
+        &mut self,
+        paths: &[String],
+        open: bool,
+        thread: &ThreadSummary,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut list = v_flex();
         let thread_id = thread.id.clone();
         list = list.child(
             PaneRow::new("hl-edited", core::text::edited_count(paths.len()))
-                .icon(if open { "chevron.down" } else { "chevron.right" })
+                .icon(if open {
+                    "chevron.down"
+                } else {
+                    "chevron.right"
+                })
                 .quiet()
                 .on_click(move |this, _window, cx| {
                     let flags = this.flags.entry(thread_id.clone()).or_default();
@@ -1804,15 +2886,24 @@ impl SidePane {
         );
         if open {
             for path in paths {
-                let (open_path, menu_path, title) = (path.clone(), path.clone(), core::last_component(path).to_owned());
-                let (menu_title, thread2, menu_thread) = (title.clone(), thread.clone(), thread.clone());
+                let (open_path, menu_path, title) = (
+                    path.clone(),
+                    path.clone(),
+                    core::last_component(path).to_owned(),
+                );
+                let (menu_title, thread2, menu_thread) =
+                    (title.clone(), thread.clone(), thread.clone());
                 list = list.child(
                     PaneRow::new(SharedString::from(format!("hl-edited-{path}")), title)
                         .icon(core::file_symbol(path))
-                        .detail(Some(core::text::folder(path, Some(&thread.cwd), &crate::files::home_dir())))
+                        .detail(Some(core::text::folder(
+                            path,
+                            Some(&thread.cwd),
+                            &crate::files::home_dir(),
+                        )))
                         .indent()
                         .tip("Open in its app")
-                        .drag(Some(path.clone()).filter(|_| !thread.is_remote()))
+                        .drag((!thread.is_remote()).then(|| path.clone()))
                         .on_click(move |this, _window, cx| {
                             // Code to read in an editor, not to review. Another Mac's
                             // copy is fetched and opened by files.rs.
@@ -1822,7 +2913,16 @@ impl SidePane {
                                 this.open_externally(&open_path.clone(), cx);
                             }
                         })
-                        .on_menu(move |this, pos, window, cx| this.open_file_row_menu(&menu_path.clone(), &menu_title.clone(), &menu_thread, pos, window, cx))
+                        .on_menu(move |this, pos, window, cx| {
+                            this.open_file_row_menu(
+                                &menu_path.clone(),
+                                &menu_title.clone(),
+                                &menu_thread,
+                                pos,
+                                window,
+                                cx,
+                            )
+                        })
                         .render(p, cx),
                 );
             }
@@ -1838,36 +2938,105 @@ impl SidePane {
             PATCHES => "Patches".to_owned(),
             FILES => "Files".to_owned(),
             BROWSER => "Browser".to_owned(),
-            id => thread.panels().into_iter().find(|p| p.id == id).map_or_else(|| id.to_owned(), |p| p.title),
+            id => thread
+                .panels()
+                .into_iter()
+                .find(|p| p.id == id)
+                .map_or_else(|| id.to_owned(), |p| p.title),
         }
     }
 
     /// The header above the pane's content: a preview's Back and buttons, else
     /// the section's name, with the section icons along the right.
-    fn render_header(&mut self, thread: &ThreadSummary, section: &str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(
+        &mut self,
+        thread: &ThreadSummary,
+        section: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let p = palette(cx);
-        let preview = self.previews.get(&thread.id).filter(|pv| pv.from == section).cloned();
-        let mut row = h_flex().flex_none().h(px(HEADER_HEIGHT)).w_full().pl(px(14.)).pr(px(6.)).items_center().gap(px(6.)).border_b_1().border_color(p.hairline);
+        let preview = self
+            .previews
+            .get(&thread.id)
+            .filter(|pv| pv.from == section)
+            .cloned();
+        let mut row = h_flex()
+            .flex_none()
+            .h(px(HEADER_HEIGHT))
+            .w_full()
+            .pl(px(14.))
+            .pr(px(6.))
+            .items_center()
+            .gap(px(6.))
+            .border_b_1()
+            .border_color(p.hairline);
         if let Some(preview) = &preview {
             let thread_id = thread.id.clone();
-            let back_to = preview.back.last().map_or_else(|| self.section_title(thread, &preview.from), |b| b.title.clone());
+            let back_to = preview.back.last().map_or_else(
+                || self.section_title(thread, &preview.from),
+                |b| b.title.clone(),
+            );
             if let Target::Pr(url) = &preview.target {
                 return row.child(self.render_pr_header(thread, url, back_to, p, cx));
             }
-            row = row.child(self.header_button("hl-back", "chevron.left", format!("Back to {back_to}"), p, cx, move |this, cx| this.preview_back(&thread_id.clone(), cx)));
-            row = row.child(div().flex_1().min_w_0().truncate().text_size(px(style::size::LABEL)).font_semibold().child(preview.title.clone()));
+            row = row.child(self.header_button(
+                "hl-back",
+                "chevron.left",
+                format!("Back to {back_to}"),
+                p,
+                cx,
+                move |this, cx| this.preview_back(&thread_id.clone(), cx),
+            ));
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(style::size::LABEL))
+                    .font_semibold()
+                    .child(preview.title.clone()),
+            );
             row = row.child(self.preview_buttons(preview, thread, p, cx));
         } else {
-            row = row.child(div().flex_1().min_w_0().truncate().text_size(px(style::size::LABEL)).font_semibold().child(self.section_title(thread, section)));
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(style::size::LABEL))
+                    .font_semibold()
+                    .child(self.section_title(thread, section)),
+            );
         }
         // Sections are switched from the window's right rail (rails.rs).
         row
     }
 
-    pub(crate) fn header_button(&self, id: &'static str, symbol: &str, tip: String, p: Palette, cx: &mut Context<Self>, action: impl Fn(&mut SidePane, &mut Context<SidePane>) + 'static) -> impl IntoElement {
+    pub(crate) fn header_button(
+        &self,
+        id: &'static str,
+        symbol: &str,
+        tip: String,
+        p: Palette,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut SidePane, &mut Context<SidePane>) + 'static,
+    ) -> impl IntoElement {
         let hover = p.hover;
-        tipped(div().id(id).size(px(26.)).flex().flex_none().items_center().justify_center().rounded(px(6.)).hover(move |s| s.bg(hover)).cursor_pointer().child(icon(symbol, 13., p.secondary)), tip)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
+        tipped(
+            div()
+                .id(id)
+                .size(px(26.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .hover(move |s| s.bg(hover))
+                .cursor_pointer()
+                .child(icon(symbol, 13., p.secondary)),
+            tip,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
     }
 }
 
@@ -1875,7 +3044,9 @@ impl Render for SidePane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Drawn whole only where something hasn't a section of its own; the
         // dock draws each section through its own view (side_sections.rs).
-        let section = self.thread(cx).map_or_else(|| HIGHLIGHTS.to_owned(), |t| self.section_for(&t));
+        let section = self
+            .thread(cx)
+            .map_or_else(|| HIGHLIGHTS.to_owned(), |t| self.section_for(&t));
         self.render_section(&section, window, cx)
     }
 }
@@ -1883,7 +3054,9 @@ impl Render for SidePane {
 impl SidePane {
     /// Whether the dock has this panel on show, in the window or one of its own.
     pub(crate) fn dock_showing(&self, panel: &str, cx: &App) -> bool {
-        self.app.upgrade().is_some_and(|app| app.read(cx).dock.read(cx).controller.is_showing(panel))
+        self.app
+            .upgrade()
+            .is_some_and(|app| app.read(cx).dock.read(cx).controller.is_showing(panel))
     }
 
     /// The section that draws what's over the whole pane (a menu, the ⓘ
@@ -1895,14 +3068,22 @@ impl SidePane {
         if self.dock_showing(&chosen, cx) {
             return chosen;
         }
-        Self::section_ids(thread).into_iter().find(|id| self.dock_showing(id, cx)).unwrap_or(chosen)
+        Self::section_ids(thread)
+            .into_iter()
+            .find(|id| self.dock_showing(id, cx))
+            .unwrap_or(chosen)
     }
 
     /// A press anywhere in a section makes it the chosen one, so what's opened
     /// from it (a file from Files, a link from Highlights) opens over it and
     /// Back comes back to it. Nothing else changes: a preview over the section
     /// beside it stays, as only one opening a new one replaces it.
-    pub(crate) fn section_pressed(&mut self, thread_id: &str, section: &str, cx: &mut Context<Self>) {
+    pub(crate) fn section_pressed(
+        &mut self,
+        thread_id: &str,
+        section: &str,
+        cx: &mut Context<Self>,
+    ) {
         if self.chosen.get(thread_id).map(String::as_str) != Some(section) {
             self.chosen.insert(thread_id.to_owned(), section.to_owned());
             self.remember(thread_id);
@@ -1916,7 +3097,12 @@ impl SidePane {
     /// One section of the pane, as the dock places it: its own content, or
     /// the preview or explanation opened over it (`DockPane`). Each section
     /// draws on its own, so Highlights beside Files shows both.
-    pub(crate) fn render_section(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_section(
+        &mut self,
+        section: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let bg = cx.theme().background;
         if let Some(width) = self.widths.get(section) {
@@ -1929,43 +3115,87 @@ impl SidePane {
             // Its menu was the thread's, gone with it (⌘N): kept, it would
             // come back over the thread later as if just opened.
             self.menu = None;
-            return v_flex().size_full().bg(bg).child(crate::files::pane_note("Pick a thread to see its Highlights.", p)).into_any_element();
+            return v_flex()
+                .size_full()
+                .bg(bg)
+                .child(crate::files::pane_note(
+                    "Pick a thread to see its Highlights.",
+                    p,
+                ))
+                .into_any_element();
         };
         // A section the thread no longer has (a panel its patch took away).
-        let section = if Self::section_ids(&thread).iter().any(|id| id == section) { section.to_owned() } else { self.section_for(&thread) };
+        let section = if Self::section_ids(&thread).iter().any(|id| id == section) {
+            section.to_owned()
+        } else {
+            self.section_for(&thread)
+        };
         // Only a preview has a header of its own here, for its Back and its
         // buttons. Otherwise the dock's bar above already names the section,
         // and the Swift pane has nothing between the two (PaneHeader is gone
         // from its panes); a second "Highlights" under the first looked off.
-        let preview = self.previews.get(&thread.id).filter(|pv| pv.from == section).cloned();
+        let preview = self
+            .previews
+            .get(&thread.id)
+            .filter(|pv| pv.from == section)
+            .cloned();
         // Words explained show over the section they were explained over,
         // as a preview does (explain_pane.rs).
         let explaining = self.explaining_over(&thread.id) == Some(section.as_str());
         let header = if explaining {
             Some(self.render_explain_header(&thread, &section, cx))
         } else {
-            preview.as_ref().map(|_| self.render_header(&thread, &section, cx).into_any_element())
+            preview
+                .as_ref()
+                .map(|_| self.render_header(&thread, &section, cx).into_any_element())
         };
         let (body, drew) = if explaining {
-            (self.render_explain(&thread, window, cx), "explanation".to_owned())
+            (
+                self.render_explain(&thread, window, cx),
+                "explanation".to_owned(),
+            )
         } else if let Some(preview) = preview {
             let drew = format!("preview {}", preview.title);
             (self.render_preview(&thread, &preview, window, cx), drew)
         } else {
             match section.as_str() {
-                HIGHLIGHTS => (self.render_highlights(&thread, window, cx), "highlights".to_owned()),
+                HIGHLIGHTS => (
+                    self.render_highlights(&thread, window, cx),
+                    "highlights".to_owned(),
+                ),
                 PATCHES => (self.render_patches(&thread, cx), "patches".to_owned()),
-                FILES => (self.render_files_panel(&thread, window, cx), "files".to_owned()),
-                BROWSER => (self.render_browser_panel(&thread, window, cx), "browser".to_owned()),
-                id => (self.render_panel(&thread, id, window, cx), format!("panel {id}")),
+                FILES => (
+                    self.render_files_panel(&thread, window, cx),
+                    "files".to_owned(),
+                ),
+                BROWSER => (
+                    self.render_browser_panel(&thread, window, cx),
+                    "browser".to_owned(),
+                ),
+                id => (
+                    self.render_panel(&thread, id, window, cx),
+                    format!("panel {id}"),
+                ),
             }
         };
         self.drawn.insert(section.clone(), drew);
         // What's over the whole pane is drawn once, by one section.
         let hosts = self.overlay_section(&thread, cx) == section;
-        let menu = if hosts { self.menu.as_ref().map(|m| (m.position, m.view.clone())) } else { None };
-        let popover = if hosts { self.why_popover(&thread, p, window, cx) } else { None };
-        let viewer = if hosts { self.viewer_overlay(window, cx) } else { None };
+        let menu = if hosts {
+            self.menu.as_ref().map(|m| (m.position, m.view.clone()))
+        } else {
+            None
+        };
+        let popover = if hosts {
+            self.why_popover(&thread, p, window, cx)
+        } else {
+            None
+        };
+        let viewer = if hosts {
+            self.viewer_overlay(window, cx)
+        } else {
+            None
+        };
         // The section's width as drawn, for the folder list's columns (the
         // column hides under a width, FolderPaneView's layout).
         let measure = {
@@ -1996,11 +3226,23 @@ impl SidePane {
             .size_full()
             .bg(bg)
             .text_color(p.fg)
-            .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, _, cx| this.section_pressed(&thread_id, &pressed, cx)))
+            .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                this.section_pressed(&thread_id, &pressed, cx)
+            }))
             .child(measure)
             .children(header)
             .child(div().flex_1().min_h_0().child(body))
-            .when_some(menu, |s, (position, view)| s.child(deferred(anchored().position(position).snap_to_window_with_margin(px(8.)).child(div().occlude().child(view))).with_priority(1)))
+            .when_some(menu, |s, (position, view)| {
+                s.child(
+                    deferred(
+                        anchored()
+                            .position(position)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(div().occlude().child(view)),
+                    )
+                    .with_priority(1),
+                )
+            })
             .when_some(popover, |s, card| s.child(card))
             .when_some(viewer, |s, v| s.child(v))
             .into_any_element()
@@ -2013,27 +3255,50 @@ impl SidePane {
     /// The `panels` part of the dump, in AppDump's shape.
     #[cfg(feature = "automation")]
     pub(crate) fn dump(&self, cx: &App) -> Value {
-        let Some(thread) = self.thread(cx) else { return Value::Null };
+        let Some(thread) = self.thread(cx) else {
+            return Value::Null;
+        };
         let section = self.section_for(&thread);
-        let mut items = vec![json!({ "id": HIGHLIGHTS, "title": "Highlights", "kind": "highlights", "active": section == HIGHLIGHTS })];
+        let mut items = vec![
+            json!({ "id": HIGHLIGHTS, "title": "Highlights", "kind": "highlights", "active": section == HIGHLIGHTS }),
+        ];
         for panel in thread.panels() {
             items.push(json!({ "id": panel.id, "title": panel.title, "kind": panel.kind, "url": panel.url, "note": panel.note, "active": section == panel.id }));
         }
         if crate::agent_browser::model(cx).is_some_and(|b| b.read(cx).available()) {
             items.push(json!({ "id": BROWSER, "title": "Browser", "kind": "browser", "active": section == BROWSER }));
         }
-        items.push(json!({ "id": FILES, "title": "Files", "kind": "files", "active": section == FILES }));
+        items.push(
+            json!({ "id": FILES, "title": "Files", "kind": "files", "active": section == FILES }),
+        );
         if thread.patches.as_ref().is_some_and(|p| !p.is_empty()) {
-            let summary = thread.patches().iter().map(|p| if p.error.is_some() { format!("{} (error)", p.id) } else { p.id.clone() }).collect::<Vec<_>>().join(", ");
+            let summary = thread
+                .patches()
+                .iter()
+                .map(|p| {
+                    if p.error.is_some() {
+                        format!("{} (error)", p.id)
+                    } else {
+                        p.id.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             items.push(json!({ "id": PATCHES, "title": "Patches", "kind": "patches", "note": summary, "active": section == PATCHES }));
         }
-        let preview = self.explain_line(&thread.id).or_else(|| self.previews.get(&thread.id).map(|pv| self.preview_line(pv)));
+        let preview = self.explain_line(&thread.id).or_else(|| {
+            self.previews
+                .get(&thread.id)
+                .map(|pv| self.preview_line(pv))
+        });
         // Each section on show and what it drew: two side by side each draw
         // their own (GPUI's own; the Swift dump has the one pane).
         let drawn: Vec<Value> = Self::section_ids(&thread)
             .into_iter()
             .filter(|id| self.dock_showing(id, cx))
-            .map(|id| json!({ "id": id, "draws": self.drawn.get(&id).cloned().unwrap_or_default() }))
+            .map(
+                |id| json!({ "id": id, "draws": self.drawn.get(&id).cloned().unwrap_or_default() }),
+            )
             .collect();
         let mut out = json!({ "shown": true, "width": PANE_WIDTH as i64, "items": items, "preview": preview, "highlights": self.highlights_line(&thread.id), "fetchingHighlights": self.fetching.contains(&thread.id), "pane": self.pane_dump(&thread, &section, cx), "drawn": drawn });
         // The Browser pane's pages while it's on show, wherever it is, as
@@ -2052,7 +3317,9 @@ impl SidePane {
         if self.highlights_unsupported {
             return "not kept by this runner".into();
         }
-        let Some(fetched) = self.highlights.get(id) else { return "not fetched".into() };
+        let Some(fetched) = self.highlights.get(id) else {
+            return "not fetched".into();
+        };
         let s = HighlightSections::build(fetched);
         if s.is_empty() {
             return "empty".into();
@@ -2061,7 +3328,13 @@ impl SidePane {
         if s.brief.is_some() {
             parts.push("a brief".into());
         }
-        for (name, n) in [("pinned", s.pinned.len()), ("files", s.files.len()), ("links", s.links.len()), ("commits", s.commits.len()), ("edited", s.edited.len())] {
+        for (name, n) in [
+            ("pinned", s.pinned.len()),
+            ("files", s.files.len()),
+            ("links", s.links.len()),
+            ("commits", s.commits.len()),
+            ("edited", s.edited.len()),
+        ] {
             if n > 0 {
                 parts.push(format!("{n} {name}"));
             }
@@ -2069,7 +3342,14 @@ impl SidePane {
         if !self.collapsed.is_empty() {
             let mut folded: Vec<&String> = self.collapsed.iter().collect();
             folded.sort();
-            parts.push(format!("folded: {}", folded.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")));
+            parts.push(format!(
+                "folded: {}",
+                folded
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
         }
         parts.join(", ")
     }
@@ -2086,7 +3366,11 @@ impl SidePane {
             pane.insert("previewKind".into(), json!("note"));
             return Value::Object(pane);
         }
-        if let Some(preview) = self.previews.get(&thread.id).filter(|pv| pv.from == section) {
+        if let Some(preview) = self
+            .previews
+            .get(&thread.id)
+            .filter(|pv| pv.from == section)
+        {
             self.fill_preview_dump(&mut pane, preview, cx);
             return Value::Object(pane);
         }
@@ -2105,29 +3389,57 @@ impl SidePane {
     }
 
     #[cfg(feature = "automation")]
-    fn fill_highlights_dump(&self, pane: &mut serde_json::Map<String, Value>, thread: &ThreadSummary, cx: &App) {
+    fn fill_highlights_dump(
+        &self,
+        pane: &mut serde_json::Map<String, Value>,
+        thread: &ThreadSummary,
+        cx: &App,
+    ) {
         if let Some(context) = thread.backlog.as_ref().and_then(|d| d.context.as_deref()) {
             pane.insert("taskContext".into(), json!(context));
         }
         if self.highlights_unsupported {
-            pane.insert("empty".into(), json!("This runner doesn't keep highlights yet."));
+            pane.insert(
+                "empty".into(),
+                json!("This runner doesn't keep highlights yet."),
+            );
             return;
         }
-        let Some(fetched) = self.highlights.get(&thread.id) else { return };
+        let Some(fetched) = self.highlights.get(&thread.id) else {
+            return;
+        };
         let sections = HighlightSections::build(fetched);
         let projects = core::project_rows(thread, |id| self.projects.get(id).cloned());
         let scheduled = self.schedule_rows(thread, cx);
         let (clock, now) = (side::local_now(), now_ms());
         let app = self.app.upgrade();
         let started = match &app {
-            Some(app) => core::started_rows(thread, app.read(cx).threads.values().map(|t| &**t), now),
+            Some(app) => {
+                core::started_rows(thread, app.read(cx).threads.values().map(|t| &**t), now)
+            }
             None => vec![],
         };
         let subagents = core::subagents_for_highlights(thread);
         let asks = thread.asks.clone().unwrap_or_default();
-        let tools: HashSet<String> = thread.patches().into_iter().filter(|p| !p.matched.clone().unwrap_or_default().is_empty()).map(|p| p.id).collect();
-        let tool_panels: Vec<Panel> = thread.panels().into_iter().filter(|panel| tools.contains(&panel.patch)).collect();
-        if sections.is_empty() && asks.is_empty() && projects.is_empty() && tool_panels.is_empty() && scheduled.is_empty() && subagents.is_empty() && started.is_empty() {
+        let tools: HashSet<String> = thread
+            .patches()
+            .into_iter()
+            .filter(|p| !p.matched.clone().unwrap_or_default().is_empty())
+            .map(|p| p.id)
+            .collect();
+        let tool_panels: Vec<Panel> = thread
+            .panels()
+            .into_iter()
+            .filter(|panel| tools.contains(&panel.patch))
+            .collect();
+        if sections.is_empty()
+            && asks.is_empty()
+            && projects.is_empty()
+            && tool_panels.is_empty()
+            && scheduled.is_empty()
+            && subagents.is_empty()
+            && started.is_empty()
+        {
             pane.insert("empty".into(), json!("Nothing here yet. Files, links and commits from this thread show up here as it works."));
             return;
         }
@@ -2138,28 +3450,56 @@ impl SidePane {
             out.push(json!({ "key": key, "title": title, "count": count, "folded": folded, "rows": if folded { vec![] } else { rows } }));
         };
         if !tool_panels.is_empty() {
-            pane.insert("cards".into(), json!(tool_panels.iter().map(|p| match p.summary.as_ref().or(p.note.as_ref()) { Some(s) => format!("{}: {s}", p.title), None => p.title.clone() }).collect::<Vec<_>>()));
+            pane.insert(
+                "cards".into(),
+                json!(tool_panels
+                    .iter()
+                    .map(|p| match p.summary.as_ref().or(p.note.as_ref()) {
+                        Some(s) => format!("{}: {s}", p.title),
+                        None => p.title.clone(),
+                    })
+                    .collect::<Vec<_>>()),
+            );
         }
         if let Some(brief) = &sections.brief {
             pane.insert("brief".into(), json!(HighlightSections::points(brief)));
         }
         if !asks.is_empty() {
             let rows = asks.iter().map(|a| json!({ "title": crate::files::plain_markdown(&a.action), "detail": a.where_text(), "symbol": if a.ticked == Some(true) { "checkmark.square.fill" } else { "square" }, "ticked": a.ticked == Some(true) })).collect();
-            add(fold::NEEDS_YOU, "Needs you", asks.iter().filter(|a| a.ticked != Some(true)).count(), rows, &mut out);
+            add(
+                fold::NEEDS_YOU,
+                "Needs you",
+                asks.iter().filter(|a| a.ticked != Some(true)).count(),
+                rows,
+                &mut out,
+            );
         }
         for row in &projects {
             let rows = row.project.links.iter().map(|l| {
                 let address = core::text::address(&l.url);
                 json!({ "title": l.title, "detail": if address == l.title { None } else { Some(address) }, "symbol": "globe" })
             }).collect();
-            add(&fold::project(&row.project.id), &row.project.title, row.project.links.len() + row.project.open_task_count(), rows, &mut out);
+            add(
+                &fold::project(&row.project.id),
+                &row.project.title,
+                row.project.links.len() + row.project.open_task_count(),
+                rows,
+                &mut out,
+            );
         }
         if !scheduled.is_empty() {
             let rows = scheduled.iter().map(|r| json!({ "title": r.title, "trailing": r.when, "detail": r.detail, "symbol": if r.paused { "pause.circle" } else { "clock" } })).collect();
-            add(fold::SCHEDULED, "Scheduled", scheduled.len(), rows, &mut out);
+            add(
+                fold::SCHEDULED,
+                "Scheduled",
+                scheduled.len(),
+                rows,
+                &mut out,
+            );
         }
         if !subagents.is_empty() {
-            let (shown, more) = HighlightSections::capped(&subagents, core::SUBAGENT_LIMIT, flags.all_subagents);
+            let (shown, more) =
+                HighlightSections::capped(&subagents, core::SUBAGENT_LIMIT, flags.all_subagents);
             let mut rows: Vec<Value> = shown
                 .iter()
                 .map(|s| {
@@ -2175,36 +3515,75 @@ impl SidePane {
             if more > 0 {
                 rows.push(json!({ "title": format!("Show all {}", subagents.len()), "symbol": "ellipsis" }));
             }
-            add(fold::SUBAGENTS, "Sub-agents", subagents.len(), rows, &mut out);
+            add(
+                fold::SUBAGENTS,
+                "Sub-agents",
+                subagents.len(),
+                rows,
+                &mut out,
+            );
         }
         if !started.is_empty() {
-            let (shown, more) = HighlightSections::capped(&started, core::SUBAGENT_LIMIT, flags.all_started);
+            let (shown, more) =
+                HighlightSections::capped(&started, core::SUBAGENT_LIMIT, flags.all_started);
             let mut rows: Vec<Value> = shown.iter().map(|r| json!({ "title": r.thread.title, "detail": core::started_detail(r, &clock), "symbol": core::started_icon(r.state) })).collect();
             if more > 0 {
-                rows.push(json!({ "title": format!("Show all {}", started.len()), "symbol": "ellipsis" }));
+                rows.push(
+                    json!({ "title": format!("Show all {}", started.len()), "symbol": "ellipsis" }),
+                );
             }
-            add(fold::STARTED_THREADS, "Threads it started", started.len(), rows, &mut out);
+            add(
+                fold::STARTED_THREADS,
+                "Threads it started",
+                started.len(),
+                rows,
+                &mut out,
+            );
         }
         let item_row = |h: &Highlight| -> Value {
             let is_commit = h.is_commit();
             let detail = if let Some(path) = &h.path {
-                Some(core::text::folder(path, Some(&thread.cwd), &crate::files::home_dir()))
+                Some(core::text::folder(
+                    path,
+                    Some(&thread.cwd),
+                    &crate::files::home_dir(),
+                ))
             } else if is_commit {
                 Some(core::text::commit_line(h))
             } else {
-                h.url.as_deref().map(core::text::address).filter(|a| *a != h.title)
+                h.url
+                    .as_deref()
+                    .map(core::text::address)
+                    .filter(|a| *a != h.title)
             };
-            let how = if h.is_pinned() || is_commit { None } else { Some(h.how.word()).filter(|w| !w.is_empty()) };
+            let how = if h.is_pinned() || is_commit {
+                None
+            } else {
+                Some(h.how.word()).filter(|w| !w.is_empty())
+            };
             json!({ "title": h.title, "lead": if is_commit { h.sha.clone() } else { None }, "trailing": how, "note": h.note, "detail": detail, "symbol": core::highlight_symbol(h) })
         };
         if !sections.pinned.is_empty() {
-            add(fold::PINNED, "Pinned", sections.pinned.len(), sections.pinned.iter().map(&item_row).collect(), &mut out);
+            add(
+                fold::PINNED,
+                "Pinned",
+                sections.pinned.len(),
+                sections.pinned.iter().map(&item_row).collect(),
+                &mut out,
+            );
         }
         if !sections.files.is_empty() {
-            add(fold::FILES, "Files", sections.files.len(), sections.files.iter().map(&item_row).collect(), &mut out);
+            add(
+                fold::FILES,
+                "Files",
+                sections.files.len(),
+                sections.files.iter().map(&item_row).collect(),
+                &mut out,
+            );
         }
         if !sections.links.is_empty() {
-            let (shown, more) = HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
+            let (shown, more) =
+                HighlightSections::capped(&sections.links, core::LINK_LIMIT, flags.all_links);
             let mut rows: Vec<Value> = shown.iter().map(&item_row).collect();
             if more > 0 {
                 rows.push(json!({ "title": format!("Show all {}", sections.links.len()), "symbol": "ellipsis" }));
@@ -2212,7 +3591,8 @@ impl SidePane {
             add(fold::LINKS, "Links", sections.links.len(), rows, &mut out);
         }
         if !sections.commits.is_empty() || !sections.edited.is_empty() {
-            let (shown, more) = HighlightSections::capped(&sections.commits, core::COMMIT_LIMIT, flags.all_commits);
+            let (shown, more) =
+                HighlightSections::capped(&sections.commits, core::COMMIT_LIMIT, flags.all_commits);
             let mut rows: Vec<Value> = shown.iter().map(&item_row).collect();
             if more > 0 {
                 rows.push(json!({ "title": format!("Show all {}", sections.commits.len()), "symbol": "ellipsis" }));
@@ -2225,7 +3605,13 @@ impl SidePane {
                     }
                 }
             }
-            add(fold::CHANGES, "Changes", sections.commits.len() + sections.edited.len(), rows, &mut out);
+            add(
+                fold::CHANGES,
+                "Changes",
+                sections.commits.len() + sections.edited.len(),
+                rows,
+                &mut out,
+            );
         }
         pane.insert("sections".into(), Value::Array(out));
     }
@@ -2237,7 +3623,12 @@ impl SidePane {
 /// `highlightSection`. `switch` (`row`, a list row's title) is GPUI's own:
 /// it presses that row's switch in the list panel showing.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     let side = app.read(cx).side.clone();
     let text = |key: &str| cmd[key].as_str().map(str::to_owned);
     let thread = side.read(cx).thread(cx).ok_or("no thread selected")?;
@@ -2262,7 +3653,9 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
                 if !ids.contains(&id) {
                     return Err(format!("no panel {id}; this thread has {}", ids.join(", ")));
                 }
-                side.update(cx, |pane, cx| pane.choose_section(&thread.id.clone(), &id, cx));
+                side.update(cx, |pane, cx| {
+                    pane.choose_section(&thread.id.clone(), &id, cx)
+                });
             }
             let section = side.read(cx).section_for(&thread);
             Ok(json!(format!("ok showing {section}")))
@@ -2283,13 +3676,21 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
 }
 
 #[cfg(feature = "automation")]
-fn highlight_command(side: &Entity<SidePane>, thread: &ThreadSummary, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+fn highlight_command(
+    side: &Entity<SidePane>,
+    thread: &ThreadSummary,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     if let Some(index) = cmd["tick"].as_u64().map(|i| i as usize) {
         let asks = thread.asks.clone().unwrap_or_default();
         let ask = asks.get(index).ok_or_else(|| format!("no ask {index}"))?;
         let seq = thread.asks_seq.ok_or("no open card of asks")?;
         let ticked = ask.ticked != Some(true);
-        side.update(cx, |pane, cx| pane.tick_ask(thread.id.clone(), seq, index, ticked, cx));
+        side.update(cx, |pane, cx| {
+            pane.tick_ask(thread.id.clone(), seq, index, ticked, cx)
+        });
         return Ok(json!(if ticked { "ok ticked" } else { "ok unticked" }));
     }
     if let Some(open) = cmd["edited"].as_bool() {
@@ -2315,18 +3716,46 @@ fn highlight_command(side: &Entity<SidePane>, thread: &ThreadSummary, cmd: &Valu
     }
     // A Scheduled row, by its title: "schedule" clicks it (the editor opens
     // on it), "scheduleMenu" lists its right-click menu.
-    if let Some(title) = cmd["schedule"].as_str().or_else(|| cmd["scheduleMenu"].as_str()) {
-        let row = side.read(cx).schedule_rows(thread, cx).into_iter().find(|r| r.title == title).ok_or_else(|| format!("no Scheduled row {title}"))?;
+    if let Some(title) = cmd["schedule"]
+        .as_str()
+        .or_else(|| cmd["scheduleMenu"].as_str())
+    {
+        let row = side
+            .read(cx)
+            .schedule_rows(thread, cx)
+            .into_iter()
+            .find(|r| r.title == title)
+            .ok_or_else(|| format!("no Scheduled row {title}"))?;
         if cmd["scheduleMenu"].is_string() {
-            return Ok(json!(format!("ok {}", SidePane::schedule_menu(&row.id).iter().map(|i| i.title.clone()).collect::<Vec<_>>().join(" | "))));
+            return Ok(json!(format!(
+                "ok {}",
+                SidePane::schedule_menu(&row.id)
+                    .iter()
+                    .map(|i| i.title.clone())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            )));
         }
         side.update(cx, |pane, cx| pane.edit_schedule(&row.id, window, cx));
         return Ok(json!("ok"));
     }
     let pane = side.read(cx);
-    let fetched = pane.highlights.get(&thread.id).ok_or("highlights not fetched")?.clone();
+    let fetched = pane
+        .highlights
+        .get(&thread.id)
+        .ok_or("highlights not fetched")?
+        .clone();
     let sections = HighlightSections::build(&fetched);
-    let find = |title: &str| sections.pinned.iter().chain(&sections.files).chain(&sections.links).chain(&sections.commits).find(|h| h.title == title).cloned();
+    let find = |title: &str| {
+        sections
+            .pinned
+            .iter()
+            .chain(&sections.files)
+            .chain(&sections.links)
+            .chain(&sections.commits)
+            .find(|h| h.title == title)
+            .cloned()
+    };
     if let Some(title) = cmd["open"].as_str() {
         let item = find(title).ok_or_else(|| format!("no row {title}"))?;
         if item.kind == HighlightKind::Commit {
@@ -2337,19 +3766,38 @@ fn highlight_command(side: &Entity<SidePane>, thread: &ThreadSummary, cmd: &Valu
             pane.section_pressed(&thread.id, HIGHLIGHTS, cx);
             pane.open_highlight(&item, thread, cx);
         });
-        let shown = side.read(cx).previews.get(&thread.id).map_or_else(|| "no preview".to_owned(), |p| format!("showing {}", p.title));
+        let shown = side.read(cx).previews.get(&thread.id).map_or_else(
+            || "no preview".to_owned(),
+            |p| format!("showing {}", p.title),
+        );
         return Ok(json!(format!("ok {shown}")));
     }
     if let Some(title) = cmd["menu"].as_str() {
         let item = find(title).ok_or_else(|| format!("no row {title}"))?;
         let items = SidePane::highlight_menu(&item, thread);
-        return Ok(json!(format!("ok {}", items.iter().map(|i| i.title.clone()).collect::<Vec<_>>().join(" | "))));
+        return Ok(json!(format!(
+            "ok {}",
+            items
+                .iter()
+                .map(|i| i.title.clone())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )));
     }
     if let (Some(chosen), Some(title)) = (cmd["choose"].as_str(), cmd["row"].as_str()) {
         let item = find(title).ok_or_else(|| format!("no row {title}"))?;
-        let action = SidePane::highlight_menu(&item, thread).into_iter().find(|i| i.title == chosen).and_then(|i| i.action).ok_or_else(|| format!("no menu item {chosen}"))?;
-        side.update(cx, |pane, cx| pane.run_menu_action(action, thread, window, cx));
-        let copied = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+        let action = SidePane::highlight_menu(&item, thread)
+            .into_iter()
+            .find(|i| i.title == chosen)
+            .and_then(|i| i.action)
+            .ok_or_else(|| format!("no menu item {chosen}"))?;
+        side.update(cx, |pane, cx| {
+            pane.run_menu_action(action, thread, window, cx)
+        });
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
         return Ok(json!(format!("ok {copied}")));
     }
     Err("highlight needs tick, edited, showAll, open, menu or choose".into())

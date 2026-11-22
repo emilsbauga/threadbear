@@ -7,7 +7,7 @@ import type { BackgroundTask } from './adapters/types.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import { IS_WINDOWS } from './platform.ts';
 
-// Background jobs that look stuck (docs/protocol.md, "Stuck background
+// Background jobs that look stuck (docs/protocol/updates.md, "Stuck background
 // jobs"). A thread whose turn has ended stays in Running while its CLI
 // still has background shells or sub-agents going, and one that can never
 // finish keeps it there for good: on 29 Oct a thread sat in Running for

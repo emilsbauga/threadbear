@@ -1,4 +1,4 @@
-// Which patch files the runner may load (docs/protocol.md, "Trusting a
+// Which patch files the runner may load (docs/protocol/trust.md, "Trusting a
 // folder's patches").
 //
 // A patch file is code: the runner imports it, and its hooks, live
@@ -55,12 +55,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 import { atomicWriteFileSync } from './fsutil.ts';
-import { claudeCommands, type ClaudeCommands, type ClaudeOptions } from './claude-trust.ts';
+import { claudeCommands, claudeCommandsKinds, type ClaudeCommands, type ClaudeOptions } from './claude-trust.ts';
 import type { Lane, TrustOffThread } from './trust-off-thread.ts';
 import { isBinary, looksRunnable, MAX_READ_BYTES, reachOf, reachOfCommand, Reads, type FollowOptions, type ScriptReach } from './script-trust.ts';
 import { bareImport } from './tracked-packages.ts';
+import { fileShas, TrustedVersions, versionKey, type FileShas, type PatchChanges } from './patch-changes.ts';
 import { allowCommand } from './shell-allowlist.ts';
-import { clicksOnly, IS_WINDOWS, realPath, realPathSync, slashes } from './platform.ts';
+import { clicksOnly, IS_WINDOWS, realPath, realPathSync } from './platform.ts';
 
 export type TrustVerdict =
   // `files`: the local files its hash covered, real paths. Absent when the
@@ -74,7 +75,9 @@ export type TrustVerdict =
   // `edges`: each of those files' local import specifiers to the file the
   // hash took them to.
   | { trusted: true; files?: string[]; blocked?: Record<string, string>; hash?: string; root?: string; code?: Map<string, Buffer>; edges?: Map<string, Map<string, string>> }
-  | { trusted: false; reason: 'new' | 'changed'; hash: string; helpers?: string[] }
+  // `changes`: with 'changed', what differs from the version last trusted
+  // there (patch-changes.ts), when that's on record.
+  | { trusted: false; reason: 'new' | 'changed'; hash: string; helpers?: string[]; changes?: PatchChanges }
   // Nothing can trust it as it stands (see the top): `problem` says why.
   | { trusted: false; reason: 'unchecked'; problem: string };
 
@@ -254,6 +257,9 @@ export class PatchTrust implements PatchTrustStore {
   // Whether there was a trust file when this started. A runner from before
   // trust existed has none, and seeds it from what it was already running.
   readonly existed: boolean;
+  // What each trusted version was made of, so a re-ask can say what
+  // changed (patch-changes.ts). Describes only: it trusts nothing.
+  private versions: TrustedVersions;
 
   // `file` undefined keeps it in memory (tests). `always` are folders whose
   // patches are trusted whatever they hold.
@@ -265,6 +271,7 @@ export class PatchTrust implements PatchTrustStore {
     this.claudeHome = opts.claudeHome;
     this.offThread = opts.offThread;
     this.always = (opts.always ?? []).map((d) => realpath(path.resolve(d)));
+    this.versions = new TrustedVersions(opts.file ? opts.file.replace(/\.json$/, '') + '-versions.json' : undefined);
     this.existed = this.load() !== 'missing';
   }
 
@@ -449,11 +456,17 @@ export class PatchTrust implements PatchTrustStore {
     if (known?.includes(hash)) {
       entry.trusted = true;
       this.approveEntry(entry);
+      // Trusted before versions were kept: on record from now on. Only
+      // when nothing of this patch is: an old branch's version, trusted
+      // long ago, mustn't become the one a re-ask compares with.
+      this.recordVersion(file, entry, true);
       return { trusted: true, files: deps.map((d) => d.path), hash, root: entry.root, code: entry.code, edges: entry.edges, ...(entry.blocked ? { blocked: entry.blocked } : {}) };
     }
     const helpers = deps.map((d) => d.path);
-    const before = known?.some((h) => !h.startsWith(CLAUDE_PREFIX) && !h.startsWith(CHECK_PREFIX));
-    return { trusted: false, reason: before ? 'changed' : 'new', hash, ...(helpers.length ? { helpers } : {}) };
+    const patchHashes = (known ?? []).filter((h) => !h.startsWith(CLAUDE_PREFIX) && !h.startsWith(CHECK_PREFIX));
+    if (!patchHashes.length) return { trusted: false, reason: 'new', hash, ...(helpers.length ? { helpers } : {}) };
+    const changes = await this.changesOf(file, entry, patchHashes.every((h) => h.startsWith(LEGACY_PREFIX)));
+    return { trusted: false, reason: 'changed', hash, ...(helpers.length ? { helpers } : {}), ...(changes ? { changes } : {}) };
   }
 
   async lookClaude(cwd: string, opts: ClaudeOptions = {}, lane: Lane = 'background'): Promise<ClaudeLook> {
@@ -464,7 +477,7 @@ export class PatchTrust implements PatchTrustStore {
     this.load();
     // Trusted whatever it holds: nothing to look at.
     if (this.alwaysFor(folderKeyOfDir(cwd), cwd)) return grants.map((g) => ({ cwd, grants: g, found: undefined, skipped: true }));
-    const found = this.offThread ? await this.offThread.claudeCommands(cwd, this.claudeHome ?? os.homedir(), grants, lane) : grants.map((g) => claudeCommands(cwd, this.claudeHome, { grants: g }));
+    const found = this.offThread ? await this.offThread.claudeCommands(cwd, this.claudeHome ?? os.homedir(), grants, lane) : claudeCommandsKinds(cwd, this.claudeHome, grants);
     return grants.map((g, i) => ({ cwd, grants: g, found: found[i] }));
   }
 
@@ -581,7 +594,61 @@ export class PatchTrust implements PatchTrustStore {
   trust(file: string, hash: string): boolean {
     if (!isPatchFile(file) || !/^[0-9a-f]{64}$/.test(hash)) return false;
     this.add(folderKey(file), [hash]);
+    try {
+      const entry = this.hashOf(file);
+      if (entry.hash === hash) this.recordVersion(file, entry);
+    } catch {
+      // Unreadable now: trusted all the same, just not on record.
+    }
     return true;
+  }
+
+  // The patch's files as `entry` hashed them, relative to the folder
+  // holding `.threadbear/`, kept as a trusted version (patch-changes.ts).
+  // `ifNew`: only when this version isn't on record yet.
+  private recordVersion(file: string, entry: HashEntry, ifNew = false): void {
+    try {
+      const { key, folder, files } = this.versionOf(file, entry);
+      if (ifNew && this.versions.any(key)) return;
+      this.versions.record(key, { hash: entry.hash, files }, folder);
+    } catch {
+      // Only a description is lost.
+    }
+  }
+
+  // Every record's HEAD written (tests).
+  settled(): Promise<void> {
+    return this.versions.settled();
+  }
+
+  private versionOf(file: string, entry: HashEntry): { key: string; folder: string; files: FileShas } {
+    const named = path.resolve(file);
+    const folder = realpath(path.dirname(path.dirname(path.dirname(named))));
+    const rel = (p: string) => {
+      const r = path.relative(folder, p);
+      // `../shared/u.ts` for one outside the folder, as a worktree and its
+      // main checkout name it alike; absolute only across drives.
+      return path.isAbsolute(r) ? p : r.split(path.sep).join('/');
+    };
+    // `.threadbear/patches/<name>`, as it's named (a patch that's a link is
+    // still kept under its own name).
+    const own = path.relative(path.dirname(path.dirname(path.dirname(named))), named).split(path.sep).join('/');
+    const files = fileShas([[own, entry.own], ...entry.deps.map((d): [string, string | null] => [rel(d.path), d.sha256 ?? null])]);
+    return { key: versionKey(folderKey(file), own), folder, files };
+  }
+
+  // What changed since the version last trusted in the folder; with
+  // nothing on record and only hashes from before version 3 there, that
+  // it's asked again because how patches are checked changed.
+  private async changesOf(file: string, entry: HashEntry, legacyOnly: boolean): Promise<PatchChanges | undefined> {
+    try {
+      const { key, folder, files } = this.versionOf(file, entry);
+      const changes = await this.versions.describe(key, entry.hash, files, folder);
+      if (changes) return changes;
+    } catch {
+      // Nothing to say.
+    }
+    return legacyOnly ? { recheck: true } : undefined;
   }
 
   // Trusts patch files as they are on disk now, unasked: the first
@@ -676,6 +743,7 @@ export class PatchTrust implements PatchTrustStore {
         entry.trusted = true;
         this.approveEntry(entry);
         hash = entry.hash;
+        this.recordVersion(file, entry);
       } catch {
         continue;
       }

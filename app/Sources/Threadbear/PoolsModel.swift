@@ -1,7 +1,7 @@
 import AppKit
 import ThreadbearCore
 
-/// Pools on AppModel (docs/pools-plan.md, "App pieces"): which pool and
+/// Pools on AppModel (docs/archive/pools-plan.md, "App pieces"): which pool and
 /// provider a new thread starts on, what a pick in the model picker does to
 /// a thread, pinning and unpinning, and Settings › Pools' saves. With a
 /// runner older than pools (`usesPools` false) none of this is used.

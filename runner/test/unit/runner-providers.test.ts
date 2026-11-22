@@ -721,8 +721,24 @@ test('sessions tell CliUpdates whether they got going, on the version new sessio
   await tick();
   h.codex.last.sink.exited(new SessionNotFoundError());
   await tick();
+  // One that fails after saying its version did get going: no report.
+  h.runner.send(thread.id, 'fourth');
+  await tick();
+  h.codex.last.init('019a-ok', 'gpt-6.1-sol');
+  h.codex.last.out({ kind: 'cliVersion', version: '0.165.0' });
+  h.codex.last.sink.exited(new Error('codex crashed'));
+  await tick();
+  // Nor one asked to go before it said it, whatever it exits with.
+  h.runner.send(thread.id, 'fifth');
+  await tick();
+  h.codex.last.slowExit = true;
+  const inner = h.runner as unknown as { releaseSession(st: unknown): void; threads: Map<string, unknown> };
+  inner.releaseSession(inner.threads.get(thread.id));
+  h.codex.last.sink.exited(new Error('codex exited before initialize'));
+  await tick();
   assert.deepEqual(told, [
     ['codex', '0.165.0', false],
+    ['codex', '0.165.0', true],
     ['codex', '0.165.0', true],
   ]);
 });

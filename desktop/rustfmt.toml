@@ -1,0 +1,4 @@
+# rustfmt's defaults, with the crates' edition (as Zed's). cargo fmt reads it;
+# a bare rustfmt on one file needs it too. ../check.sh and the Desktop
+# workflow fail a landing whose Rust it would change.
+edition = "2021"

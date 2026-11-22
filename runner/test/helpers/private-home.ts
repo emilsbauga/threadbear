@@ -127,6 +127,16 @@ for (const target of [fs, fs.promises]) {
           const callback = args.at(-1) as (...values: unknown[]) => unknown;
           args[args.length - 1] = (...values: unknown[]) => { canonical.clear(); return callback(...values); };
         }
+        // Windows: a folder can't go while a process still has it as its
+        // working directory, and a patch's loader child (patches.ts) starts
+        // in the folder it reads and takes a moment to exit after it has
+        // answered. Every recursive removal retries for a few seconds there,
+        // as Node's own option does (panel-buttons' "a folder gone by the
+        // press" failed on EPERM from 20 Nov).
+        if (name === 'rm' && process.platform === 'win32') {
+          const opts = args[0] as fs.RmOptions | undefined;
+          if (opts && typeof opts === 'object' && opts.recursive && opts.maxRetries === undefined) args[0] = { ...opts, maxRetries: 10, retryDelay: 100 };
+        }
         const result = Reflect.apply(original, this, [file, ...args]);
         if (mutates) {
           canonical.clear();

@@ -1,4 +1,4 @@
-// Moving a thread to another runner, on each runner (docs/protocol.md,
+// Moving a thread to another runner, on each runner (docs/protocol/moves.md,
 // "Moving a thread to another runner"). The backend's threadMoves rows say
 // whose turn it is (convex/moves.ts); this watches the ones this runner is
 // in and takes its step on each, so a restart carries on from the state:
@@ -92,7 +92,7 @@ export function cleanSubdir(subdir: string): string | undefined {
   return subdir;
 }
 
-// What a move's preview showed, as one digest (docs/protocol.md, "Moving a
+// What a move's preview showed, as one digest (docs/protocol/moves.md, "Moving a
 // thread to another runner", Preview binding): the thread, the runner it
 // goes to, what was picked, the planning half of the old runner's
 // description and the target's plan. The main Mac's runner works it out

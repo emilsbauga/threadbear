@@ -1,20 +1,22 @@
 // Settings › Phone & browser (DevicesSettings.swift, DevicesModel.swift): pair
 // the iPhone app with a QR code it scans, open the website signed in, and the
 // list of what's paired, each with Revoke. The runner issues every token
-// (docs/protocol.md, "Devices"), and a token is only ever inside the QR code on
+// (docs/protocol/moves.md, "Devices"), and a token is only ever inside the QR code on
 // screen or the link handed to the browser: the link is drawn into the code and
 // dropped, never kept, logged or put in the dump. The words and the code are
 // threadbear_core::devices.
-use crate::a11y::A11yRole as _;
 use super::{row_with, section, SettingsWindow};
+use crate::a11y::A11yRole as _;
 use crate::app::Threadbear;
 use crate::highlights::{tipped, tipped_as};
 use crate::push_button::PushButton;
+use crate::spinner::Spinner;
 use crate::{call, icons, style};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::dialog::Dialog;
-use crate::spinner::Spinner;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
@@ -56,7 +58,7 @@ pub(crate) struct DevicesDraft {
 
 impl SettingsWindow {
     fn devices_connected(&self, cx: &App) -> bool {
-        self.app.upgrade().is_some_and(|a| matches!(a.read(cx).status, threadbear_client::runner::Status::Connected { .. }))
+        self.app.upgrade().is_some_and(|a| a.read(cx).connected())
     }
 
     /// The section came on show: the list afresh (`onAppear`), and again
@@ -107,7 +109,8 @@ impl SettingsWindow {
     }
 
     fn receive_devices(&mut self, mut list: DeviceList) {
-        list.devices.retain(|d| !self.devices.revoking.contains(&d.id));
+        list.devices
+            .retain(|d| !self.devices.revoking.contains(&d.id));
         self.devices.list = list;
         self.devices.unsupported = false;
         self.devices.loaded = true;
@@ -123,7 +126,12 @@ impl SettingsWindow {
         cx.notify();
         let client = self.client.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res = call(client, "devices.pair", json!({ "kind": "phone", "name": "iPhone" })).await;
+            let res = call(
+                client,
+                "devices.pair",
+                json!({ "kind": "phone", "name": "iPhone" }),
+            )
+            .await;
             this.update_in(cx, |this, window, cx| {
                 this.devices.pairing = false;
                 match res {
@@ -133,7 +141,10 @@ impl SettingsWindow {
                         match v["pairingLink"].as_str() {
                             // The link goes into the code and no further.
                             Some(link) => this.show_code(rules::pairing_qr(link), window, cx),
-                            None => this.devices.error = Some("The runner gave no pairing link back.".into()),
+                            None => {
+                                this.devices.error =
+                                    Some("The runner gave no pairing link back.".into())
+                            }
                         }
                     }
                     // Only that it failed: the answer would have held the token.
@@ -154,10 +165,16 @@ impl SettingsWindow {
         }
         self.devices.opening = true;
         cx.notify();
-        let name = crate::open_gate::default_browser().map_or_else(|| "Browser".to_owned(), |b| rules::browser_name(&b));
+        let name = crate::open_gate::default_browser()
+            .map_or_else(|| "Browser".to_owned(), |b| rules::browser_name(&b));
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "devices.pair", json!({ "kind": "browser", "name": name })).await;
+            let res = call(
+                client,
+                "devices.pair",
+                json!({ "kind": "browser", "name": name }),
+            )
+            .await;
             this.update(cx, |this, cx| {
                 this.devices.opening = false;
                 match res {
@@ -168,7 +185,10 @@ impl SettingsWindow {
                             Some(link) => {
                                 crate::open_gate::open_web(link, cx);
                             }
-                            None => this.devices.error = Some("The runner gave no sign-in link back.".into()),
+                            None => {
+                                this.devices.error =
+                                    Some("The runner gave no sign-in link back.".into())
+                            }
                         }
                     }
                     Err(e) => this.devices.error = Some(e.message),
@@ -202,9 +222,16 @@ impl SettingsWindow {
                     Err(e) => {
                         // Back where it was, with why; then the runner's
                         // list, which has the last word.
-                        if let Some(at) = before.iter().position(|d| d.id == id).filter(|_| !this.devices.list.devices.iter().any(|d| d.id == id)) {
+                        if let Some(at) = before
+                            .iter()
+                            .position(|d| d.id == id)
+                            .filter(|_| !this.devices.list.devices.iter().any(|d| d.id == id))
+                        {
                             let at_most = at.min(this.devices.list.devices.len());
-                            this.devices.list.devices.insert(at_most, before[at].clone());
+                            this.devices
+                                .list
+                                .devices
+                                .insert(at_most, before[at].clone());
                         }
                         this.devices.error = Some(e.message);
                         this.load_devices(false, cx);
@@ -246,7 +273,8 @@ impl SettingsWindow {
         self.devices_on_show(cx);
         let connected = self.devices_connected(cx);
         let mut sections = Vec::new();
-        if let Some(lines) = rules::blocked(self.devices.unsupported, connected, &self.devices.list) {
+        if let Some(lines) = rules::blocked(self.devices.unsupported, connected, &self.devices.list)
+        {
             let mut note = v_flex().gap(px(6.));
             for line in lines {
                 note = note.child(div().text_color(style::secondary_text(cx)).child(line));
@@ -279,22 +307,76 @@ impl SettingsWindow {
         let (local_only, secondary) = (self.devices.local_only, style::secondary_text(cx));
         let mut rows: Vec<AnyElement> = Vec::new();
         if local_only {
-            rows.push(row_with(div().child("iPhone").into_any_element(), div().text_color(secondary).child(rules::LOCAL_ONLY_IPHONE).into_any_element(), cx));
-            rows.push(row_with(div().text_size(px(12.)).line_height(px(style::natural_line(12.))).text_color(secondary).child(rules::LOCAL_ONLY_NOTE).into_any_element(), div().into_any_element(), cx));
+            rows.push(row_with(
+                div().child("iPhone").into_any_element(),
+                div()
+                    .text_color(secondary)
+                    .child(rules::LOCAL_ONLY_IPHONE)
+                    .into_any_element(),
+                cx,
+            ));
+            rows.push(row_with(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(style::natural_line(12.)))
+                    .text_color(secondary)
+                    .child(rules::LOCAL_ONLY_NOTE)
+                    .into_any_element(),
+                div().into_any_element(),
+                cx,
+            ));
         } else {
             if self.devices.push_off {
-                let note = h_flex().gap(px(8.)).items_start().text_color(secondary).child(div().pt(px(1.)).child(icons::symbol("bell.slash").with_size(px(13.)))).child(div().flex_1().child(rules::PUSH_OFF_NOTE));
-                rows.push(row_with(note.into_any_element(), div().into_any_element(), cx));
+                let note = h_flex()
+                    .gap(px(8.))
+                    .items_start()
+                    .text_color(secondary)
+                    .child(
+                        div()
+                            .pt(px(1.))
+                            .child(icons::symbol("bell.slash").with_size(px(13.))),
+                    )
+                    .child(div().flex_1().child(rules::PUSH_OFF_NOTE));
+                rows.push(row_with(
+                    note.into_any_element(),
+                    div().into_any_element(),
+                    cx,
+                ));
             }
-            let pair = self.busy_button("settings-pair-phone", "Show the code…", rules::PHONE_BUTTON_TIP.to_owned(), self.devices.pairing, cx, |this, window, cx| this.pair_phone(window, cx));
+            let pair = self.busy_button(
+                "settings-pair-phone",
+                "Show the code…",
+                rules::PHONE_BUTTON_TIP.to_owned(),
+                self.devices.pairing,
+                cx,
+                |this, window, cx| this.pair_phone(window, cx),
+            );
             rows.push(row_with(div().child("iPhone").into_any_element(), pair, cx));
         }
         let browser = crate::open_gate::default_browser().map(|b| rules::browser_name(&b));
-        let open = self.busy_button("settings-open-website", "Open signed in", rules::website_tip(browser.as_deref()), self.devices.opening, cx, |this, _, cx| this.open_website(cx));
-        rows.push(row_with(div().child("Website").into_any_element(), open, cx));
+        let open = self.busy_button(
+            "settings-open-website",
+            "Open signed in",
+            rules::website_tip(browser.as_deref()),
+            self.devices.opening,
+            cx,
+            |this, _, cx| this.open_website(cx),
+        );
+        rows.push(row_with(
+            div().child("Website").into_any_element(),
+            open,
+            cx,
+        ));
         let site = self.devices.list.site.clone();
         let about = rules::add_about(local_only, site.as_deref());
-        section("settings-devices-add", rules::add_title(local_only), &about, rules::ADD_ASK, rows, cx)
+        section(
+            "settings-devices-add",
+            rules::add_title(local_only),
+            &about,
+            rules::ADD_ASK,
+            rows,
+            cx,
+        )
     }
 
     /// "Paired": each phone and browser, with Revoke.
@@ -302,7 +384,14 @@ impl SettingsWindow {
         let secondary = style::secondary_text(cx);
         let mut rows: Vec<AnyElement> = Vec::new();
         if self.devices.list.devices.is_empty() {
-            rows.push(row_with(div().text_color(secondary).child(rules::empty_line(self.devices.loaded)).into_any_element(), div().into_any_element(), cx));
+            rows.push(row_with(
+                div()
+                    .text_color(secondary)
+                    .child(rules::empty_line(self.devices.loaded))
+                    .into_any_element(),
+                div().into_any_element(),
+                cx,
+            ));
         }
         let now = threadbear_core::sidebar::local_now();
         for device in self.devices.list.devices.clone() {
@@ -311,16 +400,37 @@ impl SettingsWindow {
                 .gap(px(10.))
                 .items_center()
                 .min_w_0()
-                .child(div().flex_none().w(px(20.)).flex().justify_center().child(icons::symbol(device.kind.symbol()).with_size(px(14.)).text_color(secondary)))
+                .child(
+                    div().flex_none().w(px(20.)).flex().justify_center().child(
+                        icons::symbol(device.kind.symbol())
+                            .with_size(px(14.))
+                            .text_color(secondary),
+                    ),
+                )
                 .child(
                     v_flex()
                         .min_w_0()
                         .gap(px(2.))
                         .child(div().child(device.title()))
-                        .child(div().text_size(px(12.)).line_height(px(style::natural_line(12.))).text_color(if expired { crate::activity_panels::system_orange(cx) } else { secondary }).child(device.detail(&now))),
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(style::natural_line(12.)))
+                                .text_color(if expired {
+                                    crate::activity_panels::system_orange(cx)
+                                } else {
+                                    secondary
+                                })
+                                .child(device.detail(&now)),
+                        ),
                 );
             let id = device.id.clone();
-            let revoke = PushButton::new(SharedString::from(format!("settings-revoke-{}", device.id)), "Revoke", device.revoke_tip()).render(cx, {
+            let revoke = PushButton::new(
+                SharedString::from(format!("settings-revoke-{}", device.id)),
+                "Revoke",
+                device.revoke_tip(),
+            )
+            .render(cx, {
                 let me = cx.entity().downgrade();
                 move |_, _, cx| {
                     let id = id.clone();
@@ -328,15 +438,43 @@ impl SettingsWindow {
                 }
             });
             // Its name for the specs, as each browser's Revoke has the same tip.
-            let revoke = div().id(SharedString::from(format!("settings-revoke-holder-{}", device.id))).test_support().a11y_role(Role::GenericContainer).aria_label(format!("Revoke {}", device.title())).flex_none().child(revoke);
-            rows.push(row_with(label.into_any_element(), revoke.into_any_element(), cx));
+            let revoke = div()
+                .id(SharedString::from(format!(
+                    "settings-revoke-holder-{}",
+                    device.id
+                )))
+                .test_support()
+                .a11y_role(Role::GenericContainer)
+                .aria_label(format!("Revoke {}", device.title()))
+                .flex_none()
+                .child(revoke);
+            rows.push(row_with(
+                label.into_any_element(),
+                revoke.into_any_element(),
+                cx,
+            ));
         }
-        section("settings-devices-paired", "Paired", rules::PAIRED_ABOUT, rules::PAIRED_ASK, rows, cx)
+        section(
+            "settings-devices-paired",
+            "Paired",
+            rules::PAIRED_ABOUT,
+            rules::PAIRED_ASK,
+            rows,
+            cx,
+        )
     }
 
     /// A push button that, while its work is on the way, keeps its room but
     /// shows a spinner in its place and takes no clicks (`.busy`).
-    fn busy_button(&self, id: &'static str, label: &'static str, tip: String, busy: bool, cx: &mut Context<Self>, action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> AnyElement {
+    fn busy_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        tip: String,
+        busy: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
         let me = cx.entity().downgrade();
         let button = PushButton::new(id, label, tip.clone()).render(cx, move |_, window, cx| {
             me.update(cx, |this, cx| action(this, window, cx)).ok();
@@ -349,7 +487,21 @@ impl SettingsWindow {
             .child(div().when(busy, |s| s.opacity(0.)).child(button))
             .when(busy, |s| {
                 // Over the button, so it can't be pressed twice.
-                s.child(tipped_as(div().id(SharedString::from(format!("{id}-spinner"))).absolute().inset_0().flex().items_center().justify_center().occlude(), tip, gpui_kit::Role::ProgressIndicator).child(Spinner::new().with_size(px(12.)).color(secondary)))
+                s.child(
+                    tipped_as(
+                        div()
+                            .id(SharedString::from(format!("{id}-spinner")))
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .occlude(),
+                        tip,
+                        gpui_kit::Role::ProgressIndicator,
+                    )
+                    .child(Spinner::new().with_size(px(12.)).color(secondary)),
+                )
             })
             .into_any_element()
     }
@@ -360,7 +512,11 @@ impl SettingsWindow {
     #[cfg(feature = "automation")]
     pub(super) fn devices_dump(&self, cx: &App) -> Value {
         let now = threadbear_core::sidebar::local_now();
-        let blocked = rules::blocked(self.devices.unsupported, self.devices_connected(cx), &self.devices.list);
+        let blocked = rules::blocked(
+            self.devices.unsupported,
+            self.devices_connected(cx),
+            &self.devices.list,
+        );
         json!({
             "rows": self.devices.list.devices.iter().map(|d| d.line(&now)).collect::<Vec<_>>(),
             "heading": blocked.is_none().then(|| rules::add_title(self.devices.local_only)),
@@ -398,24 +554,39 @@ fn code_closed(window: &WeakEntity<SettingsWindow>, cx: &mut App) {
 }
 
 /// `PairPhoneSheet`: the title, the code on white, how to scan it, and Done.
-fn code_sheet(qr: Option<Qr>, secondary: Hsla, closed: WeakEntity<SettingsWindow>, cx: &App) -> AnyElement {
+fn code_sheet(
+    qr: Option<Qr>,
+    secondary: Hsla,
+    closed: WeakEntity<SettingsWindow>,
+    cx: &App,
+) -> AnyElement {
     let label = style::label_text(cx);
     let code: AnyElement = match qr {
         Some(qr) => div()
             .id("settings-pairing-code")
             .test_support()
-            .role(Role::Image).aria_label("Pairing code")
+            .role(Role::Image)
+            .aria_label("Pairing code")
             .p(px(10.))
             .rounded(px(10.))
             .bg(white())
             .child(div().size(px(220.)).child(qr_canvas(qr)))
             .into_any_element(),
-        None => div().text_color(style::failed(cx)).child("Couldn't draw the code.").into_any_element(),
+        None => div()
+            .text_color(style::failed(cx))
+            .child("Couldn't draw the code.")
+            .into_any_element(),
     };
-    let done = prominent_button("settings-pairing-done", "Done", "Close the code. The phone stays paired once it has scanned it.", cx, move |window, cx| {
-        code_closed(&closed, cx);
-        window.close_dialog(cx);
-    });
+    let done = prominent_button(
+        "settings-pairing-done",
+        "Done",
+        "Close the code. The phone stays paired once it has scanned it.",
+        cx,
+        move |window, cx| {
+            code_closed(&closed, cx);
+            window.close_dialog(cx);
+        },
+    );
     v_flex()
         .w_full()
         .items_center()
@@ -453,8 +624,17 @@ pub(crate) fn qr_canvas(qr: Qr) -> impl IntoElement {
             let top = snap(bounds.origin.y.as_f32() + (height - drawn) / 2.);
             for y in 0..qr.size {
                 for (x, run) in qr.runs(y) {
-                    let origin = point(gpui_kit::px(left + x as f32 * square), gpui_kit::px(top + y as f32 * square));
-                    window.paint_quad(fill(Bounds::new(origin, size(gpui_kit::px(run as f32 * square), gpui_kit::px(square))), black()));
+                    let origin = point(
+                        gpui_kit::px(left + x as f32 * square),
+                        gpui_kit::px(top + y as f32 * square),
+                    );
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            origin,
+                            size(gpui_kit::px(run as f32 * square), gpui_kit::px(square)),
+                        ),
+                        black(),
+                    ));
                 }
             }
         },
@@ -465,7 +645,13 @@ pub(crate) fn qr_canvas(qr: Qr) -> impl IntoElement {
 /// A default button (`.keyboardShortcut(.defaultAction)`, or
 /// `.borderedProminent`): the accent behind white words, as macOS draws it in
 /// the window in front.
-pub(super) fn prominent_button(id: &'static str, label: &'static str, tip: impl Into<SharedString>, cx: &App, on_click: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
+pub(super) fn prominent_button(
+    id: &'static str,
+    label: &'static str,
+    tip: impl Into<SharedString>,
+    cx: &App,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
     let accent = style::control_accent(cx);
     tipped(
         div()
@@ -496,7 +682,11 @@ pub(super) fn prominent_button(id: &'static str, label: &'static str, tip: impl 
 /// code, and `revoke` (a device's name) presses that one's Revoke, each
 /// through a real click in the Settings window.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) -> Result<Option<Value>, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    cx: &mut App,
+) -> Result<Option<Value>, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     let target = if cmd["pair"].as_bool() == Some(true) {
         rules::PHONE_BUTTON_TIP.to_owned()
@@ -507,11 +697,21 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
     } else {
         return Ok(None);
     };
-    let handle = app.read(cx).settings_window.as_ref().map(|(h, _)| *h).ok_or("the Settings window isn't open")?;
+    let handle = app
+        .read(cx)
+        .settings_window
+        .as_ref()
+        .map(|(h, _)| *h)
+        .ok_or("the Settings window isn't open")?;
     handle
         .update(cx, |_, window, cx| -> Result<(), String> {
             window.render_frame(cx);
-            let found = window.elements().into_iter().filter(|e| e.visible() && e.label().is_some_and(|l| l.to_string() == target)).last().ok_or_else(|| format!("no control {target:?} in Settings"))?;
+            let found = window
+                .elements()
+                .into_iter()
+                .filter(|e| e.visible() && e.label().is_some_and(|l| l == target))
+                .next_back()
+                .ok_or_else(|| format!("no control {target:?} in Settings"))?;
             let at = found.visible_bounds().center();
             window.pointer_move(at, None, cx);
             window.pointer_down(at, MouseButton::Left, cx);
@@ -532,6 +732,9 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
 #[cfg(feature = "automation")]
 pub(crate) fn note_drawn(view: &Entity<SettingsWindow>, window: &mut Window, cx: &mut App) {
     use gpui_kit::test::TestQueryExt as _;
-    let drawn = window.elements().into_iter().any(|e| e.visible() && e.label() == Some("Pairing code"));
+    let drawn = window
+        .elements()
+        .into_iter()
+        .any(|e| e.visible() && e.label() == Some("Pairing code"));
     view.update(cx, |this, _| this.devices.code_drawn = drawn);
 }

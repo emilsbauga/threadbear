@@ -40,8 +40,8 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/threadbear-shots.XXXXXX")"
 DATA_DIR="$WORK/data"
 mkdir -p "$DATA_DIR" "$OUT_DIR"
 
-if [[ ! -d "$TOOLS_DIR/mock-runner/node_modules" ]]; then
-  (cd "$TOOLS_DIR/mock-runner" && npm install --silent)
+if [[ ! -d "$TOOLS_DIR/../../mock-runner/node_modules" ]]; then
+  (cd "$TOOLS_DIR/../../mock-runner" && npm install --silent)
 fi
 
 # A bundle (not the bare binary) so the app has its Info.plist, staged in the
@@ -59,7 +59,7 @@ codesign --force --sign - "$WORK/Threadbear.app" >/dev/null 2>&1
 
 # Only the demo threads: private fixtures (real transcripts, tb exports)
 # must never end up in screenshots that go on GitHub.
-node "$TOOLS_DIR/mock-runner/server.mjs" --data-dir "$DATA_DIR" --fixtures "$TOOLS_DIR/mock-runner/fixtures" --quiet &
+node "$TOOLS_DIR/../../mock-runner/server.mjs" --data-dir "$DATA_DIR" --fixtures "$TOOLS_DIR/../../mock-runner/fixtures" --quiet &
 MOCK_PID=$!
 cleanup() {
   kill "$MOCK_PID" 2>/dev/null || true

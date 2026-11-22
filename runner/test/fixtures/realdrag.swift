@@ -1,4 +1,4 @@
-// Appended to app/Tools/realdrag.swift (built with -D TESTING): the drag's
+// Appended to features/tools/realdrag.swift (built with -D TESTING): the drag's
 // decisions against a made-up screen, recording what it would post.
 import CoreGraphics
 

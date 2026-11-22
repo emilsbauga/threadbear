@@ -16,7 +16,7 @@ import { useLiveQuery } from './live';
 import type { FunctionReturnType } from 'convex/server';
 import { api } from '../../convex/_generated/api';
 import { useState, type ReactNode } from 'react';
-import { bareLinks, draftFrom, fenceClosed, draftHTML, draftLabel, draftLines, draftPlainText, type Draft, type Span } from './draft';
+import { bareLinks, draftFrom, fenceClosed, draftHTML, draftLabel, draftLines, draftPlainText, editedLabel, type Draft, type Span } from './draft';
 
 // A message or tool line, from phone:messages or share:view.
 export type PageMessage = TurnMessage;
@@ -400,6 +400,27 @@ function DraftSpan({ span }: { span: Span }) {
     out = <OutLink href={span.link}>{out}</OutLink>;
   }
   return <>{out}</>;
+}
+
+// The drafts Mike changed on the Mac and sent with a message
+// (draft.ts, `splitEdited`): a chip each under his words, opening to the
+// draft he sent, as the Mac's bubble shows them.
+export function EditedDrafts({ drafts }: { drafts: Draft[] }) {
+  if (!drafts.length) return null;
+  return (
+    <div className="edited-drafts">
+      {drafts.map((draft, i) => (
+        <details key={i} className="edited-draft">
+          <summary title="Your version of the agent's draft, sent with this message for it to use">
+            <span aria-hidden="true">{draft.kind === 'email' ? '✉︎' : draft.kind === 'slack' ? '💬' : '📄'}</span> {editedLabel(draft.kind)}
+          </summary>
+          <div className="md">
+            <DraftBox draft={draft} />
+          </div>
+        </details>
+      ))}
+    </div>
+  );
 }
 
 // Pictures that go after a row: an attachment, or what a tool handed back.

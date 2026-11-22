@@ -37,15 +37,27 @@ impl DockTheme {
         let primary = theme.foreground;
         DockTheme {
             panel: theme.background,
-            hairline: if is_dark { hsla(0., 0., 1., 0.13) } else { hsla(0., 0., 0., 0.13) },
+            hairline: if is_dark {
+                hsla(0., 0., 1., 0.13)
+            } else {
+                hsla(0., 0., 0., 0.13)
+            },
             header_text: theme.foreground,
             secondary: theme.muted_foreground,
-            faint: if is_dark { hsla(0., 0., 1., 0.3) } else { hsla(0., 0., 0., 0.28) },
+            faint: if is_dark {
+                hsla(0., 0., 1., 0.3)
+            } else {
+                hsla(0., 0., 0., 0.28)
+            },
             accent: accent.unwrap_or(theme.primary),
             bar_line: primary.opacity(0.07),
             tab_selected: primary.opacity(0.07),
             tab_hover: primary.opacity(0.04),
-            plate: if is_dark { hsla(0., 0., 0.15, 0.92) } else { hsla(0., 0., 1., 0.92) },
+            plate: if is_dark {
+                hsla(0., 0., 0.15, 0.92)
+            } else {
+                hsla(0., 0., 1., 0.92)
+            },
             plate_border: primary.opacity(0.1),
             ghost_border: primary.opacity(0.14),
             shadow: hsla(0., 0., 0., 0.5),

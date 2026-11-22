@@ -15,7 +15,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 use threadbear_core::shortcuts::{ShortcutBindings, ShortcutCommand};
 use threadbear_core::zoom;
-use threadbear_dock::{DockContent, DockDrop, DockEdge, DockGroup, DockLayout, DockNode, DockOptions, DockSplit, SplitAxis};
+use threadbear_dock::{
+    DockContent, DockDrop, DockEdge, DockGroup, DockLayout, DockNode, DockOptions, DockSplit,
+    SplitAxis,
+};
 
 // The panels' ids, the same as the Swift app's so a saved layout carries over
 // (WindowDock, PaneSection, BuiltinPanels, AgentBrowser.panelId).
@@ -46,6 +49,11 @@ pub(crate) enum SidebarMode {
     Scheduled,
     Projects,
     Librarian,
+    /// The `recipes` experiment's view (recipes.rs).
+    Recipes,
+    /// The Feed (experiment `feed`, inbox_feed.rs): its page in the main
+    /// panel, the Inbox in the sidebar.
+    Feed,
 }
 
 impl SidebarMode {
@@ -55,6 +63,8 @@ impl SidebarMode {
             SidebarMode::Scheduled => "scheduled",
             SidebarMode::Projects => "projects",
             SidebarMode::Librarian => "librarian",
+            SidebarMode::Recipes => "recipes",
+            SidebarMode::Feed => "feed",
         }
     }
 }
@@ -92,18 +102,34 @@ pub(crate) struct InboxEndNote {
     pub(crate) empty: bool,
 }
 
+/// What a pane made wide for its page leaves the transcript, and anything
+/// else beside it, in points at 100% zoom (`show_pane_wide`).
+const WIDE_PANE_KEEPS: f32 = 420.;
+
 /// Swift's `WindowDock.defaultLayout`: the sidebar without a title, the
 /// thread, and Highlights, side by side.
 pub(crate) fn default_layout() -> DockLayout {
-    let group = |id: &str, panel: &str| DockNode::Group(DockGroup::new(id, vec![panel.to_string()], None));
-    let root = DockNode::Split(DockSplit::new("window", SplitAxis::Horizontal, vec![group("sidebar", THREADS), group("main", MAIN), group("pane", HIGHLIGHTS)], Some(vec![0.29, 0.47, 0.24])));
+    let group =
+        |id: &str, panel: &str| DockNode::Group(DockGroup::new(id, vec![panel.to_string()], None));
+    let root = DockNode::Split(DockSplit::new(
+        "window",
+        SplitAxis::Horizontal,
+        vec![
+            group("sidebar", THREADS),
+            group("main", MAIN),
+            group("pane", HIGHLIGHTS),
+        ],
+        Some(vec![0.29, 0.47, 0.24]),
+    ));
     DockLayout::new(root, [THREADS.to_string()], vec![])
 }
 
 /// The saved layout, or the default; without the main panel there's nowhere
 /// to type, so one saved that way gets it back (`makeController`).
 pub(crate) fn make_layout(saved: Option<&Value>) -> DockLayout {
-    let mut layout = saved.and_then(|v| serde_json::from_value::<DockLayout>(v.clone()).ok()).unwrap_or_else(default_layout);
+    let mut layout = saved
+        .and_then(|v| serde_json::from_value::<DockLayout>(v.clone()).ok())
+        .unwrap_or_else(default_layout);
     if !layout.contains(MAIN) {
         layout.add(MAIN, DockDrop::window(DockEdge::Right));
     }
@@ -114,8 +140,16 @@ pub(crate) fn make_layout(saved: Option<&Value>) -> DockLayout {
 /// bars are the window's title bar, with room for the traffic lights in the
 /// top-left panel's bar (the activity bar has the first 44 points of them).
 /// `settings` is the app's, for the switches in Settings that change the dock.
-pub(crate) fn dock_options(app: WeakEntity<Threadbear>, settings: &crate::settings::Settings, cx: &App) -> DockOptions {
-    let traffic_lights = if cfg!(target_os = "macos") { (78. - f32::from(px(crate::rails::BAR_WIDTH))).max(0.) } else { 0. };
+pub(crate) fn dock_options(
+    app: WeakEntity<Threadbear>,
+    settings: &crate::settings::Settings,
+    cx: &App,
+) -> DockOptions {
+    let traffic_lights = if cfg!(target_os = "macos") {
+        (78. - f32::from(px(crate::rails::BAR_WIDTH))).max(0.)
+    } else {
+        0.
+    };
     DockOptions {
         header_height: f32::from(px(crate::header::HEADER_HEIGHT)),
         title_size: f32::from(px(style::size::LABEL)),
@@ -129,17 +163,21 @@ pub(crate) fn dock_options(app: WeakEntity<Threadbear>, settings: &crate::settin
         // A panel's window of its own in front counts as Mike looking, as
         // the main window does (`Threadbear::looking_changed`). Going, it's
         // only noted: that can come in the middle of the app's own update.
-        window_activation: Some(std::rc::Rc::new(move |active: bool, window: &mut Window, cx: &mut App| {
-            // A script's click in that window isn't Mike looking.
-            if active && crate::thread::input_is_scripted() {
-                return;
-            }
-            let key = crate::thread::window_key(window);
-            match app.upgrade() {
-                Some(app) if active => app.update(cx, |app, cx| app.looking_changed(key, true, cx)),
-                _ => crate::thread::set_looking(key, active),
-            }
-        })),
+        window_activation: Some(std::rc::Rc::new(
+            move |active: bool, window: &mut Window, cx: &mut App| {
+                // A script's click in that window isn't Mike looking.
+                if active && crate::thread::input_is_scripted() {
+                    return;
+                }
+                let key = crate::thread::window_key(window);
+                match app.upgrade() {
+                    Some(app) if active => {
+                        app.update(cx, |app, cx| app.looking_changed(key, true, cx))
+                    }
+                    _ => crate::thread::set_looking(key, active),
+                }
+            },
+        )),
     }
 }
 
@@ -151,20 +189,38 @@ pub(crate) struct Panels {
 
 impl DockContent for Panels {
     fn title(&self, panel: &str, cx: &App) -> SharedString {
-        self.app.upgrade().map(|a| SharedString::from(a.read(cx).panel_title(panel))).unwrap_or_default()
+        self.app
+            .upgrade()
+            .map(|a| SharedString::from(a.read(cx).panel_title(panel)))
+            .unwrap_or_default()
     }
 
     fn icon(&self, panel: &str, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let color = cx.theme().muted_foreground;
         if let Some(symbol) = panel_symbol(panel) {
-            return Some(icons::symbol(symbol).with_size(px(13.)).text_color(color).into_any_element());
+            return Some(
+                icons::symbol(symbol)
+                    .with_size(px(13.))
+                    .text_color(color)
+                    .into_any_element(),
+            );
         }
         // A patch's panel: its own picture or symbol, as on the rail.
         let (found, thread) = self.patch_panel(panel, cx)?;
         let symbol = threadbear_core::highlights::panel_symbol(&found).to_owned();
-        let icon = crate::patch_icons::patch_icon(found.icon_file.as_deref(), &symbol, 13., Some(color), thread.is_remote());
+        let icon = crate::patch_icons::patch_icon(
+            found.icon_file.as_deref(),
+            &symbol,
+            13.,
+            Some(color),
+            thread.is_remote(),
+        );
         // A pinned one has a pin before it (pinned_panels.rs).
-        Some(if crate::pinned_panels::pinned(panel).is_some() { crate::pinned_panels::tab_icon(icon, cx) } else { icon })
+        Some(if crate::pinned_panels::pinned(panel).is_some() {
+            crate::pinned_panels::tab_icon(icon, cx)
+        } else {
+            icon
+        })
     }
 
     fn badge(&self, panel: &str, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -173,7 +229,12 @@ impl DockContent for Panels {
         let (found, thread) = self.patch_panel(panel, cx)?;
         let origin = threadbear_core::highlights::PanelOrigin::of_panel(&found, &thread.patches());
         let icons = self.app.upgrade()?.read(cx).sidebar.project_icons.clone();
-        crate::patch_icons::origin_badge(&origin, crate::patch_icons::project_mark(&origin, &thread, &icons), 10., cx)
+        crate::patch_icons::origin_badge(
+            &origin,
+            crate::patch_icons::project_mark(&origin, &thread, &icons),
+            10.,
+            cx,
+        )
     }
 
     fn view(&self, panel: &str, ghost: bool, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -196,7 +257,9 @@ impl DockContent for Panels {
     }
 
     fn header_fills(&self, panel: &str, cx: &App) -> bool {
-        let Some(app) = self.app.upgrade() else { return false };
+        let Some(app) = self.app.upgrade() else {
+            return false;
+        };
         app.read(cx).header_is_renaming(panel)
     }
 
@@ -218,15 +281,25 @@ impl DockContent for Panels {
     }
 
     fn available(&self, panel: &str, cx: &App) -> bool {
-        let Some(app) = self.app.upgrade() else { return true };
+        let Some(app) = self.app.upgrade() else {
+            return true;
+        };
         app.read(cx).panel_available(panel, cx)
     }
 
     /// Pin on a thread's patch panel, Unpin on a pinned one (pinned_panels.rs).
     fn menu_items(&self, panel: &str, cx: &App) -> Vec<threadbear_dock::DockMenuItem> {
-        let Some(app) = self.app.upgrade() else { return vec![] };
-        let Some(label) = app.read(cx).pin_menu_label(panel) else { return vec![] };
-        let icon = if label == "Unpin" { gpui_kit::assets::IconName::PinOff } else { gpui_kit::assets::IconName::Pin };
+        let Some(app) = self.app.upgrade() else {
+            return vec![];
+        };
+        let Some(label) = app.read(cx).pin_menu_label(panel) else {
+            return vec![];
+        };
+        let icon = if label == "Unpin" {
+            gpui_kit::assets::IconName::PinOff
+        } else {
+            gpui_kit::assets::IconName::Pin
+        };
         let (weak, panel) = (self.app.clone(), panel.to_owned());
         vec![threadbear_dock::DockMenuItem {
             label: label.into(),
@@ -239,14 +312,25 @@ impl DockContent for Panels {
 
     /// A pinned panel's tab says whose it is.
     fn tip(&self, panel: &str, cx: &App) -> Option<SharedString> {
-        self.app.upgrade()?.read(cx).pinned_tip(panel).map(SharedString::from)
+        self.app
+            .upgrade()?
+            .read(cx)
+            .pinned_tip(panel)
+            .map(SharedString::from)
     }
 }
 
 /// `WindowDock.symbol(of:)`: the icon on a panel's tab.
 impl Panels {
     /// The open thread's patch panel with this id, and the thread.
-    fn patch_panel(&self, panel: &str, cx: &App) -> Option<(threadbear_core::highlights::Panel, threadbear_core::inbox::ThreadSummary)> {
+    fn patch_panel(
+        &self,
+        panel: &str,
+        cx: &App,
+    ) -> Option<(
+        threadbear_core::highlights::Panel,
+        threadbear_core::inbox::ThreadSummary,
+    )> {
         let app = self.app.upgrade()?;
         // A pinned panel's is its own thread's (pinned_panels.rs).
         if crate::pinned_panels::pinned(panel).is_some() {
@@ -300,6 +384,7 @@ actions!(
         ShowScheduled,
         ShowProjects,
         ShowLibrarian,
+        ShowFeed,
         ShowHibernating,
         ShowArchived,
         ShowPreviousTab,
@@ -376,33 +461,98 @@ macro_rules! commands {
 commands!(
     (NewThread, NewThread, Some(ShortcutCommand::NewThread)),
     (Archive, ArchiveThread, Some(ShortcutCommand::Archive)),
-    (Hibernate, PickHibernateTime, Some(ShortcutCommand::Hibernate)),
+    (
+        Hibernate,
+        PickHibernateTime,
+        Some(ShortcutCommand::Hibernate)
+    ),
     (WakeWhen, WakeWhenPrompt, None),
     (Stop, StopTurn, Some(ShortcutCommand::Stop)),
-    (CopyTranscript, CopyTranscript, Some(ShortcutCommand::CopyTranscript)),
+    (
+        CopyTranscript,
+        CopyTranscript,
+        Some(ShortcutCommand::CopyTranscript)
+    ),
     (Back, GoBack, Some(ShortcutCommand::Back)),
     (Forward, GoForward, Some(ShortcutCommand::Forward)),
-    (NextInboxThread, NextInboxThread, Some(ShortcutCommand::NextInboxThread)),
-    (OpenAnything, OpenAnything, Some(ShortcutCommand::OpenAnything)),
+    (
+        NextInboxThread,
+        NextInboxThread,
+        Some(ShortcutCommand::NextInboxThread)
+    ),
+    (
+        OpenAnything,
+        OpenAnything,
+        Some(ShortcutCommand::OpenAnything)
+    ),
     // ⌘P: the same box from a second key, with no menu item of its own.
-    (OpenAnythingAlso, OpenAnythingAlso, Some(ShortcutCommand::OpenAnythingAlso)),
+    (
+        OpenAnythingAlso,
+        OpenAnythingAlso,
+        Some(ShortcutCommand::OpenAnythingAlso)
+    ),
     (ShowInbox, ShowInbox, Some(ShortcutCommand::ShowInbox)),
-    (ShowScheduled, ShowScheduled, Some(ShortcutCommand::ShowScheduled)),
-    (ShowProjects, ShowProjects, Some(ShortcutCommand::ShowProjects)),
-    (ShowLibrarian, ShowLibrarian, Some(ShortcutCommand::ShowLibrarian)),
-    (ShowHibernating, ShowHibernating, Some(ShortcutCommand::ShowHibernating)),
-    (ShowArchived, ShowArchived, Some(ShortcutCommand::ShowArchived)),
-    (PreviousTab, ShowPreviousTab, Some(ShortcutCommand::PreviousTab)),
+    (
+        ShowScheduled,
+        ShowScheduled,
+        Some(ShortcutCommand::ShowScheduled)
+    ),
+    (
+        ShowProjects,
+        ShowProjects,
+        Some(ShortcutCommand::ShowProjects)
+    ),
+    (
+        ShowLibrarian,
+        ShowLibrarian,
+        Some(ShortcutCommand::ShowLibrarian)
+    ),
+    (ShowFeed, ShowFeed, None),
+    (
+        ShowHibernating,
+        ShowHibernating,
+        Some(ShortcutCommand::ShowHibernating)
+    ),
+    (
+        ShowArchived,
+        ShowArchived,
+        Some(ShortcutCommand::ShowArchived)
+    ),
+    (
+        PreviousTab,
+        ShowPreviousTab,
+        Some(ShortcutCommand::PreviousTab)
+    ),
     (NextTab, ShowNextTab, Some(ShortcutCommand::NextTab)),
     (Settings, OpenSettings, Some(ShortcutCommand::Settings)),
     (ZoomIn, ZoomIn, Some(ShortcutCommand::ZoomIn)),
     (ZoomOut, ZoomOut, Some(ShortcutCommand::ZoomOut)),
     (ActualSize, ActualSize, Some(ShortcutCommand::ActualSize)),
-    (ToggleThreads, ToggleThreads, Some(ShortcutCommand::ToggleThreads)),
-    (TogglePanels, TogglePanels, Some(ShortcutCommand::TogglePanels)),
-    (ToggleTerminal, ToggleTerminal, Some(ShortcutCommand::ToggleTerminal)),
-    (ResetPanelLayout, ResetPanelLayout, Some(ShortcutCommand::ResetPanelLayout)),
-    (CollapseThreads, CollapseThreads, Some(ShortcutCommand::CollapseThreads)),
+    (
+        ToggleThreads,
+        ToggleThreads,
+        Some(ShortcutCommand::ToggleThreads)
+    ),
+    (
+        TogglePanels,
+        TogglePanels,
+        Some(ShortcutCommand::TogglePanels)
+    ),
+    (
+        ToggleTerminal,
+        ToggleTerminal,
+        Some(ShortcutCommand::ToggleTerminal)
+    ),
+    (
+        ResetPanelLayout,
+        ResetPanelLayout,
+        Some(ShortcutCommand::ResetPanelLayout)
+    ),
+    (
+        CollapseThreads,
+        CollapseThreads,
+        Some(ShortcutCommand::CollapseThreads)
+    ),
     (ToggleFrameRate, ToggleFrameRate, None),
     (About, AboutApp, None),
     (RestartToUpdate, RestartToUpdate, None),
@@ -445,7 +595,13 @@ fn standard_key_display(command: Command) -> Option<&'static str> {
 
 fn standard_keys() -> Vec<(&'static str, Command)> {
     if cfg!(target_os = "macos") {
-        vec![("cmd-q", Command::Quit), ("cmd-h", Command::Hide), ("alt-cmd-h", Command::HideOthers), ("cmd-w", Command::Close), ("cmd-m", Command::Minimize)]
+        vec![
+            ("cmd-q", Command::Quit),
+            ("cmd-h", Command::Hide),
+            ("alt-cmd-h", Command::HideOthers),
+            ("cmd-w", Command::Close),
+            ("cmd-m", Command::Minimize),
+        ]
     } else {
         vec![("ctrl-q", Command::Quit)]
     }
@@ -453,7 +609,10 @@ fn standard_keys() -> Vec<(&'static str, Command)> {
 
 impl Threadbear {
     pub(crate) fn panel_title(&self, panel: &str) -> String {
-        if let Some(title) = self.thread_panel_title(panel).or_else(|| self.pinned_title(panel)) {
+        if let Some(title) = self
+            .thread_panel_title(panel)
+            .or_else(|| self.pinned_title(panel))
+        {
             return title;
         }
         match panel {
@@ -469,7 +628,17 @@ impl Threadbear {
             FILES => "Files".into(),
             BROWSER => "Browser".into(),
             PATCHES => "Patches".into(),
-            _ => self.pane_thread().and_then(|t| t.panels.iter().flatten().find(|p| p["id"].as_str() == Some(panel)).and_then(|p| p["title"].as_str()).map(String::from)).unwrap_or_else(|| panel.to_string()),
+            _ => self
+                .pane_thread()
+                .and_then(|t| {
+                    t.panels
+                        .iter()
+                        .flatten()
+                        .find(|p| p["id"].as_str() == Some(panel))
+                        .and_then(|p| p["title"].as_str())
+                        .map(String::from)
+                })
+                .unwrap_or_else(|| panel.to_string()),
         }
     }
 
@@ -481,7 +650,9 @@ impl Threadbear {
         match self.home_page().unwrap_or(SidebarMode::Inbox) {
             SidebarMode::Projects => "Projects".into(),
             SidebarMode::Librarian => "Librarian".into(),
+            SidebarMode::Recipes => "Recipes".into(),
             SidebarMode::Scheduled => "Scheduled".into(),
+            SidebarMode::Feed => "Feed".into(),
             SidebarMode::Inbox => match self.open_thread() {
                 Some(t) if t.title.is_empty() => "Untitled".into(),
                 Some(t) => t.title.clone(),
@@ -491,14 +662,21 @@ impl Threadbear {
     }
 
     pub(crate) fn open_thread(&self) -> Option<&threadbear_core::inbox::ThreadSummary> {
-        self.selected.as_ref().and_then(|id| self.threads.get(id)).map(|t| &**t)
+        self.selected
+            .as_ref()
+            .and_then(|id| self.threads.get(id))
+            .map(|t| &**t)
     }
 
     /// `WindowDock.section(_:)` != nil: a pane section's panel, not the
     /// sidebar, the main panel, one of the activity bar's panels or a thread
     /// in a panel of its own.
     pub(crate) fn is_pane_section(panel: &str) -> bool {
-        !matches!(panel, THREADS | MAIN | USAGE | UPDATES | CONNECTORS | RUNNERS | SETUP | TERMINAL) && crate::thread_panels::pinned_thread(panel).is_none() && crate::pinned_panels::pinned(panel).is_none()
+        !matches!(
+            panel,
+            THREADS | MAIN | USAGE | UPDATES | CONNECTORS | RUNNERS | SETUP | TERMINAL
+        ) && crate::thread_panels::pinned_thread(panel).is_none()
+            && crate::pinned_panels::pinned(panel).is_none()
     }
 
     /// `available` in `RootView.content`: Highlights, Files and a thread's own
@@ -525,13 +703,19 @@ impl Threadbear {
         // A project's page has no Highlights or Files (they're a thread's),
         // and only the panels its folders give (`pane_thread`).
         let project_page = self.projects.open.is_some();
-        let Some(thread) = self.pane_thread() else { return !project_page };
+        let Some(thread) = self.pane_thread() else {
+            return !project_page;
+        };
         match panel {
             HIGHLIGHTS | FILES => !project_page,
             // While BrowserBear is on this Mac, as the rail's button.
             BROWSER => !project_page && self.browser_rail(&thread.id, cx).is_some(),
             PATCHES => thread.patches.as_ref().is_some_and(|p| !p.is_empty()),
-            other => thread.panels.iter().flatten().any(|p| p["id"].as_str() == Some(other)),
+            other => thread
+                .panels
+                .iter()
+                .flatten()
+                .any(|p| p["id"].as_str() == Some(other)),
         }
     }
 
@@ -542,7 +726,13 @@ impl Threadbear {
     /// The pane sections open in the dock, in layout order (`openPanes`),
     /// and pinned panels, which sit among them.
     fn open_panes(&self, cx: &App) -> Vec<String> {
-        self.dock.read(cx).layout().panels().into_iter().filter(|p| Self::is_pane_section(p) || crate::pinned_panels::pinned(p).is_some()).collect()
+        self.dock
+            .read(cx)
+            .layout()
+            .panels()
+            .into_iter()
+            .filter(|p| Self::is_pane_section(p) || crate::pinned_panels::pinned(p).is_some())
+            .collect()
     }
 
     /// Shows a section's panel, beside another pane section if one's open,
@@ -550,7 +740,52 @@ impl Threadbear {
     pub(crate) fn show_pane(&mut self, panel: &str, cx: &mut Context<Self>) {
         let near = self.open_panes(cx);
         let near_refs: Vec<&str> = near.iter().map(String::as_str).collect();
-        self.dock.update(cx, |m, cx| m.show(panel, &near_refs, DockDrop::window(DockEdge::Right), cx));
+        self.dock.update(cx, |m, cx| {
+            m.show(panel, &near_refs, DockDrop::window(DockEdge::Right), cx)
+        });
+    }
+
+    /// Shows a section's panel and makes it at least `width` points wide
+    /// (at 100% zoom, as the app's sizes are), for a page that needs the
+    /// room: Mike kept dragging the pane wider for a design review. The
+    /// room comes from what's beside it, the transcript mostly, which keeps
+    /// `WIDE_PANE_KEEPS`. With less room than that it goes as wide as it
+    /// can, and one that's wide enough already stays as it is.
+    /// `restore_pane_width` puts the width back.
+    pub(crate) fn show_pane_wide(&mut self, section: &str, width: f32, cx: &mut Context<Self>) {
+        if !self.is_panel_showing(section, cx) {
+            self.show_pane(section, cx);
+        }
+        // Worked out here and handed over, where the dock's view would ask
+        // its content: that reads this app, which is in the middle of this
+        // update. The widths are the last frame's and the tree is already
+        // the new one, so a section shown just now is widened at once.
+        let available: std::collections::HashSet<String> = self
+            .dock
+            .read(cx)
+            .layout()
+            .panels()
+            .into_iter()
+            .filter(|p| self.panel_available(p, cx))
+            .collect();
+        let (width, keep) = (style::zoomed(width), style::zoomed(WIDE_PANE_KEEPS));
+        let widened = self.dock.update(cx, |m, cx| {
+            m.widen_panel(section, width, keep, &|p: &str| available.contains(p), cx)
+        });
+        // Nothing changed (wide enough already) leaves an earlier widening's
+        // record be, so that one can still be put back.
+        if let Some(widened) = widened {
+            self.pane_widths.insert(section.to_string(), widened);
+        }
+    }
+
+    /// Puts a section's panel back to the width it had before
+    /// `show_pane_wide`, unless Mike has dragged a divider there since:
+    /// then it stays as he left it. The panel stays open either way.
+    pub(crate) fn restore_pane_width(&mut self, section: &str, cx: &mut Context<Self>) {
+        if let Some(widened) = self.pane_widths.remove(section) {
+            self.dock.update(cx, |m, cx| m.restore_width(&widened, cx));
+        }
     }
 
     /// A rail button, VS Code's way: closes the section's panel if it's
@@ -558,7 +793,10 @@ impl Threadbear {
     pub(crate) fn click_rail(&mut self, panel: &str, cx: &mut Context<Self>) {
         // The thread's own panel is pinned: that's it, brought to the front
         // rather than a second copy opened. Unpin is how it goes.
-        if let Some(pin) = self.own_pin(panel, cx).filter(|_| !self.is_panel_showing(panel, cx)) {
+        if let Some(pin) = self
+            .own_pin(panel, cx)
+            .filter(|_| !self.is_panel_showing(panel, cx))
+        {
             self.dock.update(cx, |m, cx| m.select(&pin, cx));
             return;
         }
@@ -577,9 +815,19 @@ impl Threadbear {
             self.dock.update(cx, |m, cx| m.close(panel, cx));
             return;
         }
-        let under = self.dock.read(cx).layout().group_containing(THREADS).map(|g| DockDrop::edge(g.id, DockEdge::Bottom)).unwrap_or(DockDrop::window(DockEdge::Left));
-        let near: Vec<&str> = [USAGE, UPDATES, SETUP, CONNECTORS, RUNNERS].into_iter().filter(|p| *p != panel).collect();
-        self.dock.update(cx, |m, cx| m.show(panel, &near, under, cx));
+        let under = self
+            .dock
+            .read(cx)
+            .layout()
+            .group_containing(THREADS)
+            .map(|g| DockDrop::edge(g.id, DockEdge::Bottom))
+            .unwrap_or(DockDrop::window(DockEdge::Left));
+        let near: Vec<&str> = [USAGE, UPDATES, SETUP, CONNECTORS, RUNNERS]
+            .into_iter()
+            .filter(|p| *p != panel)
+            .collect();
+        self.dock
+            .update(cx, |m, cx| m.show(panel, &near, under, cx));
     }
 
     /// Hide or Show Threads (`toggleThreadsPanel`): closed, or opened down
@@ -592,7 +840,9 @@ impl Threadbear {
         }
         self.set_threads_collapsed(false, cx);
         if !contains {
-            self.dock.update(cx, |m, cx| m.open(THREADS, DockDrop::window(DockEdge::Left), cx));
+            self.dock.update(cx, |m, cx| {
+                m.open(THREADS, DockDrop::window(DockEdge::Left), cx)
+            });
         }
     }
 
@@ -601,7 +851,11 @@ impl Threadbear {
     fn toggle_panels(&mut self, cx: &mut Context<Self>) {
         let open = self.open_panes(cx);
         if open.is_empty() {
-            let panes = if self.hidden_panes.is_empty() { vec![HIGHLIGHTS.to_string()] } else { std::mem::take(&mut self.hidden_panes) };
+            let panes = if self.hidden_panes.is_empty() {
+                vec![HIGHLIGHTS.to_string()]
+            } else {
+                std::mem::take(&mut self.hidden_panes)
+            };
             for panel in &panes {
                 self.show_pane(panel, cx);
             }
@@ -616,7 +870,8 @@ impl Threadbear {
     }
 
     pub(crate) fn reset_panel_layout(&mut self, cx: &mut Context<Self>) {
-        self.dock.update(cx, |m, cx| m.set_layout(default_layout(), cx));
+        self.dock
+            .update(cx, |m, cx| m.set_layout(default_layout(), cx));
     }
 
     /// Saves the panel layout (`dock.onChange`), a moment after it last moved:
@@ -638,7 +893,8 @@ impl Threadbear {
     /// on disk straight away, so nothing's lost if the app is killed next.
     pub(crate) fn save_settings_soon(&mut self, cx: &mut Context<Self>) {
         let now = crate::now_ms();
-        if self.settings_save_task.is_none() && now - self.settings_last_save_ms >= SAVE_THROTTLE_MS {
+        if self.settings_save_task.is_none() && now - self.settings_last_save_ms >= SAVE_THROTTLE_MS
+        {
             self.settings_last_save_ms = now;
             self.settings_dirty = false;
             self.settings.save();
@@ -649,7 +905,9 @@ impl Threadbear {
             return;
         }
         self.settings_save_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(SAVE_THROTTLE_MS as u64)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(SAVE_THROTTLE_MS as u64))
+                .await;
             this.update(cx, |this, _| {
                 this.settings_save_task = None;
                 this.settings_last_save_ms = crate::now_ms();
@@ -667,14 +925,22 @@ impl Threadbear {
         if std::env::var_os("THREADBEAR_AUTOMATION").is_some() {
             return;
         }
-        let WindowBounds::Windowed(b) = window.window_bounds() else { return };
-        self.settings.saved.window_frame = Some(WindowFrame { x: f64::from(b.origin.x), y: f64::from(b.origin.y), width: f64::from(b.size.width), height: f64::from(b.size.height) });
+        let WindowBounds::Windowed(b) = window.window_bounds() else {
+            return;
+        };
+        self.settings.saved.window_frame = Some(WindowFrame {
+            x: f64::from(b.origin.x),
+            y: f64::from(b.origin.y),
+            width: f64::from(b.size.width),
+            height: f64::from(b.size.height),
+        });
         self.save_settings_soon(cx);
     }
 
     /// Folds and the Inbox's sort, saved as they change.
     pub(crate) fn sidebar_settings_changed(&mut self, cx: &mut Context<Self>) {
-        self.settings.saved.collapsed_sections = Some(self.folded.iter().map(|k| k.to_string()).collect());
+        self.settings.saved.collapsed_sections =
+            Some(self.folded.iter().map(|k| k.to_string()).collect());
         self.settings.set_inbox_order(self.sidebar.order);
         self.save_settings_soon(cx);
     }
@@ -683,7 +949,8 @@ impl Threadbear {
     /// reads changed.
     fn refresh_dock_options(&mut self, cx: &mut Context<Self>) {
         let options = dock_options(cx.entity().downgrade(), &self.settings, cx);
-        self.dock_view.update(cx, |d, cx| d.set_options(options, cx));
+        self.dock_view
+            .update(cx, |d, cx| d.set_options(options, cx));
     }
 
     /// Settings > General's Move panels by their background.
@@ -724,7 +991,12 @@ impl Threadbear {
 
     // Commands.
 
-    pub(crate) fn run_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run_command(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match command {
             Command::NewThread => self.new_thread(cx),
             Command::Archive => self.toggle_archive(window, cx),
@@ -750,9 +1022,17 @@ impl Threadbear {
             // A project's page tabs; they do nothing anywhere else.
             Command::PreviousTab => self.step_project_tab(-1, cx),
             Command::NextTab => self.step_project_tab(1, cx),
-            Command::OpenAnything | Command::OpenAnythingAlso => self.toggle_open_anything(window, cx),
+            Command::OpenAnything | Command::OpenAnythingAlso => {
+                self.toggle_open_anything(window, cx)
+            }
+            Command::ShowFeed => self.show_feed(cx),
             // Each brings the Threads panel back if ⌘/ folded it away.
-            Command::ShowInbox | Command::ShowScheduled | Command::ShowProjects | Command::ShowLibrarian | Command::ShowHibernating | Command::ShowArchived => {
+            Command::ShowInbox
+            | Command::ShowScheduled
+            | Command::ShowProjects
+            | Command::ShowLibrarian
+            | Command::ShowHibernating
+            | Command::ShowArchived => {
                 self.unfold_threads(cx);
                 match command {
                     Command::ShowScheduled => self.set_mode(SidebarMode::Scheduled, cx),
@@ -791,7 +1071,11 @@ impl Threadbear {
             }
             // What's typed goes to disk on the way out (drafts.rs's
             // on_app_quit), once it's been asked (quit_prompt.rs).
-            Command::Quit => crate::quit_prompt::quit(self.settings.asks_before_quitting(), cx.entity().downgrade(), cx),
+            Command::Quit => crate::quit_prompt::quit(
+                self.settings.asks_before_quitting(),
+                cx.entity().downgrade(),
+                cx,
+            ),
             Command::Hide => cx.hide(),
             Command::HideOthers => cx.hide_other_apps(),
             Command::ShowAll => cx.unhide_other_apps(),
@@ -806,7 +1090,9 @@ impl Threadbear {
     /// ⌘E: archives the open thread, or brings it back if it's archived
     /// (`toggleArchive`).
     pub(crate) fn toggle_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else { return };
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
         let archived = self.threads.get(&id).is_some_and(|t| t.is_archived());
         if archived {
             self.unarchive_row(&id, cx);
@@ -815,9 +1101,17 @@ impl Threadbear {
         }
     }
 
-    fn hibernate_open(&mut self, preset: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else { return };
-        let until = threadbear_core::sidebar::snooze_date(preset, &threadbear_core::sidebar::local_now());
+    fn hibernate_open(
+        &mut self,
+        preset: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let until =
+            threadbear_core::sidebar::snooze_date(preset, &threadbear_core::sidebar::local_now());
         self.snooze_row(id, until, window, cx);
     }
 
@@ -867,8 +1161,19 @@ impl Threadbear {
         // A page of the activity bar's takes a project's page's place
         // (`showProjects`); the Inbox leaves it where it is.
         let closes_project = home && self.projects.open.is_some();
+        if self.mode == SidebarMode::Feed && mode != SidebarMode::Feed {
+            self.left_feed();
+        }
         if self.mode != mode || self.shows_home != home || closes_project {
-            if self.mode != mode {
+            // The Feed's sidebar is the Inbox's: nothing there to switch.
+            let same_list = matches!(
+                (self.mode, mode),
+                (
+                    SidebarMode::Inbox | SidebarMode::Feed,
+                    SidebarMode::Inbox | SidebarMode::Feed
+                )
+            );
+            if self.mode != mode && !same_list {
                 self.view_switched = Some(std::time::Instant::now());
             }
             self.mode = mode;
@@ -889,7 +1194,12 @@ impl Threadbear {
     // Back and forward (Navigation.swift).
 
     pub(crate) fn place(&self) -> NavPlace {
-        NavPlace { mode: self.mode, thread: self.selected.clone(), home: self.home_page().is_some(), project: self.projects.open.clone() }
+        NavPlace {
+            mode: self.mode,
+            thread: self.selected.clone(),
+            home: self.home_page().is_some(),
+            project: self.projects.open.clone(),
+        }
     }
 
     /// `noteNavigation`: one step per place the window has been. Not while
@@ -903,15 +1213,24 @@ impl Threadbear {
         let place = self.place();
         // The page in place of a thread, as the activity log names it.
         let page = (place.home && place.mode != SidebarMode::Inbox).then(|| place.mode.name());
-        crate::activity::view(place.mode.name(), place.thread.as_deref(), self.subagent.as_ref().map(|(_, id)| id.as_str()), place.project.as_deref(), page);
+        crate::activity::view(
+            place.mode.name(),
+            place.thread.as_deref(),
+            self.subagent.as_ref().map(|(_, id)| id.as_str()),
+            place.project.as_deref(),
+            page,
+        );
         // ⌘K's Recent: the thread or project page now in the main panel.
         let recent = match (&place.project, &place.thread) {
             (Some(project), _) => Some(threadbear_core::open_anything::project_key(project)),
-            (None, Some(thread)) if !place.home => Some(threadbear_core::open_anything::thread_key(thread)),
+            (None, Some(thread)) if !place.home => {
+                Some(threadbear_core::open_anything::thread_key(thread))
+            }
             _ => None,
         };
         if let Some(key) = recent.filter(|k| self.anything_recent.first() != Some(k)) {
-            self.anything_recent = threadbear_core::open_anything::used(&key, &self.anything_recent);
+            self.anything_recent =
+                threadbear_core::open_anything::used(&key, &self.anything_recent);
             self.settings.saved.open_anything_recent = Some(self.anything_recent.clone());
         }
         self.history.record(place);
@@ -924,7 +1243,11 @@ impl Threadbear {
         if let Some(id) = &place.project {
             return self.project(id).is_some();
         }
-        place.home || place.thread.as_ref().is_none_or(|id| self.threads.contains_key(id))
+        place.home
+            || place
+                .thread
+                .as_ref()
+                .is_none_or(|id| self.threads.contains_key(id))
     }
 
     pub(crate) fn can_go_back(&self) -> bool {
@@ -936,8 +1259,17 @@ impl Threadbear {
     }
 
     pub(crate) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let threads = self.threads.keys().cloned().collect::<std::collections::HashSet<_>>();
-        let projects = self.projects.list.iter().map(|p| p.id.clone()).collect::<std::collections::HashSet<_>>();
+        let threads = self
+            .threads
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let projects = self
+            .projects
+            .list
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<std::collections::HashSet<_>>();
         let can_show = |p: &NavPlace| match &p.project {
             Some(id) => projects.contains(id),
             None => p.home || p.thread.as_ref().is_none_or(|id| threads.contains(id)),
@@ -948,8 +1280,17 @@ impl Threadbear {
     }
 
     pub(crate) fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let threads = self.threads.keys().cloned().collect::<std::collections::HashSet<_>>();
-        let projects = self.projects.list.iter().map(|p| p.id.clone()).collect::<std::collections::HashSet<_>>();
+        let threads = self
+            .threads
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let projects = self
+            .projects
+            .list
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<std::collections::HashSet<_>>();
         let can_show = |p: &NavPlace| match &p.project {
             Some(id) => projects.contains(id),
             None => p.home || p.thread.as_ref().is_none_or(|id| threads.contains(id)),
@@ -971,7 +1312,9 @@ impl Threadbear {
                 self.select_none(cx);
             }
         }
-        // After the thread: opening one takes a page away.
+        // After the thread: opening one takes a page away (and the Feed's
+        // mode with it).
+        self.mode = place.mode;
         self.shows_home = place.home;
         self.projects.open = place.project.filter(|id| self.project(id).is_some());
         self.restoring_place = false;
@@ -990,23 +1333,41 @@ impl Threadbear {
             return Some(project.title.clone());
         }
         // A page is named for itself; otherwise the thread, or the new-thread page.
-        let page = place.home.then_some(place.mode).filter(|m| *m != SidebarMode::Inbox);
-        Some(match (page, place.thread.and_then(|id| self.threads.get(&id).cloned())) {
-            (Some(SidebarMode::Scheduled), _) => "Scheduled".to_string(),
-            (Some(SidebarMode::Projects), _) => "Projects".to_string(),
-            (Some(_), _) => "Librarian".to_string(),
-            (None, Some(t)) if t.title.is_empty() => "Untitled".to_string(),
-            (None, Some(t)) => t.title.clone(),
-            (None, None) => "New thread".to_string(),
-        })
+        let page = place
+            .home
+            .then_some(place.mode)
+            .filter(|m| *m != SidebarMode::Inbox);
+        Some(
+            match (
+                page,
+                place.thread.and_then(|id| self.threads.get(&id).cloned()),
+            ) {
+                (Some(SidebarMode::Scheduled), _) => "Scheduled".to_string(),
+                (Some(SidebarMode::Projects), _) => "Projects".to_string(),
+                (Some(SidebarMode::Feed), _) => "Feed".to_string(),
+                (Some(_), _) => "Librarian".to_string(),
+                (None, Some(t)) if t.title.is_empty() => "Untitled".to_string(),
+                (None, Some(t)) => t.title.clone(),
+                (None, None) => "New thread".to_string(),
+            },
+        )
     }
 
     /// Next Inbox Thread (⌥⌘↓, `nextInboxThread`): the thread below the open
     /// one in the Inbox, or the Inbox's first; past the last one, a note.
     pub(crate) fn next_inbox_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = crate::now_ms();
-        let inbox: Vec<String> = self.shown_sections(cx, now).iter().find(|s| s.key == "inbox").map(|s| s.rows.iter().map(|t| t.id.clone()).collect()).unwrap_or_default();
-        let next = match self.selected.as_ref().and_then(|s| inbox.iter().position(|id| id == s)) {
+        let inbox: Vec<String> = self
+            .shown_sections(cx, now)
+            .iter()
+            .find(|s| s.key == "inbox")
+            .map(|s| s.rows.iter().map(|t| t.id.clone()).collect())
+            .unwrap_or_default();
+        let next = match self
+            .selected
+            .as_ref()
+            .and_then(|s| inbox.iter().position(|id| id == s))
+        {
             Some(i) => inbox.get(i + 1).cloned(),
             None => inbox.first().cloned(),
         };
@@ -1034,22 +1395,20 @@ impl Threadbear {
         self.inbox_end_note = Some(InboxEndNote { id, empty });
         // Three seconds, then it goes (`InboxEndToast.shownFor`), unless the
         // pointer's on it.
-        let task = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(3)).await;
-                let keep = this.update(cx, |this, cx| {
-                    if this.inbox_end_note.is_some_and(|n| n.id == id) {
-                        if this.toast_hovered {
-                            return true;
-                        }
-                        this.inbox_end_note = None;
-                        cx.notify();
+        let task = cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            let keep = this.update(cx, |this, cx| {
+                if this.inbox_end_note.is_some_and(|n| n.id == id) {
+                    if this.toast_hovered {
+                        return true;
                     }
-                    false
-                });
-                if !matches!(keep, Ok(true)) {
-                    break;
+                    this.inbox_end_note = None;
+                    cx.notify();
                 }
+                false
+            });
+            if !matches!(keep, Ok(true)) {
+                break;
             }
         });
         self.note_task = Some(task);
@@ -1063,34 +1422,46 @@ impl Threadbear {
 
     /// The archived note: six seconds, unless the pointer's on it
     /// (`ArchivedToast.shownFor`).
-    pub(crate) fn show_archived_note(&mut self, thread: String, title: String, was_open: bool, cx: &mut Context<Self>) {
+    pub(crate) fn show_archived_note(
+        &mut self,
+        thread: String,
+        title: String,
+        was_open: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.note_counter += 1;
         let id = self.note_counter;
-        let note = ArchivedNote { id, thread, title, was_open };
+        let note = ArchivedNote {
+            id,
+            thread,
+            title,
+            was_open,
+        };
         // Newest last, one entry a thread, the oldest dropped past the depth.
         self.archive_history.retain(|n| n.thread != note.thread);
         self.archive_history.push(note.clone());
-        let over = self.archive_history.len().saturating_sub(ARCHIVE_UNDO_DEPTH);
+        let over = self
+            .archive_history
+            .len()
+            .saturating_sub(ARCHIVE_UNDO_DEPTH);
         self.archive_history.drain(..over);
         self.archived_note = Some(note);
         self.toast_swipe = Point::default();
         self.inbox_end_note = None;
-        let task = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(6)).await;
-                let keep = this.update(cx, |this, cx| {
-                    if this.archived_note.as_ref().is_some_and(|n| n.id == id) {
-                        if this.toast_hovered {
-                            return true;
-                        }
-                        this.archived_note = None;
-                        cx.notify();
+        let task = cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(6)).await;
+            let keep = this.update(cx, |this, cx| {
+                if this.archived_note.as_ref().is_some_and(|n| n.id == id) {
+                    if this.toast_hovered {
+                        return true;
                     }
-                    false
-                });
-                if !matches!(keep, Ok(true)) {
-                    break;
+                    this.archived_note = None;
+                    cx.notify();
                 }
+                false
+            });
+            if !matches!(keep, Ok(true)) {
+                break;
             }
         });
         self.archived_task = Some(task);
@@ -1100,7 +1471,9 @@ impl Threadbear {
     /// The archived note's Undo: back in the inbox, and open again if it was
     /// the one open when it went (`undoArchive`).
     pub(crate) fn undo_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(note) = self.archived_note.take() else { return };
+        let Some(note) = self.archived_note.take() else {
+            return;
+        };
         self.archive_history.retain(|n| n.thread != note.thread);
         self.bring_back(note, window, cx);
     }
@@ -1108,11 +1481,23 @@ impl Threadbear {
     /// ⌘Z: the last thread archived here that's still archived comes back,
     /// as the note's Undo would, then the one before, up to
     /// `ARCHIVE_UNDO_DEPTH`. False with none left, so the key goes on.
-    pub(crate) fn undo_last_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn undo_last_archive(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // Ones unarchived or deleted some other way since are passed over.
         while let Some(note) = self.archive_history.pop() {
-            if self.threads.get(&note.thread).is_some_and(|t| t.archived_at.is_some()) {
-                if self.archived_note.as_ref().is_some_and(|n| n.thread == note.thread) {
+            if self
+                .threads
+                .get(&note.thread)
+                .is_some_and(|t| t.archived_at.is_some())
+            {
+                if self
+                    .archived_note
+                    .as_ref()
+                    .is_some_and(|n| n.thread == note.thread)
+                {
                     self.archived_note = None;
                 }
                 self.bring_back(note, window, cx);
@@ -1140,7 +1525,10 @@ impl Threadbear {
         let stack = window.context_stack();
         // A terminal panel with the keyboard: its keys are the shell's, and
         // an archive coming back from under it would be a surprise.
-        if stack.iter().any(|c| c.contains(crate::terminal::KEY_CONTEXT)) {
+        if stack
+            .iter()
+            .any(|c| c.contains(crate::terminal::KEY_CONTEXT))
+        {
             return false;
         }
         let in_text = stack.iter().any(|c| c.contains("Input"));
@@ -1149,7 +1537,17 @@ impl Threadbear {
         }
         // Whichever message box has the key: the open thread's, a pinned
         // one beside it, or the new thread page's.
-        let focused = self.composers.values().chain(self.new_thread.composer.iter()).find(|c| c.read(cx).input.read(cx).focus_handle(cx).is_focused(window));
+        let focused = self
+            .composers
+            .values()
+            .chain(self.new_thread.composer.iter())
+            .find(|c| {
+                c.read(cx)
+                    .input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            });
         focused.is_some_and(|c| {
             let c = c.read(cx);
             !c.holds_anything(cx) && !c.input.read(cx).can_undo()
@@ -1176,7 +1574,9 @@ impl Threadbear {
     /// A click on the archived note: opens the thread where it now is
     /// (`openArchivedNote`).
     pub(crate) fn open_archived_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(note) = self.archived_note.take() else { return };
+        let Some(note) = self.archived_note.take() else {
+            return;
+        };
         self.show_folded_section("archived", cx);
         self.open(note.thread, window, cx);
         cx.notify();
@@ -1240,17 +1640,27 @@ impl Threadbear {
     /// the Swift app's DispatchSource watch does. A poll rather than a file
     /// watcher crate: the file is tiny and this needs no dependency.
     pub(crate) fn watch_shortcuts(&mut self, cx: &mut Context<Self>) {
-        let path = self.settings.path().parent().map(|d| d.join("shortcuts.json")).unwrap_or_else(|| "shortcuts.json".into());
+        let path = self
+            .settings
+            .path()
+            .parent()
+            .map(|d| d.join("shortcuts.json"))
+            .unwrap_or_else(|| "shortcuts.json".into());
         self.reload_shortcuts(std::fs::read_to_string(&path).ok(), cx);
         self.shortcuts_path = Some(path.clone());
         self.shortcuts_watch = Some(cx.spawn(async move |this, cx| {
             let mut last = std::fs::read_to_string(&path).ok();
             loop {
-                cx.background_executor().timer(Duration::from_millis(600)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(600))
+                    .await;
                 let now = std::fs::read_to_string(&path).ok();
                 if now != last {
                     last = now.clone();
-                    if this.update(cx, |this, cx| this.reload_shortcuts(now, cx)).is_err() {
+                    if this
+                        .update(cx, |this, cx| this.reload_shortcuts(now, cx))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -1262,13 +1672,19 @@ impl Threadbear {
     /// Archive/Unarchive, a greyed-out item, a key).
     pub(crate) fn sync_menus(&mut self, cx: &mut Context<Self>) {
         let menus = self.menu_model(cx);
-        let signature = serde_json::to_string(&menus_json(&menus, &self.shortcuts)).unwrap_or_default();
+        let signature =
+            serde_json::to_string(&menus_json(&menus, &self.shortcuts)).unwrap_or_default();
         if signature != self.menu_signature {
             self.menu_signature = signature;
             cx.set_menus(gpui_menus(&menus));
             #[cfg(target_os = "macos")]
+            // SAFETY: tb_menu_icons (native/menu_icons.m) takes nothing and only
+            // sets images on NSApp.mainMenu's items; we're on the main thread
+            // in a GPUI update, just after set_menus built that menu.
             unsafe {
-                extern "C" { fn tb_menu_icons(); }
+                extern "C" {
+                    fn tb_menu_icons();
+                }
                 tb_menu_icons();
             }
         }
@@ -1303,21 +1719,27 @@ impl Threadbear {
         let item = |title: &str, command: Command| MenuEntry::item(title, command);
         // Restart to Update is there only while a newer build is staged
         // (app_update.rs), under About, as the Swift app has it.
-        let restart = self.updater.staged.as_ref().map(|s| item(&format!("Restart to Update to {}", s.short), Command::RestartToUpdate));
+        let restart = self.updater.staged.as_ref().map(|s| {
+            item(
+                &format!("Restart to Update to {}", s.short),
+                Command::RestartToUpdate,
+            )
+        });
         vec![
             TopMenu::new(
                 "Threadbear",
                 [item("About Threadbear", Command::About)]
                     .into_iter()
                     .chain(restart)
-                    .chain([
-                        Separator,
-                        item("Settings…", Command::Settings),
-                        Separator,
-                    ])
+                    .chain([Separator, item("Settings…", Command::Settings), Separator])
                     // The system's Services, for the words selected in a
                     // text box (a Mac's own; the Swift app has it).
-                    .chain(cfg!(target_os = "macos").then_some([Services, Separator]).into_iter().flatten())
+                    .chain(
+                        cfg!(target_os = "macos")
+                            .then_some([Services, Separator])
+                            .into_iter()
+                            .flatten(),
+                    )
                     .chain([
                         item("Hide Threadbear", Command::Hide),
                         item("Hide Others", Command::HideOthers),
@@ -1327,30 +1749,73 @@ impl Threadbear {
                     ])
                     .collect(),
             ),
-            TopMenu::new("File", vec![item("New Thread", Command::NewThread), Separator, item("Close", Command::Close)]),
+            TopMenu::new(
+                "File",
+                vec![
+                    item("New Thread", Command::NewThread),
+                    Separator,
+                    item("Close", Command::Close),
+                ],
+            ),
             // The text commands, as AppKit's standard Edit menu has them;
             // AppKit adds AutoFill, Start Dictation and Emoji & Symbols
             // under them on a Mac (window_menu.rs).
-            TopMenu::new(
-                "Edit",
-                {
-                    use crate::window_menu::EditItem as E;
-                    let edit = |e: E| MenuEntry::Edit(e);
-                    vec![edit(E::Undo), edit(E::Redo), Separator, edit(E::Cut), edit(E::Copy), edit(E::Paste), edit(E::PasteAndMatchStyle), edit(E::Delete), edit(E::SelectAll)]
-                },
-            ),
+            TopMenu::new("Edit", {
+                use crate::window_menu::EditItem as E;
+                let edit = |e: E| MenuEntry::Edit(e);
+                vec![
+                    edit(E::Undo),
+                    edit(E::Redo),
+                    Separator,
+                    edit(E::Cut),
+                    edit(E::Copy),
+                    edit(E::Paste),
+                    edit(E::PasteAndMatchStyle),
+                    edit(E::Delete),
+                    edit(E::SelectAll),
+                ]
+            }),
             TopMenu::new(
                 "View",
                 vec![
                     item("Zoom In", Command::ZoomIn).enabled(zoom::can_zoom_in(zoom_now)),
                     item("Zoom Out", Command::ZoomOut).enabled(zoom::can_zoom_out(zoom_now)),
-                    item("Actual Size", Command::ActualSize).enabled(zoom_now != zoom::DEFAULT_PERCENT),
+                    item("Actual Size", Command::ActualSize)
+                        .enabled(zoom_now != zoom::DEFAULT_PERCENT),
                     Separator,
-                    item(if threads_showing { "Hide Threads" } else { "Show Threads" }, Command::ToggleThreads),
+                    item(
+                        if threads_showing {
+                            "Hide Threads"
+                        } else {
+                            "Show Threads"
+                        },
+                        Command::ToggleThreads,
+                    ),
                     // Folds the panel away and back as it was; the activity bar stays.
-                    item(if threads_showing { "Collapse Threads" } else { "Expand Threads" }, Command::CollapseThreads),
-                    item(if panels_shown { "Hide Panels" } else { "Show Panels" }, Command::TogglePanels),
-                    item(if terminal_shown { "Hide Terminal" } else { "Show Terminal" }, Command::ToggleTerminal),
+                    item(
+                        if threads_showing {
+                            "Collapse Threads"
+                        } else {
+                            "Expand Threads"
+                        },
+                        Command::CollapseThreads,
+                    ),
+                    item(
+                        if panels_shown {
+                            "Hide Panels"
+                        } else {
+                            "Show Panels"
+                        },
+                        Command::TogglePanels,
+                    ),
+                    item(
+                        if terminal_shown {
+                            "Hide Terminal"
+                        } else {
+                            "Show Terminal"
+                        },
+                        Command::ToggleTerminal,
+                    ),
                     item("Reset Panel Layout", Command::ResetPanelLayout),
                 ]
                 .into_iter()
@@ -1368,23 +1833,43 @@ impl Threadbear {
                     // there always and greyed out away from one, as the Swift
                     // app's Go menu has them.
                     Separator,
-                    item("Show Previous Tab", Command::PreviousTab).enabled(self.can_step_project_tab(-1, cx)),
-                    item("Show Next Tab", Command::NextTab).enabled(self.can_step_project_tab(1, cx)),
+                    item("Show Previous Tab", Command::PreviousTab)
+                        .enabled(self.can_step_project_tab(-1, cx)),
+                    item("Show Next Tab", Command::NextTab)
+                        .enabled(self.can_step_project_tab(1, cx)),
                     Separator,
                     item("Open Anything…", Command::OpenAnything),
-                ],
+                ]
+                .into_iter()
+                // The Feed, with its experiment on (inbox_feed.rs).
+                .chain(
+                    self.feed_on()
+                        .then(|| vec![Separator, item("Show Feed", Command::ShowFeed)])
+                        .into_iter()
+                        .flatten(),
+                )
+                .collect(),
             ),
             TopMenu::new(
                 "Thread",
                 vec![
-                    item(if archived { "Unarchive" } else { "Archive" }, Command::Archive).enabled(has_thread),
-                    Submenu { title: "Hibernate".into(), items: self.hibernate_menu_items() },
+                    item(
+                        if archived { "Unarchive" } else { "Archive" },
+                        Command::Archive,
+                    )
+                    .enabled(has_thread),
+                    Submenu {
+                        title: "Hibernate".into(),
+                        items: self.hibernate_menu_items(),
+                    },
                     item("Stop", Command::Stop).enabled(busy),
                     Separator,
-                    item("Copy Transcript as Markdown", Command::CopyTranscript).enabled(has_thread),
+                    item("Copy Transcript as Markdown", Command::CopyTranscript)
+                        .enabled(has_thread),
                     Separator,
                     item("Show Inbox", Command::ShowInbox),
-                    item("Show Scheduled", Command::ShowScheduled).enabled(self.schedules_supported),
+                    item("Show Scheduled", Command::ShowScheduled)
+                        .enabled(self.schedules_supported),
                     item("Show Projects", Command::ShowProjects).enabled(self.projects_supported),
                     item("Show Librarian", Command::ShowLibrarian).enabled(self.projects_supported),
                     Separator,
@@ -1394,8 +1879,23 @@ impl Threadbear {
             ),
             // AppKit adds Fill, Center, Move & Resize and the list of open
             // windows (the main one and any panel in a window of its own).
-            TopMenu::new("Window", vec![item("Minimize", Command::Minimize), item("Zoom", Command::Zoom), Separator, item("Bring All to Front", Command::BringAllToFront)]),
-            TopMenu::new("Help", vec![item("Set Up Threadbear", Command::SetUpThreadbear), item("Take the Tour", Command::TakeTheTour), item("Finish Setting Up", Command::FinishSettingUp)]),
+            TopMenu::new(
+                "Window",
+                vec![
+                    item("Minimize", Command::Minimize),
+                    item("Zoom", Command::Zoom),
+                    Separator,
+                    item("Bring All to Front", Command::BringAllToFront),
+                ],
+            ),
+            TopMenu::new(
+                "Help",
+                vec![
+                    item("Set Up Threadbear", Command::SetUpThreadbear),
+                    item("Take the Tour", Command::TakeTheTour),
+                    item("Finish Setting Up", Command::FinishSettingUp),
+                ],
+            ),
         ]
     }
 
@@ -1403,8 +1903,15 @@ impl Threadbear {
     fn frame_rate_items(&self) -> Vec<MenuEntry> {
         #[cfg(feature = "frame-stats")]
         {
-            let title = if self.frame_rate.is_some() { "Hide Frame Rate" } else { "Show Frame Rate" };
-            vec![MenuEntry::Separator, MenuEntry::item(title, Command::ToggleFrameRate)]
+            let title = if self.frame_rate.is_some() {
+                "Hide Frame Rate"
+            } else {
+                "Show Frame Rate"
+            };
+            vec![
+                MenuEntry::Separator,
+                MenuEntry::item(title, Command::ToggleFrameRate),
+            ]
         }
         #[cfg(not(feature = "frame-stats"))]
         Vec::new()
@@ -1423,7 +1930,8 @@ impl Threadbear {
     }
 
     fn hibernate_menu_items(&self) -> Vec<MenuEntry> {
-        let presets = threadbear_core::sidebar::snooze_presets(&threadbear_core::sidebar::local_now());
+        let presets =
+            threadbear_core::sidebar::snooze_presets(&threadbear_core::sidebar::local_now());
         let mut items: Vec<MenuEntry> = presets
             .iter()
             .filter_map(|p| {
@@ -1439,11 +1947,17 @@ impl Threadbear {
             .collect();
         // Only while a runner restart is waiting, as the Swift menu has it.
         if self.client.restart().is_pending() {
-            items.push(MenuEntry::item(threadbear_core::sidebar::SNOOZE_UNTIL_RESTART, Command::HibernateRestart));
+            items.push(MenuEntry::item(
+                threadbear_core::sidebar::SNOOZE_UNTIL_RESTART,
+                Command::HibernateRestart,
+            ));
         }
         items.push(MenuEntry::Separator);
         items.push(MenuEntry::item("Pick a time…", Command::Hibernate));
-        items.push(MenuEntry::item(threadbear_core::sidebar::WAKE_MENU_TITLE, Command::WakeWhen));
+        items.push(MenuEntry::item(
+            threadbear_core::sidebar::WAKE_MENU_TITLE,
+            Command::WakeWhen,
+        ));
         items
     }
 
@@ -1456,17 +1970,31 @@ impl Threadbear {
         // the real menu bar, which has them.
         for top in out.as_array_mut().into_iter().flatten() {
             let title = top["title"].as_str().unwrap_or_default().to_owned();
-            let ours: Vec<String> = top["items"].as_array().into_iter().flatten().filter_map(|i| i["title"].as_str().map(str::to_owned)).collect();
+            let ours: Vec<String> = top["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|i| i["title"].as_str().map(str::to_owned))
+                .collect();
             let extra = crate::window_menu::system_items(&title, &ours);
             if let Some(items) = top["items"].as_array_mut() {
-                items.extend(extra.into_iter().map(|t| serde_json::json!({ "title": t, "enabled": true, "system": true })));
+                items.extend(
+                    extra.into_iter().map(
+                        |t| serde_json::json!({ "title": t, "enabled": true, "system": true }),
+                    ),
+                );
             }
         }
         out
     }
 
     #[cfg(feature = "automation")]
-    pub(crate) fn run_menu_item(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+    pub(crate) fn run_menu_item(
+        &mut self,
+        title: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let menus = self.menu_model(cx);
         enum Found {
             Command(Command),
@@ -1474,18 +2002,26 @@ impl Threadbear {
         }
         fn find(entries: &[MenuEntry], title: &str) -> Option<Found> {
             entries.iter().find_map(|e| match e {
-                MenuEntry::Item { title: t, command, .. } if t == title => Some(Found::Command(*command)),
+                MenuEntry::Item {
+                    title: t, command, ..
+                } if t == title => Some(Found::Command(*command)),
                 MenuEntry::Edit(item) if item.title() == title => Some(Found::Edit(*item)),
                 MenuEntry::Submenu { items, .. } => find(items, title),
                 _ => None,
             })
         }
-        match menus.iter().find_map(|m| find(&m.items, title)).ok_or_else(|| format!("no menu item {title:?}"))? {
+        match menus
+            .iter()
+            .find_map(|m| find(&m.items, title))
+            .ok_or_else(|| format!("no menu item {title:?}"))?
+        {
             Found::Command(command) => self.command_chosen(command, window, cx),
             // To wherever the keyboard is, as the menu bar sends it.
             Found::Edit(item) => {
                 let action = item.action();
-                cx.defer_in(window, move |_, window, cx| window.dispatch_action(action, cx));
+                cx.defer_in(window, move |_, window, cx| {
+                    window.dispatch_action(action, cx)
+                });
             }
         }
         Ok(())
@@ -1496,24 +2032,37 @@ impl Threadbear {
     pub(crate) fn menu_path(&self, command: Command, cx: &App) -> Option<String> {
         fn find(parent: &str, entries: &[MenuEntry], command: Command) -> Option<String> {
             entries.iter().find_map(|e| match e {
-                MenuEntry::Item { title, command: c, .. } if *c == command => Some(format!("{parent} › {title}")),
+                MenuEntry::Item {
+                    title, command: c, ..
+                } if *c == command => Some(format!("{parent} › {title}")),
                 MenuEntry::Submenu { title, items } => find(title, items, command),
                 _ => None,
             })
         }
-        self.menu_model(cx).iter().find_map(|m| find(&m.title, &m.items, command))
+        self.menu_model(cx)
+            .iter()
+            .find_map(|m| find(&m.title, &m.items, command))
     }
 
     // The shell's drawing.
 
-    pub(crate) fn render_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn render_shell(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         self.sync_window_title(window);
         // The Updates icon's ring turns in that layer too (rails.rs).
         crate::spinner::view_drawing(window);
         // The layer the sidebar's arcs turn in (spinner.rs), which looks at
         // the dock to see when the Threads panel isn't in front.
         let (dock, dock_view) = (self.dock.clone(), self.dock_view.clone());
-        let arc_layer = self.arc_layer.get_or_insert_with(|| cx.new(|_| crate::spinner::ArcLayer::new(dock, dock_view, THREADS))).clone();
+        let arc_layer = self
+            .arc_layer
+            .get_or_insert_with(|| {
+                cx.new(|_| crate::spinner::ArcLayer::new(dock, dock_view, THREADS))
+            })
+            .clone();
         // With nothing focused GPUI's key dispatch doesn't reach this element's
         // key context or actions, so the shell keeps the keyboard when nothing
         // else has it (no thread open, a closed dialog).
@@ -1545,17 +2094,35 @@ impl Threadbear {
             .child(self.page_swipe_watch(cx))
             .child(self.row_press_watch(cx))
             .child(self.render_activity_bar(window, cx))
-            .child(div().relative().flex_1().min_w_0().h_full().child(self.dock_view.clone()).child(crate::tour::dock_origin_mark()))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(self.dock_view.clone())
+                    .child(crate::tour::dock_origin_mark()),
+            )
             .when_some(rail, |s, r| s.child(r))
             // An archived or hibernated thread's page on its way to its
             // heading, over the sidebar and the panel alike (archive_flight.rs).
             // The sidebar's turning arcs, drawn here so a turn doesn't
             // redraw the sidebar (spinner.rs).
-            .child(div().absolute().top_0().left_0().size_full().child(arc_layer))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .child(arc_layer),
+            )
             .child(self.flight.overlay(cx))
             // Confetti for the rare wins (confetti.rs).
             .child(self.confetti.overlay(cx))
-            .children(self.render_swipe_card(cx).map(|card| deferred(card).with_priority(1)))
+            .children(
+                self.render_swipe_card(cx)
+                    .map(|card| deferred(card).with_priority(1)),
+            )
             // The tour and the pages' intros, over everything (tour.rs).
             .children(self.render_tour(window, cx))
             // The first launch's setup cards, over all of it (hello.rs).
@@ -1574,39 +2141,69 @@ impl Threadbear {
                 }
             }))
             // The mouse's side buttons (`MouseNavigation`).
-            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _: &MouseDownEvent, window, cx| this.go_back(window, cx)))
-            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _: &MouseDownEvent, window, cx| this.go_forward(window, cx)))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _: &MouseDownEvent, window, cx| this.go_back(window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _: &MouseDownEvent, window, cx| this.go_forward(window, cx)),
+            )
             // Holding ⌘ shows the buttons' keys; a key, a click or a scroll
             // with it held puts them away (key_hints.rs).
-            .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| this.hints_modifiers_changed(&ev.modifiers, window, cx)))
-            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, cx| this.hints_used(&ev.modifiers, cx)))
-            .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| this.hints_used(&ev.modifiers, cx)))
+            .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| {
+                this.hints_modifiers_changed(&ev.modifiers, window, cx)
+            }))
+            .capture_any_mouse_down(
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| this.hints_used(&ev.modifiers, cx)),
+            )
+            .on_scroll(
+                cx.listener(|this, ev: &ScrollEvent, _, cx| this.hints_used(&ev.modifiers, cx)),
+            )
             // ⌘Z, before a text box takes it: an archive back, when that's
             // what it's for (`undo_key_is_archive`).
-            .capture_action(cx.listener(|this, _: &gpui_kit::component::input::Undo, window, cx| {
-                if this.undo_key_is_archive(window, cx) && this.undo_last_archive(window, cx) {
-                    cx.stop_propagation();
-                }
-            }));
+            .capture_action(cx.listener(
+                |this, _: &gpui_kit::component::input::Undo, window, cx| {
+                    if this.undo_key_is_archive(window, cx) && this.undo_last_archive(window, cx) {
+                        cx.stop_propagation();
+                    }
+                },
+            ));
         register_commands(root, cx)
     }
 
     /// What a panel shows (`RootView.content`'s `view`).
-    pub(crate) fn panel_view(&mut self, panel: &str, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn panel_view(
+        &mut self,
+        panel: &str,
+        ghost: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match panel {
             // A drag's ghost of it is drawn in place, not from the cached view,
             // which is already drawn where the panel sits.
             THREADS if ghost => self.render_threads_panel(window, cx),
             THREADS => {
                 let app = cx.entity();
-                let view = self.sidebar_view.get_or_insert_with(|| cx.new(|cx| crate::sidebar::SidebarView::new(&app, cx))).clone();
-                AnyView::from(view).cached(StyleRefinement::default().size_full()).into_any_element()
+                let view = self
+                    .sidebar_view
+                    .get_or_insert_with(|| cx.new(|cx| crate::sidebar::SidebarView::new(&app, cx)))
+                    .clone();
+                AnyView::from(view)
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
             }
             MAIN if ghost => self.render_main_panel(window, cx).into_any_element(),
             MAIN => {
                 let app = cx.entity();
-                let view = self.main_view.get_or_insert_with(|| cx.new(|cx| MainPanelView::new(&app, cx))).clone();
-                AnyView::from(view).cached(StyleRefinement::default().size_full()).into_any_element()
+                let view = self
+                    .main_view
+                    .get_or_insert_with(|| cx.new(|cx| MainPanelView::new(&app, cx)))
+                    .clone();
+                AnyView::from(view)
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
             }
             RUNNERS => self.activity_panel_view(RUNNERS, ghost, window, cx),
             UPDATES => self.activity_panel_view(UPDATES, ghost, window, cx),
@@ -1618,24 +2215,35 @@ impl Threadbear {
             TERMINAL if ghost => div().size_full().into_any_element(),
             TERMINAL => crate::terminal::panel_view(cx),
             // A thread in a panel of its own (thread_panels.rs).
-            _ if crate::thread_panels::pinned_thread(panel).is_some() => self.thread_panel_view(panel, ghost, window, cx),
+            _ if crate::thread_panels::pinned_thread(panel).is_some() => {
+                self.thread_panel_view(panel, ghost, window, cx)
+            }
             // A panel pinned to its thread (pinned_panels.rs).
-            _ if crate::pinned_panels::pinned(panel).is_some() => self.pinned_panel_view(panel, ghost, window, cx),
+            _ if crate::pinned_panels::pinned(panel).is_some() => {
+                self.pinned_panel_view(panel, ghost, window, cx)
+            }
             // Highlights, Files, Patches and a patch's own panels are sections of
             // the one pane beside the thread (highlights.rs), each its own panel
             // in the dock, as in the Swift app.
-            _ if !ghost && self.is_side_section(panel) => self.render_side_section(panel, window, cx),
+            _ if !ghost && self.is_side_section(panel) => {
+                self.render_side_section(panel, window, cx)
+            }
             _ => self.render_pane_placeholder(panel, cx).into_any_element(),
         }
     }
 
     /// What the Threads panel shows: the thread list, or the page of the
     /// rail's other modes (drawn by `SidebarView`).
-    pub(crate) fn render_threads_panel(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_threads_panel(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let view = match self.mode {
-            SidebarMode::Inbox => self.render_sidebar(cx).into_any_element(),
+            SidebarMode::Inbox | SidebarMode::Feed => self.render_sidebar(cx).into_any_element(),
             SidebarMode::Scheduled => self.render_scheduled_list(cx),
             SidebarMode::Librarian => self.render_librarian_list(cx),
+            SidebarMode::Recipes => self.render_recipes_list(cx),
             SidebarMode::Projects => self.render_projects_list(cx),
         };
         // A view the activity bar's just switched to fades up into place
@@ -1643,26 +2251,41 @@ impl Threadbear {
         // keyed by the switch, so each one starts over, and kept once it's
         // done, so the view's own state isn't remade.
         let reduce = cx.reduce_motion();
-        let Some(at) = self.view_switched else { return view };
+        let Some(at) = self.view_switched else {
+            return view;
+        };
         let length = threadbear_core::juice::VIEW_SETTLE;
         div()
             .relative()
             .size_full()
             .child(view)
-            .with_animation(SharedString::from(format!("view-settle-{at:?}")), Animation::new(length), move |el, t| {
-                let (fade, below) = threadbear_core::juice::view_settle(t * length.as_secs_f32(), reduce);
-                el.opacity(fade).top(px(below))
-            })
+            .with_animation(
+                SharedString::from(format!("view-settle-{at:?}")),
+                Animation::new(length),
+                move |el, t| {
+                    let (fade, below) =
+                        threadbear_core::juice::view_settle(t * length.as_secs_f32(), reduce);
+                    el.opacity(fade).top(px(below))
+                },
+            )
             .into_any_element()
     }
 
     /// The main panel: banners over the thread, the notes floating over it.
-    pub(crate) fn render_main_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_main_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let page = self.home_page();
         let banners = self.render_banners(window, cx);
         // The new-thread page comes up afresh each time it's shown
         // (open_motion.rs): anything else in its place resets its clock.
-        if self.pane.is_some() || page.is_some() || self.open_project().is_some() || self.open_elsewhere(cx).is_some() {
+        if self.pane.is_some()
+            || page.is_some()
+            || self.open_project().is_some()
+            || self.open_elsewhere(cx).is_some()
+        {
             self.opening.page_shown = None;
         }
         let main: AnyElement = match (&self.pane, page) {
@@ -1671,11 +2294,17 @@ impl Threadbear {
             _ if self.open_project().is_some() => self.render_project_page(window, cx),
             (Some(pane), None) => match self.subagent_pane.clone() {
                 // One of its sub-agents, under a bar back to the thread (`SubagentHeader`).
-                Some(sub) => v_flex().size_full().child(self.render_subagent_header(cx)).child(div().flex_1().min_h_0().child(sub)).into_any_element(),
+                Some(sub) => v_flex()
+                    .size_full()
+                    .child(self.render_subagent_header(cx))
+                    .child(div().flex_1().min_h_0().child(sub))
+                    .into_any_element(),
                 None => div().size_full().child(pane.clone()).into_any_element(),
             },
             (_, Some(SidebarMode::Scheduled)) => self.render_scheduled_home(cx),
             (_, Some(SidebarMode::Librarian)) => self.render_librarian_home(cx),
+            (_, Some(SidebarMode::Recipes)) => self.render_recipes_home(cx),
+            (_, Some(SidebarMode::Feed)) => self.render_feed(window, cx),
             (_, Some(_)) => self.render_projects_home(window, cx),
             // Its thread is open in a panel of its own (thread_panels.rs).
             (None, None) if self.open_elsewhere(cx).is_some() => {
@@ -1686,33 +2315,78 @@ impl Threadbear {
             (None, None) => self.render_new_page(window, cx),
         };
         let toasts = self.render_toasts(window, cx);
-        div().relative().size_full().child(v_flex().size_full().child(banners).child(div().flex_1().min_h_0().child(main))).child(toasts)
+        div()
+            .relative()
+            .size_full()
+            .child(
+                v_flex()
+                    .size_full()
+                    .child(banners)
+                    .child(div().flex_1().min_h_0().child(main)),
+            )
+            .child(toasts)
     }
 
     fn render_pane_placeholder(&mut self, panel: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let name = self.panel_title(panel);
-        let text = if self.open_thread().is_some() { format!("{name} isn't in this app yet.") } else { format!("Pick a thread to see its {name}.") };
-        div().size_full().flex().items_start().justify_center().pt(px(40.)).text_size(px(style::size::LABEL)).text_color(muted).child(text)
+        let text = if self.open_thread().is_some() {
+            format!("{name} isn't in this app yet.")
+        } else {
+            format!("Pick a thread to see its {name}.")
+        };
+        div()
+            .size_full()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(40.))
+            .text_size(px(style::size::LABEL))
+            .text_color(muted)
+            .child(text)
     }
 
     /// Whether a panel is one of the side pane's sections: Highlights, Files,
     /// Patches or one of the thread's patch panels (highlights.rs).
     fn is_side_section(&self, panel: &str) -> bool {
-        matches!(panel, HIGHLIGHTS | FILES | PATCHES | BROWSER) || self.pane_thread().is_some_and(|t| t.panels.iter().flatten().any(|p| p["id"].as_str() == Some(panel)))
+        matches!(panel, HIGHLIGHTS | FILES | PATCHES | BROWSER)
+            || self.pane_thread().is_some_and(|t| {
+                t.panels
+                    .iter()
+                    .flatten()
+                    .any(|p| p["id"].as_str() == Some(panel))
+            })
     }
 
     /// One section of the side pane, drawn by a view of its own so two side
     /// by side each show theirs (side_sections.rs).
-    fn render_side_section(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_side_section(
+        &mut self,
+        section: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let side = self.side.clone();
-        let view = self.side_views.entry(section.to_owned()).or_insert_with(|| cx.new(|cx| crate::side_sections::SectionView::new(side, section.to_owned(), cx))).clone();
+        let view = self
+            .side_views
+            .entry(section.to_owned())
+            .or_insert_with(|| {
+                cx.new(|cx| crate::side_sections::SectionView::new(side, section.to_owned(), cx))
+            })
+            .clone();
         if let Some(thread) = self.pane_thread() {
             // A page panel draws its page itself, every frame, so the page
             // follows its slot (web_panels.rs); a preview over it is the pane's.
-            let previewing = self.side.read(cx).previews.get(&thread.id).is_some_and(|pv| pv.from == section);
+            let previewing = self
+                .side
+                .read(cx)
+                .previews
+                .get(&thread.id)
+                .is_some_and(|pv| pv.from == section);
             if !previewing {
-                if let Some(page) = crate::web_panels::section(self, &thread, section, false, window, cx) {
+                if let Some(page) =
+                    crate::web_panels::section(self, &thread, section, false, window, cx)
+                {
                     return page;
                 }
             }
@@ -1727,7 +2401,9 @@ impl Threadbear {
         // Cached, like the Threads panel, so scrolling the transcript doesn't
         // redraw it every frame: it draws again when the app changes
         // (SidePane::app_changed) or the pane's own state does.
-        AnyView::from(view).cached(StyleRefinement::default().size_full()).into_any_element()
+        AnyView::from(view)
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
     }
 }
 
@@ -1754,13 +2430,23 @@ pub(crate) struct TopMenu {
 
 impl TopMenu {
     fn new(title: &str, items: Vec<MenuEntry>) -> Self {
-        Self { title: title.to_string(), items }
+        Self {
+            title: title.to_string(),
+            items,
+        }
     }
 }
 
 pub(crate) enum MenuEntry {
-    Item { title: String, command: Command, enabled: bool },
-    Submenu { title: String, items: Vec<MenuEntry> },
+    Item {
+        title: String,
+        command: Command,
+        enabled: bool,
+    },
+    Submenu {
+        title: String,
+        items: Vec<MenuEntry>,
+    },
     /// An Edit menu item: the text box's own action (window_menu.rs).
     Edit(crate::window_menu::EditItem),
     /// The system's Services submenu, filled by macOS.
@@ -1770,7 +2456,11 @@ pub(crate) enum MenuEntry {
 
 impl MenuEntry {
     fn item(title: &str, command: Command) -> Self {
-        MenuEntry::Item { title: title.to_string(), command, enabled: true }
+        MenuEntry::Item {
+            title: title.to_string(),
+            command,
+            enabled: true,
+        }
     }
 
     fn enabled(mut self, on: bool) -> Self {
@@ -1786,15 +2476,25 @@ fn menus_json(menus: &[TopMenu], shortcuts: &ShortcutBindings) -> Value {
         items
             .iter()
             .filter_map(|e| match e {
-                MenuEntry::Item { title, command, enabled } => {
-                    let key = command.shortcut().and_then(|c| shortcuts.key(c)).map(|k| k.display()).or_else(|| standard_key_display(*command).map(str::to_owned));
+                MenuEntry::Item {
+                    title,
+                    command,
+                    enabled,
+                } => {
+                    let key = command
+                        .shortcut()
+                        .and_then(|c| shortcuts.key(c))
+                        .map(|k| k.display())
+                        .or_else(|| standard_key_display(*command).map(str::to_owned));
                     let mut out = serde_json::json!({ "title": title, "enabled": enabled });
                     if let Some(key) = key {
                         out["key"] = Value::String(key);
                     }
                     Some(out)
                 }
-                MenuEntry::Submenu { title, items } => Some(serde_json::json!({ "title": title, "items": entries(items, shortcuts) })),
+                MenuEntry::Submenu { title, items } => {
+                    Some(serde_json::json!({ "title": title, "items": entries(items, shortcuts) }))
+                }
                 MenuEntry::Edit(item) => {
                     let mut out = serde_json::json!({ "title": item.title(), "enabled": true });
                     if let Some(key) = item.key() {
@@ -1802,12 +2502,19 @@ fn menus_json(menus: &[TopMenu], shortcuts: &ShortcutBindings) -> Value {
                     }
                     Some(out)
                 }
-                MenuEntry::Services => Some(serde_json::json!({ "title": "Services", "enabled": true, "items": [] })),
+                MenuEntry::Services => {
+                    Some(serde_json::json!({ "title": "Services", "enabled": true, "items": [] }))
+                }
                 MenuEntry::Separator => None,
             })
             .collect()
     }
-    Value::Array(menus.iter().map(|m| serde_json::json!({ "title": m.title, "items": entries(&m.items, shortcuts) })).collect())
+    Value::Array(
+        menus
+            .iter()
+            .map(|m| serde_json::json!({ "title": m.title, "items": entries(&m.items, shortcuts) }))
+            .collect(),
+    )
 }
 
 fn gpui_menus(menus: &[TopMenu]) -> Vec<Menu> {
@@ -1815,15 +2522,36 @@ fn gpui_menus(menus: &[TopMenu]) -> Vec<Menu> {
         items
             .iter()
             .map(|e| match e {
-                MenuEntry::Item { title, command, enabled } => MenuItem::Action { name: title.clone().into(), action: command.action(), os_action: None, checked: false, disabled: !enabled },
-                MenuEntry::Submenu { title, items } => MenuItem::submenu(Menu::new(title.clone()).items(entries(items))),
-                MenuEntry::Edit(item) => MenuItem::Action { name: item.title().into(), action: item.action(), os_action: item.os_action(), checked: false, disabled: false },
+                MenuEntry::Item {
+                    title,
+                    command,
+                    enabled,
+                } => MenuItem::Action {
+                    name: title.clone().into(),
+                    action: command.action(),
+                    os_action: None,
+                    checked: false,
+                    disabled: !enabled,
+                },
+                MenuEntry::Submenu { title, items } => {
+                    MenuItem::submenu(Menu::new(title.clone()).items(entries(items)))
+                }
+                MenuEntry::Edit(item) => MenuItem::Action {
+                    name: item.title().into(),
+                    action: item.action(),
+                    os_action: item.os_action(),
+                    checked: false,
+                    disabled: false,
+                },
                 MenuEntry::Services => MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuEntry::Separator => MenuItem::Separator,
             })
             .collect()
     }
-    menus.iter().map(|m| Menu::new(m.title.clone()).items(entries(&m.items))).collect()
+    menus
+        .iter()
+        .map(|m| Menu::new(m.title.clone()).items(entries(&m.items)))
+        .collect()
 }
 
 /// The main panel as a view of its own, as the Threads panel is
@@ -1841,14 +2569,19 @@ pub(crate) struct MainPanelView {
 impl MainPanelView {
     fn new(app: &Entity<Threadbear>, cx: &mut Context<Self>) -> Self {
         let app_changed = cx.observe(app, |_, _, cx| cx.notify());
-        Self { app: app.downgrade(), _app_changed: app_changed }
+        Self {
+            app: app.downgrade(),
+            _app_changed: app_changed,
+        }
     }
 }
 
 impl Render for MainPanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.app.upgrade() {
-            Some(app) => app.update(cx, |t, cx| t.render_main_panel(window, cx).into_any_element()),
+            Some(app) => app.update(cx, |t, cx| {
+                t.render_main_panel(window, cx).into_any_element()
+            }),
             None => div().into_any_element(),
         }
     }

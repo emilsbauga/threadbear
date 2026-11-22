@@ -1,5 +1,5 @@
 /* Shared look for the concept mockups: a dark macOS window, sizes from
-   docs/design-pass.md (14 pt rows, 15 pt body, 20 pt composer corners). */
+   docs/archive/design-pass.md (14 pt rows, 15 pt body, 20 pt composer corners). */
 :root {
   --bg: #1f1f21;
   --sidebar: #27272a;

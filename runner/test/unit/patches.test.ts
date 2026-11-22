@@ -122,7 +122,6 @@ test('rendering the Simulator panel: a screenshot becomes an image ref, no devic
 
 import { loadPatchSet, readPatchModule, runCommand, slug, webPage } from '../../src/patches.ts';
 import { checkAction } from '../helpers/protocol-check.ts';
-import { tick } from '../helpers/fakes.ts';
 
 function writePatch(dir: string, name: string, text: string): string {
   fs.mkdirSync(dir, { recursive: true });

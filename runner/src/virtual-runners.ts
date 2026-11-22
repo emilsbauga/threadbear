@@ -1,4 +1,4 @@
-// Virtual runners from the Mac (docs/virtual-runners.md, slice 5; docs/protocol.md,
+// Virtual runners from the Mac (docs/virtual-runners.md, slice 5; docs/protocol/keys.md,
 // Virtual runners, "Starting from the Mac" and "Cloud tokens on the Mac"):
 // starting a thread on one (threads.create with serviceId), and a Claude
 // login's cloud token for its boxes, made here with `claude setup-token`,

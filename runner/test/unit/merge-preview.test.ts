@@ -70,3 +70,39 @@ test('the merge preview shows clashes and changes, and runs no merge driver from
   assert.equal(git(repo, 'status', '--porcelain'), '', 'nothing checked out or changed');
   assert.equal(git(repo, 'rev-parse', 'HEAD'), git(repo, 'rev-parse', 'main'));
 });
+
+// A release with a format commit main doesn't have (format-replay.ts): the
+// preview says so, names the script that settles its clashes after go, and
+// lists only the real clashes, from merging the commit before it.
+test('the merge preview points past a format commit to the real clashes', () => {
+  const root = tmpDir('tb-preview-fmt-');
+  const repo = path.join(root, 'r');
+  fs.mkdirSync(repo);
+  git(repo, 'init', '-q', '-b', 'main');
+  fs.mkdirSync(path.join(repo, 'src'));
+  fs.writeFileSync(path.join(repo, 'src', 'a.rs'), 'fn  a() {}\n');
+  fs.writeFileSync(path.join(repo, 'src', 'b.rs'), 'fn  b() {}\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'base');
+  git(repo, 'branch', '-q', 'release');
+  fs.writeFileSync(path.join(repo, 'src', 'a.rs'), 'fn  a() { mine }\n');
+  fs.writeFileSync(path.join(repo, 'src', 'b.rs'), 'fn  b() { mine }\n');
+  git(repo, 'commit', '-qam', 'mine');
+  git(repo, 'checkout', '-q', 'release');
+  fs.writeFileSync(path.join(repo, 'src', 'b.rs'), 'fn  b() { theirs }\n');
+  fs.writeFileSync(path.join(repo, '.git-blame-ignore-revs'), '# format-subject: Format it\n# format-command: fmt\n# format-paths: src\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'theirs');
+  fs.writeFileSync(path.join(repo, 'src', 'a.rs'), 'fn a() {}\n');
+  fs.writeFileSync(path.join(repo, 'src', 'b.rs'), 'fn b() { theirs }\n');
+  git(repo, 'commit', '-qam', 'Format it');
+  const release = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'checkout', '-q', 'main');
+  const r = spawnSync(SHELL[0], [shPath(SCRIPT), release], { cwd: repo, encoding: 'utf8', env: ENV });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /format commit main doesn't: [0-9a-f]{40} \(Format it\)/);
+  assert.match(r.stdout, /replay-over-format\.sh --merge/);
+  const real = r.stdout.slice(r.stdout.indexOf('The real clashes'));
+  assert.match(real, /b\.rs/);
+  assert.doesNotMatch(real, /a\.rs/);
+});

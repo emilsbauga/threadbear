@@ -958,7 +958,7 @@ test("worktree setup doesn't run the main checkout's uncommitted package.json", 
   fs.chmodSync(path.join(bin, 'node'), 0o755);
   put(path.join(main, 'worktree-setup.sh'), fs.readFileSync(path.join(REPO, 'worktree-setup.sh'), 'utf8'));
   put(path.join(main, 'runner', 'scripts', 'find-node.sh'), fs.readFileSync(path.join(REPO, 'runner', 'scripts', 'find-node.sh'), 'utf8'));
-  for (const dir of ['.', 'runner', 'app/Tools/mock-runner']) {
+  for (const dir of ['.', 'runner', 'mock-runner']) {
     put(path.join(main, dir, 'package.json'), '{}\n');
     put(path.join(main, dir, 'package-lock.json'), '{}\n');
   }
@@ -968,7 +968,7 @@ test("worktree setup doesn't run the main checkout's uncommitted package.json", 
   git(main, 'commit', '-qm', 'one');
   // Installed, then the lock looks newer than the install.
   const old = new Date(Date.now() - 60_000);
-  for (const dir of ['.', 'runner', 'app/Tools/mock-runner']) {
+  for (const dir of ['.', 'runner', 'mock-runner']) {
     put(path.join(main, dir, 'node_modules', '.package-lock.json'), '{}\n');
     fs.utimesSync(path.join(main, dir, 'node_modules', '.package-lock.json'), old, old);
   }
@@ -980,13 +980,13 @@ test("worktree setup doesn't run the main checkout's uncommitted package.json", 
     return fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
   };
   // An agent in Auto writes a script into main's package.json.
-  const pkg = path.join(main, 'app/Tools/mock-runner/package.json');
+  const pkg = path.join(main, 'mock-runner/package.json');
   fs.writeFileSync(pkg, '{"scripts":{"prepare":"./evil.sh"}}\n');
   const dirty = setup('wt1');
-  assert.ok(!dirty.includes(`${path.join(main, 'app/Tools/mock-runner')} install`), dirty.join('; '));
-  assert.ok(dirty.includes(`${path.join(root, 'wt1', 'app/Tools/mock-runner')} ci`), dirty.join('; '));
+  assert.ok(!dirty.includes(`${path.join(main, 'mock-runner')} install`), dirty.join('; '));
+  assert.ok(dirty.includes(`${path.join(root, 'wt1', 'mock-runner')} ci`), dirty.join('; '));
   // A newer lock with everything committed still refreshes main.
-  git(main, 'checkout', '-q', '--', 'app/Tools/mock-runner/package.json');
+  git(main, 'checkout', '-q', '--', 'mock-runner/package.json');
   fs.rmSync(path.join(main, 'node_modules', '.package-lock.json'));
   put(path.join(main, 'node_modules', '.package-lock.json'), '{}\n');
   const stale = path.join(main, 'node_modules', '.package-lock.json');

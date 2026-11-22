@@ -25,9 +25,18 @@ pub enum FileLinkAction {
 
 impl FileLinkAction {
     /// The ways to open a file, in the menu's order.
-    pub const OPEN: [FileLinkAction; 3] = [FileLinkAction::Panel, FileLinkAction::App, FileLinkAction::Finder];
+    pub const OPEN: [FileLinkAction; 3] = [
+        FileLinkAction::Panel,
+        FileLinkAction::App,
+        FileLinkAction::Finder,
+    ];
     /// The choices under Default.
-    pub const DEFAULTS: [FileLinkAction; 4] = [FileLinkAction::Automatic, FileLinkAction::Panel, FileLinkAction::App, FileLinkAction::Finder];
+    pub const DEFAULTS: [FileLinkAction; 4] = [
+        FileLinkAction::Automatic,
+        FileLinkAction::Panel,
+        FileLinkAction::App,
+        FileLinkAction::Finder,
+    ];
 
     /// The name it's saved under: the Swift app's raw values, so the two
     /// read each other's choice the same way.
@@ -41,7 +50,9 @@ impl FileLinkAction {
     }
 
     pub fn from_key(key: &str) -> Option<FileLinkAction> {
-        FileLinkAction::DEFAULTS.into_iter().find(|a| a.key() == key)
+        FileLinkAction::DEFAULTS
+            .into_iter()
+            .find(|a| a.key() == key)
     }
 
     pub fn symbol(self) -> &'static str {
@@ -57,9 +68,14 @@ impl FileLinkAction {
     /// in ("Xcode"), for "Open in Xcode".
     pub fn title(self, app: Option<&str>) -> String {
         match self {
-            FileLinkAction::Automatic => "Panel for Docs, Code and Pictures, App for the Rest".to_owned(),
+            FileLinkAction::Automatic => {
+                "Panel for Docs, Code and Pictures, App for the Rest".to_owned()
+            }
             FileLinkAction::Panel => "Open in Panel".to_owned(),
-            FileLinkAction::App => app.map_or_else(|| "Open in Default App".to_owned(), |name| format!("Open in {name}")),
+            FileLinkAction::App => app.map_or_else(
+                || "Open in Default App".to_owned(),
+                |name| format!("Open in {name}"),
+            ),
             FileLinkAction::Finder => finder_title().to_owned(),
         }
     }
@@ -68,7 +84,12 @@ impl FileLinkAction {
     /// its app, and so does a project file on this computer with an app to
     /// open it (a copy of another Mac's has none of its media); otherwise
     /// what Default says (`FileLinkAction.forClick`).
-    pub fn for_click(command_key: bool, remote: bool, opens_in_its_app: bool, chosen: FileLinkAction) -> FileLinkAction {
+    pub fn for_click(
+        command_key: bool,
+        remote: bool,
+        opens_in_its_app: bool,
+        chosen: FileLinkAction,
+    ) -> FileLinkAction {
         if command_key || (!remote && opens_in_its_app) {
             return FileLinkAction::App;
         }
@@ -80,7 +101,9 @@ impl FileLinkAction {
     /// rest in its app (`openTranscriptFile`).
     pub fn resolved(self, path: &str, is_folder: bool) -> FileLinkAction {
         match self {
-            FileLinkAction::Automatic if is_folder || highlights::previews_in_pane(path) => FileLinkAction::Panel,
+            FileLinkAction::Automatic if is_folder || highlights::previews_in_pane(path) => {
+                FileLinkAction::Panel
+            }
             FileLinkAction::Automatic => FileLinkAction::App,
             other => other,
         }
@@ -132,7 +155,10 @@ impl WebLinkAction {
     /// `browser` is the default browser's name ("Google Chrome").
     pub fn title(self, browser: Option<&str>) -> String {
         match self {
-            WebLinkAction::Browser => browser.map_or_else(|| "Open in Browser".to_owned(), |name| format!("Open in {name}")),
+            WebLinkAction::Browser => browser.map_or_else(
+                || "Open in Browser".to_owned(),
+                |name| format!("Open in {name}"),
+            ),
             WebLinkAction::Panel => "Open in Panel".to_owned(),
         }
     }
@@ -179,7 +205,10 @@ pub fn chrome_data_folder(home: &str) -> PathBuf {
     if cfg!(target_os = "macos") {
         home.join("Library/Application Support/Google/Chrome")
     } else if cfg!(windows) {
-        std::env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| home.join("AppData/Local")).join("Google/Chrome/User Data")
+        std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join("AppData/Local"))
+            .join("Google/Chrome/User Data")
     } else {
         home.join(".config/google-chrome")
     }
@@ -189,18 +218,41 @@ pub fn chrome_data_folder(home: &str) -> PathBuf {
 /// the ones with a window, which Chrome rewrites as windows open and close
 /// (a few seconds late, as it batches writes), named from `info_cache`. In
 /// Chrome's order, so the menu doesn't reshuffle (`ChromeProfiles.parse`).
-pub fn chrome_profiles(local_state: &str, folder: &Path, exists: &dyn Fn(&Path) -> bool) -> Vec<ChromeProfile> {
-    let Ok(root) = serde_json::from_str::<Value>(local_state) else { return Vec::new() };
+pub fn chrome_profiles(
+    local_state: &str,
+    folder: &Path,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Vec<ChromeProfile> {
+    let Ok(root) = serde_json::from_str::<Value>(local_state) else {
+        return Vec::new();
+    };
     let profile = &root["profile"];
-    let (Some(active), Some(info)) = (profile["last_active_profiles"].as_array(), profile["info_cache"].as_object()) else { return Vec::new() };
+    let (Some(active), Some(info)) = (
+        profile["last_active_profiles"].as_array(),
+        profile["info_cache"].as_object(),
+    ) else {
+        return Vec::new();
+    };
     active
         .iter()
         .filter_map(Value::as_str)
         .filter_map(|directory| {
             let entry = info.get(directory)?;
-            let name = entry["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(directory).to_owned();
-            let picture = entry["gaia_picture_file_name"].as_str().filter(|f| !f.is_empty()).map(|file| folder.join(directory).join(file)).filter(|p| exists(p));
-            Some(ChromeProfile { directory: directory.to_owned(), name, picture })
+            let name = entry["name"]
+                .as_str()
+                .filter(|n| !n.is_empty())
+                .unwrap_or(directory)
+                .to_owned();
+            let picture = entry["gaia_picture_file_name"]
+                .as_str()
+                .filter(|f| !f.is_empty())
+                .map(|file| folder.join(directory).join(file))
+                .filter(|p| exists(p));
+            Some(ChromeProfile {
+                directory: directory.to_owned(),
+                name,
+                picture,
+            })
         })
         .collect()
 }
@@ -208,7 +260,10 @@ pub fn chrome_profiles(local_state: &str, folder: &Path, exists: &dyn Fn(&Path) 
 /// The profiles a web link's menu offers: only when Chrome is the default
 /// browser and running, and more than one has a window open; with one
 /// there's nothing to choose, so the menu keeps its single browser item.
-pub fn offered_profiles(profiles: Vec<ChromeProfile>, chrome_is_default_and_running: bool) -> Vec<ChromeProfile> {
+pub fn offered_profiles(
+    profiles: Vec<ChromeProfile>,
+    chrome_is_default_and_running: bool,
+) -> Vec<ChromeProfile> {
     if chrome_is_default_and_running && profiles.len() > 1 {
         profiles
     } else {
@@ -234,13 +289,22 @@ pub enum LinkChoice {
 /// One line of a link's menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkMenuEntry {
-    Item { title: String, symbol: &'static str, choice: LinkChoice },
+    Item {
+        title: String,
+        symbol: &'static str,
+        choice: LinkChoice,
+    },
     /// Greyed: said, with nothing to do.
-    Note { title: String, symbol: &'static str },
+    Note {
+        title: String,
+        symbol: &'static str,
+    },
     Separator,
     /// "Default", which sets what a plain click does: its choices, the
     /// current one ticked.
-    Defaults { choices: Vec<(String, &'static str, LinkChoice, bool)> },
+    Defaults {
+        choices: Vec<(String, &'static str, LinkChoice, bool)>,
+    },
 }
 
 impl LinkMenuEntry {
@@ -262,42 +326,101 @@ pub const DEFAULT_SYMBOL: &str = "cursorarrow.click";
 /// is the app the system opens it in.
 pub fn file_link_menu(found: bool, app: Option<&str>, click: FileLinkAction) -> Vec<LinkMenuEntry> {
     if !found {
-        return vec![LinkMenuEntry::Note { title: "Couldn't Find This File".to_owned(), symbol: "questionmark.folder" }];
+        return vec![LinkMenuEntry::Note {
+            title: "Couldn't Find This File".to_owned(),
+            symbol: "questionmark.folder",
+        }];
     }
-    let mut menu: Vec<LinkMenuEntry> = FileLinkAction::OPEN.into_iter().map(|a| LinkMenuEntry::Item { title: a.title(app), symbol: a.symbol(), choice: LinkChoice::OpenFile(a) }).collect();
+    let mut menu: Vec<LinkMenuEntry> = FileLinkAction::OPEN
+        .into_iter()
+        .map(|a| LinkMenuEntry::Item {
+            title: a.title(app),
+            symbol: a.symbol(),
+            choice: LinkChoice::OpenFile(a),
+        })
+        .collect();
     menu.push(LinkMenuEntry::Separator);
-    menu.push(LinkMenuEntry::Item { title: "Copy Path".to_owned(), symbol: "doc.on.doc", choice: LinkChoice::CopyPath });
+    menu.push(LinkMenuEntry::Item {
+        title: "Copy Path".to_owned(),
+        symbol: "doc.on.doc",
+        choice: LinkChoice::CopyPath,
+    });
     menu.push(LinkMenuEntry::Separator);
     // "Default App" rather than this file's app: the choice is for every
     // file link, and they open in different apps.
-    let choices = FileLinkAction::DEFAULTS.into_iter().map(|a| (a.title(None), a.symbol(), LinkChoice::SetFileClick(a), a == click)).collect();
+    let choices = FileLinkAction::DEFAULTS
+        .into_iter()
+        .map(|a| {
+            (
+                a.title(None),
+                a.symbol(),
+                LinkChoice::SetFileClick(a),
+                a == click,
+            )
+        })
+        .collect();
     menu.push(LinkMenuEntry::Defaults { choices });
     menu
 }
 
 /// A web link's right-click menu (`WebLinkMenu`): the browser, or one item
 /// per open Chrome profile, the pane, Copy Link, and Default.
-pub fn web_link_menu(browser: Option<&str>, profiles: &[ChromeProfile], click: WebLinkAction) -> Vec<LinkMenuEntry> {
+pub fn web_link_menu(
+    browser: Option<&str>,
+    profiles: &[ChromeProfile],
+    click: WebLinkAction,
+) -> Vec<LinkMenuEntry> {
     let mut menu = Vec::new();
     if profiles.is_empty() {
-        menu.push(LinkMenuEntry::Item { title: WebLinkAction::Browser.title(browser), symbol: WebLinkAction::Browser.symbol(), choice: LinkChoice::OpenWeb(WebLinkAction::Browser) });
+        menu.push(LinkMenuEntry::Item {
+            title: WebLinkAction::Browser.title(browser),
+            symbol: WebLinkAction::Browser.symbol(),
+            choice: LinkChoice::OpenWeb(WebLinkAction::Browser),
+        });
     } else {
         for (index, profile) in profiles.iter().enumerate() {
-            menu.push(LinkMenuEntry::Item { title: profile.title(), symbol: WebLinkAction::Browser.symbol(), choice: LinkChoice::OpenInProfile(index) });
+            menu.push(LinkMenuEntry::Item {
+                title: profile.title(),
+                symbol: WebLinkAction::Browser.symbol(),
+                choice: LinkChoice::OpenInProfile(index),
+            });
         }
     }
-    menu.push(LinkMenuEntry::Item { title: WebLinkAction::Panel.title(browser), symbol: WebLinkAction::Panel.symbol(), choice: LinkChoice::OpenWeb(WebLinkAction::Panel) });
+    menu.push(LinkMenuEntry::Item {
+        title: WebLinkAction::Panel.title(browser),
+        symbol: WebLinkAction::Panel.symbol(),
+        choice: LinkChoice::OpenWeb(WebLinkAction::Panel),
+    });
     menu.push(LinkMenuEntry::Separator);
-    menu.push(LinkMenuEntry::Item { title: "Copy Link".to_owned(), symbol: "link", choice: LinkChoice::CopyLink });
+    menu.push(LinkMenuEntry::Item {
+        title: "Copy Link".to_owned(),
+        symbol: "link",
+        choice: LinkChoice::CopyLink,
+    });
     menu.push(LinkMenuEntry::Separator);
-    menu.push(LinkMenuEntry::Defaults { choices: web_defaults(browser, click) });
+    menu.push(LinkMenuEntry::Defaults {
+        choices: web_defaults(browser, click),
+    });
     menu
 }
 
 /// Default's choices for web links, the current one ticked: the same
 /// choice in a reply's menu and a Highlights link's.
-pub fn web_defaults(browser: Option<&str>, click: WebLinkAction) -> Vec<(String, &'static str, LinkChoice, bool)> {
-    WebLinkAction::ALL.into_iter().map(|a| (a.title(browser), a.symbol(), LinkChoice::SetWebClick(a), a == click)).collect()
+pub fn web_defaults(
+    browser: Option<&str>,
+    click: WebLinkAction,
+) -> Vec<(String, &'static str, LinkChoice, bool)> {
+    WebLinkAction::ALL
+        .into_iter()
+        .map(|a| {
+            (
+                a.title(browser),
+                a.symbol(),
+                LinkChoice::SetWebClick(a),
+                a == click,
+            )
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- the hover card
@@ -316,8 +439,16 @@ pub struct PeekWords {
 pub fn page_peek(url: &str, words: &str) -> PeekWords {
     let shown = address(url);
     let words = words.trim();
-    let title = if !words.is_empty() && !shown.starts_with(words) && !url.starts_with(words) { words.to_owned() } else { host(url).unwrap_or_else(|| shown.clone()) };
-    PeekWords { title, detail: shown, footer: "Click to open".to_owned() }
+    let title = if !words.is_empty() && !shown.starts_with(words) && !url.starts_with(words) {
+        words.to_owned()
+    } else {
+        host(url).unwrap_or_else(|| shown.clone())
+    };
+    PeekWords {
+        title,
+        detail: shown,
+        footer: "Click to open".to_owned(),
+    }
 }
 
 /// A file's card: its name, its folder with `~` for home, and what a click
@@ -325,7 +456,11 @@ pub fn page_peek(url: &str, words: &str) -> PeekWords {
 pub fn file_peek(path: &str, exists: bool, away: Option<&str>, home: &str) -> PeekWords {
     let name = highlights::last_component(path).to_owned();
     let trimmed = path.trim_end_matches('/');
-    let split = if crate::reducer::text::is_windows_path(trimmed) { trimmed.rsplit_once(['/', '\\']) } else { trimmed.rsplit_once('/') };
+    let split = if crate::reducer::text::is_windows_path(trimmed) {
+        trimmed.rsplit_once(['/', '\\'])
+    } else {
+        trimmed.rsplit_once('/')
+    };
     let parent = split.map_or("", |(dir, _)| if dir.is_empty() { "/" } else { dir });
     let detail = crate::new_thread::abbreviate_home(parent, home);
     let footer = match (exists, away) {
@@ -333,7 +468,11 @@ pub fn file_peek(path: &str, exists: bool, away: Option<&str>, home: &str) -> Pe
         (false, Some(away)) => format!("On {away}. Click to open."),
         (false, None) => "Not found on this Mac".to_owned(),
     };
-    PeekWords { title: name, detail, footer }
+    PeekWords {
+        title: name,
+        detail,
+        footer,
+    }
 }
 
 /// What a file's card shows over its words.
@@ -352,7 +491,12 @@ pub enum PeekPicture {
 /// The pictures and text the pane previews get a look at their contents;
 /// anything else (a folder, a PDF, a project) its symbol.
 pub fn peek_picture(path: &str) -> PeekPicture {
-    if matches!(crate::open_policy::media_kind(path), Some(crate::open_policy::Media::Pdf | crate::open_policy::Media::Video)) { return PeekPicture::Thumbnail; }
+    if matches!(
+        crate::open_policy::media_kind(path),
+        Some(crate::open_policy::Media::Pdf | crate::open_policy::Media::Video)
+    ) {
+        return PeekPicture::Thumbnail;
+    }
     let lower = path.to_lowercase();
     if highlights::looks_like_picture(path) || lower.ends_with(".svg") {
         return PeekPicture::Image;
@@ -374,7 +518,19 @@ pub fn first_lines(sample: &[u8], lines: usize, width: usize) -> Option<Vec<Stri
         Ok(text) => text.to_owned(),
         Err(e) => String::from_utf8_lossy(&sample[..e.valid_up_to()]).into_owned(),
     };
-    Some(text.lines().take(lines).map(|line| line.replace('\t', "    ").chars().take(width).collect::<String>().trim_end().to_owned()).collect())
+    Some(
+        text.lines()
+            .take(lines)
+            .map(|line| {
+                line.replace('\t', "    ")
+                    .chars()
+                    .take(width)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect(),
+    )
 }
 
 /// A web address's host, without its port or sign-in (`URL.host()`).
@@ -382,8 +538,71 @@ pub fn host(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if authority.starts_with('[') { authority.split_inclusive(']').next().unwrap_or(authority) } else { authority.split(':').next().unwrap_or(authority) };
+    let host = if authority.starts_with('[') {
+        authority.split_inclusive(']').next().unwrap_or(authority)
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
     (!host.is_empty()).then(|| host.to_owned())
+}
+
+// ------------------------------------------------------ links into the thread
+
+/// A link back into the thread (docs/protocol.md, "Links into the thread"):
+/// `work:<words>` quotes a step of the turn's working, `thread:<id>` is
+/// another thread, `review:<id>` a design review, and `button:<id>` a reply
+/// button (reply_buttons.rs), which its pill presses rather than a click.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThreadLink {
+    Step(String),
+    Thread(String),
+    Review(String),
+    Button(String),
+}
+
+/// What a link in a reply opens in the app, or None for anything else (a
+/// page, a file). The scheme in any case; the rest percent-decoded as it is,
+/// so an empty or spaced one still names its (missing) step or thread, and
+/// the click says it found nothing. The phones and the website trim it and
+/// read an empty one as no link (shared/cases/thread-links.json).
+pub fn thread_link(url: &str) -> Option<ThreadLink> {
+    let (scheme, rest) = url.split_once(':')?;
+    match scheme.to_ascii_lowercase().as_str() {
+        "work" => Some(ThreadLink::Step(percent_decode(rest))),
+        "thread" => Some(ThreadLink::Thread(percent_decode(rest))),
+        "review" => Some(ThreadLink::Review(percent_decode(rest))),
+        "button" => crate::reply_buttons::id_of(url).map(|id| ThreadLink::Button(id.to_owned())),
+        _ => None,
+    }
+}
+
+/// `%20` and friends back to what a link's words were; a `%` not followed by
+/// two hex digits stays as it is, and bytes that aren't UTF-8 become U+FFFD.
+pub fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(a * 16 + b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -392,20 +611,63 @@ mod tests {
 
     #[test]
     fn a_click_on_a_file_link_does_what_default_says_unless_command_is_held() {
-        assert_eq!(FileLinkAction::for_click(false, false, false, FileLinkAction::Automatic), FileLinkAction::Automatic);
-        assert_eq!(FileLinkAction::for_click(true, false, false, FileLinkAction::Panel), FileLinkAction::App, "⌘ always means its app");
-        assert_eq!(FileLinkAction::for_click(false, false, true, FileLinkAction::Panel), FileLinkAction::App, "a project file goes to its app");
-        assert_eq!(FileLinkAction::for_click(false, true, true, FileLinkAction::Panel), FileLinkAction::Panel, "another Mac's copy has none of its media");
+        assert_eq!(
+            FileLinkAction::for_click(false, false, false, FileLinkAction::Automatic),
+            FileLinkAction::Automatic
+        );
+        assert_eq!(
+            FileLinkAction::for_click(true, false, false, FileLinkAction::Panel),
+            FileLinkAction::App,
+            "⌘ always means its app"
+        );
+        assert_eq!(
+            FileLinkAction::for_click(false, false, true, FileLinkAction::Panel),
+            FileLinkAction::App,
+            "a project file goes to its app"
+        );
+        assert_eq!(
+            FileLinkAction::for_click(false, true, true, FileLinkAction::Panel),
+            FileLinkAction::Panel,
+            "another Mac's copy has none of its media"
+        );
         // Automatic made definite: docs, code and pictures in the pane, the rest in its app.
-        assert_eq!(FileLinkAction::Automatic.resolved("/w/notes.md", false), FileLinkAction::Panel);
-        assert_eq!(FileLinkAction::Automatic.resolved("/w/shot.PNG", false), FileLinkAction::Panel);
-        assert_eq!(FileLinkAction::Automatic.resolved("/w/main.rs", false), FileLinkAction::Panel);
-        assert_eq!(FileLinkAction::Automatic.resolved("/w/put-1.json", false), FileLinkAction::Panel);
-        assert_eq!(FileLinkAction::Automatic.resolved("/w/build.zip", false), FileLinkAction::App);
-        assert_eq!(FileLinkAction::Automatic.resolved("/w/src", true), FileLinkAction::Panel, "a folder is browsed in the pane");
-        assert_eq!(FileLinkAction::Finder.resolved("/w/notes.md", false), FileLinkAction::Finder);
-        assert_eq!(WebLinkAction::for_click(true, WebLinkAction::Panel), WebLinkAction::Browser);
-        assert_eq!(WebLinkAction::for_click(false, WebLinkAction::Panel), WebLinkAction::Panel);
+        assert_eq!(
+            FileLinkAction::Automatic.resolved("/w/notes.md", false),
+            FileLinkAction::Panel
+        );
+        assert_eq!(
+            FileLinkAction::Automatic.resolved("/w/shot.PNG", false),
+            FileLinkAction::Panel
+        );
+        assert_eq!(
+            FileLinkAction::Automatic.resolved("/w/main.rs", false),
+            FileLinkAction::Panel
+        );
+        assert_eq!(
+            FileLinkAction::Automatic.resolved("/w/put-1.json", false),
+            FileLinkAction::Panel
+        );
+        assert_eq!(
+            FileLinkAction::Automatic.resolved("/w/build.zip", false),
+            FileLinkAction::App
+        );
+        assert_eq!(
+            FileLinkAction::Automatic.resolved("/w/src", true),
+            FileLinkAction::Panel,
+            "a folder is browsed in the pane"
+        );
+        assert_eq!(
+            FileLinkAction::Finder.resolved("/w/notes.md", false),
+            FileLinkAction::Finder
+        );
+        assert_eq!(
+            WebLinkAction::for_click(true, WebLinkAction::Panel),
+            WebLinkAction::Browser
+        );
+        assert_eq!(
+            WebLinkAction::for_click(false, WebLinkAction::Panel),
+            WebLinkAction::Panel
+        );
     }
 
     #[test]
@@ -413,7 +675,10 @@ mod tests {
         for a in FileLinkAction::DEFAULTS {
             assert_eq!(FileLinkAction::from_key(a.key()), Some(a));
         }
-        assert_eq!(FileLinkAction::from_key("automatic"), Some(FileLinkAction::Automatic));
+        assert_eq!(
+            FileLinkAction::from_key("automatic"),
+            Some(FileLinkAction::Automatic)
+        );
         assert_eq!(WebLinkAction::from_key("panel"), Some(WebLinkAction::Panel));
         assert_eq!(WebLinkAction::from_key("nonsense"), None);
     }
@@ -422,30 +687,113 @@ mod tests {
     fn a_file_links_menu_has_its_ways_to_open_copy_path_and_default() {
         let menu = file_link_menu(true, Some("Xcode"), FileLinkAction::Panel);
         let titles: Vec<&str> = menu.iter().map(LinkMenuEntry::title).collect();
-        assert_eq!(titles, ["Open in Panel", "Open in Xcode", finder_title(), "---", "Copy Path", "---", "Default"]);
-        let LinkMenuEntry::Defaults { choices } = menu.last().unwrap() else { panic!() };
-        let named: Vec<(&str, bool)> = choices.iter().map(|(t, _, _, on)| (t.as_str(), *on)).collect();
+        assert_eq!(
+            titles,
+            [
+                "Open in Panel",
+                "Open in Xcode",
+                finder_title(),
+                "---",
+                "Copy Path",
+                "---",
+                "Default"
+            ]
+        );
+        let LinkMenuEntry::Defaults { choices } = menu.last().unwrap() else {
+            panic!()
+        };
+        let named: Vec<(&str, bool)> = choices
+            .iter()
+            .map(|(t, _, _, on)| (t.as_str(), *on))
+            .collect();
         // Default App, not this file's app: the choice is for every file link.
-        assert_eq!(named, [("Panel for Docs, Code and Pictures, App for the Rest", false), ("Open in Panel", true), ("Open in Default App", false), (finder_title(), false)]);
-        assert_eq!(file_link_menu(false, None, FileLinkAction::Automatic).iter().map(LinkMenuEntry::title).collect::<Vec<_>>(), ["Couldn't Find This File"]);
+        assert_eq!(
+            named,
+            [
+                ("Panel for Docs, Code and Pictures, App for the Rest", false),
+                ("Open in Panel", true),
+                ("Open in Default App", false),
+                (finder_title(), false)
+            ]
+        );
+        assert_eq!(
+            file_link_menu(false, None, FileLinkAction::Automatic)
+                .iter()
+                .map(LinkMenuEntry::title)
+                .collect::<Vec<_>>(),
+            ["Couldn't Find This File"]
+        );
         // With no app found for it.
-        assert_eq!(file_link_menu(true, None, FileLinkAction::Automatic)[1].title(), "Open in Default App");
+        assert_eq!(
+            file_link_menu(true, None, FileLinkAction::Automatic)[1].title(),
+            "Open in Default App"
+        );
     }
 
     #[test]
     fn a_web_links_menu_has_one_item_a_profile_when_chrome_has_several_open() {
-        let titles = |menu: Vec<LinkMenuEntry>| menu.iter().map(|e| e.title().to_owned()).collect::<Vec<_>>();
-        assert_eq!(titles(web_link_menu(Some("Safari"), &[], WebLinkAction::Browser)), ["Open in Safari", "Open in Panel", "---", "Copy Link", "---", "Default"]);
+        let titles = |menu: Vec<LinkMenuEntry>| {
+            menu.iter()
+                .map(|e| e.title().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            titles(web_link_menu(Some("Safari"), &[], WebLinkAction::Browser)),
+            [
+                "Open in Safari",
+                "Open in Panel",
+                "---",
+                "Copy Link",
+                "---",
+                "Default"
+            ]
+        );
         let profiles = vec![
-            ChromeProfile { directory: "Default".into(), name: "Alex".into(), picture: None },
-            ChromeProfile { directory: "Profile 5".into(), name: "Work".into(), picture: None },
+            ChromeProfile {
+                directory: "Default".into(),
+                name: "Alex".into(),
+                picture: None,
+            },
+            ChromeProfile {
+                directory: "Profile 5".into(),
+                name: "Work".into(),
+                picture: None,
+            },
         ];
         let menu = web_link_menu(Some("Google Chrome"), &profiles, WebLinkAction::Panel);
-        assert_eq!(titles(menu.clone()), ["Open in Chrome: Alex", "Open in Chrome: Work", "Open in Panel", "---", "Copy Link", "---", "Default"]);
-        assert!(matches!(&menu[1], LinkMenuEntry::Item { choice: LinkChoice::OpenInProfile(1), .. }));
-        let LinkMenuEntry::Defaults { choices } = menu.last().unwrap() else { panic!() };
-        assert_eq!(choices.iter().map(|(t, _, _, on)| (t.as_str(), *on)).collect::<Vec<_>>(), [("Open in Google Chrome", false), ("Open in Panel", true)]);
-        assert_eq!(web_link_menu(None, &[], WebLinkAction::Browser)[0].title(), "Open in Browser");
+        assert_eq!(
+            titles(menu.clone()),
+            [
+                "Open in Chrome: Alex",
+                "Open in Chrome: Work",
+                "Open in Panel",
+                "---",
+                "Copy Link",
+                "---",
+                "Default"
+            ]
+        );
+        assert!(matches!(
+            &menu[1],
+            LinkMenuEntry::Item {
+                choice: LinkChoice::OpenInProfile(1),
+                ..
+            }
+        ));
+        let LinkMenuEntry::Defaults { choices } = menu.last().unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            choices
+                .iter()
+                .map(|(t, _, _, on)| (t.as_str(), *on))
+                .collect::<Vec<_>>(),
+            [("Open in Google Chrome", false), ("Open in Panel", true)]
+        );
+        assert_eq!(
+            web_link_menu(None, &[], WebLinkAction::Browser)[0].title(),
+            "Open in Browser"
+        );
     }
 
     #[test]
@@ -457,9 +805,24 @@ mod tests {
             "Profile 9":{"name":"Closed"}}}}"#;
         let exists = |p: &Path| p == Path::new("/Chrome/Default/Google Profile Picture.png");
         let profiles = chrome_profiles(state, folder, &exists);
-        assert_eq!(profiles.len(), 2, "a profile Chrome no longer has is left out");
-        assert_eq!((profiles[0].directory.as_str(), profiles[0].name.as_str(), profiles[0].picture.is_none()), ("Profile 5", "Profile 5", true), "no name: its folder's");
-        assert_eq!(profiles[1].picture.as_deref(), Some(Path::new("/Chrome/Default/Google Profile Picture.png")));
+        assert_eq!(
+            profiles.len(),
+            2,
+            "a profile Chrome no longer has is left out"
+        );
+        assert_eq!(
+            (
+                profiles[0].directory.as_str(),
+                profiles[0].name.as_str(),
+                profiles[0].picture.is_none()
+            ),
+            ("Profile 5", "Profile 5", true),
+            "no name: its folder's"
+        );
+        assert_eq!(
+            profiles[1].picture.as_deref(),
+            Some(Path::new("/Chrome/Default/Google Profile Picture.png"))
+        );
         assert_eq!(profiles[1].title(), "Open in Chrome: Alex");
         assert!(chrome_profiles("not json", folder, &exists).is_empty());
         assert!(chrome_profiles(r#"{"profile":{}}"#, folder, &exists).is_empty());
@@ -471,21 +834,66 @@ mod tests {
 
     #[test]
     fn a_pages_card_is_titled_by_its_words_unless_theyre_its_address() {
-        let card = page_peek("https://github.com/alex-example/threadbear/pull/12", "the PR");
-        assert_eq!((card.title.as_str(), card.detail.as_str(), card.footer.as_str()), ("the PR", "github.com/alex-example/threadbear/pull/12", "Click to open"));
-        assert_eq!(page_peek("https://www.example.com/a", "example.com/a").title, "www.example.com");
-        assert_eq!(page_peek("https://example.com/a", "https://example.com/a").title, "example.com");
+        let card = page_peek(
+            "https://github.com/alex-example/threadbear/pull/12",
+            "the PR",
+        );
+        assert_eq!(
+            (
+                card.title.as_str(),
+                card.detail.as_str(),
+                card.footer.as_str()
+            ),
+            (
+                "the PR",
+                "github.com/alex-example/threadbear/pull/12",
+                "Click to open"
+            )
+        );
+        assert_eq!(
+            page_peek("https://www.example.com/a", "example.com/a").title,
+            "www.example.com"
+        );
+        assert_eq!(
+            page_peek("https://example.com/a", "https://example.com/a").title,
+            "example.com"
+        );
         assert_eq!(page_peek("https://example.com/", "").detail, "example.com");
     }
 
     #[test]
     fn a_files_card_names_it_its_folder_and_whether_its_here() {
-        let card = file_peek("/Users/alex/dev/app/docs/plan.md", true, None, "/Users/alex");
-        assert_eq!((card.title.as_str(), card.detail.as_str(), card.footer.as_str()), ("plan.md", "~/dev/app/docs", "Click to open"));
-        assert_eq!(file_peek("/tmp/a.png", false, None, "/Users/alex").footer, "Not found on this Mac");
-        assert_eq!(file_peek("/Users/alex/a.png", false, Some("mac-mini"), "/Users/alex").footer, "On mac-mini. Click to open.");
-        assert_eq!(file_peek("/Users/alex/a.png", true, None, "/Users/alex").detail, "~");
-        assert_eq!(file_peek("/Users/alexa/a.png", true, None, "/Users/alex").detail, "/Users/alexa", "not home, just a name like it");
+        let card = file_peek(
+            "/Users/alex/dev/app/docs/plan.md",
+            true,
+            None,
+            "/Users/alex",
+        );
+        assert_eq!(
+            (
+                card.title.as_str(),
+                card.detail.as_str(),
+                card.footer.as_str()
+            ),
+            ("plan.md", "~/dev/app/docs", "Click to open")
+        );
+        assert_eq!(
+            file_peek("/tmp/a.png", false, None, "/Users/alex").footer,
+            "Not found on this Mac"
+        );
+        assert_eq!(
+            file_peek("/Users/alex/a.png", false, Some("mac-mini"), "/Users/alex").footer,
+            "On mac-mini. Click to open."
+        );
+        assert_eq!(
+            file_peek("/Users/alex/a.png", true, None, "/Users/alex").detail,
+            "~"
+        );
+        assert_eq!(
+            file_peek("/Users/alexa/a.png", true, None, "/Users/alex").detail,
+            "/Users/alexa",
+            "not home, just a name like it"
+        );
         assert_eq!(file_peek("/a.png", true, None, "").detail, "/");
     }
 
@@ -500,16 +908,58 @@ mod tests {
         assert_eq!(peek_picture("/a/clip.MP4"), PeekPicture::Thumbnail);
         assert_eq!(peek_picture("/a/clip.mov"), PeekPicture::Thumbnail);
         assert_eq!(peek_picture("/a/project.tandem"), PeekPicture::Symbol);
-        assert_eq!(first_lines(b"one\n\ttwo\nthree\nfour", 3, 80).unwrap(), ["one", "    two", "three"]);
-        assert_eq!(first_lines("caf\u{e9}".as_bytes().split_last().unwrap().1, 2, 80).unwrap(), ["caf"], "a character cut off at the end");
+        assert_eq!(
+            first_lines(b"one\n\ttwo\nthree\nfour", 3, 80).unwrap(),
+            ["one", "    two", "three"]
+        );
+        assert_eq!(
+            first_lines("caf\u{e9}".as_bytes().split_last().unwrap().1, 2, 80).unwrap(),
+            ["caf"],
+            "a character cut off at the end"
+        );
         assert_eq!(first_lines(b"0123456789", 1, 4).unwrap(), ["0123"]);
         assert!(first_lines(b"\x00\x01png", 3, 80).is_none());
     }
 
     #[test]
     fn hosts() {
-        assert_eq!(host("https://user:pw@example.com:8080/a?b").as_deref(), Some("example.com"));
+        assert_eq!(
+            host("https://user:pw@example.com:8080/a?b").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(host("http://[::1]:3000/").as_deref(), Some("[::1]"));
         assert_eq!(host("mailto:a@b.c"), None);
+    }
+
+    /// The cases the phones and the website run too (shared/cases/thread-links.json).
+    #[test]
+    fn thread_links_match_the_shared_cases() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../shared/cases/thread-links.json"
+        );
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mut ran = 0;
+        for case in file["cases"].as_array().unwrap() {
+            if case["differs"].get("desktop").is_some() {
+                continue;
+            }
+            let name = case["name"].as_str().unwrap();
+            let got = thread_link(case["input"].as_str().unwrap()).map(|t| match t {
+                ThreadLink::Step(v) => ("step", v),
+                ThreadLink::Thread(v) => ("thread", v),
+                ThreadLink::Review(v) => ("review", v),
+                ThreadLink::Button(v) => ("button", v),
+            });
+            let want = case["expect"].as_object().map(|e| {
+                (
+                    e["kind"].as_str().unwrap(),
+                    e["value"].as_str().unwrap().to_owned(),
+                )
+            });
+            assert_eq!(got, want, "{name}");
+            ran += 1;
+        }
+        assert!(ran > 5);
     }
 }

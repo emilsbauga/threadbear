@@ -1,5 +1,5 @@
 // Files an agent's Edit or Write turns into code that runs by itself
-// (docs/protocol.md, "Agent writes that run as code").
+// (docs/protocol/trust.md, "Agent writes that run as code").
 //
 // A patch file is imported into the runner, and its hooks and setup run
 // unasked; a folder's Claude Code settings start hooks and MCP servers. So

@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use threadbear_client::config::RunnerConfig;
 
 fn path() -> PathBuf {
-    RunnerConfig::from_env().home.join("desktop-highlights.json")
+    RunnerConfig::from_env()
+        .home
+        .join("desktop-highlights.json")
 }
 
 pub(crate) fn load_collapsed() -> HashSet<String> {

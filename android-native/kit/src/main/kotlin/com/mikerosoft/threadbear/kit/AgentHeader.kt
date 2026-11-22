@@ -4,7 +4,7 @@ package com.mikerosoft.threadbear.kit
  * The line the runner starts a message from another thread's agent with,
  * `[Sent by the agent in the thread "<title>" (<id8>)]`, or the `then` of a
  * thread's own move, `[Sent by the agent before moving to <folder>]`
- * (docs/protocol.md, "Threadbear tools"; AgentHeader.swift). The runner
+ * (docs/protocol/tools.md, "Tools for agents"; AgentHeader.swift). The runner
  * gives these no origin, so this line is the only thing saying they aren't
  * Mike's, and the phone draws them as a card rather than his bubble, as the
  * Mac does.

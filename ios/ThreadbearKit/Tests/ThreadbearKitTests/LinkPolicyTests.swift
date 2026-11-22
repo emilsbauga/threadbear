@@ -16,4 +16,35 @@ import ThreadbearKit
         }
         guard case .file = LinkPolicy.kind(of: try #require(URL(string: "file:///etc/hosts"))) else { Issue.record("a file is the Mac's"); return }
     }
+
+    struct Cases: Decodable {
+        struct Case: Decodable {
+            var name: String
+            var input: String
+            var expect: String
+            var differs: [String: String]?
+        }
+        var cases: [Case]
+    }
+
+    /// The cases the desktop app, Android and the website run too
+    /// (shared/cases/link-policy.json). A string URL can't read is refused.
+    @Test func theSharedCases() throws {
+        // ios/ThreadbearKit/Tests/ThreadbearKitTests/ -> the repo.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let url = repo.appendingPathComponent("shared/cases/link-policy.json")
+        let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: url)).cases
+        #expect(cases.count >= 40)
+        for c in cases where c.differs?["ios"] == nil {
+            let kind: String
+            switch URL(string: c.input).map(LinkPolicy.kind(of:)) {
+            case .web: kind = "web"
+            case .ask: kind = "ask"
+            case .file: kind = "file"
+            case .refuse, nil: kind = "refuse"
+            }
+            #expect(kind == c.expect, "\(c.name)")
+        }
+    }
 }

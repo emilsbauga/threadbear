@@ -25,10 +25,17 @@ pub(crate) fn receive(application: &Application) -> UnboundedReceiver<Vec<String
 }
 
 /// Shows each link's thread in the main window, in turn.
-pub(crate) fn listen(mut links: UnboundedReceiver<Vec<String>>, app: WeakEntity<Threadbear>, window: AnyWindowHandle, cx: &mut App) {
+pub(crate) fn listen(
+    mut links: UnboundedReceiver<Vec<String>>,
+    app: WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    cx: &mut App,
+) {
     cx.spawn(async move |cx| {
         while let Some(urls) = links.next().await {
-            let Some(id) = thread_link::last_thread(urls.iter().map(String::as_str)) else { continue };
+            let Some(id) = thread_link::last_thread(urls.iter().map(String::as_str)) else {
+                continue;
+            };
             let app = app.clone();
             cx.update(|cx| show(&app, window, id, true, cx));
         }
@@ -40,13 +47,22 @@ pub(crate) fn listen(mut links: UnboundedReceiver<Vec<String>>, app: WeakEntity<
 /// (not a script's, which stays behind whatever's on that screen), and the
 /// thread opens in the Inbox view, or once the list has loaded
 /// (`open_from_outside`).
-pub(crate) fn show(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, id: String, activate: bool, cx: &mut App) {
+pub(crate) fn show(
+    app: &WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    id: String,
+    activate: bool,
+    cx: &mut App,
+) {
     if activate {
         cx.activate(true);
     }
     window
         .update(cx, |_, window, cx| {
-            app.update(cx, |this, cx| this.open_linked_thread(id, activate, window, cx)).ok();
+            app.update(cx, |this, cx| {
+                this.open_linked_thread(id, activate, window, cx)
+            })
+            .ok();
         })
         .ok();
 }
@@ -54,7 +70,13 @@ pub(crate) fn show(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, id: St
 impl Threadbear {
     /// A link's thread, once the list is in: one it doesn't have says so
     /// rather than leaving the click with nothing to show for it.
-    pub(crate) fn open_linked_thread(&mut self, id: String, activate: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_linked_thread(
+        &mut self,
+        id: String,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if activate {
             window.activate_window();
         }
@@ -93,7 +115,9 @@ impl Threadbear {
     /// says it isn't once both lists are in or it's waited long enough, or
     /// goes on waiting.
     pub(crate) fn try_waiting_link(&mut self, cx: &mut Context<Self>) {
-        let Some((id, since)) = self.waiting_link.clone() else { return };
+        let Some((id, since)) = self.waiting_link.clone() else {
+            return;
+        };
         let there = self.threads.contains_key(&id);
         let lists_in = self.sidebar.loaded && self.remote.heard;
         if !there && !lists_in && since.elapsed() < LINK_WAIT {
@@ -124,7 +148,12 @@ impl Threadbear {
 /// The automation's `open-url`: a link handed over as macOS hands one to the
 /// app, through the same steps.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &serde_json::Value, window: AnyWindowHandle, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &serde_json::Value,
+    window: AnyWindowHandle,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     let url = cmd["url"].as_str().ok_or("url is the link")?;
     match thread_link::thread_id(url) {
         Some(id) => {

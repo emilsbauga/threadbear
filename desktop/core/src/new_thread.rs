@@ -32,9 +32,12 @@ pub struct AccountUsage {
 /// The account's usage, if the runner sent any.
 pub fn usage_of(account: &Account) -> Option<AccountUsage> {
     // A signed-out login has no room for anything, as the runner's pools
-    // have it (docs/protocol.md, Pools, "Signed out").
+    // have it (docs/protocol/settings.md, Pools, "Signed out").
     if (account.signed_out || account.plan_ended) && account.usage.is_none() {
-        return Some(AccountUsage { windows: Vec::new(), blocked: true });
+        return Some(AccountUsage {
+            windows: Vec::new(),
+            blocked: true,
+        });
     }
     let v = account.usage.as_ref()?;
     Some(AccountUsage {
@@ -53,20 +56,29 @@ pub fn usage_of(account: &Account) -> Option<AccountUsage> {
                     .collect()
             })
             .unwrap_or_default(),
-        blocked: v["blocked"].as_bool().unwrap_or(false) || account.signed_out || account.plan_ended,
+        blocked: v["blocked"].as_bool().unwrap_or(false)
+            || account.signed_out
+            || account.plan_ended,
     })
 }
 
 /// `AccountUsageText.mainWindows`: the 5-hour and weekly windows, the two
 /// that decide whether there's room.
 pub fn main_windows(usage: &AccountUsage) -> Vec<&UsageWindow> {
-    ["five_hour", "weekly"].iter().filter_map(|kind| usage.windows.iter().find(|w| w.kind == *kind)).collect()
+    ["five_hour", "weekly"]
+        .iter()
+        .filter_map(|kind| usage.windows.iter().find(|w| w.kind == *kind))
+        .collect()
 }
 
 /// `AccountUsageText.tightest`: the tighter of the main windows, the one
 /// that runs out first (the first of a tie, as `min` keeps it).
 pub fn tightest(usage: &AccountUsage) -> Option<&UsageWindow> {
-    main_windows(usage).into_iter().min_by(|a, b| a.remaining_percent.partial_cmp(&b.remaining_percent).unwrap_or(std::cmp::Ordering::Equal))
+    main_windows(usage).into_iter().min_by(|a, b| {
+        a.remaining_percent
+            .partial_cmp(&b.remaining_percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 /// `AccountUsageText.room`.
@@ -97,11 +109,19 @@ pub fn room_line(usage: Option<&AccountUsage>) -> Option<String> {
     if main.is_empty() {
         return None;
     }
-    Some(format!("{} left", main.iter().map(|w| format!("{} {}", short_name(w), percent(w.remaining_percent))).collect::<Vec<_>>().join(" · ")))
+    Some(format!(
+        "{} left",
+        main.iter()
+            .map(|w| format!("{} {}", short_name(w), percent(w.remaining_percent)))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    ))
 }
 
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// `AccountUsageText.clock`: "3:40 pm", "1 pm" on the hour.
 pub fn clock<Tz: TimeZone>(d: &DateTime<Tz>) -> String {
@@ -151,10 +171,17 @@ pub fn room_tooltip<Tz: TimeZone>(account: &Account, now: &DateTime<Tz>) -> Stri
     if account.plan_ended {
         return format!("{text}: Plan ended.");
     }
-    let Some(usage) = usage_of(account) else { return text };
+    let Some(usage) = usage_of(account) else {
+        return text;
+    };
     let main = main_windows(&usage);
     if usage.blocked {
-        let reset = main.iter().filter(|w| w.remaining_percent < 1.).filter_map(|w| w.resets_at).min().or_else(|| main.iter().filter_map(|w| w.resets_at).min());
+        let reset = main
+            .iter()
+            .filter(|w| w.remaining_percent < 1.)
+            .filter_map(|w| w.resets_at)
+            .min()
+            .or_else(|| main.iter().filter_map(|w| w.resets_at).min());
         let line = match reset {
             Some(ms) => format!("Limit reached, resets {}", reset_time(&at(ms, now), now)),
             None => "Limit reached".to_owned(),
@@ -164,7 +191,11 @@ pub fn room_tooltip<Tz: TimeZone>(account: &Account, now: &DateTime<Tz>) -> Stri
     if main.is_empty() {
         return text;
     }
-    let mut words = main.iter().map(|w| format!("{} {} left", w.title, percent(w.remaining_percent))).collect::<Vec<_>>().join(", ");
+    let mut words = main
+        .iter()
+        .map(|w| format!("{} {} left", w.title, percent(w.remaining_percent)))
+        .collect::<Vec<_>>()
+        .join(", ");
     if let Some(ms) = tightest(&usage).and_then(|w| w.resets_at) {
         words.push_str(&format!(", resets {}", reset_time(&at(ms, now), now)));
     }
@@ -173,7 +204,11 @@ pub fn room_tooltip<Tz: TimeZone>(account: &Account, now: &DateTime<Tz>) -> Stri
 
 /// A moment in milliseconds in the same zone as `reference`.
 fn at<Tz: TimeZone>(ms: i64, reference: &DateTime<Tz>) -> DateTime<Tz> {
-    reference.timezone().timestamp_millis_opt(ms).single().unwrap_or_else(|| reference.clone())
+    reference
+        .timezone()
+        .timestamp_millis_opt(ms)
+        .single()
+        .unwrap_or_else(|| reference.clone())
 }
 
 // ---- Names ----
@@ -192,14 +227,25 @@ fn domain_part(address: &str) -> Option<String> {
 /// sam@acme.io), or the part before the @ when another login shares that
 /// domain, else the whole address. Codex reads as `short` has it.
 pub fn login_name(id: &str, accounts: &[Account]) -> String {
-    let Some(account) = accounts.iter().find(|a| a.id == id) else { return id.to_owned() };
+    let Some(account) = accounts.iter().find(|a| a.id == id) else {
+        return id.to_owned();
+    };
     if account.provider_id() == "codex" {
         return short_account_name(id, accounts);
     }
     let full = account.name();
-    let Some(domain) = domain_part(&full) else { return full };
-    let siblings: Vec<String> = accounts.iter().filter(|a| a.id != id && a.provider_id() == account.provider_id()).map(Account::name).collect();
-    if !siblings.iter().any(|s| domain_part(s).as_deref() == Some(domain.as_str())) {
+    let Some(domain) = domain_part(&full) else {
+        return full;
+    };
+    let siblings: Vec<String> = accounts
+        .iter()
+        .filter(|a| a.id != id && a.provider_id() == account.provider_id())
+        .map(Account::name)
+        .collect();
+    if !siblings
+        .iter()
+        .any(|s| domain_part(s).as_deref() == Some(domain.as_str()))
+    {
         return domain;
     }
     let local = local_part(&full).to_owned();
@@ -212,18 +258,35 @@ pub fn login_name(id: &str, accounts: &[Account]) -> String {
 
 /// `AccountName.label`: a name for a card, where a whole address doesn't fit.
 pub fn account_label(id: &str, accounts: &[Account]) -> String {
-    let Some(account) = accounts.iter().find(|a| a.id == id) else { return id.to_owned() };
+    let Some(account) = accounts.iter().find(|a| a.id == id) else {
+        return id.to_owned();
+    };
     if account.provider_id() == "codex" {
         return short_account_name(id, accounts);
     }
     let full = account.name();
-    let Some(at) = full.find('@') else { return full };
-    let siblings: Vec<String> = accounts.iter().filter(|a| a.id != id && a.provider_id() == account.provider_id()).map(Account::name).collect();
+    let Some(at) = full.find('@') else {
+        return full;
+    };
+    let siblings: Vec<String> = accounts
+        .iter()
+        .filter(|a| a.id != id && a.provider_id() == account.provider_id())
+        .map(Account::name)
+        .collect();
     let local = local_part(&full).to_owned();
     if !siblings.iter().any(|s| local_part(s) == local) {
         return local;
     }
-    let domain = |address: &str| address.split('@').nth(1).unwrap_or(address).split('.').next().unwrap_or("").to_owned();
+    let domain = |address: &str| {
+        address
+            .split('@')
+            .nth(1)
+            .unwrap_or(address)
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_owned()
+    };
     let own = domain(&full[at..]);
     if own.is_empty() || siblings.iter().any(|s| domain(s) == own) {
         full
@@ -248,7 +311,10 @@ fn is_eligible(account: &Account) -> bool {
     if account.note.as_deref().is_some_and(|n| !n.is_empty()) {
         return false;
     }
-    !usage.as_ref().and_then(room).is_some_and(|r| r < PICK_FLOOR)
+    !usage
+        .as_ref()
+        .and_then(room)
+        .is_some_and(|r| r < PICK_FLOOR)
 }
 
 /// `AccountUsageText.pickAccount`: the runner's rule for the account a new
@@ -261,22 +327,40 @@ pub fn pick_account(accounts: &[Account], last_used: Option<&str>) -> Option<Str
     }
     let last = accounts.iter().find(|a| Some(a.id.as_str()) == last_used);
     let provider = last.map_or(accounts[0].provider_id(), Account::provider_id);
-    let eligible: Vec<&Account> = accounts.iter().filter(|a| a.provider_id() == provider && is_eligible(a)).collect();
+    let eligible: Vec<&Account> = accounts
+        .iter()
+        .filter(|a| a.provider_id() == provider && is_eligible(a))
+        .collect();
     let fallback = last.map(|a| a.id.clone());
     if let Some(last) = last {
-        if eligible.iter().any(|a| a.id == last.id) && usage_of(last).as_ref().and_then(room).is_none() {
+        if eligible.iter().any(|a| a.id == last.id)
+            && usage_of(last).as_ref().and_then(room).is_none()
+        {
             return Some(last.id.clone());
         }
     }
-    let known: Vec<(&Account, f64)> = eligible.iter().filter_map(|a| usage_of(a).as_ref().and_then(room).map(|r| (*a, r))).collect();
-    let Some(best) = known.iter().map(|(_, r)| *r).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) else { return fallback };
+    let known: Vec<(&Account, f64)> = eligible
+        .iter()
+        .filter_map(|a| usage_of(a).as_ref().and_then(room).map(|r| (*a, r)))
+        .collect();
+    let Some(best) = known
+        .iter()
+        .map(|(_, r)| *r)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    else {
+        return fallback;
+    };
     if let Some(last) = last {
         if known.iter().any(|(a, r)| a.id == last.id && *r >= best) {
             return Some(last.id.clone());
         }
     }
     // `max` keeps the last of equals; the first in the runner's order wins a tie.
-    known.iter().find(|(_, r)| *r == best).map(|(a, _)| a.id.clone()).or(fallback)
+    known
+        .iter()
+        .find(|(_, r)| *r == best)
+        .map(|(a, _)| a.id.clone())
+        .or(fallback)
 }
 
 /// `Pools.forFolder`: the pool whose `folders` hold `cwd`, the most specific
@@ -293,7 +377,12 @@ pub fn pool_for_folder(pools: &[Pool], cwd: &str, home: &str) -> Option<String> 
             if root.is_empty() {
                 continue;
             }
-            let inside = folder == root || folder.starts_with(&if root == "/" { "/".to_owned() } else { format!("{root}/") });
+            let inside = folder == root
+                || folder.starts_with(&if root == "/" {
+                    "/".to_owned()
+                } else {
+                    format!("{root}/")
+                });
             if inside && best.as_ref().is_none_or(|(_, length)| root.len() > *length) {
                 best = Some((pool.id.clone(), root.len()));
             }
@@ -318,7 +407,14 @@ fn normalised(path: &str, home: &str) -> String {
 /// `Pools.newThreadPool`: the one Mike picked for this draft, else its
 /// folder's, else the one he last picked, else the runner's default, else the
 /// first. A pool that's gone is skipped. None only with no pools at all.
-pub fn new_thread_pool(pools: &[Pool], picked: Option<&str>, cwd: &str, home: &str, last: Option<&str>, runner_default: Option<&str>) -> Option<String> {
+pub fn new_thread_pool(
+    pools: &[Pool],
+    picked: Option<&str>,
+    cwd: &str,
+    home: &str,
+    last: Option<&str>,
+    runner_default: Option<&str>,
+) -> Option<String> {
     let has = |id: &str| pools.iter().any(|p| p.id == id);
     if let Some(picked) = picked.filter(|p| has(p)) {
         return Some(picked.to_owned());
@@ -337,8 +433,16 @@ pub fn new_thread_pool(pools: &[Pool], picked: Option<&str>, cwd: &str, home: &s
 
 /// `Pools.logins`: the pool's logins the runner has, in the pool's order,
 /// optionally only one provider's.
-pub fn pool_logins<'a>(pool: &Pool, accounts: &'a [Account], provider: Option<&str>) -> Vec<&'a Account> {
-    pool.account_ids.iter().filter_map(|id| accounts.iter().find(|a| a.id == *id)).filter(|a| provider.is_none_or(|p| a.provider_id() == p)).collect()
+pub fn pool_logins<'a>(
+    pool: &Pool,
+    accounts: &'a [Account],
+    provider: Option<&str>,
+) -> Vec<&'a Account> {
+    pool.account_ids
+        .iter()
+        .filter_map(|id| accounts.iter().find(|a| a.id == *id))
+        .filter(|a| provider.is_none_or(|p| a.provider_id() == p))
+        .collect()
 }
 
 /// `Pools.providers`: the providers in the pool, in the order its logins name them.
@@ -368,7 +472,10 @@ pub enum ChipBadge {
 impl ChipBadge {
     /// Red: nothing runs on it now.
     pub fn is_stop(&self) -> bool {
-        matches!(self, ChipBadge::Blocked | ChipBadge::SignedOut | ChipBadge::PlanEnded)
+        matches!(
+            self,
+            ChipBadge::Blocked | ChipBadge::SignedOut | ChipBadge::PlanEnded
+        )
     }
 }
 
@@ -401,13 +508,18 @@ pub fn best_room(pool: &Pool, accounts: &[Account]) -> Option<f64> {
                 room(&usage)
             }
         })
-        .fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))))
+        .fold(None, |best: Option<f64>, r| {
+            Some(best.map_or(r, |b| b.max(r)))
+        })
 }
 
 /// `Pools.chipBadge`: the model chip's badge on a pool thread, only once
 /// every login in the pool is running out (or all are at their limit).
 pub fn pool_chip_badge(pool: &Pool, accounts: &[Account]) -> Option<ChipBadge> {
-    let usages: Vec<Option<AccountUsage>> = pool_logins(pool, accounts, None).into_iter().map(usage_of).collect();
+    let usages: Vec<Option<AccountUsage>> = pool_logins(pool, accounts, None)
+        .into_iter()
+        .map(usage_of)
+        .collect();
     if usages.is_empty() {
         return None;
     }
@@ -437,12 +549,22 @@ pub fn switch_target<'a>(accounts: &'a [Account], from: &str) -> Option<&'a Acco
 /// (Mike, 12 Nov: a drop-down of the logins to carry on with).
 pub fn switch_targets<'a>(accounts: &'a [Account], from: &str) -> Vec<&'a Account> {
     let room_of = |a: &Account| usage_of(a).as_ref().and_then(room);
-    let provider = accounts.iter().find(|a| a.id == from).map(|a| a.provider_id());
-    let mut list: Vec<&'a Account> = accounts.iter().filter(|a| a.id != from && is_eligible(a) && room_of(a).is_some()).collect();
+    let provider = accounts
+        .iter()
+        .find(|a| a.id == from)
+        .map(|a| a.provider_id());
+    let mut list: Vec<&'a Account> = accounts
+        .iter()
+        .filter(|a| a.id != from && is_eligible(a) && room_of(a).is_some())
+        .collect();
     // Stable, so a tie keeps the logins' own order.
     list.sort_by(|a, b| {
         let other = |x: &Account| Some(x.provider_id()) != provider;
-        other(a).cmp(&other(b)).then(room_of(b).partial_cmp(&room_of(a)).unwrap_or(std::cmp::Ordering::Equal))
+        other(a).cmp(&other(b)).then(
+            room_of(b)
+                .partial_cmp(&room_of(a))
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
     });
     list
 }
@@ -467,11 +589,13 @@ pub fn switch_title(target: &Account, accounts: &[Account]) -> String {
 
 /// `Pools.hasRoom`: not blocked, and at or over the floor (or usage unknown).
 pub fn has_room(account: &Account) -> bool {
-    let Some(usage) = usage_of(account) else { return true };
+    let Some(usage) = usage_of(account) else {
+        return true;
+    };
     !usage.blocked && !room(&usage).is_some_and(|r| r < PICK_FLOOR)
 }
 
-/// `usage.resets`: a Codex login's usage resets left (docs/protocol.md,
+/// `usage.resets`: a Codex login's usage resets left (docs/protocol/settings.md,
 /// Pools, "Usage resets"), and when the soonest expires (ms).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsageResets {
@@ -481,23 +605,41 @@ pub struct UsageResets {
 
 pub fn resets_of(account: &Account) -> Option<UsageResets> {
     let r = account.usage.as_ref()?.get("resets")?;
-    Some(UsageResets { available: r["available"].as_u64()?, next_expires_at: r["nextExpiresAt"].as_str().and_then(parse_ms) })
+    Some(UsageResets {
+        available: r["available"].as_u64()?,
+        next_expires_at: r["nextExpiresAt"].as_str().and_then(parse_ms),
+    })
 }
 
 /// The login the limit box offers to spend a usage reset on: the first of
 /// `candidates` (the thread's own login, then its pool's) that is a Codex
 /// login out of room with a reset left. Never by itself: Mike clicks it.
 pub fn reset_target<'a>(candidates: impl IntoIterator<Item = &'a Account>) -> Option<&'a Account> {
-    candidates.into_iter().find(|a| a.provider_id() == "codex" && !a.signed_out && !has_room(a) && resets_of(a).is_some_and(|r| r.available > 0))
+    candidates.into_iter().find(|a| {
+        a.provider_id() == "codex"
+            && !a.signed_out
+            && !has_room(a)
+            && resets_of(a).is_some_and(|r| r.available > 0)
+    })
 }
 
 /// The Use a reset button's tip: "Restores sam@example.com's 5-hour and
 /// weekly limits now. 2 left, the next expires 2 Dec."
-pub fn reset_tip<Tz: TimeZone>(target: &Account, accounts: &[Account], now: &DateTime<Tz>) -> String {
-    let mut tip = format!("Restores {}'s 5-hour and weekly limits now.", short_account_name(&target.id, accounts));
+pub fn reset_tip<Tz: TimeZone>(
+    target: &Account,
+    accounts: &[Account],
+    now: &DateTime<Tz>,
+) -> String {
+    let mut tip = format!(
+        "Restores {}'s 5-hour and weekly limits now.",
+        short_account_name(&target.id, accounts)
+    );
     if let Some(r) = resets_of(target) {
         tip.push_str(&format!(" {} left", r.available));
-        if let Some(at) = r.next_expires_at.and_then(|ms| now.timezone().timestamp_millis_opt(ms).single()) {
+        if let Some(at) = r
+            .next_expires_at
+            .and_then(|ms| now.timezone().timestamp_millis_opt(ms).single())
+        {
             tip.push_str(&format!(", the next expires {}", reset_time(&at, now)));
         }
         tip.push('.');
@@ -506,7 +648,12 @@ pub fn reset_tip<Tz: TimeZone>(target: &Account, accounts: &[Account], now: &Dat
 }
 
 fn weekly_reset(account: &Account, now_ms: i64) -> f64 {
-    let reset = usage_of(account).and_then(|u| u.windows.iter().find(|w| w.kind == "weekly").and_then(|w| w.resets_at));
+    let reset = usage_of(account).and_then(|u| {
+        u.windows
+            .iter()
+            .find(|w| w.kind == "weekly")
+            .and_then(|w| w.resets_at)
+    });
     match reset {
         Some(ms) if ms > now_ms => (ms as f64 / 60_000.).round(),
         _ => f64::INFINITY,
@@ -517,7 +664,13 @@ fn weekly_reset(account: &Account, now_ms: i64) -> f64 {
 /// while it has room, else, of those with room, the one whose weekly window
 /// resets soonest (the most room breaking a tie), as the runner's `pickInPool`;
 /// else one whose usage isn't known, else the first.
-pub fn pick_login(pool: &Pool, accounts: &[Account], provider: &str, current: Option<&str>, now_ms: i64) -> Option<String> {
+pub fn pick_login(
+    pool: &Pool,
+    accounts: &[Account],
+    provider: &str,
+    current: Option<&str>,
+    now_ms: i64,
+) -> Option<String> {
     let own = pool_logins(pool, accounts, Some(provider));
     if let Some(current) = current {
         if own.iter().any(|a| a.id == current && has_room(a)) {
@@ -527,9 +680,13 @@ pub fn pick_login(pool: &Pool, accounts: &[Account], provider: &str, current: Op
     let open: Vec<&&Account> = own.iter().filter(|a| has_room(a)).collect();
     let mut best: Option<(String, f64, f64)> = None;
     for login in &open {
-        let Some(login_room) = usage_of(login).as_ref().and_then(room) else { continue };
+        let Some(login_room) = usage_of(login).as_ref().and_then(room) else {
+            continue;
+        };
         let reset = weekly_reset(login, now_ms);
-        if best.as_ref().is_some_and(|(_, have_room, have_reset)| !(reset < *have_reset || (reset == *have_reset && login_room > *have_room))) {
+        if best.as_ref().is_some_and(|(_, have_room, have_reset)| {
+            !(reset < *have_reset || (reset == *have_reset && login_room > *have_room))
+        }) {
             continue;
         }
         best = Some((login.id.clone(), login_room, reset));
@@ -537,7 +694,10 @@ pub fn pick_login(pool: &Pool, accounts: &[Account], provider: &str, current: Op
     if let Some((id, _, _)) = best {
         return Some(id);
     }
-    own.iter().find(|a| has_room(a)).or(own.first()).map(|a| a.id.clone())
+    own.iter()
+        .find(|a| has_room(a))
+        .or(own.first())
+        .map(|a| a.id.clone())
 }
 
 /// `UsageGroups.byProvider`: Claude's logins, then Codex's, then the rest,
@@ -556,7 +716,14 @@ pub fn by_provider(accounts: &[Account]) -> Vec<&Account> {
     };
     let mut indexed: Vec<(usize, &String)> = order.iter().enumerate().collect();
     indexed.sort_by_key(|(i, p)| (rank(p), *i));
-    indexed.into_iter().flat_map(|(_, p)| accounts.iter().filter(move |a| a.provider_id() == p.as_str())).collect()
+    indexed
+        .into_iter()
+        .flat_map(|(_, p)| {
+            accounts
+                .iter()
+                .filter(move |a| a.provider_id() == p.as_str())
+        })
+        .collect()
 }
 
 // ---- The draft ----
@@ -607,14 +774,16 @@ impl Remembered {
     /// AppModel.rememberLastAccount.
     pub fn used_account(&mut self, account: &str, provider: &str) {
         self.last_account = Some(account.to_owned());
-        self.last_account_by_provider.insert(provider.to_owned(), account.to_owned());
+        self.last_account_by_provider
+            .insert(provider.to_owned(), account.to_owned());
     }
 
     /// AppModel.rememberPool.
     pub fn used_pool(&mut self, pool: &str, provider: Option<&str>) {
         self.last_pool = Some(pool.to_owned());
         if let Some(provider) = provider {
-            self.last_pool_providers.insert(pool.to_owned(), provider.to_owned());
+            self.last_pool_providers
+                .insert(pool.to_owned(), provider.to_owned());
         }
     }
 
@@ -678,7 +847,10 @@ pub struct Draft<'a> {
 impl Draft<'_> {
     /// Where it will start.
     pub fn cwd(&self) -> String {
-        self.picks.cwd.clone().unwrap_or_else(|| self.logins.defaults.cwd.clone())
+        self.picks
+            .cwd
+            .clone()
+            .unwrap_or_else(|| self.logins.defaults.cwd.clone())
     }
 
     /// `newThreadUsesPools`: pools are on when the draft's logins have them.
@@ -688,7 +860,10 @@ impl Draft<'_> {
 
     /// `AppModel.lastPoolId`.
     fn last_pool(&self) -> Option<&str> {
-        self.mem.last_pool.as_deref().or(self.logins.defaults.pool_id.as_deref())
+        self.mem
+            .last_pool
+            .as_deref()
+            .or(self.logins.defaults.pool_id.as_deref())
     }
 
     /// `AppModel.newThreadPoolId`: None when it's pinned to a login.
@@ -696,7 +871,14 @@ impl Draft<'_> {
         if !self.uses_pools() || self.picks.account.is_some() {
             return None;
         }
-        new_thread_pool(&self.logins.pools, self.picks.pool.as_deref(), &self.cwd(), self.home, self.last_pool(), self.logins.defaults.pool_id.as_deref())
+        new_thread_pool(
+            &self.logins.pools,
+            self.picks.pool.as_deref(),
+            &self.cwd(),
+            self.home,
+            self.last_pool(),
+            self.logins.defaults.pool_id.as_deref(),
+        )
     }
 
     pub fn pool(&self) -> Option<&Pool> {
@@ -706,34 +888,70 @@ impl Draft<'_> {
     /// `AppModel.newThreadProvider(in:)`.
     pub fn provider_in(&self, pool: &Pool) -> String {
         let providers = pool_providers(pool, &self.logins.accounts);
-        for candidate in [self.picks.provider.as_deref(), self.mem.last_pool_providers.get(&pool.id).map(String::as_str)].into_iter().flatten() {
+        for candidate in [
+            self.picks.provider.as_deref(),
+            self.mem
+                .last_pool_providers
+                .get(&pool.id)
+                .map(String::as_str),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if providers.iter().any(|p| p == candidate) {
                 return candidate.to_owned();
             }
         }
-        providers.first().cloned().unwrap_or_else(|| "claude".to_owned())
+        providers
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "claude".to_owned())
     }
 
     /// `AppModel.newThreadAccountId`.
     pub fn account_id(&self) -> String {
-        if let Some(account) = self.picks.account.as_deref().filter(|a| self.picks.runner.is_none() || self.logins.account(a).is_some()) {
+        if let Some(account) = self
+            .picks
+            .account
+            .as_deref()
+            .filter(|a| self.picks.runner.is_none() || self.logins.account(a).is_some())
+        {
             return account.to_owned();
         }
         if let Some(pool) = self.pool() {
             let provider = self.provider_in(pool);
-            if let Some(login) = pick_login(pool, &self.logins.accounts, &provider, self.mem.last_account_by_provider.get(&provider).map(String::as_str), self.now_ms) {
+            if let Some(login) = pick_login(
+                pool,
+                &self.logins.accounts,
+                &provider,
+                self.mem
+                    .last_account_by_provider
+                    .get(&provider)
+                    .map(String::as_str),
+                self.now_ms,
+            ) {
                 return login;
             }
         }
-        let last = self.mem.last_account.as_deref().unwrap_or(&self.logins.defaults.account_id);
+        let last = self
+            .mem
+            .last_account
+            .as_deref()
+            .unwrap_or(&self.logins.defaults.account_id);
         // On another runner only one of its own logins will do, so nothing
         // picked means its default; on this Mac it's the last one used.
-        let fallback = if self.picks.runner.is_some() { self.logins.defaults.account_id.clone() } else { last.to_owned() };
+        let fallback = if self.picks.runner.is_some() {
+            self.logins.defaults.account_id.clone()
+        } else {
+            last.to_owned()
+        };
         pick_account(&self.logins.accounts, Some(last)).unwrap_or(fallback)
     }
 
     pub fn provider(&self) -> String {
-        self.logins.account(&self.account_id()).map_or_else(|| "claude".to_owned(), |a| a.provider_id().to_owned())
+        self.logins
+            .account(&self.account_id())
+            .map_or_else(|| "claude".to_owned(), |a| a.provider_id().to_owned())
     }
 
     /// `AppModel.newThreadPermission`: picked, else the last one picked for a
@@ -769,7 +987,11 @@ impl Draft<'_> {
     pub fn note(&self, runner_name: Option<&str>, logins_known: bool) -> String {
         match runner_name {
             Some(name) if !logins_known => format!("Starts on {name}"),
-            Some(name) => format!("Starts in {} on {name}, with {}", short_folder(&self.cwd()), self.on()),
+            Some(name) => format!(
+                "Starts in {} on {name}, with {}",
+                short_folder(&self.cwd()),
+                self.on()
+            ),
             None => format!("Starts in {} on {}", short_folder(&self.cwd()), self.on()),
         }
     }
@@ -796,7 +1018,10 @@ impl Draft<'_> {
     pub fn room_cards<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Vec<RoomCard> {
         let pool = self.pool();
         let selected = self.account_id();
-        let cards: Vec<&Account> = by_provider(&self.logins.accounts).into_iter().filter(|a| pool.is_none_or(|p| p.account_ids.contains(&a.id))).collect();
+        let cards: Vec<&Account> = by_provider(&self.logins.accounts)
+            .into_iter()
+            .filter(|a| pool.is_none_or(|p| p.account_ids.contains(&a.id)))
+            .collect();
         if cards.len() <= 1 || !cards.iter().any(|a| a.usage.is_some()) {
             return Vec::new();
         }
@@ -807,7 +1032,12 @@ impl Draft<'_> {
                 let tight = usage.as_ref().and_then(tightest);
                 let look = match tight {
                     _ if account.signed_out || account.plan_ended => RoomLook::Blocked,
-                    Some(t) if usage.as_ref().is_some_and(|u| u.blocked) || t.remaining_percent < 1. => RoomLook::Blocked,
+                    Some(t)
+                        if usage.as_ref().is_some_and(|u| u.blocked)
+                            || t.remaining_percent < 1. =>
+                    {
+                        RoomLook::Blocked
+                    }
                     Some(t) if t.remaining_percent < CHIP_WARNING => RoomLook::Low,
                     _ => RoomLook::Ample,
                 };
@@ -815,7 +1045,13 @@ impl Draft<'_> {
                     id: account.id.clone(),
                     label: account_label(&account.id, &self.logins.accounts),
                     note: account.note.clone().filter(|n| !n.is_empty()),
-                    line: if account.plan_ended { "Plan ended".to_owned() } else if account.signed_out { "Signed out".to_owned() } else { room_line(usage.as_ref()).unwrap_or_else(|| "Nothing known yet".to_owned()) },
+                    line: if account.plan_ended {
+                        "Plan ended".to_owned()
+                    } else if account.signed_out {
+                        "Signed out".to_owned()
+                    } else {
+                        room_line(usage.as_ref()).unwrap_or_else(|| "Nothing known yet".to_owned())
+                    },
                     tooltip: room_tooltip(account, now),
                     selected: pool.is_none() && account.id == selected,
                     fraction: tight.map(|t| (t.remaining_percent / 100.).clamp(0., 1.)),
@@ -843,9 +1079,23 @@ impl Draft<'_> {
         if let Some(pool) = self.pool() {
             let provider = self.provider_in(pool);
             out["poolId"] = serde_json::json!(pool.id);
+            // Which of a mixed pool's providers, as the model alone can't
+            // always say (an OpenCode model called gpt-…).
+            if pool_providers(pool, &self.logins.accounts).len() > 1 {
+                out["provider"] = serde_json::json!(provider);
+            }
             let mut model = self.mem.last_models.get(&provider).cloned();
             if model.is_none() && pool_providers(pool, &self.logins.accounts).len() > 1 {
-                model = self.logins.defaults.model_for(&provider).map(str::to_owned).or_else(|| self.logins.account(&self.account_id()).and_then(|a| a.default_model.clone()));
+                model = self
+                    .logins
+                    .defaults
+                    .model_for(&provider)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        self.logins
+                            .account(&self.account_id())
+                            .and_then(|a| a.default_model.clone())
+                    });
             }
             if let Some(model) = model {
                 out["model"] = serde_json::json!(model);
@@ -857,7 +1107,11 @@ impl Draft<'_> {
         }
         let account = self.account_id();
         out["accountId"] = serde_json::json!(account);
-        let provider = self.logins.account(&account).map_or("claude", Account::provider_id).to_owned();
+        let provider = self
+            .logins
+            .account(&account)
+            .map_or("claude", Account::provider_id)
+            .to_owned();
         if let Some(model) = self.mem.last_models.get(&provider) {
             out["model"] = serde_json::json!(model);
         }
@@ -871,7 +1125,11 @@ impl Draft<'_> {
 /// `FolderName.short`: the last part of a path ("/" for the root).
 pub fn short_folder(path: &str) -> String {
     if path.trim_matches('/').is_empty() {
-        return if path.is_empty() { String::new() } else { "/".to_owned() };
+        return if path.is_empty() {
+            String::new()
+        } else {
+            "/".to_owned()
+        };
     }
     folder_name(path)
 }
@@ -887,7 +1145,12 @@ pub fn abbreviate_home(path: &str, home: &str) -> String {
         return path.to_owned();
     }
     let (head, rest) = path.split_at(home.len());
-    let same = if windows { head.replace('\\', "/").eq_ignore_ascii_case(&home.replace('\\', "/")) } else { head == home };
+    let same = if windows {
+        head.replace('\\', "/")
+            .eq_ignore_ascii_case(&home.replace('\\', "/"))
+    } else {
+        head == home
+    };
     let follows = rest.is_empty() || rest.starts_with('/') || (windows && rest.starts_with('\\'));
     if same && follows {
         format!("~{rest}")
@@ -937,17 +1200,36 @@ mod tests {
         let target = switch_target(&l.accounts, "claude-3").expect("somewhere to go");
         assert_eq!(target.id, "claude-main");
         // Three Claude logins share "mike", so the whole address (AccountName.short).
-        assert_eq!(switch_title(target, &l.accounts), "Switch to alex@home.example (52% left)");
+        assert_eq!(
+            switch_title(target, &l.accounts),
+            "Switch to alex@home.example (52% left)"
+        );
         // The noted one is never offered, and codex has no room known.
-        assert_eq!(switch_target(&l.accounts, "claude-main").map(|a| a.id.as_str()), Some("claude-3"));
-        assert_eq!(continue_title(target, &l.accounts), "alex@home.example (52% left)");
+        assert_eq!(
+            switch_target(&l.accounts, "claude-main").map(|a| a.id.as_str()),
+            Some("claude-3")
+        );
+        assert_eq!(
+            continue_title(target, &l.accounts),
+            "alex@home.example (52% left)"
+        );
         // The Continue now on menu: the same choice first, then the rest.
-        let ids: Vec<&str> = switch_targets(&l.accounts, "claude-3").into_iter().map(|a| a.id.as_str()).collect();
+        let ids: Vec<&str> = switch_targets(&l.accounts, "claude-3")
+            .into_iter()
+            .map(|a| a.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["claude-main"]);
         // Codex with more room still comes after the same provider's.
         let mut l = l;
-        l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap().usage = Some(usage(90., 95.));
-        let ids: Vec<&str> = switch_targets(&l.accounts, "claude-3").into_iter().map(|a| a.id.as_str()).collect();
+        l.accounts
+            .iter_mut()
+            .find(|a| a.id == "codex-main")
+            .unwrap()
+            .usage = Some(usage(90., 95.));
+        let ids: Vec<&str> = switch_targets(&l.accounts, "claude-3")
+            .into_iter()
+            .map(|a| a.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["claude-main", "codex-main"]);
     }
 
@@ -957,21 +1239,52 @@ mod tests {
         let out = json!({ "blocked": true, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0 }], "resets": { "available": 2, "nextExpiresAt": "2026-12-01T22:37:40.000Z" } });
         // No count known: nothing to offer.
         assert!(reset_target(l.accounts.iter()).is_none());
-        l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap().usage = Some(out.clone());
+        l.accounts
+            .iter_mut()
+            .find(|a| a.id == "codex-main")
+            .unwrap()
+            .usage = Some(out.clone());
         let target = reset_target(l.accounts.iter()).expect("codex-main is out with resets left");
         assert_eq!(target.id, "codex-main");
-        assert_eq!(resets_of(target), Some(UsageResets { available: 2, next_expires_at: parse_ms("2026-12-01T22:37:40.000Z") }));
+        assert_eq!(
+            resets_of(target),
+            Some(UsageResets {
+                available: 2,
+                next_expires_at: parse_ms("2026-12-01T22:37:40.000Z")
+            })
+        );
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
-        assert_eq!(reset_tip(target, &l.accounts, &now), "Restores Codex's 5-hour and weekly limits now. 2 left, the next expires 2 Dec.");
+        assert_eq!(
+            reset_tip(target, &l.accounts, &now),
+            "Restores Codex's 5-hour and weekly limits now. 2 left, the next expires 2 Dec."
+        );
         // A Claude login out of room never is, nor a Codex one with room,
         // none left, or signed out.
-        l.accounts.iter_mut().find(|a| a.id == "claude-main").unwrap().usage = Some(out.clone());
-        assert_eq!(reset_target(l.accounts.iter().filter(|a| a.id == "claude-main")).map(|a| a.id.as_str()), None);
-        let codex = l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap();
-        codex.usage = Some(json!({ "blocked": false, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 40 }], "resets": { "available": 2 } }));
+        l.accounts
+            .iter_mut()
+            .find(|a| a.id == "claude-main")
+            .unwrap()
+            .usage = Some(out);
+        assert_eq!(
+            reset_target(l.accounts.iter().filter(|a| a.id == "claude-main"))
+                .map(|a| a.id.as_str()),
+            None
+        );
+        let codex = l
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == "codex-main")
+            .unwrap();
+        codex.usage = Some(
+            json!({ "blocked": false, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 40 }], "resets": { "available": 2 } }),
+        );
         assert!(reset_target(l.accounts.iter()).is_none(), "room left");
-        let codex = l.accounts.iter_mut().find(|a| a.id == "codex-main").unwrap();
+        let codex = l
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == "codex-main")
+            .unwrap();
         codex.usage = Some(json!({ "blocked": true, "windows": [], "resets": { "available": 0 } }));
         assert!(reset_target(l.accounts.iter()).is_none(), "none left");
     }
@@ -980,21 +1293,35 @@ mod tests {
     fn a_pools_chip_badge_waits_for_every_login_to_run_low() {
         let mut l = with_pools();
         let pool = l.pool("claude").unwrap().clone();
-        assert_eq!(pool_chip_badge(&pool, &l.accounts), None, "claude-main still has room");
+        assert_eq!(
+            pool_chip_badge(&pool, &l.accounts),
+            None,
+            "claude-main still has room"
+        );
         l.accounts[0].usage = Some(usage(12.0, 40.0));
-        assert_eq!(pool_chip_badge(&pool, &l.accounts), Some(ChipBadge::Low("20%".into())), "the best room of two low logins");
+        assert_eq!(
+            pool_chip_badge(&pool, &l.accounts),
+            Some(ChipBadge::Low("20%".into())),
+            "the best room of two low logins"
+        );
         for a in l.accounts.iter_mut() {
             a.usage = Some(json!({ "blocked": true, "windows": [] }));
         }
-        assert_eq!(pool_chip_badge(&pool, &l.accounts), Some(ChipBadge::Blocked));
+        assert_eq!(
+            pool_chip_badge(&pool, &l.accounts),
+            Some(ChipBadge::Blocked)
+        );
         assert_eq!(chip_badge(l.accounts.first()), Some(ChipBadge::Blocked));
     }
 
     fn with_pools() -> RunnerLogins {
-        logins(json!([
-            { "id": "claude", "title": "Claude", "accountIds": ["claude-main", "claude-3"] },
-            { "id": "work", "title": "Work", "accountIds": ["claude-2"], "folders": ["~/dev/work"] }
-        ]), "/Users/alex/code/misc")
+        logins(
+            json!([
+                { "id": "claude", "title": "Claude", "accountIds": ["claude-main", "claude-3"] },
+                { "id": "work", "title": "Work", "accountIds": ["claude-2"], "folders": ["~/dev/work"] }
+            ]),
+            "/Users/alex/code/misc",
+        )
     }
 
     fn no_pools() -> RunnerLogins {
@@ -1002,20 +1329,32 @@ mod tests {
     }
 
     fn draft<'a>(l: &'a RunnerLogins, picks: &'a NewThreadPicks, mem: &'a Remembered) -> Draft<'a> {
-        Draft { logins: l, picks, mem, home: "/Users/alex", now_ms: 1_762_600_000_000 }
+        Draft {
+            logins: l,
+            picks,
+            mem,
+            home: "/Users/alex",
+            now_ms: 1_762_600_000_000,
+        }
     }
 
     #[test]
     fn the_note_says_where_a_draft_starts() {
         let l = with_pools();
         let (picks, mem) = (NewThreadPicks::default(), Remembered::default());
-        assert_eq!(draft(&l, &picks, &mem).note(None, true), "Starts in misc on the Claude pool");
+        assert_eq!(
+            draft(&l, &picks, &mem).note(None, true),
+            "Starts in misc on the Claude pool"
+        );
     }
 
     #[test]
     fn the_folder_decides_the_pool() {
         let l = with_pools();
-        let picks = NewThreadPicks { cwd: Some("/Users/alex/dev/work/app".into()), ..Default::default() };
+        let picks = NewThreadPicks {
+            cwd: Some("/Users/alex/dev/work/app".into()),
+            ..Default::default()
+        };
         let mem = Remembered::default();
         let d = draft(&l, &picks, &mem);
         assert_eq!(d.pool_id().as_deref(), Some("work"));
@@ -1025,7 +1364,10 @@ mod tests {
     #[test]
     fn pinning_a_login_leaves_the_pool() {
         let l = with_pools();
-        let picks = NewThreadPicks { account: Some("claude-3".into()), ..Default::default() };
+        let picks = NewThreadPicks {
+            account: Some("claude-3".into()),
+            ..Default::default()
+        };
         let mem = Remembered::default();
         let d = draft(&l, &picks, &mem);
         assert_eq!(d.pool_id(), None);
@@ -1048,25 +1390,45 @@ mod tests {
     #[test]
     fn another_runner_is_named() {
         let l = no_pools();
-        let picks = NewThreadPicks { runner: Some("r".into()), ..Default::default() };
+        let picks = NewThreadPicks {
+            runner: Some("r".into()),
+            ..Default::default()
+        };
         let mem = Remembered::default();
         let d = draft(&l, &picks, &mem);
         assert_eq!(d.note(Some("mac-mini"), false), "Starts on mac-mini");
-        assert!(d.note(Some("mac-mini"), true).starts_with("Starts in misc on mac-mini, with "));
+        assert!(d
+            .note(Some("mac-mini"), true)
+            .starts_with("Starts in misc on mac-mini, with "));
     }
 
     #[test]
     fn room_cards_are_the_pools_logins_with_usage() {
         let l = with_pools();
         let (picks, mem) = (NewThreadPicks::default(), Remembered::default());
-        let now = FixedOffset::east_opt(0).unwrap().with_ymd_and_hms(2026, 11, 9, 9, 0, 0).unwrap();
+        let now = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2026, 11, 9, 9, 0, 0)
+            .unwrap();
         let cards = draft(&l, &picks, &mem).room_cards(&now);
-        let lines: Vec<(&str, &str, bool)> = cards.iter().map(|c| (c.label.as_str(), c.line.as_str(), c.selected)).collect();
+        let lines: Vec<(&str, &str, bool)> = cards
+            .iter()
+            .map(|c| (c.label.as_str(), c.line.as_str(), c.selected))
+            .collect();
         // In a pool none is ringed: the pool picks.
-        assert_eq!(lines, vec![("home", "5h 52% · week 67% left", false), ("studio", "5h 20% · week 88% left", false)]);
+        assert_eq!(
+            lines,
+            vec![
+                ("home", "5h 52% · week 67% left", false),
+                ("studio", "5h 20% · week 88% left", false)
+            ]
+        );
         assert_eq!(cards[1].look, RoomLook::Low);
         assert_eq!(cards[0].fraction, Some(0.52));
-        assert_eq!(cards[0].tooltip, "alex@home.example: 5-hour 52% left, Weekly 67% left, resets 6 pm.");
+        assert_eq!(
+            cards[0].tooltip,
+            "alex@home.example: 5-hour 52% left, Weekly 67% left, resets 6 pm."
+        );
     }
 
     #[test]
@@ -1076,38 +1438,84 @@ mod tests {
             "pools": [], "defaults": { "cwd": "/x", "accountId": "claude-main" }
         }));
         let (picks, mem) = (NewThreadPicks::default(), Remembered::default());
-        let now = FixedOffset::east_opt(0).unwrap().timestamp_millis_opt(0).unwrap();
+        let now = FixedOffset::east_opt(0)
+            .unwrap()
+            .timestamp_millis_opt(0)
+            .unwrap();
         assert!(draft(&l, &picks, &mem).room_cards(&now).is_empty());
     }
 
     #[test]
     fn a_pinned_card_is_ringed_outside_a_pool() {
         let l = no_pools();
-        let picks = NewThreadPicks { account: Some("claude-3".into()), ..Default::default() };
+        let picks = NewThreadPicks {
+            account: Some("claude-3".into()),
+            ..Default::default()
+        };
         let mem = Remembered::default();
-        let now = FixedOffset::east_opt(0).unwrap().timestamp_millis_opt(0).unwrap();
+        let now = FixedOffset::east_opt(0)
+            .unwrap()
+            .timestamp_millis_opt(0)
+            .unwrap();
         let cards = draft(&l, &picks, &mem).room_cards(&now);
-        assert_eq!(cards.iter().filter(|c| c.selected).map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["claude-3"]);
+        assert_eq!(
+            cards
+                .iter()
+                .filter(|c| c.selected)
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-3"]
+        );
     }
 
     // A signed-out login has no room for a new thread, and its chip says
     // why rather than "Limit reached" (Grok's review, 16 Nov).
     #[test]
     fn signed_out_logins_have_no_room_and_say_so() {
-        let out = Account { id: "s".into(), provider: "claude".into(), signed_out: true, usage: Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 71.0 }] })), ..Default::default() };
+        let out = Account {
+            id: "s".into(),
+            provider: "claude".into(),
+            signed_out: true,
+            usage: Some(
+                json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 71.0 }] }),
+            ),
+            ..Default::default()
+        };
         assert!(usage_of(&out).unwrap().blocked);
         assert_eq!(chip_badge(Some(&out)), Some(ChipBadge::SignedOut));
         assert!(ChipBadge::SignedOut.is_stop());
-        let ended = Account { id: "e".into(), provider: "claude".into(), plan_ended: true, usage: out.usage.clone(), ..Default::default() };
+        let ended = Account {
+            id: "e".into(),
+            provider: "claude".into(),
+            plan_ended: true,
+            usage: out.usage,
+            ..Default::default()
+        };
         assert_eq!(chip_badge(Some(&ended)), Some(ChipBadge::PlanEnded));
-        assert!(usage_of(&ended).is_some_and(|u| u.blocked), "its old room is no room");
-        let bare = Account { id: "t".into(), signed_out: true, ..Default::default() };
-        assert!(usage_of(&bare).unwrap().blocked, "no usage known still has no room");
+        assert!(
+            usage_of(&ended).is_some_and(|u| u.blocked),
+            "its old room is no room"
+        );
+        let bare = Account {
+            id: "t".into(),
+            signed_out: true,
+            ..Default::default()
+        };
+        assert!(
+            usage_of(&bare).unwrap().blocked,
+            "no usage known still has no room"
+        );
     }
 
     #[test]
     fn blocked_accounts_read_as_at_their_limit() {
-        let blocked = Account { id: "b".into(), usage: Some(json!({ "blocked": true, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0.0 }] })), ..Default::default() };
+        let blocked = Account {
+            id: "b".into(),
+            usage: Some(
+                json!({ "blocked": true, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0.0 }] }),
+            ),
+            ..Default::default()
+        };
         let usage = usage_of(&blocked).unwrap();
         assert_eq!(room_line(Some(&usage)), Some("Limit reached".to_owned()));
         assert!(!has_room(&blocked));
@@ -1117,12 +1525,27 @@ mod tests {
     fn pick_account_follows_the_runners_rule() {
         let l = no_pools();
         // The most room among Claude logins without a note.
-        assert_eq!(pick_account(&l.accounts, Some("claude-3")).as_deref(), Some("claude-main"));
+        assert_eq!(
+            pick_account(&l.accounts, Some("claude-3")).as_deref(),
+            Some("claude-main")
+        );
         // A last-used login with its usage unknown stays.
-        let unknown = Account { id: "x".into(), provider: "claude".into(), ..Default::default() };
-        assert_eq!(pick_account(&[unknown.clone()], Some("x")).as_deref(), Some("x"));
+        let unknown = Account {
+            id: "x".into(),
+            provider: "claude".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            pick_account(std::slice::from_ref(&unknown), Some("x")).as_deref(),
+            Some("x")
+        );
         // Nothing eligible on the provider: the last used, if there is one.
-        let noted = Account { id: "n".into(), provider: "claude".into(), note: Some("work".into()), ..Default::default() };
+        let noted = Account {
+            id: "n".into(),
+            provider: "claude".into(),
+            note: Some("work".into()),
+            ..Default::default()
+        };
         assert_eq!(pick_account(&[noted], Some("n")).as_deref(), Some("n"));
     }
 
@@ -1130,24 +1553,48 @@ mod tests {
     fn pick_login_keeps_the_current_one_while_it_has_room() {
         let l = with_pools();
         let pool = l.pool("claude").unwrap();
-        assert_eq!(pick_login(pool, &l.accounts, "claude", Some("claude-3"), 0).as_deref(), Some("claude-3"));
-        assert_eq!(pick_login(pool, &l.accounts, "claude", None, 0).as_deref(), Some("claude-main"));
+        assert_eq!(
+            pick_login(pool, &l.accounts, "claude", Some("claude-3"), 0).as_deref(),
+            Some("claude-3")
+        );
+        assert_eq!(
+            pick_login(pool, &l.accounts, "claude", None, 0).as_deref(),
+            Some("claude-main")
+        );
     }
 
     #[test]
     fn folders_win_over_the_last_pool() {
         let l = with_pools();
-        assert_eq!(pool_for_folder(&l.pools, "/Users/alex/dev/work/x", "/Users/alex").as_deref(), Some("work"));
-        assert_eq!(pool_for_folder(&l.pools, "/Users/alex/code", "/Users/alex"), None);
+        assert_eq!(
+            pool_for_folder(&l.pools, "/Users/alex/dev/work/x", "/Users/alex").as_deref(),
+            Some("work")
+        );
+        assert_eq!(
+            pool_for_folder(&l.pools, "/Users/alex/code", "/Users/alex"),
+            None
+        );
     }
 
     #[test]
     fn new_thread_pool_order() {
         let l = with_pools();
-        assert_eq!(new_thread_pool(&l.pools, Some("work"), "/x", "/h", None, None).as_deref(), Some("work"));
-        assert_eq!(new_thread_pool(&l.pools, Some("gone"), "/x", "/h", Some("claude"), None).as_deref(), Some("claude"));
-        assert_eq!(new_thread_pool(&l.pools, None, "/x", "/h", Some("gone"), Some("work")).as_deref(), Some("work"));
-        assert_eq!(new_thread_pool(&l.pools, None, "/x", "/h", None, None).as_deref(), Some("claude"));
+        assert_eq!(
+            new_thread_pool(&l.pools, Some("work"), "/x", "/h", None, None).as_deref(),
+            Some("work")
+        );
+        assert_eq!(
+            new_thread_pool(&l.pools, Some("gone"), "/x", "/h", Some("claude"), None).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            new_thread_pool(&l.pools, None, "/x", "/h", Some("gone"), Some("work")).as_deref(),
+            Some("work")
+        );
+        assert_eq!(
+            new_thread_pool(&l.pools, None, "/x", "/h", None, None).as_deref(),
+            Some("claude")
+        );
         assert_eq!(new_thread_pool(&[], None, "/x", "/h", None, None), None);
     }
 
@@ -1166,13 +1613,20 @@ mod tests {
         assert_eq!(params["effort"], "high");
         assert_eq!(params["permissionMode"], "auto");
         assert!(params.get("accountId").is_none());
-        let picks = NewThreadPicks { account: Some("codex-main".into()), permission: Some("ask".into()), ..Default::default() };
+        let picks = NewThreadPicks {
+            account: Some("codex-main".into()),
+            permission: Some("ask".into()),
+            ..Default::default()
+        };
         let d = draft(&l, &picks, &mem);
         let params = d.create_params("hello", vec![], false);
         assert_eq!(params["accountId"], "codex-main");
         assert_eq!(params["permissionMode"], "ask");
         assert!(params.get("poolId").is_none());
-        assert!(params.get("model").is_none(), "the claude model doesn't follow a codex login");
+        assert!(
+            params.get("model").is_none(),
+            "the claude model doesn't follow a codex login"
+        );
     }
 
     #[test]
@@ -1180,12 +1634,23 @@ mod tests {
         let l = with_pools();
         let picks = NewThreadPicks::default();
         let mut mem = Remembered::default();
-        assert_eq!(draft(&l, &picks, &mem).permission(), "auto", "the runner's default till one is picked");
+        assert_eq!(
+            draft(&l, &picks, &mem).permission(),
+            "auto",
+            "the runner's default till one is picked"
+        );
         mem.set_permission("full");
         assert_eq!(draft(&l, &picks, &mem).permission(), "full");
         mem.set_permission("plan");
-        assert_eq!(mem.last_permission.as_deref(), Some("full"), "Plan first is for one task");
-        let picked = NewThreadPicks { permission: Some("ask".into()), ..Default::default() };
+        assert_eq!(
+            mem.last_permission.as_deref(),
+            Some("full"),
+            "Plan first is for one task"
+        );
+        let picked = NewThreadPicks {
+            permission: Some("ask".into()),
+            ..Default::default()
+        };
         assert_eq!(draft(&l, &picked, &mem).permission(), "ask");
     }
 
@@ -1208,7 +1673,11 @@ mod tests {
     #[test]
     fn a_runner_with_no_logins_yet_gets_only_the_mode() {
         let l = RunnerLogins::default();
-        let picks = NewThreadPicks { runner: Some("r".into()), cwd: Some("/there".into()), ..Default::default() };
+        let picks = NewThreadPicks {
+            runner: Some("r".into()),
+            cwd: Some("/there".into()),
+            ..Default::default()
+        };
         let mem = Remembered::default();
         let params = draft(&l, &picks, &mem).create_params("x", vec![], true);
         assert_eq!(params["cwd"], "/there");
@@ -1228,10 +1697,24 @@ mod tests {
     #[test]
     fn claude_comes_before_codex_on_the_cards() {
         let accounts = vec![
-            Account { id: "c1".into(), provider: "codex".into(), ..Default::default() },
-            Account { id: "a1".into(), provider: "claude".into(), ..Default::default() },
+            Account {
+                id: "c1".into(),
+                provider: "codex".into(),
+                ..Default::default()
+            },
+            Account {
+                id: "a1".into(),
+                provider: "claude".into(),
+                ..Default::default()
+            },
         ];
-        assert_eq!(by_provider(&accounts).iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["a1", "c1"]);
+        assert_eq!(
+            by_provider(&accounts)
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1", "c1"]
+        );
     }
 
     #[test]
@@ -1239,10 +1722,22 @@ mod tests {
         let tz = FixedOffset::east_opt(0).unwrap();
         let now = tz.with_ymd_and_hms(2026, 11, 9, 9, 0, 0).unwrap();
         assert_eq!(reset_time(&now, &now), "now");
-        assert_eq!(reset_time(&tz.with_ymd_and_hms(2026, 11, 9, 13, 40, 0).unwrap(), &now), "1:40 pm");
-        assert_eq!(reset_time(&tz.with_ymd_and_hms(2026, 11, 10, 13, 0, 0).unwrap(), &now), "tomorrow 1 pm");
-        assert_eq!(reset_time(&tz.with_ymd_and_hms(2026, 11, 12, 13, 0, 0).unwrap(), &now), "Thu 1 pm");
-        assert_eq!(reset_time(&tz.with_ymd_and_hms(2026, 11, 20, 13, 0, 0).unwrap(), &now), "20 Nov");
+        assert_eq!(
+            reset_time(&tz.with_ymd_and_hms(2026, 11, 9, 13, 40, 0).unwrap(), &now),
+            "1:40 pm"
+        );
+        assert_eq!(
+            reset_time(&tz.with_ymd_and_hms(2026, 11, 10, 13, 0, 0).unwrap(), &now),
+            "tomorrow 1 pm"
+        );
+        assert_eq!(
+            reset_time(&tz.with_ymd_and_hms(2026, 11, 12, 13, 0, 0).unwrap(), &now),
+            "Thu 1 pm"
+        );
+        assert_eq!(
+            reset_time(&tz.with_ymd_and_hms(2026, 11, 20, 13, 0, 0).unwrap(), &now),
+            "20 Nov"
+        );
     }
 
     #[test]
@@ -1251,16 +1746,43 @@ mod tests {
         assert_eq!(short_folder("/"), "/");
         assert_eq!(abbreviate_home("/Users/alex/dev", "/Users/alex"), "~/dev");
         assert_eq!(abbreviate_home("/opt", "/Users/alex"), "/opt");
-        assert_eq!(abbreviate_home("/Users/alexandra/dev", "/Users/alex"), "/Users/alexandra/dev");
-        assert_eq!(abbreviate_home("/users/alex/dev", "/Users/alex"), "/users/alex/dev");
+        assert_eq!(
+            abbreviate_home("/Users/alexandra/dev", "/Users/alex"),
+            "/Users/alexandra/dev"
+        );
+        assert_eq!(
+            abbreviate_home("/users/alex/dev", "/Users/alex"),
+            "/users/alex/dev"
+        );
         assert_eq!(abbreviate_home("/Users/alex", "/Users/alex/"), "~");
         // A runner on Windows: any case, either slash, and nothing else.
-        assert_eq!(abbreviate_home("C:\\Users\\mikec\\dev\\me", "C:\\Users\\mikec"), "~\\dev\\me");
-        assert_eq!(abbreviate_home("c:\\users\\MIKEC\\dev", "C:\\Users\\mikec"), "~\\dev");
-        assert_eq!(abbreviate_home("C:/Users/mikec/dev", "C:\\Users\\mikec"), "~/dev");
-        assert_eq!(abbreviate_home("C:\\Users\\mikec", "C:\\Users\\mikec\\"), "~");
-        assert_eq!(abbreviate_home("C:\\Users\\mikecann\\x", "C:\\Users\\mikec"), "C:\\Users\\mikecann\\x");
-        assert_eq!(abbreviate_home("D:\\Users\\mikec\\x", "C:\\Users\\mikec"), "D:\\Users\\mikec\\x");
-        assert_eq!(abbreviate_home("C:\\Users\\mikec\\x", "/Users/alex"), "C:\\Users\\mikec\\x");
+        assert_eq!(
+            abbreviate_home("C:\\Users\\mikec\\dev\\me", "C:\\Users\\mikec"),
+            "~\\dev\\me"
+        );
+        assert_eq!(
+            abbreviate_home("c:\\users\\MIKEC\\dev", "C:\\Users\\mikec"),
+            "~\\dev"
+        );
+        assert_eq!(
+            abbreviate_home("C:/Users/mikec/dev", "C:\\Users\\mikec"),
+            "~/dev"
+        );
+        assert_eq!(
+            abbreviate_home("C:\\Users\\mikec", "C:\\Users\\mikec\\"),
+            "~"
+        );
+        assert_eq!(
+            abbreviate_home("C:\\Users\\mikecann\\x", "C:\\Users\\mikec"),
+            "C:\\Users\\mikecann\\x"
+        );
+        assert_eq!(
+            abbreviate_home("D:\\Users\\mikec\\x", "C:\\Users\\mikec"),
+            "D:\\Users\\mikec\\x"
+        );
+        assert_eq!(
+            abbreviate_home("C:\\Users\\mikec\\x", "/Users/alex"),
+            "C:\\Users\\mikec\\x"
+        );
     }
 }

@@ -274,3 +274,59 @@ import Testing
         #expect(page.messages.map(\.role) == [.user, .note])
     }
 }
+
+/// The cases Android and the website run too (shared/cases/turns.json):
+/// rows in, what's shown out, a folded turn as its title then its items.
+@Suite struct SharedTurnCasesTests {
+    struct Cases: Decodable {
+        struct Row: Decodable {
+            var seq: Int
+            var role: PhoneMessage.Role
+            var text: String
+            var at: Double
+            var origin: String?
+            var summary: Bool?
+            var plan: Bool?
+            var turn: String?
+            var wokeBy: [WokeTask]?
+        }
+        struct Input: Decodable {
+            var busy: Bool
+            var messages: [Row]
+        }
+        struct Case: Decodable {
+            var name: String
+            var input: Input
+            var expect: [String]
+            var differs: [String: String]?
+        }
+        var cases: [Case]
+    }
+
+    func shown(_ item: ThreadItem) -> String {
+        switch item {
+        case let .message(m): "m\(m.seq)"
+        case let .note(m): "note \(m.seq)"
+        case let .tools(items): "tools " + items.map { String($0.seq) }.joined(separator: " ")
+        case let .gap(g): "gap " + g.label
+        case let .worked(w): w.title + ": " + w.items.map(shown).joined(separator: ", ")
+        }
+    }
+
+    @Test func foldingFollowsTheSharedCases() throws {
+        // ios/ThreadbearKit/Tests/ThreadbearKitTests/ -> the repo.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let url = repo.appendingPathComponent("shared/cases/turns.json")
+        let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: url)).cases
+        #expect(cases.count >= 20)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        for c in cases where c.differs?["ios"] == nil {
+            let rows = c.input.messages.map { r in
+                PhoneMessage(seq: r.seq, role: r.role, text: r.text, origin: r.origin, toolKind: r.role == .tool ? "command" : nil,
+                             summary: r.summary ?? false, plan: r.plan ?? false, turn: r.turn, wokeBy: r.wokeBy, at: t0.addingTimeInterval(r.at))
+            }
+            #expect(Turns.fold(rows, busy: c.input.busy).map(shown) == c.expect, "\(c.name)")
+        }
+    }
+}

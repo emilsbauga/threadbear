@@ -861,7 +861,7 @@ function memberName(n: AstNode): string | undefined {
 
 // Whether an identifier is read as a value here, not declared, named as a
 // property or a label.
-function isValue(node: AstNode, parent: Parent, parents: Map<AstNode, Parent>): boolean {
+function isValue(_node: AstNode, parent: Parent, parents: Map<AstNode, Parent>): boolean {
   const p = parent.node;
   const k = parent.key;
   if (p.type === 'MemberExpression' && k === 'property') return !!p.computed;

@@ -65,7 +65,12 @@ impl Archive {
     }
 
     pub fn pin(&self) -> Pin {
-        Pin { bytes: self.bytes, sha1: self.sha1.to_owned(), sha256: self.sha256.to_owned(), top: self.file.trim_end_matches(".tar.bz2").to_owned() }
+        Pin {
+            bytes: self.bytes,
+            sha1: self.sha1.to_owned(),
+            sha256: self.sha256.to_owned(),
+            top: self.file.trim_end_matches(".tar.bz2").to_owned(),
+        }
     }
 
     /// The download, in whole megabytes, as the prompt says it.
@@ -129,7 +134,13 @@ pub const RUNTIME_BUNDLE: &str = "Threadbear Web.bundle";
 pub const HELPER_NAME: &str = "Threadbear Helper";
 /// The five helpers Chromium asks for on a Mac, with the end of each one's
 /// bundle id (as CEF's own helper-Info.plist has them).
-pub const HELPER_KINDS: [(&str, &str); 5] = [("", ""), (" (GPU)", ".gpu"), (" (Renderer)", ".renderer"), (" (Plugin)", ".plugin"), (" (Alerts)", ".alerts")];
+pub const HELPER_KINDS: [(&str, &str); 5] = [
+    ("", ""),
+    (" (GPU)", ".gpu"),
+    (" (Renderer)", ".renderer"),
+    (" (Plugin)", ".plugin"),
+    (" (Alerts)", ".alerts"),
+];
 
 impl Layout {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -142,7 +153,8 @@ impl Layout {
     /// to the machine, not to whichever runner the app is talking to, so a
     /// dev runner doesn't mean another 135 MB download.
     pub fn default_root() -> Option<PathBuf> {
-        if let Some(dir) = std::env::var_os("THREADBEAR_WEB_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        if let Some(dir) = std::env::var_os("THREADBEAR_WEB_RUNTIME_DIR").filter(|d| !d.is_empty())
+        {
             return Some(PathBuf::from(dir));
         }
         if cfg!(windows) {
@@ -152,7 +164,13 @@ impl Layout {
         // The runner keeps the Mac's folder names on every system for now
         // (INSTALL.md, "A runner on Linux"), so Linux has them too.
         let home = std::env::var_os("HOME").filter(|d| !d.is_empty())?;
-        Some(PathBuf::from(home).join("Library").join("Application Support").join("Threadbear").join("web-runtime"))
+        Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Threadbear")
+                .join("web-runtime"),
+        )
     }
 
     /// One folder per CEF build, so a new Threadbear with a newer build never
@@ -190,7 +208,9 @@ impl Layout {
 
     /// Where a download goes while it's coming in.
     pub fn download_file(&self, archive_file: &str) -> PathBuf {
-        self.root.join("download").join(format!("{archive_file}.part"))
+        self.root
+            .join("download")
+            .join(format!("{archive_file}.part"))
     }
 
     /// Chromium's own folder: the panels' sign-ins and storage, kept between
@@ -243,7 +263,10 @@ pub fn profile_holder(profile: &Path) -> Option<u32> {
 fn process_alive(pid: u32) -> bool {
     // SAFETY: signal 0 only asks whether the pid exists. EPERM means it
     // does, as someone else's.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    unsafe {
+        libc::kill(pid as libc::pid_t, 0) == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
 }
 
 #[cfg(not(unix))]
@@ -253,7 +276,10 @@ fn process_alive(_pid: u32) -> bool {
 
 fn helper_executable_in(dir: &Path, suffix: &str) -> PathBuf {
     let name = format!("{HELPER_NAME}{suffix}");
-    dir.join(format!("{name}.app")).join("Contents").join("MacOS").join(name)
+    dir.join(format!("{name}.app"))
+        .join("Contents")
+        .join("MacOS")
+        .join(name)
 }
 
 /// Where the runtime has got to on this machine, as the app shows it.
@@ -263,7 +289,10 @@ pub enum State {
     Unavailable,
     /// Not installed.
     Missing,
-    Downloading { received: u64, total: u64 },
+    Downloading {
+        received: u64,
+        total: u64,
+    },
     /// Checked, and coming out of the archive.
     Unpacking,
     Ready,
@@ -286,7 +315,9 @@ impl State {
     /// How far a download has got, 0 to 100.
     pub fn percent(&self) -> Option<u8> {
         match self {
-            State::Downloading { received, total } if *total > 0 => Some(((received.min(total) * 100) / total) as u8),
+            State::Downloading { received, total } if *total > 0 => {
+                Some(((received.min(total) * 100) / total) as u8)
+            }
             _ => None,
         }
     }
@@ -300,7 +331,11 @@ impl State {
         match self {
             State::Unavailable => "Not available for this system yet".to_owned(),
             State::Missing => "Not installed".to_owned(),
-            State::Downloading { received, total } => format!("Downloading, {} of {} MB", received / 1_000_000, (total + 500_000) / 1_000_000),
+            State::Downloading { received, total } => format!(
+                "Downloading, {} of {} MB",
+                received / 1_000_000,
+                (total + 500_000) / 1_000_000
+            ),
             State::Unpacking => "Unpacking".to_owned(),
             State::Ready => "Installed".to_owned(),
             State::Failed(why) => format!("Couldn't install it: {why}"),
@@ -332,7 +367,9 @@ fn failed(why: impl Into<String>) -> InstallError {
 fn disk(what: &str, error: io::Error) -> InstallError {
     // ENOSPC on the Mac and Linux, ERROR_DISK_FULL on Windows.
     if error.raw_os_error() == Some(28) || error.raw_os_error() == Some(112) {
-        return failed(format!("there isn't room on the disk ({what}). It needs about 500 MB free"));
+        return failed(format!(
+            "there isn't room on the disk ({what}). It needs about 500 MB free"
+        ));
     }
     failed(format!("{what}: {error}"))
 }
@@ -341,12 +378,19 @@ fn disk(what: &str, error: io::Error) -> InstallError {
 /// only if it's exactly what `pin` says: the size, Spotify's SHA-1 and the
 /// SHA-256. Anything else is deleted and said why; a download that's longer
 /// than it should be stops there. Nothing is unpacked here.
-pub fn receive(body: &mut dyn Read, part: &Path, pin: &Pin, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<(), InstallError> {
+pub fn receive(
+    body: &mut dyn Read,
+    part: &Path,
+    pin: &Pin,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<(), InstallError> {
     if let Some(dir) = part.parent() {
         std::fs::create_dir_all(dir).map_err(|e| disk("couldn't make the download folder", e))?;
     }
     let result = (|| {
-        let mut file = std::fs::File::create(part).map_err(|e| disk("couldn't start the download", e))?;
+        let mut file =
+            std::fs::File::create(part).map_err(|e| disk("couldn't start the download", e))?;
         let (mut sha1, mut sha256) = (Sha1::new(), Sha256::new());
         let mut buffer = vec![0u8; 256 * 1024];
         let mut received: u64 = 0;
@@ -362,19 +406,31 @@ pub fn receive(body: &mut dyn Read, part: &Path, pin: &Pin, progress: &mut dyn F
             };
             received += n as u64;
             if received > pin.bytes {
-                return Err(failed("the download was bigger than the pinned build, so it isn't that build"));
+                return Err(failed(
+                    "the download was bigger than the pinned build, so it isn't that build",
+                ));
             }
             sha1.update(&buffer[..n]);
             sha256.update(&buffer[..n]);
-            file.write_all(&buffer[..n]).map_err(|e| disk("couldn't save the download", e))?;
+            file.write_all(&buffer[..n])
+                .map_err(|e| disk("couldn't save the download", e))?;
             progress(received);
         }
         if received != pin.bytes {
-            return Err(failed(format!("the download ended early ({} of {} MB)", received / 1_000_000, pin.bytes / 1_000_000)));
+            return Err(failed(format!(
+                "the download ended early ({} of {} MB)",
+                received / 1_000_000,
+                pin.bytes / 1_000_000
+            )));
         }
-        file.sync_all().map_err(|e| disk("couldn't save the download", e))?;
-        if hex(&sha1.finalize()) != pin.sha1.to_ascii_lowercase() || hex(&sha256.finalize()) != pin.sha256.to_ascii_lowercase() {
-            return Err(failed("the download didn't match the pinned build's hash, so it wasn't used"));
+        file.sync_all()
+            .map_err(|e| disk("couldn't save the download", e))?;
+        if hex(&sha1.finalize()) != pin.sha1.to_ascii_lowercase()
+            || hex(&sha256.finalize()) != pin.sha256.to_ascii_lowercase()
+        {
+            return Err(failed(
+                "the download didn't match the pinned build's hash, so it wasn't used",
+            ));
         }
         Ok(())
     })();
@@ -417,17 +473,30 @@ pub fn install_from_file(archive: &Path, pin: &Pin, layout: &Layout) -> Result<(
 
 /// `install_from_file`, with `between` run after the hash is checked and
 /// before anything's unpacked, for the test that swaps the file there.
-fn install_checked(archive: &Path, pin: &Pin, layout: &Layout, between: impl FnOnce()) -> Result<(), InstallError> {
+fn install_checked(
+    archive: &Path,
+    pin: &Pin,
+    layout: &Layout,
+    between: impl FnOnce(),
+) -> Result<(), InstallError> {
     // One handle, hashed and then unpacked from its start again: opened a
     // second time by name, a file swapped in between would be unpacked
     // under the pinned hash's name (Codex review, 11 Nov).
-    let mut file = std::fs::File::open(archive).map_err(|e| failed(format!("couldn't open the download: {e}")))?;
-    let (len, sha1, sha256) = file_hashes(&mut file).map_err(|e| failed(format!("couldn't read the download: {e}")))?;
-    if len != pin.bytes || sha1 != pin.sha1.to_ascii_lowercase() || sha256 != pin.sha256.to_ascii_lowercase() {
-        return Err(failed("the archive didn't match the pinned build's hash, so it wasn't unpacked"));
+    let mut file = std::fs::File::open(archive)
+        .map_err(|e| failed(format!("couldn't open the download: {e}")))?;
+    let (len, sha1, sha256) =
+        file_hashes(&mut file).map_err(|e| failed(format!("couldn't read the download: {e}")))?;
+    if len != pin.bytes
+        || sha1 != pin.sha1.to_ascii_lowercase()
+        || sha256 != pin.sha256.to_ascii_lowercase()
+    {
+        return Err(failed(
+            "the archive didn't match the pinned build's hash, so it wasn't unpacked",
+        ));
     }
     between();
-    file.seek(SeekFrom::Start(0)).map_err(|e| failed(format!("couldn't read the download: {e}")))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| failed(format!("couldn't read the download: {e}")))?;
     let partial = layout.partial_dir();
     if partial.exists() {
         std::fs::remove_dir_all(&partial).map_err(|e| disk("couldn't clear an earlier try", e))?;
@@ -444,7 +513,8 @@ fn install_checked(archive: &Path, pin: &Pin, layout: &Layout, between: impl FnO
     let dir = layout.version_dir();
     if dir.exists() {
         // A folder without a good marker: a copy cut off before this check.
-        std::fs::remove_dir_all(&dir).map_err(|e| disk("couldn't replace an unfinished copy", e))?;
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| disk("couldn't replace an unfinished copy", e))?;
     }
     std::fs::rename(&partial, &dir).map_err(|e| disk("couldn't put the runtime in place", e))?;
     remove_other_builds(layout);
@@ -454,10 +524,13 @@ fn install_checked(archive: &Path, pin: &Pin, layout: &Layout, between: impl FnO
 /// Older builds' folders, and anything half-made. The profile, the log and
 /// the download folder stay.
 fn remove_other_builds(layout: &Layout) {
-    let Ok(entries) = std::fs::read_dir(&layout.root) else { return };
+    let Ok(entries) = std::fs::read_dir(&layout.root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let looks_like_build = name.chars().next().is_some_and(|c| c.is_ascii_digit()) && name.contains("chromium-");
+        let looks_like_build =
+            name.chars().next().is_some_and(|c| c.is_ascii_digit()) && name.contains("chromium-");
         if looks_like_build && name != CEF_VERSION && entry.path().is_dir() {
             let _ = std::fs::remove_dir_all(entry.path());
         }
@@ -467,9 +540,15 @@ fn remove_other_builds(layout: &Layout) {
 /// Whether the pinned build is installed: its marker names this build and
 /// hash, and the framework's library is there.
 pub fn is_installed(layout: &Layout, pin: &Pin) -> bool {
-    let Ok(text) = std::fs::read_to_string(layout.marker()) else { return false };
-    let Ok(marker) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
-    marker["version"] == CEF_VERSION && marker["sha256"].as_str() == Some(&pin.sha256.to_ascii_lowercase()) && layout.framework_binary().is_file()
+    let Ok(text) = std::fs::read_to_string(layout.marker()) else {
+        return false;
+    };
+    let Ok(marker) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    marker["version"] == CEF_VERSION
+        && marker["sha256"].as_str() == Some(&pin.sha256.to_ascii_lowercase())
+        && layout.framework_binary().is_file()
 }
 
 /// The part of an entry's path under `<top>/Release/<framework>`, checked:
@@ -482,10 +561,17 @@ fn framework_path(entry: &Path, top: &str) -> Result<Option<PathBuf>, InstallErr
         match component {
             Component::Normal(name) => parts.push(name.to_owned()),
             Component::CurDir => {}
-            _ => return Err(failed(format!("the archive has a path that leaves its folder ({})", entry.display()))),
+            _ => {
+                return Err(failed(format!(
+                    "the archive has a path that leaves its folder ({})",
+                    entry.display()
+                )))
+            }
         }
     }
-    let [first, release, framework, rest @ ..] = parts.as_slice() else { return Ok(None) };
+    let [first, release, framework, rest @ ..] = parts.as_slice() else {
+        return Ok(None);
+    };
     if first.to_str() != Some(top) || release != "Release" || framework != FRAMEWORK {
         return Ok(None);
     }
@@ -506,11 +592,18 @@ fn unpack_framework(file: std::fs::File, pin: &Pin, dest: &Path) -> Result<(), I
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(io::BufReader::new(file)));
     let root = dest.join(FRAMEWORK);
     let mut files = 0usize;
-    let entries = tar.entries().map_err(|e| failed(format!("couldn't read the archive: {e}")))?;
+    let entries = tar
+        .entries()
+        .map_err(|e| failed(format!("couldn't read the archive: {e}")))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| failed(format!("couldn't read the archive: {e}")))?;
-        let path = entry.path().map_err(|e| failed(format!("couldn't read a name in the archive: {e}")))?.into_owned();
-        let Some(inside) = framework_path(&path, &pin.top)? else { continue };
+        let path = entry
+            .path()
+            .map_err(|e| failed(format!("couldn't read a name in the archive: {e}")))?
+            .into_owned();
+        let Some(inside) = framework_path(&path, &pin.top)? else {
+            continue;
+        };
         let out = root.join(&inside);
         let kind = entry.header().entry_type();
         if kind.is_dir() {
@@ -519,14 +612,18 @@ fn unpack_framework(file: std::fs::File, pin: &Pin, dest: &Path) -> Result<(), I
             if let Some(dir) = out.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| disk("couldn't unpack it", e))?;
             }
-            let mut target = std::fs::File::create(&out).map_err(|e| disk("couldn't unpack it", e))?;
+            let mut target =
+                std::fs::File::create(&out).map_err(|e| disk("couldn't unpack it", e))?;
             io::copy(&mut entry, &mut target).map_err(|e| disk("couldn't unpack it", e))?;
             set_mode(&out, entry.header().mode().unwrap_or(0o644));
             files += 1;
         } else if kind.is_symlink() || kind.is_hard_link() {
             return Err(failed(format!("the archive has a link in the framework ({}), which CEF's own build doesn't, so it wasn't used", inside.display())));
         } else {
-            return Err(failed(format!("the archive has something that isn't a file or folder ({})", path.display())));
+            return Err(failed(format!(
+                "the archive has something that isn't a file or folder ({})",
+                path.display()
+            )));
         }
     }
     if files == 0 {
@@ -553,12 +650,15 @@ fn set_mode(_path: &Path, _mode: u32) {}
 /// (an update of the app), and left alone otherwise: a stamp holds the
 /// binary's SHA-256. Returns the first helper's path, for Chromium.
 pub fn make_helpers(layout: &Layout, binary: &Path, bundle_id: &str) -> Result<PathBuf, String> {
-    let bytes = std::fs::read(binary).map_err(|e| format!("couldn't read the web helper ({}): {e}", binary.display()))?;
+    let bytes = std::fs::read(binary)
+        .map_err(|e| format!("couldn't read the web helper ({}): {e}", binary.display()))?;
     // The binary and the ids it's given: either changing means making them again.
     let stamped = format!("{}\n{bundle_id}", hex(&Sha256::digest(&bytes)));
     let stamp = layout.version_dir().join("helpers.stamp");
     let dir = Layout::frameworks_in(&layout.version_dir());
-    let all_there = HELPER_KINDS.iter().all(|(suffix, _)| helper_executable_in(&dir, suffix).is_file());
+    let all_there = HELPER_KINDS
+        .iter()
+        .all(|(suffix, _)| helper_executable_in(&dir, suffix).is_file());
     if all_there && std::fs::read_to_string(&stamp).is_ok_and(|s| s == stamped) {
         return Ok(layout.helper_executable());
     }
@@ -566,27 +666,44 @@ pub fn make_helpers(layout: &Layout, binary: &Path, bundle_id: &str) -> Result<P
     // what a helper and the app agree on to find each other.
     let bundle_id = format!("{bundle_id}.web");
     let contents = layout.runtime_bundle().join("Contents");
-    std::fs::create_dir_all(&contents).map_err(|e| format!("couldn't make the runtime's bundle: {e}"))?;
-    std::fs::write(contents.join("Info.plist"), runtime_bundle_plist(&bundle_id)).map_err(|e| format!("couldn't write the runtime's Info.plist: {e}"))?;
+    std::fs::create_dir_all(&contents)
+        .map_err(|e| format!("couldn't make the runtime's bundle: {e}"))?;
+    std::fs::write(
+        contents.join("Info.plist"),
+        runtime_bundle_plist(&bundle_id),
+    )
+    .map_err(|e| format!("couldn't write the runtime's Info.plist: {e}"))?;
     for (suffix, id_end) in HELPER_KINDS {
         let name = format!("{HELPER_NAME}{suffix}");
         let exe = helper_executable_in(&dir, suffix);
-        let contents = exe.parent().and_then(Path::parent).ok_or("a helper's folder")?.to_owned();
-        std::fs::create_dir_all(exe.parent().ok_or("a helper's folder")?).map_err(|e| format!("couldn't make {name}: {e}"))?;
+        let contents = exe
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("a helper's folder")?
+            .to_owned();
+        std::fs::create_dir_all(exe.parent().ok_or("a helper's folder")?)
+            .map_err(|e| format!("couldn't make {name}: {e}"))?;
         // Written beside and renamed over, so a helper another copy of the
         // app is running from keeps its old file until it's done.
         let fresh = exe.with_extension("new");
         std::fs::write(&fresh, &bytes).map_err(|e| format!("couldn't write {name}: {e}"))?;
         set_mode(&fresh, 0o755);
         std::fs::rename(&fresh, &exe).map_err(|e| format!("couldn't write {name}: {e}"))?;
-        std::fs::write(contents.join("Info.plist"), helper_plist(&name, &format!("{bundle_id}.helper{id_end}"))).map_err(|e| format!("couldn't write {name}'s Info.plist: {e}"))?;
+        std::fs::write(
+            contents.join("Info.plist"),
+            helper_plist(&name, &format!("{bundle_id}.helper{id_end}")),
+        )
+        .map_err(|e| format!("couldn't write {name}'s Info.plist: {e}"))?;
     }
     std::fs::write(&stamp, &stamped).map_err(|e| format!("couldn't finish the helpers: {e}"))?;
     Ok(layout.helper_executable())
 }
 
 fn xml(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// RUNTIME_BUNDLE's Info.plist: a plain bundle with an id, nothing to run.
@@ -643,14 +760,20 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tb-web-runtime-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tb-web-runtime-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     fn pin_for(bytes: &[u8], top: &str) -> Pin {
-        Pin { bytes: bytes.len() as u64, sha1: hex(&Sha1::digest(bytes)), sha256: hex(&Sha256::digest(bytes)), top: top.to_owned() }
+        Pin {
+            bytes: bytes.len() as u64,
+            sha1: hex(&Sha1::digest(bytes)),
+            sha256: hex(&Sha256::digest(bytes)),
+            top: top.to_owned(),
+        }
     }
 
     const TOP: &str = "cef_binary_test_macosarm64_minimal";
@@ -688,7 +811,10 @@ mod tests {
     /// and folders, no links, as the real one), with the headers and a
     /// static library beside it that aren't wanted.
     fn archive(extra: impl FnOnce(&mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>)) -> Vec<u8> {
-        let mut builder = tar::Builder::new(bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast()));
+        let mut builder = tar::Builder::new(bzip2::write::BzEncoder::new(
+            Vec::new(),
+            bzip2::Compression::fast(),
+        ));
         let mut add = |path: &str, data: &[u8], mode: u32| {
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
@@ -697,10 +823,22 @@ mod tests {
             builder.append_data(&mut header, path, data).unwrap();
         };
         let fw = format!("{TOP}/Release/{FRAMEWORK}");
-        add(&format!("{fw}/Chromium Embedded Framework"), b"the library", 0o4755);
+        add(
+            &format!("{fw}/Chromium Embedded Framework"),
+            b"the library",
+            0o4755,
+        );
         add(&format!("{fw}/Resources/icudtl.dat"), b"data", 0o644);
-        add(&format!("{fw}/Libraries/libcef_sandbox.dylib"), b"sandbox", 0o755);
-        add(&format!("{TOP}/Release/cef_sandbox.a"), b"not wanted", 0o644);
+        add(
+            &format!("{fw}/Libraries/libcef_sandbox.dylib"),
+            b"sandbox",
+            0o755,
+        );
+        add(
+            &format!("{TOP}/Release/cef_sandbox.a"),
+            b"not wanted",
+            0o644,
+        );
         add(&format!("{TOP}/include/cef_app.h"), b"not wanted", 0o644);
         extra(&mut builder);
         builder.into_inner().unwrap().finish().unwrap()
@@ -708,7 +846,12 @@ mod tests {
 
     /// An entry written with a raw name, which tar's own builder refuses to
     /// write, as a hostile archive would have it.
-    fn raw_entry(builder: &mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>, name: &str, kind: tar::EntryType, link: &str) {
+    fn raw_entry(
+        builder: &mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>,
+        name: &str,
+        kind: tar::EntryType,
+        link: &str,
+    ) {
         let mut header = tar::Header::new_old();
         let bytes = header.as_old_mut();
         bytes.name[..name.len()].copy_from_slice(name.as_bytes());
@@ -732,15 +875,24 @@ mod tests {
         assert!(err.message().contains("didn't match"), "{err:?}");
         assert!(!part.exists(), "a download that didn't match is deleted");
         let short = &good[..5];
-        assert!(receive(&mut &short[..], &part, &pin, &mut |_| {}, &no).unwrap_err().message().contains("ended early"));
+        assert!(receive(&mut &short[..], &part, &pin, &mut |_| {}, &no)
+            .unwrap_err()
+            .message()
+            .contains("ended early"));
         let long = [good.as_slice(), b"!"].concat();
-        assert!(receive(&mut long.as_slice(), &part, &pin, &mut |_| {}, &no).unwrap_err().message().contains("bigger"));
+        assert!(receive(&mut long.as_slice(), &part, &pin, &mut |_| {}, &no)
+            .unwrap_err()
+            .message()
+            .contains("bigger"));
         let mut seen = 0;
         receive(&mut good.as_slice(), &part, &pin, &mut |n| seen = n, &no).unwrap();
         assert_eq!(seen, good.len() as u64);
         assert_eq!(std::fs::read(&part).unwrap(), good);
         let stop = AtomicBool::new(true);
-        assert_eq!(receive(&mut good.as_slice(), &part, &pin, &mut |_| {}, &stop).unwrap_err(), InstallError::Cancelled);
+        assert_eq!(
+            receive(&mut good.as_slice(), &part, &pin, &mut |_| {}, &stop).unwrap_err(),
+            InstallError::Cancelled
+        );
         assert!(!part.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -761,18 +913,35 @@ mod tests {
         assert!(is_installed(&layout, &pin));
         assert!(!old.exists(), "the older build was removed");
         let fw = layout.framework();
-        assert_eq!(std::fs::read(fw.join("Chromium Embedded Framework")).unwrap(), b"the library");
+        assert_eq!(
+            std::fs::read(fw.join("Chromium Embedded Framework")).unwrap(),
+            b"the library"
+        );
         assert!(fw.join("Libraries/libcef_sandbox.dylib").is_file());
-        assert!(!layout.version_dir().join("cef_sandbox.a").exists() && !layout.version_dir().join("include").exists(), "only the framework comes out");
+        assert!(
+            !layout.version_dir().join("cef_sandbox.a").exists()
+                && !layout.version_dir().join("include").exists(),
+            "only the framework comes out"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(fw.join("Chromium Embedded Framework")).unwrap().permissions().mode() & 0o7777;
+            let mode = std::fs::metadata(fw.join("Chromium Embedded Framework"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
             assert_eq!(mode, 0o755, "executable, and the set-user bit dropped");
         }
         assert!(!layout.root.join(format!("{CEF_VERSION}.partial")).exists());
         // Another pin (a newer Threadbear's) doesn't count this one installed.
-        assert!(!is_installed(&layout, &Pin { sha256: "0".repeat(64), ..pin.clone() }));
+        assert!(!is_installed(
+            &layout,
+            &Pin {
+                sha256: "0".repeat(64),
+                ..pin
+            }
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -787,17 +956,64 @@ mod tests {
         let layout = Layout::new(dir.join("runtime"));
         let err = install_from_file(&file, &pin, &layout).unwrap_err();
         assert!(err.message().contains("wasn't unpacked"), "{err:?}");
-        assert!(!layout.version_dir().exists() && !layout.root.join(format!("{CEF_VERSION}.partial")).exists(), "nothing was written");
+        assert!(
+            !layout.version_dir().exists()
+                && !layout.root.join(format!("{CEF_VERSION}.partial")).exists(),
+            "nothing was written"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn refuses_anything_that_would_land_outside_the_framework() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>)>)> = vec![
-            ("climbs out", Box::new(|b| raw_entry(b, &format!("{TOP}/Release/{FRAMEWORK}/../../../escaped"), tar::EntryType::Regular, ""))),
-            ("absolute link", Box::new(|b| raw_entry(b, &format!("{TOP}/Release/{FRAMEWORK}/evil"), tar::EntryType::Symlink, "/etc/passwd"))),
-            ("link that climbs", Box::new(|b| raw_entry(b, &format!("{TOP}/Release/{FRAMEWORK}/Resources/evil"), tar::EntryType::Symlink, "../../../../outside"))),
-            ("hard link", Box::new(|b| raw_entry(b, &format!("{TOP}/Release/{FRAMEWORK}/hard"), tar::EntryType::Link, "Chromium Embedded Framework"))),
+        let cases: Vec<(
+            &str,
+            Box<dyn Fn(&mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>)>,
+        )> = vec![
+            (
+                "climbs out",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{TOP}/Release/{FRAMEWORK}/../../../escaped"),
+                        tar::EntryType::Regular,
+                        "",
+                    )
+                }),
+            ),
+            (
+                "absolute link",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{TOP}/Release/{FRAMEWORK}/evil"),
+                        tar::EntryType::Symlink,
+                        "/etc/passwd",
+                    )
+                }),
+            ),
+            (
+                "link that climbs",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{TOP}/Release/{FRAMEWORK}/Resources/evil"),
+                        tar::EntryType::Symlink,
+                        "../../../../outside",
+                    )
+                }),
+            ),
+            (
+                "hard link",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{TOP}/Release/{FRAMEWORK}/hard"),
+                        tar::EntryType::Link,
+                        "Chromium Embedded Framework",
+                    )
+                }),
+            ),
         ];
         for (what, extra) in cases {
             let dir = temp("hostile");
@@ -806,8 +1022,15 @@ mod tests {
             std::fs::write(&file, &data).unwrap();
             let pin = pin_for(&data, TOP);
             let layout = Layout::new(dir.join("runtime"));
-            assert!(install_from_file(&file, &pin, &layout).is_err(), "{what} was let through");
-            assert!(!layout.version_dir().exists() && !layout.root.join(format!("{CEF_VERSION}.partial")).exists(), "{what}: nothing kept");
+            assert!(
+                install_from_file(&file, &pin, &layout).is_err(),
+                "{what} was let through"
+            );
+            assert!(
+                !layout.version_dir().exists()
+                    && !layout.root.join(format!("{CEF_VERSION}.partial")).exists(),
+                "{what}: nothing kept"
+            );
             assert!(!dir.join("escaped").exists() && !dir.join("outside").exists());
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -828,7 +1051,11 @@ mod tests {
         std::fs::write(&file, data).unwrap();
         let dest = dir.join("Frameworks");
         std::fs::create_dir_all(&dest).unwrap();
-        let result = unpack_framework(std::fs::File::open(&file).unwrap(), &pin_for(data, TOP), &dest);
+        let result = unpack_framework(
+            std::fs::File::open(&file).unwrap(),
+            &pin_for(data, TOP),
+            &dest,
+        );
         (dir, result)
     }
 
@@ -841,13 +1068,25 @@ mod tests {
         let data = archive(|b| {
             raw_entry(b, &format!("{fw}/a"), tar::EntryType::Symlink, ".");
             raw_entry(b, &format!("{fw}/escape"), tar::EntryType::Symlink, "a/..");
-            raw_entry(b, &format!("{fw}/escape/planted-file"), tar::EntryType::Regular, "");
+            raw_entry(
+                b,
+                &format!("{fw}/escape/planted-file"),
+                tar::EntryType::Regular,
+                "",
+            );
         });
         let (dir, result) = unpack_into("through-links", &data);
         assert!(result.is_err(), "it was unpacked");
-        assert!(!anything_at(&dir.join("Frameworks/planted-file")) && !anything_at(&dir.join("planted-file")), "a file landed outside the framework");
+        assert!(
+            !anything_at(&dir.join("Frameworks/planted-file"))
+                && !anything_at(&dir.join("planted-file")),
+            "a file landed outside the framework"
+        );
         let root = dir.join(format!("Frameworks/{FRAMEWORK}"));
-        assert!(!anything_at(&root.join("a")) && !anything_at(&root.join("escape")), "a link was made");
+        assert!(
+            !anything_at(&root.join("a")) && !anything_at(&root.join("escape")),
+            "a link was made"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -859,40 +1098,143 @@ mod tests {
         // and, from Codex's second look (11 Nov), names the Mac's disk takes
         // as one: Lib and lib, and é written precomposed and as e and an
         // accent.
-        let cases: Vec<(&str, Box<dyn Fn(&mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>)>)> = vec![
-            ("a plain link", Box::new(|b| raw_entry(b, &format!("{fw}/Versions/Current"), tar::EntryType::Symlink, "A"))),
-            ("a hard link", Box::new(|b| raw_entry(b, &format!("{fw}/hard"), tar::EntryType::Link, "Chromium Embedded Framework"))),
-            ("link then file", Box::new(|b| {
-                raw_entry(b, &format!("{fw}/lib"), tar::EntryType::Symlink, "Libraries");
-                raw_entry(b, &format!("{fw}/lib/planted-file"), tar::EntryType::Regular, "");
-            })),
-            ("file then link", Box::new(|b| {
-                raw_entry(b, &format!("{fw}/lib/planted-file"), tar::EntryType::Regular, "");
-                raw_entry(b, &format!("{fw}/lib"), tar::EntryType::Symlink, "Libraries");
-            })),
-            ("link under a link", Box::new(|b| {
-                raw_entry(b, &format!("{fw}/lib"), tar::EntryType::Symlink, "Libraries");
-                raw_entry(b, &format!("{fw}/lib/planted-link"), tar::EntryType::Symlink, "Resources");
-            })),
-            ("link and file in another case", Box::new(|b| {
-                raw_entry(b, &format!("{fw}/Lib"), tar::EntryType::Symlink, "Libraries");
-                raw_entry(b, &format!("{fw}/lib/planted-file"), tar::EntryType::Regular, "");
-            })),
-            ("two spellings of one name", Box::new(|b| {
-                raw_entry(b, &format!("{fw}/\u{e9}"), tar::EntryType::Symlink, ".");
-                // (Short, to fit an old header's hundred bytes.)
-                raw_entry(b, &format!("{fw}/e\u{301}/new/link"), tar::EntryType::Symlink, ".");
-            })),
+        let cases: Vec<(
+            &str,
+            Box<dyn Fn(&mut tar::Builder<bzip2::write::BzEncoder<Vec<u8>>>)>,
+        )> = vec![
+            (
+                "a plain link",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{fw}/Versions/Current"),
+                        tar::EntryType::Symlink,
+                        "A",
+                    )
+                }),
+            ),
+            (
+                "a hard link",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{fw}/hard"),
+                        tar::EntryType::Link,
+                        "Chromium Embedded Framework",
+                    )
+                }),
+            ),
+            (
+                "link then file",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib"),
+                        tar::EntryType::Symlink,
+                        "Libraries",
+                    );
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib/planted-file"),
+                        tar::EntryType::Regular,
+                        "",
+                    );
+                }),
+            ),
+            (
+                "file then link",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib/planted-file"),
+                        tar::EntryType::Regular,
+                        "",
+                    );
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib"),
+                        tar::EntryType::Symlink,
+                        "Libraries",
+                    );
+                }),
+            ),
+            (
+                "link under a link",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib"),
+                        tar::EntryType::Symlink,
+                        "Libraries",
+                    );
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib/planted-link"),
+                        tar::EntryType::Symlink,
+                        "Resources",
+                    );
+                }),
+            ),
+            (
+                "link and file in another case",
+                Box::new(|b| {
+                    raw_entry(
+                        b,
+                        &format!("{fw}/Lib"),
+                        tar::EntryType::Symlink,
+                        "Libraries",
+                    );
+                    raw_entry(
+                        b,
+                        &format!("{fw}/lib/planted-file"),
+                        tar::EntryType::Regular,
+                        "",
+                    );
+                }),
+            ),
+            (
+                "two spellings of one name",
+                Box::new(|b| {
+                    raw_entry(b, &format!("{fw}/\u{e9}"), tar::EntryType::Symlink, ".");
+                    // (Short, to fit an old header's hundred bytes.)
+                    raw_entry(
+                        b,
+                        &format!("{fw}/e\u{301}/new/link"),
+                        tar::EntryType::Symlink,
+                        ".",
+                    );
+                }),
+            ),
         ];
         for (what, extra) in cases {
             let data = archive(|b| extra(b));
             let (dir, result) = unpack_into("links", &data);
-            assert!(result.as_ref().is_err_and(|e| e.message().contains("link")), "{what} was unpacked: {result:?}");
-            assert_eq!(links_under(&dir), Vec::<PathBuf>::new(), "{what}: a link was made");
-            let beside: Vec<_> = std::fs::read_dir(dir.join("Frameworks")).unwrap().flatten().map(|e| e.file_name()).collect();
-            assert!(beside.iter().all(|name| name == FRAMEWORK), "{what}: {beside:?} beside the framework");
-            assert!(!anything_at(&dir.join(format!("Frameworks/{FRAMEWORK}/Libraries/planted-file"))), "{what}: a file was written through a link");
-            assert!(!anything_at(&dir.join(format!("Frameworks/{FRAMEWORK}/hard"))), "{what}: a hard link was made");
+            assert!(
+                result.as_ref().is_err_and(|e| e.message().contains("link")),
+                "{what} was unpacked: {result:?}"
+            );
+            assert_eq!(
+                links_under(&dir),
+                Vec::<PathBuf>::new(),
+                "{what}: a link was made"
+            );
+            let beside: Vec<_> = std::fs::read_dir(dir.join("Frameworks"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            assert!(
+                beside.iter().all(|name| name == FRAMEWORK),
+                "{what}: {beside:?} beside the framework"
+            );
+            assert!(
+                !anything_at(&dir.join(format!("Frameworks/{FRAMEWORK}/Libraries/planted-file"))),
+                "{what}: a file was written through a link"
+            );
+            assert!(
+                !anything_at(&dir.join(format!("Frameworks/{FRAMEWORK}/hard"))),
+                "{what}: a hard link was made"
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -923,7 +1265,12 @@ mod tests {
             header.set_size(10);
             header.set_mode(0o755);
             header.set_entry_type(tar::EntryType::Regular);
-            b.append_data(&mut header, format!("{TOP}/Release/{FRAMEWORK}/Chromium Embedded Framework"), &b"swapped in"[..]).unwrap();
+            b.append_data(
+                &mut header,
+                format!("{TOP}/Release/{FRAMEWORK}/Chromium Embedded Framework"),
+                &b"swapped in"[..],
+            )
+            .unwrap();
         });
         let layout = Layout::new(dir.join("runtime"));
         install_checked(&file, &pin_for(&good, TOP), &layout, || {
@@ -933,7 +1280,11 @@ mod tests {
             std::fs::rename(&swapped, &file).unwrap();
         })
         .unwrap();
-        assert_eq!(std::fs::read(layout.framework().join("Chromium Embedded Framework")).unwrap(), b"the library", "what was hashed is what was unpacked");
+        assert_eq!(
+            std::fs::read(layout.framework().join("Chromium Embedded Framework")).unwrap(),
+            b"the library",
+            "what was hashed is what was unpacked"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -948,18 +1299,34 @@ mod tests {
         // In the bundle Chromium takes for the app's, beside where the
         // framework goes, as an app bundle would hold them.
         assert!(first.starts_with(layout.runtime_bundle().join("Contents/Frameworks")));
-        let bundle = std::fs::read_to_string(layout.runtime_bundle().join("Contents/Info.plist")).unwrap();
-        assert!(bundle.contains("<string>com.example.app.web</string>"), "{bundle}");
+        let bundle =
+            std::fs::read_to_string(layout.runtime_bundle().join("Contents/Info.plist")).unwrap();
+        assert!(
+            bundle.contains("<string>com.example.app.web</string>"),
+            "{bundle}"
+        );
         for (suffix, id_end) in HELPER_KINDS {
             let exe = helper_executable_in(&Layout::frameworks_in(&layout.version_dir()), suffix);
             assert_eq!(std::fs::read(&exe).unwrap(), b"helper v1");
             // ../../.. from a helper's MacOS folder is where the framework
             // is, as CEF's loader and sandbox look for it.
             let up = exe.ancestors().nth(4).unwrap();
-            assert_eq!(up, layout.framework().parent().unwrap(), "{}", exe.display());
-            let plist = std::fs::read_to_string(exe.parent().unwrap().parent().unwrap().join("Info.plist")).unwrap();
+            assert_eq!(
+                up,
+                layout.framework().parent().unwrap(),
+                "{}",
+                exe.display()
+            );
+            let plist =
+                std::fs::read_to_string(exe.parent().unwrap().parent().unwrap().join("Info.plist"))
+                    .unwrap();
             assert!(plist.contains("<key>LSUIElement</key><string>1</string>"));
-            assert!(plist.contains(&format!("<string>com.example.app.web.helper{id_end}</string>")), "{plist}");
+            assert!(
+                plist.contains(&format!(
+                    "<string>com.example.app.web.helper{id_end}</string>"
+                )),
+                "{plist}"
+            );
             assert!(plist.contains(&format!("<string>{HELPER_NAME}{suffix}</string>")));
         }
         // Same binary: left alone. A new one (the app updated): replaced.
@@ -976,17 +1343,34 @@ mod tests {
     #[test]
     fn says_where_it_has_got_to() {
         assert_eq!(State::Missing.words(), "Not installed");
-        let s = State::Downloading { received: 45_200_000, total: 134_979_837 };
+        let s = State::Downloading {
+            received: 45_200_000,
+            total: 134_979_837,
+        };
         assert_eq!(s.words(), "Downloading, 45 of 135 MB");
         assert_eq!(s.percent(), Some(33));
         assert!(s.busy());
-        assert_eq!(State::Failed("no network".into()).words(), "Couldn't install it: no network");
+        assert_eq!(
+            State::Failed("no network".into()).words(),
+            "Couldn't install it: no network"
+        );
         assert_eq!(ARCHIVES[0].megabytes(), 135);
-        assert!(ARCHIVES[0].url().ends_with("cef_binary_156.0.26%2Bg8ea0c73%2Bchromium-156.0.8078.88_macosarm64_minimal.tar.bz2"));
+        assert!(ARCHIVES[0].url().ends_with(
+            "cef_binary_156.0.26%2Bg8ea0c73%2Bchromium-156.0.8078.88_macosarm64_minimal.tar.bz2"
+        ));
         for archive in ARCHIVES {
-            assert!(archive.file.contains(CEF_VERSION), "{} is the pinned build", archive.file);
+            assert!(
+                archive.file.contains(CEF_VERSION),
+                "{} is the pinned build",
+                archive.file
+            );
             assert_eq!(archive.sha1.len(), 40);
-            assert_eq!(archive.sha256.len(), 64, "{}'s SHA-256 is pinned", archive.platform);
+            assert_eq!(
+                archive.sha256.len(),
+                64,
+                "{}'s SHA-256 is pinned",
+                archive.platform
+            );
         }
     }
 }

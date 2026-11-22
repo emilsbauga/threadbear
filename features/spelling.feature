@@ -23,12 +23,25 @@ Feature: Spelling in the message box
     When I choose "the" from the composer's right-click menu on "teh"
     Then the composer says "I saw the cat"
 
+  # Mike, 20 Nov: "jank" came out as "tank". Correction is off until it's
+  # switched on in this menu, whatever the Mac's Keyboard settings say.
+  @composer.spelling @swift-pending @windows-pending @linux-pending
+  Scenario: A misspelled word is left as typed while correction is off
+    Given "Spelling and Grammar › Correct Spelling Automatically" is not ticked in the composer's right-click menu
+    When I type "in the begining" in the composer
+    And I type " " in the composer
+    Then the composer says "in the begining "
+
+  # Not "teh" or "recieve" in the three below: until 20 Nov the scripted app
+  # told the Mac's checker about every correction these scenarios took back,
+  # which it remembers for good, so Tinker Desk stopped correcting both words
+  # and all three failed there. The scripted app no longer tells it.
   @composer.spelling @swift-pending @windows-pending @linux-pending
   Scenario: A misspelled word is corrected as the next word starts
     Given "Spelling and Grammar › Correct Spelling Automatically" is ticked in the composer's right-click menu
-    When I type "I saw teh" in the composer
+    When I type "I beleive" in the composer
     And I type " " in the composer
-    Then the composer says "I saw the "
+    Then the composer says "I believe "
 
   # Wayne's recording (17 Nov): the Mac's checker turned "threadbear" into
   # "threadbare" every time it was typed.
@@ -43,27 +56,27 @@ Feature: Spelling in the message box
   @composer.spelling @swift-pending @windows-pending @linux-pending
   Scenario: A correction put back with Undo isn't made again
     Given "Spelling and Grammar › Correct Spelling Automatically" is ticked in the composer's right-click menu
-    When I type "I saw teh" in the composer
+    When I type "I beleive" in the composer
     And I type " " in the composer
-    Then the composer says "I saw the "
+    Then the composer says "I believe "
     When I undo in the composer
-    Then the composer says "I saw teh "
-    When I type "teh" in the composer, replacing what's there
+    Then the composer says "I beleive "
+    When I type "beleive" in the composer, replacing what's there
     And I type " " in the composer
-    Then the composer says "teh "
+    Then the composer says "beleive "
 
   # Its own word: one put back stays put back while the app runs, and the
-  # scenario before this one puts back "teh" in the same app.
+  # scenario before this one puts back "beleive" in the same app.
   @composer.spelling @swift-pending @windows-pending @linux-pending
   Scenario: A correction typed back over isn't made again
     Given "Spelling and Grammar › Correct Spelling Automatically" is ticked in the composer's right-click menu
-    When I type "we recieve" in the composer
+    When I type "its definately" in the composer
     And I type " " in the composer
-    Then the composer says "we receive "
-    When I press Backspace 5 times on the keyboard
-    And I type "ieve" in the composer
+    Then the composer says "its definitely "
+    When I press Backspace 6 times on the keyboard
+    And I type "ately" in the composer
     And I type " " in the composer
-    Then the composer says "we recieve "
+    Then the composer says "its definately "
 
   @composer.spelling @swift-pending @windows-pending @linux-pending
   Scenario: Transformations change the word the cursor is in

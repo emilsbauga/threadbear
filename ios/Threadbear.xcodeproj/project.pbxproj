@@ -210,7 +210,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				BB0000000000000000000201 /* XCLocalSwiftPackageReference "ThreadbearKit" */,
-				BB0000000000000000000202 /* XCLocalSwiftPackageReference "../app/SentryBinary" */,
+				BB0000000000000000000202 /* XCLocalSwiftPackageReference "SentryBinary" */,
 				BB0000000000000000000203 /* XCLocalSwiftPackageReference "WhisperBinary" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -472,9 +472,9 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ThreadbearKit;
 		};
-		BB0000000000000000000202 /* XCLocalSwiftPackageReference "../app/SentryBinary" */ = {
+		BB0000000000000000000202 /* XCLocalSwiftPackageReference "SentryBinary" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../app/SentryBinary;
+			relativePath = SentryBinary;
 		};
 		BB0000000000000000000203 /* XCLocalSwiftPackageReference "WhisperBinary" */ = {
 			isa = XCLocalSwiftPackageReference;

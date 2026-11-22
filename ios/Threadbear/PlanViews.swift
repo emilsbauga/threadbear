@@ -91,7 +91,7 @@ struct PlanSheet: View {
 
     private var title: String { Plans.title(of: plan.text) }
     /// Spinning from the tap until the card goes (AppModel.answerCard).
-    private var approving: Bool { approvalId.map { model.cardAnswers[$0] != nil } ?? false }
+    private var approving: Bool { approvalId.map { model.cardAnswer($0) != nil } ?? false }
     private var typed: String { change.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {

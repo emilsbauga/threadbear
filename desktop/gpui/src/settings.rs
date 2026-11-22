@@ -136,7 +136,12 @@ const ONCE_ONLY: [&str; 3] = ["swiftImport", "swiftImportParts", "swiftTourImpor
 impl Saved {
     fn after_a_broken_file() -> Self {
         let now = threadbear_core::inbox::iso_time(crate::now_ms());
-        Saved { swift_import: Some(now.clone()), swift_tour_import: Some(now), tour_seen: Some(true), ..Saved::default() }
+        Saved {
+            swift_import: Some(now.clone()),
+            swift_tour_import: Some(now),
+            tour_seen: Some(true),
+            ..Saved::default()
+        }
     }
 }
 
@@ -145,17 +150,28 @@ impl Saved {
 /// the names of those left out. None when it isn't a JSON object at all.
 /// `T` must take any one of its fields alone (`#[serde(default)]`).
 pub(crate) fn tolerant<T: DeserializeOwned>(data: &[u8], file: &str) -> Option<(T, Vec<String>)> {
-    let Ok(Value::Object(mut fields)) = serde_json::from_slice::<Value>(data) else { return None };
+    let Ok(Value::Object(mut fields)) = serde_json::from_slice::<Value>(data) else {
+        return None;
+    };
     let mut dropped = Vec::new();
     fields.retain(|key, value| {
-        let fits = serde_json::from_value::<T>(Value::Object(Map::from_iter([(key.clone(), value.clone())]))).is_ok();
+        let fits = serde_json::from_value::<T>(Value::Object(Map::from_iter([(
+            key.clone(),
+            value.clone(),
+        )])))
+        .is_ok();
         if !fits {
-            threadbear_client::log::write("settings", &format!("{file}: left out {key}, which isn't the type this build reads"));
+            threadbear_client::log::write(
+                "settings",
+                &format!("{file}: left out {key}, which isn't the type this build reads"),
+            );
             dropped.push(key.clone());
         }
         fits
     });
-    serde_json::from_value(Value::Object(fields)).ok().map(|t| (t, dropped))
+    serde_json::from_value(Value::Object(fields))
+        .ok()
+        .map(|t| (t, dropped))
 }
 
 /// The settings file: where it is and what's in it. Reading is at launch only;
@@ -194,7 +210,10 @@ impl Settings {
     pub fn load_from(path: PathBuf) -> Self {
         let saved = match std::fs::read(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Saved::default(),
-            read => match read.ok().and_then(|data| tolerant::<Saved>(&data, Self::file_name())) {
+            read => match read
+                .ok()
+                .and_then(|data| tolerant::<Saved>(&data, Self::file_name()))
+            {
                 // A record of a step done once that can't be read counts as
                 // done, as a broken file does: else a mangled swiftImport
                 // reads as none and the drafts come across again (Codex's
@@ -203,7 +222,8 @@ impl Settings {
                     if dropped.iter().any(|k| ONCE_ONLY.contains(&k.as_str())) {
                         let done = Saved::after_a_broken_file();
                         saved.swift_import = saved.swift_import.or(done.swift_import);
-                        saved.swift_tour_import = saved.swift_tour_import.or(done.swift_tour_import);
+                        saved.swift_tour_import =
+                            saved.swift_tour_import.or(done.swift_tour_import);
                     }
                     saved
                 }
@@ -238,7 +258,8 @@ impl Settings {
     /// (swift_import.rs).
     pub fn save_checked(&self) -> Result<(), String> {
         let text = serde_json::to_string_pretty(&self.saved).map_err(|e| e.to_string())?;
-        threadbear_core::private_file::write(&self.path, text.as_bytes()).map_err(|e| format!("couldn't save {}: {e}", self.path.display()))
+        threadbear_core::private_file::write(&self.path, text.as_bytes())
+            .map_err(|e| format!("couldn't save {}: {e}", self.path.display()))
     }
 
     pub fn zoom_percent(&self) -> u32 {
@@ -250,7 +271,11 @@ impl Settings {
     }
 
     pub fn inbox_order(&self) -> InboxOrder {
-        self.saved.inbox_order.as_deref().and_then(InboxOrder::from_name).unwrap_or_default()
+        self.saved
+            .inbox_order
+            .as_deref()
+            .and_then(InboxOrder::from_name)
+            .unwrap_or_default()
     }
 
     pub fn set_inbox_order(&mut self, order: InboxOrder) {
@@ -266,7 +291,10 @@ impl Settings {
     }
 
     pub fn ding_volume(&self) -> f64 {
-        self.saved.completion_sound_volume.unwrap_or(completion_sound::DEFAULT_VOLUME).clamp(0.1, 1.)
+        self.saved
+            .completion_sound_volume
+            .unwrap_or(completion_sound::DEFAULT_VOLUME)
+            .clamp(0.1, 1.)
     }
 
     pub fn panel_background_drag(&self) -> bool {
@@ -296,13 +324,29 @@ mod tests {
         s.set_zoom_percent(125);
         s.set_inbox_order(InboxOrder::Newest);
         s.saved.collapsed_sections = Some(vec!["inbox".into()]);
-        s.saved.window_frame = Some(WindowFrame { x: 10., y: 20., width: 1180., height: 800. });
+        s.saved.window_frame = Some(WindowFrame {
+            x: 10.,
+            y: 20.,
+            width: 1180.,
+            height: 800.,
+        });
         s.save();
         let read = Settings::load_from(path);
         assert_eq!(read.zoom_percent(), 125);
         assert_eq!(read.inbox_order(), InboxOrder::Newest);
-        assert_eq!(read.saved.collapsed_sections, Some(vec!["inbox".to_string()]));
-        assert_eq!(read.saved.window_frame, Some(WindowFrame { x: 10., y: 20., width: 1180., height: 800. }));
+        assert_eq!(
+            read.saved.collapsed_sections,
+            Some(vec!["inbox".to_string()])
+        );
+        assert_eq!(
+            read.saved.window_frame,
+            Some(WindowFrame {
+                x: 10.,
+                y: 20.,
+                width: 1180.,
+                height: 800.
+            })
+        );
     }
 
     #[test]
@@ -310,11 +354,17 @@ mod tests {
         let path = temp_file("broken");
         std::fs::write(&path, "{ half").unwrap();
         let s = Settings::load_from(path.clone());
-        assert!(s.saved.swift_import.is_some(), "no second Swift import, which could bring sent drafts back");
+        assert!(
+            s.saved.swift_import.is_some(),
+            "no second Swift import, which could bring sent drafts back"
+        );
         assert!(s.saved.swift_tour_import.is_some());
         assert_eq!(s.saved.tour_seen, Some(true));
         assert_eq!(s.zoom_percent(), zoom::DEFAULT_PERCENT);
-        assert_eq!(std::fs::read_to_string(path.with_file_name("desktop-settings.json.broken")).unwrap(), "{ half");
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("desktop-settings.json.broken")).unwrap(),
+            "{ half"
+        );
     }
 
     #[test]
@@ -323,7 +373,10 @@ mod tests {
         std::fs::write(&path, r#"{"textZoomPercent": 140, "swiftImport": "2026-11-12T01:00:00Z", "swiftImportParts": null, "inboxOrder": 5, "tourSeen": true}"#).unwrap();
         let s = Settings::load_from(path);
         assert_eq!(s.zoom_percent(), 140);
-        assert_eq!(s.saved.swift_import.as_deref(), Some("2026-11-12T01:00:00Z"));
+        assert_eq!(
+            s.saved.swift_import.as_deref(),
+            Some("2026-11-12T01:00:00Z")
+        );
         assert_eq!(s.saved.swift_import_parts, Vec::<String>::new());
         assert_eq!(s.saved.inbox_order, None);
         assert_eq!(s.saved.tour_seen, Some(true));
@@ -332,23 +385,35 @@ mod tests {
     #[test]
     fn a_mangled_record_of_the_swift_import_counts_as_done() {
         let path = temp_file("mangled-marker");
-        std::fs::write(&path, r#"{"swiftImport": true, "swiftImportParts": [], "textZoomPercent": 125}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"swiftImport": true, "swiftImportParts": [], "textZoomPercent": 125}"#,
+        )
+        .unwrap();
         let s = Settings::load_from(path);
         assert!(s.saved.swift_import.is_some(), "not imported again");
         assert!(s.saved.swift_tour_import.is_some());
         assert_eq!(s.zoom_percent(), 125);
-        assert_eq!(s.saved.tour_seen, None, "only the records, not the tour itself");
+        assert_eq!(
+            s.saved.tour_seen, None,
+            "only the records, not the tour itself"
+        );
     }
 
     #[test]
     fn unknown_fields_are_read_past_and_saved_back() {
         let path = temp_file("unknown");
-        std::fs::write(&path, r#"{"textZoomPercent": 140, "somethingNewer": {"on": true}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"textZoomPercent": 140, "somethingNewer": {"on": true}}"#,
+        )
+        .unwrap();
         let mut s = Settings::load_from(path.clone());
         assert_eq!(s.zoom_percent(), 140);
         s.set_zoom_percent(110);
         s.save_checked().unwrap();
-        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["somethingNewer"], serde_json::json!({ "on": true }));
         assert_eq!(written["textZoomPercent"], 110);
     }

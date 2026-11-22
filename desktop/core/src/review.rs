@@ -11,7 +11,9 @@
 // the answer, so the GPUI window does the waiting and these tests can put an
 // edit, or another window's change, between the two, as the Swift tests do
 // with continuations.
-use crate::reducer::{DesignReview, ImageRef, ReviewDraft, ReviewOption, ReviewShot, Row, RowContent};
+use crate::reducer::{
+    DesignReview, ImageRef, ReviewDraft, ReviewOption, ReviewShot, Row, RowContent,
+};
 use crate::zoom::Rect;
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
@@ -20,13 +22,15 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The most a note on one option and the reply may be, in UTF-16 units, as
-/// the runner counts them (docs/protocol.md, "Design reviews").
+/// the runner counts them (docs/protocol/events.md, "Design reviews").
 pub const NOTE_LIMIT: usize = 4000;
 pub const REPLY_LIMIT: usize = 8000;
 
 /// What the window says when the review moved on without it.
-pub const CHANGED_ELSEWHERE: &str = "This review changed elsewhere. Your unsent notes are kept here.";
-pub const CLOSED_ELSEWHERE: &str = "This review was closed elsewhere. Your unsent notes are still shown below.";
+pub const CHANGED_ELSEWHERE: &str =
+    "This review changed elsewhere. Your unsent notes are kept here.";
+pub const CLOSED_ELSEWHERE: &str =
+    "This review was closed elsewhere. Your unsent notes are still shown below.";
 
 /// The runner restarting answers with these: the connection gone (the
 /// client's own errors are -1) or `RPCError.busy`. A call that gets one is
@@ -56,33 +60,53 @@ impl ReviewDraft {
     }
 
     pub fn has_reply(&self) -> bool {
-        self.reply.as_deref().is_some_and(|reply| !reply.trim().is_empty())
+        self.reply
+            .as_deref()
+            .is_some_and(|reply| !reply.trim().is_empty())
     }
 
     /// The runner checks again. This only keeps Send from offering an empty
     /// reply or a pick that can't be made (`canSubmit`).
     pub fn can_submit(&self, options: &[ReviewOption]) -> bool {
         let known = |id: &str| options.iter().any(|o| o.id == id);
-        if !self.notes.iter().all(|(id, note)| known(id) && utf16_len(note) <= NOTE_LIMIT) {
+        if !self
+            .notes
+            .iter()
+            .all(|(id, note)| known(id) && utf16_len(note) <= NOTE_LIMIT)
+        {
             return false;
         }
-        if self.reply.as_deref().map_or(0, utf16_len) > REPLY_LIMIT || (self.none && !self.picked_ids.is_empty()) {
+        if self.reply.as_deref().map_or(0, utf16_len) > REPLY_LIMIT
+            || (self.none && !self.picked_ids.is_empty())
+        {
             return false;
         }
-        if !self.picked_ids.iter().all(|id| options.iter().any(|o| &o.id == id && !o.reference)) {
+        if !self
+            .picked_ids
+            .iter()
+            .all(|id| options.iter().any(|o| &o.id == id && !o.reference))
+        {
             return false;
         }
         if self.images.len() > crate::reducer::REVIEW_REPLY_IMAGES_MAX {
             return false;
         }
-        !self.picked_ids.is_empty() || self.none || self.has_reply() || !self.images.is_empty() || self.has_notes()
+        !self.picked_ids.is_empty()
+            || self.none
+            || self.has_reply()
+            || !self.images.is_empty()
+            || self.has_notes()
     }
 
     /// The same apart from where its pictures are: the runner keeps its own
     /// copies of the ones pasted (runner/reviews.ts keepReplyImages), so the
     /// draft it saved names them there.
     pub fn same_but_picture_copies(&self, other: &ReviewDraft) -> bool {
-        self.images.len() == other.images.len() && ReviewDraft { images: other.images.clone(), ..self.clone() } == *other
+        self.images.len() == other.images.len()
+            && ReviewDraft {
+                images: other.images.clone(),
+                ..self.clone()
+            } == *other
     }
 
     /// What `reviews.save` and `reviews.respond` take (`jsonValue`): always
@@ -90,7 +114,15 @@ impl ReviewDraft {
     /// which is the first pick for one that doesn't.
     pub fn to_json(&self) -> Value {
         let mut out = Map::new();
-        out.insert("notes".into(), Value::Object(self.notes.iter().map(|(k, v)| (k.clone(), json!(v))).collect()));
+        out.insert(
+            "notes".into(),
+            Value::Object(
+                self.notes
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json!(v)))
+                    .collect(),
+            ),
+        );
         if let Some(first) = self.picked_id() {
             out.insert("pickedId".into(), json!(first));
         }
@@ -100,7 +132,15 @@ impl ReviewDraft {
         }
         // Always, empty too: a runner keeps the saved pictures for a client
         // that leaves `images` out, as one from before them does.
-        out.insert("images".into(), Value::Array(self.images.iter().map(crate::inline_chips::image_json).collect()));
+        out.insert(
+            "images".into(),
+            Value::Array(
+                self.images
+                    .iter()
+                    .map(crate::inline_chips::image_json)
+                    .collect(),
+            ),
+        );
         if self.none {
             out.insert("none".into(), json!(true));
         }
@@ -114,7 +154,12 @@ impl ReviewDraft {
         let reply = self.reply.as_deref().unwrap_or("").trim();
         ReviewDraft {
             picked_ids: self.picked_ids.clone(),
-            notes: self.notes.iter().filter_map(|(id, note)| (!note.trim().is_empty()).then(|| (id.clone(), note.trim().to_owned()))).collect(),
+            notes: self
+                .notes
+                .iter()
+                .filter(|&(_id, note)| !note.trim().is_empty())
+                .map(|(id, note)| (id.clone(), note.trim().to_owned()))
+                .collect(),
             reply: (!reply.is_empty()).then(|| reply.to_owned()),
             images: self.images.clone(),
             none: self.none,
@@ -128,7 +173,10 @@ impl ReviewOption {
     /// Agents often number their titles already ("1. One decision at a
     /// time"); the number isn't said twice.
     pub fn label(&self) -> String {
-        if self.title.starts_with(&format!("{}.", self.id)) || self.title.starts_with(&format!("{} ", self.id)) || self.title == self.id {
+        if self.title.starts_with(&format!("{}.", self.id))
+            || self.title.starts_with(&format!("{} ", self.id))
+            || self.title == self.id
+        {
             self.title.clone()
         } else {
             format!("{}. {}", self.id, self.title)
@@ -138,7 +186,11 @@ impl ReviewOption {
     /// What the window steps through: the shots, or the one image.
     pub fn all_shots(&self) -> Vec<ReviewShot> {
         if self.shots.is_empty() {
-            vec![ReviewShot { title: None, image: self.image.clone(), media: None }]
+            vec![ReviewShot {
+                title: None,
+                image: self.image.clone(),
+                media: None,
+            }]
         } else {
             self.shots.clone()
         }
@@ -151,19 +203,28 @@ impl ReviewOption {
     /// One of its shots, or its first when there's no such one.
     pub fn shot(&self, index: usize) -> ReviewShot {
         let shots = self.all_shots();
-        shots.get(index).cloned().unwrap_or_else(|| shots[0].clone())
+        shots
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| shots[0].clone())
     }
 }
 
 impl ReviewShot {
     /// The clip to play, when the shot is a video.
     pub fn video(&self) -> Option<&str> {
-        self.media.as_ref().filter(|m| m.media_type.starts_with("video/")).map(|m| m.path.as_str())
+        self.media
+            .as_ref()
+            .filter(|m| m.media_type.starts_with("video/"))
+            .map(|m| m.path.as_str())
     }
 
     /// The page to show, when the shot is one.
     pub fn page(&self) -> Option<&str> {
-        self.media.as_ref().filter(|m| m.media_type == "text/html").map(|m| m.path.as_str())
+        self.media
+            .as_ref()
+            .filter(|m| m.media_type == "text/html")
+            .map(|m| m.path.as_str())
     }
 }
 
@@ -173,7 +234,10 @@ pub fn shot_tip(option: &ReviewOption, index: usize) -> String {
     if shots.len() <= 1 {
         return option.label();
     }
-    let what = shots.get(index).and_then(|s| s.title.clone()).unwrap_or_else(|| format!("shot {}", index + 1));
+    let what = shots
+        .get(index)
+        .and_then(|s| s.title.clone())
+        .unwrap_or_else(|| format!("shot {}", index + 1));
     format!("{}, {what}", option.label())
 }
 
@@ -228,7 +292,10 @@ pub fn link_review_id(rest: &str) -> Option<String> {
 
 /// The thread's review with that id, or the only one it's the start of
 /// (`WorkLinks.review`): the latest snapshot of each, as rows keep them.
-pub fn find_review<'a>(id: &str, rows: impl IntoIterator<Item = &'a Row>) -> Option<&'a DesignReview> {
+pub fn find_review<'a>(
+    id: &str,
+    rows: impl IntoIterator<Item = &'a Row>,
+) -> Option<&'a DesignReview> {
     let id = id.to_lowercase();
     let reviews: Vec<&DesignReview> = rows
         .into_iter()
@@ -240,7 +307,10 @@ pub fn find_review<'a>(id: &str, rows: impl IntoIterator<Item = &'a Row>) -> Opt
     if let Some(exact) = reviews.iter().rev().find(|r| r.id.to_lowercase() == id) {
         return Some(exact);
     }
-    let matches: Vec<&&DesignReview> = reviews.iter().filter(|r| r.id.to_lowercase().starts_with(&id)).collect();
+    let matches: Vec<&&DesignReview> = reviews
+        .iter()
+        .filter(|r| r.id.to_lowercase().starts_with(&id))
+        .collect();
     let mut ids: Vec<&str> = matches.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -324,12 +394,23 @@ impl DraftCache {
                         let revision = entry["revision"].as_i64()?;
                         let draft = ReviewDraft::decode(&entry["draft"])?;
                         let owner = entry["owner"].as_str().map(str::to_owned);
-                        Some((key.clone(), CachedDraft { revision, draft, owner, conflict: entry["conflict"].as_bool().unwrap_or(false) }))
+                        Some((
+                            key.clone(),
+                            CachedDraft {
+                                revision,
+                                draft,
+                                owner,
+                                conflict: entry["conflict"].as_bool().unwrap_or(false),
+                            },
+                        ))
                     })
                     .collect()
             })
             .unwrap_or_default();
-        DraftCache { entries, changed: false }
+        DraftCache {
+            entries,
+            changed: false,
+        }
     }
 
     pub fn encode(&self) -> Value {
@@ -425,10 +506,21 @@ pub struct ReviewSession {
 
 impl ReviewSession {
     pub fn new(thread_id: &str, review: DesignReview, cache: SharedDraftCache) -> ReviewSession {
-        let draft = review.response.clone().unwrap_or_else(|| review.draft.clone());
-        let mode = if review.is_pending() && !review.options.is_empty() { ReviewMode::Single } else { ReviewMode::All };
+        let draft = review
+            .response
+            .clone()
+            .unwrap_or_else(|| review.draft.clone());
+        let mode = if review.is_pending() && !review.options.is_empty() {
+            ReviewMode::Single
+        } else {
+            ReviewMode::All
+        };
         let cache_key = DraftCache::key(thread_id, &review.id);
-        let owner = format!("gpui-{}-{}", std::process::id(), NEXT_OWNER.fetch_add(1, Ordering::Relaxed));
+        let owner = format!(
+            "gpui-{}-{}",
+            std::process::id(),
+            NEXT_OWNER.fetch_add(1, Ordering::Relaxed)
+        );
         let mut session = ReviewSession {
             thread_id: thread_id.to_owned(),
             review,
@@ -455,7 +547,10 @@ impl ReviewSession {
         if let Some(cached) = cached.filter(|c| c.draft != session.draft) {
             session.draft = cached.draft;
             session.dirty = true;
-            if cached.conflict || cached.revision != session.review.revision || !session.review.is_pending() {
+            if cached.conflict
+                || cached.revision != session.review.revision
+                || !session.review.is_pending()
+            {
                 session.conflict = true;
                 session.error = Some(CHANGED_ELSEWHERE.to_owned());
             }
@@ -501,7 +596,10 @@ impl ReviewSession {
     }
 
     pub fn can_submit(&self) -> bool {
-        self.review.is_pending() && !self.submitting && !self.conflict && self.draft.can_submit(&self.review.options)
+        self.review.is_pending()
+            && !self.submitting
+            && !self.conflict
+            && self.draft.can_submit(&self.review.options)
     }
 
     pub fn editable(&self) -> bool {
@@ -556,7 +654,10 @@ impl ReviewSession {
     }
 
     pub fn can_peek(&self) -> bool {
-        self.mode == ReviewMode::Single && self.baseline().is_some_and(|b| Some(&b.id) != self.focused_option().map(|o| &o.id))
+        self.mode == ReviewMode::Single
+            && self
+                .baseline()
+                .is_some_and(|b| Some(&b.id) != self.focused_option().map(|o| &o.id))
     }
 
     /// The option the stage shows: today's while peeking.
@@ -572,10 +673,19 @@ impl ReviewSession {
     /// name, or its first if none has that name.
     pub fn shown_shot(&self) -> Option<ReviewShot> {
         let baseline = self.baseline().filter(|_| self.peeking && self.can_peek());
-        let Some(baseline) = baseline else { return self.focused_shot() };
+        let Some(baseline) = baseline else {
+            return self.focused_shot();
+        };
         let shots = baseline.all_shots();
         let title = self.focused_shot().and_then(|s| s.title);
-        title.and_then(|t| shots.iter().find(|s| s.title.as_deref() == Some(t.as_str())).cloned()).or_else(|| shots.first().cloned())
+        title
+            .and_then(|t| {
+                shots
+                    .iter()
+                    .find(|s| s.title.as_deref() == Some(t.as_str()))
+                    .cloned()
+            })
+            .or_else(|| shots.first().cloned())
     }
 
     // Editing. Each says whether the draft changed: if it did, a save is due
@@ -615,7 +725,13 @@ impl ReviewSession {
     /// list", Mike, 2 Nov); they stay in the review's order, as the runner
     /// keeps them, so the draft doesn't look changed after a save.
     pub fn pick(&mut self, id: &str) -> bool {
-        if !self.editable() || !self.review.options.iter().any(|o| o.id == id && !o.reference) {
+        if !self.editable()
+            || !self
+                .review
+                .options
+                .iter()
+                .any(|o| o.id == id && !o.reference)
+        {
             return false;
         }
         let mut picked: Vec<String> = self.draft.picked_ids.clone();
@@ -625,7 +741,13 @@ impl ReviewSession {
             picked.push(id.to_owned());
         }
         let mut next = self.draft.clone();
-        next.picked_ids = self.review.options.iter().map(|o| o.id.clone()).filter(|o| picked.contains(o)).collect();
+        next.picked_ids = self
+            .review
+            .options
+            .iter()
+            .map(|o| o.id.clone())
+            .filter(|o| picked.contains(o))
+            .collect();
         next.none = false;
         self.edit(next)
     }
@@ -665,16 +787,26 @@ impl ReviewSession {
         let mut cache = self.cache.borrow_mut();
         // A closing window may finish its save after a new window has edited
         // this review; its old session leaves the new copy alone.
-        if !force && cache.get(&self.cache_key).is_some_and(|c| c.owner.as_deref() != Some(self.owner.as_str())) {
+        if !force
+            && cache
+                .get(&self.cache_key)
+                .is_some_and(|c| c.owner.as_deref() != Some(self.owner.as_str()))
+        {
             return;
         }
-        let entry = CachedDraft { revision: self.review.revision, draft: self.draft.clone(), owner: Some(self.owner.clone()), conflict: self.conflict };
+        let entry = CachedDraft {
+            revision: self.review.revision,
+            draft: self.draft.clone(),
+            owner: Some(self.owner.clone()),
+            conflict: self.conflict,
+        };
         cache.set(&self.cache_key, entry);
     }
 
     fn clear_cache(&mut self) {
         let mut cache = self.cache.borrow_mut();
-        if cache.get(&self.cache_key).and_then(|c| c.owner.as_deref()) == Some(self.owner.as_str()) {
+        if cache.get(&self.cache_key).and_then(|c| c.owner.as_deref()) == Some(self.owner.as_str())
+        {
             cache.remove(&self.cache_key);
         }
     }
@@ -683,12 +815,20 @@ impl ReviewSession {
 
     /// A save to send, if one's due (`saveNow`'s guard).
     pub fn begin_save(&mut self) -> Option<SaveCall> {
-        if !self.dirty || !self.review.is_pending() || self.saving || self.submitting || self.conflict {
+        if !self.dirty
+            || !self.review.is_pending()
+            || self.saving
+            || self.submitting
+            || self.conflict
+        {
             return None;
         }
         self.saving = true;
         self.saving_images = self.draft.images.clone();
-        Some(SaveCall { revision: self.review.revision, draft: self.draft.clone() })
+        Some(SaveCall {
+            revision: self.review.revision,
+            draft: self.draft.clone(),
+        })
     }
 
     /// The runner saved it. An edit made meanwhile keeps the draft dirty, and
@@ -702,10 +842,14 @@ impl ReviewSession {
         // The runner's copies of the pictures, so the next look doesn't see a
         // change and save again (and again).
         let theirs = self.review.response.as_ref().unwrap_or(&self.review.draft);
-        if newer && self.draft.images == self.saving_images && self.draft.normalized().same_but_picture_copies(theirs) {
+        if newer
+            && self.draft.images == self.saving_images
+            && self.draft.normalized().same_but_picture_copies(theirs)
+        {
             self.draft.images = theirs.images.clone();
         }
-        self.dirty = self.draft.normalized() != *self.review.response.as_ref().unwrap_or(&self.review.draft);
+        self.dirty =
+            self.draft.normalized() != *self.review.response.as_ref().unwrap_or(&self.review.draft);
         if stale && self.dirty {
             self.conflict = true;
             self.error = Some(CHANGED_ELSEWHERE.to_owned());
@@ -723,7 +867,9 @@ impl ReviewSession {
     /// The save failed; the window then asks for the latest copy and hands it
     /// to `save_failed_then_loaded`. The draft stays here either way.
     pub fn save_failed(&mut self, message: &str) {
-        self.error = Some(format!("Couldn’t save the draft. Your notes are kept on this computer. {message}"));
+        self.error = Some(format!(
+            "Couldn’t save the draft. Your notes are kept on this computer. {message}"
+        ));
         self.saving = false;
     }
 
@@ -736,13 +882,20 @@ impl ReviewSession {
         // can't be told from another picture put in its place elsewhere
         // (Codex's review, 17 Nov), so that stays a conflict to settle.
         let sent = call.draft.normalized();
-        if revision > call.revision && latest.is_pending() && theirs == sent && sent.images.is_empty() {
+        if revision > call.revision
+            && latest.is_pending()
+            && theirs == sent
+            && sent.images.is_empty()
+        {
             self.saving_images = Vec::new();
             self.save_done(latest);
             return;
         }
         self.receive(latest);
-        if revision > call.revision && theirs != call.draft.normalized() && theirs != self.draft.normalized() {
+        if revision > call.revision
+            && theirs != call.draft.normalized()
+            && theirs != self.draft.normalized()
+        {
             self.conflict = true;
             self.error = Some(CHANGED_ELSEWHERE.to_owned());
             self.cache_draft(false);
@@ -783,8 +936,14 @@ impl ReviewSession {
             // start, and the next dictation lands there (Mike, 16 Nov). So a
             // reply or note that only differs by that trimming stays as typed,
             // even when a pick changed elsewhere in the same copy.
-            let mut next = self.review.response.clone().unwrap_or_else(|| self.review.draft.clone());
-            if next.reply.as_deref().unwrap_or("") == self.draft.reply.as_deref().unwrap_or("").trim() {
+            let mut next = self
+                .review
+                .response
+                .clone()
+                .unwrap_or_else(|| self.review.draft.clone());
+            if next.reply.as_deref().unwrap_or("")
+                == self.draft.reply.as_deref().unwrap_or("").trim()
+            {
                 next.reply = self.draft.reply.clone();
             }
             for (id, note) in &self.draft.notes {
@@ -797,7 +956,14 @@ impl ReviewSession {
             }
         } else if advanced && !self.saving && !self.submitting {
             self.conflict = true;
-            self.error = Some(if self.review.is_pending() { CHANGED_ELSEWHERE } else { CLOSED_ELSEWHERE }.to_owned());
+            self.error = Some(
+                if self.review.is_pending() {
+                    CHANGED_ELSEWHERE
+                } else {
+                    CLOSED_ELSEWHERE
+                }
+                .to_owned(),
+            );
             self.cache_draft(false);
         }
     }
@@ -828,11 +994,17 @@ impl ReviewSession {
             self.submitting = false;
             return None;
         }
-        Some(SaveCall { revision: self.review.revision, draft: self.draft.clone() })
+        Some(SaveCall {
+            revision: self.review.revision,
+            draft: self.draft.clone(),
+        })
     }
 
     pub fn submit_done(&mut self, answered: DesignReview) {
-        self.draft = answered.response.clone().unwrap_or_else(|| answered.draft.clone());
+        self.draft = answered
+            .response
+            .clone()
+            .unwrap_or_else(|| answered.draft.clone());
         self.review = answered;
         self.dirty = false;
         self.conflict = false;
@@ -844,21 +1016,26 @@ impl ReviewSession {
     /// Sending failed. The window asks for the latest copy, and hands it (or
     /// None if that failed too) to `submit_failed_then_loaded`.
     pub fn submit_failed(&mut self, message: &str) {
-        self.error = Some(format!("Couldn’t send the reply. Your notes are kept here. {message}"));
+        self.error = Some(format!(
+            "Couldn’t send the reply. Your notes are kept here. {message}"
+        ));
     }
 
     pub fn submit_failed_then_loaded(&mut self, call: &SendCall, latest: Option<DesignReview>) {
         if let Some(latest) = latest {
             // The answer can be lost after the runner kept the reply: its
             // answered copy is the authority.
-            if latest.status == "answered" && latest.response.as_ref() == Some(&self.draft.normalized()) {
+            if latest.status == "answered"
+                && latest.response.as_ref() == Some(&self.draft.normalized())
+            {
                 self.review = latest;
                 self.dirty = false;
                 self.clear_cache();
                 self.error = None;
             } else {
                 self.submitting = false;
-                let (pending, revision, theirs) = (latest.is_pending(), latest.revision, latest.draft.clone());
+                let (pending, revision, theirs) =
+                    (latest.is_pending(), latest.revision, latest.draft.clone());
                 self.receive(latest);
                 if pending && revision > call.revision && self.draft.normalized() != theirs {
                     self.conflict = true;
@@ -900,7 +1077,9 @@ impl ReviewSession {
     // What's on the stage.
 
     pub fn enlarge(&mut self, index: usize, shot: usize) {
-        let Some(option) = self.review.options.get(index) else { return };
+        let Some(option) = self.review.options.get(index) else {
+            return;
+        };
         self.shot = shot.min(option.shot_count() - 1);
         self.focused = index;
         self.mode = ReviewMode::Single;
@@ -908,7 +1087,10 @@ impl ReviewSession {
     }
 
     pub fn zoom(&mut self, step: ZoomStep) -> ZoomRequest {
-        let request = ZoomRequest { serial: self.zoom_request.map_or(1, |r| r.serial + 1), step };
+        let request = ZoomRequest {
+            serial: self.zoom_request.map_or(1, |r| r.serial + 1),
+            step,
+        };
         self.zoom_request = Some(request);
         request
     }
@@ -1018,7 +1200,14 @@ pub struct GalleryLayout {
 impl GalleryLayout {
     /// `aspects` is each image's width over height; `chrome_width` and
     /// `chrome_height` are what a cell spends on anything but its image.
-    pub fn best(aspects: &[f64], width: f64, height: f64, spacing: f64, chrome_width: f64, chrome_height: f64) -> GalleryLayout {
+    pub fn best(
+        aspects: &[f64],
+        width: f64,
+        height: f64,
+        spacing: f64,
+        chrome_width: f64,
+        chrome_height: f64,
+    ) -> GalleryLayout {
         let count = aspects.len().max(1);
         let mut best: Option<GalleryLayout> = None;
         let mut best_area = -1.;
@@ -1026,7 +1215,10 @@ impl GalleryLayout {
             let rows = count.div_ceil(columns);
             let cell_width = ((width - spacing * (columns - 1) as f64) / columns as f64).max(0.);
             let cell_height = ((height - spacing * (rows - 1) as f64) / rows as f64).max(0.);
-            let room = ((cell_width - chrome_width).max(0.), (cell_height - chrome_height).max(0.));
+            let room = (
+                (cell_width - chrome_width).max(0.),
+                (cell_height - chrome_height).max(0.),
+            );
             let area: f64 = aspects
                 .iter()
                 .map(|&aspect| {
@@ -1037,10 +1229,20 @@ impl GalleryLayout {
             // Ties keep the fewer columns, for the wider cells.
             if area > best_area {
                 best_area = area;
-                best = Some(GalleryLayout { columns, rows, cell_width, cell_height });
+                best = Some(GalleryLayout {
+                    columns,
+                    rows,
+                    cell_width,
+                    cell_height,
+                });
             }
         }
-        best.unwrap_or(GalleryLayout { columns: 1, rows: 1, cell_width: 0., cell_height: 0. })
+        best.unwrap_or(GalleryLayout {
+            columns: 1,
+            rows: 1,
+            cell_width: 0.,
+            cell_height: 0.,
+        })
     }
 
     /// The biggest size of that shape in the room given.
@@ -1078,8 +1280,16 @@ pub const REVIEW_WINDOW_LEAST: (f64, f64) = (780., 650.);
 pub fn window_frame(visible: Rect) -> Rect {
     let width = (visible.width * 0.9).min(REVIEW_WINDOW_MOST.0);
     let height = (visible.height * 0.9).min(REVIEW_WINDOW_MOST.1);
-    let (mid_x, mid_y) = (visible.x + visible.width / 2., visible.y + visible.height / 2.);
-    Rect { x: (mid_x - width / 2.).round(), y: (mid_y - height / 2.).round(), width: width.round(), height: height.round() }
+    let (mid_x, mid_y) = (
+        visible.x + visible.width / 2.,
+        visible.y + visible.height / 2.,
+    );
+    Rect {
+        x: (mid_x - width / 2.).round(),
+        y: (mid_y - height / 2.).round(),
+        width: width.round(),
+        height: height.round(),
+    }
 }
 
 // ---------------------------------------------------------------- the shot zoomed in
@@ -1140,8 +1350,14 @@ impl StageZoom {
 
     pub fn new(doc_width: f64, doc_height: f64, view_width: f64, view_height: f64) -> StageZoom {
         let mut zoom = StageZoom {
-            doc: Point { x: doc_width.max(1.), y: doc_height.max(1.) },
-            view: Point { x: view_width.max(0.), y: view_height.max(0.) },
+            doc: Point {
+                x: doc_width.max(1.),
+                y: doc_height.max(1.),
+            },
+            view: Point {
+                x: view_width.max(0.),
+                y: view_height.max(0.),
+            },
             magnification: 1.,
             origin: Point::default(),
             fitted: true,
@@ -1197,21 +1413,39 @@ impl StageZoom {
     /// The part of the image on show, in its points (`contentView.bounds`).
     pub fn visible(&self) -> Rect {
         let m = self.magnification.max(1e-9);
-        Rect { x: self.origin.x, y: self.origin.y, width: self.view.x / m, height: self.view.y / m }
+        Rect {
+            x: self.origin.x,
+            y: self.origin.y,
+            width: self.view.x / m,
+            height: self.view.y / m,
+        }
     }
 
     /// Where the image is drawn on the stage, in the stage's points.
     pub fn image_rect(&self) -> Rect {
         let m = self.magnification;
-        Rect { x: -self.origin.x * m, y: -self.origin.y * m, width: self.doc.x * m, height: self.doc.y * m }
+        Rect {
+            x: -self.origin.x * m,
+            y: -self.origin.y * m,
+            width: self.doc.x * m,
+            height: self.doc.y * m,
+        }
     }
 
     /// A smaller image is held in the middle of the stage, and a bigger one
     /// can't be moved past its edges (`ReviewCentringClip`).
     fn constrain(&mut self) {
         let visible = self.visible();
-        self.origin.x = if visible.width > self.doc.x { (self.doc.x - visible.width) / 2. } else { self.origin.x.max(0.).min(self.doc.x - visible.width) };
-        self.origin.y = if visible.height > self.doc.y { (self.doc.y - visible.height) / 2. } else { self.origin.y.max(0.).min(self.doc.y - visible.height) };
+        self.origin.x = if visible.width > self.doc.x {
+            (self.doc.x - visible.width) / 2.
+        } else {
+            self.origin.x.max(0.).min(self.doc.x - visible.width)
+        };
+        self.origin.y = if visible.height > self.doc.y {
+            (self.doc.y - visible.height) / 2.
+        } else {
+            self.origin.y.max(0.).min(self.doc.y - visible.height)
+        };
     }
 
     fn settle(&mut self) {
@@ -1222,12 +1456,19 @@ impl StageZoom {
     /// The stage changed size: fitted stays fitted, zoomed keeps its scale
     /// and its top left.
     pub fn set_view(&mut self, width: f64, height: f64) {
-        let view = Point { x: width.max(0.), y: height.max(0.) };
+        let view = Point {
+            x: width.max(0.),
+            y: height.max(0.),
+        };
         if self.view == view {
             return;
         }
         self.view = view;
-        self.magnification = if self.fitted { self.fit_scale() } else { self.clamp(self.magnification) };
+        self.magnification = if self.fitted {
+            self.fit_scale()
+        } else {
+            self.clamp(self.magnification)
+        };
         self.settle();
     }
 
@@ -1237,8 +1478,15 @@ impl StageZoom {
     pub fn swap_image(&mut self, doc_width: f64, doc_height: f64) {
         let centre = self.centre_fraction();
         let fitted = self.fitted;
-        self.doc = Point { x: doc_width.max(1.), y: doc_height.max(1.) };
-        self.magnification = if fitted { self.fit_scale() } else { self.clamp(self.magnification) };
+        self.doc = Point {
+            x: doc_width.max(1.),
+            y: doc_height.max(1.),
+        };
+        self.magnification = if fitted {
+            self.fit_scale()
+        } else {
+            self.clamp(self.magnification)
+        };
         self.fitted = fitted;
         if !fitted {
             self.go_to(centre.x, centre.y);
@@ -1248,7 +1496,10 @@ impl StageZoom {
 
     fn centre_fraction(&self) -> Point {
         let v = self.visible();
-        Point { x: (v.x + v.width / 2.) / self.doc.x.max(1.), y: (v.y + v.height / 2.) / self.doc.y.max(1.) }
+        Point {
+            x: (v.x + v.width / 2.) / self.doc.x.max(1.),
+            y: (v.y + v.height / 2.) / self.doc.y.max(1.),
+        }
     }
 
     pub fn apply(&mut self, step: ZoomStep) {
@@ -1261,7 +1512,10 @@ impl StageZoom {
                 let fit = self.fit_scale();
                 self.magnification = self.clamp(if fit < 1. { 1. } else { fit * 2. });
                 let visible = self.visible();
-                self.origin = Point { x: ((self.doc.x - visible.width) / 2.).max(0.), y: 0. };
+                self.origin = Point {
+                    x: ((self.doc.x - visible.width) / 2.).max(0.),
+                    y: 0.,
+                };
             }
             ZoomStep::Closer => self.zoom_by(Self::KEY_STEP, None),
             ZoomStep::Further => self.zoom_by(1. / Self::KEY_STEP, None),
@@ -1273,20 +1527,32 @@ impl StageZoom {
     /// stage's points), or the middle of the stage without one.
     pub fn zoom_by(&mut self, factor: f64, at: Option<Point>) {
         let before = self.visible();
-        let at = at.unwrap_or(Point { x: self.view.x / 2., y: self.view.y / 2. });
+        let at = at.unwrap_or(Point {
+            x: self.view.x / 2.,
+            y: self.view.y / 2.,
+        });
         let across = (at.x / self.view.x.max(1.)).clamp(0., 1.);
         let down = (at.y / self.view.y.max(1.)).clamp(0., 1.);
-        let anchor = Point { x: before.x + across * before.width, y: before.y + down * before.height };
+        let anchor = Point {
+            x: before.x + across * before.width,
+            y: before.y + down * before.height,
+        };
         self.magnification = self.clamp(self.magnification * factor);
         let after = self.visible();
-        self.origin = Point { x: anchor.x - across * after.width, y: anchor.y - down * after.height };
+        self.origin = Point {
+            x: anchor.x - across * after.width,
+            y: anchor.y - down * after.height,
+        };
         self.settle();
     }
 
     /// Puts the stage's middle on a spot, as fractions of the image.
     pub fn go_to(&mut self, x: f64, y: f64) {
         let visible = self.visible();
-        self.origin = Point { x: x * self.doc.x - visible.width / 2., y: y * self.doc.y - visible.height / 2. };
+        self.origin = Point {
+            x: x * self.doc.x - visible.width / 2.,
+            y: y * self.doc.y - visible.height / 2.,
+        };
         self.constrain();
     }
 
@@ -1294,7 +1560,10 @@ impl StageZoom {
     /// goes the way the fingers do, as in a scroll view.
     pub fn scroll_by(&mut self, dx: f64, dy: f64) {
         let m = self.magnification.max(1e-9);
-        self.origin = Point { x: self.origin.x - dx / m, y: self.origin.y - dy / m };
+        self.origin = Point {
+            x: self.origin.x - dx / m,
+            y: self.origin.y - dy / m,
+        };
         self.constrain();
     }
 
@@ -1378,9 +1647,14 @@ impl StageZoom {
 
     /// The image follows the hand.
     pub fn drag_to(&mut self, at: Point) {
-        let Some((from, origin)) = self.drag else { return };
+        let Some((from, origin)) = self.drag else {
+            return;
+        };
         let m = self.magnification.max(1e-9);
-        self.origin = Point { x: origin.x - (at.x - from.x) / m, y: origin.y - (at.y - from.y) / m };
+        self.origin = Point {
+            x: origin.x - (at.x - from.x) / m,
+            y: origin.y - (at.y - from.y) / m,
+        };
         self.constrain();
     }
 
@@ -1405,16 +1679,37 @@ impl StageZoom {
         }
         let room = (150., (self.view.y - 32.).max(40.));
         let scale = (room.0 / self.doc.x).min(room.1 / self.doc.y);
-        let size = ((self.doc.x * scale).round().max(20.), (self.doc.y * scale).round().max(20.));
+        let size = (
+            (self.doc.x * scale).round().max(20.),
+            (self.doc.y * scale).round().max(20.),
+        );
         // Clear of where scroll bars would run, down the right edge and along
         // the bottom.
-        let frame = Rect { x: self.view.x - size.0 - 22., y: self.view.y - size.1 - 16., width: size.0, height: size.1 };
+        let frame = Rect {
+            x: self.view.x - size.0 - 22.,
+            y: self.view.y - size.1 - 16.,
+            width: size.0,
+            height: size.1,
+        };
         let (x0, y0) = (visible.x.max(0.), visible.y.max(0.));
-        let (x1, y1) = ((visible.x + visible.width).min(self.doc.x), (visible.y + visible.height).min(self.doc.y));
-        let fraction = Rect { x: x0 / self.doc.x, y: y0 / self.doc.y, width: (x1 - x0).max(0.) / self.doc.x, height: (y1 - y0).max(0.) / self.doc.y };
+        let (x1, y1) = (
+            (visible.x + visible.width).min(self.doc.x),
+            (visible.y + visible.height).min(self.doc.y),
+        );
+        let fraction = Rect {
+            x: x0 / self.doc.x,
+            y: y0 / self.doc.y,
+            width: (x1 - x0).max(0.) / self.doc.x,
+            height: (y1 - y0).max(0.) / self.doc.y,
+        };
         // Tall enough to see and grab even when it's a sliver of the page.
         let height = (fraction.height * size.1).max(6.);
-        let shown = Rect { x: fraction.x * size.0, y: (fraction.y * size.1).min(size.1 - height), width: fraction.width * size.0, height };
+        let shown = Rect {
+            x: fraction.x * size.0,
+            y: (fraction.y * size.1).min(size.1 - height),
+            width: fraction.width * size.0,
+            height,
+        };
         Some(Minimap { frame, shown })
     }
 
@@ -1429,7 +1724,12 @@ impl StageZoom {
     /// The visible box as fractions of the image, for the scripts.
     pub fn shown_fraction(&self) -> Rect {
         let v = self.visible();
-        Rect { x: v.x / self.doc.x, y: v.y / self.doc.y, width: v.width / self.doc.x, height: v.height / self.doc.y }
+        Rect {
+            x: v.x / self.doc.x,
+            y: v.y / self.doc.y,
+            width: v.width / self.doc.x,
+            height: v.height / self.doc.y,
+        }
     }
 }
 
@@ -1469,11 +1769,25 @@ pub fn inline_markdown(source: &str) -> Vec<InlineRun> {
     let chars: Vec<char> = source.chars().collect();
     let marks = Marks::new(&chars);
     let mut out: Vec<InlineRun> = Vec::new();
-    inline_runs(&chars, &marks, 0, chars.len(), InlineStyle::default(), None, 0, &mut out);
+    inline_runs(
+        &chars,
+        &marks,
+        0,
+        chars.len(),
+        InlineStyle::default(),
+        None,
+        0,
+        &mut out,
+    );
     let mut merged: Vec<InlineRun> = Vec::new();
     for run in out.into_iter().filter(|r| !r.text.is_empty()) {
         match merged.last_mut() {
-            Some(last) if (last.bold, last.italic, last.code, &last.link) == (run.bold, run.italic, run.code, &run.link) => last.text.push_str(&run.text),
+            Some(last)
+                if (last.bold, last.italic, last.code, &last.link)
+                    == (run.bold, run.italic, run.code, &run.link) =>
+            {
+                last.text.push_str(&run.text)
+            }
             _ => merged.push(run),
         }
     }
@@ -1522,19 +1836,45 @@ impl Marks {
         let mut last_word_before = vec![None; c.len() + 1];
         for (j, ch) in c.iter().enumerate() {
             spaces_before[j + 1] = spaces_before[j] + usize::from(ch.is_whitespace());
-            last_word_before[j + 1] = if ch.is_whitespace() { last_word_before[j] } else { Some(j) };
+            last_word_before[j + 1] = if ch.is_whitespace() {
+                last_word_before[j]
+            } else {
+                Some(j)
+            };
         }
         let mut next_word = vec![c.len(); c.len() + 1];
         for j in (0..c.len()).rev() {
-            next_word[j] = if c[j].is_whitespace() { next_word[j + 1] } else { j };
+            next_word[j] = if c[j].is_whitespace() {
+                next_word[j + 1]
+            } else {
+                j
+            };
         }
-        Marks { bracket_close, next_paren, spaces_before, next_word, last_word_before }
+        Marks {
+            bracket_close,
+            next_paren,
+            spaces_before,
+            next_word,
+            last_word_before,
+        }
     }
 }
 
-fn inline_push(out: &mut Vec<InlineRun>, text: &mut String, style: InlineStyle, code: bool, link: Option<&std::sync::Arc<str>>) {
+fn inline_push(
+    out: &mut Vec<InlineRun>,
+    text: &mut String,
+    style: InlineStyle,
+    code: bool,
+    link: Option<&std::sync::Arc<str>>,
+) {
     if !text.is_empty() {
-        out.push(InlineRun { text: std::mem::take(text), bold: style.bold, italic: style.italic, code, link: link.cloned() });
+        out.push(InlineRun {
+            text: std::mem::take(text),
+            bold: style.bold,
+            italic: style.italic,
+            code,
+            link: link.cloned(),
+        });
     }
 }
 
@@ -1545,7 +1885,11 @@ fn run_length(c: &[char], at: usize, end: usize, ch: char) -> usize {
 /// The run's length up to `max`: emphasis only ever needs three, and a long
 /// run of `*` counted whole at each of its places is quadratic.
 fn run_length_upto(c: &[char], at: usize, end: usize, ch: char, max: usize) -> usize {
-    c[at..end].iter().take(max).take_while(|&&x| x == ch).count()
+    c[at..end]
+        .iter()
+        .take(max)
+        .take_while(|&&x| x == ch)
+        .count()
 }
 
 /// A delimiter run can open emphasis when what follows it isn't a space, and
@@ -1553,13 +1897,15 @@ fn run_length_upto(c: &[char], at: usize, end: usize, ch: char, max: usize) -> u
 fn can_open(c: &[char], at: usize, len: usize, end: usize) -> bool {
     let next = c.get(at + len).filter(|_| at + len < end);
     let before = at.checked_sub(1).map(|i| c[i]);
-    next.is_some_and(|n| !n.is_whitespace()) && (c[at] == '*' || before.is_none_or(|b| !b.is_alphanumeric()))
+    next.is_some_and(|n| !n.is_whitespace())
+        && (c[at] == '*' || before.is_none_or(|b| !b.is_alphanumeric()))
 }
 
 fn can_close(c: &[char], at: usize, len: usize, end: usize) -> bool {
     let before = at.checked_sub(1).map(|i| c[i]);
     let after = c.get(at + len).filter(|_| at + len < end);
-    before.is_some_and(|b| !b.is_whitespace()) && (c[at] == '*' || after.is_none_or(|a| !a.is_alphanumeric()))
+    before.is_some_and(|b| !b.is_whitespace())
+        && (c[at] == '*' || after.is_none_or(|a| !a.is_alphanumeric()))
 }
 
 /// The start of the next run of exactly `ticks` backticks from `from`, up
@@ -1580,13 +1926,26 @@ fn closing_ticks(c: &[char], from: usize, end: usize, ticks: usize) -> Option<us
     None
 }
 
-#[allow(clippy::too_many_arguments)]
-fn inline_runs(c: &[char], marks: &Marks, mut i: usize, end: usize, style: InlineStyle, link: Option<&std::sync::Arc<str>>, depth: usize, out: &mut Vec<InlineRun>) {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn inline_runs(
+    c: &[char],
+    marks: &Marks,
+    mut i: usize,
+    end: usize,
+    style: InlineStyle,
+    link: Option<&std::sync::Arc<str>>,
+    depth: usize,
+    out: &mut Vec<InlineRun>,
+) {
     let mut plain = String::new();
     // Delimiters whose closer wasn't found from somewhere in this range:
     // none is found from further on either.
     let mut unclosed_ticks: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut unclosed_marks: std::collections::HashSet<(char, usize)> = std::collections::HashSet::new();
+    let mut unclosed_marks: std::collections::HashSet<(char, usize)> =
+        std::collections::HashSet::new();
     let nests = depth < INLINE_DEPTH;
     while i < end {
         let ch = c[i];
@@ -1598,7 +1957,11 @@ fn inline_runs(c: &[char], marks: &Marks, mut i: usize, end: usize, style: Inlin
         }
         if ch == '`' {
             let ticks = run_length(c, i, end, '`');
-            let close = if unclosed_ticks.contains(&ticks) { None } else { closing_ticks(c, i + ticks, end, ticks) };
+            let close = if unclosed_ticks.contains(&ticks) {
+                None
+            } else {
+                closing_ticks(c, i + ticks, end, ticks)
+            };
             if let Some(close) = close {
                 inline_push(out, &mut plain, style, false, link);
                 let mut code: String = c[i + ticks..close].iter().collect();
@@ -1624,16 +1987,27 @@ fn inline_runs(c: &[char], marks: &Marks, mut i: usize, end: usize, style: Inlin
                 continue;
             }
         }
-        if (ch == '*' || ch == '_') && nests && can_open(c, i, run_length_upto(c, i, end, ch, 3), end) {
+        if (ch == '*' || ch == '_')
+            && nests
+            && can_open(c, i, run_length_upto(c, i, end, ch, 3), end)
+        {
             let len = run_length_upto(c, i, end, ch, 3);
             let close = if unclosed_marks.contains(&(ch, len)) {
                 None
             } else {
-                (i + len..end).find(|&j| c[j] == ch && (j == 0 || c[j - 1] != ch) && run_length_upto(c, j, end, ch, len) >= len && can_close(c, j, len, end))
+                (i + len..end).find(|&j| {
+                    c[j] == ch
+                        && (j == 0 || c[j - 1] != ch)
+                        && run_length_upto(c, j, end, ch, len) >= len
+                        && can_close(c, j, len, end)
+                })
             };
             if let Some(close) = close {
                 inline_push(out, &mut plain, style, false, link);
-                let inner = InlineStyle { bold: style.bold || len >= 2, italic: style.italic || len != 2 };
+                let inner = InlineStyle {
+                    bold: style.bold || len >= 2,
+                    italic: style.italic || len != 2,
+                };
                 inline_runs(c, marks, i + len, close, inner, link, depth + 1, out);
                 i = close + len;
                 continue;
@@ -1665,7 +2039,11 @@ fn inline_link(c: &[char], marks: &Marks, at: usize, end: usize) -> Option<(usiz
     if marks.spaces_before[last + 1] != marks.spaces_before[first] {
         return None;
     }
-    let url: String = c[close + 2..stop].iter().collect::<String>().trim().to_owned();
+    let url: String = c[close + 2..stop]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_owned();
     Some((close, url, stop + 1))
 }
 
@@ -1679,11 +2057,23 @@ mod tests {
     }
 
     fn option(id: &str) -> ReviewOption {
-        ReviewOption { id: id.into(), title: format!("Option {id}"), note: Some(format!("Why {id}")), reference: false, image: image(id), shots: vec![], url: None }
+        ReviewOption {
+            id: id.into(),
+            title: format!("Option {id}"),
+            note: Some(format!("Why {id}")),
+            reference: false,
+            image: image(id),
+            shots: vec![],
+            url: None,
+        }
     }
 
     fn shot(title: Option<&str>, name: &str) -> ReviewShot {
-        ReviewShot { title: title.map(str::to_owned), image: image(name), media: None }
+        ReviewShot {
+            title: title.map(str::to_owned),
+            image: image(name),
+            media: None,
+        }
     }
 
     fn design(options: Vec<ReviewOption>) -> DesignReview {
@@ -1716,14 +2106,21 @@ mod tests {
     /// untitled, C one, and Today is a reference with two.
     fn rail() -> DesignReview {
         let mut options: Vec<ReviewOption> = ["A", "B", "C"].iter().map(|id| option(id)).collect();
-        options[0].shots = vec![shot(Some("Overview"), "A"), shot(Some("Mid-drag"), "A2"), shot(Some("Detail"), "A3")];
+        options[0].shots = vec![
+            shot(Some("Overview"), "A"),
+            shot(Some("Mid-drag"), "A2"),
+            shot(Some("Detail"), "A3"),
+        ];
         options[0].url = Some("http://localhost:5190/a".into());
         options[1].shots = vec![shot(None, "B"), shot(None, "B2")];
         let mut today = option("Today");
         today.title = "Today".into();
         today.reference = true;
         today.image = image("today");
-        today.shots = vec![shot(Some("Overview"), "today"), shot(Some("Mid-drag"), "today2")];
+        today.shots = vec![
+            shot(Some("Overview"), "today"),
+            shot(Some("Mid-drag"), "today2"),
+        ];
         options.push(today);
         design(options)
     }
@@ -1733,7 +2130,10 @@ mod tests {
     }
 
     fn at(s: &ReviewSession) -> (String, usize) {
-        (s.focused_option().map(|o| o.id.clone()).unwrap_or_default(), s.shot())
+        (
+            s.focused_option().map(|o| o.id.clone()).unwrap_or_default(),
+            s.shot(),
+        )
     }
 
     fn saved(mut review: DesignReview, draft: &ReviewDraft) -> DesignReview {
@@ -1757,32 +2157,61 @@ mod tests {
             d
         };
         assert!(!ReviewDraft::default().can_submit(options));
-        assert!(!draft(&|d| { d.notes.insert("A".into(), " \n ".into()); }).can_submit(options));
-        assert!(draft(&|d| { d.notes.insert("D".into(), "Works with every option".into()); }).can_submit(options));
+        assert!(!draft(&|d| {
+            d.notes.insert("A".into(), " \n ".into());
+        })
+        .can_submit(options));
+        assert!(draft(&|d| {
+            d.notes.insert("D".into(), "Works with every option".into());
+        })
+        .can_submit(options));
         assert!(draft(&|d| d.picked_ids = vec!["B".into()]).can_submit(options));
         assert!(!draft(&|d| d.picked_ids = vec!["D".into()]).can_submit(options));
         assert!(!draft(&|d| d.picked_ids = vec!["missing".into()]).can_submit(options));
-        assert!(!draft(&|d| { d.notes.insert("missing".into(), "Note".into()); }).can_submit(options));
-        assert!(!draft(&|d| { d.notes.insert("A".into(), "x".repeat(4001)); }).can_submit(options));
         assert!(!draft(&|d| {
-            d.picked_ids = vec!["A".into()];
-            d.none = true;
+            d.notes.insert("missing".into(), "Note".into());
         })
-        .can_submit(options), "picks or none, not both");
+        .can_submit(options));
+        assert!(!draft(&|d| {
+            d.notes.insert("A".into(), "x".repeat(4001));
+        })
+        .can_submit(options));
+        assert!(
+            !draft(&|d| {
+                d.picked_ids = vec!["A".into()];
+                d.none = true;
+            })
+            .can_submit(options),
+            "picks or none, not both"
+        );
         assert!(draft(&|d| d.reply = Some("Hmm".into())).can_submit(options));
         assert!(!draft(&|d| d.reply = Some("  ".into())).can_submit(options));
     }
 
     #[test]
     fn a_draft_goes_with_its_picks_listed_and_reads_back_the_same() {
-        let mut draft = ReviewDraft { picked_ids: vec!["A".into(), "D".into()], reply: Some("Both".into()), ..Default::default() };
+        let mut draft = ReviewDraft {
+            picked_ids: vec!["A".into(), "D".into()],
+            reply: Some("Both".into()),
+            ..Default::default()
+        };
         draft.notes.insert("A".into(), "Fainter".into());
         let sent = draft.to_json();
-        assert_eq!(sent["pickedId"], "A", "the first pick, for a runner from before several");
+        assert_eq!(
+            sent["pickedId"], "A",
+            "the first pick, for a runner from before several"
+        );
         assert_eq!(sent["pickedIds"], json!(["A", "D"]));
         assert_eq!(ReviewDraft::decode(&sent), Some(draft));
-        let none = ReviewDraft { none: true, ..Default::default() }.to_json();
-        assert_eq!(none, json!({ "notes": {}, "pickedIds": [], "images": [], "none": true }));
+        let none = ReviewDraft {
+            none: true,
+            ..Default::default()
+        }
+        .to_json();
+        assert_eq!(
+            none,
+            json!({ "notes": {}, "pickedIds": [], "images": [], "none": true })
+        );
     }
 
     #[test]
@@ -1795,22 +2224,53 @@ mod tests {
         a.title = "A".into();
         assert_eq!(a.label(), "A");
         let review = rail();
-        assert_eq!(review.options[0].all_shots().iter().map(|s| s.title.clone()).collect::<Vec<_>>(), vec![Some("Overview".to_owned()), Some("Mid-drag".to_owned()), Some("Detail".to_owned())]);
+        assert_eq!(
+            review.options[0]
+                .all_shots()
+                .iter()
+                .map(|s| s.title.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("Overview".to_owned()),
+                Some("Mid-drag".to_owned()),
+                Some("Detail".to_owned())
+            ]
+        );
         assert_eq!(shot_tip(&review.options[0], 1), "A. Option A, Mid-drag");
         assert_eq!(shot_tip(&review.options[1], 1), "B. Option B, shot 2");
         assert_eq!(shot_tip(&review.options[2], 0), "C. Option C");
-        assert_eq!(caption_where(&review.options[0], &review.options[0].shot(1)), "2 of 3 \u{00B7} Mid-drag");
-        assert_eq!(caption_where(&review.options[1], &review.options[1].shot(0)), "1 of 2");
-        assert_eq!(caption_where(&review.options[2], &review.options[2].shot(0)), "");
+        assert_eq!(
+            caption_where(&review.options[0], &review.options[0].shot(1)),
+            "2 of 3 \u{00B7} Mid-drag"
+        );
+        assert_eq!(
+            caption_where(&review.options[1], &review.options[1].shot(0)),
+            "1 of 2"
+        );
+        assert_eq!(
+            caption_where(&review.options[2], &review.options[2].shot(0)),
+            ""
+        );
     }
 
     #[test]
     fn a_shot_can_be_a_video_or_a_page_with_its_still() {
-        let video = ReviewShot { title: None, image: image("a"), media: Some(ImageRef::new("/a.mp4", "video/mp4")) };
-        let page = ReviewShot { title: None, image: image("p"), media: Some(ImageRef::new("/p/index.html", "text/html")) };
+        let video = ReviewShot {
+            title: None,
+            image: image("a"),
+            media: Some(ImageRef::new("/a.mp4", "video/mp4")),
+        };
+        let page = ReviewShot {
+            title: None,
+            image: image("p"),
+            media: Some(ImageRef::new("/p/index.html", "text/html")),
+        };
         assert_eq!((video.video(), video.page()), (Some("/a.mp4"), None));
         assert_eq!((page.video(), page.page()), (None, Some("/p/index.html")));
-        assert_eq!(page.image.path, "/nonexistent/p.png", "the still stays the image, for thumbnails");
+        assert_eq!(
+            page.image.path, "/nonexistent/p.png",
+            "the still stays the image, for thumbnails"
+        );
     }
 
     // The session, after ReviewSessionTests.
@@ -1825,17 +2285,29 @@ mod tests {
         assert!(s.set_reply_with_pictures("Cut off? [Picture 1]", vec![pasted.clone()]));
         assert!(s.can_submit(), "pictures alone would be an answer too");
         let call = s.begin_save().expect("a save is due");
-        assert_eq!(call.draft.to_json()["images"], json!([{ "path": "/home/inbox/1.png", "mediaType": "image/png" }]));
+        assert_eq!(
+            call.draft.to_json()["images"],
+            json!([{ "path": "/home/inbox/1.png", "mediaType": "image/png" }])
+        );
         let mut theirs = call.draft.normalized();
-        theirs.images = vec![ImageRef::new("/home/media/t/reviews/r/reply/abc.png", "image/png")];
+        theirs.images = vec![ImageRef::new(
+            "/home/media/t/reviews/r/reply/abc.png",
+            "image/png",
+        )];
         let mut back = s.review().clone();
         back.revision += 1;
         back.draft = theirs.clone();
         s.save_done(back);
-        assert!(!s.dirty(), "the runner's copy of the same picture isn't an edit");
+        assert!(
+            !s.dirty(),
+            "the runner's copy of the same picture isn't an edit"
+        );
         assert_eq!(s.draft().images, theirs.images);
         assert_eq!(ReviewDraft::decode(&theirs.to_json()), Some(theirs));
-        let only = ReviewDraft { images: vec![pasted.clone()], ..Default::default() };
+        let only = ReviewDraft {
+            images: vec![pasted.clone()],
+            ..Default::default()
+        };
         assert!(only.can_submit(&two().options));
 
         // A picture changed while a save of another was on its way stays.
@@ -1846,9 +2318,16 @@ mod tests {
         s.set_reply_with_pictures("[Picture 1]", vec![other.clone()]);
         let mut back = s.review().clone();
         back.revision += 1;
-        back.draft = ReviewDraft { images: vec![ImageRef::new("/kept/1.png", "image/png")], ..call.draft.normalized() };
+        back.draft = ReviewDraft {
+            images: vec![ImageRef::new("/kept/1.png", "image/png")],
+            ..call.draft.normalized()
+        };
         s.save_done(back);
-        assert_eq!(s.draft().images, vec![other], "not the copy of the one it replaced");
+        assert_eq!(
+            s.draft().images,
+            vec![other],
+            "not the copy of the one it replaced"
+        );
         assert!(s.dirty() && s.save_again());
 
         // A save whose answer was lost, though the runner kept it, isn't a
@@ -1868,7 +2347,10 @@ mod tests {
         let call = s.begin_save().unwrap();
         let mut latest = s.review().clone();
         latest.revision += 1;
-        latest.draft = ReviewDraft { images: vec![ImageRef::new("/kept/other.png", "image/png")], ..call.draft.normalized() };
+        latest.draft = ReviewDraft {
+            images: vec![ImageRef::new("/kept/other.png", "image/png")],
+            ..call.draft.normalized()
+        };
         s.save_failed("connection lost");
         s.save_failed_then_loaded(&call, latest);
         assert!(s.conflict(), "not taken as the copy of mine");
@@ -1915,7 +2397,10 @@ mod tests {
         assert!(s.can_submit());
         assert!(s.begin_submit());
         assert!(!s.begin_submit(), "Send can't be pressed twice");
-        assert!(!s.set_note("Typed while it goes", "A"), "nothing can be typed while it goes");
+        assert!(
+            !s.set_note("Typed while it goes", "A"),
+            "nothing can be typed while it goes"
+        );
         let call = s.send_call().unwrap();
         let mut answered = s.review().clone();
         answered.status = "answered".into();
@@ -1925,7 +2410,10 @@ mod tests {
         s.submit_done(answered);
         assert!(!s.set_note("Cannot edit an answer", "A"));
         assert!(!s.begin_submit());
-        assert_eq!(s.review().response.as_ref().unwrap().notes["A"], "Try a version with a smaller menu");
+        assert_eq!(
+            s.review().response.as_ref().unwrap().notes["A"],
+            "Try a version with a smaller menu"
+        );
         assert!(!s.review().is_pending());
         assert!(!s.dirty());
     }
@@ -1937,7 +2425,10 @@ mod tests {
         s.set_note("My draft", "A");
         server.status = "answered".into();
         server.revision = 2;
-        server.response = Some(ReviewDraft { picked_ids: vec!["B".into()], ..Default::default() });
+        server.response = Some(ReviewDraft {
+            picked_ids: vec!["B".into()],
+            ..Default::default()
+        });
         s.receive(server);
         assert_eq!(s.draft().notes["A"], "My draft");
         assert!(!s.can_submit());
@@ -1996,7 +2487,7 @@ mod tests {
         s.receive(remote.clone());
         let mut acknowledgement = initial;
         acknowledgement.revision = 2;
-        acknowledgement.draft = call.draft.clone();
+        acknowledgement.draft = call.draft;
         s.save_done(acknowledgement);
         assert_eq!(s.review().revision, 3);
         assert_eq!(s.draft().notes["A"], "Mine");
@@ -2116,7 +2607,10 @@ mod tests {
         let again = ReviewSession::new("thread", two(), Rc::new(RefCell::new(read)));
         assert_eq!(again.draft().picked_ids, vec!["B".to_owned()]);
         assert_eq!(again.draft().reply.as_deref(), Some("Bigger please"));
-        assert!(again.dirty() && !again.conflict(), "the same revision, so it just saves");
+        assert!(
+            again.dirty() && !again.conflict(),
+            "the same revision, so it just saves"
+        );
         assert!(DraftCache::decode(&json!({ "x": { "revision": "one" } })).is_empty());
     }
 
@@ -2168,7 +2662,11 @@ mod tests {
     fn a_review_thats_over_opens_on_all_of_them_and_takes_nothing() {
         let mut answered = rail();
         answered.status = "answered".into();
-        answered.response = Some(ReviewDraft { picked_ids: vec!["A".into(), "C".into()], reply: Some("Both".into()), ..Default::default() });
+        answered.response = Some(ReviewDraft {
+            picked_ids: vec!["A".into(), "C".into()],
+            reply: Some("Both".into()),
+            ..Default::default()
+        });
         let mut s = session(answered);
         assert_eq!(s.mode, ReviewMode::All, "nothing left to step towards");
         assert!(!s.editable());
@@ -2176,11 +2674,18 @@ mod tests {
         assert!(!s.toggle_none());
         assert_eq!(s.shown_draft().reply.as_deref(), Some("Both"));
         assert_eq!(status_text(s.review()), "Sent");
-        for (status, words) in [("cancelled", "Cancelled"), ("superseded", "Answered in the thread"), ("someday", "Closed")] {
+        for (status, words) in [
+            ("cancelled", "Cancelled"),
+            ("superseded", "Answered in the thread"),
+            ("someday", "Closed"),
+        ] {
             let mut r = rail();
             r.status = status.into();
             assert_eq!(status_text(&r), words);
-            assert!(!ReviewSession::new("t", r, DraftCache::shared()).editable(), "{status} is read-only");
+            assert!(
+                !ReviewSession::new("t", r, DraftCache::shared()).editable(),
+                "{status} is read-only"
+            );
         }
     }
 
@@ -2218,7 +2723,11 @@ mod tests {
         assert_eq!(at(&s), ("A".into(), 2));
         s.show_all();
         s.browse(0);
-        assert_eq!(at(&s), ("A".into(), 2), "Return goes back to the one last looked at");
+        assert_eq!(
+            at(&s),
+            ("A".into(), 2),
+            "Return goes back to the one last looked at"
+        );
     }
 
     #[test]
@@ -2247,10 +2756,18 @@ mod tests {
         let mut s = session(only);
         assert_eq!(s.visible_indices(), vec![0]);
         s.browse(1);
-        assert_eq!(s.mode, ReviewMode::All, "next from the only image is the choosing step");
+        assert_eq!(
+            s.mode,
+            ReviewMode::All,
+            "next from the only image is the choosing step"
+        );
         assert_eq!(s.visible_indices(), vec![0]);
         s.browse(1);
-        assert_eq!(s.visible_indices(), vec![0], "and next from there stays put");
+        assert_eq!(
+            s.visible_indices(),
+            vec![0],
+            "and next from there stays put"
+        );
     }
 
     #[test]
@@ -2260,12 +2777,20 @@ mod tests {
         assert!(s.can_peek());
         s.peeking = true;
         assert_eq!(s.shown_option().map(|o| o.id.as_str()), Some("Today"));
-        assert_eq!(s.shown_shot().unwrap().image.path, "/nonexistent/today2.png", "today's shot of the same name");
+        assert_eq!(
+            s.shown_shot().unwrap().image.path,
+            "/nonexistent/today2.png",
+            "today's shot of the same name"
+        );
         assert_eq!(at(&s), ("A".into(), 1), "flicking isn't moving");
         s.enlarge(1, 1);
         assert!(!s.peeking);
         s.peeking = true;
-        assert_eq!(s.shown_shot().unwrap().image.path, "/nonexistent/today.png", "no shot of that name: today's first");
+        assert_eq!(
+            s.shown_shot().unwrap().image.path,
+            "/nonexistent/today.png",
+            "no shot of that name: today's first"
+        );
         s.browse(1);
         assert!(!s.peeking, "moving turns it off");
         s.enlarge(3, 0);
@@ -2291,13 +2816,33 @@ mod tests {
         first.id = "review_account_picker".into();
         let mut second = two();
         second.id = "review_account_menu".into();
-        let row = |review: DesignReview| Row::new(&format!("review:{}", review.id), 4, None, RowContent::Review(review));
-        let rows = vec![row(first.clone()), row(second.clone())];
-        assert_eq!(find_review("review_account_picker", &rows).map(|r| r.id.as_str()), Some("review_account_picker"));
-        assert_eq!(find_review("REVIEW_ACCOUNT_M", &rows).map(|r| r.id.as_str()), Some("review_account_menu"));
-        assert_eq!(find_review("review_account", &rows), None, "two of them start that way");
+        let row = |review: DesignReview| {
+            Row::new(
+                &format!("review:{}", review.id),
+                4,
+                None,
+                RowContent::Review(review),
+            )
+        };
+        let rows = vec![row(first), row(second)];
+        assert_eq!(
+            find_review("review_account_picker", &rows).map(|r| r.id.as_str()),
+            Some("review_account_picker")
+        );
+        assert_eq!(
+            find_review("REVIEW_ACCOUNT_M", &rows).map(|r| r.id.as_str()),
+            Some("review_account_menu")
+        );
+        assert_eq!(
+            find_review("review_account", &rows),
+            None,
+            "two of them start that way"
+        );
         assert_eq!(find_review("nothing", &rows), None);
-        assert_eq!(link_review_id(" review_account_picker "), Some("review_account_picker".into()));
+        assert_eq!(
+            link_review_id(" review_account_picker "),
+            Some("review_account_picker".into())
+        );
         assert_eq!(link_review_id("  "), None);
         assert_eq!(pending_button_title(2), "Review design options (2)");
     }
@@ -2313,18 +2858,33 @@ mod tests {
         let layout = GalleryLayout::best(&wide, 1200., 900., 12., 0., 0.);
         assert_eq!((layout.columns, layout.rows), (2, 2));
         let one = GalleryLayout::best(&[1.5], 1200., 900., 12., 0., 0.);
-        assert_eq!((one.columns, one.cell_width, one.cell_height), (1, 1200., 900.));
+        assert_eq!(
+            (one.columns, one.cell_width, one.cell_height),
+            (1, 1200., 900.)
+        );
         let none = GalleryLayout::best(&[1., 1.], 0., 0., 12., 16., 36.);
-        assert_eq!((none.cell_width, none.cell_height), (0., 0.), "a stage with no room yet doesn't go negative");
+        assert_eq!(
+            (none.cell_width, none.cell_height),
+            (0., 0.),
+            "a stage with no room yet doesn't go negative"
+        );
         assert_eq!(GalleryLayout::fit(0.5, 400., 400.), (200., 400.));
         assert_eq!(GalleryLayout::fit(2., 400., 400.), (400., 200.));
-        assert_eq!(aspect(&ImageRef::new("/a.png", "image/png")), 1100. / 760., "no size: the usual mockup's");
+        assert_eq!(
+            aspect(&ImageRef::new("/a.png", "image/png")),
+            1100. / 760.,
+            "no size: the usual mockup's"
+        );
     }
 
     #[test]
     fn the_bottom_row_shares_its_room_by_what_each_wants() {
         assert_eq!(stepper_share(600., 200., 300.), (200., 300.));
-        assert_eq!(stepper_share(600., 700., 100.), (500., 100.), "short marks don't scroll to make the strip longer");
+        assert_eq!(
+            stepper_share(600., 700., 100.),
+            (500., 100.),
+            "short marks don't scroll to make the strip longer"
+        );
         assert_eq!(stepper_share(300., 100., 500.), (100., 200.));
         assert_eq!(stepper_share(300., 900., 900.), (150., 150.));
         assert_eq!(stepper_share(-40., 900., 900.), (0., 0.));
@@ -2332,12 +2892,28 @@ mod tests {
 
     #[test]
     fn the_window_opens_on_ninety_percent_of_the_screen_centred_and_capped() {
-        let laptop = window_frame(Rect { x: 0., y: 0., width: 1512., height: 944. });
+        let laptop = window_frame(Rect {
+            x: 0.,
+            y: 0.,
+            width: 1512.,
+            height: 944.,
+        });
         assert_eq!((laptop.width, laptop.height), (1361., 850.));
-        assert!((laptop.x + laptop.width / 2. - 756.).abs() <= 1. && (laptop.y + laptop.height / 2. - 472.).abs() <= 1.);
-        let huge = window_frame(Rect { x: -1000., y: 200., width: 5120., height: 2160. });
+        assert!(
+            (laptop.x + laptop.width / 2. - 756.).abs() <= 1.
+                && (laptop.y + laptop.height / 2. - 472.).abs() <= 1.
+        );
+        let huge = window_frame(Rect {
+            x: -1000.,
+            y: 200.,
+            width: 5120.,
+            height: 2160.,
+        });
         assert_eq!((huge.width, huge.height), REVIEW_WINDOW_MOST);
-        assert!((huge.x + huge.width / 2. - 1560.).abs() <= 1. && (huge.y + huge.height / 2. - 1280.).abs() <= 1.);
+        assert!(
+            (huge.x + huge.width / 2. - 1560.).abs() <= 1.
+                && (huge.y + huge.height / 2. - 1280.).abs() <= 1.
+        );
     }
 
     // The shot zoomed in, after ReviewWindowTests' stage tests. A phone's
@@ -2356,13 +2932,25 @@ mod tests {
         assert!(z.wheel(5., false, None));
         assert!(z.magnification > fit * 2.);
         assert!(z.is_zoomed());
-        assert!(!z.press(Point { x: 400., y: 350. }, 1), "a press on a zoomed shot is for dragging");
+        assert!(
+            !z.press(Point { x: 400., y: 350. }, 1),
+            "a press on a zoomed shot is for dragging"
+        );
         z.release();
         z.wheel(-40., false, None);
-        assert!((z.magnification - fit).abs() < 1e-9, "it stops at the whole page");
+        assert!(
+            (z.magnification - fit).abs() < 1e-9,
+            "it stops at the whole page"
+        );
         assert!(!z.is_zoomed());
-        assert!(z.press(Point { x: 400., y: 350. }, 1), "fitted, a press is a click");
-        assert!(!z.wheel(3., true, None), "Shift and a wheel scrolls sideways");
+        assert!(
+            z.press(Point { x: 400., y: 350. }, 1),
+            "fitted, a press is a click"
+        );
+        assert!(
+            !z.wheel(3., true, None),
+            "Shift and a wheel scrolls sideways"
+        );
     }
 
     #[test]
@@ -2371,10 +2959,16 @@ mod tests {
         z.apply(ZoomStep::Actual);
         let pointer = Point { x: 550., y: 250. };
         let before = z.visible();
-        let spot = Point { x: before.x + pointer.x / z.magnification, y: before.y + pointer.y / z.magnification };
+        let spot = Point {
+            x: before.x + pointer.x / z.magnification,
+            y: before.y + pointer.y / z.magnification,
+        };
         z.zoom_by(1.5, Some(pointer));
         let after = z.visible();
-        let now = Point { x: after.x + pointer.x / z.magnification, y: after.y + pointer.y / z.magnification };
+        let now = Point {
+            x: after.x + pointer.x / z.magnification,
+            y: after.y + pointer.y / z.magnification,
+        };
         assert!((now.x - spot.x).abs() < 1. && (now.y - spot.y).abs() < 1.);
     }
 
@@ -2392,7 +2986,10 @@ mod tests {
         z.drag_to(Point { x: 400., y: 150. });
         z.release();
         assert!((z.visible().y - 200.).abs() < 1.);
-        assert!(!z.press(Point { x: 1., y: 1. }, 2) && z.is_fitted(), "a double click fits it");
+        assert!(
+            !z.press(Point { x: 1., y: 1. }, 2) && z.is_fitted(),
+            "a double click fits it"
+        );
     }
 
     #[test]
@@ -2405,14 +3002,20 @@ mod tests {
         assert!(zoomed_in > fit, "nothing to scroll while it fits");
         let top = z.visible().y;
         z.swipe(0., 20., ScrollPhase::Moved, false, None);
-        assert!(z.magnification > zoomed_in, "the same swipe stays a zoom right through");
+        assert!(
+            z.magnification > zoomed_in,
+            "the same swipe stays a zoom right through"
+        );
         let scale = z.magnification;
         z.swipe(0., 0., ScrollPhase::Ended, false, None);
         z.swipe(0., 30., ScrollPhase::Moved, false, None);
         assert_eq!(z.magnification, scale, "its coast does nothing");
         z.swipe(0., -60., ScrollPhase::Started, false, None);
         z.swipe(0., -60., ScrollPhase::Moved, false, None);
-        assert!((z.magnification - scale).abs() < 1e-9, "the next swipe moves around");
+        assert!(
+            (z.magnification - scale).abs() < 1e-9,
+            "the next swipe moves around"
+        );
         assert_ne!(z.visible().y, top);
     }
 
@@ -2431,7 +3034,10 @@ mod tests {
         held.swipe(0., 0., ScrollPhase::Ended, true, None);
         held.swipe(0., -20., ScrollPhase::Started, true, None);
         held.swipe(0., -20., ScrollPhase::Moved, true, None);
-        assert!(held.magnification < zoomed_in, "held, it zooms even once zoomed, and the other way is out");
+        assert!(
+            held.magnification < zoomed_in,
+            "held, it zooms even once zoomed, and the other way is out"
+        );
     }
 
     #[test]
@@ -2441,11 +3047,24 @@ mod tests {
         z.apply(ZoomStep::Actual);
         let map = z.minimap().expect("zoomed in, it shows");
         assert_eq!(map.shown.y, 0.);
-        assert!(map.frame.x + map.frame.width <= 800. - 22. + 0.5, "clear of the scroll bar down the right");
-        assert_eq!(map.frame.y + map.frame.height, 700. - 16., "16 up from the bottom, as the Swift window has it");
-        z.minimap_to(Point { x: map.frame.width / 2., y: map.frame.height / 2. });
+        assert!(
+            map.frame.x + map.frame.width <= 800. - 22. + 0.5,
+            "clear of the scroll bar down the right"
+        );
+        assert_eq!(
+            map.frame.y + map.frame.height,
+            700. - 16.,
+            "16 up from the bottom, as the Swift window has it"
+        );
+        z.minimap_to(Point {
+            x: map.frame.width / 2.,
+            y: map.frame.height / 2.,
+        });
         let v = z.visible();
-        assert!((v.y + v.height / 2. - 10426. / 2.).abs() < 2., "halfway down the page");
+        assert!(
+            (v.y + v.height / 2. - 10426. / 2.).abs() < 2.,
+            "halfway down the page"
+        );
         z.apply(ZoomStep::Fit);
         assert!(z.minimap().is_none());
     }
@@ -2459,7 +3078,10 @@ mod tests {
         z.go_to(0.5, 0.48);
         let before = z.visible().y;
         z.swap_image(390., 10426.);
-        assert!((z.magnification - scale).abs() < 1e-9, "flicking keeps the zoom");
+        assert!(
+            (z.magnification - scale).abs() < 1e-9,
+            "flicking keeps the zoom"
+        );
         assert!((z.visible().y - before).abs() < 20., "and the place");
     }
 
@@ -2476,7 +3098,10 @@ mod tests {
         let mut zoomed = tall();
         zoomed.apply(ZoomStep::Actual);
         zoomed.set_view(600., 500.);
-        assert!((zoomed.magnification - 1.).abs() < 1e-9, "zoomed keeps its scale");
+        assert!(
+            (zoomed.magnification - 1.).abs() < 1e-9,
+            "zoomed keeps its scale"
+        );
     }
 
     #[test]
@@ -2486,30 +3111,102 @@ mod tests {
         z.pinch(0.5, Some(Point { x: 100., y: 100. }));
         assert!(z.magnification > fit);
         z.pinch(-0.9, None);
-        assert!((z.magnification - fit).abs() < 1e-9, "no further out than the whole image");
+        assert!(
+            (z.magnification - fit).abs() < 1e-9,
+            "no further out than the whole image"
+        );
     }
 
     // An agent's notes.
 
     fn plain(text: &str) -> InlineRun {
-        InlineRun { text: text.into(), ..Default::default() }
+        InlineRun {
+            text: text.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn a_note_draws_its_bold_code_and_links_and_leaves_the_rest_as_written() {
         let runs = inline_markdown("Three ways to pick **which login a thread uses**. D shows it");
-        assert_eq!(runs, vec![plain("Three ways to pick "), InlineRun { text: "which login a thread uses".into(), bold: true, ..Default::default() }, plain(". D shows it")]);
+        assert_eq!(
+            runs,
+            vec![
+                plain("Three ways to pick "),
+                InlineRun {
+                    text: "which login a thread uses".into(),
+                    bold: true,
+                    ..Default::default()
+                },
+                plain(". D shows it")
+            ]
+        );
         let runs = inline_markdown("inside the `model` picker");
-        assert_eq!(runs[1], InlineRun { text: "model".into(), code: true, ..Default::default() });
+        assert_eq!(
+            runs[1],
+            InlineRun {
+                text: "model".into(),
+                code: true,
+                ..Default::default()
+            }
+        );
         let runs = inline_markdown("see [the *audit*](https://x.y/a) now");
-        assert_eq!(runs[1], InlineRun { text: "the ".into(), link: Some("https://x.y/a".into()), ..Default::default() });
-        assert_eq!(runs[2], InlineRun { text: "audit".into(), italic: true, link: Some("https://x.y/a".into()), ..Default::default() });
-        assert_eq!(inline_markdown("a * b, snake_case_name"), vec![plain("a * b, snake_case_name")], "nothing that isn't emphasis");
-        assert_eq!(inline_markdown("**bold** and _it_"), vec![InlineRun { text: "bold".into(), bold: true, ..Default::default() }, plain(" and "), InlineRun { text: "it".into(), italic: true, ..Default::default() }]);
+        assert_eq!(
+            runs[1],
+            InlineRun {
+                text: "the ".into(),
+                link: Some("https://x.y/a".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            runs[2],
+            InlineRun {
+                text: "audit".into(),
+                italic: true,
+                link: Some("https://x.y/a".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            inline_markdown("a * b, snake_case_name"),
+            vec![plain("a * b, snake_case_name")],
+            "nothing that isn't emphasis"
+        );
+        assert_eq!(
+            inline_markdown("**bold** and _it_"),
+            vec![
+                InlineRun {
+                    text: "bold".into(),
+                    bold: true,
+                    ..Default::default()
+                },
+                plain(" and "),
+                InlineRun {
+                    text: "it".into(),
+                    italic: true,
+                    ..Default::default()
+                }
+            ]
+        );
         assert_eq!(inline_markdown("\\*not\\* `a*b`")[0], plain("*not* "));
-        assert_eq!(inline_markdown("an [unfinished](link"), vec![plain("an [unfinished](link")]);
-        assert_eq!(inline_markdown("***both***")[0], InlineRun { text: "both".into(), bold: true, italic: true, ..Default::default() });
-        assert_eq!(inline_markdown("line one\n\nline two"), vec![plain("line one\n\nline two")]);
+        assert_eq!(
+            inline_markdown("an [unfinished](link"),
+            vec![plain("an [unfinished](link")]
+        );
+        assert_eq!(
+            inline_markdown("***both***")[0],
+            InlineRun {
+                text: "both".into(),
+                bold: true,
+                italic: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            inline_markdown("line one\n\nline two"),
+            vec![plain("line one\n\nline two")]
+        );
     }
 
     /// The parser as it was before Daybreak 93, to check the bounded one
@@ -2518,20 +3215,44 @@ mod tests {
     fn old_inline_markdown(source: &str) -> Vec<InlineRun> {
         let chars: Vec<char> = source.chars().collect();
         let mut out: Vec<InlineRun> = Vec::new();
-        old_inline_runs(&chars, 0, chars.len(), InlineStyle::default(), None, &mut out);
+        old_inline_runs(
+            &chars,
+            0,
+            chars.len(),
+            InlineStyle::default(),
+            None,
+            &mut out,
+        );
         let mut merged: Vec<InlineRun> = Vec::new();
         for run in out.into_iter().filter(|r| !r.text.is_empty()) {
             match merged.last_mut() {
-                Some(last) if (last.bold, last.italic, last.code, &last.link) == (run.bold, run.italic, run.code, &run.link) => last.text.push_str(&run.text),
+                Some(last)
+                    if (last.bold, last.italic, last.code, &last.link)
+                        == (run.bold, run.italic, run.code, &run.link) =>
+                {
+                    last.text.push_str(&run.text)
+                }
                 _ => merged.push(run),
             }
         }
         merged
     }
 
-    fn old_inline_push(out: &mut Vec<InlineRun>, text: &mut String, style: InlineStyle, code: bool, link: Option<&str>) {
+    fn old_inline_push(
+        out: &mut Vec<InlineRun>,
+        text: &mut String,
+        style: InlineStyle,
+        code: bool,
+        link: Option<&str>,
+    ) {
         if !text.is_empty() {
-            out.push(InlineRun { text: std::mem::take(text), bold: style.bold, italic: style.italic, code, link: link.map(Into::into) });
+            out.push(InlineRun {
+                text: std::mem::take(text),
+                bold: style.bold,
+                italic: style.italic,
+                code,
+                link: link.map(Into::into),
+            });
         }
     }
 
@@ -2544,16 +3265,25 @@ mod tests {
     fn old_can_open(c: &[char], at: usize, len: usize, end: usize) -> bool {
         let next = c.get(at + len).filter(|_| at + len < end);
         let before = at.checked_sub(1).map(|i| c[i]);
-        next.is_some_and(|n| !n.is_whitespace()) && (c[at] == '*' || before.is_none_or(|b| !b.is_alphanumeric()))
+        next.is_some_and(|n| !n.is_whitespace())
+            && (c[at] == '*' || before.is_none_or(|b| !b.is_alphanumeric()))
     }
 
     fn old_can_close(c: &[char], at: usize, len: usize, end: usize) -> bool {
         let before = at.checked_sub(1).map(|i| c[i]);
         let after = c.get(at + len).filter(|_| at + len < end);
-        before.is_some_and(|b| !b.is_whitespace()) && (c[at] == '*' || after.is_none_or(|a| !a.is_alphanumeric()))
+        before.is_some_and(|b| !b.is_whitespace())
+            && (c[at] == '*' || after.is_none_or(|a| !a.is_alphanumeric()))
     }
 
-    fn old_inline_runs(c: &[char], mut i: usize, end: usize, style: InlineStyle, link: Option<&str>, out: &mut Vec<InlineRun>) {
+    fn old_inline_runs(
+        c: &[char],
+        mut i: usize,
+        end: usize,
+        style: InlineStyle,
+        link: Option<&str>,
+        out: &mut Vec<InlineRun>,
+    ) {
         let mut plain = String::new();
         while i < end {
             let ch = c[i];
@@ -2565,7 +3295,11 @@ mod tests {
             }
             if ch == '`' {
                 let ticks = old_run_length(c, i, end, '`');
-                let close = (i + ticks..end).find(|&j| c[j] == '`' && old_run_length(c, j, end, '`') == ticks && (j == 0 || c[j - 1] != '`'));
+                let close = (i + ticks..end).find(|&j| {
+                    c[j] == '`'
+                        && old_run_length(c, j, end, '`') == ticks
+                        && (j == 0 || c[j - 1] != '`')
+                });
                 if let Some(close) = close {
                     old_inline_push(out, &mut plain, style, false, link);
                     let mut code: String = c[i + ticks..close].iter().collect();
@@ -2589,12 +3323,22 @@ mod tests {
                     continue;
                 }
             }
-            if (ch == '*' || ch == '_') && old_can_open(c, i, old_run_length(c, i, end, ch).min(3), end) {
+            if (ch == '*' || ch == '_')
+                && old_can_open(c, i, old_run_length(c, i, end, ch).min(3), end)
+            {
                 let len = old_run_length(c, i, end, ch).min(3);
-                let close = (i + len..end).find(|&j| c[j] == ch && (j == 0 || c[j - 1] != ch) && old_run_length(c, j, end, ch) >= len && old_can_close(c, j, len, end));
+                let close = (i + len..end).find(|&j| {
+                    c[j] == ch
+                        && (j == 0 || c[j - 1] != ch)
+                        && old_run_length(c, j, end, ch) >= len
+                        && old_can_close(c, j, len, end)
+                });
                 if let Some(close) = close {
                     old_inline_push(out, &mut plain, style, false, link);
-                    let inner = InlineStyle { bold: style.bold || len >= 2, italic: style.italic || len != 2 };
+                    let inner = InlineStyle {
+                        bold: style.bold || len >= 2,
+                        italic: style.italic || len != 2,
+                    };
                     old_inline_runs(c, i + len, close, inner, link, out);
                     i = close + len;
                     continue;
@@ -2610,8 +3354,8 @@ mod tests {
     fn old_inline_link(c: &[char], at: usize, end: usize) -> Option<(usize, String, usize)> {
         let mut depth = 0;
         let mut close = None;
-        for j in at..end {
-            match c[j] {
+        for (j, ch) in c.iter().enumerate().take(end).skip(at) {
+            match *ch {
                 '\\' => continue,
                 '[' => depth += 1,
                 ']' => {
@@ -2629,10 +3373,13 @@ mod tests {
             return None;
         }
         let stop = (close + 2..end).find(|&j| c[j] == ')')?;
-        let url: String = c[close + 2..stop].iter().collect::<String>().trim().to_owned();
+        let url: String = c[close + 2..stop]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .to_owned();
         (!url.is_empty() && !url.contains(char::is_whitespace)).then_some((close, url, stop + 1))
     }
-
 
     /// This thread's CPU time: the M5 is often busy, so wall time would
     /// say more about the machine than the parser.
@@ -2669,13 +3416,30 @@ mod tests {
         #[link(name = "kernel32")]
         extern "system" {
             fn GetCurrentThread() -> *mut std::ffi::c_void;
-            fn GetThreadTimes(thread: *mut std::ffi::c_void, created: *mut FileTime, exited: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32;
+            fn GetThreadTimes(
+                thread: *mut std::ffi::c_void,
+                created: *mut FileTime,
+                exited: *mut FileTime,
+                kernel: *mut FileTime,
+                user: *mut FileTime,
+            ) -> i32;
         }
         let zero = || FileTime { low: 0, high: 0 };
         let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
         // SAFETY: GetCurrentThread's handle needs no closing, and
         // GetThreadTimes only writes the four structs it's given.
-        assert_ne!(unsafe { GetThreadTimes(GetCurrentThread(), &mut created, &mut exited, &mut kernel, &mut user) }, 0);
+        assert_ne!(
+            unsafe {
+                GetThreadTimes(
+                    GetCurrentThread(),
+                    &mut created,
+                    &mut exited,
+                    &mut kernel,
+                    &mut user,
+                )
+            },
+            0
+        );
         let ticks = |t: &FileTime| (u64::from(t.high) << 32) | u64::from(t.low);
         std::time::Duration::from_nanos((ticks(&kernel) + ticks(&user)) * 100)
     }
@@ -2725,10 +3489,18 @@ mod tests {
         ];
         for note in &notes {
             let took = cpu_time_of(note);
-            assert!(took < std::time::Duration::from_millis(400), "{} characters starting {:?} took {took:?}", note.len(), &note[..12]);
+            assert!(
+                took < std::time::Duration::from_millis(400),
+                "{} characters starting {:?} took {took:?}",
+                note.len(),
+                &note[..12]
+            );
         }
         // Words come back as written.
-        assert_eq!(inline_markdown(&"[".repeat(20_000)), vec![plain(&"[".repeat(20_000))]);
+        assert_eq!(
+            inline_markdown(&"[".repeat(20_000)),
+            vec![plain(&"[".repeat(20_000))]
+        );
     }
 
     /// A link's runs share its address rather than copying it each.
@@ -2753,13 +3525,31 @@ mod tests {
             let mut x = seed;
             let note: String = (0..len)
                 .map(|_| {
-                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    x = x
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
                     alphabet[(x >> 33) as usize % alphabet.len()]
                 })
                 .collect();
-            assert_eq!(inline_markdown(&note), old_inline_markdown(&note), "{note:?}");
+            assert_eq!(
+                inline_markdown(&note),
+                old_inline_markdown(&note),
+                "{note:?}"
+            );
         }
-        for note in ["a `b` c ``d`` e", "**a _b_ c**", "[x *y*](u) `[z](w)`", "``a`b``", "*a **b** c*", "\\`x` [a]b(c)", "[a](  u  ) [b]( u v ) [c](\tw\n)", "[a]()", "[a](   )", "****a****", "___a___ __b__"] {
+        for note in [
+            "a `b` c ``d`` e",
+            "**a _b_ c**",
+            "[x *y*](u) `[z](w)`",
+            "``a`b``",
+            "*a **b** c*",
+            "\\`x` [a]b(c)",
+            "[a](  u  ) [b]( u v ) [c](\tw\n)",
+            "[a]()",
+            "[a](   )",
+            "****a****",
+            "___a___ __b__",
+        ] {
             assert_eq!(inline_markdown(note), old_inline_markdown(note), "{note:?}");
         }
     }
@@ -2777,10 +3567,19 @@ mod tests {
         let review = serde_json::json!({ "id": "r", "title": "T".repeat(300), "note": "`".repeat(20_000), "status": "pending", "revision": 1, "options": vec![option; 13], "draft": draft, "response": draft });
         let review = DesignReview::decode(&review).expect("a review");
         assert_eq!(review.title.chars().count(), 200);
-        assert_eq!(review.note.as_deref().map(|n| n.chars().count()), Some(4000));
+        assert_eq!(
+            review.note.as_deref().map(|n| n.chars().count()),
+            Some(4000)
+        );
         assert_eq!(review.options.len(), 12);
-        assert!(review.options.iter().all(|o| o.note.as_deref().map(str::len) == Some(4000) && o.title.len() == 200));
-        assert!(review.options.iter().all(|o| o.shots.len() == 8 && o.shots.iter().all(|s| s.title.as_deref().map(str::len) == Some(200))));
+        assert!(review
+            .options
+            .iter()
+            .all(|o| o.note.as_deref().map(str::len) == Some(4000) && o.title.len() == 200));
+        assert!(review.options.iter().all(|o| o.shots.len() == 8
+            && o.shots
+                .iter()
+                .all(|s| s.title.as_deref().map(str::len) == Some(200))));
         for draft in [&review.draft, review.response.as_ref().expect("a response")] {
             assert_eq!((draft.picked_ids.len(), draft.notes.len()), (12, 12));
             assert!(draft.notes.values().all(|n| n.len() == 4000));
@@ -2793,13 +3592,24 @@ mod tests {
         let small = serde_json::json!({ "image": image });
         let many_shots = serde_json::json!({ "id": "a", "title": "t", "image": image, "shots": vec![small; 10_000] });
         let long = serde_json::json!({ "id": "r", "title": "T", "status": "pending", "revision": 1, "options": [many_shots] });
-        assert_eq!(DesignReview::decode(&long).expect("a review").options[0].shots.len(), 8);
+        assert_eq!(
+            DesignReview::decode(&long).expect("a review").options[0]
+                .shots
+                .len(),
+            8
+        );
         let lean = serde_json::json!({ "id": "a", "title": "t", "image": image });
         let long = serde_json::json!({ "id": "r", "title": "T", "status": "pending", "revision": 1, "options": vec![lean; 10_000] });
-        assert_eq!(DesignReview::decode(&long).expect("a review").options.len(), 12);
+        assert_eq!(
+            DesignReview::decode(&long).expect("a review").options.len(),
+            12
+        );
         // Within the limits nothing changes, in characters, not bytes.
         let short = serde_json::json!({ "id": "r", "title": "é".repeat(200), "note": "ü".repeat(4000), "status": "pending", "revision": 1, "options": [] });
         let short = DesignReview::decode(&short).expect("a review");
-        assert_eq!((short.title, short.note), ("é".repeat(200), Some("ü".repeat(4000))));
+        assert_eq!(
+            (short.title, short.note),
+            ("é".repeat(200), Some("ü".repeat(4000)))
+        );
     }
 }

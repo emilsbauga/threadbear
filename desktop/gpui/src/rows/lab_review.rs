@@ -7,9 +7,9 @@
 // folds as the line of work does: a panel's eight answered findings ran a
 // screen tall over a reply that already said what was fixed. Folded, it's the
 // heading and any finding still open (LabReview::shown_findings). The ledger
-// is `turn.completed`'s `review` (docs/protocol.md, "Review by another lab").
-use super::row_wrap;
+// is `turn.completed`'s `review` (docs/protocol/needs-you.md, "Review by another lab").
 use super::metrics::{ROW_BOTTOM, TITLE_INDENT};
+use super::row_wrap;
 use super::work::{work_line, Runs};
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
@@ -19,8 +19,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
-use threadbear_core::reducer::{LabReview, ReviewFinding, Row};
 use crate::tips::Tip as _;
+use threadbear_core::reducer::{LabReview, ReviewFinding, Row};
 
 /// A finding's mark (SF's checkmark.circle, exclamationmark.bubble,
 /// person.crop.circle and circle, as Lucide draws them), its word and its
@@ -28,7 +28,11 @@ use crate::tips::Tip as _;
 fn outcome(finding: &ReviewFinding, cx: &App) -> (IconName, &'static str, Hsla) {
     match finding.outcome.as_deref() {
         Some("fixed") => (IconName::CircleCheck, "Fixed", style::tick_green(cx)),
-        Some("disputed") => (IconName::MessageSquareWarning, "Disputed", style::needs_you(cx)),
+        Some("disputed") => (
+            IconName::MessageSquareWarning,
+            "Disputed",
+            style::needs_you(cx),
+        ),
         Some("left") => (IconName::CircleUser, "Left for you", style::accent(cx)),
         _ => (IconName::Circle, "No answer", style::faint_text(cx)),
     }
@@ -59,7 +63,13 @@ impl ThreadPane {
     /// quiet, and once open a last line to the review's thread. A review with
     /// nothing to fold (no findings, or every one still open) doesn't open,
     /// so its line goes straight to the review's thread, as it always did.
-    pub(crate) fn lab_review_row(&mut self, ix: usize, row: &Row, review: &LabReview, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn lab_review_row(
+        &mut self,
+        ix: usize,
+        row: &Row,
+        review: &LabReview,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (quiet, secondary) = (style::quiet_text(cx), style::secondary_label(cx));
         let folds = review.folds();
         let open = folds && self.row_open(row);
@@ -72,21 +82,51 @@ impl ThreadPane {
         });
         let runs: Runs = vec![(review.heading(), quiet)];
         let mut line = if folds {
-            let tip = if open { "Hide the findings" } else { "Show every finding" };
+            let tip = if open {
+                "Hide the findings"
+            } else {
+                "Show every finding"
+            };
             let toggle = self.toggle_listener(row, cx);
-            work_line(("lab-review", ix).into(), "checklist", style::faint_icon(cx), &runs, None, Some(open), Some(tip), cx, Some(toggle))
+            work_line(
+                ("lab-review", ix).into(),
+                "checklist",
+                style::faint_icon(cx),
+                &runs,
+                None,
+                Some(open),
+                Some(tip),
+                cx,
+                Some(toggle),
+            )
         } else {
             let tip = to_thread.is_some().then_some("Open the review's thread");
-            work_line(("lab-review", ix).into(), "checklist", style::faint_icon(cx), &runs, None, None, tip, cx, None)
+            work_line(
+                ("lab-review", ix).into(),
+                "checklist",
+                style::faint_icon(cx),
+                &runs,
+                None,
+                None,
+                tip,
+                cx,
+                None,
+            )
         };
         if !folds {
             if let Some(click) = to_thread {
                 let hover = style::hover_fill(cx);
-                line = line.cursor_pointer().hover(move |s| s.bg(hover)).on_click(move |e, window, cx| click(e, window, cx));
+                line = line
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(move |e, window, cx| click(e, window, cx));
             }
         }
         let shown = review.shown_findings(open);
-        let mut column = v_flex().w_full().child(line).when(!shown.is_empty(), |c| c.pb(px(ROW_BOTTOM)));
+        let mut column = v_flex()
+            .w_full()
+            .child(line)
+            .when(!shown.is_empty(), |c| c.pb(px(ROW_BOTTOM)));
         for finding in shown {
             let (symbol, word, color) = outcome(finding, cx);
             column = column.child(
@@ -94,13 +134,33 @@ impl ThreadPane {
                     .w_full()
                     .items_start()
                     .mt(px(4.))
-                    .child(div().flex_none().w(px(TITLE_INDENT)).h(px(19.)).flex().items_center().child(Icon::from(symbol).with_size(px(13.)).text_color(color)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(TITLE_INDENT))
+                            .h(px(19.))
+                            .flex()
+                            .items_center()
+                            .child(Icon::from(symbol).with_size(px(13.)).text_color(color)),
+                    )
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .child(div().text_size(px(size::SMALL)).line_height(px(19.)).text_color(secondary).child(finding.claim.clone()))
-                            .child(div().text_size(px(size::SMALL)).line_height(px(17.)).text_color(quiet).child(finding_detail(finding, word, review.found_by(finding)))),
+                            .child(
+                                div()
+                                    .text_size(px(size::SMALL))
+                                    .line_height(px(19.))
+                                    .text_color(secondary)
+                                    .child(finding.claim.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(size::SMALL))
+                                    .line_height(px(17.))
+                                    .text_color(quiet)
+                                    .child(finding_detail(finding, word, review.found_by(finding))),
+                            ),
                     ),
             );
         }

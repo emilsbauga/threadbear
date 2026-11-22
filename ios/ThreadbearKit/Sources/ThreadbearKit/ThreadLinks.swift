@@ -1,6 +1,6 @@
 import Foundation
 
-/// Links from a message back into the thread (docs/protocol.md, "Links into
+/// Links from a message back into the thread (docs/protocol/needs-you.md, "Links into
 /// the thread"), as the Mac's WorkLinks reads them: `work:<words>` quotes a
 /// step in the turn's working, `thread:<id>` is another thread and
 /// `review:<id>` a design review.

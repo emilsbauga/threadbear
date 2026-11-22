@@ -99,7 +99,16 @@ impl Finder {
     pub fn search(&mut self, text: &str, query: &str, from: usize) {
         self.query = query.to_owned();
         self.matches = find_all(text, query);
-        self.current = if self.matches.is_empty() { None } else { Some(self.matches.iter().position(|m| m.start >= from).unwrap_or(0)) };
+        self.current = if self.matches.is_empty() {
+            None
+        } else {
+            Some(
+                self.matches
+                    .iter()
+                    .position(|m| m.start >= from)
+                    .unwrap_or(0),
+            )
+        };
     }
 
     /// The text changed under the search (a reload): the same words again,
@@ -115,7 +124,7 @@ impl Finder {
     }
 
     /// ⌘G, Return: the next match, round to the first after the last.
-    pub fn next(&mut self) -> Option<Range<usize>> {
+    pub fn next_match(&mut self) -> Option<Range<usize>> {
         let count = self.matches.len();
         if count == 0 {
             return None;
@@ -125,7 +134,7 @@ impl Finder {
     }
 
     /// ⇧⌘G, Shift-Return: the one before, round to the last before the first.
-    pub fn previous(&mut self) -> Option<Range<usize>> {
+    pub fn previous_match(&mut self) -> Option<Range<usize>> {
         let count = self.matches.len();
         if count == 0 {
             return None;
@@ -150,6 +159,10 @@ mod tests {
     const REVIEW: &str = "The new hero is shorter, and every page now leads with what the app does.\nThe three cards say what you get.";
 
     #[test]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "a list of one match's range, as find_all returns"
+    )]
     fn finds_words_whatever_their_case_and_not_overlapping() {
         assert_eq!(find_all(REVIEW, "the"), [0..3, 60..63, 74..77]);
         assert_eq!(find_all("aaaa", "aa"), [0..2, 2..4]);
@@ -161,6 +174,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "a list of one match's range, as find_all returns"
+    )]
     fn finds_words_with_letters_past_ascii() {
         let text = "Café, CAFÉ and café au lait";
         assert_eq!(find_all(text, "café"), [0..5, 7..12, 17..22]);
@@ -174,11 +191,15 @@ mod tests {
         let mut finder = Finder::default();
         finder.search(REVIEW, "the", 0);
         assert_eq!(finder.label(), "1 of 3");
-        assert_eq!(finder.next(), Some(60..63));
-        assert_eq!(finder.next(), Some(74..77));
+        assert_eq!(finder.next_match(), Some(60..63));
+        assert_eq!(finder.next_match(), Some(74..77));
         assert_eq!(finder.label(), "3 of 3");
-        assert_eq!(finder.next(), Some(0..3), "round to the first");
-        assert_eq!(finder.previous(), Some(74..77), "and back round to the last");
+        assert_eq!(finder.next_match(), Some(0..3), "round to the first");
+        assert_eq!(
+            finder.previous_match(),
+            Some(74..77),
+            "and back round to the last"
+        );
         assert_eq!(finder.dump_line(), "the: 3 of 3");
     }
 
@@ -188,7 +209,11 @@ mod tests {
         finder.search(REVIEW, "the", 61);
         assert_eq!(finder.current_range(), Some(74..77));
         finder.search(REVIEW, "the", 100);
-        assert_eq!(finder.current, Some(0), "past the last match goes round to the first");
+        assert_eq!(
+            finder.current,
+            Some(0),
+            "past the last match goes round to the first"
+        );
         // A reload keeps to the match picked.
         finder.search(REVIEW, "the", 61);
         finder.refresh(&format!("Intro.\n{REVIEW}"));
@@ -203,8 +228,8 @@ mod tests {
         assert_eq!(dump_line("zzz", None, 0), "zzz: not found");
         let mut finder = Finder::default();
         finder.search(REVIEW, "zzz", 0);
-        assert_eq!(finder.next(), None);
-        assert_eq!(finder.previous(), None);
+        assert_eq!(finder.next_match(), None);
+        assert_eq!(finder.previous_match(), None);
         assert_eq!(finder.label(), "Not found");
     }
 }

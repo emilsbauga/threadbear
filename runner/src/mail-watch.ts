@@ -116,6 +116,14 @@ export class MailWatch {
   private timer?: TimerHandle;
   private busy = false;
   private stopped = false;
+  // The look under way, for stopAndWait to wait on, and what it has
+  // finished so far, saved if it's given up.
+  private looking?: Promise<void>;
+  private progress?: State;
+  // An email whose action is being checked: its wake and hold are done.
+  private checking?: { email: Email; what: string };
+  // Waited on too long at a handover: a look under way does nothing more.
+  private gaveUp = false;
 
   constructor(deps: MailWatchDeps) {
     this.d = deps;
@@ -167,21 +175,76 @@ export class MailWatch {
     this.timer?.cancel();
   }
 
+  // A runner handing over (THREADBEAR-2G): no look starts after this, and
+  // one under way finishes as usual, while the runner can still start
+  // threads and before the new runner is asked for, so the two never look at
+  // once. Past `ms` it's given up: it starts, wakes, sends and saves nothing
+  // more, and says so.
+  stopAndWait(ms: number): Promise<void> {
+    this.stop();
+    const looking = this.looking;
+    if (!looking) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = this.d.clock.setTimeout(() => {
+        this.gaveUp = true;
+        // Now, before the new runner looks: an email counts as seen only
+        // once it's dealt with, so one not yet started is sorted again there.
+        // One whose action was being checked has been woken for and kept
+        // already, so it's seen, and the action goes to the owner on the pile.
+        // A save that fails doesn't hold the handover up.
+        let saveError: string | undefined;
+        try {
+          if (this.progress && this.checking) {
+            this.progress.pile.push({ email: this.checking.email, action: this.checking.what, at: new Date(this.d.clock.now()).toISOString() });
+            this.progress.seen.push(this.checking.email.id);
+          }
+          if (this.progress) this.write(this.progress);
+        } catch (e) {
+          saveError = String((e as Error)?.message ?? e);
+        }
+        this.d.log.warn('email watch: gave up on a look under way at handover', { waitedMs: ms, ...(saveError ? { saveError } : {}) });
+        resolve();
+      }, ms);
+      void looking.then(() => {
+        timer.cancel();
+        resolve();
+      });
+    });
+  }
+
+  // Each wait in a look is followed by this, so a look given up on stops
+  // before its next change.
+  private carryOn(): void {
+    if (this.gaveUp) throw new GaveUp();
+  }
+
   // One look: new emails sorted and dealt with, then the pile's list if
   // one is due. Returns what it did, for tests and logs.
   async look(): Promise<{ emails: number; woke: number; held: number; acted: number; piled: number; digest?: string } | undefined> {
-    if (this.busy || !this.d.on() || !this.d.looks()) return undefined;
+    if (this.stopped || this.busy || !this.d.on() || !this.d.looks()) return undefined;
     const settings = this.d.settings();
     if (!settings?.command?.trim()) return undefined;
     this.busy = true;
+    let finished = () => {};
+    this.looking = new Promise((resolve) => (finished = resolve));
     try {
       const out = { emails: 0, woke: 0, held: 0, acted: 0, piled: 0 } as { emails: number; woke: number; held: number; acted: number; piled: number; digest?: string };
       const s = this.read();
+      this.progress = s;
       const now = this.d.clock.now();
       s.lastRun = new Date(now).toISOString();
       let emails: Email[] = [];
+      let printed: string | undefined;
+      let failed: unknown;
       try {
-        emails = parseEmails(await this.runCommand(settings.command));
+        printed = await this.runCommand(settings.command);
+      } catch (e) {
+        failed = e;
+      }
+      this.carryOn();
+      try {
+        if (failed !== undefined) throw failed;
+        emails = parseEmails(printed ?? '');
         delete s.lastError;
         s.failures = 0;
       } catch (e) {
@@ -199,12 +262,13 @@ export class MailWatch {
         for (let i = 0; i < fresh.length; i += BATCH) {
           const batch = fresh.slice(i, i + BATCH);
           const answer = await this.sort(batch, threads, decisions);
+          this.carryOn();
           // No answer (no model, a failure): left unseen, for the next look.
           if (!answer) break;
           for (const email of batch) {
-            s.seen.push(email.id);
             const a = answer.get(email.id);
             if (a) await this.apply(email, a, threads, decisions, settings, s, out);
+            s.seen.push(email.id);
           }
           this.write(s);
         }
@@ -213,8 +277,15 @@ export class MailWatch {
       this.write(s);
       if (out.emails) this.d.log.info('email watch looked', { ...out });
       return out;
+    } catch (e) {
+      if (e instanceof GaveUp) return undefined;
+      throw e;
     } finally {
       this.busy = false;
+      this.looking = undefined;
+      this.progress = undefined;
+      this.checking = undefined;
+      finished();
     }
   }
 
@@ -268,7 +339,11 @@ export class MailWatch {
     let acted = false;
     if (a.act && settings.act !== false && decisions && this.mayAct(s)) {
       const t = a.act.thread ? byId8(a.act.thread) : undefined;
-      if (quoted(a.act.decision, decisions) && (await this.actChecked(email, a.act, decisions))) {
+      this.checking = { email, what: a.act.what };
+      const ok = quoted(a.act.decision, decisions) && (await this.actChecked(email, a.act, decisions));
+      this.carryOn();
+      this.checking = undefined;
+      if (ok) {
         const text = actText(email, a.act);
         let where: string | undefined;
         if (t && this.d.host.send(t.id, text, 'An email it can deal with came in')) where = `"${t.title}"`;
@@ -338,6 +413,8 @@ export class MailWatch {
 }
 
 // ------------------------------------------------------------------ pieces
+
+class GaveUp extends Error {}
 
 type SortedAct = { what: string; decision: string; thread?: string };
 type Sorted = { wake: string[]; tell: string[]; act?: SortedAct; pile?: string };

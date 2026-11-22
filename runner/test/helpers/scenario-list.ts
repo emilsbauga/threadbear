@@ -187,6 +187,20 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // Mike changes the agent's email in its box on the Mac and sends it with
+    // his answer: his bubble shows his words and a chip, not the line to the
+    // agent and the raw fence (20 Nov).
+    name: 'a message with an edited email draft on its end',
+    shows: ['Send it', 'Your edited email', 'Sent your version.'],
+    play: (p) => {
+      p.say("Here's a reply:\n\n```email\nHi Geoff,\n\nCan you send it again?\n```");
+      p.endTurn({ needs: 'nothing' });
+      p.send("Send it\n\nI edited your draft. Use my version below exactly as it is, not yours:\n\n```email\nHi Geoff,\n\nI don't think it came through. Can you send it again please?\n```");
+      p.say('Sent your version.');
+      p.endTurn({ needs: 'nothing' });
+    },
+  },
+  {
     name: 'Alex sends two pictures placed in his words',
     shows: ['should look like', 'They differ in colour.'],
     play: (p) => {

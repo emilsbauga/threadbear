@@ -1,4 +1,4 @@
-// A project's task board, read from Notion (docs/protocol.md, "Project
+// A project's task board, read from Notion (docs/protocol/projects.md, "Project
 // tasks"). A project can name a Notion page (or a database); the runner
 // finds the task database on it and reads its rows every few minutes
 // through Mike's Connectors gateway (connectors.ts), the same Notion login

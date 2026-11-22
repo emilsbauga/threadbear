@@ -1,1 +1,57 @@
-app/threadbear
+#!/usr/bin/env bash
+# The command a clone starts with (README.md, INSTALL.md):
+#
+#   ./threadbear setup [options]   sets Threadbear up from this clone
+#                                  (scripts/setup.mjs): your own Convex
+#                                  project, keys, the runner and the desktop
+#                                  app. Safe to run again.
+#   ./threadbear [start]           opens the desktop app (or the old Swift
+#                                  one, where only that is installed), or
+#                                  runs setup when neither is
+#
+# Until 21 Nov 2026 this was a link to the frozen Swift app's launcher
+# (app/threadbear), whose other commands (restart, mock, perf, stop) are for
+# that app only; they're still handed to it while it's here.
+set -euo pipefail
+
+# THREADBARE_* was the old name for these variables: each stands in for its new name.
+for v in $(compgen -e | grep '^THREADBARE_' || true); do n="THREADBEAR_${v#THREADBARE_}"; [ -n "${!n+x}" ] || export "$n=${!v}"; done
+# Through a link (~/.local/bin/threadbear, say), still find this clone.
+ROOT="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]}")"
+APP="$HOME/Applications/Threadbear GPUI.app"
+SWIFT_APP="${THREADBEAR_APP_DIR:-$HOME/Applications/Threadbear.app}"
+
+setup() {
+  if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 24 ]]; then
+    echo "Threadbear needs Node 24 or newer: https://nodejs.org (or nvm install 24), then run this again." >&2
+    exit 1
+  fi
+  exec node "$ROOT/scripts/setup.mjs" "$@"
+}
+
+case "${1:-start}" in
+  setup)
+    shift
+    setup "$@"
+    ;;
+  start)
+    if [[ -d "$APP" ]]; then
+      exec open "$APP"
+    elif [[ -d "$SWIFT_APP" ]]; then
+      exec open "$SWIFT_APP"
+    fi
+    echo "Threadbear isn't installed yet: setting it up first." >&2
+    setup
+    ;;
+  restart|mock|perf|stop|kill|install)
+    if [[ -f "$ROOT/app/threadbear" ]]; then
+      exec bash "$ROOT/app/threadbear" "$@"
+    fi
+    echo "threadbear $1 was for the old Swift app, which this clone no longer has." >&2
+    exit 2
+    ;;
+  *)
+    echo "Usage: threadbear [start|setup]" >&2
+    exit 2
+    ;;
+esac

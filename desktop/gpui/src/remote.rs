@@ -1,4 +1,4 @@
-// Other runners' threads (docs/protocol.md, "Other runners' threads" and "...
+// Other runners' threads (docs/protocol/runners.md, "Other runners' threads" and "...
 // through the backend"), a port of the parts of RemoteRunners.swift the app
 // needs while it reaches them through this Mac's runner and Convex (the
 // only route since the direct link was removed on 13 Nov 2026). Their rows
@@ -6,14 +6,16 @@
 // `Threadbear::threads` beside this Mac's own, so the sidebar and the
 // transcript take them as they are: every request about one goes to this
 // Mac's runner, which answers from the backend.
-use threadbear_core::inbox::ThreadSummary;
 use crate::app::Threadbear;
 use crate::call;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::logins::RunnerLogins;
-use threadbear_core::remote::{self, RecentUpdates, RemoteRunner, RemoteThreads, RunnerBox, RunnerInfo, VirtualRunner};
+use threadbear_core::remote::{
+    self, RecentUpdates, RemoteRunner, RemoteThreads, RunnerBox, RunnerInfo, VirtualRunner,
+};
 
 /// What the app knows of the other runners; the app holds one of these.
 #[derive(Default)]
@@ -54,18 +56,28 @@ impl RemoteState {
     /// The other runners that are machines, to pick from: never a box's
     /// (a thread's own box on a virtual runner, docs/virtual-runners.md).
     pub(crate) fn machines(&self) -> Vec<RemoteRunner> {
-        self.runners.iter().filter(|r| r.runner_box.is_none()).cloned().collect()
+        self.runners
+            .iter()
+            .filter(|r| r.runner_box.is_none())
+            .cloned()
+            .collect()
     }
 
     /// Whether that runner is a thread's box on a virtual runner.
     pub(crate) fn is_box(&self, id: &str) -> bool {
-        self.runners.iter().any(|r| r.id == id && r.runner_box.is_some())
+        self.runners
+            .iter()
+            .any(|r| r.id == id && r.runner_box.is_some())
     }
 
     /// A thread's box, when its runner is one.
     pub(crate) fn box_of(&self, runner_id: Option<&str>) -> Option<&RunnerBox> {
         let id = runner_id?;
-        self.runners.iter().find(|r| r.id == id)?.runner_box.as_ref()
+        self.runners
+            .iter()
+            .find(|r| r.id == id)?
+            .runner_box
+            .as_ref()
     }
 
     /// The virtual runners (`RemoteThreads.services`): Runs on's entries
@@ -78,7 +90,12 @@ impl RemoteState {
     /// would show as a machine in Move to, the Runners panel and the
     /// schedule editor: those go by this list, kept to machines.
     pub(crate) fn keep_machines(&mut self) {
-        let boxes: HashSet<String> = self.runners.iter().filter(|r| r.runner_box.is_some()).map(|r| r.id.clone()).collect();
+        let boxes: HashSet<String> = self
+            .runners
+            .iter()
+            .filter(|r| r.runner_box.is_some())
+            .map(|r| r.id.clone())
+            .collect();
         self.all_runners.retain(|r| !boxes.contains(&r.id));
     }
 }
@@ -89,26 +106,42 @@ impl Threadbear {
     /// lists it (`remote::moved_away`, Daybreak 113). False when it isn't a
     /// move, and the row should go.
     pub(crate) fn moved_away(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
-        let Some(kept) = self.threads.get(id).and_then(|t| remote::moved_away(t)) else { return false };
-        let self_id = self.remote.all_runners.iter().find(|r| r.is_self).map(|r| r.id.clone());
+        let Some(kept) = self.threads.get(id).and_then(|t| remote::moved_away(t)) else {
+            return false;
+        };
+        let self_id = self
+            .remote
+            .all_runners
+            .iter()
+            .find(|r| r.is_self)
+            .map(|r| r.id.clone());
         let here = remote::moving_to(&kept).is_some_and(|to| Some(to) == self_id.as_deref());
         self.remote.made.insert(id.to_owned());
         self.kept.forget(id, cx);
-        let panes: Vec<_> = self.pane.iter().chain(self.subagent_pane.iter()).chain(self.thread_panels.panes()).cloned().collect();
+        let panes: Vec<_> = self
+            .pane
+            .iter()
+            .chain(self.subagent_pane.iter())
+            .chain(self.thread_panels.panes())
+            .cloned()
+            .collect();
         for pane in panes {
             if pane.read(cx).summary.id == id {
                 pane.update(cx, |p, cx| {
                     p.unsubscribe();
                     p.summary_changed(&kept, cx);
-                    p.connection_back();
+                    p.connection_back(cx);
                 });
             }
         }
-        self.threads.insert(id.to_owned(), std::sync::Arc::new(kept));
+        self.threads
+            .insert(id.to_owned(), std::sync::Arc::new(kept));
         // Only this Mac's own list says a move here has arrived (load_list
         // takes it from `made` then); one to another runner arrives with
         // that runner's index row (apply_remote_index).
-        if here { self.load_list(cx); }
+        if here {
+            self.load_list(cx);
+        }
         self.refresh_dock_badge();
         true
     }
@@ -119,13 +152,23 @@ impl Threadbear {
     pub(crate) fn load_remote(&mut self, cx: &mut Context<Self>) {
         if self.remote.logins_refresh.is_none() {
             self.remote.logins_refresh = Some(cx.spawn(async move |this, cx| loop {
-                cx.background_executor().timer(std::time::Duration::from_secs(60)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(60))
+                    .await;
                 // Every thread showing, its own panels too, not only the
                 // sidebar's selection (Codex's second review, 13 Nov).
                 let gone = this
                     .update(cx, |t, cx| {
-                        let panes: Vec<_> = t.pane.iter().chain(t.thread_panels.panes()).cloned().collect();
-                        let runners: HashSet<String> = panes.iter().filter_map(|p| p.read(cx).summary.runner_id.clone()).collect();
+                        let panes: Vec<_> = t
+                            .pane
+                            .iter()
+                            .chain(t.thread_panels.panes())
+                            .cloned()
+                            .collect();
+                        let runners: HashSet<String> = panes
+                            .iter()
+                            .filter_map(|p| p.read(cx).summary.runner_id.clone())
+                            .collect();
                         for runner in runners {
                             t.load_remote_logins(runner, cx);
                         }
@@ -142,7 +185,10 @@ impl Threadbear {
             let res = call(client.clone(), "remoteThreads.list", json!({})).await;
             match res {
                 Ok(value) => {
-                    this.update(cx, |this, cx| this.receive_remote_since(&value, Some(asked), cx)).ok();
+                    this.update(cx, |this, cx| {
+                        this.receive_remote_since(&value, Some(asked), cx)
+                    })
+                    .ok();
                 }
                 // None to come (a runner from before them).
                 Err(_) => {
@@ -167,7 +213,13 @@ impl Threadbear {
 
     /// `selfRunnerIcon`: this Mac's icon, as a symbol this app has.
     pub(crate) fn self_runner_symbol(&self) -> &'static str {
-        crate::icons::runner_symbol(self.remote.all_runners.iter().find(|r| r.is_self).and_then(|r| r.icon.as_deref()))
+        crate::icons::runner_symbol(
+            self.remote
+                .all_runners
+                .iter()
+                .find(|r| r.is_self)
+                .and_then(|r| r.icon.as_deref()),
+        )
     }
 
     /// `receive(remote:)`: the whole list, as `remoteThreads.list` and
@@ -178,7 +230,12 @@ impl Threadbear {
 
     /// `receive_remote` for a `remoteThreads.list` reply asked for at
     /// `asked` (`RecentUpdates::mark`): what came since stays.
-    pub(crate) fn receive_remote_since(&mut self, value: &Value, asked: Option<u64>, cx: &mut Context<Self>) {
+    pub(crate) fn receive_remote_since(
+        &mut self,
+        value: &Value,
+        asked: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         if value["ready"].as_bool() == Some(false) {
             self.remote.heard = false;
             cx.notify();
@@ -209,21 +266,30 @@ impl Threadbear {
     /// `applyRemoteIndex`: puts the table's rows in `threads` and lets go of
     /// rows that have gone from it (deleted there).
     pub(crate) fn apply_remote_index(&mut self, cx: &mut Context<Self>) {
-        if !self.remote.heard { return; }
+        if !self.remote.heard {
+            return;
+        }
         let mut listed = HashSet::new();
         let mut reload = HashSet::new();
         for summary in self.remote.index.threads.clone() {
             // Never in place of one of this Mac's own.
             let waiting = self.remote.made.contains(&summary.id);
             if let Some(current) = self.threads.get(&summary.id) {
-                if current.runner_id.is_none() && !waiting { continue; }
+                if current.runner_id.is_none() && !waiting {
+                    continue;
+                }
                 // While it waits on its move only the runner it's going to
                 // and the one it's leaving speak for it: an old Mac's
                 // lingering row can't take it, and the one it's leaving
                 // putting its row back keeps the thread that runner's,
                 // still locked with its move (Daybreak 113), rather than
                 // being ignored for a destination that never listed it.
-                if waiting && summary.runner_id != current.runner_id && summary.runner_id.as_deref() != remote::moving_to(current) { continue; }
+                if waiting
+                    && summary.runner_id != current.runner_id
+                    && summary.runner_id.as_deref() != remote::moving_to(current)
+                {
+                    continue;
+                }
             }
             listed.insert(summary.id.clone());
             let waiting = self.remote.made.remove(&summary.id);
@@ -233,13 +299,19 @@ impl Threadbear {
             if let Some(b) = self.remote.box_of(summary.runner_id.as_deref()) {
                 threadbear_core::sidebar::dress_box(&mut summary, b);
             }
-            let before = self.threads.insert(summary.id.clone(), std::sync::Arc::new(summary.clone()));
+            let before = self
+                .threads
+                .insert(summary.id.clone(), std::sync::Arc::new(summary.clone()));
             // Every row comes again with any one's change: only one that
-            // changed is that runner's word on it (`thread::AWAITING`).
+            // changed is that runner's word on it (`Outbox::sending`).
             if before.as_deref() != Some(&summary) {
-                crate::thread::summary_arrived(&summary.id);
+                crate::thread::summary_arrived(&summary.id, cx);
             }
-            if waiting || before.as_ref().is_some_and(|old| old.runner_id != summary.runner_id) {
+            if waiting
+                || before
+                    .as_ref()
+                    .is_some_and(|old| old.runner_id != summary.runner_id)
+            {
                 reload.insert(summary.id.clone());
             }
             self.note_failed_account(before.as_deref(), &summary);
@@ -247,7 +319,18 @@ impl Threadbear {
             // way, not through thread.updated (Codex's review, 18 Nov).
             self.note_failed_move(before.as_deref(), &summary, cx);
         }
-        let gone: Vec<String> = self.threads.values().map(|t| &**t).filter(|t| self.remote.index.can_remove_missing() && t.runner_id.is_some() && !listed.contains(&t.id) && !self.remote.made.contains(&t.id)).map(|t| t.id.clone()).collect();
+        let gone: Vec<String> = self
+            .threads
+            .values()
+            .map(|t| &**t)
+            .filter(|t| {
+                self.remote.index.can_remove_missing()
+                    && t.runner_id.is_some()
+                    && !listed.contains(&t.id)
+                    && !self.remote.made.contains(&t.id)
+            })
+            .map(|t| t.id.clone())
+            .collect();
         for id in gone {
             if !self.moved_away(&id, cx) {
                 self.threads.remove(&id);
@@ -266,11 +349,22 @@ impl Threadbear {
     }
 
     pub(crate) fn sync_thread_panes(&mut self, reload: &HashSet<String>, cx: &mut Context<Self>) {
-        let panes: Vec<_> = self.pane.iter().chain(self.subagent_pane.iter()).chain(self.thread_panels.panes()).chain(self.kept.panes()).cloned().collect();
+        let panes: Vec<_> = self
+            .pane
+            .iter()
+            .chain(self.subagent_pane.iter())
+            .chain(self.thread_panels.panes())
+            .chain(self.kept.panes())
+            .cloned()
+            .collect();
         let mut seen = HashSet::new();
         for pane in panes {
-            if !seen.insert(pane.entity_id()) { continue; }
-            let Some(t) = self.threads.get(&pane.read(cx).summary.id).cloned() else { continue };
+            if !seen.insert(pane.entity_id()) {
+                continue;
+            }
+            let Some(t) = self.threads.get(&pane.read(cx).summary.id).cloned() else {
+                continue;
+            };
             pane.update(cx, |p, cx| {
                 p.summary_changed(&t, cx);
                 if reload.contains(&t.id) {
@@ -284,19 +378,34 @@ impl Threadbear {
     /// `loadRelayLogins`: that runner's logins for the pickers, from the
     /// backend through this Mac's runner, once per runner.
     pub(crate) fn load_remote_logins(&mut self, runner: String, cx: &mut Context<Self>) {
-        let fresh = self.remote.logins_at.get(&runner).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60));
-        if (self.remote.logins.contains_key(&runner) && fresh) || !self.remote.fetching.insert(runner.clone()) {
+        let fresh = self
+            .remote
+            .logins_at
+            .get(&runner)
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60));
+        if (self.remote.logins.contains_key(&runner) && fresh)
+            || !self.remote.fetching.insert(runner.clone())
+        {
             return;
         }
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "remoteThreads.logins", json!({ "runnerId": runner })).await;
+            let res = call(
+                client,
+                "remoteThreads.logins",
+                json!({ "runnerId": runner }),
+            )
+            .await;
             this.update(cx, |this, cx| {
                 this.remote.fetching.remove(&runner);
                 match res {
                     Ok(value) => {
-                        this.remote.logins.insert(runner.clone(), RunnerLogins::from_hello(&value));
-                        this.remote.logins_at.insert(runner.clone(), std::time::Instant::now());
+                        this.remote
+                            .logins
+                            .insert(runner.clone(), RunnerLogins::from_hello(&value));
+                        this.remote
+                            .logins_at
+                            .insert(runner.clone(), std::time::Instant::now());
                         if this.new_thread.picks.runner.as_deref() == Some(runner.as_str()) {
                             this.new_thread.runner_problem = None;
                         }
@@ -316,7 +425,11 @@ impl Threadbear {
 
     /// `runnerName(of:)`: "bruce" for another runner's thread.
     pub(crate) fn runner_name_of(&self, runner_id: &str) -> String {
-        self.remote.runners.iter().find(|r| r.id == runner_id).map_or_else(|| "another Mac".to_owned(), |r| r.name.clone())
+        self.remote
+            .runners
+            .iter()
+            .find(|r| r.id == runner_id)
+            .map_or_else(|| "another Mac".to_owned(), |r| r.name.clone())
     }
 
     /// `runnerLabel(of:)`: the runner's name on a sidebar row ("m5",
@@ -330,13 +443,22 @@ impl Threadbear {
         if self.remote.runners.is_empty() {
             return None;
         }
-        self.remote.all_runners.iter().find(|r| r.is_self).map(|r| r.name.clone())
+        self.remote
+            .all_runners
+            .iter()
+            .find(|r| r.is_self)
+            .map(|r| r.name.clone())
     }
 
     /// `runnerPlace(of:)`: "On bruce", or "On bruce, offline".
     pub(crate) fn runner_place_of(&self, runner_id: &str) -> String {
         let name = self.runner_name_of(runner_id);
-        if self.remote.runners.iter().any(|r| r.id == runner_id && !r.online) {
+        if self
+            .remote
+            .runners
+            .iter()
+            .any(|r| r.id == runner_id && !r.online)
+        {
             format!("On {name}, offline")
         } else {
             format!("On {name}")
@@ -348,6 +470,10 @@ impl Threadbear {
         if self.remote.box_of(runner_id).is_some() {
             return crate::icons::VIRTUAL_RUNNER;
         }
-        crate::icons::runner_symbol(runner_id.and_then(|id| self.remote.runners.iter().find(|r| r.id == id)).and_then(|r| r.icon.as_deref()))
+        crate::icons::runner_symbol(
+            runner_id
+                .and_then(|id| self.remote.runners.iter().find(|r| r.id == id))
+                .and_then(|r| r.icon.as_deref()),
+        )
     }
 }

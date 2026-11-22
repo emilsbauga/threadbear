@@ -239,7 +239,7 @@ On screen it's the same as A. The remaining misses:
   context instead.
 
 Built behind Settings > General > One reply (`oneReply`), off by default,
-for Mike to try (docs/protocol.md, "One reply").
+for Mike to try (docs/protocol/needs-you.md, "One reply").
 
 Regression cases for the trial, real threads where the reply went wrong:
 - 77e7a0a6, this one: the reply came as narration.

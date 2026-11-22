@@ -119,3 +119,6 @@ automation = ["gpui-kit/test-support", "tokio/net", "tokio/io-util", "tokio/macr
 # numbers behind features/tools/scroll-perf.ts. In the build installed for Mike
 # (desktop/scripts/install-app.sh) and the perf runs, not the specs' builds.
 frame-stats = ["gpui-kit/profiler"]
+
+[lints]
+workspace = true

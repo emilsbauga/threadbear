@@ -31,6 +31,8 @@ fn now_ns() -> u64 {
         unsafe extern "C" {
             fn clock_gettime_nsec_np(clock: u32) -> u64;
         }
+        // SAFETY: takes a clock id by value and returns a number, touching no
+        // memory of ours; 8 (CLOCK_UPTIME_RAW) is a valid clock.
         unsafe { clock_gettime_nsec_np(8) }
     }
     #[cfg(not(target_os = "macos"))]
@@ -45,7 +47,10 @@ pub(crate) fn input(what: &'static str, window: &Window) {
         return;
     }
     let at = window.mouse_position();
-    INPUTS.with(|i| i.borrow_mut().push((what, f32::from(at.x), f32::from(at.y), now_ns())));
+    INPUTS.with(|i| {
+        i.borrow_mut()
+            .push((what, f32::from(at.x), f32::from(at.y), now_ns()))
+    });
 }
 
 /// CPU time this thread (the main one, where the automation's commands run)
@@ -59,7 +64,9 @@ fn thread_cpu_ns() -> i64 {
 #[cfg(all(feature = "automation", feature = "frame-stats"))]
 mod journal {
     use super::*;
-    use gpui_kit::profiler::journal::{ForegroundEvent, ForegroundJournalCollector, ForegroundJournalEntry, IntervalBoundary};
+    use gpui_kit::profiler::journal::{
+        ForegroundEvent, ForegroundJournalCollector, ForegroundJournalEntry, IntervalBoundary,
+    };
     use serde_json::{json, Value};
     use std::time::Instant;
 
@@ -72,20 +79,43 @@ mod journal {
     pub(crate) fn report(start: bool, cx: &App) -> Value {
         if start {
             INPUTS.with(|i| i.borrow_mut().clear());
-            READER.with(|r| *r.borrow_mut() = Some((cx.foreground_journal().collector(), Instant::now(), now_ns(), thread_cpu_ns())));
+            READER.with(|r| {
+                *r.borrow_mut() = Some((
+                    cx.foreground_journal().collector(),
+                    Instant::now(),
+                    now_ns(),
+                    thread_cpu_ns(),
+                ))
+            });
             ON.with(|o| o.set(true));
             return json!("recording");
         }
         ON.with(|o| o.set(false));
         let cpu_ns = thread_cpu_ns();
-        let Some((mut reader, base, base_ns, base_cpu)) = READER.with(|r| r.borrow_mut().take()) else { return json!({ "error": "not started" }) };
-        let ns = |at: Instant| base_ns as i64 + if at >= base { at.duration_since(base).as_nanos() as i64 } else { -(base.duration_since(at).as_nanos() as i64) };
+        let Some((mut reader, base, base_ns, base_cpu)) = READER.with(|r| r.borrow_mut().take())
+        else {
+            return json!({ "error": "not started" });
+        };
+        let ns = |at: Instant| {
+            base_ns as i64
+                + if at >= base {
+                    at.duration_since(base).as_nanos() as i64
+                } else {
+                    -(base.duration_since(at).as_nanos() as i64)
+                }
+        };
         let drained = reader.collect_unseen();
         let (mut presented, mut presses) = (Vec::<i64>::new(), Vec::<(i64, i64)>::new());
         for entry in &drained.entries {
             match entry {
-                ForegroundJournalEntry::Boundary(IntervalBoundary::Presented(p)) => presented.push(ns(p.presentation.present_end)),
-                ForegroundJournalEntry::Event(ForegroundEvent::Input(i)) if i.kind == "mouse_down" => presses.push((ns(i.start), ns(i.end))),
+                ForegroundJournalEntry::Boundary(IntervalBoundary::Presented(p)) => {
+                    presented.push(ns(p.presentation.present_end))
+                }
+                ForegroundJournalEntry::Event(ForegroundEvent::Input(i))
+                    if i.kind == "mouse_down" =>
+                {
+                    presses.push((ns(i.start), ns(i.end)))
+                }
                 _ => {}
             }
         }
@@ -98,7 +128,10 @@ mod journal {
             .into_iter()
             .map(|(what, x, y, at)| json!({ "what": what, "x": x, "y": y, "handledNs": at, "presentedNs": after(at as i64) }))
             .collect();
-        let presses: Vec<Value> = presses.into_iter().map(|(start, end)| json!({ "dispatchedNs": start, "presentedNs": after(end) })).collect();
+        let presses: Vec<Value> = presses
+            .into_iter()
+            .map(|(start, end)| json!({ "dispatchedNs": start, "presentedNs": after(end) }))
+            .collect();
         json!({ "hovers": hovers, "presses": presses, "frames": presented.len(), "lost": drained.lost, "mainCpuMs": (cpu_ns - base_cpu) as f64 / 1e6 })
     }
 }

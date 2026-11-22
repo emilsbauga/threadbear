@@ -1,6 +1,6 @@
 // What each provider is called and what it can do. The runner's checks read
 // this rather than comparing provider names, and hello hands it to the apps
-// (docs/protocol.md, "Providers"), so adding a provider is a row here and
+// (docs/protocol/types.md, `ProviderInfo`), so adding a provider is a row here and
 // not a hunt through every `=== 'codex'`.
 //
 // What's left comparing names is really about one CLI's own files or
@@ -73,6 +73,19 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     // Threadbear's hook denies every tool for a small job, reads included
     // (adapters/acp/grok-guard.ts).
     smallJobs: true,
+    usageReadings: false,
+  },
+  // Gemini on a Google plan, through Google's antigravity-acp. It has no
+  // sign-in command of its own (it signs in over ACP's authenticate).
+  antigravity: {
+    id: 'antigravity',
+    name: 'Gemini',
+    cliName: 'Antigravity',
+    loginCommand: '',
+    effort: 'none',
+    autoMode: 'asks',
+    rewind: false,
+    smallJobs: false,
     usageReadings: false,
   },
 };

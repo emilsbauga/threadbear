@@ -13,7 +13,11 @@ use std::sync::Arc;
 
 /// The longest side the atlas holds. wgpu (Linux) is held to its default
 /// device limit, 8192, which some GPUs there don't go past.
-pub(crate) const MAX_SIDE: u32 = if cfg!(target_os = "linux") { 8192 } else { 16384 };
+pub(crate) const MAX_SIDE: u32 = if cfg!(target_os = "linux") {
+    8192
+} else {
+    16384
+};
 
 /// Whether a picture of this size is too big to draw as it is.
 pub(crate) fn too_big((width, height): (u32, u32)) -> bool {
@@ -33,7 +37,11 @@ pub(crate) fn fitted((width, height): (u32, u32)) -> (u32, u32) {
 
 /// A picture's size from its header, without decoding it.
 pub(crate) fn size_of(bytes: &[u8]) -> Option<(u32, u32)> {
-    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 /// Decodes and shrinks a picture to `fitted`'s size, turned the way its
@@ -46,7 +54,9 @@ fn shrunk(bytes: &[u8]) -> Option<image::RgbaImage> {
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
         return None;
     }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_PIXELS * 4);
     reader.limits(limits);
@@ -57,7 +67,11 @@ fn shrunk(bytes: &[u8]) -> Option<image::RgbaImage> {
         picture.apply_orientation(orientation);
     }
     let (width, height) = fitted((picture.width(), picture.height()));
-    Some(picture.resize_exact(width, height, image::imageops::FilterType::Triangle).into_rgba8())
+    Some(
+        picture
+            .resize_exact(width, height, image::imageops::FilterType::Triangle)
+            .into_rgba8(),
+    )
 }
 
 /// The most pixels a picture may have to be shrunk: 128 million, 512 MB
@@ -77,7 +91,11 @@ pub(crate) fn fit_bytes(format: ImageFormat, bytes: Vec<u8>) -> Option<(ImageFor
     }
     let small = shrunk(&bytes)?;
     let mut png = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new_with_quality(&mut png, image::codecs::png::CompressionType::Fast, image::codecs::png::FilterType::NoFilter);
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::NoFilter,
+    );
     small.write_with_encoder(encoder).ok()?;
     Some((ImageFormat::Png, png))
 }
@@ -94,14 +112,21 @@ impl Asset for FittedPicture {
     type Source = FittedKey;
     type Output = Result<Arc<RenderImage>, ImageCacheError>;
 
-    fn load((path, _, _): Self::Source, _cx: &mut App) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "an async fn would hold on to `cx`, and GPUI's Asset wants a future that's 'static"
+    )]
+    fn load(
+        (path, _, _): Self::Source,
+        _cx: &mut App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         async move {
             let bytes = crate::rows::markdown::checked_picture_bytes(&path)?;
             // Drawn as it is, it would be a blank box: the fallback says
             // it can't be shown instead.
             let mut small = shrunk(&bytes).ok_or_else(|| std::io::Error::other(TOO_BIG))?;
             // GPUI's pictures are BGRA (as `Image::to_image_data` makes them).
-            for pixel in small.chunks_exact_mut(4) {
+            for pixel in small.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
             Ok(Arc::new(RenderImage::new(vec![image::Frame::new(small)])))
@@ -123,12 +148,19 @@ struct Newest(std::collections::HashMap<PathBuf, FittedKey>);
 impl Global for Newest {}
 
 /// The shrunk picture for `file_picture`, loading it the first time.
-pub(crate) fn use_fitted(key: &FittedKey, window: &mut Window, cx: &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+pub(crate) fn use_fitted(
+    key: &FittedKey,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
     let newest = &mut cx.default_global::<Newest>().0;
     if newest.len() > 500 {
         newest.clear();
     }
-    if let Some(old) = newest.insert(key.0.clone(), key.clone()).filter(|old| old != key) {
+    if let Some(old) = newest
+        .insert(key.0.clone(), key.clone())
+        .filter(|old| old != key)
+    {
         cx.remove_asset::<FittedPicture>(&old);
     }
     window.use_asset::<FittedPicture>(key, cx)
@@ -139,7 +171,8 @@ pub(crate) fn use_fitted(key: &FittedKey, window: &mut Window, cx: &mut App) -> 
 pub(crate) fn file_size(path: &Path, meta: &std::fs::Metadata) -> Option<(u32, u32)> {
     use std::sync::{LazyLock, Mutex};
     type Key = (PathBuf, u64, Option<std::time::SystemTime>);
-    static SEEN: LazyLock<Mutex<std::collections::HashMap<Key, Option<(u32, u32)>>>> = LazyLock::new(Default::default);
+    static SEEN: LazyLock<Mutex<std::collections::HashMap<Key, Option<(u32, u32)>>>> =
+        LazyLock::new(Default::default);
     let key = (path.to_owned(), meta.len(), meta.modified().ok());
     if let Some(known) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return *known;
@@ -152,7 +185,11 @@ pub(crate) fn file_size(path: &Path, meta: &std::fs::Metadata) -> Option<(u32, u
         .and_then(|file| {
             use std::io::Read as _;
             let head = std::io::BufReader::new(file.take(HEADER_BYTES));
-            image::ImageReader::new(head).with_guessed_format().ok()?.into_dimensions().ok()
+            image::ImageReader::new(head)
+                .with_guessed_format()
+                .ok()?
+                .into_dimensions()
+                .ok()
         });
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     if seen.len() > 2000 {
@@ -168,7 +205,12 @@ mod tests {
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
-        image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255])).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+        image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
         bytes
     }
 

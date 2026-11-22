@@ -9,13 +9,30 @@ use std::collections::HashMap;
 pub const CREDIT: &str = "Made in Busselton by Mike and a lot of bears.";
 
 /// "212 threads since 3 Oct.", the busiest day, and how many are hibernating.
-pub fn lines<'a, Tz: TimeZone>(threads: impl IntoIterator<Item = &'a ThreadSummary>, now_ms: i64, tz: &Tz) -> Vec<String> {
-    let real: Vec<&ThreadSummary> = threads.into_iter().filter(|t| t.sample != Some(true)).collect();
-    let days: Vec<NaiveDate> = real.iter().filter_map(|t| t.created_at.as_deref().and_then(parse_ms)).filter_map(|ms| tz.timestamp_millis_opt(ms).single()).map(|d| d.date_naive()).collect();
+pub fn lines<'a, Tz: TimeZone>(
+    threads: impl IntoIterator<Item = &'a ThreadSummary>,
+    now_ms: i64,
+    tz: &Tz,
+) -> Vec<String> {
+    let real: Vec<&ThreadSummary> = threads
+        .into_iter()
+        .filter(|t| t.sample != Some(true))
+        .collect();
+    let days: Vec<NaiveDate> = real
+        .iter()
+        .filter_map(|t| t.created_at.as_deref().and_then(parse_ms))
+        .filter_map(|ms| tz.timestamp_millis_opt(ms).single())
+        .map(|d| d.date_naive())
+        .collect();
     let mut out = Vec::new();
     if let Some(first) = days.iter().min() {
         let count = real.len();
-        out.push(format!("{} {} since {}.", number(count), if count == 1 { "thread" } else { "threads" }, day(*first)));
+        out.push(format!(
+            "{} {} since {}.",
+            number(count),
+            if count == 1 { "thread" } else { "threads" },
+            day(*first)
+        ));
     }
     let mut by_day: HashMap<NaiveDate, usize> = HashMap::new();
     for d in &days {
@@ -24,12 +41,22 @@ pub fn lines<'a, Tz: TimeZone>(threads: impl IntoIterator<Item = &'a ThreadSumma
     // The most recent of any tie, so the answer doesn't change between looks.
     if let Some((busiest, count)) = by_day.into_iter().max_by_key(|(d, n)| (*n, *d)) {
         if count > 1 {
-            out.push(format!("Busiest day: {}, {} threads. Sorry.", day(busiest), number(count)));
+            out.push(format!(
+                "Busiest day: {}, {} threads. Sorry.",
+                day(busiest),
+                number(count)
+            ));
         }
     }
-    let hibernating = real.iter().filter(|t| !t.is_archived() && t.snoozed(now_ms)).count();
+    let hibernating = real
+        .iter()
+        .filter(|t| !t.is_archived() && t.snoozed(now_ms))
+        .count();
     if hibernating > 0 {
-        out.push(format!("{} hibernating. Snoring, mostly.", number(hibernating)));
+        out.push(format!(
+            "{} hibernating. Snoring, mostly.",
+            number(hibernating)
+        ));
     }
     out
 }
@@ -40,15 +67,22 @@ pub fn build<Tz: TimeZone>(short: &str, built_at: &str, tz: &Tz) -> Option<Strin
     if short.is_empty() {
         return None;
     }
-    Some(match parse_ms(built_at).and_then(|ms| tz.timestamp_millis_opt(ms).single()) {
-        Some(at) => format!("Stitched together from {short} on {}.", day(at.date_naive())),
-        None => format!("Stitched together from {short}."),
-    })
+    Some(
+        match parse_ms(built_at).and_then(|ms| tz.timestamp_millis_opt(ms).single()) {
+            Some(at) => format!(
+                "Stitched together from {short} on {}.",
+                day(at.date_naive())
+            ),
+            None => format!("Stitched together from {short}."),
+        },
+    )
 }
 
 /// "7 Nov", as en_AU's day and short month.
 fn day(d: NaiveDate) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     format!("{} {}", d.day(), MONTHS[d.month0() as usize])
 }
 
@@ -57,7 +91,7 @@ fn number(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -71,7 +105,11 @@ mod tests {
     use chrono::FixedOffset;
 
     fn thread(id: &str, created: &str) -> ThreadSummary {
-        ThreadSummary { id: id.into(), created_at: Some(created.into()), ..Default::default() }
+        ThreadSummary {
+            id: id.into(),
+            created_at: Some(created.into()),
+            ..Default::default()
+        }
     }
 
     fn perth() -> FixedOffset {
@@ -80,15 +118,30 @@ mod tests {
 
     #[test]
     fn counts_threads_since_the_first_and_the_busiest_day() {
-        let threads = vec![thread("a", "2026-10-03T01:00:00.000Z"), thread("b", "2026-11-07T02:00:00.000Z"), thread("c", "2026-11-07T03:00:00.000Z")];
+        let threads = vec![
+            thread("a", "2026-10-03T01:00:00.000Z"),
+            thread("b", "2026-11-07T02:00:00.000Z"),
+            thread("c", "2026-11-07T03:00:00.000Z"),
+        ];
         let now = parse_ms("2026-11-12T00:00:00.000Z").unwrap();
-        assert_eq!(lines(&threads, now, &perth()), vec!["3 threads since 3 Oct.", "Busiest day: 7 Nov, 2 threads. Sorry."]);
+        assert_eq!(
+            lines(&threads, now, &perth()),
+            vec![
+                "3 threads since 3 Oct.",
+                "Busiest day: 7 Nov, 2 threads. Sorry."
+            ]
+        );
     }
 
     #[test]
     fn days_are_local_and_ties_go_to_the_latest() {
         // 4 Oct 18:00 UTC is 5 Oct in Perth.
-        let threads = vec![thread("a", "2026-10-04T18:00:00.000Z"), thread("b", "2026-10-05T01:00:00.000Z"), thread("c", "2026-10-09T01:00:00.000Z"), thread("d", "2026-10-09T02:00:00.000Z")];
+        let threads = vec![
+            thread("a", "2026-10-04T18:00:00.000Z"),
+            thread("b", "2026-10-05T01:00:00.000Z"),
+            thread("c", "2026-10-09T01:00:00.000Z"),
+            thread("d", "2026-10-09T02:00:00.000Z"),
+        ];
         let out = lines(&threads, 0, &perth());
         assert_eq!(out[0], "4 threads since 5 Oct.");
         assert_eq!(out[1], "Busiest day: 9 Oct, 2 threads. Sorry.");
@@ -108,7 +161,10 @@ mod tests {
         asleep.snoozed_until = Some("2026-11-20T00:00:00.000Z".into());
         let now = parse_ms("2026-11-12T00:00:00.000Z").unwrap();
         let out = lines(&[asleep], now, &perth());
-        assert_eq!(out.last().map(String::as_str), Some("1 hibernating. Snoring, mostly."));
+        assert_eq!(
+            out.last().map(String::as_str),
+            Some("1 hibernating. Snoring, mostly.")
+        );
     }
 
     #[test]
@@ -118,8 +174,14 @@ mod tests {
 
     #[test]
     fn the_build_line() {
-        assert_eq!(build("fa772646", "2026-11-07T03:00:00Z", &perth()).as_deref(), Some("Stitched together from fa772646 on 7 Nov."));
-        assert_eq!(build("fa772646", "", &perth()).as_deref(), Some("Stitched together from fa772646."));
+        assert_eq!(
+            build("fa772646", "2026-11-07T03:00:00Z", &perth()).as_deref(),
+            Some("Stitched together from fa772646 on 7 Nov.")
+        );
+        assert_eq!(
+            build("fa772646", "", &perth()).as_deref(),
+            Some("Stitched together from fa772646.")
+        );
         assert_eq!(build("", "2026-11-07T03:00:00Z", &perth()), None);
     }
 

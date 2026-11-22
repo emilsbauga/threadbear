@@ -1,11 +1,10 @@
-// A moving thread's git work (docs/protocol.md, "Moving a thread to another
+// A moving thread's git work (docs/protocol/moves.md, "Moving a thread to another
 // runner", Git). On the runner it leaves, the branch's commits that
 // `origin` doesn't have, and one more commit of every uncommitted and
 // untracked file, go in a git bundle. On the runner it goes to, the bundle
 // is fetched into the thread's new worktree, the branch set to where it
 // was, and that last commit's changes put back as uncommitted, so the
 // agent finds the worktree as it left it. `.gitignore`d files stay behind.
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

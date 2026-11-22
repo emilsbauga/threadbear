@@ -1,4 +1,4 @@
-// files.read and files.list (docs/protocol.md, "Other runners' threads"): a file on this
+// files.read and files.list (docs/protocol/runners.md, "Other runners' threads"): a file on this
 // Mac, for a Mac app showing one of this runner's threads from another Mac.
 // Pictures, long tool output (blobs) and file links in a thread's events
 // are paths here, which that app can't open, so it asks for the bytes and

@@ -32,7 +32,7 @@ Built 28 Oct 2026 (thread 66935d23).
   threads, live then archived, newest first, from `phone:projectThreads`
   for that runner's project (Show
   more for older ones). A runner's page has its CPU, memory and disk, reported
-  only while that view is open (docs/protocol.md, Sync, "Runner figures"), and
+  only while that view is open (docs/protocol/moves.md, Sync, "Runner figures"), and
   its tile an orange dot while it's low on memory or disk. The sidebar and rail
   read `phone:wakes`, not the schedules. On a phone the rail is a tab bar, with Runners and Usage under
   More. The pencil beside the search starts a thread (`/new`, `phone:create`)
@@ -61,7 +61,7 @@ Built 28 Oct 2026 (thread 66935d23).
 
 ## Sharing
 
-A thread can be shared by link (docs/protocol.md, "Sharing"): from the
+A thread can be shared by link (docs/protocol/runners.md, "Sharing"): from the
 share button beside the Mac app's ... menu, or from the website, where
 Mike's own thread page and the shared page (when he's signed in) have a
 Share button: Share with a link, Copy, Stop sharing, and on his thread
@@ -101,7 +101,7 @@ which checks at every request that the thread is still shared under that
 link, so a saved picture URL stops with the share, and only real
 pictures from the thread's media folder (attachments, tool pictures, and
 what the agent copies into `THREADBEAR_MEDIA_DIR`), never its working
-folder or a temp folder (docs/protocol.md, "Sharing"). A picture written in
+folder or a temp folder (docs/protocol/runners.md, "Sharing"). A picture written in
 a message's Markdown (`src`) takes the place of that Markdown image; the
 rest go after the row they came with. Mike's own thread page shows them
 too (`phone:messages` returns them), with what he pasted into his own messages
@@ -116,7 +116,7 @@ else for now, and it needed a Resend key Threadbear doesn't have.
 ## Signing in
 
 The browser holds a browser token (`convex/tokens.ts`) in localStorage. The
-Mac app gets one for it through the runner (docs/protocol.md "Devices"):
+Mac app gets one for it through the runner (docs/protocol/moves.md "Devices"):
 Settings › Phone & browser › "Open signed in" opens the site in the default
 browser with a one-use sign-in code in the link's `#fragment`, which the
 page trades for the token (`tokens:claim`) and wipes from the address bar,

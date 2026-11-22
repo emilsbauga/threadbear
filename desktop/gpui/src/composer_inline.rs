@@ -58,7 +58,11 @@ pub(crate) struct DraggedThread {
 
 impl Render for DraggedThread {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = if self.title.is_empty() { "Untitled".to_owned() } else { self.title.clone() };
+        let title = if self.title.is_empty() {
+            "Untitled".to_owned()
+        } else {
+            self.title.clone()
+        };
         mention_chip_body(&title, MentionKind::Thread, false, cx)
     }
 }
@@ -66,7 +70,10 @@ impl Render for DraggedThread {
 /// A file chip's symbol, by the file's name: a film for a video, a waveform
 /// for sound, a page for anything else (a folder's name rarely says it's one).
 pub(crate) fn file_symbol(name: &str) -> &'static str {
-    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     match extension.as_str() {
         "mp4" | "mov" | "m4v" | "webm" | "mkv" | "avi" => "film",
         "mp3" | "m4a" | "wav" | "aiff" | "aif" | "flac" | "ogg" | "caf" => "waveform",
@@ -77,7 +84,11 @@ pub(crate) fn file_symbol(name: &str) -> &'static str {
 /// A file's path for its card, with the home folder as `~`.
 pub(crate) fn short_path(path: &str) -> String {
     let home = crate::files::home_dir();
-    if home.is_empty() { path.to_owned() } else { threadbear_core::new_thread::abbreviate_home(path, &home) }
+    if home.is_empty() {
+        path.to_owned()
+    } else {
+        threadbear_core::new_thread::abbreviate_home(path, &home)
+    }
 }
 
 /// What a file chip's tooltip says about its dot.
@@ -89,7 +100,11 @@ pub(crate) const FILE_TIP: &str = "Not uploaded: only an agent on this Mac can o
 pub(crate) const FILE_DOT: f32 = 5.;
 
 pub(crate) fn file_dot(cx: &App) -> Div {
-    div().flex_none().size(px(FILE_DOT)).rounded_full().bg(style::tertiary_label(cx))
+    div()
+        .flex_none()
+        .size(px(FILE_DOT))
+        .rounded_full()
+        .bg(style::tertiary_label(cx))
 }
 
 /// A chip's body: its symbol and label on the chips' fill, with a hairline
@@ -97,7 +112,11 @@ pub(crate) fn file_dot(cx: &App) -> Div {
 /// its dot after the label.
 fn mention_chip_body(title: &str, kind: MentionKind, selected: bool, cx: &App) -> Div {
     let secondary = style::secondary_label(cx);
-    let edge = if selected { style::accent(cx) } else { style::hairline(cx) };
+    let edge = if selected {
+        style::accent(cx)
+    } else {
+        style::hairline(cx)
+    };
     // A speech bubble for a thread, a card for a Notion card, the file's kind for a file.
     let symbol = match kind {
         MentionKind::Thread => "bubble.left",
@@ -119,8 +138,28 @@ fn mention_chip_body(title: &str, kind: MentionKind, selected: bool, cx: &App) -
         .border(gpui_kit::px(0.5))
         .border_color(edge)
         // SF's symbols fill their box; Lucide's draw a little inside it.
-        .child(div().size(px(ICON)).flex().items_center().justify_center().child(crate::icons::symbol(symbol).size(px(13.)).text_color(secondary)))
-        .child(div().max_w(px(LABEL_MAX)).truncate().whitespace_nowrap().text_size(px(LABEL)).line_height(px(16.)).text_color(secondary).child(title.to_owned()))
+        .child(
+            div()
+                .size(px(ICON))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    crate::icons::symbol(symbol)
+                        .size(px(13.))
+                        .text_color(secondary),
+                ),
+        )
+        .child(
+            div()
+                .max_w(px(LABEL_MAX))
+                .truncate()
+                .whitespace_nowrap()
+                .text_size(px(LABEL))
+                .line_height(px(16.))
+                .text_color(secondary)
+                .child(title.to_owned()),
+        )
         .when(kind == MentionKind::File, |d| d.child(file_dot(cx)))
 }
 
@@ -135,17 +174,38 @@ impl Composer {
     fn mention_token(&mut self, mention: &Mention, link: &str) -> InlineToken {
         self.next_picture += 1;
         let id: SharedString = format!("mention-{}", self.next_picture).into();
-        self.mentions.insert(id.clone(), MentionChip { title: mention.title.clone(), kind: mention.kind, url: mention.url.clone() });
+        self.mentions.insert(
+            id.clone(),
+            MentionChip {
+                title: mention.title.clone(),
+                kind: mention.kind,
+                url: mention.url.clone(),
+            },
+        );
         // A label with nothing in it isn't a token the box takes.
-        let label = if mention.title.trim().is_empty() { "Link".to_owned() } else { mention.title.clone() };
+        let label = if mention.title.trim().is_empty() {
+            "Link".to_owned()
+        } else {
+            mention.title.clone()
+        };
         InlineToken::new(id, link.to_owned()).with_label(label)
     }
 
     /// A click on a file's chip in the box opens the file, as one in the
     /// bubble does. True when it was a file's.
     pub(crate) fn open_file_chip(&self, id: &SharedString, cx: &mut App) -> bool {
-        let Some(chip) = self.mentions.get(id).filter(|c| c.kind == MentionKind::File) else { return false };
-        crate::open_gate::open_file(&threadbear_core::reducer::text::expanding_tilde(&chip.url), crate::open_gate::Origin::ThisMac, cx);
+        let Some(chip) = self
+            .mentions
+            .get(id)
+            .filter(|c| c.kind == MentionKind::File)
+        else {
+            return false;
+        };
+        crate::open_gate::open_file(
+            &threadbear_core::reducer::text::expanding_tilde(&chip.url),
+            crate::open_gate::Origin::ThisMac,
+            cx,
+        );
         true
     }
 
@@ -155,14 +215,22 @@ impl Composer {
     }
 
     /// The same for `target`: the box, or a Something else box.
-    pub(crate) fn box_chips_in(&self, target: &Entity<TextareaState>, cx: &App) -> Vec<(std::ops::Range<usize>, BoxChip)> {
+    pub(crate) fn box_chips_in(
+        &self,
+        target: &Entity<TextareaState>,
+        cx: &App,
+    ) -> Vec<(std::ops::Range<usize>, BoxChip)> {
         target
             .read(cx)
             .tokens()
             .iter()
             .map(|span| {
                 let id = span.token().id();
-                let chip = if Self::is_mention_token(id) { BoxChip::Mention } else { BoxChip::Picture(self.pictures.get(id).and_then(|c| c.image.clone())) };
+                let chip = if Self::is_mention_token(id) {
+                    BoxChip::Mention
+                } else {
+                    BoxChip::Picture(self.pictures.get(id).and_then(|c| c.image.clone()))
+                };
                 (span.range(), chip)
             })
             .collect()
@@ -172,11 +240,23 @@ impl Composer {
     /// and title. A click puts the cursor beside it, as on a word.
     pub(crate) fn render_mention_chip(&self, ctx: &InlineTokenContext, cx: &App) -> AnyElement {
         let chip = self.mentions.get(ctx.token().id());
-        let (title, kind) = chip.map_or_else(|| (ctx.token().label().to_string(), MentionKind::Card), |c| (c.title.clone(), c.kind));
-        let body = div().h_full().flex().items_center().child(mention_chip_body(&title, kind, ctx.is_selected(), cx));
+        let (title, kind) = chip.map_or_else(
+            || (ctx.token().label().to_string(), MentionKind::Card),
+            |c| (c.title.clone(), c.kind),
+        );
+        let body = div()
+            .h_full()
+            .flex()
+            .items_center()
+            .child(mention_chip_body(&title, kind, ctx.is_selected(), cx));
         if kind == MentionKind::File {
             use crate::tips::Tip as _;
-            return body.id(ElementId::Name(format!("composer-file-{}", ctx.token().id()).into())).tip(FILE_TIP).into_any_element();
+            return body
+                .id(ElementId::Name(
+                    format!("composer-file-{}", ctx.token().id()).into(),
+                ))
+                .tip(FILE_TIP)
+                .into_any_element();
         }
         body.into_any_element()
     }
@@ -185,7 +265,11 @@ impl Composer {
     /// edit, a draft kept from before): each mark a chip for its picture,
     /// each card or thread linked in the words a chip of its own
     /// (ComposerTextView.show).
-    pub(crate) fn content_for(&mut self, text: &str, images: &[ImageRef]) -> gpui_kit::component::input::InputContent {
+    pub(crate) fn content_for(
+        &mut self,
+        text: &str,
+        images: &[ImageRef],
+    ) -> gpui_kit::component::input::InputContent {
         let mut words = String::new();
         let mut tokens: Vec<(std::ops::Range<usize>, InlineToken)> = Vec::new();
         for piece in inline::draft_pieces(text, images.len()) {
@@ -197,7 +281,14 @@ impl Composer {
                     let start = words.len();
                     words.push_str(threadbear_core::composer::PICTURE_MARK_STR);
                     tokens.push((start..words.len(), crate::composer::picture_token(&id)));
-                    self.pictures.insert(id, PictureChip { source: PathBuf::from(&image.path), image: Some(image), dropping: None });
+                    self.pictures.insert(
+                        id,
+                        PictureChip {
+                            source: PathBuf::from(&image.path),
+                            image: Some(image),
+                            dropping: None,
+                        },
+                    );
                 }
                 DraftPiece::Mention(mention, link) => {
                     let token = self.mention_token(&mention, &link);
@@ -220,12 +311,25 @@ impl Composer {
     /// Pieces in place of the selection, as one paste puts them
     /// (ComposerTextView.readSelection): words as words, pictures already
     /// in as their chips, cards and threads as theirs.
-    pub(crate) fn insert_pieces(&mut self, pieces: Vec<DraftPiece>, images: &[ImageRef], window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn insert_pieces(
+        &mut self,
+        pieces: Vec<DraftPiece>,
+        images: &[ImageRef],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let target = self.input.clone();
         self.insert_pieces_in(&target, pieces, images, window, cx);
     }
 
-    pub(crate) fn insert_pieces_in(&mut self, target: &Entity<TextareaState>, pieces: Vec<DraftPiece>, images: &[ImageRef], window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn insert_pieces_in(
+        &mut self,
+        target: &Entity<TextareaState>,
+        pieces: Vec<DraftPiece>,
+        images: &[ImageRef],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut tokens: Vec<Option<InlineToken>> = Vec::new();
         for piece in &pieces {
             tokens.push(match piece {
@@ -233,7 +337,14 @@ impl Composer {
                 DraftPiece::Picture(index) => {
                     let image = images[*index].clone();
                     let id = self.fresh_picture_id();
-                    self.pictures.insert(id.clone(), PictureChip { source: PathBuf::from(&image.path), image: Some(image), dropping: None });
+                    self.pictures.insert(
+                        id.clone(),
+                        PictureChip {
+                            source: PathBuf::from(&image.path),
+                            image: Some(image),
+                            dropping: None,
+                        },
+                    );
                     Some(crate::composer::picture_token(&id))
                 }
                 DraftPiece::Mention(mention, link) => Some(self.mention_token(mention, link)),
@@ -263,8 +374,16 @@ impl Composer {
     /// words: a clip of the box's own with its pictures, a known thread's id
     /// on its own, or words with a card or thread linked in them. True when
     /// it's taken.
-    pub(crate) fn take_clipboard_chips(&mut self, target: &Entity<TextareaState>, item: &ClipboardItem, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(words) = item.text() else { return false };
+    pub(crate) fn take_clipboard_chips(
+        &mut self,
+        target: &Entity<TextareaState>,
+        item: &ClipboardItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(words) = item.text() else {
+            return false;
+        };
         // The box's own copy, its pictures beside the words.
         let note = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::String(s) => s.metadata_json::<serde_json::Value>(),
@@ -292,14 +411,22 @@ impl Composer {
         let app = self.app.upgrade()?;
         let threads = &app.read(cx).threads;
         let id = inline::pasted_thread_id(pasted, |id| threads.contains_key(id))?;
-        Some(inline::thread_reference(&id, threads.get(&id).map_or("", |t| t.title.as_str())))
+        Some(inline::thread_reference(
+            &id,
+            threads.get(&id).map_or("", |t| t.title.as_str()),
+        ))
     }
 
     /// ⌘C or ⌘X with chips in the selection (writeSelection): the words as
     /// the agent would get them, with the pictures beside them when there
     /// are any, and a cut takes the selection out. False with no chips in
     /// it, for the box's own copy.
-    pub(crate) fn copy_chips(&mut self, cut: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn copy_chips(
+        &mut self,
+        cut: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let target = self.input.clone();
         self.copy_chips_in(&target, cut, window, cx)
     }
@@ -307,13 +434,22 @@ impl Composer {
     /// The same for `target`: the box, or a Something else box. Without it
     /// those boxes copied and cut a picture as a bare marker, and pasting
     /// it back brought no picture.
-    pub(crate) fn copy_chips_in(&mut self, target: &Entity<TextareaState>, cut: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn copy_chips_in(
+        &mut self,
+        target: &Entity<TextareaState>,
+        cut: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let selection = target.read(cx).selected_range();
         if selection.is_empty() {
             return false;
         }
         let chips = self.box_chips_in(target, cx);
-        if !chips.iter().any(|(range, _)| range.start < selection.end && range.end > selection.start) {
+        if !chips
+            .iter()
+            .any(|(range, _)| range.start < selection.end && range.end > selection.start)
+        {
             return false;
         }
         let text = target.read(cx).value().to_string();
@@ -323,7 +459,10 @@ impl Composer {
             cx.write_to_clipboard(ClipboardItem::new_string(draft));
         } else {
             let clip = Clip::new(draft, images);
-            cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(clip.plain.clone(), clip.metadata()));
+            cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(
+                clip.plain.clone(),
+                clip.metadata(),
+            ));
         }
         if cut {
             target.update(cx, |s, cx| s.replace("", window, cx));
@@ -334,7 +473,13 @@ impl Composer {
 
     /// A thread let go over the box, or anywhere on the thread (ThreadDrag):
     /// its chip where the cursor is, and the cursor stays here to carry on.
-    pub(crate) fn take_thread_drop(&mut self, drag: &DraggedThread, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn take_thread_drop(
+        &mut self,
+        drag: &DraggedThread,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let target = self.input.clone();
         self.caret_to_drop(&target, at, cx);
         let reference = inline::thread_reference(&drag.id, &drag.title);
@@ -375,9 +520,16 @@ impl Composer {
 /// The automation's `composer-clip` (both apps): the whole box copied or
 /// cut, or what's on the clipboard pasted, as ⌘A then ⌘C or ⌘X, and ⌘V, do.
 #[cfg(feature = "automation")]
-pub(crate) fn clip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn clip_command(
+    app: &Entity<crate::app::Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::TestWindowExt as _;
-    let Some(composer) = app.read(cx).composer(cx) else { return Err("no thread open".into()) };
+    let Some(composer) = app.read(cx).composer(cx) else {
+        return Err("no thread open".into());
+    };
     let input = composer.read(cx).input.clone();
     let handle = input.read(cx).focus_handle(cx);
     window.focus(&handle, cx);
@@ -386,10 +538,21 @@ pub(crate) fn clip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
     match cmd["action"].as_str().unwrap_or("") {
         action @ ("copy" | "cut") => {
             input.update(cx, |s, cx| s.select_all(window, cx));
-            window.press(if action == "cut" { "secondary-x" } else { "secondary-c" }, cx);
+            window.press(
+                if action == "cut" {
+                    "secondary-x"
+                } else {
+                    "secondary-c"
+                },
+                cx,
+            );
         }
         "paste" => window.press("secondary-v", cx),
-        other => return Err(format!("composer-clip takes copy, cut or paste, not {other:?}")),
+        other => {
+            return Err(format!(
+                "composer-clip takes copy, cut or paste, not {other:?}"
+            ))
+        }
     }
     window.render_frame(cx);
     Ok(serde_json::json!("ok"))
@@ -397,8 +560,16 @@ pub(crate) fn clip_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
 
 /// The automation's `composer-chips`: the box's chips, in order.
 #[cfg(feature = "automation")]
-pub(crate) fn chips_command(app: &Entity<crate::app::Threadbear>, cx: &mut App) -> Result<serde_json::Value, String> {
-    let Some(composer) = app.read(cx).composer(cx) else { return Err("no thread open".into()) };
+pub(crate) fn chips_command(
+    app: &Entity<crate::app::Threadbear>,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
+    let Some(composer) = app.read(cx).composer(cx) else {
+        return Err("no thread open".into());
+    };
     let chips = composer.read(cx).chip_descriptions(cx);
-    Ok(serde_json::json!(format!("ok {}", serde_json::to_string(&chips).unwrap_or_default())))
+    Ok(serde_json::json!(format!(
+        "ok {}",
+        serde_json::to_string(&chips).unwrap_or_default()
+    )))
 }

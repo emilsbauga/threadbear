@@ -51,7 +51,10 @@ impl Plist {
 
     fn as_strings(&self) -> Option<Vec<String>> {
         match self {
-            Plist::Array(items) => items.iter().map(|i| i.as_str().map(str::to_owned)).collect(),
+            Plist::Array(items) => items
+                .iter()
+                .map(|i| i.as_str().map(str::to_owned))
+                .collect(),
             _ => None,
         }
     }
@@ -60,13 +63,18 @@ impl Plist {
 /// An XML property list, as `defaults export` writes it, or none if it isn't
 /// one. Its DOCTYPE is allowed, and nothing it points to is fetched.
 pub fn parse_plist(xml: &str) -> Option<Plist> {
-    let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    let options = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
     let doc = roxmltree::Document::parse_with_options(xml, options).ok()?;
     let root = doc.root_element();
     if root.tag_name().name() != "plist" {
         return None;
     }
-    root.children().find(roxmltree::Node::is_element).and_then(value)
+    root.children()
+        .find(roxmltree::Node::is_element)
+        .and_then(value)
 }
 
 fn value(node: roxmltree::Node<'_, '_>) -> Option<Plist> {
@@ -81,9 +89,18 @@ fn value(node: roxmltree::Node<'_, '_>) -> Option<Plist> {
         "data" => {
             use base64::Engine as _;
             let compact: String = text().chars().filter(|c| !c.is_whitespace()).collect();
-            Plist::Data(base64::engine::general_purpose::STANDARD.decode(compact).ok()?)
+            Plist::Data(
+                base64::engine::general_purpose::STANDARD
+                    .decode(compact)
+                    .ok()?,
+            )
         }
-        "array" => Plist::Array(node.children().filter(roxmltree::Node::is_element).filter_map(value).collect()),
+        "array" => Plist::Array(
+            node.children()
+                .filter(roxmltree::Node::is_element)
+                .filter_map(value)
+                .collect(),
+        ),
         "dict" => {
             let mut dict = BTreeMap::new();
             let mut key: Option<String> = None;
@@ -105,8 +122,15 @@ fn value(node: roxmltree::Node<'_, '_>) -> Option<Plist> {
 /// "{{-0, 32}, {2560, 918}}" (NSStringFromRect, AppKit's bottom-left origin on
 /// the main screen) to `windowFrame`'s top-left x, y, width and height.
 pub fn window_frame(rect: &str, primary_screen_height: f64) -> Option<Value> {
-    let numbers: Vec<f64> = rect.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).filter(|s| !s.is_empty()).map(|s| s.parse::<f64>()).collect::<Result<_, _>>().ok()?;
-    let [x, y, width, height] = numbers[..] else { return None };
+    let numbers: Vec<f64> = rect
+        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<f64>())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let [x, y, width, height] = numbers[..] else {
+        return None;
+    };
     (width > 0. && height > 0.).then(|| json!({ "x": x + 0., "y": primary_screen_height - (y + height), "width": width, "height": height }))
 }
 
@@ -114,7 +138,10 @@ pub fn window_frame(rect: &str, primary_screen_height: f64) -> Option<Value> {
 /// app's defaults, under this app's names for them: each the same value
 /// under the same key, but for the frame and the panel layout (saved as
 /// JSON data there).
-pub fn settings(defaults: &BTreeMap<String, Plist>, primary_screen_height: f64) -> Map<String, Value> {
+pub fn settings(
+    defaults: &BTreeMap<String, Plist>,
+    primary_screen_height: f64,
+) -> Map<String, Value> {
     let mut out = Map::new();
     let mut put = |key: &str, v: Option<Value>| {
         if let Some(v) = v {
@@ -123,27 +150,65 @@ pub fn settings(defaults: &BTreeMap<String, Plist>, primary_screen_height: f64) 
     };
     let get = |key: &str| defaults.get(key);
     // TextZoom keeps it only when it isn't 100.
-    put("textZoomPercent", get("textZoomPercent").and_then(Plist::as_f64).filter(|z| *z != 100.).map(|z| json!(z as i64)));
-    for key in ["collapsedSections", "collapsedScheduleSections", "projectsList.openRows"] {
+    put(
+        "textZoomPercent",
+        get("textZoomPercent")
+            .and_then(Plist::as_f64)
+            .filter(|z| *z != 100.)
+            .map(|z| json!(z as i64)),
+    );
+    for key in [
+        "collapsedSections",
+        "collapsedScheduleSections",
+        "projectsList.openRows",
+    ] {
         put(key, get(key).and_then(Plist::as_strings).map(Value::from));
     }
-    for key in ["inboxOrder", "completionSoundDing", "runnersPanelOpen", "usage.chartRange"] {
+    for key in [
+        "inboxOrder",
+        "completionSoundDing",
+        "runnersPanelOpen",
+        "usage.chartRange",
+    ] {
         put(key, get(key).and_then(Plist::as_str).map(Value::from));
     }
     // "system" is what none means here.
-    put("appearance", get("appearance").and_then(Plist::as_str).filter(|a| *a != "system").map(Value::from));
-    for key in ["completionSound", "askBeforeQuitting", "activityLog", "usage.showModelWeeks"] {
+    put(
+        "appearance",
+        get("appearance")
+            .and_then(Plist::as_str)
+            .filter(|a| *a != "system")
+            .map(Value::from),
+    );
+    for key in [
+        "completionSound",
+        "askBeforeQuitting",
+        "activityLog",
+        "usage.showModelWeeks",
+    ] {
         put(key, get(key).and_then(Plist::as_bool).map(Value::from));
     }
-    put("completionSoundVolume", get("completionSoundVolume").and_then(Plist::as_f64).map(Value::from));
+    put(
+        "completionSoundVolume",
+        get("completionSoundVolume")
+            .and_then(Plist::as_f64)
+            .map(Value::from),
+    );
     put(
         "dockLayout",
         match get("dockLayout") {
-            Some(Plist::Data(bytes)) => serde_json::from_slice::<Value>(bytes).ok().filter(Value::is_object),
+            Some(Plist::Data(bytes)) => serde_json::from_slice::<Value>(bytes)
+                .ok()
+                .filter(Value::is_object),
             _ => None,
         },
     );
-    put("windowFrame", get("Threadbear window frame main").and_then(Plist::as_str).and_then(|r| window_frame(r, primary_screen_height)));
+    put(
+        "windowFrame",
+        get("Threadbear window frame main")
+            .and_then(Plist::as_str)
+            .and_then(|r| window_frame(r, primary_screen_height)),
+    );
     out
 }
 
@@ -153,12 +218,22 @@ pub fn settings(defaults: &BTreeMap<String, Plist>, primary_screen_height: f64) 
 pub fn side_files(defaults: &BTreeMap<String, Plist>) -> Vec<(&'static str, Value, &'static str)> {
     let mut out = Vec::new();
     // Highlights' folded headings (highlights_store.rs): the list as it is.
-    if let Some(folds) = defaults.get("collapsedHighlights").and_then(Plist::as_strings) {
-        out.push(("desktop-highlights.json", Value::from(folds), "collapsedHighlights"));
+    if let Some(folds) = defaults
+        .get("collapsedHighlights")
+        .and_then(Plist::as_strings)
+    {
+        out.push((
+            "desktop-highlights.json",
+            Value::from(folds),
+            "collapsedHighlights",
+        ));
     }
     // What a click on a link does (reply_links.rs), the same values.
     let mut links = Map::new();
-    for (swift, here) in [("transcriptFileLinkClick", "fileLinkClick"), ("webLinkClick", "webLinkClick")] {
+    for (swift, here) in [
+        ("transcriptFileLinkClick", "fileLinkClick"),
+        ("webLinkClick", "webLinkClick"),
+    ] {
         if let Some(v) = defaults.get(swift).and_then(Plist::as_str) {
             links.insert(here.to_owned(), Value::from(v));
         }
@@ -168,12 +243,19 @@ pub fn side_files(defaults: &BTreeMap<String, Plist>) -> Vec<(&'static str, Valu
     }
     // How files and folders show in the pane (files_store.rs).
     let mut files = Map::new();
-    for (swift, here) in [("filesMarkdownView", "markdownView"), ("folderBrowserMode", "folderMode"), ("folderBrowserSort", "folderSort")] {
+    for (swift, here) in [
+        ("filesMarkdownView", "markdownView"),
+        ("folderBrowserMode", "folderMode"),
+        ("folderBrowserSort", "folderSort"),
+    ] {
         if let Some(v) = defaults.get(swift).and_then(Plist::as_str) {
             files.insert(here.to_owned(), Value::from(v));
         }
     }
-    for (swift, here) in [("folderBrowserSortAscending", "folderSortAscending"), ("folderBrowserShowHidden", "folderShowHidden")] {
+    for (swift, here) in [
+        ("folderBrowserSortAscending", "folderSortAscending"),
+        ("folderBrowserShowHidden", "folderShowHidden"),
+    ] {
         if let Some(v) = defaults.get(swift).and_then(Plist::as_bool) {
             files.insert(here.to_owned(), Value::from(v));
         }
@@ -191,13 +273,23 @@ pub fn side_files(defaults: &BTreeMap<String, Plist>) -> Vec<(&'static str, Valu
 /// has: a Mac that never ran it gives none, and gets the tour.
 pub fn tour_state(defaults: &BTreeMap<String, Plist>) -> Map<String, Value> {
     let mut out = Map::new();
-    let on = |key: &str| defaults.get(key).and_then(Plist::as_bool).or_else(|| defaults.get(key).and_then(Plist::as_f64).map(|n| n != 0.));
+    let on = |key: &str| {
+        defaults
+            .get(key)
+            .and_then(Plist::as_bool)
+            .or_else(|| defaults.get(key).and_then(Plist::as_f64).map(|n| n != 0.))
+    };
     for key in ["tourSeen", "setupHidden"] {
         if let Some(v) = on(key) {
             out.insert(key.to_owned(), Value::from(v));
         }
     }
-    let intros: Vec<Value> = defaults.keys().filter_map(|k| k.strip_prefix("tourIntro.")).filter(|name| on(&format!("tourIntro.{name}")) == Some(true)).map(Value::from).collect();
+    let intros: Vec<Value> = defaults
+        .keys()
+        .filter_map(|k| k.strip_prefix("tourIntro."))
+        .filter(|name| on(&format!("tourIntro.{name}")) == Some(true))
+        .map(Value::from)
+        .collect();
     if !intros.is_empty() {
         out.insert("tourIntrosSeen".to_owned(), Value::Array(intros));
     }
@@ -226,7 +318,10 @@ const NOTE_ORDER: [&str; 12] = [
 pub fn setting_name(key: &str) -> &'static str {
     match key {
         "textZoomPercent" => "zoom",
-        "collapsedSections" | "collapsedScheduleSections" | "projectsList.openRows" | "collapsedHighlights" => "folded sections",
+        "collapsedSections"
+        | "collapsedScheduleSections"
+        | "projectsList.openRows"
+        | "collapsedHighlights" => "folded sections",
         "inboxOrder" => "Inbox order",
         "appearance" => "appearance",
         "dockLayout" => "panel layout",
@@ -258,7 +353,10 @@ pub fn fill_missing(current: &mut Map<String, Value>, imported: Map<String, Valu
 /// `desktop-drafts.json`) put into this app's where its box is empty. Says
 /// how many came across.
 pub fn fill_drafts(current: &mut Map<String, Value>, swift: &Value) -> usize {
-    let empty = |d: &Value| d["text"].as_str().is_none_or(|t| t.trim().is_empty()) && d["images"].as_array().is_none_or(Vec::is_empty);
+    let empty = |d: &Value| {
+        d["text"].as_str().is_none_or(|t| t.trim().is_empty())
+            && d["images"].as_array().is_none_or(Vec::is_empty)
+    };
     let mut count = 0;
     for (key, draft) in swift.as_object().into_iter().flatten() {
         if empty(draft) || current.get(key).is_some_and(|d| !empty(d)) {
@@ -352,7 +450,10 @@ mod tests {
         d.insert("tourIntro.usage".to_owned(), Plist::Integer(1));
         d.insert("tourIntro.pools".to_owned(), Plist::Bool(false));
         let got = tour_state(&d);
-        assert_eq!(Value::Object(got), json!({ "tourSeen": true, "tourIntrosSeen": ["projects", "usage"] }));
+        assert_eq!(
+            Value::Object(got),
+            json!({ "tourSeen": true, "tourIntrosSeen": ["projects", "usage"] })
+        );
         // A Mac that never ran the Swift app: nothing, so it gets the tour.
         assert!(tour_state(&BTreeMap::new()).is_empty());
     }
@@ -362,8 +463,13 @@ mod tests {
         let d = defaults();
         assert_eq!(d["textZoomPercent"], Plist::Integer(90));
         assert_eq!(d["activityLog"], Plist::Bool(true));
-        assert_eq!(d["dockLayout"], Plist::Data(br#"{"floating":[],"root":{"group":{}}}"#.to_vec()));
-        assert!(matches!(&d["dismissedRecaps"], Plist::Dict(inner) if inner["t1"] == Plist::Bool(true)));
+        assert_eq!(
+            d["dockLayout"],
+            Plist::Data(br#"{"floating":[],"root":{"group":{}}}"#.to_vec())
+        );
+        assert!(
+            matches!(&d["dismissedRecaps"], Plist::Dict(inner) if inner["t1"] == Plist::Bool(true))
+        );
         assert_eq!(parse_plist("not xml"), None);
         assert_eq!(parse_plist("<html></html>"), None);
     }
@@ -376,9 +482,15 @@ mod tests {
         assert_eq!(s["inboxOrder"], json!("newest"));
         assert_eq!(s["activityLog"], json!(true));
         assert_eq!(s["completionSoundVolume"], json!(0.4));
-        assert_eq!(s["dockLayout"], json!({ "floating": [], "root": { "group": {} } }));
+        assert_eq!(
+            s["dockLayout"],
+            json!({ "floating": [], "root": { "group": {} } })
+        );
         // 950 - (32 + 800): AppKit's bottom-left origin to a top-left one.
-        assert_eq!(s["windowFrame"], json!({ "x": 0.0, "y": 118.0, "width": 1400.0, "height": 800.0 }));
+        assert_eq!(
+            s["windowFrame"],
+            json!({ "x": 0.0, "y": 118.0, "width": 1400.0, "height": 800.0 })
+        );
         // Only what this app keeps.
         assert!(!s.contains_key("panelWidth") && !s.contains_key("dismissedRecaps"));
     }
@@ -386,14 +498,41 @@ mod tests {
     #[test]
     fn the_rest_go_in_this_apps_own_small_files() {
         let mut d = defaults();
-        d.insert("collapsedHighlights".into(), Plist::Array(vec![Plist::String("Files".into())]));
-        d.insert("transcriptFileLinkClick".into(), Plist::String("panel".into()));
+        d.insert(
+            "collapsedHighlights".into(),
+            Plist::Array(vec![Plist::String("Files".into())]),
+        );
+        d.insert(
+            "transcriptFileLinkClick".into(),
+            Plist::String("panel".into()),
+        );
         d.insert("folderBrowserMode".into(), Plist::String("icons".into()));
         d.insert("folderBrowserShowHidden".into(), Plist::Bool(true));
         let files = side_files(&d);
-        assert_eq!(files[0], ("desktop-highlights.json", json!(["Files"]), "collapsedHighlights"));
-        assert_eq!(files[1], ("desktop-links.json", json!({ "fileLinkClick": "panel" }), "linkClicks"));
-        assert_eq!(files[2], ("desktop-files.json", json!({ "folderMode": "icons", "folderShowHidden": true }), "filePrefs"));
+        assert_eq!(
+            files[0],
+            (
+                "desktop-highlights.json",
+                json!(["Files"]),
+                "collapsedHighlights"
+            )
+        );
+        assert_eq!(
+            files[1],
+            (
+                "desktop-links.json",
+                json!({ "fileLinkClick": "panel" }),
+                "linkClicks"
+            )
+        );
+        assert_eq!(
+            files[2],
+            (
+                "desktop-files.json",
+                json!({ "folderMode": "icons", "folderShowHidden": true }),
+                "filePrefs"
+            )
+        );
         assert!(side_files(&BTreeMap::new()).is_empty());
     }
 
@@ -405,11 +544,17 @@ mod tests {
 
     #[test]
     fn what_this_app_has_already_stays() {
-        let mut current = json!({ "textZoomPercent": 125, "inboxOrder": null }).as_object().cloned().unwrap();
+        let mut current = json!({ "textZoomPercent": 125, "inboxOrder": null })
+            .as_object()
+            .cloned()
+            .unwrap();
         let filled = fill_missing(&mut current, settings(&defaults(), 950.));
         assert_eq!(current["textZoomPercent"], json!(125));
         assert_eq!(current["inboxOrder"], json!("newest"));
-        assert!(filled.contains(&"inboxOrder".to_owned()) && !filled.contains(&"textZoomPercent".to_owned()));
+        assert!(
+            filled.contains(&"inboxOrder".to_owned())
+                && !filled.contains(&"textZoomPercent".to_owned())
+        );
     }
 
     #[test]
@@ -420,7 +565,10 @@ mod tests {
             "t3": { "text": "  ", "images": [] },
             "new": { "text": "a new thread", "images": [] },
         });
-        let mut current = json!({ "t2": { "text": "mine", "images": [] } }).as_object().cloned().unwrap();
+        let mut current = json!({ "t2": { "text": "mine", "images": [] } })
+            .as_object()
+            .cloned()
+            .unwrap();
         assert_eq!(fill_drafts(&mut current, &swift), 2);
         assert_eq!(current["t1"]["images"][0]["path"], "/tmp/a.png");
         assert_eq!(current["t2"]["text"], "mine");
@@ -430,15 +578,29 @@ mod tests {
 
     #[test]
     fn the_note_says_what_came_across_in_plain_words() {
-        let keys: Vec<String> = ["textZoomPercent", "collapsedSections", "collapsedScheduleSections", "usage.chartRange", "dockLayout"].map(String::from).to_vec();
+        let keys: Vec<String> = [
+            "textZoomPercent",
+            "collapsedSections",
+            "collapsedScheduleSections",
+            "usage.chartRange",
+            "dockLayout",
+        ]
+        .map(String::from)
+        .to_vec();
         assert_eq!(note(&keys, 2).as_deref(), Some("Brought across from the Swift app: your zoom, panel layout, folded sections and other settings, and 2 unsent drafts."));
         // The same words whichever order the keys come in.
         let mut reversed = keys.clone();
         reversed.reverse();
         assert_eq!(note(&reversed, 2), note(&keys, 2));
         assert_eq!(note(&["inboxOrder".to_owned(), "textZoomPercent".to_owned()], 1).as_deref(), Some("Brought across from the Swift app: your zoom and Inbox order, and an unsent draft."));
-        assert_eq!(note(&["dockLayout".to_owned()], 0).as_deref(), Some("Brought across from the Swift app: your panel layout."));
-        assert_eq!(note(&[], 1).as_deref(), Some("Brought across from the Swift app: an unsent draft."));
+        assert_eq!(
+            note(&["dockLayout".to_owned()], 0).as_deref(),
+            Some("Brought across from the Swift app: your panel layout.")
+        );
+        assert_eq!(
+            note(&[], 1).as_deref(),
+            Some("Brought across from the Swift app: an unsent draft.")
+        );
         assert_eq!(note(&[], 0), None);
     }
 }

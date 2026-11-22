@@ -47,7 +47,7 @@ export const box = defineMachine(
       // `attempt`: which box the event is about (boxes.ts mintBootToken numbers
       // each), on every event about one box. Without one, it's taken to be
       // about the newest (a loss: every box's so far). WAKE is the thread's.
-      server: { TOKEN_SET: {}, ROOM: {}, CREATED: { providerBoxId: v.string(), attempt: v.optional(v.number()) }, IDLE: { attempt: v.optional(v.number()), capped: v.optional(v.boolean()) }, WAKE: {}, EXPIRE: {}, RESUMED: { attempt: v.optional(v.number()) }, LOST: { attempt: v.optional(v.number()) }, DESTROYED: {}, FAILED: { error: v.string(), attempt: v.optional(v.number()) }, PAUSED: { attempt: v.optional(v.number()) }, RETIRE: { sleptAt: v.number() }, RETIRED: {} },
+      server: { TOKEN_SET: {}, ROOM: {}, CREATED: { providerBoxId: v.string(), attempt: v.optional(v.number()) }, IDLE: { attempt: v.optional(v.number()), capped: v.optional(v.boolean()) }, WAKE: {}, EXPIRE: {}, RESUMED: { attempt: v.optional(v.number()) }, LOST: { attempt: v.optional(v.number()) }, DESTROYED: {}, FAILED: { error: v.string(), attempt: v.optional(v.number()) }, PAUSED: { attempt: v.optional(v.number()) }, RETIRE: { sleptAt: v.number() }, RETIRED: {}, PURGE: {} },
     },
     guards: {
       heardFrom: "The box hasn't heartbeated within the lease.",
@@ -274,8 +274,12 @@ export const box = defineMachine(
       },
       expired: {
         description: "Its box and its save are gone: the thread can't come back, and what's sent to it fails saying so.",
-        on: { DESTROYED: { effect: 'forgetProvider', description: 'A kept box it had is deleted too.' } },
+        on: {
+          DESTROYED: { effect: 'forgetProvider', description: 'A kept box it had is deleted too.' },
+          PURGE: { to: 'purged', effect: 'purged', description: "Its virtual runner's deleteAfterDays more have passed, and the provider has no box of it left: its thread and runner rows have gone (boxService.ts purgeExpiredBoxes), and this row goes in the same step." },
+        },
       },
+      purged: { description: 'Gone for good, with its thread and its runner: the row is deleted in the step that put it here.' },
       failed: {
         description: "A box couldn't be started or brought back. The thread and its last save are kept, and no key works for it.",
         on: {
@@ -456,6 +460,7 @@ export const box = defineMachine(
         await expiredNow(ctx, row);
         return { kind: 'expired' as const, at: Date.now() };
       },
+      purged: async () => ({ kind: 'purged' as const, at: Date.now() }),
       forgetProvider: async (ctx, { id, state }) => {
         await patch(ctx, id, noBox);
         return state;

@@ -1,5 +1,5 @@
 // [Picture N] in Mike's own message stands for a picture he pasted
-// (docs/protocol.md, "Pictures in a message"). The picture goes in its place when
+// (docs/protocol/threads.md, "Pictures in a message"). The picture goes in its place when
 // the runner sent it up (`src` picture:N), and a chip when it didn't: pasted
 // before that, too big, or kept on the Mac (`sync.pastedPictures`). Done on the
 // parsed Markdown, so a marker in code stays as typed. Turned into a link the

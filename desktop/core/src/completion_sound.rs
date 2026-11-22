@@ -37,7 +37,10 @@ impl Ding {
 
     /// A saved name, or the chime for one it doesn't know.
     pub fn from_name(name: &str) -> Ding {
-        Ding::ALL.into_iter().find(|d| d.name() == name).unwrap_or_default()
+        Ding::ALL
+            .into_iter()
+            .find(|d| d.name() == name)
+            .unwrap_or_default()
     }
 }
 
@@ -66,20 +69,62 @@ struct Note {
 }
 
 fn notes(ding: Ding) -> (f64, Vec<Note>) {
-    let partial = |ratio, level, decay| Partial { ratio, level, decay };
+    let partial = |ratio, level, decay| Partial {
+        ratio,
+        level,
+        decay,
+    };
     match ding {
         // Two notes going up, G5 then C6, like a gentle doorbell.
         Ding::Chime => {
             let p = || vec![partial(1., 1., 0.32), partial(2., 0.18, 0.18)];
-            (0.95, vec![Note { at: 0., from: 783.99, to: 783.99, glide: 0., partials: p() }, Note { at: 0.13, from: 1046.5, to: 1046.5, glide: 0., partials: p() }])
+            (
+                0.95,
+                vec![
+                    Note {
+                        at: 0.,
+                        from: 783.99,
+                        to: 783.99,
+                        glide: 0.,
+                        partials: p(),
+                    },
+                    Note {
+                        at: 0.13,
+                        from: 1046.5,
+                        to: 1046.5,
+                        glide: 0.,
+                        partials: p(),
+                    },
+                ],
+            )
         }
         // One small bell, A5, with a bell's uneven overtones.
         Ding::Bell => (
             1.5,
-            vec![Note { at: 0., from: 880., to: 880., glide: 0., partials: vec![partial(1., 1., 0.55), partial(2.0, 0.28, 0.35), partial(2.76, 0.14, 0.22), partial(5.4, 0.05, 0.1)] }],
+            vec![Note {
+                at: 0.,
+                from: 880.,
+                to: 880.,
+                glide: 0.,
+                partials: vec![
+                    partial(1., 1., 0.55),
+                    partial(2.0, 0.28, 0.35),
+                    partial(2.76, 0.14, 0.22),
+                    partial(5.4, 0.05, 0.1),
+                ],
+            }],
         ),
         // A short round blip that falls in pitch, like a drop of water.
-        Ding::Droplet => (0.45, vec![Note { at: 0., from: 1250., to: 720., glide: 0.07, partials: vec![partial(1., 1., 0.11)] }]),
+        Ding::Droplet => (
+            0.45,
+            vec![Note {
+                at: 0.,
+                from: 1250.,
+                to: 720.,
+                glide: 0.07,
+                partials: vec![partial(1., 1., 0.11)],
+            }],
+        ),
     }
 }
 
@@ -96,7 +141,11 @@ pub fn wav(ding: Ding) -> Vec<u8> {
             let mut phase = 0.;
             for (i, sample) in samples.iter_mut().enumerate().skip(start) {
                 let t = (i - start) as f64 / rate;
-                let glide = if note.glide > 0. { (t / note.glide).min(1.) } else { 1. };
+                let glide = if note.glide > 0. {
+                    (t / note.glide).min(1.)
+                } else {
+                    1.
+                };
                 let freq = (note.from + (note.to - note.from) * glide) * partial.ratio;
                 phase += 2. * std::f64::consts::PI * freq / rate;
                 let envelope = (t / attack).min(1.) * (-t / partial.decay).exp();
@@ -106,7 +155,11 @@ pub fn wav(ding: Ding) -> Vec<u8> {
     }
     // A short fade at the very end, so it never stops with a click.
     let fade = (0.03 * rate) as usize;
-    for (i, sample) in samples.iter_mut().enumerate().skip(count.saturating_sub(fade)) {
+    for (i, sample) in samples
+        .iter_mut()
+        .enumerate()
+        .skip(count.saturating_sub(fade))
+    {
         *sample *= (count - i) as f64 / fade as f64;
     }
     let peak = samples.iter().fold(0f64, |m, s| m.max(s.abs()));
@@ -157,14 +210,25 @@ mod tests {
 
     #[test]
     fn each_ding_is_a_soft_mono_wav_of_its_length() {
-        for (ding, seconds) in [(Ding::Chime, 0.95), (Ding::Bell, 1.5), (Ding::Droplet, 0.45)] {
+        for (ding, seconds) in [
+            (Ding::Chime, 0.95),
+            (Ding::Bell, 1.5),
+            (Ding::Droplet, 0.45),
+        ] {
             let wav = wav(ding);
             let samples = (seconds * SAMPLE_RATE as f64) as usize;
             assert_eq!(&wav[0..4], b"RIFF");
             assert_eq!(&wav[8..16], b"WAVEfmt ");
             assert_eq!(wav.len(), 44 + samples * 2, "{ding:?}");
-            let loudest = wav[44..].chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap();
-            assert!(loudest <= i16::MAX as u16 / 2 + 1 && loudest > i16::MAX as u16 / 3, "{ding:?} peaks at half: {loudest}");
+            let loudest = wav[44..]
+                .chunks(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
+                .max()
+                .unwrap();
+            assert!(
+                loudest <= i16::MAX as u16 / 2 + 1 && loudest > i16::MAX as u16 / 3,
+                "{ding:?} peaks at half: {loudest}"
+            );
             let last = i16::from_le_bytes([wav[wav.len() - 2], wav[wav.len() - 1]]);
             assert!(last.unsigned_abs() < 200, "{ding:?} fades out at the end");
         }

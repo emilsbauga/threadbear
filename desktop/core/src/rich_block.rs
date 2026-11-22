@@ -49,7 +49,10 @@ impl RichBlock {
     /// the first word counts), or None for anything else, an empty one, or
     /// one too long.
     pub fn from(language: Option<&str>, code: &str) -> Option<RichBlock> {
-        let word = language?.split([' ', '\t', '{']).find(|w| !w.is_empty())?.to_lowercase();
+        let word = language?
+            .split([' ', '\t', '{'])
+            .find(|w| !w.is_empty())?
+            .to_lowercase();
         let kind = match word.as_str() {
             "mermaid" => RichKind::Mermaid,
             "html" => RichKind::Html,
@@ -115,8 +118,26 @@ pub struct RichPalette {
 }
 
 impl RichPalette {
-    pub const DARK: RichPalette = RichPalette { bg: "#282828", fg: "#ececec", muted: "#9a9a9a", line: "#8e8e93", surface: "#333335", surface_alt: "#3a3a3c", border: "#5a5a5e", accent: "#0a84ff" };
-    pub const LIGHT: RichPalette = RichPalette { bg: "#f7f7f7", fg: "#1d1d1f", muted: "#6e6e73", line: "#86868b", surface: "#ffffff", surface_alt: "#f0f0f2", border: "#c7c7cc", accent: "#007aff" };
+    pub const DARK: RichPalette = RichPalette {
+        bg: "#282828",
+        fg: "#ececec",
+        muted: "#9a9a9a",
+        line: "#8e8e93",
+        surface: "#333335",
+        surface_alt: "#3a3a3c",
+        border: "#5a5a5e",
+        accent: "#0a84ff",
+    };
+    pub const LIGHT: RichPalette = RichPalette {
+        bg: "#f7f7f7",
+        fg: "#1d1d1f",
+        muted: "#6e6e73",
+        line: "#86868b",
+        surface: "#ffffff",
+        surface_alt: "#f0f0f2",
+        border: "#c7c7cc",
+        accent: "#007aff",
+    };
 
     /// Pele's CSS variables (pele.run/theming), without the selector.
     fn variables(&self) -> String {
@@ -138,7 +159,10 @@ impl RichPalette {
 pub const POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'; frame-src 'none'";
 
 fn escape_attribute(text: &str) -> String {
-    text.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// The agent's HTML with the policy in front of it. A `<meta>` policy only
@@ -235,7 +259,13 @@ pub fn fitted_to_window(page: &str) -> String {
 /// How a block's picture sits in its box: a diagram at its own size or
 /// smaller, centred; a page filling the width, cut past `max_body`. All in
 /// points (RichBlockCell.pictureSize).
-pub fn picture_size(kind: RichKind, natural: (f32, f32), room: f32, max_body: f32, pad: f32) -> (f32, f32) {
+pub fn picture_size(
+    kind: RichKind,
+    natural: (f32, f32),
+    room: f32,
+    max_body: f32,
+    pad: f32,
+) -> (f32, f32) {
     let (width, height) = natural;
     if width <= 0. || height <= 0. {
         return (0., 0.);
@@ -278,7 +308,13 @@ impl<V: Clone> PictureBudget<V> {
     pub const BYTES: usize = 160 * 1024 * 1024;
 
     pub fn new(budget: usize) -> PictureBudget<V> {
-        PictureBudget { budget, used: 0, entries: std::collections::VecDeque::new(), parts: std::collections::HashMap::new(), next_own: u64::MAX }
+        PictureBudget {
+            budget,
+            used: 0,
+            entries: std::collections::VecDeque::new(),
+            parts: std::collections::HashMap::new(),
+            next_own: u64::MAX,
+        }
     }
 
     /// Keeps `value` as the newest, and gives back what had to go to fit it
@@ -292,7 +328,13 @@ impl<V: Clone> PictureBudget<V> {
     /// by key: it goes over the budget for them rather than take a picture
     /// off the screen (they're FrameBudget's, which holds half of it), and
     /// `trim_with` brings it back once they're not.
-    pub fn keep_with(&mut self, key: String, value: V, cost: usize, pinned: impl Fn(&str) -> bool) -> Vec<V> {
+    pub fn keep_with(
+        &mut self,
+        key: String,
+        value: V,
+        cost: usize,
+        pinned: impl Fn(&str) -> bool,
+    ) -> Vec<V> {
         let own = self.next_own;
         self.next_own -= 1;
         self.keep_parts_with(key, value, &[(own, cost)], pinned)
@@ -300,7 +342,13 @@ impl<V: Clone> PictureBudget<V> {
 
     /// `keep_with` for a value made of parts (pictures, by id, and what
     /// each takes up), a part counted once while any block holds it.
-    pub fn keep_parts_with(&mut self, key: String, value: V, parts: &[(u64, usize)], pinned: impl Fn(&str) -> bool) -> Vec<V> {
+    pub fn keep_parts_with(
+        &mut self,
+        key: String,
+        value: V,
+        parts: &[(u64, usize)],
+        pinned: impl Fn(&str) -> bool,
+    ) -> Vec<V> {
         let mut gone = Vec::new();
         // Held before the old one under this key lets them go, so a part
         // both have isn't counted out and in again.
@@ -314,12 +362,17 @@ impl<V: Clone> PictureBudget<V> {
         if let Some(at) = self.entries.iter().position(|(k, ..)| *k == key) {
             gone.push(self.take(at));
         }
-        self.entries.push_back((key, value, parts.iter().map(|&(id, _)| id).collect()));
+        self.entries
+            .push_back((key, value, parts.iter().map(|&(id, _)| id).collect()));
         gone.extend(self.trim_with(pinned));
         gone
     }
 
     /// Entry `at` out, its parts let go of.
+    #[expect(
+        clippy::expect_used,
+        reason = "callers pass an index they have just found in the list"
+    )]
     fn take(&mut self, at: usize) -> V {
         let (_, value, ids) = self.entries.remove(at).expect("there");
         for id in ids {
@@ -352,7 +405,7 @@ impl<V: Clone> PictureBudget<V> {
     /// The pictures kept for `key`, now the most recently used.
     pub fn get(&mut self, key: &str) -> Option<V> {
         let at = self.entries.iter().position(|(k, ..)| k == key)?;
-        let entry = self.entries.remove(at).expect("there");
+        let entry = self.entries.remove(at)?;
         let value = entry.1.clone();
         self.entries.push_back(entry);
         Some(value)
@@ -443,7 +496,8 @@ impl FrameBudget {
 /// Bytes that aren't a PNG count as four times their length.
 pub fn png_cost(bytes: &[u8]) -> usize {
     const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-    let decoded = if bytes.len() >= 24 && bytes.starts_with(SIGNATURE) && &bytes[12..16] == b"IHDR" {
+    let decoded = if bytes.len() >= 24 && bytes.starts_with(SIGNATURE) && &bytes[12..16] == b"IHDR"
+    {
         let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
         let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as usize;
         width.saturating_mul(height).saturating_mul(4)
@@ -462,15 +516,44 @@ mod tests {
         let block = RichBlock::from(Some("mermaid"), "graph TD\n  A --> B\n\n").unwrap();
         assert_eq!(block.kind, RichKind::Mermaid);
         assert_eq!(block.source, "graph TD\n  A --> B");
-        assert_eq!(RichBlock::from(Some("HTML"), "<p>hi</p>").unwrap().kind, RichKind::Html);
-        assert_eq!(RichBlock::from(Some("html title=x"), "<p>hi</p>").unwrap().kind, RichKind::Html);
-        assert_eq!(RichBlock::from(Some("mermaid{init}"), "graph TD").unwrap().kind, RichKind::Mermaid);
+        assert_eq!(
+            RichBlock::from(Some("HTML"), "<p>hi</p>").unwrap().kind,
+            RichKind::Html
+        );
+        assert_eq!(
+            RichBlock::from(Some("html title=x"), "<p>hi</p>")
+                .unwrap()
+                .kind,
+            RichKind::Html
+        );
+        assert_eq!(
+            RichBlock::from(Some("mermaid{init}"), "graph TD")
+                .unwrap()
+                .kind,
+            RichKind::Mermaid
+        );
         assert!(RichBlock::from(Some("js"), "x").is_none());
         assert!(RichBlock::from(None, "x").is_none());
-        assert!(RichBlock::from(Some("mermaid"), "  \n\n").is_none(), "an empty block stays code");
-        assert!(RichBlock::from(Some("html"), &"x".repeat(RichBlock::MAX_SOURCE + 1)).is_none(), "too long to be a reply's");
-        assert_eq!(RichBlock::from(Some("mermaid"), "graph TD").unwrap().drawn_title(), "Diagram");
-        assert_eq!(RichBlock::from(Some("html"), "<b>x</b>").unwrap().drawn_title(), "Preview");
+        assert!(
+            RichBlock::from(Some("mermaid"), "  \n\n").is_none(),
+            "an empty block stays code"
+        );
+        assert!(
+            RichBlock::from(Some("html"), &"x".repeat(RichBlock::MAX_SOURCE + 1)).is_none(),
+            "too long to be a reply's"
+        );
+        assert_eq!(
+            RichBlock::from(Some("mermaid"), "graph TD")
+                .unwrap()
+                .drawn_title(),
+            "Diagram"
+        );
+        assert_eq!(
+            RichBlock::from(Some("html"), "<b>x</b>")
+                .unwrap()
+                .drawn_title(),
+            "Preview"
+        );
     }
 
     #[test]
@@ -479,10 +562,20 @@ mod tests {
         // RichBlock.swift makes them, so both apps find the same pictures.
         let block = RichBlock::new(RichKind::Mermaid, "graph TD");
         let digest = Sha256::digest(b"mermaid\ngraph TD");
-        assert_eq!(block.id, digest[..10].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        assert_eq!(
+            block.id,
+            digest[..10]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
         assert_eq!(block.id.len(), 20);
         assert_eq!(block.key(115), format!("{}-115", block.id));
-        assert_ne!(block.id, RichBlock::new(RichKind::Html, "graph TD").id, "the kind is part of it");
+        assert_ne!(
+            block.id,
+            RichBlock::new(RichKind::Html, "graph TD").id,
+            "the kind is part of it"
+        );
     }
 
     #[test]
@@ -499,8 +592,16 @@ mod tests {
         assert!(page.starts_with("<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:;"));
         // The policy is ahead of anything the agent wrote.
         assert!(page.find("Content-Security-Policy").unwrap() < page.find("<script>").unwrap());
-        assert!(POLICY.contains("default-src 'none'") && POLICY.contains("form-action 'none'") && POLICY.contains("frame-src 'none'") && POLICY.contains("base-uri 'none'"));
-        assert!(!POLICY.contains("script-src"), "no script source is allowed, so default-src 'none' covers scripts");
+        assert!(
+            POLICY.contains("default-src 'none'")
+                && POLICY.contains("form-action 'none'")
+                && POLICY.contains("frame-src 'none'")
+                && POLICY.contains("base-uri 'none'")
+        );
+        assert!(
+            !POLICY.contains("script-src"),
+            "no script source is allowed, so default-src 'none' covers scripts"
+        );
         // Quotes in the policy can't close the attribute early.
         assert!(!escape_attribute("a\"b<c>").contains('"'));
     }
@@ -510,7 +611,10 @@ mod tests {
         let hostile = "graph TD\n A[\"</script><script>alert(1)</script>\"] --> B\n`${x}`'\\";
         let call = draw_call(hostile, true, 14.);
         let literal = serde_json::to_string(hostile).unwrap();
-        assert!(call.ends_with(&format!("({literal}, true, 14, 2400, 3840000)")), "{call}");
+        assert!(
+            call.ends_with(&format!("({literal}, true, 14, 2400, 3840000)")),
+            "{call}"
+        );
         // The diagram page itself has no script and lets none run.
         let page = diagram_page();
         assert!(!page.contains("<script"));
@@ -522,7 +626,10 @@ mod tests {
     fn the_window_page_fills_its_window() {
         let page = diagram_pane_page("<svg id=d></svg>", "<svg id=l></svg>", "Diagram");
         assert!(page.contains("<title>Diagram</title>"));
-        assert!(page.contains("default-src 'none'"), "the window's page is sealed too");
+        assert!(
+            page.contains("default-src 'none'"),
+            "the window's page is sealed too"
+        );
         let fitted = fitted_to_window(&page);
         assert!(fitted.contains(&format!("{FIT_TO_WINDOW}</head>")));
     }
@@ -530,10 +637,19 @@ mod tests {
     #[test]
     fn pictures_fit_their_box() {
         // A diagram is never drawn bigger than it is, and fits the room.
-        assert_eq!(picture_size(RichKind::Mermaid, (300., 200.), 700., 560., 12.), (300., 200.));
-        assert_eq!(picture_size(RichKind::Mermaid, (1352., 400.), 700., 560., 12.), (676., 200.));
+        assert_eq!(
+            picture_size(RichKind::Mermaid, (300., 200.), 700., 560., 12.),
+            (300., 200.)
+        );
+        assert_eq!(
+            picture_size(RichKind::Mermaid, (1352., 400.), 700., 560., 12.),
+            (676., 200.)
+        );
         // A page fills the width.
-        assert_eq!(picture_size(RichKind::Html, (720., 1000.), 640., 560., 12.), (640., 889.));
+        assert_eq!(
+            picture_size(RichKind::Html, (720., 1000.), 640., 560., 12.),
+            (640., 889.)
+        );
     }
 
     fn png(width: u32, height: u32, extra: usize) -> Vec<u8> {
@@ -549,7 +665,10 @@ mod tests {
         let mut frame = FrameBudget::default();
         assert!(frame.hand_out("a", [1, 2], 500, 100), "the first always");
         assert!(!frame.hand_out("b", [3, 4], 1, 100), "nothing more past it");
-        assert!(frame.hand_out("c", [1, 2], 500, 100), "the same pictures again");
+        assert!(
+            frame.hand_out("c", [1, 2], 500, 100),
+            "the same pictures again"
+        );
         // One picture shared, the other not: it costs, and isn't drawn.
         assert!(!frame.hand_out("d", [1, 9], 500, 100));
         assert!(frame.holds(1) && !frame.holds(3) && !frame.holds(9));
@@ -566,7 +685,11 @@ mod tests {
         let tall = png(1440, 3200, 1000);
         assert_eq!(png_cost(&tall), tall.len() + 1440 * 3200 * 4);
         assert_eq!(png_cost(b"not a png"), 9 * 5);
-        assert_eq!(png_cost(&png(u32::MAX, u32::MAX, 0)), usize::MAX, "a header can't overflow it");
+        assert_eq!(
+            png_cost(&png(u32::MAX, u32::MAX, 0)),
+            usize::MAX,
+            "a header can't overflow it"
+        );
     }
 
     /// Daybreak 92: 121 distinct tall, noisy pages (two 1440 by 3200 looks
@@ -594,8 +717,16 @@ mod tests {
         assert!(kept.keep("a".into(), 'a', 40).is_empty());
         assert!(kept.keep("b".into(), 'b', 40).is_empty());
         assert_eq!(kept.get("a"), Some('a'));
-        assert_eq!(kept.keep("c".into(), 'c', 40), ['b'], "b was used longest ago");
-        assert_eq!(kept.keep("c".into(), 'C', 10), ['c'], "the same key again replaces it");
+        assert_eq!(
+            kept.keep("c".into(), 'c', 40),
+            ['b'],
+            "b was used longest ago"
+        );
+        assert_eq!(
+            kept.keep("c".into(), 'C', 10),
+            ['c'],
+            "the same key again replaces it"
+        );
         assert_eq!(kept.used(), 50);
         assert_eq!(kept.keep("huge".into(), 'h', 500), ['a', 'C']);
         assert_eq!((kept.len(), kept.get("huge")), (1, Some('h')));
@@ -605,10 +736,17 @@ mod tests {
         assert!(kept.keep("a".into(), 'a', 60).is_empty());
         assert!(kept.keep("b".into(), 'b', 30).is_empty());
         assert_eq!(kept.keep_with("c".into(), 'c', 60, |k| k == "a"), ['b']);
-        assert_eq!(kept.keep_with("d".into(), 'd', 60, |k| k == "a" || k == "c"), Vec::<char>::new());
+        assert_eq!(
+            kept.keep_with("d".into(), 'd', 60, |k| k == "a" || k == "c"),
+            Vec::<char>::new()
+        );
         assert_eq!(kept.used(), 180);
         // Once they're not drawn, back within it.
-        assert_eq!(kept.trim_with(|_| false), ['a', 'c'], "under the budget once a and c go");
+        assert_eq!(
+            kept.trim_with(|_| false),
+            ['a', 'c'],
+            "under the budget once a and c go"
+        );
         assert_eq!(kept.used(), 60);
     }
 
@@ -618,9 +756,13 @@ mod tests {
     fn shared_pictures_are_counted_once() {
         let mut kept = PictureBudget::new(100);
         for n in 0..6 {
-            assert!(kept.keep_parts_with(format!("a{n}"), n, &[(1, 30), (2, 5)], |_| false).is_empty());
+            assert!(kept
+                .keep_parts_with(format!("a{n}"), n, &[(1, 30), (2, 5)], |_| false)
+                .is_empty());
         }
-        assert!(kept.keep_parts_with("b".into(), 9, &[(3, 30), (4, 5)], |_| false).is_empty());
+        assert!(kept
+            .keep_parts_with("b".into(), 9, &[(3, 30), (4, 5)], |_| false)
+            .is_empty());
         assert_eq!((kept.len(), kept.used()), (7, 70));
         assert!(kept.trim_with(|_| false).is_empty());
         // The part goes only with the last block holding it.

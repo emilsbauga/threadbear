@@ -13,6 +13,7 @@ import com.mikerosoft.threadbear.kit.Question
 import com.mikerosoft.threadbear.kit.RunnerKeyPins
 import com.mikerosoft.threadbear.kit.SecretAnswer
 import com.mikerosoft.threadbear.kit.SecretSeal
+import com.mikerosoft.threadbear.kit.CommandKey
 import com.mikerosoft.threadbear.kit.CommandState
 import com.mikerosoft.threadbear.kit.InboxSections
 import com.mikerosoft.threadbear.kit.MessageHistory
@@ -24,6 +25,7 @@ import com.mikerosoft.threadbear.kit.ThreadDetail
 import com.mikerosoft.threadbear.kit.TransportError
 import com.mikerosoft.threadbear.kit.WaitingSend
 import com.mikerosoft.threadbear.kit.WaitingSends
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -147,6 +149,8 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
             try {
                 val chunk = b.olderMessages(threadId, before, MORE_PER_PAGE)
                 if (h.takeOlder(chunk, before)) history.value = h.copy()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 model.report(e)
             } finally {
@@ -173,6 +177,8 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
                     loadingBefore.value = null
                     return@launch
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 model.report(e)
             }
@@ -224,6 +230,9 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
                 onSent()
                 locals.update { list -> list.map { if (it.key == key) it.copy(commandId = id) else it } }
                 watch(key, id)
+            } catch (e: CancellationException) {
+                // Left the thread mid-send: not a failure to report.
+                throw e
             } catch (e: Exception) {
                 locals.update { list -> list.filterNot { it.key == key } }
                 model.report(e)
@@ -233,29 +242,24 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
     }
 
     // Cards. A tapped answer spins until its card goes (the thread's row
-    // moves on), and comes back with why if the runner refuses it.
+    // moves on, or five seconds after it's done), and comes back with why if
+    // the runner refuses it, or saying so if the Mac hasn't picked it up.
+    // Kept in AppModel.commands, so leaving the thread and coming back doesn't
+    // offer the buttons again meanwhile.
 
-    /** The card being answered and the choice tapped on it. */
-    val answering = MutableStateFlow<Pair<String, String>?>(null)
+    /** The cards being answered, by approval id, and the choice tapped on each. */
+    val answering: StateFlow<Map<String, String>> = model.commands.entries.map { pending ->
+        pending.entries.mapNotNull { (key, entry) -> if (key is CommandKey.Card && entry.state.locked) key.approvalId to (entry.value ?: "") else null }.toMap()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
     /** The card of asks (by its asksSeq) and the done card (by the reply's seq) answered from here. */
     val answeredAsks = MutableStateFlow<Double?>(null)
     val answeredDone = MutableStateFlow<Int?>(null)
 
     private fun answerCard(cardId: String, choice: String, call: suspend (PhoneBackend) -> String) {
         val b = model.backend.value ?: return
-        if (answering.value?.first == cardId) return
-        answering.value = cardId to choice
-        viewModelScope.launch {
-            try {
-                val status = b.command(call(b)).first { it == null || it.state != CommandState.PENDING && it.state != CommandState.TAKEN }
-                if (status?.state == CommandState.FAILED) {
-                    model.note("Didn't go through: ${status.note ?: "the runner refused it"}")
-                    if (answering.value?.first == cardId) answering.value = null
-                }
-            } catch (e: Exception) {
-                model.report(e)
-                if (answering.value?.first == cardId) answering.value = null
-            }
+        model.commands.start(CommandKey.Card(cardId), choice, settleMs = 5_000, send = { call(b) }) { state ->
+            val failure = state.failure("the runner refused it")
+            if (failure != null) model.note("Didn't go through: $failure") else model.said(state, "")
         }
     }
 
@@ -278,7 +282,7 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
             model.note("This Mac's key isn't one this phone was paired with. Answer it on the Mac.")
             return
         }
-        val sealed = try { SecretSeal.seal(value, card.key, card.id) } catch (e: Exception) { model.report(e); return }
+        val sealed = try { SecretSeal.seal(value, card.key, card.id) } catch (e: CancellationException) { throw e } catch (e: Exception) { model.report(e); return }
         answerCard(card.id, "secret") { it.secret(threadId, card.id, SecretAnswer.Sealed(sealed)) }
     }
 
@@ -302,6 +306,8 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
         val b = model.backend.value ?: return
         val status = try {
             b.command(commandId).first { it == null || it.state != CommandState.PENDING }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -334,6 +340,8 @@ class ThreadViewModel(private val model: AppModel, val threadId: String) : ViewM
                 } else {
                     model.note("Too late to cancel: it's already gone to the Mac.")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 model.report(e)
             } finally {

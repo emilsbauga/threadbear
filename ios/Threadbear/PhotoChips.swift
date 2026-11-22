@@ -2,7 +2,7 @@ import SwiftUI
 import ThreadbearKit
 import UIKit
 
-/// A picture's chip among the words, as on the Mac (docs/protocol.md,
+/// A picture's chip among the words, as on the Mac (docs/protocol/threads.md,
 /// "Pictures in a message"): a small rounded tag with the picture and
 /// "Picture N", the marker the agent gets. In the composer it shows the
 /// photo; in a message, the photo symbol, as the phone never gets a

@@ -1,5 +1,5 @@
 // Mike's Connectors gateway, as the runner last heard from its /health
-// (docs/protocol.md, "Connectors"): `connectors.status` and
+// (docs/protocol/panels.md, "Connectors"): `connectors.status` and
 // `connectors.updated`, and what the Connectors panel and its activity bar
 // icon say about it, a port of Connectors.swift and ConnectorsText.swift.
 // The accent dot only when a service is signed out, as only Mike can sign it
@@ -46,7 +46,12 @@ impl ConnectorsStatus {
             checked_ms: v["checkedAt"].as_str().and_then(parse_ms),
             error: text("error"),
             version: text("version"),
-            services: v["services"].as_array().into_iter().flatten().filter_map(ConnectorService::decode).collect(),
+            services: v["services"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(ConnectorService::decode)
+                .collect(),
         }
     }
 }
@@ -55,7 +60,9 @@ impl ConnectorService {
     fn decode(v: &Value) -> Option<ConnectorService> {
         let id = v["id"].as_str()?.to_owned();
         Some(ConnectorService {
-            title: v["title"].as_str().map_or_else(|| id.clone(), str::to_owned),
+            title: v["title"]
+                .as_str()
+                .map_or_else(|| id.clone(), str::to_owned),
             state: v["state"].as_str().unwrap_or("unknown").to_owned(),
             message: v["message"].as_str().map(str::to_owned),
             connect_url: v["connectUrl"].as_str().map(str::to_owned),
@@ -66,7 +73,12 @@ impl ConnectorService {
 
 /// The services that need Mike to sign in again.
 pub fn signed_out(s: Option<&ConnectorsStatus>) -> Vec<&ConnectorService> {
-    s.filter(|s| s.state == "ok").map_or_else(Vec::new, |s| s.services.iter().filter(|x| x.state == "signed_out").collect())
+    s.filter(|s| s.state == "ok").map_or_else(Vec::new, |s| {
+        s.services
+            .iter()
+            .filter(|x| x.state == "signed_out")
+            .collect()
+    })
 }
 
 /// The accent dot.
@@ -79,7 +91,10 @@ pub fn quiet(s: Option<&ConnectorsStatus>) -> bool {
     let Some(s) = s else { return false };
     match s.state.as_str() {
         "unreachable" => true,
-        "ok" => s.services.iter().any(|x| x.state == "error" || x.state == "connecting"),
+        "ok" => s
+            .services
+            .iter()
+            .any(|x| x.state == "error" || x.state == "connecting"),
         _ => false,
     }
 }
@@ -90,17 +105,45 @@ pub fn tooltip(s: Option<&ConnectorsStatus>) -> String {
     let mut lines = vec!["Connectors".to_owned()];
     match s.map(|s| s.state.as_str()) {
         Some("ok") => {
+            #[expect(clippy::expect_used, reason = "this arm is only reached with a status")]
             let all = &s.expect("ok has a status").services;
             let out: Vec<&str> = signed_out(s).iter().map(|x| x.title.as_str()).collect();
             if !out.is_empty() {
-                lines.push(format!("{}{}", list(&out), if out.len() == 1 { " needs signing in" } else { " need signing in" }));
+                lines.push(format!(
+                    "{}{}",
+                    list(&out),
+                    if out.len() == 1 {
+                        " needs signing in"
+                    } else {
+                        " need signing in"
+                    }
+                ));
             }
-            let broken: Vec<&str> = all.iter().filter(|x| x.state == "error").map(|x| x.title.as_str()).collect();
+            let broken: Vec<&str> = all
+                .iter()
+                .filter(|x| x.state == "error")
+                .map(|x| x.title.as_str())
+                .collect();
             if !broken.is_empty() {
-                lines.push(format!("{}{}", list(&broken), if broken.len() == 1 { " has a problem" } else { " have problems" }));
+                lines.push(format!(
+                    "{}{}",
+                    list(&broken),
+                    if broken.len() == 1 {
+                        " has a problem"
+                    } else {
+                        " have problems"
+                    }
+                ));
             }
             if out.is_empty() && broken.is_empty() {
-                lines.push(if all.is_empty() { "No services yet" } else { "Everything is signed in" }.to_owned());
+                lines.push(
+                    if all.is_empty() {
+                        "No services yet"
+                    } else {
+                        "Everything is signed in"
+                    }
+                    .to_owned(),
+                );
             }
         }
         Some("unreachable") => lines.push("Can't reach the gateway".to_owned()),
@@ -112,15 +155,25 @@ pub fn tooltip(s: Option<&ConnectorsStatus>) -> String {
 
 /// The panel's line when there are no services to list.
 pub fn empty_line(s: Option<&ConnectorsStatus>) -> Option<String> {
-    let Some(s) = s else { return Some("Checking the gateway.".to_owned()) };
+    let Some(s) = s else {
+        return Some("Checking the gateway.".to_owned());
+    };
     match s.state.as_str() {
         "off" => Some("No Connectors gateway is set up for this runner.".to_owned()),
         "checking" => Some("Checking the gateway.".to_owned()),
         "unreachable" => {
             let host = host(Some(s)).unwrap_or_else(|| "the gateway".to_owned());
-            Some(format!("Can't reach {host}{}", s.error.as_ref().map_or_else(|| ".".to_owned(), |e| format!(": {e}."))))
+            Some(format!(
+                "Can't reach {host}{}",
+                s.error
+                    .as_ref()
+                    .map_or_else(|| ".".to_owned(), |e| format!(": {e}."))
+            ))
         }
-        _ => s.services.is_empty().then(|| "The gateway has no services set up.".to_owned()),
+        _ => s
+            .services
+            .is_empty()
+            .then(|| "The gateway has no services set up.".to_owned()),
     }
 }
 
@@ -146,7 +199,11 @@ pub fn manage_url(s: Option<&ConnectorsStatus>) -> Option<String> {
 /// isn't signed in, so a signed-in one gets the gateway's page for it, as the
 /// runner's own fallback does.
 pub fn service_url(s: Option<&ConnectorsStatus>, service: &ConnectorService) -> Option<String> {
-    if let Some(raw) = service.connect_url.as_deref().filter(|raw| web_parts(raw).is_some()) {
+    if let Some(raw) = service
+        .connect_url
+        .as_deref()
+        .filter(|raw| web_parts(raw).is_some())
+    {
         return Some(raw.to_owned());
     }
     admin_url(s, &format!("/admin/connect/{}", path_segment(&service.id)))
@@ -207,7 +264,10 @@ pub fn state_line(service: &ConnectorService) -> String {
         other => {
             let words = other.replace('_', " ");
             let mut chars = words.chars();
-            chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+            chars
+                .next()
+                .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
         }
     }
 }
@@ -247,14 +307,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// What the mock runner's gateway says (app/Tools/mock-runner/server.mjs).
+    /// What the mock runner's gateway says (mock-runner/server.mjs).
     fn mock() -> ConnectorsStatus {
-        ConnectorsStatus::decode(&json!({ "state": "ok", "url": "https://mac-mini.example.ts.net:8443", "version": "0.2.0", "checkedAt": "2026-11-11T01:00:00.000Z", "services": [
-            { "id": "notion", "title": "Notion", "state": "connected" },
-            { "id": "sentry", "title": "Sentry", "state": "signed_out", "message": "The sign-in expired.", "connectUrl": "https://mac-mini.example.ts.net:8443/admin/connect/sentry" },
-            { "id": "cloudflare", "state": "connected" },
-            { "title": "No id" },
-        ]}))
+        ConnectorsStatus::decode(
+            &json!({ "state": "ok", "url": "https://mac-mini.example.ts.net:8443", "version": "0.2.0", "checkedAt": "2026-11-11T01:00:00.000Z", "services": [
+                { "id": "notion", "title": "Notion", "state": "connected" },
+                { "id": "sentry", "title": "Sentry", "state": "signed_out", "message": "The sign-in expired.", "connectUrl": "https://mac-mini.example.ts.net:8443/admin/connect/sentry" },
+                { "id": "cloudflare", "state": "connected" },
+                { "title": "No id" },
+            ]}),
+        )
     }
 
     #[test]
@@ -270,9 +332,19 @@ mod tests {
         assert_eq!(button_title(&s.services[1]), Some("Connect"));
         assert_eq!(button_title(&s.services[0]), None);
         assert_eq!(host(Some(&s)).as_deref(), Some("mac-mini"));
-        assert_eq!(manage_url(Some(&s)).as_deref(), Some("https://mac-mini.example.ts.net:8443/admin"));
-        assert_eq!(service_url(Some(&s), &s.services[1]).as_deref(), Some("https://mac-mini.example.ts.net:8443/admin/connect/sentry"));
-        assert_eq!(service_url(Some(&s), &s.services[0]).as_deref(), Some("https://mac-mini.example.ts.net:8443/admin/connect/notion"), "a signed-in one gets its page on the gateway");
+        assert_eq!(
+            manage_url(Some(&s)).as_deref(),
+            Some("https://mac-mini.example.ts.net:8443/admin")
+        );
+        assert_eq!(
+            service_url(Some(&s), &s.services[1]).as_deref(),
+            Some("https://mac-mini.example.ts.net:8443/admin/connect/sentry")
+        );
+        assert_eq!(
+            service_url(Some(&s), &s.services[0]).as_deref(),
+            Some("https://mac-mini.example.ts.net:8443/admin/connect/notion"),
+            "a signed-in one gets its page on the gateway"
+        );
         assert!(about(Some(&s))[0].contains("Connectors gateway on mac-mini."));
     }
 
@@ -284,18 +356,40 @@ mod tests {
         assert!(quiet(Some(&s)));
         assert_eq!(button_title(&s.services[1]), Some("Reconnect"));
         assert_eq!(tooltip(Some(&s)), "Connectors\nSentry has a problem");
-        let down = ConnectorsStatus::decode(&json!({ "state": "unreachable", "url": "https://mac-mini.example.ts.net:8443", "error": "timed out", "services": [] }));
+        let down = ConnectorsStatus::decode(
+            &json!({ "state": "unreachable", "url": "https://mac-mini.example.ts.net:8443", "error": "timed out", "services": [] }),
+        );
         assert!(quiet(Some(&down)));
         assert_eq!(tooltip(Some(&down)), "Connectors\nCan't reach the gateway");
-        assert_eq!(empty_line(Some(&down)).as_deref(), Some("Can't reach mac-mini: timed out."));
-        let fine = ConnectorsStatus { services: vec![ConnectorService { id: "n".into(), title: "Notion".into(), state: "connected".into(), ..Default::default() }], ..mock() };
+        assert_eq!(
+            empty_line(Some(&down)).as_deref(),
+            Some("Can't reach mac-mini: timed out.")
+        );
+        let fine = ConnectorsStatus {
+            services: vec![ConnectorService {
+                id: "n".into(),
+                title: "Notion".into(),
+                state: "connected".into(),
+                ..Default::default()
+            }],
+            ..mock()
+        };
         assert_eq!(tooltip(Some(&fine)), "Connectors\nEverything is signed in");
         assert!(!needs_you(Some(&fine)) && !quiet(Some(&fine)));
         let off = ConnectorsStatus::decode(&json!({ "state": "off" }));
-        assert_eq!(empty_line(Some(&off)).as_deref(), Some("No Connectors gateway is set up for this runner."));
+        assert_eq!(
+            empty_line(Some(&off)).as_deref(),
+            Some("No Connectors gateway is set up for this runner.")
+        );
         assert_eq!(manage_url(Some(&off)), None);
         assert_eq!(empty_line(None).as_deref(), Some("Checking the gateway."));
-        assert_eq!(state_line(&ConnectorService { state: "needs_more_love".into(), ..Default::default() }), "Needs more love");
+        assert_eq!(
+            state_line(&ConnectorService {
+                state: "needs_more_love".into(),
+                ..Default::default()
+            }),
+            "Needs more love"
+        );
     }
 
     #[test]
@@ -305,9 +399,19 @@ mod tests {
         assert_eq!(manage_url(Some(&s)), None);
         assert_eq!(host(Some(&s)), None);
         s.url = Some("http://localhost:7000/some/path?x#y".into());
-        assert_eq!(manage_url(Some(&s)).as_deref(), Some("http://localhost:7000/admin"));
-        let odd = ConnectorService { id: "a/b c".into(), connect_url: Some("javascript:alert(1)".into()), ..Default::default() };
-        assert_eq!(service_url(Some(&s), &odd).as_deref(), Some("http://localhost:7000/admin/connect/a%2Fb%20c"));
+        assert_eq!(
+            manage_url(Some(&s)).as_deref(),
+            Some("http://localhost:7000/admin")
+        );
+        let odd = ConnectorService {
+            id: "a/b c".into(),
+            connect_url: Some("javascript:alert(1)".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            service_url(Some(&s), &odd).as_deref(),
+            Some("http://localhost:7000/admin/connect/a%2Fb%20c")
+        );
         s.url = Some("https://[::1]:8443".into());
         assert_eq!(host(Some(&s)).as_deref(), Some("::1"));
     }

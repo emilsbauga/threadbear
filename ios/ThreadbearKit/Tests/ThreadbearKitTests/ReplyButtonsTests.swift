@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ThreadbearKit
 
-/// Reply buttons (docs/protocol.md, "Reply buttons"): a daily brief's
+/// Reply buttons (docs/protocol/events.md, "Reply buttons"): a daily brief's
 /// `[Fill in the form](button:<id>)` drawn as a button that starts a thread.
 @Suite struct ReplyButtonsTests {
     let start = MessageButton(id: "abcd1234", title: "Fill in the form", kind: .start, target: "pebble")
@@ -54,5 +54,64 @@ import Testing
         #expect(m.buttons == [MessageButton(id: "abcd1234", title: "Go", kind: .send, target: "Meetup", pressedThreadId: "t9")])
         let old = try JSONDecoder().decode(PhoneMessage.self, from: Data(#"{"seq":4,"role":"assistant","text":"x","at":"2026-11-07T00:00:00.000Z"}"#.utf8))
         #expect(old.buttons == nil)
+    }
+
+    /// A shared case file's cases this app runs: those whose `differs` doesn't name the iPhone.
+    private static func shared(_ path: String) throws -> [[String: Any]] {
+        // ios/ThreadbearKit/Tests/ThreadbearKitTests/ -> the repo.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let file = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: repo.appendingPathComponent(path))) as? [String: Any])
+        let cases = try #require(file["cases"] as? [[String: Any]])
+        return cases.filter { ($0["differs"] as? [String: Any])?["ios"] == nil }
+    }
+
+    /// How a button looks, against the cases the desktop app, Android and
+    /// the website run too.
+    @Test func looksMatchTheSharedCases() throws {
+        let cases = try Self.shared("shared/cases/reply-buttons.json")
+        #expect(cases.count > 5)
+        for c in cases {
+            let name = c["name"] as? String ?? "?"
+            let input = try #require(c["input"] as? [String: Any])
+            let row = try #require(input["button"] as? [String: Any])
+            let press = try #require(input["press"] as? [String: Any])
+            let expect = try #require(c["expect"] as? [String: Any])
+            let button = MessageButton(id: "abcd1234", title: "Go", kind: row["kind"] as? String == "send" ? .send : .start, target: row["target"] as? String,
+                                       pressedThreadId: row["pressedThreadId"] as? String, failed: row["failed"] as? String)
+            let state = press["state"] as? String ?? "none"
+            var status: CommandStatus?
+            if state != "none", state != "sending" {
+                status = CommandStatus(state: try #require(CommandState(rawValue: state), "\(name)"), note: press["note"] as? String, threadId: press["threadId"] as? String)
+            }
+            let want: ReplyButtons.Look = switch expect["look"] as? String ?? "" {
+            case "pressed": .pressed(threadId: expect["threadId"] as? String)
+            case "failed": .failed(expect["error"] as? String ?? "")
+            case "pressing": .pressing
+            default: .ready
+            }
+            #expect(ReplyButtons.look(button, status: status, asking: state == "sending") == want, "\(name)")
+        }
+    }
+
+    /// Button links as text, against the cases the desktop app and Android run too.
+    @Test func buttonLinksMatchTheSharedCases() throws {
+        let cases = try Self.shared("shared/cases/reply-button-links.json")
+        #expect(cases.count > 5)
+        for c in cases {
+            let name = c["name"] as? String ?? "?"
+            let input = try #require(c["input"] as? [String: Any])
+            let expect = try #require(c["expect"] as? [String: Any])
+            let text = try #require(input["text"] as? String)
+            if input["op"] as? String == "unlink" {
+                let known = Set(input["known"] as? [String] ?? [])
+                #expect(ReplyButtons.unlinking(text, except: known) == expect["text"] as? String, "\(name)")
+            } else {
+                let (rest, links) = ReplyButtons.trailing(in: text)
+                let want = (expect["links"] as? [[String: String]] ?? []).map { ReplyButtons.Link(id: $0["id"] ?? "", title: $0["title"] ?? "") }
+                #expect(rest == expect["text"] as? String, "\(name)")
+                #expect(links == want, "\(name)")
+            }
+        }
     }
 }

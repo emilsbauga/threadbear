@@ -14,8 +14,12 @@ impl ApprovalText {
         let file = Self::file_path(request).map(|p| Self::shown(text::last_path_component(&p)));
         match request.name.as_str() {
             "Bash" => "Run this command?".to_owned(),
-            "Edit" | "MultiEdit" | "NotebookEdit" => file.map(|f| format!("Edit {f}?")).unwrap_or_else(|| "Edit this file?".to_owned()),
-            "Write" => file.map(|f| format!("Write {f}?")).unwrap_or_else(|| "Write this file?".to_owned()),
+            "Edit" | "MultiEdit" | "NotebookEdit" => file
+                .map(|f| format!("Edit {f}?"))
+                .unwrap_or_else(|| "Edit this file?".to_owned()),
+            "Write" => file
+                .map(|f| format!("Write {f}?"))
+                .unwrap_or_else(|| "Write this file?".to_owned()),
             "WebFetch" => "Fetch this page?".to_owned(),
             "WebSearch" => "Search the web?".to_owned(),
             _ => format!("Use {}?", Self::tool_name(&request.name)),
@@ -30,17 +34,29 @@ impl ApprovalText {
             "Bash" => {
                 // Named before it's split, so a U+2028 can't make `ls` alone
                 // look like the line that was allowed.
-                if let Some(line) = input.get("command").and_then(Value::as_str).and_then(|c| Self::first_line(&Self::shown(c))) {
+                if let Some(line) = input
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .and_then(|c| Self::first_line(&Self::shown(c)))
+                {
                     return line;
                 }
             }
             "WebFetch" => {
-                if let Some(url) = input.get("url").and_then(Value::as_str).filter(|u| !u.is_empty()) {
+                if let Some(url) = input
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|u| !u.is_empty())
+                {
                     return format!("Fetch {}", Self::shown(url));
                 }
             }
             "WebSearch" => {
-                if let Some(query) = input.get("query").and_then(Value::as_str).filter(|q| !q.is_empty()) {
+                if let Some(query) = input
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .filter(|q| !q.is_empty())
+                {
                     return format!("Search for {}", Self::shown(query));
                 }
             }
@@ -101,19 +117,39 @@ impl ApprovalText {
     /// command (Codex review, 10 Nov 2026: `replace_all: true` and
     /// `false` drew the same card).
     pub fn fields_beyond_diff(input: &Value) -> Vec<Field> {
-        const DRAWN: &[&str] = &["file_path", "notebook_path", "path", "content", "old_string", "new_string", "edits"];
-        let mut out: Vec<Field> = super::tool_presentation::ToolPresentation::fields(input, true).into_iter().filter(|f| !DRAWN.contains(&f.key.as_str())).collect();
+        const DRAWN: &[&str] = &[
+            "file_path",
+            "notebook_path",
+            "path",
+            "content",
+            "old_string",
+            "new_string",
+            "edits",
+        ];
+        let mut out: Vec<Field> = super::tool_presentation::ToolPresentation::fields(input, true)
+            .into_iter()
+            .filter(|f| !DRAWN.contains(&f.key.as_str()))
+            .collect();
         if let Some(edits) = input.get("edits").and_then(Value::as_array) {
             for (i, edit) in edits.iter().enumerate() {
                 let rest = match edit.as_object() {
                     Some(fields) => {
-                        let rest: serde_json::Map<String, Value> = fields.iter().filter(|(k, _)| k.as_str() != "old_string" && k.as_str() != "new_string").map(|(k, v)| (k.clone(), v.clone())).collect();
+                        let rest: serde_json::Map<String, Value> = fields
+                            .iter()
+                            .filter(|(k, _)| {
+                                k.as_str() != "old_string" && k.as_str() != "new_string"
+                            })
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
                         (!rest.is_empty()).then(|| Value::Object(rest).to_string())
                     }
                     None => Some(edit.to_string()),
                 };
                 if let Some(rest) = rest {
-                    out.push(Field { key: format!("edit {}", i + 1), value: rest });
+                    out.push(Field {
+                        key: format!("edit {}", i + 1),
+                        value: rest,
+                    });
                 }
             }
         }
@@ -127,7 +163,11 @@ impl ApprovalText {
     /// line of its own, Codex review, 10 Nov 2026).
     pub fn line_break_notes(input: &Value) -> Vec<Field> {
         fn note(key: String, edit: &Value) -> Option<Field> {
-            let ends = |k: &str| edit.get(k).and_then(Value::as_str).map(|s| s.ends_with('\n'));
+            let ends = |k: &str| {
+                edit.get(k)
+                    .and_then(Value::as_str)
+                    .map(|s| s.ends_with('\n'))
+            };
             match (ends("old_string"), ends("new_string")) {
                 (Some(false), Some(true)) => Some(Field { key, value: "the new text adds a line break at its end, so what follows it starts a new line".to_owned() }),
                 (Some(true), Some(false)) => Some(Field { key, value: "the new text drops the line break at its end, so what follows it joins its last line".to_owned() }),
@@ -136,11 +176,23 @@ impl ApprovalText {
         }
         let mut out: Vec<Field> = note("line break".to_owned(), input).into_iter().collect();
         // A whole file that doesn't end with one (a cron entry needs it).
-        if input.get("content").and_then(Value::as_str).is_some_and(|c| !c.is_empty() && !c.ends_with('\n')) {
-            out.push(Field { key: "line break".to_owned(), value: "the file doesn't end with a line break".to_owned() });
+        if input
+            .get("content")
+            .and_then(Value::as_str)
+            .is_some_and(|c| !c.is_empty() && !c.ends_with('\n'))
+        {
+            out.push(Field {
+                key: "line break".to_owned(),
+                value: "the file doesn't end with a line break".to_owned(),
+            });
         }
         if let Some(edits) = input.get("edits").and_then(Value::as_array) {
-            out.extend(edits.iter().enumerate().filter_map(|(i, e)| note(format!("edit {} line break", i + 1), e)));
+            out.extend(
+                edits
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| note(format!("edit {} line break", i + 1), e)),
+            );
         }
         out
     }
@@ -157,7 +209,7 @@ impl ApprovalText {
             let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
             let kept = body.trim_end_matches(' ');
             out.push_str(&kept.replace('\t', "\u{21E5}   "));
-            out.extend(std::iter::repeat('\u{B7}').take(body.len() - kept.len()));
+            out.extend(std::iter::repeat_n('\u{B7}', body.len() - kept.len()));
             out.push_str(end);
         }
         out
@@ -165,7 +217,13 @@ impl ApprovalText {
 
     /// The same for a card's fields, keys and values.
     pub fn shown_fields(fields: &[Field]) -> Vec<Field> {
-        fields.iter().map(|f| Field { key: Self::shown(&f.key), value: Self::shown(&f.value) }).collect()
+        fields
+            .iter()
+            .map(|f| Field {
+                key: Self::shown(&f.key),
+                value: Self::shown(&f.value),
+            })
+            .collect()
     }
 
     fn hides(scalar: char) -> bool {
@@ -205,7 +263,10 @@ impl ApprovalText {
 
     /// The answers to a question card in one line, in the order the
     /// questions were asked.
-    pub fn answer_summary(request: &QuestionRequest, answers: &std::collections::HashMap<String, String>) -> String {
+    pub fn answer_summary(
+        request: &QuestionRequest,
+        answers: &std::collections::HashMap<String, String>,
+    ) -> String {
         request
             .questions
             .iter()
@@ -225,11 +286,19 @@ impl ApprovalText {
     }
 
     fn first_line(s: &str) -> Option<String> {
-        let line = s.split(text::is_newline).find(|p| !p.is_empty()).map(text::trim_whitespace).unwrap_or("");
+        let line = s
+            .split(text::is_newline)
+            .find(|p| !p.is_empty())
+            .map(text::trim_whitespace)
+            .unwrap_or("");
         if line.is_empty() {
             return None;
         }
-        Some(if text::count(line) > 160 { format!("{}…", text::prefix(line, 159)) } else { line.to_owned() })
+        Some(if text::count(line) > 160 {
+            format!("{}…", text::prefix(line, 159))
+        } else {
+            line.to_owned()
+        })
     }
 }
 
@@ -265,7 +334,10 @@ fn is_default_ignorable(v: u32) -> bool {
 
 // General_Category Zs.
 fn is_space_separator(v: u32) -> bool {
-    matches!(v, 0x0020 | 0x00A0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000)
+    matches!(
+        v,
+        0x0020 | 0x00A0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000
+    )
 }
 
 // General_Category Cc.
@@ -304,7 +376,11 @@ fn is_format(v: u32) -> bool {
 // Hebrew, Arabic, Syriac, Thaana, N'Ko and the other right-to-left scripts'
 // blocks, and their presentation forms.
 fn right_to_left(v: u32) -> bool {
-    (0x0590..=0x08FF).contains(&v) || (0xFB1D..=0xFDFF).contains(&v) || (0xFE70..=0xFEFF).contains(&v) || (0x10800..=0x10FFF).contains(&v) || (0x1E800..=0x1EFFF).contains(&v)
+    (0x0590..=0x08FF).contains(&v)
+        || (0xFB1D..=0xFDFF).contains(&v)
+        || (0xFE70..=0xFEFF).contains(&v)
+        || (0x10800..=0x10FFF).contains(&v)
+        || (0x1E800..=0x1EFFF).contains(&v)
 }
 
 /// The plan card's title: how far along it is (`PlanSummary`).
@@ -314,13 +390,20 @@ impl PlanSummary {
     /// "2 of 5 steps done", or "All 3 steps done" at the end.
     pub fn title(entries: &[PlanEntry]) -> String {
         let total = entries.len();
-        let done = entries.iter().filter(|e| e.status == PlanStatus::Completed).count();
+        let done = entries
+            .iter()
+            .filter(|e| e.status == PlanStatus::Completed)
+            .count();
         let steps = if total == 1 { "step" } else { "steps" };
         if total == 0 {
             return "No steps yet".to_owned();
         }
         if done == total {
-            return if total == 1 { "1 step done".to_owned() } else { format!("All {total} steps done") };
+            return if total == 1 {
+                "1 step done".to_owned()
+            } else {
+                format!("All {total} steps done")
+            };
         }
         format!("{done} of {total} {steps} done")
     }
@@ -372,7 +455,13 @@ impl PlanCardText {
             }
         }
         // An open code fence would swallow the rest of the card.
-        if kept.iter().filter(|l| text::trim_whitespace(l).starts_with("```")).count() % 2 == 1 {
+        if kept
+            .iter()
+            .filter(|l| text::trim_whitespace(l).starts_with("```"))
+            .count()
+            % 2
+            == 1
+        {
             kept.push("```".to_owned());
         }
         (kept.join("\n"), true)
@@ -381,8 +470,18 @@ impl PlanCardText {
     /// The plan's first line of prose, for a one-line mention: its
     /// heading's words if that's all there is.
     pub fn summary(plan: &str) -> String {
-        let lines: Vec<&str> = plan.split('\n').filter(|l| !l.is_empty()).map(text::trim_whitespace).filter(|l| !l.is_empty()).collect();
-        let prose = lines.iter().find(|l| !l.starts_with('#')).or_else(|| lines.first()).copied().unwrap_or("");
+        let lines: Vec<&str> = plan
+            .split('\n')
+            .filter(|l| !l.is_empty())
+            .map(text::trim_whitespace)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let prose = lines
+            .iter()
+            .find(|l| !l.starts_with('#'))
+            .or_else(|| lines.first())
+            .copied()
+            .unwrap_or("");
         let line = prose.trim_start_matches(['#', ' ']);
         if text::count(line) > 160 {
             format!("{}…", text::prefix(line, 159))

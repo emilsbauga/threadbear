@@ -32,7 +32,12 @@ pub enum DockEdge {
 }
 
 impl DockEdge {
-    pub const ALL: [DockEdge; 4] = [DockEdge::Left, DockEdge::Right, DockEdge::Top, DockEdge::Bottom];
+    pub const ALL: [DockEdge; 4] = [
+        DockEdge::Left,
+        DockEdge::Right,
+        DockEdge::Top,
+        DockEdge::Bottom,
+    ];
 
     pub fn axis(self) -> SplitAxis {
         if self == DockEdge::Left || self == DockEdge::Right {
@@ -58,8 +63,14 @@ pub struct DockGroup {
 
 impl DockGroup {
     pub fn new(id: impl Into<String>, panels: Vec<PanelId>, selected: Option<PanelId>) -> Self {
-        let selected = selected.or_else(|| panels.first().cloned()).unwrap_or_default();
-        Self { id: id.into(), panels, selected }
+        let selected = selected
+            .or_else(|| panels.first().cloned())
+            .unwrap_or_default();
+        Self {
+            id: id.into(),
+            panels,
+            selected,
+        }
     }
 }
 
@@ -74,9 +85,20 @@ pub struct DockSplit {
 }
 
 impl DockSplit {
-    pub fn new(id: impl Into<String>, axis: SplitAxis, children: Vec<DockNode>, fractions: Option<Vec<f64>>) -> Self {
-        let fractions = fractions.unwrap_or_else(|| vec![1. / children.len().max(1) as f64; children.len()]);
-        Self { id: id.into(), axis, children, fractions }
+    pub fn new(
+        id: impl Into<String>,
+        axis: SplitAxis,
+        children: Vec<DockNode>,
+        fractions: Option<Vec<f64>>,
+    ) -> Self {
+        let fractions =
+            fractions.unwrap_or_else(|| vec![1. / children.len().max(1) as f64; children.len()]);
+        Self {
+            id: id.into(),
+            axis,
+            children,
+            fractions,
+        }
     }
 }
 
@@ -113,13 +135,20 @@ pub enum DockDrop {
 
 impl DockDrop {
     pub fn edge(group: impl Into<String>, edge: DockEdge) -> Self {
-        DockDrop::Edge { group: group.into(), edge }
+        DockDrop::Edge {
+            group: group.into(),
+            edge,
+        }
     }
     pub fn tab(group: impl Into<String>) -> Self {
-        DockDrop::Tab { group: group.into() }
+        DockDrop::Tab {
+            group: group.into(),
+        }
     }
     pub fn swap(group: impl Into<String>) -> Self {
-        DockDrop::Swap { group: group.into() }
+        DockDrop::Swap {
+            group: group.into(),
+        }
     }
     pub fn window(edge: DockEdge) -> Self {
         DockDrop::Window(edge)
@@ -146,8 +175,18 @@ pub struct DockFloat {
 }
 
 impl DockFloat {
-    pub fn new(panel: impl Into<PanelId>, frame: Rect, home: Option<DockDrop>, share: Option<f64>) -> Self {
-        Self { panel: panel.into(), frame, home, share }
+    pub fn new(
+        panel: impl Into<PanelId>,
+        frame: Rect,
+        home: Option<DockDrop>,
+        share: Option<f64>,
+    ) -> Self {
+        Self {
+            panel: panel.into(),
+            frame,
+            home,
+            share,
+        }
     }
 }
 
@@ -173,13 +212,24 @@ pub struct DockLayout {
 pub fn default_new_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     format!("node-{t:x}-{n:x}")
 }
 
 impl DockLayout {
-    pub fn new(root: DockNode, hidden_titles: impl IntoIterator<Item = PanelId>, floating: Vec<DockFloat>) -> Self {
-        Self { root, floating, hidden_titles: hidden_titles.into_iter().collect() }
+    pub fn new(
+        root: DockNode,
+        hidden_titles: impl IntoIterator<Item = PanelId>,
+        floating: Vec<DockFloat>,
+    ) -> Self {
+        Self {
+            root,
+            floating,
+            hidden_titles: hidden_titles.into_iter().collect(),
+        }
     }
 
     /// Whether a group gets its title bar. Always with tabs: they're how you
@@ -221,7 +271,9 @@ impl DockLayout {
     }
 
     pub fn group_containing(&self, panel: &str) -> Option<DockGroup> {
-        Self::groups_in(&self.root).into_iter().find(|g| g.panels.iter().any(|p| p == panel))
+        Self::groups_in(&self.root)
+            .into_iter()
+            .find(|g| g.panels.iter().any(|p| p == panel))
     }
 
     pub fn groups(&self) -> Vec<DockGroup> {
@@ -238,15 +290,28 @@ impl DockLayout {
         if self.floating.is_empty() {
             tree
         } else {
-            tree + &self.floating.iter().map(|f| format!(" + window[{}]", f.panel)).collect::<String>()
+            tree + &self
+                .floating
+                .iter()
+                .map(|f| format!(" + window[{}]", f.panel))
+                .collect::<String>()
         }
     }
 
     fn summary_of(node: &DockNode, hidden: &BTreeSet<PanelId>) -> String {
         match node {
             DockNode::Group(g) => {
-                let tabs: Vec<String> =
-                    g.panels.iter().map(|p| if g.panels.len() > 1 && *p == g.selected { format!("{p}*") } else { p.clone() }).collect();
+                let tabs: Vec<String> = g
+                    .panels
+                    .iter()
+                    .map(|p| {
+                        if g.panels.len() > 1 && *p == g.selected {
+                            format!("{p}*")
+                        } else {
+                            p.clone()
+                        }
+                    })
+                    .collect();
                 let tabs = tabs.join("+");
                 if g.panels.len() == 1 && hidden.contains(&g.selected) {
                     format!("{tabs} (no title)")
@@ -259,10 +324,20 @@ impl DockLayout {
                     .children
                     .iter()
                     .zip(s.fractions.iter())
-                    .map(|(c, f)| format!("{} {}%", Self::summary_of(c, hidden), (f * 100.0).round() as i64))
+                    .map(|(c, f)| {
+                        format!(
+                            "{} {}%",
+                            Self::summary_of(c, hidden),
+                            (f * 100.0).round() as i64
+                        )
+                    })
                     .collect();
                 let horizontal = s.axis == SplitAxis::Horizontal;
-                format!("{}{}]", if horizontal { "row[" } else { "column[" }, parts.join(if horizontal { " | " } else { " / " }))
+                format!(
+                    "{}{}]",
+                    if horizontal { "row[" } else { "column[" },
+                    parts.join(if horizontal { " | " } else { " / " })
+                )
             }
         }
     }
@@ -287,12 +362,16 @@ impl DockLayout {
             // From a window of its own, back into the dock: anywhere but a
             // swap, as there's no place in the dock to swap with.
             return match drop {
-                DockDrop::Edge { group: target, .. } | DockDrop::Tab { group: target } => self.group(target).is_some(),
+                DockDrop::Edge { group: target, .. } | DockDrop::Tab { group: target } => {
+                    self.group(target).is_some()
+                }
                 DockDrop::Swap { .. } => false,
                 DockDrop::Window(_) => true,
             };
         }
-        let Some(source) = self.group_containing(panel) else { return false };
+        let Some(source) = self.group_containing(panel) else {
+            return false;
+        };
         match drop {
             DockDrop::Edge { group: target, .. } => {
                 if self.group(target).is_none() {
@@ -301,7 +380,9 @@ impl DockLayout {
                 // Splitting a group by a panel it alone holds goes nowhere.
                 !(*target == source.id && source.panels.len() == 1)
             }
-            DockDrop::Tab { group: target } | DockDrop::Swap { group: target } => self.group(target).is_some() && *target != source.id,
+            DockDrop::Tab { group: target } | DockDrop::Swap { group: target } => {
+                self.group(target).is_some() && *target != source.id
+            }
             DockDrop::Window(_) => {
                 // The only panel there is can't go anywhere else.
                 if let DockNode::Group(g) = &self.root {
@@ -340,9 +421,12 @@ impl DockLayout {
         if !self.can_float(panel) {
             return;
         }
-        let Some(rest) = Self::removing(panel, &self.root) else { return };
+        let Some(rest) = Self::removing(panel, &self.root) else {
+            return;
+        };
         self.root = rest;
-        self.floating.push(DockFloat::new(panel, frame, home, share));
+        self.floating
+            .push(DockFloat::new(panel, frame, home, share));
     }
 
     /// Moves a panel already in the layout. Does nothing for a drop
@@ -353,14 +437,23 @@ impl DockLayout {
     }
 
     /// `move_panel` with `new_id` naming any group or split this makes.
-    pub fn move_panel_with(&mut self, panel: &str, drop: DockDrop, new_id: &mut dyn FnMut() -> String) {
+    pub fn move_panel_with(
+        &mut self,
+        panel: &str,
+        drop: DockDrop,
+        new_id: &mut dyn FnMut() -> String,
+    ) {
         if !self.can_drop(panel, &drop) {
             return;
         }
         if let Some(i) = self.floating.iter().position(|f| f.panel == panel) {
             let float = self.floating.remove(i);
             // Back home along a side: the size it left at.
-            let share = if float.home.as_ref() == Some(&drop) { float.share } else { None };
+            let share = if float.home.as_ref() == Some(&drop) {
+                float.share
+            } else {
+                None
+            };
             self.insert(panel, &drop, share, new_id);
             return;
         }
@@ -368,7 +461,9 @@ impl DockLayout {
             self.swap_panels(panel, target);
             return;
         }
-        let Some(rest) = Self::removing(panel, &self.root) else { return };
+        let Some(rest) = Self::removing(panel, &self.root) else {
+            return;
+        };
         self.root = rest;
         self.insert(panel, &drop, None, new_id);
     }
@@ -394,7 +489,9 @@ impl DockLayout {
             self.floating.retain(|f| f.panel != panel);
             return;
         }
-        let Some(rest) = Self::removing(panel, &self.root) else { return };
+        let Some(rest) = Self::removing(panel, &self.root) else {
+            return;
+        };
         self.root = rest;
     }
 
@@ -451,10 +548,19 @@ impl DockLayout {
 
     /// `share`: for a drop along a side of the window, how much of it the
     /// panel takes; a quarter if nil.
-    fn insert(&mut self, panel: &str, drop: &DockDrop, share: Option<f64>, new_id: &mut dyn FnMut() -> String) {
+    fn insert(
+        &mut self,
+        panel: &str,
+        drop: &DockDrop,
+        share: Option<f64>,
+        new_id: &mut dyn FnMut() -> String,
+    ) {
         let fresh = DockNode::Group(DockGroup::new(new_id(), vec![panel.to_string()], None));
         match drop {
-            DockDrop::Edge { group: target, edge } => {
+            DockDrop::Edge {
+                group: target,
+                edge,
+            } => {
                 self.root = Self::inserting(&fresh, target, *edge, &self.root, new_id);
             }
             DockDrop::Tab { group: target } => {
@@ -471,7 +577,7 @@ impl DockLayout {
             DockDrop::Window(edge) => {
                 // A new outer child takes a quarter (or its old share); the
                 // rest keeps its proportions.
-                let take = share.unwrap_or(0.25).max(0.1).min(0.9);
+                let take = share.unwrap_or(0.25).clamp(0.1, 0.9);
                 if let DockNode::Split(s) = &self.root {
                     if s.axis == edge.axis() {
                         let mut s = s.clone();
@@ -489,40 +595,76 @@ impl DockLayout {
                     }
                 }
                 let old_root = self.root.clone();
-                let (children, fractions) =
-                    if edge.is_leading() { (vec![fresh, old_root], vec![take, 1. - take]) } else { (vec![old_root, fresh], vec![1. - take, take]) };
-                self.root = DockNode::Split(DockSplit::new(new_id(), edge.axis(), children, Some(fractions)));
+                let (children, fractions) = if edge.is_leading() {
+                    (vec![fresh, old_root], vec![take, 1. - take])
+                } else {
+                    (vec![old_root, fresh], vec![1. - take, take])
+                };
+                self.root = DockNode::Split(DockSplit::new(
+                    new_id(),
+                    edge.axis(),
+                    children,
+                    Some(fractions),
+                ));
             }
         }
         self.root = Self::normalised(&self.root);
     }
 
     fn swap_panels(&mut self, panel: &str, target: &str) {
-        let Some(source) = self.group_containing(panel) else { return };
-        let Some(other) = self.group(target).map(|g| g.selected.clone()) else { return };
+        let Some(source) = self.group_containing(panel) else {
+            return;
+        };
+        let Some(other) = self.group(target).map(|g| g.selected) else {
+            return;
+        };
         self.root = Self::map_groups(&self.root, &mut |g: &DockGroup| {
             let mut g = g.clone();
             if g.id == source.id {
-                g.panels = g.panels.iter().map(|p| if p == panel { other.clone() } else { p.clone() }).collect();
+                g.panels = g
+                    .panels
+                    .iter()
+                    .map(|p| if p == panel { other.clone() } else { p.clone() })
+                    .collect();
                 if g.selected == panel {
                     g.selected = other.clone();
                 }
             } else if g.id == target {
-                g.panels = g.panels.iter().map(|p| if *p == other { panel.to_string() } else { p.clone() }).collect();
+                g.panels = g
+                    .panels
+                    .iter()
+                    .map(|p| {
+                        if *p == other {
+                            panel.to_string()
+                        } else {
+                            p.clone()
+                        }
+                    })
+                    .collect();
                 g.selected = panel.to_string();
             }
             g
         });
     }
 
-    fn inserting(fresh: &DockNode, target: &str, edge: DockEdge, node: &DockNode, new_id: &mut dyn FnMut() -> String) -> DockNode {
+    fn inserting(
+        fresh: &DockNode,
+        target: &str,
+        edge: DockEdge,
+        node: &DockNode,
+        new_id: &mut dyn FnMut() -> String,
+    ) -> DockNode {
         match node {
             DockNode::Group(g) => {
                 // Reached the target without a parent split along this axis to join.
                 if g.id != target {
                     return node.clone();
                 }
-                let children = if edge.is_leading() { vec![fresh.clone(), node.clone()] } else { vec![node.clone(), fresh.clone()] };
+                let children = if edge.is_leading() {
+                    vec![fresh.clone(), node.clone()]
+                } else {
+                    vec![node.clone(), fresh.clone()]
+                };
                 DockNode::Split(DockSplit::new(new_id(), edge.axis(), children, None))
             }
             DockNode::Split(s) => {
@@ -540,7 +682,11 @@ impl DockLayout {
                         return DockNode::Split(s);
                     }
                 }
-                s.children = s.children.iter().map(|c| Self::inserting(fresh, target, edge, c, new_id)).collect();
+                s.children = s
+                    .children
+                    .iter()
+                    .map(|c| Self::inserting(fresh, target, edge, c, new_id))
+                    .collect();
                 DockNode::Split(s)
             }
         }
@@ -551,7 +697,9 @@ impl DockLayout {
         match node {
             DockNode::Group(g) => {
                 let mut g = g.clone();
-                let Some(i) = g.panels.iter().position(|p| p == panel) else { return Some(node.clone()) };
+                let Some(i) = g.panels.iter().position(|p| p == panel) else {
+                    return Some(node.clone());
+                };
                 g.panels.remove(i);
                 if g.panels.is_empty() {
                     return None;
@@ -585,7 +733,9 @@ impl DockLayout {
     /// No one-child splits, no split inside another along the same axis,
     /// fractions adding up to 1. Applied all the way down.
     pub fn normalised(node: &DockNode) -> DockNode {
-        let DockNode::Split(s) = node else { return node.clone() };
+        let DockNode::Split(s) = node else {
+            return node.clone();
+        };
         let mut s = s.clone();
         let mut children: Vec<DockNode> = Vec::new();
         let mut fractions: Vec<f64> = Vec::new();
@@ -613,7 +763,7 @@ impl DockLayout {
 
     pub fn normalised_fractions(fractions: &[f64]) -> Vec<f64> {
         let sum: f64 = fractions.iter().sum();
-        if !(sum > 0.) {
+        if sum.partial_cmp(&0.) != Some(std::cmp::Ordering::Greater) {
             return vec![1. / fractions.len().max(1) as f64; fractions.len()];
         }
         fractions.iter().map(|f| f / sum).collect()
@@ -649,7 +799,10 @@ impl DockLayout {
     }
 
     pub fn panels_in(node: &DockNode) -> Vec<PanelId> {
-        Self::groups_in(node).into_iter().flat_map(|g| g.panels).collect()
+        Self::groups_in(node)
+            .into_iter()
+            .flat_map(|g| g.panels)
+            .collect()
     }
 }
 
@@ -694,7 +847,9 @@ impl<'de> Deserialize<'de> for DockNode {
         match (w.group, w.split) {
             (Some(g), None) => Ok(DockNode::Group(g.value)),
             (None, Some(s)) => Ok(DockNode::Split(s.value)),
-            _ => Err(D::Error::custom("a dock node has exactly one of group or split")),
+            _ => Err(D::Error::custom(
+                "a dock node has exactly one of group or split",
+            )),
         }
     }
 }
@@ -716,18 +871,32 @@ impl<'de> Deserialize<'de> for DockDrop {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde_json::Value;
         let v = Value::deserialize(d)?;
-        let (key, inner) = v.as_object().and_then(|o| o.iter().next()).ok_or_else(|| D::Error::custom("a dock drop is an object with one key"))?;
+        let (key, inner) = v
+            .as_object()
+            .and_then(|o| o.iter().next())
+            .ok_or_else(|| D::Error::custom("a dock drop is an object with one key"))?;
         let group = |inner: &Value| -> Result<String, D::Error> {
-            inner.get("group").and_then(Value::as_str).map(str::to_string).ok_or_else(|| D::Error::custom("this dock drop needs a group"))
+            inner
+                .get("group")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| D::Error::custom("this dock drop needs a group"))
         };
         let edge = |value: Option<&Value>| -> Result<DockEdge, D::Error> {
             let value = value.ok_or_else(|| D::Error::custom("this dock drop needs an edge"))?;
             serde_json::from_value(value.clone()).map_err(D::Error::custom)
         };
         Ok(match key.as_str() {
-            "edge" => DockDrop::Edge { group: group(inner)?, edge: edge(inner.get("_1").or_else(|| inner.get("edge")))? },
-            "tab" => DockDrop::Tab { group: group(inner)? },
-            "swap" => DockDrop::Swap { group: group(inner)? },
+            "edge" => DockDrop::Edge {
+                group: group(inner)?,
+                edge: edge(inner.get("_1").or_else(|| inner.get("edge")))?,
+            },
+            "tab" => DockDrop::Tab {
+                group: group(inner)?,
+            },
+            "swap" => DockDrop::Swap {
+                group: group(inner)?,
+            },
             "window" => DockDrop::Window(edge(inner.get("_0"))?),
             other => return Err(D::Error::custom(format!("unknown dock drop {other}"))),
         })

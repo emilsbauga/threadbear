@@ -17,7 +17,7 @@
 // the urgent one never does, as a pull just before the message may have
 // brought hooks the earlier look missed.
 import { SHARE_ENV, Worker } from 'node:worker_threads';
-import { claudeCommands, type ClaudeCommands } from './claude-trust.ts';
+import { claudeCommandsKinds, type ClaudeCommands } from './claude-trust.ts';
 import { codeOfUnhashedPatch, type UnsureWhy } from './unhashed-scan.ts';
 import { noFifoReads } from './no-fifo-reads.ts';
 import { spawnGateInstalled } from './spawn-gate.ts';
@@ -46,7 +46,7 @@ const LOAD_TIMEOUT_MS = 30_000;
 // Its reads still never wait on a FIFO (no-fifo-reads.ts).
 function inline(ask: Ask): unknown {
   return noFifoReads(() => {
-    if (ask.kind === 'claudeCommands') return ask.grants.map((grants) => claudeCommands(ask.cwd, ask.home, { grants }));
+    if (ask.kind === 'claudeCommands') return claudeCommandsKinds(ask.cwd, ask.home, ask.grants);
     const scan = codeOfUnhashedPatch(ask.file, ask.from, ask.now);
     return { all: scan.all, ...(scan.why ? { why: scan.why } : {}) };
   });

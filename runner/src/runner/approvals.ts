@@ -16,6 +16,7 @@ import { START_CARD, type RequestAnswer } from '../cross-runner.ts';
 import { noAppToAllow } from '../app-seen.ts';
 import { REMOTE_ALLOW_REFUSED, remoteCardShowsAll } from '../tools.ts';
 import { reviewCard, reviewerLeftIt, reviewsCards, type CardForReview, type CardVerdict } from './card-review.ts';
+import { cliHears } from '../cli-session.ts';
 
 export type SecretRequest = { label: string; reason: string; placeholder?: string; timeoutMinutes?: number; toolUseId?: string; signal?: AbortSignal };
 export type SecretAnswer = ({ status: 'saved' } & SecretFiles) | { status: 'declined' | 'expired'; message?: string };
@@ -49,7 +50,7 @@ export const approvalsPart = {
     decision: ApprovalDecision;
     message?: string;
     answers?: Record<string, string>;
-    // Answers to the calls queued on the card (docs/protocol.md, "Queued calls").
+    // Answers to the calls queued on the card (docs/protocol/threads.md, "Queued calls").
     queued?: QueuedAnswers;
     // From the phone or another Mac's view of this runner, through the
     // backend (sync.ts), which show only a line of a card's input.
@@ -108,7 +109,7 @@ export const approvalsPart = {
     return {};
   },
 
-  // plans.approve (docs/protocol.md, "Plan first"): Go ahead on a plan card.
+  // plans.approve (docs/protocol/threads.md, "Plan first"): Go ahead on a plan card.
   // Claude's plan is an ExitPlanMode call waiting on its approval, which
   // this allows. Otherwise (Codex, whose plan ends its turn, or Claude's
   // after a restart dropped the call) the thread leaves plan mode and Mike
@@ -120,8 +121,9 @@ export const approvalsPart = {
     const call = [...rt.approvals.values()].find((p) => p.kind === 'tool' && p.plan === params.itemId);
     if (call) return this.respondApproval({ threadId: params.threadId, approvalId: call.approvalId, decision: 'allow' });
     const mode = this.leavePlan(st);
+    const gen = rt.generation;
     rt.session?.setPermissionMode(mode).catch(() => {
-      rt.releaseWhenIdle = true;
+      this.cli(st, { kind: 'leave', gen });
     });
     this.send(params.threadId, PLAN_GO_AHEAD);
     return {};
@@ -144,11 +146,11 @@ export const approvalsPart = {
   // it gets a turn. A background subagent's (no toolUseId) gets none: it's
   // between the subagent and Mike, whatever the agent is doing. A turn opened
   // for one held Mike's messages back until the CLI next ran one, and ending
-  // it cleared the asks of the turn before (docs/protocol.md, "A subagent's
+  // it cleared the asks of the turn before (docs/protocol/needs-you.md, "A subagent's
   // card").
   turnForRequest(this: Runner, st: ThreadState, gen: number, main = true): boolean {
     const { rt } = st;
-    if (rt.generation !== gen || rt.closing || this.stopping) return false;
+    if (cliHears(rt, gen) !== 'current' || this.stopping) return false;
     if (main && !rt.turn) this.openCliTurn(st);
     return true;
   },
@@ -197,7 +199,7 @@ export const approvalsPart = {
       rt.reviews?.delete(id);
       signal?.removeEventListener('abort', onAbort);
     }
-    if (rt.generation !== gen || rt.closing || rt.deleted || this.stopping) return { decision: 'expired', message: 'The thread is shutting down.' };
+    if (cliHears(rt, gen) !== 'current' || rt.deleted || this.stopping) return { decision: 'expired', message: 'The thread is shutting down.' };
     // Still on Auto: switched to Ask or Plan meanwhile, it's Mike's card.
     if (verdict.allow && !entry.stale && reviewsCards(this, st)) {
       this.emit(st, { type: 'system.note', text: `Allowed by the reviewer: ${card.title}. ${verdict.why}` }, rt.turn?.turnId);
@@ -285,7 +287,7 @@ export const approvalsPart = {
     });
   },
 
-  // ask_secret (docs/protocol.md, "Secrets"): a card that waits for Mike to
+  // ask_secret (docs/protocol/threads.md, "Secrets"): a card that waits for Mike to
   // type a secret on the Mac or the phone. Resolves with the file's paths,
   // or declined or expired; never with the value.
   requestSecret(this: Runner, threadId: string, req: SecretRequest): Promise<SecretAnswer> {

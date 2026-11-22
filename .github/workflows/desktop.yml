@@ -11,8 +11,8 @@
 # Linux and Windows see, which tb land's quick check on Tinker Desk can't.
 #
 # The paths are everything the app builds and tests from, the files outside
-# desktop/ included (the Swift app's pictures and pele.js, the shared inbox
-# fixture, the runner files the mock runner imports):
+# desktop/ included (the mock runner, the pictures, pele.js and cases in
+# shared/, the runner files the mock runner imports):
 # runner/test/unit/desktop-ci-paths.test.ts finds those in the code and fails
 # when one's missing here, as a change to only them ran no desktop CI.
 # tb land: hold while red
@@ -23,34 +23,30 @@ on:
     branches: [main]
     paths:
       - desktop/**
+      - rust-toolchain.toml
       - runner/src/protocol.ts
       - runner/src/rpc-auth.ts
       - runner/src/reviews.ts
       - runner/src/samples.ts
       - web/src/sections.ts
       - web/src/format.ts
-      - app/Tools/mock-runner/**
-      - app/Sources/Threadbear/Resources/Art/**
-      - app/Sources/Threadbear/Resources/Rich/**
-      - app/Sources/Threadbear/Views/Tour.swift
-      - app/Tests/Fixtures/**
+      - mock-runner/**
+      - shared/**
       - site/app-doc-slugs.json
       - features/**
       - .github/workflows/desktop.yml
   pull_request:
     paths:
       - desktop/**
+      - rust-toolchain.toml
       - runner/src/protocol.ts
       - runner/src/rpc-auth.ts
       - runner/src/reviews.ts
       - runner/src/samples.ts
       - web/src/sections.ts
       - web/src/format.ts
-      - app/Tools/mock-runner/**
-      - app/Sources/Threadbear/Resources/Art/**
-      - app/Sources/Threadbear/Resources/Rich/**
-      - app/Sources/Threadbear/Views/Tour.swift
-      - app/Tests/Fixtures/**
+      - mock-runner/**
+      - shared/**
       - site/app-doc-slugs.json
       - features/**
       - .github/workflows/desktop.yml
@@ -112,10 +108,20 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      # The stable toolchain, from a pinned commit of the action that installs it.
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable, 15 Nov 2026
-        with:
-          toolchain: stable
+      # The toolchain rust-toolchain.toml pins (rustfmt and clippy with it), as
+      # the check hosts and tb land use, so a format or lint result is the
+      # same here. GitHub's images have rustup; with no argument it installs
+      # the file's toolchain.
+      - name: Rust toolchain
+        run: rustup toolchain install && rustc --version
+      # Formatting is the same on every system, so Linux's first job checks it.
+      - name: Rust formatting
+        if: runner.os == 'Linux' && !matrix.specsOnly
+        run: |
+          cargo fmt --manifest-path desktop/Cargo.toml --all -- --check || {
+            echo "::error::desktop/ is not formatted as cargo fmt writes it. Fix: cd desktop && cargo fmt --all, then commit what it changed."
+            exit 1
+          }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: desktop
@@ -127,20 +133,35 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev libzstd-dev libvulkan-dev xvfb mesa-vulkan-drivers dbus-x11
       - name: Install the mock runner and the specs
         run: |
-          npm ci --prefix app/Tools/mock-runner
+          npm ci --prefix mock-runner
           npm ci --prefix features
       - name: The specs line up with their steps
         working-directory: features
         run: node verify-pairing.mjs
+      - name: The specs' steps typecheck
+        working-directory: features
+        run: npm run typecheck
+      # Clippy with desktop/Cargo.toml's [workspace.lints], on Linux and the
+      # Mac (each lints its own platform's code); a warning fails it.
+      - name: Clippy
+        if: runner.os != 'Windows' && !matrix.specsOnly
+        run: |
+          cargo clippy --locked --manifest-path desktop/Cargo.toml --workspace --all-targets -- -D warnings || {
+            echo "::error::Clippy found problems. To see them: cd desktop && cargo clippy --workspace --all-targets -- -D warnings (desktop/Cargo.toml says what each lint is for)."
+            exit 1
+          }
       - name: Rust tests (with the mock runner)
         if: ${{ !matrix.specsOnly }}
-        run: cargo test --manifest-path desktop/Cargo.toml
+        run: cargo test --locked --manifest-path desktop/Cargo.toml
       - name: Native text bridge contract
         if: runner.os == 'macOS' && !matrix.specsOnly
         run: bash desktop/scripts/test-native-text.sh
       - name: File-drop regression tests
         if: ${{ !matrix.specsOnly }}
         run: cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation --test file_drop
+      - name: GIF regression tests
+        if: ${{ !matrix.specsOnly }}
+        run: cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation --test gif_frames
       - name: Loader repaint and lifetime regressions
         if: ${{ !matrix.specsOnly }}
         run: |
@@ -173,7 +194,7 @@ jobs:
         run: echo "TB_WEB_RUNTIME_ARCHIVE=$(desktop/scripts/web-runtime-archive.sh ~/web-runtime-archive)" >> "$GITHUB_ENV"
       - name: Behaviour specs
         run: |
-          cargo build --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation
+          cargo build --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation
           cd features
           TB_APP=gpui TB_RETRY=1 TB_SHARD=${{ matrix.shard }} node_modules/.bin/cucumber-js
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -184,7 +205,7 @@ jobs:
           if-no-files-found: ignore
       - name: Build the GPUI app
         if: ${{ !matrix.specsOnly }}
-        run: cargo build --release --manifest-path desktop/Cargo.toml -p threadbear-gpui
+        run: cargo build --locked --release --manifest-path desktop/Cargo.toml -p threadbear-gpui
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !matrix.specsOnly }}
         with:

@@ -23,7 +23,7 @@ function fakeClock(start = Date.parse('2026-11-20T01:30:00Z')) {
 }
 
 // A watcher over a fake host, mailbox and model.
-function watcher(opts: { emails?: Email[][]; answers?: string[]; settings?: MailWatchSettings; threads?: MailThread[]; check?: boolean; on?: boolean; decisions?: string; home?: string } = {}) {
+function watcher(opts: { emails?: Email[][]; answers?: string[]; settings?: MailWatchSettings; threads?: MailThread[]; check?: boolean; on?: boolean; decisions?: string; home?: string; run?: () => Promise<string> } = {}) {
   const home = opts.home ?? tmpDir();
   const userHome = tmpDir();
   const clock = fakeClock();
@@ -50,7 +50,7 @@ function watcher(opts: { emails?: Email[][]; answers?: string[]; settings?: Mail
     on: () => opts.on ?? true,
     looks: () => true,
     settings: () => ({ command: 'fetch', ...(decisionsFile ? { decisions: [decisionsFile] } : {}), ...opts.settings }),
-    run: async () => JSON.stringify(mailbox.shift() ?? []),
+    run: opts.run ?? (async () => JSON.stringify(mailbox.shift() ?? [])),
     isPrivate: (cwd) => cwd.startsWith('/private-'),
     generate: async (p): Promise<ModelResult<string>> => {
       calls.push({ system: p.system, prompt: p.prompt, ...(p.strong ? { strong: true } : {}) });
@@ -156,6 +156,141 @@ test('mailWatch: off, or without a command, it does nothing at all', async () =>
   assert.equal(await off.w.look(), undefined);
   const none = watcher({ emails: [[PETER]], settings: { command: '' } });
   assert.equal(await none.w.look(), undefined);
+});
+
+// THREADBEAR-2G (20 Nov 2026): a runner handing over to a new release kept
+// looking beside the new one, sorting the same emails twice, and its 4 pm
+// list failed, as a draining runner can't start threads. main.ts's handOver
+// stops the watcher; once stopped, no new look starts.
+test('mailWatch: once stopped (a runner handing over), it no longer looks', async () => {
+  const t = watcher({ emails: [[PETER]], answers: [sortAnswer([{ id: PETER.id, pile: 'Reply to Peter' }])] });
+  t.w.stop();
+  assert.equal(await t.w.look(), undefined);
+  assert.equal(t.calls.length, 0);
+  assert.deepEqual(t.state().seen, []);
+});
+
+// A look already under way when the runner hands over finishes as usual,
+// and stopAndWait says when, so the handover waits for it before this runner
+// stops starting threads and before the new one is asked for.
+test('mailWatch: stopAndWait waits for a look under way, which finishes as usual', async () => {
+  let printed: (out: string) => void = () => {};
+  const t = watcher({ answers: [sortAnswer([{ id: PETER.id, pile: 'Reply to Peter' }])], run: () => new Promise((resolve) => (printed = resolve)) });
+  const looking = t.w.look();
+  let stopped = false;
+  const stopping = t.w.stopAndWait(60_000).then(() => (stopped = true));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(stopped, false);
+  printed(JSON.stringify([PETER]));
+  await stopping;
+  assert.equal((await looking)?.piled, 1);
+  assert.deepEqual(t.state().seen, [PETER.id]);
+  // With nothing under way, it's done at once.
+  await t.w.stopAndWait(60_000);
+});
+
+// One that takes too long is given up: the handover goes on, and the look
+// starts, wakes, sends and saves nothing more, as the new runner looks now.
+// What it had finished is saved as it's given up; an email it hadn't
+// started is left unseen, for the new runner to sort. One whose action was
+// being checked, already woken for, is seen, with the action on the pile.
+test('mailWatch: a look given up on at handover changes nothing after', async () => {
+  for (const at of ['command', 'sort', 'check'] as const) {
+    let printed: (out: string) => void = () => {};
+    let sorted: (out: ModelResult<string>) => void = () => {};
+    let checked: (out: ModelResult<string>) => void = () => {};
+    let fire: (() => void) | undefined;
+    const warned: string[] = [];
+    const home = tmpDir();
+    const thread: MailThread = { id: '403bb720-aaaa', title: 'Peter', hibernating: true };
+    const woke: string[] = [];
+    const started: string[] = [];
+    const sent: string[] = [];
+    const userHome = tmpDir();
+    fs.writeFileSync(path.join(userHome, 'MEMORY.md'), DECISIONS);
+    const w = new MailWatch({
+      home,
+      userHome,
+      clock: { now: () => Date.parse('2026-11-20T08:05:00Z'), setTimeout: (fn: () => void) => ((fire = fn), { cancel() {} }) },
+      log: { ...quietLog, warn: (m: string) => void warned.push(m) } as unknown as Logger,
+      timeZone: 'Australia/Perth',
+      on: () => true,
+      looks: () => true,
+      settings: () => ({ command: 'fetch', decisions: [path.join(userHome, 'MEMORY.md')] }),
+      run: () => new Promise((resolve) => (printed = resolve)),
+      generate: (p) => new Promise((resolve) => (p.strong ? (checked = resolve) : (sorted = resolve))),
+      host: {
+        mailThreads: () => [thread],
+        wakeForMail: (id) => (woke.push(id), true),
+        holdMail: () => true,
+        send: (id) => (sent.push(id), true),
+        start: (r) => (started.push(r.title), 'started-1'),
+        open: () => true,
+      },
+    });
+    const looking = w.look();
+    const tick = () => new Promise((r) => setImmediate(r));
+    // Peter's email wakes its thread; Apple's is to be acted on, once checked.
+    const sort = sortAnswer([
+      { id: PETER.id, wake: ['403bb720'] },
+      { id: APPLE.id, wake: ['403bb720'], act: { what: 'Resubmit Walkies', decision: 'Resubmit to App Review without asking' } },
+    ]);
+    if (at !== 'command') {
+      printed(JSON.stringify([PETER, APPLE]));
+      await tick();
+    }
+    if (at === 'check') {
+      sorted({ ok: true, value: sort, model: 'haiku' });
+      await tick();
+      assert.deepEqual(woke, [thread.id, thread.id]);
+    }
+    const stopping = w.stopAndWait(180_000);
+    fire?.();
+    await stopping;
+    assert.match(warned.join('\n'), /gave up on a look under way/, at);
+    const saved = w.read();
+    if (at === 'command') printed(JSON.stringify([PETER, APPLE]));
+    if (at === 'sort') sorted({ ok: true, value: sort, model: 'haiku' });
+    if (at === 'check') checked({ ok: true, value: JSON.stringify({ ok: true, why: 'covered' }), model: 'opus' });
+    assert.equal(await looking, undefined, at);
+    assert.deepEqual({ woke: woke.length, started, sent }, { woke: at === 'check' ? 2 : 0, started: [], sent: [] }, at);
+    // Nothing more was saved after it was given up.
+    assert.deepEqual(w.read(), saved, at);
+    if (at === 'check') {
+      assert.deepEqual(saved.seen, [PETER.id, APPLE.id]);
+      assert.match(saved.done[0]?.line ?? '', /Woke "Peter"/);
+      assert.equal(saved.acts.count, 0);
+      assert.deepEqual(saved.pile.map((p) => [p.email.id, p.action]), [[APPLE.id, 'Resubmit Walkies']]);
+    } else assert.deepEqual(saved.seen, [], at);
+  }
+});
+
+// Saving what it had finished can fail too (a full disk): the handover
+// still goes on.
+test('mailWatch: a given-up look whose save fails still lets the handover go on', async () => {
+  let fire: (() => void) | undefined;
+  const warned: object[] = [];
+  const home = tmpDir();
+  // The watcher's folder is a file, so saving there fails.
+  fs.writeFileSync(path.join(home, 'runner'), '');
+  const w = new MailWatch({
+    home,
+    userHome: tmpDir(),
+    clock: { now: () => Date.parse('2026-11-20T08:05:00Z'), setTimeout: (fn: () => void) => ((fire = fn), { cancel() {} }) },
+    log: { ...quietLog, warn: (_m: string, f: object) => void warned.push(f) } as unknown as Logger,
+    timeZone: 'Australia/Perth',
+    on: () => true,
+    looks: () => true,
+    settings: () => ({ command: 'fetch' }),
+    run: () => new Promise(() => {}),
+    generate: async () => ({ ok: false, reason: 'off', message: 'no model' }),
+    host: { mailThreads: () => [], wakeForMail: () => true, holdMail: () => true, send: () => true, start: () => 'x', open: () => false },
+  });
+  void w.look();
+  const stopping = w.stopAndWait(180_000);
+  fire?.();
+  await stopping;
+  assert.match(JSON.stringify(warned), /saveError/);
 });
 
 test('mailWatch: one that needs Mike goes on the pile, and comes as one thread at the next set time', async () => {

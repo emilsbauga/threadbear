@@ -1,5 +1,5 @@
 // Keeps a thread that isn't on Full access from reading the runner's secrets
-// with Claude's own tools (docs/protocol.md, "Who's really calling"). Defence in
+// with Claude's own tools (docs/protocol/connection.md, "Who's really calling"). Defence in
 // depth behind the RPC's own check of the caller's process: a shell that's
 // allowed to run anything can spell a path in ways no pattern will see, and
 // SECURITY.md says so. A Full access thread can already run anything as you,

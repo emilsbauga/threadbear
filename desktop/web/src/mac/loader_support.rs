@@ -25,7 +25,10 @@ pub(crate) struct Slot {
 
 impl Slot {
     pub(crate) const fn new(name: &'static CStr) -> Self {
-        Slot { name, found: AtomicPtr::new(std::ptr::null_mut()) }
+        Slot {
+            name,
+            found: AtomicPtr::new(std::ptr::null_mut()),
+        }
     }
 
     pub(crate) fn get(&self) -> *mut c_void {
@@ -37,9 +40,14 @@ impl Slot {
         if library.is_null() {
             missing(self.name, "before the web runtime was loaded");
         }
+        // SAFETY: `library` is the non-null handle dlopen gave
+        // cef_load_library, never closed, and `name` is a 'static CStr.
         let found = unsafe { libc::dlsym(library, self.name.as_ptr()) };
         if found.is_null() {
-            missing(self.name, "and isn't in the web runtime, so it isn't the build this app was made for");
+            missing(
+                self.name,
+                "and isn't in the web runtime, so it isn't the build this app was made for",
+            );
         }
         self.found.store(found, Ordering::Release);
         found
@@ -49,7 +57,10 @@ impl Slot {
 /// A call that can't be made. Carrying on would mean calling nothing, so the
 /// process stops with the reason in its log, as the wrapper's own loader does.
 fn missing(name: &CStr, why: &str) -> ! {
-    eprintln!("threadbear-web: {} was called {why}", name.to_string_lossy());
+    eprintln!(
+        "threadbear-web: {} was called {why}",
+        name.to_string_lossy()
+    );
     std::process::abort()
 }
 
@@ -68,11 +79,28 @@ pub unsafe extern "C" fn cef_load_library(path: *const c_char) -> c_int {
     if path.is_null() {
         return 0;
     }
-    let handle = unsafe { libc::dlopen(path, libc::RTLD_LAZY | libc::RTLD_LOCAL | libc::RTLD_FIRST) };
+    // SAFETY: `path` isn't null, and the caller passes a NUL-terminated
+    // C string that lives through this call.
+    let handle =
+        unsafe { libc::dlopen(path, libc::RTLD_LAZY | libc::RTLD_LOCAL | libc::RTLD_FIRST) };
     if handle.is_null() {
+        // SAFETY: dlerror takes no arguments and returns null or this
+        // thread's last dl error message.
         let why = unsafe { libc::dlerror() };
-        let why = if why.is_null() { "unknown".into() } else { unsafe { CStr::from_ptr(why) }.to_string_lossy() };
-        eprintln!("threadbear-web: couldn't load {}: {why}", unsafe { CStr::from_ptr(path) }.to_string_lossy());
+        let why = if why.is_null() {
+            "unknown".into()
+        } else {
+            // SAFETY: a non-null dlerror result is a NUL-terminated string
+            // that stays valid until the next dl call on this thread, and
+            // it's used before any.
+            unsafe { CStr::from_ptr(why) }.to_string_lossy()
+        };
+        eprintln!(
+            "threadbear-web: couldn't load {}: {why}",
+            // SAFETY: `path` isn't null, and the caller passes a
+            // NUL-terminated C string that lives through this call.
+            unsafe { CStr::from_ptr(path) }.to_string_lossy()
+        );
         if let Ok(mut e) = LOAD_ERROR.lock() {
             *e = Some(why.into_owned());
         }
@@ -94,10 +122,21 @@ pub unsafe extern "C" fn cef_unload_library() -> c_int {
 /// loaded by path), but the C API has it, so it works the way it says.
 #[no_mangle]
 pub unsafe extern "C" fn cef_scoped_library_loader_create(helper: c_int) -> *mut c_void {
-    let Ok(exe) = std::env::current_exe() else { return std::ptr::null_mut() };
-    let Some(dir) = exe.parent() else { return std::ptr::null_mut() };
-    let relative = if helper != 0 { "../../../Chromium Embedded Framework.framework/Chromium Embedded Framework" } else { "../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" };
-    let Ok(path) = CString::new(dir.join(relative).to_string_lossy().into_owned()) else { return std::ptr::null_mut() };
+    let Ok(exe) = std::env::current_exe() else {
+        return std::ptr::null_mut();
+    };
+    let Some(dir) = exe.parent() else {
+        return std::ptr::null_mut();
+    };
+    let relative = if helper != 0 {
+        "../../../Chromium Embedded Framework.framework/Chromium Embedded Framework"
+    } else {
+        "../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+    };
+    let Ok(path) = CString::new(dir.join(relative).to_string_lossy().into_owned()) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: `path` is a NUL-terminated CString that outlives the call.
     if unsafe { cef_load_library(path.as_ptr()) } == 1 {
         LIBRARY.load(Ordering::Acquire)
     } else {

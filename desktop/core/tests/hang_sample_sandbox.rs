@@ -13,7 +13,17 @@ fn sample_still_works_in_the_sandbox() {
     let mut target = Command::new("/bin/sleep").arg("20").spawn().unwrap();
     let file = dir.join("s.sample");
     let home = std::env::var("HOME").unwrap_or_default();
-    let status = Command::new("/usr/bin/sandbox-exec").args(sample_arguments(&home, target.id(), 1, &file.to_string_lossy())).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+    let status = Command::new("/usr/bin/sandbox-exec")
+        .args(sample_arguments(
+            &home,
+            target.id(),
+            1,
+            &file.to_string_lossy(),
+        ))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
     let _ = target.kill();
     let _ = target.wait();
     assert!(status.success());

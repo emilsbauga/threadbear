@@ -1,4 +1,4 @@
-// Projects (docs/protocol.md, "Projects") with no UI in them, ported from the
+// Projects (docs/protocol/projects.md, "Projects") with no UI in them, ported from the
 // Swift app: the project itself and its icon and task board (Project.swift),
 // what `projects.update` changes (ProjectUpdate in RunnerAPI.swift), the
 // sidebar's sections with parts nested under their parent
@@ -73,8 +73,14 @@ impl Icon {
             return None;
         }
         Some(Icon {
-            image_path: v["image"]["path"].as_str().filter(|p| !p.is_empty()).map(str::to_owned),
-            symbol: v["symbol"].as_str().filter(|s| !s.is_empty()).map(str::to_owned),
+            image_path: v["image"]["path"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned),
+            symbol: v["symbol"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             from: v["from"].as_str().map(str::to_owned),
             by: Author::read(&v["by"]),
         })
@@ -92,7 +98,10 @@ impl Link {
     /// One without a title is named by its address; one without a url is no link.
     fn decode(v: &Value) -> Option<Link> {
         let url = v["url"].as_str()?.to_owned();
-        let title = v["title"].as_str().filter(|t| !t.is_empty()).map_or_else(|| address(&url), str::to_owned);
+        let title = v["title"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .map_or_else(|| address(&url), str::to_owned);
         Some(Link { title, url })
     }
 }
@@ -134,7 +143,14 @@ impl Task {
     /// Its Thread column names this thread: the id or a prefix of it, six
     /// characters at least, so a stray word doesn't match.
     pub fn is_worked_by(&self, thread_id: &str) -> bool {
-        let Some(mine) = self.thread.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| t.chars().count() >= 6) else { return false };
+        let Some(mine) = self
+            .thread
+            .as_deref()
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| t.chars().count() >= 6)
+        else {
+            return false;
+        };
         thread_id.to_lowercase().starts_with(&mine)
     }
 }
@@ -185,7 +201,8 @@ impl Tasks {
                 .into_iter()
                 .flatten()
                 .filter_map(|i| {
-                    let some = |key: &str| i[key].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+                    let some =
+                        |key: &str| i[key].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
                     Some(Task {
                         id: i["id"].as_str()?.to_owned(),
                         title: some("title").unwrap_or_else(|| "Untitled".to_owned()),
@@ -207,12 +224,23 @@ impl Tasks {
 
     /// The cards in a column, in Notion's order.
     pub fn items_in<'a>(&'a self, column: &TaskColumn) -> Vec<&'a Task> {
-        self.items.iter().filter(|t| t.status == column.name).collect()
+        self.items
+            .iter()
+            .filter(|t| t.status == column.name)
+            .collect()
     }
 
     /// Cards not in a Done column.
     pub fn open_count(&self) -> usize {
-        self.items.iter().filter(|item| self.columns.iter().find(|c| c.name == item.status).is_none_or(|c| c.kind != TaskKind::Done)).count()
+        self.items
+            .iter()
+            .filter(|item| {
+                self.columns
+                    .iter()
+                    .find(|c| c.name == item.status)
+                    .is_none_or(|c| c.kind != TaskKind::Done)
+            })
+            .count()
     }
 }
 
@@ -250,12 +278,19 @@ pub struct Project {
 }
 
 fn strings(v: &Value) -> Vec<String> {
-    v.as_array().into_iter().flatten().filter_map(|s| s.as_str().map(str::to_owned)).collect()
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.as_str().map(str::to_owned))
+        .collect()
 }
 
 /// A count that may come as a number or as its digits.
 fn lenient_count(v: &Value) -> Option<usize> {
-    v.as_u64().map(|n| n as usize).or_else(|| v.as_f64().filter(|f| *f >= 0.).map(|f| f as usize)).or_else(|| v.as_str()?.trim().parse().ok())
+    v.as_u64()
+        .map(|n| n as usize)
+        .or_else(|| v.as_f64().filter(|f| *f >= 0.).map(|f| f as usize))
+        .or_else(|| v.as_str()?.trim().parse().ok())
 }
 
 impl Project {
@@ -274,11 +309,19 @@ impl Project {
             goals: text("goals"),
             state: text("state"),
             notes: text("notes"),
-            links: v["links"].as_array().into_iter().flatten().filter_map(Link::decode).collect(),
+            links: v["links"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Link::decode)
+                .collect(),
             created_by: Author::read(&v["createdBy"]),
             created_by_thread: v["createdByThread"].as_str().map(str::to_owned),
             created_ms,
-            updated_ms: v["updatedAt"].as_str().and_then(parse_ms).unwrap_or(created_ms),
+            updated_ms: v["updatedAt"]
+                .as_str()
+                .and_then(parse_ms)
+                .unwrap_or(created_ms),
             state_updated_ms: v["stateUpdatedAt"].as_str().and_then(parse_ms),
             archived: v["archived"].as_bool().unwrap_or(false),
             icon: Icon::decode(&v["icon"]),
@@ -293,7 +336,11 @@ impl Project {
     /// `projects.list`'s (or `projects.updated`'s) list, one at a time so
     /// one that won't read can't lose the rest.
     pub fn list(v: &Value) -> Vec<Project> {
-        v.as_array().into_iter().flatten().filter_map(Project::decode).collect()
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Project::decode)
+            .collect()
     }
 
     /// The tile's letter when there's no icon to draw (`ProjectMark.letter`).
@@ -304,7 +351,12 @@ impl Project {
     /// Everything a search looks through. Folders by name only: the path
     /// before it is the same for most projects, so "dev" would find them all.
     fn search_text(&self) -> String {
-        let mut parts = vec![self.title.clone(), self.state.clone(), self.goals.clone(), self.notes.clone()];
+        let mut parts = vec![
+            self.title.clone(),
+            self.state.clone(),
+            self.goals.clone(),
+            self.notes.clone(),
+        ];
         parts.extend(self.folders.iter().map(|f| folder_name(f)));
         parts.extend(self.links.iter().map(|l| l.title.clone()));
         parts.join("\n")
@@ -404,13 +456,28 @@ impl Update {
 /// what he adds is pinned and his, as the runner's `threads.setProjects`
 /// does, so a click shows at once. `title` names a project being added; one
 /// it doesn't know waits for the runner's reply.
-pub fn changing(projects: &[Membership], add: &[String], remove: &[String], title: impl Fn(&str) -> Option<String>) -> Vec<Membership> {
-    let mut out: Vec<Membership> = projects.iter().filter(|p| !remove.contains(&p.id)).cloned().collect();
+pub fn changing(
+    projects: &[Membership],
+    add: &[String],
+    remove: &[String],
+    title: impl Fn(&str) -> Option<String>,
+) -> Vec<Membership> {
+    let mut out: Vec<Membership> = projects
+        .iter()
+        .filter(|p| !remove.contains(&p.id))
+        .cloned()
+        .collect();
     for id in add {
         if let Some(existing) = out.iter_mut().find(|p| &p.id == id) {
             existing.pinned = true;
         } else if let Some(title) = title(id) {
-            out.push(Membership { id: id.clone(), title, by: "mike".to_owned(), pinned: true, why: None });
+            out.push(Membership {
+                id: id.clone(),
+                title,
+                by: "mike".to_owned(),
+                pinned: true,
+                why: None,
+            });
         }
     }
     out
@@ -418,8 +485,16 @@ pub fn changing(projects: &[Membership], add: &[String], remove: &[String], titl
 
 /// The live projects a thread could be put in, by name (`projectsToAdd`).
 pub fn projects_to_add<'a>(projects: &'a [Project], thread: &ThreadSummary) -> Vec<&'a Project> {
-    let already: HashSet<&str> = thread.projects.iter().flatten().map(|m| m.id.as_str()).collect();
-    let mut out: Vec<&Project> = projects.iter().filter(|p| !p.archived && !already.contains(p.id.as_str())).collect();
+    let already: HashSet<&str> = thread
+        .projects
+        .iter()
+        .flatten()
+        .map(|m| m.id.as_str())
+        .collect();
+    let mut out: Vec<&Project> = projects
+        .iter()
+        .filter(|p| !p.archived && !already.contains(p.id.as_str()))
+        .collect();
     out.sort_by(|a, b| standard_compare(&a.title, &b.title));
     out
 }
@@ -435,10 +510,17 @@ pub fn live_by_title(projects: &[Project]) -> Vec<&Project> {
 /// of), by name. One level only: none for a project with parts of its own,
 /// and only projects that aren't parts themselves.
 pub fn possible_parents<'a>(projects: &'a [Project], project: &Project) -> Vec<&'a Project> {
-    if project.parent_id.is_some() || projects.iter().any(|p| p.parent_id.as_deref() == Some(project.id.as_str())) {
+    if project.parent_id.is_some()
+        || projects
+            .iter()
+            .any(|p| p.parent_id.as_deref() == Some(project.id.as_str()))
+    {
         return vec![];
     }
-    let mut out: Vec<&Project> = projects.iter().filter(|p| p.id != project.id && !p.archived && p.parent_id.is_none()).collect();
+    let mut out: Vec<&Project> = projects
+        .iter()
+        .filter(|p| p.id != project.id && !p.archived && p.parent_id.is_none())
+        .collect();
     out.sort_by(|a, b| standard_compare(&a.title, &b.title));
     out
 }
@@ -557,7 +639,9 @@ pub struct Sections<'a> {
 
 /// Newest activity first, then by id so the order never wobbles.
 fn newest_first(a: &ThreadSummary, b: &ThreadSummary) -> Ordering {
-    b.activity_ms().cmp(&a.activity_ms()).then_with(|| a.id.cmp(&b.id))
+    b.activity_ms()
+        .cmp(&a.activity_ms())
+        .then_with(|| a.id.cmp(&b.id))
 }
 
 /// Sorts as `newest_first` does, reading each thread's time once: comparing
@@ -574,7 +658,11 @@ impl<'a> Sections<'a> {
     /// Archived projects are left out, and so are archived and hibernating
     /// threads, as in the inbox (archived ones go in `archived`). A thread in
     /// two projects is under both.
-    pub fn build(projects: &'a [Project], threads: impl IntoIterator<Item = &'a ThreadSummary>, now_ms: i64) -> Sections<'a> {
+    pub fn build(
+        projects: &'a [Project],
+        threads: impl IntoIterator<Item = &'a ThreadSummary>,
+        now_ms: i64,
+    ) -> Sections<'a> {
         let shown: Vec<&Project> = projects.iter().filter(|p| !p.archived).collect();
         let shown_ids: HashSet<&str> = shown.iter().map(|p| p.id.as_str()).collect();
         let mut members: HashMap<&str, Vec<&ThreadSummary>> = HashMap::new();
@@ -583,10 +671,13 @@ impl<'a> Sections<'a> {
         let mut unfiled = Vec::new();
         for thread in threads {
             // One waiting on its own work is under Running in the sidebar, so here too.
-            let inbox = !thread.is_archived() && (!thread.snoozed(now_ms) || thread.waiting_on_work());
+            let inbox =
+                !thread.is_archived() && (!thread.snoozed(now_ms) || thread.waiting_on_work());
             let mut filed = false;
             for membership in thread.projects.iter().flatten() {
-                let Some(id) = shown_ids.get(membership.id.as_str()).copied() else { continue };
+                let Some(id) = shown_ids.get(membership.id.as_str()).copied() else {
+                    continue;
+                };
                 filed = true;
                 let at = newest.entry(id).or_insert(i64::MIN);
                 *at = (*at).max(thread.activity_ms());
@@ -612,11 +703,24 @@ impl<'a> Sections<'a> {
                 sort_newest_first(&mut put_away);
                 put_away.dedup_by(|a, b| a.id == b.id);
                 let own = project.last_activity_ms.unwrap_or(project.updated_ms);
-                let last_activity_ms = newest.get(project.id.as_str()).copied().unwrap_or(i64::MIN).max(own);
-                Section { project, threads, archived: put_away, last_activity_ms }
+                let last_activity_ms = newest
+                    .get(project.id.as_str())
+                    .copied()
+                    .unwrap_or(i64::MIN)
+                    .max(own);
+                Section {
+                    project,
+                    threads,
+                    archived: put_away,
+                    last_activity_ms,
+                }
             })
             .collect();
-        sections.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms).then_with(|| standard_compare(&a.project.title, &b.project.title)));
+        sections.sort_by(|a, b| {
+            b.last_activity_ms
+                .cmp(&a.last_activity_ms)
+                .then_with(|| standard_compare(&a.project.title, &b.project.title))
+        });
         sort_newest_first(&mut unfiled);
         Sections::with_parts(sections, unfiled)
     }
@@ -627,23 +731,49 @@ impl<'a> Sections<'a> {
     fn with_parts(sections: Vec<Section<'a>>, unfiled: Vec<&'a ThreadSummary>) -> Sections<'a> {
         let mut parent_of: HashMap<&str, Option<&str>> = HashMap::new();
         for s in &sections {
-            parent_of.entry(s.project.id.as_str()).or_insert(s.project.parent_id.as_deref());
+            parent_of
+                .entry(s.project.id.as_str())
+                .or_insert(s.project.parent_id.as_deref());
         }
-        let is_part = |s: &Section| s.project.parent_id.as_deref().is_some_and(|p| p != s.project.id && parent_of.get(p) == Some(&None));
+        let is_part = |s: &Section| {
+            s.project
+                .parent_id
+                .as_deref()
+                .is_some_and(|p| p != s.project.id && parent_of.get(p) == Some(&None))
+        };
         let mut parts: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, s) in sections.iter().enumerate() {
             if is_part(s) {
-                parts.entry(s.project.parent_id.clone().unwrap_or_default()).or_default().push(i);
+                parts
+                    .entry(s.project.parent_id.clone().unwrap_or_default())
+                    .or_default()
+                    .push(i);
             }
         }
         for list in parts.values_mut() {
-            list.sort_by(|a, b| standard_compare(&sections[*a].project.title, &sections[*b].project.title));
+            list.sort_by(|a, b| {
+                standard_compare(&sections[*a].project.title, &sections[*b].project.title)
+            });
         }
-        let newest = |i: usize| parts.get(&sections[i].project.id).into_iter().flatten().map(|p| sections[*p].last_activity_ms).fold(sections[i].last_activity_ms, i64::max);
-        let mut top: Vec<usize> = (0..sections.len()).filter(|i| !is_part(&sections[*i])).collect();
+        let newest = |i: usize| {
+            parts
+                .get(&sections[i].project.id)
+                .into_iter()
+                .flatten()
+                .map(|p| sections[*p].last_activity_ms)
+                .fold(sections[i].last_activity_ms, i64::max)
+        };
+        let mut top: Vec<usize> = (0..sections.len())
+            .filter(|i| !is_part(&sections[*i]))
+            .collect();
         // Stable, so ties keep the sections' own order.
         top.sort_by_key(|i| std::cmp::Reverse(newest(*i)));
-        Sections { sections, unfiled, top, parts }
+        Sections {
+            sections,
+            unfiled,
+            top,
+            parts,
+        }
     }
 
     /// What the lists and the Projects page show at the top, in order.
@@ -653,7 +783,12 @@ impl<'a> Sections<'a> {
 
     /// A shown parent's parts, in title order; none for anything else.
     pub fn parts_of(&self, id: &str) -> Vec<&Section<'a>> {
-        self.parts.get(id).into_iter().flatten().map(|i| &self.sections[*i]).collect()
+        self.parts
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|i| &self.sections[*i])
+            .collect()
     }
 
     pub fn section(&self, id: &str) -> Option<&Section<'a>> {
@@ -663,7 +798,11 @@ impl<'a> Sections<'a> {
     /// The project's threads and its parts', each once, newest first.
     pub fn threads_with_parts(&self, section: &Section<'a>) -> Vec<&'a ThreadSummary> {
         let mut seen = HashSet::new();
-        let mut out: Vec<&ThreadSummary> = std::iter::once(section).chain(self.parts_of(section.id())).flat_map(|s| s.threads.iter().copied()).filter(|t| seen.insert(t.id.as_str())).collect();
+        let mut out: Vec<&ThreadSummary> = std::iter::once(section)
+            .chain(self.parts_of(section.id()))
+            .flat_map(|s| s.threads.iter().copied())
+            .filter(|t| seen.insert(t.id.as_str()))
+            .collect();
         sort_newest_first(&mut out);
         out
     }
@@ -673,15 +812,29 @@ impl<'a> Sections<'a> {
     /// it first comes.
     pub fn order(&self) -> Vec<String> {
         let mut seen = HashSet::new();
-        let drawn = self.top_level().into_iter().flat_map(|s| std::iter::once(s).chain(self.parts_of(s.id())));
-        drawn.flat_map(|s| s.threads.iter().copied()).chain(self.unfiled.iter().copied()).filter(|t| seen.insert(t.id.as_str())).map(|t| t.id.clone()).collect()
+        let drawn = self
+            .top_level()
+            .into_iter()
+            .flat_map(|s| std::iter::once(s).chain(self.parts_of(s.id())));
+        drawn
+            .flat_map(|s| s.threads.iter().copied())
+            .chain(self.unfiled.iter().copied())
+            .filter(|t| seen.insert(t.id.as_str()))
+            .map(|t| t.id.clone())
+            .collect()
     }
 }
 
 /// A project's threads (any, put away ones too), newest activity first, for
 /// its page.
-pub fn threads_in<'a>(project_id: &str, threads: impl IntoIterator<Item = &'a ThreadSummary>) -> Vec<&'a ThreadSummary> {
-    let mut out: Vec<&ThreadSummary> = threads.into_iter().filter(|t| t.projects.iter().flatten().any(|m| m.id == project_id)).collect();
+pub fn threads_in<'a>(
+    project_id: &str,
+    threads: impl IntoIterator<Item = &'a ThreadSummary>,
+) -> Vec<&'a ThreadSummary> {
+    let mut out: Vec<&ThreadSummary> = threads
+        .into_iter()
+        .filter(|t| t.projects.iter().flatten().any(|m| m.id == project_id))
+        .collect();
     sort_newest_first(&mut out);
     out
 }
@@ -711,7 +864,11 @@ pub fn fold_order(sections: &Sections, open: &HashSet<String>) -> Vec<String> {
         shown.extend(sections.unfiled.iter().copied());
     }
     let mut seen = HashSet::new();
-    shown.into_iter().filter(|t| seen.insert(t.id.as_str())).map(|t| t.id.clone()).collect()
+    shown
+        .into_iter()
+        .filter(|t| seen.insert(t.id.as_str()))
+        .map(|t| t.id.clone())
+        .collect()
 }
 
 /// What the folded list draws, a row id each: a project's row as "p:<id>",
@@ -727,14 +884,23 @@ pub fn fold_layout(sections: &Sections, open: &HashSet<String>) -> Vec<String> {
         for part in sections.parts_of(top.id()) {
             rows.push(format!("p:{}", part.id()));
             if open.contains(part.id()) {
-                rows.extend(part.threads.iter().map(|t| format!("{}/{}", part.id(), t.id)));
+                rows.extend(
+                    part.threads
+                        .iter()
+                        .map(|t| format!("{}/{}", part.id(), t.id)),
+                );
             }
         }
     }
     if !sections.unfiled.is_empty() {
         rows.push(format!("p:{UNFILED_ID}"));
         if open.contains(UNFILED_ID) {
-            rows.extend(sections.unfiled.iter().map(|t| format!("{UNFILED_ID}/{}", t.id)));
+            rows.extend(
+                sections
+                    .unfiled
+                    .iter()
+                    .map(|t| format!("{UNFILED_ID}/{}", t.id)),
+            );
         }
     }
     rows
@@ -777,15 +943,25 @@ impl ProjectTab {
     /// The tab a page opens on when none has been picked for it: Decisions
     /// when something's waiting, else Project.
     pub fn opening(decisions: usize) -> ProjectTab {
-        if decisions > 0 { ProjectTab::Decisions } else { ProjectTab::Project }
+        if decisions > 0 {
+            ProjectTab::Decisions
+        } else {
+            ProjectTab::Project
+        }
     }
 
     /// The tab showing: the one last picked for this project, else the one
     /// it opened on this visit. Never worked out again from the decisions
     /// while it's open, so the page doesn't jump under the pointer as they
     /// come and go.
-    pub fn current(picked: Option<ProjectTab>, opened_on: Option<ProjectTab>, decisions: usize) -> ProjectTab {
-        picked.or(opened_on).unwrap_or_else(|| ProjectTab::opening(decisions))
+    pub fn current(
+        picked: Option<ProjectTab>,
+        opened_on: Option<ProjectTab>,
+        decisions: usize,
+    ) -> ProjectTab {
+        picked
+            .or(opened_on)
+            .unwrap_or_else(|| ProjectTab::opening(decisions))
     }
 
     /// The tab beside this one, for ⇧⌘[ (-1) and ⇧⌘] (1): they stop at the
@@ -803,13 +979,20 @@ impl ProjectTab {
 /// running, and some ask is unticked. One that needs him with no asks (a plain
 /// reply) isn't a decision.
 pub fn is_waiting(t: &ThreadSummary) -> bool {
-    t.waiting_on_mike() && !t.is_archived() && t.asks_seq.is_some() && t.asks.iter().flatten().any(|a| a.ticked != Some(true))
+    t.waiting_on_mike()
+        && !t.is_archived()
+        && t.asks_seq.is_some()
+        && t.asks.iter().flatten().any(|a| a.ticked != Some(true))
 }
 
 /// How many of its asks are still open.
 pub fn open_asks(t: &ThreadSummary) -> usize {
     if is_waiting(t) {
-        t.asks.iter().flatten().filter(|a| a.ticked != Some(true)).count()
+        t.asks
+            .iter()
+            .flatten()
+            .filter(|a| a.ticked != Some(true))
+            .count()
     } else {
         0
     }
@@ -830,7 +1013,11 @@ pub fn decision_count(threads: &[&ThreadSummary]) -> usize {
 
 /// "1 decision", "3 decisions".
 pub fn decision_label(count: usize) -> String {
-    if count == 1 { "1 decision".to_owned() } else { format!("{count} decisions") }
+    if count == 1 {
+        "1 decision".to_owned()
+    } else {
+        format!("{count} decisions")
+    }
 }
 
 /// The section's line beside its heading: "4 decisions from 3 threads", or
@@ -839,7 +1026,15 @@ pub fn decision_heading(decisions: usize, threads: usize) -> String {
     if decisions == threads {
         decision_label(decisions)
     } else {
-        format!("{} from {}", decision_label(decisions), if threads == 1 { "1 thread".to_owned() } else { format!("{threads} threads") })
+        format!(
+            "{} from {}",
+            decision_label(decisions),
+            if threads == 1 {
+                "1 thread".to_owned()
+            } else {
+                format!("{threads} threads")
+            }
+        )
     }
 }
 
@@ -875,8 +1070,19 @@ pub fn decision_asks(t: &ThreadSummary) -> Vec<crate::reducer::Ask> {
 /// A decision as the dump says it: "Title: first ask | second ask", its open
 /// asks in plain words, and "(sending)" while an answer's on its way.
 pub fn decision_line(t: &ThreadSummary, sending: bool) -> String {
-    let asks: Vec<String> = t.asks.iter().flatten().filter(|a| a.ticked != Some(true)).map(|a| crate::sidebar::preview_plain(&a.action)).collect();
-    format!("{}: {}{}", t.title, asks.join(" | "), if sending { " (sending)" } else { "" })
+    let asks: Vec<String> = t
+        .asks
+        .iter()
+        .flatten()
+        .filter(|a| a.ticked != Some(true))
+        .map(|a| crate::sidebar::preview_plain(&a.action))
+        .collect();
+    format!(
+        "{}: {}{}",
+        t.title,
+        asks.join(" | "),
+        if sending { " (sending)" } else { "" }
+    )
 }
 
 // ---------------------------------------------------------------- the Projects page's cards
@@ -921,7 +1127,10 @@ impl CardPart {
 
 impl CardStatus {
     pub fn of(threads: &[&ThreadSummary], decisions: bool) -> CardStatus {
-        let mut status = CardStatus { open: threads.len(), ..Default::default() };
+        let mut status = CardStatus {
+            open: threads.len(),
+            ..Default::default()
+        };
         for thread in threads {
             let asks = if decisions { open_asks(thread) } else { 0 };
             status.decisions += asks;
@@ -944,7 +1153,11 @@ impl CardStatus {
 
     /// Nothing running, waiting or new.
     pub fn is_quiet(&self) -> bool {
-        self.working == 0 && self.needs_you == 0 && self.failed == 0 && self.unread == 0 && self.decisions == 0
+        self.working == 0
+            && self.needs_you == 0
+            && self.failed == 0
+            && self.unread == 0
+            && self.decisions == 0
     }
 
     /// The status line, most pressing first: "1 needs you · 2 working".
@@ -974,7 +1187,11 @@ impl CardStatus {
         if self.is_quiet() {
             "quiet".to_owned()
         } else {
-            self.parts().iter().map(CardPart::text).collect::<Vec<_>>().join(" · ")
+            self.parts()
+                .iter()
+                .map(CardPart::text)
+                .collect::<Vec<_>>()
+                .join(" · ")
         }
     }
 }
@@ -1004,8 +1221,21 @@ pub fn cards<'a>(sections: &Sections<'a>, recent: usize, decisions: bool) -> Vec
             Card {
                 project: section.project,
                 status: CardStatus::of(&threads, decisions),
-                last_activity_ms: parts.iter().map(|p| p.last_activity_ms).fold(section.last_activity_ms, i64::max),
-                recent: threads.iter().take(recent).map(|t| if t.title.is_empty() { "Untitled".to_owned() } else { t.title.clone() }).collect(),
+                last_activity_ms: parts
+                    .iter()
+                    .map(|p| p.last_activity_ms)
+                    .fold(section.last_activity_ms, i64::max),
+                recent: threads
+                    .iter()
+                    .take(recent)
+                    .map(|t| {
+                        if t.title.is_empty() {
+                            "Untitled".to_owned()
+                        } else {
+                            t.title.clone()
+                        }
+                    })
+                    .collect(),
                 parts: parts.iter().map(|p| p.project).collect(),
             }
         })
@@ -1016,7 +1246,12 @@ pub fn cards<'a>(sections: &Sections<'a>, recent: usize, decisions: bool) -> Vec
 /// cards but is still one thread working.
 pub fn overall(sections: &Sections, decisions: bool) -> CardStatus {
     let mut seen = HashSet::new();
-    let threads: Vec<&ThreadSummary> = sections.sections.iter().flat_map(|s| s.threads.iter().copied()).filter(|t| seen.insert(t.id.as_str())).collect();
+    let threads: Vec<&ThreadSummary> = sections
+        .sections
+        .iter()
+        .flat_map(|s| s.threads.iter().copied())
+        .filter(|t| seen.insert(t.id.as_str()))
+        .collect();
     CardStatus::of(&threads, decisions)
 }
 
@@ -1036,7 +1271,10 @@ pub fn matching<'a>(cards: Vec<Card<'a>>, query: &str) -> Vec<Card<'a>> {
     };
     let (mut in_title, mut rest) = (Vec::new(), Vec::new());
     for card in cards {
-        let text = std::iter::once(card.project.search_text()).chain(card.parts.iter().map(|p| p.search_text())).collect::<Vec<_>>().join("\n");
+        let text = std::iter::once(card.project.search_text())
+            .chain(card.parts.iter().map(|p| p.search_text()))
+            .collect::<Vec<_>>()
+            .join("\n");
         if !hit(&text) {
             continue;
         }
@@ -1052,13 +1290,20 @@ pub fn matching<'a>(cards: Vec<Card<'a>>, query: &str) -> Vec<Card<'a>> {
 
 /// The Projects page's count while its search has text.
 pub fn match_count(shown: usize, total: usize) -> String {
-    format!("{shown} of {total} {}", if total == 1 { "project" } else { "projects" })
+    format!(
+        "{shown} of {total} {}",
+        if total == 1 { "project" } else { "projects" }
+    )
 }
 
 /// "4 projects · 3 decisions · 2 working · 1 needs you", each thread counted
 /// once (`ProjectsHome.summary`).
 pub fn summary(cards: usize, overall: &CardStatus) -> String {
-    let mut parts = vec![if cards == 1 { "1 project".to_owned() } else { format!("{cards} projects") }];
+    let mut parts = vec![if cards == 1 {
+        "1 project".to_owned()
+    } else {
+        format!("{cards} projects")
+    }];
     if overall.decisions > 0 {
         parts.push(decision_label(overall.decisions));
     }
@@ -1074,20 +1319,35 @@ pub fn summary(cards: usize, overall: &CardStatus) -> String {
 /// The state is markdown-ish prose the librarian writes; a card wants its
 /// opening sentences on one run, without the line breaks.
 pub fn first_lines(text: &str) -> String {
-    text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// "1 open thread", "3 open threads": the card's corner count's tooltip.
 pub fn open_threads_tip(count: usize) -> String {
-    if count == 1 { "1 open thread".to_owned() } else { format!("{count} open threads") }
+    if count == 1 {
+        "1 open thread".to_owned()
+    } else {
+        format!("{count} open threads")
+    }
 }
 
 // ---------------------------------------------------------------- a project's page
 
 /// "20 Oct": a day and a short month, in the time zone of `now`.
 pub fn day_month<Tz: TimeZone>(at_ms: i64, now: &DateTime<Tz>) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let date = now.timezone().timestamp_millis_opt(at_ms).single().map(|d| (d.day(), d.month0())).unwrap_or((1, 0));
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let date = now
+        .timezone()
+        .timestamp_millis_opt(at_ms)
+        .single()
+        .map(|d| (d.day(), d.month0()))
+        .unwrap_or((1, 0));
     format!("{} {}", date.0, MONTHS[date.1 as usize])
 }
 
@@ -1101,7 +1361,11 @@ pub fn made_by<Tz: TimeZone>(project: &Project, threads: usize, now: &DateTime<T
     };
     let mut parts = vec![format!("{who} on {}", day_month(project.created_ms, now))];
     let count = threads.max(project.thread_count);
-    parts.push(if count == 1 { "1 thread".to_owned() } else { format!("{count} threads") });
+    parts.push(if count == 1 {
+        "1 thread".to_owned()
+    } else {
+        format!("{count} threads")
+    });
     if project.archived {
         parts.push("Archived".to_owned());
     }
@@ -1110,14 +1374,18 @@ pub fn made_by<Tz: TimeZone>(project: &Project, threads: usize, now: &DateTime<T
 
 /// The big icon's tooltip: where it came from (`IconButton.help`).
 pub fn icon_help(project: &Project, home: &str) -> String {
-    let Some(icon) = &project.icon else { return "No icon yet: the librarian looks in the project's folders for one. Click to choose a picture.".to_owned() };
+    let Some(icon) = &project.icon else {
+        return "No icon yet: the librarian looks in the project's folders for one. Click to choose a picture.".to_owned();
+    };
     let source = match (&icon.from, &icon.symbol) {
         (Some(from), _) => format!("from {}", crate::new_thread::abbreviate_home(from, home)),
         (None, Some(symbol)) => format!("the {symbol} symbol"),
         (None, None) => String::new(),
     };
     match icon.by {
-        Author::Librarian => format!("The librarian found this ({source}) and keeps it up to date. Click to choose another."),
+        Author::Librarian => format!(
+            "The librarian found this ({source}) and keeps it up to date. Click to choose another."
+        ),
         Author::Mike => format!("You chose this ({source}). Click to change it."),
         Author::Agent => format!("An agent chose this ({source}). Click to change it."),
     }
@@ -1162,15 +1430,26 @@ impl TextField {
     /// Saving `text` in this field.
     pub fn update(self, text: String) -> Update {
         match self {
-            TextField::Goals => Update { goals: Some(text), ..Default::default() },
-            TextField::State => Update { state: Some(text), ..Default::default() },
-            TextField::Notes => Update { notes: Some(text), ..Default::default() },
+            TextField::Goals => Update {
+                goals: Some(text),
+                ..Default::default()
+            },
+            TextField::State => Update {
+                state: Some(text),
+                ..Default::default()
+            },
+            TextField::Notes => Update {
+                notes: Some(text),
+                ..Default::default()
+            },
         }
     }
 
     /// Beside the heading: when the state was last written ("updated 5m ago").
     pub fn detail<Tz: TimeZone>(self, project: &Project, now: &DateTime<Tz>) -> Option<String> {
-        let at = project.state_updated_ms.filter(|_| self == TextField::State)?;
+        let at = project
+            .state_updated_ms
+            .filter(|_| self == TextField::State)?;
         Some(format!("updated {}", ago(at, now)))
     }
 }
@@ -1222,11 +1501,15 @@ pub fn tasks_detail<Tz: TimeZone>(tasks: &Tasks, now: &DateTime<Tz>) -> Option<S
 /// A card's dates: "29 Nov", or "29 Nov to 4 Dec" (`TaskCard.due`).
 pub fn task_due(task: &Task) -> Option<String> {
     let day = |s: &str| -> Option<String> {
-        const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
         let date = s.get(..10)?;
         let month: usize = date.get(5..7)?.parse().ok()?;
         let day: u32 = date.get(8..10)?.parse().ok()?;
-        (1..=12).contains(&month).then(|| format!("{day} {}", MONTHS[month - 1]))
+        (1..=12)
+            .contains(&month)
+            .then(|| format!("{day} {}", MONTHS[month - 1]))
     };
     let start = task.due.as_deref().and_then(day)?;
     Some(match task.due_end.as_deref().and_then(day) {
@@ -1237,12 +1520,22 @@ pub fn task_due(task: &Task) -> Option<String> {
 
 /// A part's row on its parent's page: its state's first line.
 pub fn part_line(project: &Project) -> Option<String> {
-    project.state.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned)
+    project
+        .state
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
 }
 
 /// "1 thread", "4 threads".
 pub fn thread_count_words(count: usize) -> String {
-    if count == 1 { "1 thread".to_owned() } else { format!("{count} threads") }
+    if count == 1 {
+        "1 thread".to_owned()
+    } else {
+        format!("{count} threads")
+    }
 }
 
 /// The Done column shows its newest few; the rest are a click away in Notion.
@@ -1255,10 +1548,14 @@ pub const DONE_SHOWN: usize = 3;
 pub fn is_inside(path: &str, folder: &str) -> bool {
     let trim = |p: &str| -> String {
         let t = p.trim_end_matches('/');
-        if t.is_empty() { "/".to_owned() } else { t.to_owned() }
+        if t.is_empty() {
+            "/".to_owned()
+        } else {
+            t.to_owned()
+        }
     };
     let (p, f) = (trim(path), trim(folder));
-    p == f || p.starts_with(&if f.ends_with('/') { f.clone() } else { format!("{f}/") })
+    p == f || p.starts_with(&if f.ends_with('/') { f } else { format!("{f}/") })
 }
 
 /// What a thread has from the project (`ProjectPane.patches`): patches
@@ -1277,7 +1574,11 @@ pub fn project_patches(project: &Project, thread: &ThreadSummary) -> Vec<PatchIn
                 return false;
             }
             // A built-in from the thread's own folder says no folder.
-            let from = patch.folder.as_deref().or(patch.file.as_deref()).unwrap_or(&thread.cwd);
+            let from = patch
+                .folder
+                .as_deref()
+                .or(patch.file.as_deref())
+                .unwrap_or(&thread.cwd);
             !from.is_empty() && project.folders.iter().any(|f| is_inside(from, f))
         })
         .collect()
@@ -1285,14 +1586,28 @@ pub fn project_patches(project: &Project, thread: &ThreadSummary) -> Vec<PatchIn
 
 /// The panels those patches give (`ProjectPane.panels`).
 pub fn project_panels(project: &Project, thread: &ThreadSummary) -> Vec<Panel> {
-    let own: HashSet<String> = project_patches(project, thread).into_iter().filter(|p| p.project_id.is_none()).map(|p| p.id).collect();
-    thread.panels().into_iter().filter(|p| p.project_id.as_deref() == Some(project.id.as_str()) || (p.project_id.is_none() && own.contains(&p.patch))).collect()
+    let own: HashSet<String> = project_patches(project, thread)
+        .into_iter()
+        .filter(|p| p.project_id.is_none())
+        .map(|p| p.id)
+        .collect();
+    thread
+        .panels()
+        .into_iter()
+        .filter(|p| {
+            p.project_id.as_deref() == Some(project.id.as_str())
+                || (p.project_id.is_none() && own.contains(&p.patch))
+        })
+        .collect()
 }
 
 /// The thread a project's page borrows its panels from (`ProjectPane.standIn`):
 /// the newest open one that has anything from the project, else the newest
 /// archived one. None when none of its threads has anything from it.
-pub fn stand_in<'a>(project: &Project, threads: impl IntoIterator<Item = &'a ThreadSummary>) -> Option<&'a ThreadSummary> {
+pub fn stand_in<'a>(
+    project: &Project,
+    threads: impl IntoIterator<Item = &'a ThreadSummary>,
+) -> Option<&'a ThreadSummary> {
     let better = |a: &ThreadSummary, b: &ThreadSummary| {
         if a.is_archived() != b.is_archived() {
             return !a.is_archived();
@@ -1317,12 +1632,19 @@ pub fn stand_in<'a>(project: &Project, threads: impl IntoIterator<Item = &'a Thr
 
 /// The project's patches across its threads, each once by id and folder,
 /// with the thread each came from (`PatchGroups.patches(of:in:)`).
-pub fn patches_across<'a>(project: &Project, threads: &[&'a ThreadSummary]) -> Vec<(PatchInfo, &'a ThreadSummary)> {
+pub fn patches_across<'a>(
+    project: &Project,
+    threads: &[&'a ThreadSummary],
+) -> Vec<(PatchInfo, &'a ThreadSummary)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for thread in threads {
         for patch in project_patches(project, thread) {
-            if seen.insert(format!("{}|{}", patch.id, patch.folder.as_deref().unwrap_or(""))) {
+            if seen.insert(format!(
+                "{}|{}",
+                patch.id,
+                patch.folder.as_deref().unwrap_or("")
+            )) {
                 out.push((patch, *thread));
             }
         }
@@ -1341,9 +1663,15 @@ mod tests {
         assert_eq!(ProjectTab::opening(3), ProjectTab::Decisions);
         assert_eq!(ProjectTab::opening(0), ProjectTab::Project);
         // What it opened on holds while the decisions come and go.
-        assert_eq!(ProjectTab::current(None, Some(ProjectTab::Decisions), 0), ProjectTab::Decisions);
+        assert_eq!(
+            ProjectTab::current(None, Some(ProjectTab::Decisions), 0),
+            ProjectTab::Decisions
+        );
         // A tab picked wins over both.
-        assert_eq!(ProjectTab::current(Some(ProjectTab::Project), Some(ProjectTab::Decisions), 4), ProjectTab::Project);
+        assert_eq!(
+            ProjectTab::current(Some(ProjectTab::Project), Some(ProjectTab::Decisions), 4),
+            ProjectTab::Project
+        );
         assert_eq!(ProjectTab::current(None, None, 2), ProjectTab::Decisions);
     }
 
@@ -1364,11 +1692,22 @@ mod tests {
     }
 
     fn project(id: &str, title: &str) -> Project {
-        Project { id: id.into(), title: title.into(), updated_ms: NOW - 86_400_000, ..Default::default() }
+        Project {
+            id: id.into(),
+            title: title.into(),
+            updated_ms: NOW - 86_400_000,
+            ..Default::default()
+        }
     }
 
     fn member(id: &str) -> Membership {
-        Membership { id: id.into(), title: id.to_uppercase(), by: "librarian".into(), pinned: false, why: None }
+        Membership {
+            id: id.into(),
+            title: id.to_uppercase(),
+            by: "librarian".into(),
+            pinned: false,
+            why: None,
+        }
     }
 
     fn thread(id: &str, minutes: f64, projects: &[&str]) -> ThreadSummary {
@@ -1386,7 +1725,15 @@ mod tests {
         let mut t = thread(id, minutes, projects);
         t.needs_you = true;
         t.needs = Some("you".into());
-        t.asks = Some((0..asks).map(|n| OpenAsk { action: format!("Ask {n}?"), options: Some(vec!["Yes".into(), "No".into()]), ..Default::default() }).collect());
+        t.asks = Some(
+            (0..asks)
+                .map(|n| OpenAsk {
+                    action: format!("Ask {n}?"),
+                    options: Some(vec!["Yes".into(), "No".into()]),
+                    ..Default::default()
+                })
+                .collect(),
+        );
         t.asks_seq = Some(7);
         t
     }
@@ -1405,18 +1752,41 @@ mod tests {
             "links": [{ "title": "Live site", "url": "https://cruise.example/" }, { "url": "https://www.cruise.example/admin/" }, { "title": "no url" }, "https://loose.example"],
         }))
         .unwrap();
-        assert_eq!(p.folders, ["/Users/alex/code/threadbear", "/Users/alex/code/notes"], "a folder that isn't a string is skipped");
+        assert_eq!(
+            p.folders,
+            ["/Users/alex/code/threadbear", "/Users/alex/code/notes"],
+            "a folder that isn't a string is skipped"
+        );
         assert_eq!(p.created_by, Author::Librarian);
         assert_eq!(p.thread_count, 7);
         assert_eq!(p.last_activity_ms, parse_ms("2026-10-27T11:00:00Z"));
         assert_eq!(p.parent_id, None, "an empty parent is none");
-        assert_eq!(p.links, vec![Link { title: "Live site".into(), url: "https://cruise.example/".into() }, Link { title: "cruise.example/admin".into(), url: "https://www.cruise.example/admin/".into() }]);
+        assert_eq!(
+            p.links,
+            vec![
+                Link {
+                    title: "Live site".into(),
+                    url: "https://cruise.example/".into()
+                },
+                Link {
+                    title: "cruise.example/admin".into(),
+                    url: "https://www.cruise.example/admin/".into()
+                }
+            ]
+        );
 
         let bare = Project::decode(&json!({ "id": "p_1", "createdBy": "someone-new" })).unwrap();
         assert_eq!(bare.title, "Untitled project");
-        assert_eq!(bare.created_by, Author::Agent, "an author from a newer runner reads as an agent");
+        assert_eq!(
+            bare.created_by,
+            Author::Agent,
+            "an author from a newer runner reads as an agent"
+        );
         assert_eq!(bare.icon, None);
-        assert_eq!(Project::list(&json!([{ "id": "a" }, { "title": "no id" }, 3])).len(), 1);
+        assert_eq!(
+            Project::list(&json!([{ "id": "a" }, { "title": "no id" }, 3])).len(),
+            1
+        );
     }
 
     #[test]
@@ -1425,9 +1795,19 @@ mod tests {
         let icon = picture.icon.unwrap();
         assert_eq!(icon.image_path.as_deref(), Some("/d/p-ab.png"));
         assert!(!icon.is_chosen());
-        let symbol = Project::decode(&json!({ "id": "p", "icon": { "symbol": "film", "by": "mike" } })).unwrap().icon.unwrap();
+        let symbol =
+            Project::decode(&json!({ "id": "p", "icon": { "symbol": "film", "by": "mike" } }))
+                .unwrap()
+                .icon
+                .unwrap();
         assert!(symbol.is_chosen());
-        assert_eq!(Project::decode(&json!({ "id": "p", "icon": "film" })).unwrap().icon, None, "an icon that isn't an object is dropped, not the project");
+        assert_eq!(
+            Project::decode(&json!({ "id": "p", "icon": "film" }))
+                .unwrap()
+                .icon,
+            None,
+            "an icon that isn't an object is dropped, not the project"
+        );
 
         let p = Project::decode(&json!({ "id": "p_1", "notion": "https://www.notion.so/abc", "tasks": {
             "url": "https://www.notion.so/db", "fetchedAt": "2026-10-30T05:00:00Z", "error": "",
@@ -1436,44 +1816,169 @@ mod tests {
                       { "id": "t2", "status": "Done" }, { "title": "no id" }] } }))
         .unwrap();
         let tasks = p.tasks.unwrap();
-        assert_eq!(tasks.columns.iter().map(|c| c.kind).collect::<Vec<_>>(), [TaskKind::Todo, TaskKind::Todo, TaskKind::Done], "an unknown kind reads as to do");
+        assert_eq!(
+            tasks.columns.iter().map(|c| c.kind).collect::<Vec<_>>(),
+            [TaskKind::Todo, TaskKind::Todo, TaskKind::Done],
+            "an unknown kind reads as to do"
+        );
         assert_eq!(tasks.items.len(), 2, "a card without an id is skipped");
         assert_eq!(tasks.items[0].who, ["Zaran"]);
         assert_eq!(tasks.items[1].title, "Untitled");
         assert_eq!(tasks.error, None, "an empty error is none");
         assert_eq!(tasks.open_count(), 1);
-        assert_eq!(tasks.items_in(&tasks.columns[2]).iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t2"]);
+        assert_eq!(
+            tasks
+                .items_in(&tasks.columns[2])
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["t2"]
+        );
         assert_eq!(task_due(&tasks.items[0]).as_deref(), Some("29 Nov"));
-        let range = Task { due: Some("2026-11-29".into()), due_end: Some("2026-12-04T00:00:00Z".into()), ..Default::default() };
+        let range = Task {
+            due: Some("2026-11-29".into()),
+            due_end: Some("2026-12-04T00:00:00Z".into()),
+            ..Default::default()
+        };
         assert_eq!(task_due(&range).as_deref(), Some("29 Nov to 4 Dec"));
-        assert!(!Task { thread: Some("abc".into()), ..Default::default() }.is_worked_by("abcdef12"), "a short Thread value matches nothing");
-        assert!(Task { thread: Some("85046057".into()), ..Default::default() }.is_worked_by("85046057-1df7"));
+        assert!(
+            !Task {
+                thread: Some("abc".into()),
+                ..Default::default()
+            }
+            .is_worked_by("abcdef12"),
+            "a short Thread value matches nothing"
+        );
+        assert!(Task {
+            thread: Some("85046057".into()),
+            ..Default::default()
+        }
+        .is_worked_by("85046057-1df7"));
     }
 
     #[test]
     fn an_update_guesses_what_it_changes() {
-        let base = Project { id: "p".into(), title: "T".into(), folders: vec!["/a".into()], notion: Some("https://n/1".into()), tasks: Some(Tasks { url: "https://n/1".into(), ..Default::default() }), ..Default::default() };
-        assert_eq!(Update { goals: Some("G".into()), ..Default::default() }.applied(&base, 100).goals, "G");
-        let state = Update { state: Some("S".into()), ..Default::default() }.applied(&base, 100);
-        assert_eq!((state.state.as_str(), state.state_updated_ms), ("S", Some(100)));
-        assert_eq!(Update { title: Some(String::new()), ..Default::default() }.applied(&base, 100).title, "T", "the runner keeps a title on an empty one");
+        let base = Project {
+            id: "p".into(),
+            title: "T".into(),
+            folders: vec!["/a".into()],
+            notion: Some("https://n/1".into()),
+            tasks: Some(Tasks {
+                url: "https://n/1".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            Update {
+                goals: Some("G".into()),
+                ..Default::default()
+            }
+            .applied(&base, 100)
+            .goals,
+            "G"
+        );
+        let state = Update {
+            state: Some("S".into()),
+            ..Default::default()
+        }
+        .applied(&base, 100);
+        assert_eq!(
+            (state.state.as_str(), state.state_updated_ms),
+            ("S", Some(100))
+        );
+        assert_eq!(
+            Update {
+                title: Some(String::new()),
+                ..Default::default()
+            }
+            .applied(&base, 100)
+            .title,
+            "T",
+            "the runner keeps a title on an empty one"
+        );
         assert_eq!(Update::default().applied(&base, 100), base);
-        let other = Update { notion: Some("https://n/2".into()), ..Default::default() }.applied(&base, 100);
-        assert_eq!((other.notion.as_deref(), other.tasks.is_none()), (Some("https://n/2"), true), "a different page drops the old board");
-        assert!(Update { notion: Some("https://n/1".into()), ..Default::default() }.applied(&base, 100).tasks.is_some(), "the same page keeps it");
-        assert_eq!(Update { notion: Some(String::new()), ..Default::default() }.applied(&base, 100).notion, None);
-        let part = Update { parent_id: Some("tb".into()), ..Default::default() }.applied(&base, 100);
+        let other = Update {
+            notion: Some("https://n/2".into()),
+            ..Default::default()
+        }
+        .applied(&base, 100);
+        assert_eq!(
+            (other.notion.as_deref(), other.tasks.is_none()),
+            (Some("https://n/2"), true),
+            "a different page drops the old board"
+        );
+        assert!(
+            Update {
+                notion: Some("https://n/1".into()),
+                ..Default::default()
+            }
+            .applied(&base, 100)
+            .tasks
+            .is_some(),
+            "the same page keeps it"
+        );
+        assert_eq!(
+            Update {
+                notion: Some(String::new()),
+                ..Default::default()
+            }
+            .applied(&base, 100)
+            .notion,
+            None
+        );
+        let part = Update {
+            parent_id: Some("tb".into()),
+            ..Default::default()
+        }
+        .applied(&base, 100);
         assert_eq!(part.parent_id.as_deref(), Some("tb"));
-        assert_eq!(Update { parent_id: Some(String::new()), ..Default::default() }.applied(&part, 100).parent_id, None);
-        assert_eq!(Update { title: Some("U".into()), ..Default::default() }.applied(&part, 100).parent_id.as_deref(), Some("tb"), "left out, it stays a part");
-        let params = Update { folders: Some(vec!["/a".into()]), notes: Some(String::new()), ..Default::default() }.params("p");
-        assert_eq!(params, json!({ "projectId": "p", "folders": ["/a"], "notes": "" }), "an emptied field is sent, so it's cleared");
+        assert_eq!(
+            Update {
+                parent_id: Some(String::new()),
+                ..Default::default()
+            }
+            .applied(&part, 100)
+            .parent_id,
+            None
+        );
+        assert_eq!(
+            Update {
+                title: Some("U".into()),
+                ..Default::default()
+            }
+            .applied(&part, 100)
+            .parent_id
+            .as_deref(),
+            Some("tb"),
+            "left out, it stays a part"
+        );
+        let params = Update {
+            folders: Some(vec!["/a".into()]),
+            notes: Some(String::new()),
+            ..Default::default()
+        }
+        .params("p");
+        assert_eq!(
+            params,
+            json!({ "projectId": "p", "folders": ["/a"], "notes": "" }),
+            "an emptied field is sent, so it's cleared"
+        );
     }
 
     #[test]
     fn changing_a_threads_projects_pins_whats_added() {
-        let changed = changing(&[member("a"), member("b")], &["a".into(), "c".into(), "unknown".into()], &["b".into()], |id| (id == "c").then(|| "C".to_owned()));
-        assert_eq!(changed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["a", "c"], "one it can't name waits for the reply");
+        let changed = changing(
+            &[member("a"), member("b")],
+            &["a".into(), "c".into(), "unknown".into()],
+            &["b".into()],
+            |id| (id == "c").then(|| "C".to_owned()),
+        );
+        assert_eq!(
+            changed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["a", "c"],
+            "one it can't name waits for the reply"
+        );
         assert!(changed.iter().all(|m| m.pinned));
         assert_eq!(changed[1].by, "mike");
     }
@@ -1482,31 +1987,80 @@ mod tests {
     fn sections_newest_first_with_a_thread_in_two_and_unfiled_last() {
         let mut quiet = project("quiet", "Quiet");
         quiet.updated_ms = NOW - 7 * 86_400_000;
-        let projects = vec![project("a", "A"), project("b", "B"), Project { archived: true, ..project("gone", "Gone") }, quiet];
+        let projects = vec![
+            project("a", "A"),
+            project("b", "B"),
+            Project {
+                archived: true,
+                ..project("gone", "Gone")
+            },
+            quiet,
+        ];
         let mut t3 = thread("t3", 1., &["b"]);
         t3.archived_at = Some(iso_time(NOW));
         let mut t6 = thread("t6", 4., &["a"]);
         t6.snoozed_until = Some(iso_time(NOW + 3_600_000));
-        let threads = vec![thread("t1", 30., &["a"]), thread("t2", 5., &["b", "a"]), t3, thread("t4", 2., &[]), thread("t5", 3., &["gone"]), t6];
+        let threads = vec![
+            thread("t1", 30., &["a"]),
+            thread("t2", 5., &["b", "a"]),
+            t3,
+            thread("t4", 2., &[]),
+            thread("t5", 3., &["gone"]),
+            t6,
+        ];
         let built = Sections::build(&projects, &threads, NOW);
-        assert_eq!(built.sections.iter().map(|s| s.id()).collect::<Vec<_>>(), ["b", "a", "quiet"], "b's archived thread is its newest activity; archived projects are left out");
-        assert_eq!(ids(&built.sections[0].threads), ["t2"], "archived threads aren't listed");
-        assert_eq!(ids(&built.sections[1].threads), ["t2", "t1"], "a thread in two projects is under both; hibernating ones aren't");
+        assert_eq!(
+            built.sections.iter().map(|s| s.id()).collect::<Vec<_>>(),
+            ["b", "a", "quiet"],
+            "b's archived thread is its newest activity; archived projects are left out"
+        );
+        assert_eq!(
+            ids(&built.sections[0].threads),
+            ["t2"],
+            "archived threads aren't listed"
+        );
+        assert_eq!(
+            ids(&built.sections[1].threads),
+            ["t2", "t1"],
+            "a thread in two projects is under both; hibernating ones aren't"
+        );
         assert_eq!(ids(&built.sections[0].archived), ["t3"]);
-        assert_eq!(ids(&built.unfiled), ["t4", "t5"], "a thread only in an archived project counts as in none");
+        assert_eq!(
+            ids(&built.unfiled),
+            ["t4", "t5"],
+            "a thread only in an archived project counts as in none"
+        );
         assert_eq!(built.order(), ["t2", "t1", "t4", "t5"]);
-        assert_eq!(ids(&threads_in("b", &threads)), ["t3", "t2"], "the page lists put away ones too");
+        assert_eq!(
+            ids(&threads_in("b", &threads)),
+            ["t3", "t2"],
+            "the page lists put away ones too"
+        );
     }
 
     fn parts_world() -> (Vec<Project>, Vec<ThreadSummary>) {
         let projects = vec![
             project("tb", "Threadbear"),
-            Project { parent_id: Some("tb".into()), ..project("port", "GPUI port") },
-            Project { parent_id: Some("tb".into()), ..project("android", "Android app") },
+            Project {
+                parent_id: Some("tb".into()),
+                ..project("port", "GPUI port")
+            },
+            Project {
+                parent_id: Some("tb".into()),
+                ..project("android", "Android app")
+            },
             project("pool", "Pool"),
-            Project { parent_id: Some("gone".into()), ..project("orphan", "Orphan") },
+            Project {
+                parent_id: Some("gone".into()),
+                ..project("orphan", "Orphan")
+            },
         ];
-        let threads = vec![thread("t-pool", 5., &["pool"]), asking("t-port", 1., &["port"], 1), thread("t-tb", 30., &["tb"]), asking("t-android", 40., &["android"], 1)];
+        let threads = vec![
+            thread("t-pool", 5., &["pool"]),
+            asking("t-port", 1., &["port"], 1),
+            thread("t-tb", 30., &["tb"]),
+            asking("t-android", 40., &["android"], 1),
+        ];
         (projects, threads)
     }
 
@@ -1515,52 +2069,144 @@ mod tests {
         let (projects, threads) = parts_world();
         let s = Sections::build(&projects, &threads, NOW);
         assert_eq!(s.top_level().iter().map(|x| x.id()).collect::<Vec<_>>(), ["tb", "pool", "orphan"], "Threadbear first, by its part's newest thread; a part whose parent's gone stands alone");
-        assert_eq!(s.parts_of("tb").iter().map(|x| x.id()).collect::<Vec<_>>(), ["android", "port"], "parts in title order");
+        assert_eq!(
+            s.parts_of("tb").iter().map(|x| x.id()).collect::<Vec<_>>(),
+            ["android", "port"],
+            "parts in title order"
+        );
         assert_eq!(s.sections.len(), 5);
-        assert_eq!(ids(&s.threads_with_parts(s.top_level()[0])), ["t-port", "t-tb", "t-android"]);
-        assert_eq!(s.order(), ["t-tb", "t-android", "t-port", "t-pool"], "the arrow keys go through a parent, then its parts");
+        assert_eq!(
+            ids(&s.threads_with_parts(s.top_level()[0])),
+            ["t-port", "t-tb", "t-android"]
+        );
+        assert_eq!(
+            s.order(),
+            ["t-tb", "t-android", "t-port", "t-pool"],
+            "the arrow keys go through a parent, then its parts"
+        );
 
         let open = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
-        assert_eq!(fold_layout(&s, &open(&[])), ["p:tb", "p:pool", "p:orphan"], "a part folds away with its parent");
-        assert_eq!(fold_layout(&s, &open(&["tb"])), ["p:tb", "tb/t-tb", "p:android", "p:port", "p:pool", "p:orphan"]);
+        assert_eq!(
+            fold_layout(&s, &open(&[])),
+            ["p:tb", "p:pool", "p:orphan"],
+            "a part folds away with its parent"
+        );
+        assert_eq!(
+            fold_layout(&s, &open(&["tb"])),
+            [
+                "p:tb",
+                "tb/t-tb",
+                "p:android",
+                "p:port",
+                "p:pool",
+                "p:orphan"
+            ]
+        );
         assert_eq!(fold_order(&s, &open(&["tb", "port"])), ["t-tb", "t-port"]);
-        assert!(fold_order(&s, &open(&["port"])).is_empty(), "a part's threads only show with its parent open");
+        assert!(
+            fold_order(&s, &open(&["port"])).is_empty(),
+            "a part's threads only show with its parent open"
+        );
 
         let all = cards(&s, 3, true);
-        assert_eq!(all.iter().map(|c| c.project.id.as_str()).collect::<Vec<_>>(), ["tb", "pool", "orphan"]);
-        assert_eq!(all[0].parts.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["Android app", "GPUI port"]);
-        assert_eq!((all[0].status.decisions, all[0].status.open), (2, 3), "both parts' decisions");
-        assert_eq!(matching(all, "GPUI").iter().map(|c| c.project.id.as_str()).collect::<Vec<_>>(), ["tb"], "a part's name finds its parent's card");
+        assert_eq!(
+            all.iter()
+                .map(|c| c.project.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tb", "pool", "orphan"]
+        );
+        assert_eq!(
+            all[0]
+                .parts
+                .iter()
+                .map(|p| p.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Android app", "GPUI port"]
+        );
+        assert_eq!(
+            (all[0].status.decisions, all[0].status.open),
+            (2, 3),
+            "both parts' decisions"
+        );
+        assert_eq!(
+            matching(all, "GPUI")
+                .iter()
+                .map(|c| c.project.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tb"],
+            "a part's name finds its parent's card"
+        );
     }
 
     #[test]
     fn a_cycle_or_three_levels_hides_nothing() {
         let projects = vec![
-            Project { parent_id: Some("b".into()), ..project("a", "A") },
-            Project { parent_id: Some("a".into()), ..project("b", "B") },
+            Project {
+                parent_id: Some("b".into()),
+                ..project("a", "A")
+            },
+            Project {
+                parent_id: Some("a".into()),
+                ..project("b", "B")
+            },
             project("top", "Top"),
-            Project { parent_id: Some("top".into()), ..project("mid", "Mid") },
-            Project { parent_id: Some("mid".into()), ..project("low", "Low") },
+            Project {
+                parent_id: Some("top".into()),
+                ..project("mid", "Mid")
+            },
+            Project {
+                parent_id: Some("mid".into()),
+                ..project("low", "Low")
+            },
         ];
         let s = Sections::build(&projects, std::iter::empty(), NOW);
         let mut top: Vec<&str> = s.top_level().iter().map(|x| x.id()).collect();
         top.sort();
         assert_eq!(top, ["a", "b", "low", "top"]);
-        assert_eq!(s.parts_of("top").iter().map(|x| x.id()).collect::<Vec<_>>(), ["mid"]);
-        assert_eq!(possible_parents(&projects, &projects[2]).len(), 0, "a project with a part can't become one");
-        assert_eq!(possible_parents(&projects, &projects[3]).len(), 0, "a part can't be a part again");
+        assert_eq!(
+            s.parts_of("top").iter().map(|x| x.id()).collect::<Vec<_>>(),
+            ["mid"]
+        );
+        assert_eq!(
+            possible_parents(&projects, &projects[2]).len(),
+            0,
+            "a project with a part can't become one"
+        );
+        assert_eq!(
+            possible_parents(&projects, &projects[3]).len(),
+            0,
+            "a part can't be a part again"
+        );
     }
 
     #[test]
     fn folded_rows_show_only_open_projects_threads() {
         let projects = vec![project("a", "A"), project("b", "B")];
-        let threads = vec![thread("t1", 1., &["a", "b"]), thread("t2", 2., &["b"]), thread("loose", 3., &[])];
+        let threads = vec![
+            thread("t1", 1., &["a", "b"]),
+            thread("t2", 2., &["b"]),
+            thread("loose", 3., &[]),
+        ];
         let s = Sections::build(&projects, &threads, NOW);
         let open = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
-        assert!(fold_order(&s, &open(&[])).is_empty(), "folded by default: nothing to arrow through");
-        assert_eq!(fold_layout(&s, &open(&[])), ["p:a", "p:b", "p:-"], "a row a project, and one for the rest");
-        assert_eq!(fold_order(&s, &open(&["b", "a"])), ["t1", "t2"], "a thread in two open projects comes once");
-        assert_eq!(fold_layout(&s, &open(&["b"])), ["p:a", "p:b", "b/t1", "b/t2", "p:-"]);
+        assert!(
+            fold_order(&s, &open(&[])).is_empty(),
+            "folded by default: nothing to arrow through"
+        );
+        assert_eq!(
+            fold_layout(&s, &open(&[])),
+            ["p:a", "p:b", "p:-"],
+            "a row a project, and one for the rest"
+        );
+        assert_eq!(
+            fold_order(&s, &open(&["b", "a"])),
+            ["t1", "t2"],
+            "a thread in two open projects comes once"
+        );
+        assert_eq!(
+            fold_layout(&s, &open(&["b"])),
+            ["p:a", "p:b", "b/t1", "b/t2", "p:-"]
+        );
         assert_eq!(fold_order(&s, &open(&["-"])), ["loose"]);
     }
 
@@ -1568,29 +2214,88 @@ mod tests {
     fn cards_count_what_each_projects_threads_are_doing() {
         let mut quiet = project("quiet", "Quiet");
         quiet.updated_ms = NOW - 7 * 86_400_000;
-        let projects = vec![project("a", "A"), quiet, Project { archived: true, ..project("gone", "Gone") }];
-        let with = |id: &str, minutes: f64, status: &str| ThreadSummary { status: status.into(), ..thread(id, minutes, &["a"]) };
+        let projects = vec![
+            project("a", "A"),
+            quiet,
+            Project {
+                archived: true,
+                ..project("gone", "Gone")
+            },
+        ];
+        let with = |id: &str, minutes: f64, status: &str| ThreadSummary {
+            status: status.into(),
+            ..thread(id, minutes, &["a"])
+        };
         let mut bg = with("bg", 2., "idle");
         bg.title = String::new();
         bg.background = Some(vec![json!({ "kind": "shell", "description": "npm test" })]);
-        let wait = ThreadSummary { needs_you: true, ..with("wait", 3., "waiting") };
-        let mut new = ThreadSummary { needs_you: true, ..with("new", 4., "idle") };
+        let wait = ThreadSummary {
+            needs_you: true,
+            ..with("wait", 3., "waiting")
+        };
+        let mut new = ThreadSummary {
+            needs_you: true,
+            ..with("new", 4., "idle")
+        };
         new.title = "Finished".into();
         let mut away = with("away", 7., "waiting");
         away.archived_at = Some(iso_time(NOW));
-        let threads = vec![with("run", 1., "running"), bg, wait, new, with("bad", 5., "error"), with("old", 6., "idle"), away];
+        let threads = vec![
+            with("run", 1., "running"),
+            bg,
+            wait,
+            new,
+            with("bad", 5., "error"),
+            with("old", 6., "idle"),
+            away,
+        ];
         let s = Sections::build(&projects, &threads, NOW);
         let all = cards(&s, 3, false);
-        assert_eq!(all.iter().map(|c| c.project.id.as_str()).collect::<Vec<_>>(), ["a", "quiet"], "archived projects get no card");
-        assert_eq!(all[0].status, CardStatus { working: 2, needs_you: 1, failed: 1, unread: 1, open: 6, decisions: 0 }, "background work counts as working; archived threads aren't counted");
-        assert_eq!(all[0].status.parts().iter().map(CardPart::text).collect::<Vec<_>>(), ["1 needs you", "2 working", "1 failed", "1 new"]);
+        assert_eq!(
+            all.iter()
+                .map(|c| c.project.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "quiet"],
+            "archived projects get no card"
+        );
+        assert_eq!(
+            all[0].status,
+            CardStatus {
+                working: 2,
+                needs_you: 1,
+                failed: 1,
+                unread: 1,
+                open: 6,
+                decisions: 0
+            },
+            "background work counts as working; archived threads aren't counted"
+        );
+        assert_eq!(
+            all[0]
+                .status
+                .parts()
+                .iter()
+                .map(CardPart::text)
+                .collect::<Vec<_>>(),
+            ["1 needs you", "2 working", "1 failed", "1 new"]
+        );
         assert_eq!(all[0].recent, ["run", "Untitled", "wait"]);
         assert!(all[1].status.is_quiet());
         assert_eq!(all[1].status.words(), "quiet");
 
-        let both = vec![ThreadSummary { status: "running".into(), ..thread("x", 1., &["a", "quiet"]) }];
+        let both = vec![ThreadSummary {
+            status: "running".into(),
+            ..thread("x", 1., &["a", "quiet"])
+        }];
         let s = Sections::build(&projects, &both, NOW);
-        assert_eq!(cards(&s, 3, false).iter().map(|c| c.status.working).collect::<Vec<_>>(), [1, 1], "on both cards");
+        assert_eq!(
+            cards(&s, 3, false)
+                .iter()
+                .map(|c| c.status.working)
+                .collect::<Vec<_>>(),
+            [1, 1],
+            "on both cards"
+        );
         assert_eq!(overall(&s, false).working, 1, "but one thread working");
         assert_eq!(summary(2, &overall(&s, false)), "2 projects · 1 working");
     }
@@ -1598,19 +2303,41 @@ mod tests {
     #[test]
     fn a_decision_is_a_thread_waiting_on_a_card_of_asks() {
         assert!(is_waiting(&asking("t", 1., &["a"], 1)));
-        assert!(!is_waiting(&ThreadSummary { status: "running".into(), ..asking("t", 1., &["a"], 1) }), "running: not his move yet");
-        assert!(!is_waiting(&asking("t", 1., &["a"], 0)), "needs him with no asks is a plain reply");
-        assert!(!is_waiting(&ThreadSummary { asks_seq: None, ..asking("t", 1., &["a"], 1) }), "no card to answer");
+        assert!(
+            !is_waiting(&ThreadSummary {
+                status: "running".into(),
+                ..asking("t", 1., &["a"], 1)
+            }),
+            "running: not his move yet"
+        );
+        assert!(
+            !is_waiting(&asking("t", 1., &["a"], 0)),
+            "needs him with no asks is a plain reply"
+        );
+        assert!(
+            !is_waiting(&ThreadSummary {
+                asks_seq: None,
+                ..asking("t", 1., &["a"], 1)
+            }),
+            "no card to answer"
+        );
         let mut ticked = asking("t", 1., &["a"], 1);
         ticked.asks.as_mut().unwrap()[0].ticked = Some(true);
         assert!(!is_waiting(&ticked), "every ask ticked hands it back");
         let mut two = asking("new", 1., &["a"], 3);
         two.asks.as_mut().unwrap()[2].ticked = Some(true);
         let old = asking("old", 60., &["a"], 1);
-        let busy = ThreadSummary { status: "running".into(), ..asking("busy", 0., &["a"], 1) };
+        let busy = ThreadSummary {
+            status: "running".into(),
+            ..asking("busy", 0., &["a"], 1)
+        };
         let list = vec![&old, &two, &busy];
         assert_eq!(ids(&decision_threads(&list)), ["new", "old"]);
-        assert_eq!(decision_count(&list), 3, "two open on one card, one on the other; the running one waits");
+        assert_eq!(
+            decision_count(&list),
+            3,
+            "two open on one card, one on the other; the running one waits"
+        );
         assert_eq!(decision_heading(3, 2), "3 decisions from 2 threads");
         assert_eq!(decision_heading(2, 2), "2 decisions");
         assert!(is_sending(&old, Some(7)));
@@ -1618,10 +2345,24 @@ mod tests {
         assert!(!is_sending(&busy, Some(7)), "taken: its turn started");
 
         let projects = vec![project("a", "A")];
-        let threads = vec![asking("ask", 1., &["a"], 1), ThreadSummary { needs_you: true, ..thread("new", 1., &["a"]) }];
+        let threads = vec![
+            asking("ask", 1., &["a"], 1),
+            ThreadSummary {
+                needs_you: true,
+                ..thread("new", 1., &["a"])
+            },
+        ];
         let s = Sections::build(&projects, &threads, NOW);
-        assert_eq!(cards(&s, 3, false)[0].status.words(), "2 new", "the experiment off: as before");
-        assert_eq!(cards(&s, 3, true)[0].status.words(), "1 decision · 1 new", "a thread with a decision isn't counted as new too");
+        assert_eq!(
+            cards(&s, 3, false)[0].status.words(),
+            "2 new",
+            "the experiment off: as before"
+        );
+        assert_eq!(
+            cards(&s, 3, true)[0].status.words(),
+            "1 decision · 1 new",
+            "a thread with a decision isn't counted as new too"
+        );
         let mut t = asking("t", 1., &["a"], 1);
         t.preview = "Batching is in (#67).\nMore after".into();
         assert_eq!(status_line(&t).as_deref(), Some("Batching is in (#67)."));
@@ -1640,34 +2381,97 @@ mod tests {
         .unwrap();
         let asks = decision_asks(&t);
         assert_eq!(asks.len(), 2, "ticked ones too, as the card draws them");
-        assert_eq!(asks[0].option_notes, ["Revisit at 5,000 threads", "About two days of work"]);
-        assert_eq!((asks[0].suggested, asks[0].links.len(), asks[1].ticked), (Some(0), 1, true));
-        assert_eq!(decision_line(&t, false), "Compare SQLite: Keep plain files for now?", "open asks only, in plain words");
-        assert_eq!(decision_line(&t, true), "Compare SQLite: Keep plain files for now? (sending)");
+        assert_eq!(
+            asks[0].option_notes,
+            ["Revisit at 5,000 threads", "About two days of work"]
+        );
+        assert_eq!(
+            (asks[0].suggested, asks[0].links.len(), asks[1].ticked),
+            (Some(0), 1, true)
+        );
+        assert_eq!(
+            decision_line(&t, false),
+            "Compare SQLite: Keep plain files for now?",
+            "open asks only, in plain words"
+        );
+        assert_eq!(
+            decision_line(&t, true),
+            "Compare SQLite: Keep plain files for now? (sending)"
+        );
     }
 
     #[test]
     fn searching_cards_looks_through_what_a_project_is_about() {
-        let projects = vec![
-            Project { state: "The deterrent speaks through a Pi".into(), ..project("state", "Porch Cam") },
-            Project { folders: vec!["/Users/alex/code/alex-pod-site".into()], ..project("folder", "Podcast site") },
-            Project { goals: "Sell coffee".into(), ..project("goals", "Café") },
-            Project { notes: "Moored by the café".into(), ..project("notes", "Boat") },
-            Project { links: vec![Link { title: "Admin".into(), url: "https://example.com/x".into() }], ..project("link", "Shop") },
+        let projects = [
+            Project {
+                state: "The deterrent speaks through a Pi".into(),
+                ..project("state", "Porch Cam")
+            },
+            Project {
+                folders: vec!["/Users/alex/code/alex-pod-site".into()],
+                ..project("folder", "Podcast site")
+            },
+            Project {
+                goals: "Sell coffee".into(),
+                ..project("goals", "Café")
+            },
+            Project {
+                notes: "Moored by the café".into(),
+                ..project("notes", "Boat")
+            },
+            Project {
+                links: vec![Link {
+                    title: "Admin".into(),
+                    url: "https://example.com/x".into(),
+                }],
+                ..project("link", "Shop")
+            },
             project("title", "The Deterrent"),
         ];
-        let all: Vec<Card> = projects.iter().map(|p| Card { project: p, status: CardStatus::default(), last_activity_ms: 0, recent: vec![], parts: vec![] }).collect();
-        let found = |q: &str| matching(all.clone(), q).iter().map(|c| c.project.id.clone()).collect::<Vec<_>>();
+        let all: Vec<Card> = projects
+            .iter()
+            .map(|p| Card {
+                project: p,
+                status: CardStatus::default(),
+                last_activity_ms: 0,
+                recent: vec![],
+                parts: vec![],
+            })
+            .collect();
+        let found = |q: &str| {
+            matching(all.clone(), q)
+                .iter()
+                .map(|c| c.project.id.clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(found("  \n").len(), 6, "nothing typed leaves every card");
-        assert_eq!(found("deterrent"), ["title", "state"], "a title match goes above one in the state");
-        assert_eq!(found("DETERRENT porch"), ["state"], "every word has to match, in any field");
-        assert_eq!(found("cafe"), ["goals", "notes"], "case and accents don't count");
+        assert_eq!(
+            found("deterrent"),
+            ["title", "state"],
+            "a title match goes above one in the state"
+        );
+        assert_eq!(
+            found("DETERRENT porch"),
+            ["state"],
+            "every word has to match, in any field"
+        );
+        assert_eq!(
+            found("cafe"),
+            ["goals", "notes"],
+            "case and accents don't count"
+        );
         assert_eq!(found("alex-pod"), ["folder"]);
-        assert!(found("users").is_empty(), "a folder's name counts, not the path every project shares");
+        assert!(
+            found("users").is_empty(),
+            "a folder's name counts, not the path every project shares"
+        );
         assert_eq!(found("admin"), ["link"]);
         assert_eq!(match_count(3, 76), "3 of 76 projects");
         assert_eq!(match_count(0, 1), "0 of 1 project");
-        assert_eq!(first_lines("Line one.\n\n  Line two  "), "Line one. Line two");
+        assert_eq!(
+            first_lines("Line one.\n\n  Line two  "),
+            "Line one. Line two"
+        );
     }
 
     #[test]
@@ -1682,26 +2486,87 @@ mod tests {
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.timestamp_millis_opt(NOW).unwrap();
         let created = parse_ms("2026-10-20T10:00:00Z").unwrap();
-        let p = Project { created_ms: created, created_by: Author::Librarian, thread_count: 5, ..project("p", "P") };
-        assert_eq!(made_by(&p, 2, &now), "Made by the librarian on 20 Oct · 5 threads", "the runner's count when it knows more");
-        assert_eq!(made_by(&Project { archived: true, created_by: Author::Mike, thread_count: 0, ..p.clone() }, 1, &now), "Made by you on 20 Oct · 1 thread · Archived");
+        let p = Project {
+            created_ms: created,
+            created_by: Author::Librarian,
+            thread_count: 5,
+            ..project("p", "P")
+        };
+        assert_eq!(
+            made_by(&p, 2, &now),
+            "Made by the librarian on 20 Oct · 5 threads",
+            "the runner's count when it knows more"
+        );
+        assert_eq!(
+            made_by(
+                &Project {
+                    archived: true,
+                    created_by: Author::Mike,
+                    thread_count: 0,
+                    ..p.clone()
+                },
+                1,
+                &now
+            ),
+            "Made by you on 20 Oct · 1 thread · Archived"
+        );
         assert_eq!(icon_help(&p, "/Users/alex"), "No icon yet: the librarian looks in the project's folders for one. Click to choose a picture.");
-        let found = Project { icon: Some(Icon { from: Some("/Users/alex/dev/x/icon.png".into()), ..Default::default() }), ..p.clone() };
-        assert_eq!(icon_help(&found, "/Users/alex"), "An agent chose this (from ~/dev/x/icon.png). Click to change it.");
-        let symbol = Project { icon: Some(Icon { symbol: Some("film".into()), by: Author::Librarian, ..Default::default() }), ..p };
+        let found = Project {
+            icon: Some(Icon {
+                from: Some("/Users/alex/dev/x/icon.png".into()),
+                ..Default::default()
+            }),
+            ..p.clone()
+        };
+        assert_eq!(
+            icon_help(&found, "/Users/alex"),
+            "An agent chose this (from ~/dev/x/icon.png). Click to change it."
+        );
+        let symbol = Project {
+            icon: Some(Icon {
+                symbol: Some("film".into()),
+                by: Author::Librarian,
+                ..Default::default()
+            }),
+            ..p
+        };
         assert_eq!(icon_help(&symbol, "/Users/alex"), "The librarian found this (the film symbol) and keeps it up to date. Click to choose another.");
-        let kept = Membership { pinned: true, ..member("a") };
-        assert_eq!(put_here_by(&kept), "The librarian put it here and you kept it");
-        assert_eq!(put_here_by(&Membership { by: "mike".into(), ..member("a") }), "You put it here");
+        let kept = Membership {
+            pinned: true,
+            ..member("a")
+        };
+        assert_eq!(
+            put_here_by(&kept),
+            "The librarian put it here and you kept it"
+        );
+        assert_eq!(
+            put_here_by(&Membership {
+                by: "mike".into(),
+                ..member("a")
+            }),
+            "You put it here"
+        );
     }
 
     #[test]
     fn a_page_borrows_the_newest_open_threads_panels() {
-        let project = Project { folders: vec!["/walkies".into()], ..project("p_w", "Walkies") };
-        let in_w = |id: &str, cwd: &str, minutes: f64| ThreadSummary { cwd: cwd.into(), ..thread(id, minutes, &["p_w"]) };
+        let project = Project {
+            folders: vec!["/walkies".into()],
+            ..project("p_w", "Walkies")
+        };
+        let in_w = |id: &str, cwd: &str, minutes: f64| ThreadSummary {
+            cwd: cwd.into(),
+            ..thread(id, minutes, &["p_w"])
+        };
         let mut misc = in_w("misc", "/misc", 10.);
-        misc.patches = Some(vec![json!({ "id": "checks", "source": "project", "file": "/misc/.threadbear/patches/checks.ts" }), json!({ "id": "walkies:convex", "source": "builtin", "folder": "/walkies", "projectId": "p_w" })]);
-        misc.panels = Some(vec![json!({ "id": "worktrees", "title": "Worktrees", "kind": "list", "patch": "checks" }), json!({ "id": "walkies:convex", "title": "Convex", "kind": "url", "patch": "walkies:convex", "projectId": "p_w" })]);
+        misc.patches = Some(vec![
+            json!({ "id": "checks", "source": "project", "file": "/misc/.threadbear/patches/checks.ts" }),
+            json!({ "id": "walkies:convex", "source": "builtin", "folder": "/walkies", "projectId": "p_w" }),
+        ]);
+        misc.panels = Some(vec![
+            json!({ "id": "worktrees", "title": "Worktrees", "kind": "list", "patch": "checks" }),
+            json!({ "id": "walkies:convex", "title": "Convex", "kind": "url", "patch": "walkies:convex", "projectId": "p_w" }),
+        ]);
         let mut inside = in_w("inside", "/walkies-threads/x", 1.);
         inside.patches = Some(vec![json!({ "id": "convex", "source": "builtin" })]);
         let newer = in_w("bare", "/elsewhere", 0.);
@@ -1711,13 +2576,36 @@ mod tests {
         let threads = vec![misc.clone(), inside, newer.clone(), away.clone()];
         let pane = stand_in(&project, &threads).unwrap();
         assert_eq!(pane.id, "misc", "a worktree outside the folder isn't inside it; nothing, archived or not in the project lose");
-        assert_eq!(project_patches(&project, pane).iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["walkies:convex"], "only what came from the project");
-        assert_eq!(project_panels(&project, pane).iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["walkies:convex"]);
-        assert_eq!(stand_in(&project, &[newer.clone(), away.clone()]).map(|t| t.id.as_str()), Some("away"), "an archived thread when no open one has any");
+        assert_eq!(
+            project_patches(&project, pane)
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["walkies:convex"],
+            "only what came from the project"
+        );
+        assert_eq!(
+            project_panels(&project, pane)
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["walkies:convex"]
+        );
+        assert_eq!(
+            stand_in(&project, &[newer.clone(), away.clone()]).map(|t| t.id.as_str()),
+            Some("away"),
+            "an archived thread when no open one has any"
+        );
         assert!(stand_in(&project, &[newer]).is_none());
         assert!(is_inside("/walkies", "/walkies/"));
         assert!(!is_inside("/walkies2", "/walkies"));
         let found = patches_across(&project, &[&misc, &away]);
-        assert_eq!(found.iter().map(|(p, t)| (p.id.as_str(), t.id.as_str())).collect::<Vec<_>>(), [("walkies:convex", "misc"), ("xcode", "away")]);
+        assert_eq!(
+            found
+                .iter()
+                .map(|(p, t)| (p.id.as_str(), t.id.as_str()))
+                .collect::<Vec<_>>(),
+            [("walkies:convex", "misc"), ("xcode", "away")]
+        );
     }
 }

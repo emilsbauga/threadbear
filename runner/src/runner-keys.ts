@@ -1,4 +1,4 @@
-// `tb runner add|list|logins|revoke|check|rotate-owner` (docs/protocol.md, "Runner keys"): on the main
+// `tb runner add|list|logins|revoke|check|rotate-owner` (docs/protocol/keys.md, "Runner keys"): on the main
 // Mac, whose secrets/convex-key is the owner key, makes a key for one other
 // runner. That key acts as its runner alone on the backend, so a second Mac
 // no longer holds a copy of the key that can do everything. Straight to the

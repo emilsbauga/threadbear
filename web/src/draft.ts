@@ -38,6 +38,72 @@ export function draftFrom(language: string | null | undefined, code: string): Dr
   return { kind: word as DraftKind, source };
 }
 
+// A sent message with the Mac's edited drafts on its end (desktop/core's
+// draft_block.rs, `edited_message` and `split_edited`): his own words, and
+// each draft he changed, so his bubble shows a chip for each rather than the
+// line asking the agent to use them and the raw fences. Undefined when the
+// message doesn't end that way; then it's shown as it is.
+const editedOne = 'I edited your draft. Use my version below exactly as it is, not yours:';
+const editedMany = 'I edited your drafts. Use my versions below exactly as they are, not yours:';
+
+export function splitEdited(text: string): { words: string; drafts: Draft[] } | undefined {
+  // From the first one: a draft can hold the line itself, and Mike's own
+  // words can too, so each place it starts a paragraph is tried until one
+  // is followed by nothing but drafts.
+  const starts: { at: number; intro: string }[] = [];
+  for (const intro of [editedOne, editedMany]) {
+    for (let at = text.indexOf(intro); at >= 0; at = text.indexOf(intro, at + 1)) starts.push({ at, intro });
+  }
+  starts.sort((a, b) => a.at - b.at);
+  for (const { at, intro } of starts) {
+    const split = splitAt(text, at, intro);
+    if (split) return split;
+  }
+  return undefined;
+}
+
+function splitAt(text: string, at: number, intro: string): { words: string; drafts: Draft[] } | undefined {
+  if (at !== 0 && !text.slice(0, at).endsWith('\n\n')) return undefined;
+  let rest = text.slice(at + intro.length);
+  const drafts: Draft[] = [];
+  while (rest.startsWith('\n\n')) {
+    const after = rest.slice(2);
+    const ticks = /^`*/.exec(after)![0].length;
+    if (ticks < 3) return undefined;
+    const lineEnd = after.indexOf('\n');
+    if (lineEnd < 0) return undefined;
+    const word = after.slice(ticks, lineEnd);
+    if (!kinds.includes(word)) return undefined;
+    const body = after.slice(lineEnd + 1);
+    const close = '\n' + '`'.repeat(ticks);
+    const end = findClosing(body, close);
+    if (end === undefined) return undefined;
+    // Whatever length it is: what was sent is shown.
+    const source = body.slice(0, end).replace(/\r\n/g, '\n');
+    if (!source.trim()) return undefined;
+    drafts.push({ kind: word as DraftKind, source });
+    rest = body.slice(end + close.length);
+  }
+  if (!drafts.length || rest.trim() || (intro === editedOne) !== (drafts.length === 1)) return undefined;
+  return { words: text.slice(0, at).trimEnd(), drafts };
+}
+
+function findClosing(text: string, close: string): number | undefined {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(close, from);
+    if (at < 0) return undefined;
+    const after = text.slice(at + close.length);
+    if (!after.trim() || after.startsWith('\n\n')) return at;
+    from = at + 1;
+  }
+}
+
+// What the chip for his changed draft calls it.
+export function editedLabel(kind: DraftKind): string {
+  return kind === 'slack' ? 'Your edited Slack message' : kind === 'email' ? 'Your edited email' : 'Your edited draft';
+}
+
 // Whether the fenced code block written at source[start..<end] (the hast
 // node's position in the exact text handed to Markdown) has its closing
 // fence, the way the Mac's MarkdownRenderer isClosed checks it. The node
@@ -46,6 +112,9 @@ export function draftFrom(language: string | null | undefined, code: string): Dr
 // the text, and it stays plain code until it's done, as on the Mac and the
 // phone.
 export function fenceClosed(source: string, start: number, end: number): boolean {
+  // The block's last line, not the line break after it (as the desktop
+  // app's fence_closed has it).
+  while (end > start && (source[end - 1] === '\n' || source[end - 1] === '\r')) end--;
   const openingStart = source.lastIndexOf('\n', start - 1) + 1;
   const closingStart = source.lastIndexOf('\n', end - 1) + 1;
   if (closingStart <= start) return false;
@@ -217,6 +286,9 @@ export function token(inside: string): Token | undefined {
   // (a URL object would add a "/" to "https://x.dev").
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(target)?.[1]?.toLowerCase();
   if (target.includes(' ') || !scheme || !['http', 'https', 'mailto'].includes(scheme) || !URL.canParse(target)) return undefined;
+  // A mail link names someone: "mailto:" alone parses, but goes nowhere
+  // (desktop/core/src/draft_block.rs is_address; shared/cases/draft-blocks.json).
+  if (target.length === scheme.length + 1) return undefined;
   const shown = label !== undefined ? decode(label) : scheme === 'mailto' ? target.slice('mailto:'.length) : target;
   return { kind: 'link', url: target, label: shown };
 }

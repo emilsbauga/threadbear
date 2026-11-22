@@ -40,6 +40,7 @@ on:
   pull_request:
     paths:
       - 'android-native/**'
+      - 'shared/cases/**'
       - '.github/workflows/android.yml'
   # Run on a release/* tag to build (or finish) that release's APK.
   workflow_dispatch:

@@ -18,7 +18,9 @@ mod platform {
         use objc2::MainThreadMarker;
         use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn};
         use objc2_foundation::NSString;
-        let Some(mtm) = MainThreadMarker::new() else { return false };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return false;
+        };
         let alert = NSAlert::new(mtm);
         alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(detail));

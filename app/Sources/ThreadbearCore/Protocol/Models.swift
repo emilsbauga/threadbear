@@ -1280,7 +1280,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
     /// The projects it's in, oldest first. Empty when it's in none (or the
     /// runner is from before projects).
     public var projects: [ThreadProject]
-    /// The pool that picks its login (docs/pools-plan.md). Nil means it's
+    /// The pool that picks its login (docs/archive/pools-plan.md). Nil means it's
     /// pinned to `accountId`, which is every thread from a runner older
     /// than pools.
     public var poolId: String?

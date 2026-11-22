@@ -1,4 +1,4 @@
-// A real handover (docs/protocol.md, "Handovers"): launch.mjs supervises
+// A real handover (docs/protocol/updates.md, "Handovers"): launch.mjs supervises
 // the runner from a temp data dir, a real Claude turn on the cheapest model
 // is busy when an idle restart is asked for, and the new runner takes over
 // at once while the old one finishes that turn and hands the thread across.

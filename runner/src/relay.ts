@@ -1,4 +1,4 @@
-// Other runners' threads through the backend (docs/protocol.md, "Other
+// Other runners' threads through the backend (docs/protocol/runners.md, "Other
 // runners' threads through the backend"; full Convex step 5). The Mac app
 // asks its own runner about another runner's thread as it would about one of
 // this runner's, and this answers from the backend: the thread's message rows
@@ -9,7 +9,7 @@
 // The backend has a thread's text, one line per tool call, its open approval
 // and its card. A tool row's result says the output is kept on that runner, and
 // carries `heldBack: { seq }`: opening that tool in the app asks for it
-// (threads.heldBody), and if that runner has full sync on (docs/full-convex.md
+// (threads.heldBody), and if that runner has full sync on (docs/archive/full-convex.md
 // step 4) its output comes from the backend, once, as more events for the row.
 //
 // Pictures. That runner puts the pictures pasted into its messages up for
@@ -35,7 +35,7 @@
 // order, and every one has a seq of its own. The app takes these threads' events with gaps
 // and late ones (ThreadFeed's sparse mode), and pages by these seqs.
 //
-// Reads (docs/full-convex.md, "Read rules"): a thread is watched only while
+// Reads (docs/convex-backend.md, "Read rules"): a thread is watched only while
 // an app has it subscribed, through a 15-row tail and its one threads row;
 // older rows are read once by page and kept here, and a tail that skips past
 // what's held reads the gap once rather than leave a hole.
@@ -722,7 +722,7 @@ export class Relay {
       lastSeenSeq: 0,
       runnerId: t.runnerId,
     };
-    for (const k of ['model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'startedBy', 'asked', 'backlogged', 'recap', 'keywords'] as const) {
+    for (const k of ['model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'startedBy', 'asked', 'backlogged', 'recap', 'request', 'keywords'] as const) {
       if (t[k] !== undefined) thread[k] = t[k];
     }
     // Its real access, or "unknown" from a runner that doesn't say: never
@@ -737,7 +737,7 @@ export class Relay {
   }
 
   /**
-   * The done card's loose ends (docs/protocol.md, "Loose ends") as this
+   * The done card's loose ends (docs/protocol/threads.md, "Loose ends") as this
    * runner's summary has them, `{ seq, ends }`, from the thread's backend
    * row (API 73) and the seq of the turn.completed the relay gave the app
    * for that card. Only for a thread being watched: the sidebar's rows don't

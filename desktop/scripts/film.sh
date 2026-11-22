@@ -142,13 +142,13 @@ case "$cmd" in
     fi
     # What dev-app.sh needs there, and the recorder.
     (cd "$root" && rsync -rlpcR --delete -e "${SSH[*]}" --exclude node_modules \
-      desktop/scripts runner/scripts/find-node.sh runner/src app/Tools/mock-runner site/scripts/record-window.swift "$host:$base/checkout/")
+      desktop/scripts runner/scripts/find-node.sh runner/src mock-runner site/scripts/record-window.swift "$host:$base/checkout/")
     "${SSH[@]}" "$host" "rm -f $base/live-page.html"
     [ -z "$live_page" ] || rsync -c -e "${SSH[*]}" "$live_page" "$host:$base/live-page.html"
     for f in "${fix_src[@]+"${fix_src[@]}"}"; do rsync -rlpc --delete -e "${SSH[*]}" "${f%/}/" "$host:$base/fixtures/$(basename "$f")/"; done
     if [ -n "$turns" ]; then scp -q "$turns" "$host:$base/turns.json"; else "${SSH[@]}" "$host" "rm -f $base/turns.json"; fi
-    there "[ -d app/Tools/mock-runner/node_modules ] || (. runner/scripts/find-node.sh && n=\"\$(threadbear_find_node)\" && PATH=\"\${n%/*}:\$PATH\" npm ci --silent --prefix app/Tools/mock-runner)
-      clang -fobjc-arc -O -framework AppKit -framework ApplicationServices -framework CoreGraphics desktop/scripts/film/stage.m -o $base/stage"
+    there "[ -d mock-runner/node_modules ] || (. runner/scripts/find-node.sh && n=\"\$(threadbear_find_node)\" && PATH=\"\${n%/*}:\$PATH\" npm ci --silent --prefix mock-runner)
+      clang -fobjc-arc -O -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework IOKit desktop/scripts/film/stage.m -o $base/stage"
     # The host's build-and-measurement lock first (film/hold.pl), so the app's
     # window and the stage never land in another thread's --desk run.
     desk "(perl desktop/scripts/film/hold.pl $base $base/stage $stage_size >$base/stage.log 2>&1 </dev/null &)"
@@ -180,7 +180,9 @@ case "$cmd" in
     fi
     pid="$(there "cat \"\$(find \"\$TMPDIR\" -path '*/film/app.json' 2>/dev/null | head -1)\"" | sed -E 's/.*"app":([0-9]+).*/\1/')"
     [[ "$pid" =~ ^[0-9]+$ ]] || { there "touch $base/stage.stop"; die "couldn't find the app's pid"; }
-    there "echo $pid > $base/go; for i in \$(seq 1 150); do [ -f $base/stage.json ] && break; grep -q '^error' $base/stage.log && break; sleep 0.2; done; cat $base/stage.log"
+    # Long enough for all the stage's own waits (making the display 20s, the
+    # window on it 30s, moving it 10s), as an error line ends it at once.
+    there "echo $pid > $base/go; for i in \$(seq 1 375); do [ -f $base/stage.json ] && break; grep -q '^error' $base/stage.log && break; sleep 0.2; done; cat $base/stage.log"
     if ! there "[ -f $base/stage.json ]"; then
       there "desktop/scripts/dev-app.sh stop --id film >/dev/null 2>&1; touch $base/stage.stop"
       # Its own words, in the message itself: on 19 Nov all that showed was

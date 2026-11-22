@@ -105,7 +105,7 @@ export function isCodexLogin(dir: string): boolean {
 }
 
 export type DiscoveryConfig = Pick<Config, 'claudeMainDir' | 'claudeMainJson' | 'tokenStatsAccountsDir' | 'userHome' | 'pathEnv'> &
-  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'piProfiles' | 'hiddenLogins' | 'accountsDir' | 'home' | 'cursorPath' | 'opencodePath' | 'grokPath' | 'claudeMainEmail'>>;
+  Partial<Pick<Config, 'codexMainDir' | 'accountNotes' | 'piProfiles' | 'hiddenLogins' | 'accountsDir' | 'home' | 'cursorPath' | 'opencodePath' | 'grokPath' | 'antigravityPath' | 'claudeMainEmail'>>;
 
 // claude-main is ~/.claude (its .claude.json sits at ~/.claude.json);
 // codex-main is ~/.codex. Token Stats' Accounts folder holds claude-N and
@@ -145,7 +145,7 @@ export function discoverAccounts(cfg: DiscoveryConfig): Account[] {
     if (isCodexLogin(dir)) out.push(codexAccount(id, dir));
   }
   for (const profile of cfg.piProfiles ?? []) out.push({ id: piAccountId(profile.id), provider: 'pi', title: `Pi · ${profile.title}`, configDir: profile.configDir, executable: profile.executable, piProfileId: profile.id, connection: profile.connection, defaultModel: profile.connection.model, models: [{ id: profile.connection.model, model: profile.connection.model, title: profile.connection.model, effortLevels: [] }] });
-  out.push(...acpAccounts({ home: cfg.userHome, pathEnv: cfg.pathEnv, paths: { cursor: cfg.cursorPath, opencode: cfg.opencodePath, grok: cfg.grokPath } }));
+  out.push(...acpAccounts({ home: cfg.userHome, pathEnv: cfg.pathEnv, paths: { cursor: cfg.cursorPath, opencode: cfg.opencodePath, grok: cfg.grokPath, antigravity: cfg.antigravityPath } }));
   for (const a of out) {
     const note = cfg.accountNotes?.[a.id];
     if (note) a.note = note;

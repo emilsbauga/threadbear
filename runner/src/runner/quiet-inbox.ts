@@ -1,4 +1,4 @@
-// A quiet inbox (docs/protocol.md, "A quiet inbox"): a finished thread
+// A quiet inbox (docs/protocol/threads.md, "A quiet inbox"): a finished thread
 // another thread started, with nothing for Mike, archives itself.
 //
 // Mike, 12 Nov 2026, of three threads other threads had started (a bun fix

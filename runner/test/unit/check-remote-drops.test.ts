@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { GiB, SCRIPT, macDf, setup, shortHome, test } from '../helpers/check-remote-harness.ts';
 
 // THREADBEAR_NODE: find-node.sh finds the Node nvm installed in its home.
-function onHost(checkExit: number, df: string, opts: { hang?: boolean; leave?: string; env?: Record<string, string> } = {}) {
+function onHost(checkExit: number, df: string, opts: { hang?: boolean; leave?: string; env?: Record<string, string>; body?: string; dfFile?: string } = {}) {
   const home = shortHome();
   const base = path.join(home, '.cache', 'threadbear-check');
   const copy = path.join(base, 'runs', '1-1-0');
@@ -16,11 +16,13 @@ function onHost(checkExit: number, df: string, opts: { hang?: boolean; leave?: s
   fs.copyFileSync(path.join(path.dirname(SCRIPT), 'limit-step.mjs'), path.join(copy, 'scripts', 'limit-step.mjs'));
   fs.mkdirSync(path.join(copy, 'runner', 'scripts'), { recursive: true });
   fs.copyFileSync(path.join(path.dirname(SCRIPT), '..', 'runner', 'scripts', 'find-node.sh'), path.join(copy, 'runner', 'scripts', 'find-node.sh'));
-  fs.writeFileSync(path.join(copy, 'check.sh'), `#!/bin/bash\necho made >"$TMPDIR/big"\n${opts.hang ? 'sleep 60\n' : ''}${opts.leave ? `mkdir -p "$TMPDIR/wt"; (cd "$TMPDIR/wt" && exec sleep 300) >/dev/null 2>&1 </dev/null &\necho $! >'${opts.leave}'\n(exec sleep 300) >/dev/null 2>&1 </dev/null &\necho $! >>'${opts.leave}'\n` : ''}exit ${checkExit}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(copy, 'check.sh'), `#!/bin/bash\necho made >"$TMPDIR/big"\n${opts.body ?? ''}${opts.hang ? 'sleep 60\n' : ''}${opts.leave ? `mkdir -p "$TMPDIR/wt"; (cd "$TMPDIR/wt" && exec sleep 300) >/dev/null 2>&1 </dev/null &\necho $! >'${opts.leave}'\n(exec sleep 300) >/dev/null 2>&1 </dev/null &\necho $! >>'${opts.leave}'\n` : ''}exit ${checkExit}\n`, { mode: 0o755 });
   const nodeBin = path.join(home, '.nvm', 'versions', 'node', 'v24.0.0', 'bin');
   fs.mkdirSync(nodeBin, { recursive: true });
   fs.symlinkSync(process.execPath, path.join(nodeBin, 'node'));
-  fs.writeFileSync(path.join(nodeBin, 'df'), `#!/bin/bash\n[ "$*" = "-Pk ." ] || exit 9\ncat <<'END'\n${df}END\n`, { mode: 0o755 });
+  // dfFile: the KiB free is read from it each time, so a run can change it.
+  const dfBody = opts.dfFile ? `${macDf('$(cat ' + JSON.stringify(opts.dfFile) + ')')}` : df;
+  fs.writeFileSync(path.join(nodeBin, 'df'), `#!/bin/bash\n[ "$*" = "-Pk ." ] || exit 9\ncat <<${opts.dfFile ? 'END' : "'END'"}\n${dfBody}END\n`, { mode: 0o755 });
   const empty = path.join(home, 'empty-bin');
   fs.mkdirSync(empty, { recursive: true });
   const env: Record<string, string | undefined> = { ...process.env, HOME: home, PATH: empty, ...opts.env };
@@ -36,6 +38,23 @@ test('--on-host records the free space of a failed run for this Mac, before clea
   assert.equal(fs.readFileSync(kept, 'utf8').trim(), String(GiB));
   assert.ok(!fs.existsSync(path.join(base, 'tmp-1-1-0')), 'temp files gone');
   assert.ok(!fs.existsSync(path.join(base, 'src')), 'copy gone');
+});
+
+// 20 Nov: the cloud box was at 0.1 GiB mid-check and 8.3 by the time anyone
+// asked. The lowest is what says the run ran out of disk.
+test('--on-host keeps the lowest the disk went during the run, for this Mac to read', () => {
+  const dfFile = path.join(shortHome(), 'free');
+  fs.writeFileSync(dfFile, String(20 * GiB));
+  const { r, base } = onHost(1, '', {
+    dfFile,
+    env: { THREADBEAR_CHECK_SAMPLE_SECS: '0.2' },
+    body: `echo ${Math.round(0.1 * GiB)} >'${dfFile}'; sleep 1.5; echo ${8 * GiB} >'${dfFile}'; sleep 0.5\n`,
+  });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  const low = fs.readFileSync(path.join(base, 'kept-1-1-0', 'min-free-kb'), 'utf8');
+  assert.equal(Number(low), Math.round(0.1 * GiB), low);
+  // At the end it had room again.
+  assert.equal(fs.readFileSync(path.join(base, 'kept-1-1-0', 'free-kb'), 'utf8').trim(), String(8 * GiB));
 });
 
 test('--on-host records nothing when the run passed', () => {

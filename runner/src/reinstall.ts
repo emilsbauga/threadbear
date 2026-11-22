@@ -56,7 +56,7 @@ export const START_GRACE_MS = 15_000;
 // How often a running one's result is looked for.
 export const POLL_MS = 5_000;
 
-// runner.updates' `reinstall` (docs/protocol.md, "Runner updates").
+// runner.updates' `reinstall` (docs/protocol/updates.md, "Runner updates").
 export type ReinstallStatus = {
   // waiting: about to start (or, from a runner before 15 Nov, for busy
   // threads); running: install-runner.sh --stage is going; staged: it's in

@@ -20,7 +20,10 @@ pub(crate) fn thread_changed(previous: Option<&str>, now: &str, settings: &Setti
     if !settings.ding_on() || !completion_sound::finished(previous, now) {
         return;
     }
-    if LAST_PLAYED.get().is_some_and(|at| at.elapsed() < Duration::from_millis(1500)) {
+    if LAST_PLAYED
+        .get()
+        .is_some_and(|at| at.elapsed() < Duration::from_millis(1500))
+    {
         return;
     }
     play(settings.ding(), settings.ding_volume());
@@ -30,7 +33,9 @@ pub(crate) fn thread_changed(previous: Option<&str>, now: &str, settings: &Setti
 pub(crate) fn play(ding: Ding, volume: f64) {
     LAST_PLAYED.set(Some(Instant::now()));
     MADE.with_borrow_mut(|made| {
-        let wav = made.entry(ding.name()).or_insert_with(|| completion_sound::wav(ding));
+        let wav = made
+            .entry(ding.name())
+            .or_insert_with(|| completion_sound::wav(ding));
         platform::play(wav, volume);
     });
 }
@@ -51,7 +56,9 @@ mod platform {
 
     pub(super) fn play(wav: &[u8], volume: f64) {
         let data = NSData::with_bytes(wav);
-        let Some(sound) = NSSound::initWithData(NSSound::alloc(), &data) else { return };
+        let Some(sound) = NSSound::initWithData(NSSound::alloc(), &data) else {
+            return;
+        };
         sound.setVolume(volume.clamp(0., 1.) as f32);
         PLAYING.with_borrow_mut(|playing| {
             if let Some(old) = playing.take() {

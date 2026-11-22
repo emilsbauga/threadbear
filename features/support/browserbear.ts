@@ -1,6 +1,6 @@
 // A stand-in BrowserBear for the Browser pane's scenarios (browser-pane.feature):
 // a folder with agent/tabs.json, as BrowserBear's agent host writes it, and its
-// private socket answering the commands the apps send (docs/protocol.md, "The
+// private socket answering the commands the apps send (docs/protocol/panels.md, "The
 // Browser panel"). The app is pointed at it with BROWSERBEAR_HOME, so a
 // scenario never reaches the real BrowserBear on the machine running it.
 import fs from 'node:fs';

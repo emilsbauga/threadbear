@@ -8,7 +8,7 @@ import { tmpDir } from '../helpers/fakes.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
 import { Upstream, gitAsync } from '../../src/upstream.ts';
-import { GIT_ENV, LATER, alive, commit, git, hangingUpstream, kept, objectsIn, release, signedTag, upstreamFor, world } from '../helpers/upstream-harness.ts';
+import { GIT_ENV, LATER, alive, commit, git, hangingUpstream, kept, objectsIn, signedTag, upstreamFor, world } from '../helpers/upstream-harness.ts';
 
 // A runner from before this check fetched straight into the verified
 // namespace, so a fork can have an unsigned tag sitting there.

@@ -26,7 +26,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use threadbear_core::inbox::ThreadSummary;
-use threadbear_core::tour::{self as rules, Edge, Finished, Intro, Rect, Step, Target, Task as TourTask};
+use threadbear_core::tour::{
+    self as rules, Edge, Finished, Intro, Rect, Step, Target, Task as TourTask,
+};
 
 const BEAR_WAVE: &[u8] = include_bytes!("../icons/bear-wave.svg");
 /// The card's width at 100%, as the Swift card's `zoomed(320)`.
@@ -49,7 +51,12 @@ thread_local! {
 }
 
 fn rect_of(bounds: Bounds<Pixels>) -> Rect {
-    Rect::new(f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height))
+    Rect::new(
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    )
 }
 
 fn record(target: Target, rect: Rect, window: &mut Window) {
@@ -73,19 +80,41 @@ fn record(target: Target, rect: Rect, window: &mut Window) {
 pub(crate) fn mark(target: Target) -> Option<AnyElement> {
     // Always measured, so the tour knows at its start what's on screen; the
     // window's only drawn again for a change while it's up.
-    Some(canvas(move |bounds, window, _| record(target.clone(), rect_of(bounds), window), |_, _, _, _| {}).absolute().top_0().left_0().size_full().into_any_element())
+    Some(
+        canvas(
+            move |bounds, window, _| record(target, rect_of(bounds), window),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element(),
+    )
 }
 
 /// The composer's mark: only the main panel's (`thread` None is the
 /// new-thread page's).
 pub(crate) fn mark_composer(thread: Option<&str>) -> Option<AnyElement> {
     let open = OPEN.with(|o| o.borrow().clone());
-    (thread.unwrap_or("") == open).then(|| mark(Target::Composer)).flatten()
+    (thread.unwrap_or("") == open)
+        .then(|| mark(Target::Composer))
+        .flatten()
 }
 
 /// Where the dock sits, from the shell, every frame.
 pub(crate) fn dock_origin_mark() -> AnyElement {
-    canvas(|bounds, _, _| DOCK_ORIGIN.with(|o| o.set((f32::from(bounds.origin.x), f32::from(bounds.origin.y)))), |_, _, _, _| {}).absolute().top_0().left_0().size_full().into_any_element()
+    canvas(
+        |bounds, _, _| {
+            DOCK_ORIGIN.with(|o| o.set((f32::from(bounds.origin.x), f32::from(bounds.origin.y))))
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
 }
 
 /// The tour's state in the app (`Threadbear::tour`).
@@ -121,7 +150,11 @@ use std::rc::Rc;
 
 impl TourState {
     pub(crate) fn new() -> Self {
-        TourState { intros_off: crate::scripted::scripted(), card_size: Rc::new(Cell::new((CARD_WIDTH, 160.))), ..Default::default() }
+        TourState {
+            intros_off: crate::scripted::scripted(),
+            card_size: Rc::new(Cell::new((CARD_WIDTH, 160.))),
+            ..Default::default()
+        }
     }
 }
 
@@ -130,7 +163,11 @@ impl TourState {
 /// real one.
 fn welcome_folder() -> String {
     if crate::scripted::scripted() {
-        return threadbear_client::config::RunnerConfig::from_env().home.join("Welcome").to_string_lossy().into_owned();
+        return threadbear_client::config::RunnerConfig::from_env()
+            .home
+            .join("Welcome")
+            .to_string_lossy()
+            .into_owned();
     }
     // As `~/`, which the runner expands to its own home: the runner may not
     // share the app's home or path style. On Windows the app's home came out
@@ -153,15 +190,25 @@ impl Threadbear {
             Target::Panel("connectors") => Some(shell::CONNECTORS),
             _ => None,
         };
-        let Some(panel) = panel else { return FRAMES.with(|f| f.borrow().get(target).copied()) };
+        let Some(panel) = panel else {
+            return FRAMES.with(|f| f.borrow().get(target).copied());
+        };
         let controller = &self.dock.read(cx).controller;
-        if !controller.is_showing(panel) || controller.layout.is_floating(panel) || !self.panel_available(panel, cx) {
+        if !controller.is_showing(panel)
+            || controller.layout.is_floating(panel)
+            || !self.panel_available(panel, cx)
+        {
             return None;
         }
         let group = controller.layout.group_containing(panel)?;
         let r = controller.frames.get(&group.id)?;
         let (x, y) = DOCK_ORIGIN.with(Cell::get);
-        Some(Rect::new(x + r.x as f32, y + r.y as f32, r.width as f32, r.height as f32))
+        Some(Rect::new(
+            x + r.x as f32,
+            y + r.y as f32,
+            r.width as f32,
+            r.height as f32,
+        ))
     }
 
     fn tour_frame(&self, step: &Step, cx: &App) -> Option<Rect> {
@@ -174,7 +221,8 @@ impl Threadbear {
     /// app's has been looked for (swift_import.rs).
     pub(crate) fn tour_start_if_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A spec can ask a scripted app to behave as a new install does.
-        let scripted = crate::scripted::scripted() && std::env::var_os("THREADBEAR_TOUR_AUTOSTART").is_none();
+        let scripted =
+            crate::scripted::scripted() && std::env::var_os("THREADBEAR_TOUR_AUTOSTART").is_none();
         if self.tour.checked_new || scripted {
             return;
         }
@@ -185,30 +233,51 @@ impl Threadbear {
         if self.settings.saved.swift_tour_import.is_none() {
             crate::swift_import::tour_once(&mut self.settings);
         }
-        if self.settings.saved.tour_seen == Some(true) || self.settings.saved.swift_tour_import.is_none() || self.tour.tour.is_on() {
+        if self.settings.saved.tour_seen == Some(true)
+            || self.settings.saved.swift_tour_import.is_none()
+            || self.tour.tour.is_on()
+        {
             return;
         }
         // Once the window's drawn with their threads in it.
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(600)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(600))
+                .await;
             // The setup cards now, rather than the tour (hello.rs); Help
             // still has the tour.
-            this.update_in(cx, |this, window, cx| this.hello_start(window, cx)).ok();
+            this.update_in(cx, |this, window, cx| this.hello_start(window, cx))
+                .ok();
         })
         .detach();
     }
 
     /// Starts it: Help > Take the Tour (skippable), or the first run.
-    pub(crate) fn tour_start(&mut self, skippable: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn tour_start(
+        &mut self,
+        skippable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Samples to try things on, from the runner, in the Welcome folder
         // with its example patch (trusted, so Roll a die shows without asking).
         let client = self.client.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res = crate::call(client, "threads.samples", json!({ "cwd": welcome_folder() })).await;
+            let res = crate::call(
+                client,
+                "threads.samples",
+                json!({ "cwd": welcome_folder() }),
+            )
+            .await;
             this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(v) => {
-                        let samples: Vec<ThreadSummary> = v["threads"].as_array().into_iter().flatten().filter_map(|t| serde_json::from_value(t.clone()).ok()).collect();
+                        let samples: Vec<ThreadSummary> = v["threads"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                            .collect();
                         this.tour.samples = samples.iter().map(|t| t.id.clone()).collect();
                         for t in samples {
                             this.threads.insert(t.id.clone(), std::sync::Arc::new(t));
@@ -227,8 +296,14 @@ impl Threadbear {
         })
         .detach();
         ON.with(|o| o.set(true));
-        let frames: HashMap<Target, Option<Rect>> = rules::steps().iter().flat_map(|s| s.targets.clone()).map(|t| (t.clone(), self.tour_frame_of(&t, cx))).collect();
-        self.tour.tour.start(skippable, &|t| frames.get(t).copied().flatten());
+        let frames: HashMap<Target, Option<Rect>> = rules::steps()
+            .iter()
+            .flat_map(|s| s.targets.clone())
+            .map(|t| (t.clone(), self.tour_frame_of(&t, cx)))
+            .collect();
+        self.tour
+            .tour
+            .start(skippable, &|t| frames.get(t).copied().flatten());
         self.tour_go(window, cx);
     }
 
@@ -236,7 +311,7 @@ impl Threadbear {
         if !self.tour.tour.is_on() {
             return;
         }
-        if self.tour.tour.next() {
+        if self.tour.tour.forward() {
             self.tour_go(window, cx);
         } else {
             self.tour_finish(cx);
@@ -253,7 +328,11 @@ impl Threadbear {
     pub(crate) fn tour_finish(&mut self, cx: &mut Context<Self>) {
         match self.tour.tour.finish() {
             Some(Finished::Intro(intro)) => {
-                let seen = self.settings.saved.tour_intros_seen.get_or_insert_with(Vec::new);
+                let seen = self
+                    .settings
+                    .saved
+                    .tour_intros_seen
+                    .get_or_insert_with(Vec::new);
                 if !seen.iter().any(|s| s == intro.name()) {
                     seen.push(intro.name().to_owned());
                 }
@@ -279,7 +358,13 @@ impl Threadbear {
     fn tour_remove_samples(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         cx.spawn(async move |_, _| {
-            if let Err(e) = crate::call(client, "threads.samples", json!({ "cwd": welcome_folder(), "remove": true })).await {
+            if let Err(e) = crate::call(
+                client,
+                "threads.samples",
+                json!({ "cwd": welcome_folder(), "remove": true }),
+            )
+            .await
+            {
                 eprintln!("removing the tour's samples failed: {}", e.message);
             }
         })
@@ -300,18 +385,26 @@ impl Threadbear {
             self.tour.threads_at_start = self.threads.keys().cloned().collect();
             self.new_thread(cx);
             let composer = self.ensure_new_composer(window, cx);
-            composer.update(cx, |c, cx| c.replace_text(rules::FIRST_MESSAGE.to_owned(), cx));
+            composer.update(cx, |c, cx| {
+                c.replace_text(rules::FIRST_MESSAGE.to_owned(), cx)
+            });
         } else {
             // Return and Esc are the tour's while it's up, not a send or an
             // empty line in a composer.
-            let focus = self.tour.focus.get_or_insert_with(|| cx.focus_handle()).clone();
+            let focus = self
+                .tour
+                .focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
             window.focus(&focus, cx);
             // And AppKit's keyboard with it, or a web panel's page keeps it.
             crate::web_panels::keyboard_to_app(window);
         }
         if task.is_some() {
             self.tour.patience = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(Duration::from_millis(rules::PATIENCE_MS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(rules::PATIENCE_MS))
+                    .await;
                 this.update(cx, |this, cx| {
                     this.tour.waited = true;
                     cx.notify();
@@ -327,12 +420,23 @@ impl Threadbear {
 
     /// The sample a step opens, and the row it draws hovered.
     fn tour_apply_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(step) = self.tour.tour.current().cloned() else { return };
+        let Some(step) = self.tour.tour.current().cloned() else {
+            return;
+        };
         if step.opens_sample {
             let now = crate::now_ms();
             // The first still in the inbox: the one that needs you, unless
             // it's been put away.
-            let open = self.tour.samples.iter().find(|id| self.threads.get(*id).is_some_and(|t| !t.is_archived() && !t.snoozed(now))).cloned();
+            let open = self
+                .tour
+                .samples
+                .iter()
+                .find(|id| {
+                    self.threads
+                        .get(*id)
+                        .is_some_and(|t| !t.is_archived() && !t.snoozed(now))
+                })
+                .cloned();
             if let Some(id) = open {
                 self.set_mode(SidebarMode::Inbox, cx);
                 if self.selected.as_deref() != Some(id.as_str()) {
@@ -342,18 +446,33 @@ impl Threadbear {
         }
         // Drawn without the pointer, as the screenshot run does; None puts
         // the row back.
-        self.sidebar.hover_override = step.hovers.and_then(|title| self.tour.samples.iter().find(|id| self.threads.get(*id).is_some_and(|t| t.title == title)).cloned());
+        self.sidebar.hover_override = step.hovers.and_then(|title| {
+            self.tour
+                .samples
+                .iter()
+                .find(|id| self.threads.get(*id).is_some_and(|t| t.title == title))
+                .cloned()
+        });
     }
 
     /// Whether the step's task is done, as the threads change: the first
     /// thread sent moves on to what's left to set up, or ends the tour if
     /// nothing is.
     fn tour_check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(TourTask::SendFirst) = self.tour.tour.current().and_then(|s| s.task) else { return };
+        let Some(TourTask::SendFirst) = self.tour.tour.current().and_then(|s| s.task) else {
+            return;
+        };
         if self.tour.tour.task_done {
             return;
         }
-        let Some(id) = self.threads.keys().find(|k| !self.tour.threads_at_start.contains(*k) && !self.tour.samples.contains(*k)).cloned() else { return };
+        let Some(id) = self
+            .threads
+            .keys()
+            .find(|k| !self.tour.threads_at_start.contains(*k) && !self.tour.samples.contains(*k))
+            .cloned()
+        else {
+            return;
+        };
         self.tour.first_thread = Some(id);
         self.tour.tour.task_done = true;
         if self.setup_shows_icon() {
@@ -366,24 +485,43 @@ impl Threadbear {
 
     /// The first thread they sent has failed.
     fn tour_first_failed(&self) -> bool {
-        self.tour.first_thread.as_ref().and_then(|id| self.threads.get(id)).is_some_and(|t| t.status == "error")
+        self.tour
+            .first_thread
+            .as_ref()
+            .and_then(|id| self.threads.get(id))
+            .is_some_and(|t| t.status == "error")
     }
 
     /// A page's or panel's intro the first time it's opened, once it's drawn
     /// for the card to point at.
-    pub(crate) fn tour_introduce_soon(&mut self, intro: Intro, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn tour_introduce_soon(
+        &mut self,
+        intro: Intro,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.tour.intros_off {
             return;
         }
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(300)).await;
-            this.update_in(cx, |this, window, cx| this.tour_introduce(intro, window, cx)).ok();
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.tour_introduce(intro, window, cx)
+            })
+            .ok();
         })
         .detach();
     }
 
     fn tour_introduce(&mut self, intro: Intro, window: &mut Window, cx: &mut Context<Self>) {
-        let seen = self.settings.saved.tour_intros_seen.as_ref().is_some_and(|s| s.iter().any(|n| n == intro.name()));
+        let seen = self
+            .settings
+            .saved
+            .tour_intros_seen
+            .as_ref()
+            .is_some_and(|s| s.iter().any(|n| n == intro.name()));
         if self.tour.tour.introduce(intro, seen, !self.tour.intros_off) {
             ON.with(|o| o.set(true));
             self.tour_go(window, cx);
@@ -395,16 +533,29 @@ impl Threadbear {
     /// changing, a panel under the threads coming on show, a second login in
     /// a pool).
     pub(crate) fn tour_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        OPEN.with(|o| *o.borrow_mut() = if self.home_page().is_some() { "-".into() } else { self.selected.clone().unwrap_or_default() });
+        OPEN.with(|o| {
+            *o.borrow_mut() = if self.home_page().is_some() {
+                "-".into()
+            } else {
+                self.selected.clone().unwrap_or_default()
+            }
+        });
         // Someone's first launch: once the runner's there.
-        if !self.tour.checked_new && matches!(self.status, threadbear_client::runner::Status::Connected { .. }) {
-            cx.defer_in(window, |this, window, cx| this.tour_start_if_new(window, cx));
+        if !self.tour.checked_new && self.connected() {
+            cx.defer_in(window, |this, window, cx| {
+                this.tour_start_if_new(window, cx)
+            });
         }
         if self.tour.tour.current().is_some_and(|s| s.task.is_some()) && !self.tour.tour.task_done {
             cx.defer_in(window, |this, window, cx| this.tour_check(window, cx));
         }
         let dock = &self.dock.read(cx).controller;
-        let now = (self.mode, dock.is_showing(shell::USAGE), dock.is_showing(shell::UPDATES), dock.is_showing(shell::CONNECTORS));
+        let now = (
+            self.mode,
+            dock.is_showing(shell::USAGE),
+            dock.is_showing(shell::UPDATES),
+            dock.is_showing(shell::CONNECTORS),
+        );
         let was = self.tour.watched.replace(now);
         if let Some(was) = was {
             let mut due = vec![];
@@ -413,23 +564,39 @@ impl Threadbear {
                     SidebarMode::Scheduled => due.push(Intro::Scheduled),
                     SidebarMode::Projects => due.push(Intro::Projects),
                     SidebarMode::Librarian => due.push(Intro::Librarian),
-                    SidebarMode::Inbox => {}
+                    SidebarMode::Inbox | SidebarMode::Recipes | SidebarMode::Feed => {}
                 }
             }
-            for (on, w, intro) in [(now.1, was.1, Intro::Usage), (now.2, was.2, Intro::Updates), (now.3, was.3, Intro::Connectors)] {
+            for (on, w, intro) in [
+                (now.1, was.1, Intro::Usage),
+                (now.2, was.2, Intro::Updates),
+                (now.3, was.3, Intro::Connectors),
+            ] {
                 if on && !w {
                     due.push(intro);
                 }
             }
             for intro in due {
-                cx.defer_in(window, move |this, window, cx| this.tour_introduce_soon(intro, window, cx));
+                cx.defer_in(window, move |this, window, cx| {
+                    this.tour_introduce_soon(intro, window, cx)
+                });
             }
         }
-        let pools = self.logins.pools.iter().filter(|p| p.account_ids.len() >= 2).count();
+        let pools = self
+            .logins
+            .pools
+            .iter()
+            .filter(|p| p.account_ids.len() >= 2)
+            .count();
         if pools != self.tour.pools_seen {
             self.tour.pools_seen = pools;
-            if rules::pools_intro_due(&self.logins.pools, self.settings.saved.tour_seen == Some(true)) {
-                cx.defer_in(window, |this, window, cx| this.tour_introduce_soon(Intro::Pools, window, cx));
+            if rules::pools_intro_due(
+                &self.logins.pools,
+                self.settings.saved.tour_seen == Some(true),
+            ) {
+                cx.defer_in(window, |this, window, cx| {
+                    this.tour_introduce_soon(Intro::Pools, window, cx)
+                });
             }
         }
     }
@@ -438,20 +605,37 @@ impl Threadbear {
 
     /// The dimmed window with the step's part cut out of it, the card and
     /// its arrow, over everything (`TourOverlay`).
-    pub(crate) fn render_tour(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "baselined at 203 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
+    )]
+    pub(crate) fn render_tour(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let index = self.tour.tour.step?;
         let step = self.tour.tour.current()?.clone();
         let count = self.tour.tour.shown.len();
         let size = window.viewport_size();
         let bounds = Rect::new(0., 0., f32::from(size.width), f32::from(size.height));
         // A few points round it, and never past the window's edge.
-        let hole = self.tour_frame(&step, cx).map(|r| r.outset(4.).intersection(&bounds)).filter(|r| r.w > 1. && r.h > 1.);
+        let hole = self
+            .tour_frame(&step, cx)
+            .map(|r| r.outset(4.).intersection(&bounds))
+            .filter(|r| r.w > 1. && r.h > 1.);
         // A part that's on its way (a panel gliding in under the threads, a
         // thread's composer still opening) has no frame yet, and the dock's
         // frames don't redraw the app: look again next frame till it's there.
         // Only for a few seconds: a part that never shows (a panel closed
         // since) shouldn't keep the window drawing.
-        if hole.is_none() && !step.targets.is_empty() && self.tour.step_at.is_some_and(|at| at.elapsed() < Duration::from_secs(3)) {
+        if hole.is_none()
+            && !step.targets.is_empty()
+            && self
+                .tour
+                .step_at
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(3))
+        {
             window.request_animation_frame();
         }
         let card_size = self.tour.card_size.get();
@@ -463,7 +647,13 @@ impl Threadbear {
         let hands_on = step.task.is_some();
         let raw = gpui_kit::px;
 
-        let mut layer = div().id("tour").absolute().top_0().left_0().w(raw(bounds.w)).h(raw(bounds.h));
+        let mut layer = div()
+            .id("tour")
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(raw(bounds.w))
+            .h(raw(bounds.h));
         // The dim, with a rounded hole.
         let shape_hole = hole;
         layer = layer.child(
@@ -471,7 +661,12 @@ impl Threadbear {
                 |_, _, _| {},
                 move |b, _, window, _| {
                     let mut path = PathBuilder::fill();
-                    let (x0, y0, x1, y1) = (b.origin.x, b.origin.y, b.origin.x + b.size.width, b.origin.y + b.size.height);
+                    let (x0, y0, x1, y1) = (
+                        b.origin.x,
+                        b.origin.y,
+                        b.origin.x + b.size.width,
+                        b.origin.y + b.size.height,
+                    );
                     path.move_to(point(x0, y0));
                     path.line_to(point(x1, y0));
                     path.line_to(point(x1, y1));
@@ -493,14 +688,30 @@ impl Threadbear {
         // Clicks on the window behind wait till the tour's done, except in
         // the lit part of a hands-on step (the composer): four blocks round
         // the hole, and one over it when there's nothing to do there.
-        let block = |id: &'static str, r: Rect| div().id(id).absolute().left(raw(r.x)).top(raw(r.y)).w(raw(r.w.max(0.))).h(raw(r.h.max(0.))).occlude().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        let block = |id: &'static str, r: Rect| {
+            div()
+                .id(id)
+                .absolute()
+                .left(raw(r.x))
+                .top(raw(r.y))
+                .w(raw(r.w.max(0.)))
+                .h(raw(r.h.max(0.)))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        };
         match hole {
             Some(h) => {
                 layer = layer
                     .child(block("tour-block-top", Rect::new(0., 0., bounds.w, h.y)))
-                    .child(block("tour-block-bottom", Rect::new(0., h.max_y(), bounds.w, bounds.h - h.max_y())))
+                    .child(block(
+                        "tour-block-bottom",
+                        Rect::new(0., h.max_y(), bounds.w, bounds.h - h.max_y()),
+                    ))
                     .child(block("tour-block-left", Rect::new(0., h.y, h.x, h.h)))
-                    .child(block("tour-block-right", Rect::new(h.max_x(), h.y, bounds.w - h.max_x(), h.h)));
+                    .child(block(
+                        "tour-block-right",
+                        Rect::new(h.max_x(), h.y, bounds.w - h.max_x(), h.h),
+                    ));
                 if !hands_on {
                     layer = layer.child(block("tour-block-hole", h));
                 }
@@ -511,16 +722,44 @@ impl Threadbear {
                 // GPUI fills a shadow under the whole box, which would cover
                 // the lit part, so the glow is a second ring outside the
                 // first that brightens and fades.
-                let ring = div().absolute().left(raw(h.x)).top(raw(h.y)).w(raw(h.w)).h(raw(h.h)).rounded(raw(CORNER)).border(raw(2.)).border_color(accent);
-                let halo = move |t: f32| div().absolute().left(raw(h.x - 4.)).top(raw(h.y - 4.)).w(raw(h.w + 8.)).h(raw(h.h + 8.)).rounded(raw(CORNER + 4.)).border(raw(3.)).border_color(accent.opacity(0.15 + 0.35 * t));
+                let ring = div()
+                    .absolute()
+                    .left(raw(h.x))
+                    .top(raw(h.y))
+                    .w(raw(h.w))
+                    .h(raw(h.h))
+                    .rounded(raw(CORNER))
+                    .border(raw(2.))
+                    .border_color(accent);
+                let halo = move |t: f32| {
+                    div()
+                        .absolute()
+                        .left(raw(h.x - 4.))
+                        .top(raw(h.y - 4.))
+                        .w(raw(h.w + 8.))
+                        .h(raw(h.h + 8.))
+                        .rounded(raw(CORNER + 4.))
+                        .border(raw(3.))
+                        .border_color(accent.opacity(0.15 + 0.35 * t))
+                };
                 let halo: AnyElement = if cx.reduce_motion() {
                     halo(0.4).into_any_element()
                 } else {
-                    div().absolute().top_0().left_0().size_full().child(halo(0.)).with_animation(ElementId::Name(format!("tour-glow-{index}").into()), Animation::new(Duration::from_millis(2200)).repeat(), move |_, t| {
-                        let t = (t * std::f32::consts::PI).sin();
-                        div().absolute().top_0().left_0().size_full().child(halo(t))
-                    })
-                    .into_any_element()
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .child(halo(0.))
+                        .with_animation(
+                            ElementId::Name(format!("tour-glow-{index}").into()),
+                            Animation::new(Duration::from_millis(2200)).repeat(),
+                            move |_, t| {
+                                let t = (t * std::f32::consts::PI).sin();
+                                div().absolute().top_0().left_0().size_full().child(halo(t))
+                            },
+                        )
+                        .into_any_element()
                 };
                 layer = layer.child(halo);
                 layer = layer.child(ring);
@@ -561,19 +800,37 @@ impl Threadbear {
             );
         }
         let card = self.render_tour_card(&step, index, count, cx);
-        layer = layer.child(div().absolute().left(raw(origin.0)).top(raw(origin.1)).child(card));
-        let focus = self.tour.focus.get_or_insert_with(|| cx.focus_handle()).clone();
+        layer = layer.child(
+            div()
+                .absolute()
+                .left(raw(origin.0))
+                .top(raw(origin.1))
+                .child(card),
+        );
+        let focus = self
+            .tour
+            .focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
         let layer = layer
             .track_focus(&focus)
             .key_context("Tour")
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                let Some(step) = this.tour.tour.current().cloned() else { return };
+                let Some(step) = this.tour.tour.current().cloned() else {
+                    return;
+                };
                 match ev.keystroke.key.as_str() {
-                    "enter" if step.task.is_none() || this.tour.tour.task_done || this.tour.waited => {
+                    "enter"
+                        if step.task.is_none() || this.tour.tour.task_done || this.tour.waited =>
+                    {
                         cx.stop_propagation();
                         this.tour_next(window, cx);
                     }
-                    "escape" if this.tour.tour.skippable && step.task.is_none() && !this.tour.tour.is_last() => {
+                    "escape"
+                        if this.tour.tour.skippable
+                            && step.task.is_none()
+                            && !this.tour.tour.is_last() =>
+                    {
                         cx.stop_propagation();
                         this.tour_finish(cx);
                     }
@@ -585,7 +842,13 @@ impl Threadbear {
 
     /// The card: the bear on the welcome, the title with its ⓘ, one
     /// sentence, the dots and the buttons (`TourCard`).
-    fn render_tour_card(&mut self, step: &Step, index: usize, count: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tour_card(
+        &mut self,
+        step: &Step,
+        index: usize,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let fg = style::label_text(cx);
         let secondary = style::secondary_text(cx);
         let done = self.tour.tour.task_done;
@@ -594,9 +857,19 @@ impl Threadbear {
         let task = step.task;
         let can_next = task.is_none() || done || self.tour.waited;
         let size_cell = self.tour.card_size.clone();
-        let mut title_row = h_flex().items_center().gap(px(6.)).child(div().text_size(px(style::size::CARD_TITLE + 1.)).font_semibold().text_color(fg).child(step.title));
+        let mut title_row = h_flex().items_center().gap(px(6.)).child(
+            div()
+                .text_size(px(style::size::CARD_TITLE + 1.))
+                .font_semibold()
+                .text_color(fg)
+                .child(step.title),
+        );
         if done {
-            title_row = title_row.child(crate::icons::symbol("checkmark.circle.fill").with_size(px(13.)).text_color(secondary));
+            title_row = title_row.child(
+                crate::icons::symbol("checkmark.circle.fill")
+                    .with_size(px(13.))
+                    .text_color(secondary),
+            );
         }
         title_row = title_row.child(div().flex_1().min_w(px(8.)));
         // By the title, out of the buttons' way: the detail the card leaves
@@ -604,9 +877,14 @@ impl Threadbear {
         if let Some(url) = step.doc_url() {
             title_row = title_row.child(
                 div()
-                    .id("tour-docs").role(Role::Button)
+                    .id("tour-docs")
+                    .role(Role::Button)
                     .cursor_pointer()
-                    .child(crate::icons::symbol("info.circle").with_size(px(14.)).text_color(secondary))
+                    .child(
+                        crate::icons::symbol("info.circle")
+                            .with_size(px(14.))
+                            .text_color(secondary),
+                    )
                     .tip("More about this, in the docs")
                     .on_click(move |_, _, cx| {
                         crate::open_gate::open_web(&url, cx);
@@ -618,13 +896,26 @@ impl Threadbear {
         // Where you are in it, as dots, the step on show darker. None for a
         // page's one-card intro: a lone dot says nothing.
         if count > 1 {
-            buttons = buttons.child(h_flex().gap(px(5.)).flex_shrink(1.).overflow_hidden().children((0..count).map(|dot| div().flex_none().size(px(5.)).rounded_full().bg(if dot == index { fg } else { fg.opacity(0.2) }))));
+            buttons = buttons.child(
+                h_flex()
+                    .gap(px(5.))
+                    .flex_shrink(1.)
+                    .overflow_hidden()
+                    .children((0..count).map(|dot| {
+                        div()
+                            .flex_none()
+                            .size(px(5.))
+                            .rounded_full()
+                            .bg(if dot == index { fg } else { fg.opacity(0.2) })
+                    })),
+            );
         }
         buttons = buttons.child(div().flex_1().min_w(px(8.)));
         if skippable && task != Some(TourTask::SendFirst) && !is_last {
             buttons = buttons.child(
                 div()
-                    .id("tour-skip").role(Role::Button)
+                    .id("tour-skip")
+                    .role(Role::Button)
                     .cursor_pointer()
                     .text_color(secondary)
                     .child("Skip")
@@ -633,32 +924,65 @@ impl Threadbear {
             );
         }
         if index > 0 {
-            buttons = buttons.child(crate::push_button::PushButton::new("tour-back", "Back", "The step before").render(cx, {
-                let app = cx.entity().downgrade();
-                move |_, window, cx| {
-                    app.update(cx, |this, cx| this.tour_back(window, cx)).ok();
-                }
-            }));
+            buttons =
+                buttons.child(
+                    crate::push_button::PushButton::new("tour-back", "Back", "The step before")
+                        .render(cx, {
+                            let app = cx.entity().downgrade();
+                            move |_, window, cx| {
+                                app.update(cx, |this, cx| this.tour_back(window, cx)).ok();
+                            }
+                        }),
+                );
         }
         if task == Some(TourTask::SendFirst) {
             // Sending is the way on; this leaves the message in the composer
             // for later. No Return here: that's the send.
-            buttons = buttons.child(crate::push_button::PushButton::new("tour-not-now", "Not now", "End the tour. The message stays in the composer").render(cx, {
-                let app = cx.entity().downgrade();
-                move |_, _, cx| {
-                    app.update(cx, |this, cx| this.tour_finish(cx)).ok();
-                }
-            }));
+            buttons = buttons.child(
+                crate::push_button::PushButton::new(
+                    "tour-not-now",
+                    "Not now",
+                    "End the tour. The message stays in the composer",
+                )
+                .render(cx, {
+                    let app = cx.entity().downgrade();
+                    move |_, _, cx| {
+                        app.update(cx, |this, cx| this.tour_finish(cx)).ok();
+                    }
+                }),
+            );
         } else {
-            let label = if is_last { "Done" } else if index == 0 { "Show me" } else { "Next" };
-            let tip = if !can_next { "Have a go first" } else if is_last { "End the tour (Return)" } else { "The next step (Return)" };
-            buttons = buttons.child(prominent_button("tour-next", label, tip, can_next, cx).on_click(cx.listener(move |this, _, window, cx| {
-                if can_next {
-                    this.tour_next(window, cx);
-                }
-            })));
+            let label = if is_last {
+                "Done"
+            } else if index == 0 {
+                "Show me"
+            } else {
+                "Next"
+            };
+            let tip = if !can_next {
+                "Have a go first"
+            } else if is_last {
+                "End the tour (Return)"
+            } else {
+                "The next step (Return)"
+            };
+            buttons = buttons.child(
+                prominent_button("tour-next", label, tip, can_next, cx).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        if can_next {
+                            this.tour_next(window, cx);
+                        }
+                    },
+                )),
+            );
         }
-        let shadow = vec![BoxShadow { color: hsla(0., 0., 0., 0.25), offset: point(gpui_kit::px(0.), gpui_kit::px(6.)), blur_radius: gpui_kit::px(18.), spread_radius: gpui_kit::px(0.), inset: false }];
+        let shadow = vec![BoxShadow {
+            color: hsla(0., 0., 0., 0.25),
+            offset: point(gpui_kit::px(0.), gpui_kit::px(6.)),
+            blur_radius: gpui_kit::px(18.),
+            spread_radius: gpui_kit::px(0.),
+            inset: false,
+        }];
         v_flex()
             .id("tour-card")
             .relative()
@@ -672,7 +996,13 @@ impl Threadbear {
             .shadow(shadow)
             .when(step.bear, |c| c.child(waving_bear(44., secondary)))
             .child(title_row)
-            .child(div().text_size(px(style::size::LABEL)).line_height(px(style::natural_line(style::size::LABEL))).text_color(secondary).child(body))
+            .child(
+                div()
+                    .text_size(px(style::size::LABEL))
+                    .line_height(px(style::natural_line(style::size::LABEL)))
+                    .text_color(secondary)
+                    .child(body),
+            )
             .child(buttons.pt(px(4.)).text_size(px(style::size::LABEL)))
             // Its size, for placing it beside its part next frame.
             .child(
@@ -699,17 +1029,27 @@ impl Threadbear {
     /// pages' intros on; says the step, its title and what it lights up, as
     /// the Swift command does: "ok 3/10 Star or put away lit: 52,264 313x51".
     #[cfg(feature = "automation")]
-    pub(crate) fn tour_command(&mut self, cmd: &Value, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
+    pub(crate) fn tour_command(
+        &mut self,
+        cmd: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
         if let Some(on) = cmd["intros"].as_bool() {
             self.tour.intros_off = !on;
         }
         match cmd["do"].as_str() {
-            Some("start") => self.tour_start(cmd["skippable"].as_bool().unwrap_or(false), window, cx),
+            Some("start") => {
+                self.tour_start(cmd["skippable"].as_bool().unwrap_or(false), window, cx)
+            }
             Some("next") => self.tour_next(window, cx),
             Some("back") => self.tour_back(window, cx),
             Some("end") => self.tour_finish(cx),
             Some("pools") => {
-                if rules::pools_intro_due(&self.logins.pools, self.settings.saved.tour_seen == Some(true)) {
+                if rules::pools_intro_due(
+                    &self.logins.pools,
+                    self.settings.saved.tour_seen == Some(true),
+                ) {
                     self.tour_introduce(Intro::Pools, window, cx);
                 }
             }
@@ -722,20 +1062,41 @@ impl Threadbear {
     /// What `tour` says once the window has settled.
     #[cfg(feature = "automation")]
     pub(crate) fn tour_line(&self, cx: &App) -> String {
-        let Some(index) = self.tour.tour.step else { return "ok off".into() };
-        let Some(step) = self.tour.tour.current() else { return "ok off".into() };
-        let lit = self.tour_frame(step, cx).map_or_else(|| "nothing".to_owned(), |r| format!("{},{} {}x{}", r.x as i64, r.y as i64, r.w as i64, r.h as i64));
+        let Some(index) = self.tour.tour.step else {
+            return "ok off".into();
+        };
+        let Some(step) = self.tour.tour.current() else {
+            return "ok off".into();
+        };
+        let lit = self.tour_frame(step, cx).map_or_else(
+            || "nothing".to_owned(),
+            |r| {
+                format!(
+                    "{},{} {}x{}",
+                    r.x as i64, r.y as i64, r.w as i64, r.h as i64
+                )
+            },
+        );
         let task = match step.task {
             None => String::new(),
             Some(_) if self.tour.tour.task_done => " (done)".into(),
             Some(_) => " (to do)".into(),
         };
-        format!("ok {}/{} {}{} lit: {}", index + 1, self.tour.tour.shown.len(), step.title, task, lit)
+        format!(
+            "ok {}/{} {}{} lit: {}",
+            index + 1,
+            self.tour.tour.shown.len(),
+            step.title,
+            task,
+            lit
+        )
     }
 
     /// The tour in `dump`: the step, its card and what it lights up.
     pub(crate) fn tour_dump(&self, cx: &App) -> Value {
-        let Some(step) = self.tour.tour.current() else { return Value::Null };
+        let Some(step) = self.tour.tour.current() else {
+            return Value::Null;
+        };
         json!({
             "step": self.tour.tour.step.map(|i| i + 1),
             "count": self.tour.tour.shown.len(),
@@ -754,12 +1115,29 @@ impl Threadbear {
 /// side:)`: the picture is twice as tall as the bear (room under its feet for
 /// the About window's tilt), so only its top half is shown.
 pub(crate) fn waving_bear(side: f32, color: Hsla) -> Div {
-    div().flex_none().w(px(side)).h(px(side)).overflow_hidden().child(Icon::default().data(BEAR_WAVE).w(px(side)).h(px(side * 2.)).text_color(color))
+    div()
+        .flex_none()
+        .w(px(side))
+        .h(px(side))
+        .overflow_hidden()
+        .child(
+            Icon::default()
+                .data(BEAR_WAVE)
+                .w(px(side))
+                .h(px(side * 2.))
+                .text_color(color),
+        )
 }
 
 /// The card's default button: the accent, white words, as SwiftUI's
 /// `.borderedProminent`; faded and deaf while it can't be pressed.
-pub(crate) fn prominent_button(id: &'static str, label: &'static str, tip: &'static str, enabled: bool, cx: &App) -> Stateful<Div> {
+pub(crate) fn prominent_button(
+    id: &'static str,
+    label: &'static str,
+    tip: &'static str,
+    enabled: bool,
+    cx: &App,
+) -> Stateful<Div> {
     let accent = style::control_accent(cx);
     div()
         .id(id)
@@ -774,7 +1152,10 @@ pub(crate) fn prominent_button(id: &'static str, label: &'static str, tip: &'sta
         .whitespace_nowrap()
         .bg(accent)
         .text_color(gpui_kit::white())
-        .when(enabled, |b| b.cursor_pointer().active(move |s| s.bg(accent.opacity(0.85))))
+        .when(enabled, |b| {
+            b.cursor_pointer()
+                .active(move |s| s.bg(accent.opacity(0.85)))
+        })
         .when(!enabled, |b| b.opacity(0.45))
         .child(label)
         .tip(tip)

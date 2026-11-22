@@ -34,9 +34,21 @@ pub(crate) struct PressKind {
     pub(crate) needs_hold: bool,
 }
 
-pub(crate) const BAR_PRESS: PressKind = PressKind { moves_window: true, from_press: true, needs_hold: true };
-pub(crate) const TAB_PRESS: PressKind = PressKind { moves_window: true, from_press: false, needs_hold: false };
-pub(crate) const BODY_PRESS: PressKind = PressKind { moves_window: false, from_press: false, needs_hold: true };
+pub(crate) const BAR_PRESS: PressKind = PressKind {
+    moves_window: true,
+    from_press: true,
+    needs_hold: true,
+};
+pub(crate) const TAB_PRESS: PressKind = PressKind {
+    moves_window: true,
+    from_press: false,
+    needs_hold: false,
+};
+pub(crate) const BODY_PRESS: PressKind = PressKind {
+    moves_window: false,
+    from_press: false,
+    needs_hold: true,
+};
 
 /// Waiting for the hold or the first 5 points of movement; then which of the
 /// three it became. Swift's HoldDrag.Mode.
@@ -137,7 +149,12 @@ impl DockView {
 
     /// A dock for `layout`. It redraws itself when the model changes, and
     /// opens and closes the torn-out windows the layout says it has.
-    pub fn new(model: Entity<DockModel>, content: SharedContent, options: DockOptions, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        model: Entity<DockModel>,
+        content: SharedContent,
+        options: DockOptions,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observed = cx.observe(&model, |this, _, cx| {
             // Any window of the dock can change it (a torn-out window's bar
             // drives a drag from over there): this window follows.
@@ -176,8 +193,16 @@ impl DockView {
     /// The last time the layout changed: where each panel's group was drawn
     /// and where it went, by the panel showing in it, and whether the groups
     /// are still on their way. For scripts.
-    pub fn last_motion(&self) -> Option<(&HashMap<PanelId, dl::Rect>, &HashMap<PanelId, dl::Rect>, bool)> {
-        self.last_motion.as_ref().map(|(from, to)| (from, to, self.motion.is_some()))
+    pub fn last_motion(
+        &self,
+    ) -> Option<(
+        &HashMap<PanelId, dl::Rect>,
+        &HashMap<PanelId, dl::Rect>,
+        bool,
+    )> {
+        self.last_motion
+            .as_ref()
+            .map(|(from, to)| (from, to, self.motion.is_some()))
     }
 
     /// Whether `panel` is drawn in this window now: the front panel of a group
@@ -191,10 +216,45 @@ impl DockView {
         fn walk(node: &DockNode, panel: &str, is_available: &dyn Fn(&str) -> bool) -> bool {
             match node {
                 DockNode::Group(g) => dl::visible_group(g, is_available).selected == panel,
-                DockNode::Split(s) => dl::shown_indices(s, is_available).into_iter().any(|i| walk(&s.children[i], panel, is_available)),
+                DockNode::Split(s) => dl::shown_indices(s, is_available)
+                    .into_iter()
+                    .any(|i| walk(&s.children[i], panel, is_available)),
             }
         }
         walk(&self.model.read(cx).layout().root, panel, &is_available)
+    }
+
+    /// Makes the group `panel` is in at least `width` points wide, leaving
+    /// what's beside it `keep` points each, and returns what changed for
+    /// `restore_width` (`DockModel::widen_panel`, with what the content says
+    /// is available, as it's drawn). That asks the content, so an app whose
+    /// content reads the app itself can't call this from inside its own
+    /// update: it calls the model's with its own answer.
+    pub fn widen_panel(
+        &mut self,
+        panel: &str,
+        width: f32,
+        keep: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<dl::Widened> {
+        let content = self.content.clone();
+        let available: HashSet<PanelId> = self
+            .model
+            .read(cx)
+            .layout()
+            .panels()
+            .into_iter()
+            .filter(|p| content.available(p, cx))
+            .collect();
+        self.model.update(cx, |m, cx| {
+            m.widen_panel(panel, width, keep, &|p: &str| available.contains(p), cx)
+        })
+    }
+
+    /// Puts back what `widen_panel` changed, unless a divider there has been
+    /// dragged since (`DockModel::restore_width`).
+    pub fn restore_width(&mut self, widened: &dl::Widened, cx: &mut Context<Self>) -> bool {
+        self.model.update(cx, |m, cx| m.restore_width(widened, cx))
     }
 
     /// Whether a dropped panel's ghost is still flying to where it landed.
@@ -222,14 +282,26 @@ impl DockView {
     /// The dock's position in its window.
     fn dock_point(&self, position: Point<Pixels>) -> dl::Point {
         let origin = self.root_bounds.get().origin;
-        dl::Point::new((position.x - origin.x).as_f32() as f64, (position.y - origin.y).as_f32() as f64)
+        dl::Point::new(
+            (position.x - origin.x).as_f32() as f64,
+            (position.y - origin.y).as_f32() as f64,
+        )
     }
 
     fn drags_window(&self, kind: PressKind, panel: &str, cx: &App) -> bool {
-        kind.moves_window && (self.options.bars_move_window || self.model.read(cx).controller.layout.is_floating(panel))
+        kind.moves_window
+            && (self.options.bars_move_window
+                || self.model.read(cx).controller.layout.is_floating(panel))
     }
 
-    fn begin_press(&mut self, panel: PanelId, kind: PressKind, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn begin_press(
+        &mut self,
+        panel: PanelId,
+        kind: PressKind,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.press.is_some() {
             return;
         }
@@ -241,11 +313,22 @@ impl DockView {
         let timer = kind.from_press.then(|| {
             let panel = panel.clone();
             cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs_f64(dl::HOLD_SECONDS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(dl::HOLD_SECONDS))
+                    .await;
                 let _ = this.update(cx, |this, cx| this.hold_fired(&panel, cx));
             })
         });
-        self.press = Some(Press { panel, kind, start, location: start, pressed_at: Instant::now(), mode: PressMode::Waiting, grab: platform::grab_window(window), _timer: timer });
+        self.press = Some(Press {
+            panel,
+            kind,
+            start,
+            location: start,
+            pressed_at: Instant::now(),
+            mode: PressMode::Waiting,
+            grab: platform::grab_window(window),
+            _timer: timer,
+        });
         cx.notify();
     }
 
@@ -260,8 +343,16 @@ impl DockView {
         self.drag_changed(panel, start, location, cx);
     }
 
-    fn drag_changed(&mut self, panel: &str, start: dl::Point, location: dl::Point, cx: &mut Context<Self>) {
-        self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.drag_changed(panel, start, location)));
+    fn drag_changed(
+        &mut self,
+        panel: &str,
+        start: dl::Point,
+        location: dl::Point,
+        cx: &mut Context<Self>,
+    ) {
+        self.model.update(cx, |m, cx| {
+            m.update_controller(cx, |c| c.drag_changed(panel, start, location))
+        });
         // Now as well as from the model's observer, so a frame drawn in this
         // same event (the scripted demo draws right after dispatching) is current.
         self.after_drag_update(cx);
@@ -277,7 +368,11 @@ impl DockView {
             Some(d) => {
                 // The preview is for places in the dock; opening a window has
                 // its own outline. Swift's DragOverlay draws it for `drop != nil`.
-                let preview = d.target.as_ref().filter(|t| t.drop.is_some()).map(|t| t.preview);
+                let preview = d
+                    .target
+                    .as_ref()
+                    .filter(|t| t.drop.is_some())
+                    .map(|t| t.preview);
                 self.update_preview(preview);
                 if d.window.is_none() {
                     if self.lift.is_none() {
@@ -289,7 +384,8 @@ impl DockView {
                     let float = d.target.as_ref().and_then(|t| t.float);
                     let title = self.content.title(&d.panel, cx);
                     let (height, accent) = (self.options.header_height, self.options.accent);
-                    self.windows.update_outline(float, title, height, accent, cx);
+                    self.windows
+                        .update_outline(float, title, height, accent, cx);
                 }
             }
             None => {
@@ -310,7 +406,11 @@ impl DockView {
         }
         let view = cx.entity().downgrade();
         self.escape_watch = Some(cx.intercept_keystrokes(move |event, window, cx| {
-            if event.keystroke.key == "escape" && view.update(cx, |v, cx| v.cancel_drag(window, cx)).unwrap_or(false) {
+            if event.keystroke.key == "escape"
+                && view
+                    .update(cx, |v, cx| v.cancel_drag(window, cx))
+                    .unwrap_or(false)
+            {
                 cx.stop_propagation();
             }
         }));
@@ -331,7 +431,12 @@ impl DockView {
         };
     }
 
-    fn pointer_moved(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn pointer_moved(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The button came up without us seeing it (released between two
         // frames, or on something that took the mouse-up): the press is over.
         if event.pressed_button != Some(MouseButton::Left) {
@@ -349,13 +454,19 @@ impl DockView {
         p.location = location;
         let (panel, start, kind) = (p.panel.clone(), p.start, p.kind);
         if p.mode == PressMode::Waiting {
-            let moved = ((location.x - start.x).powi(2) + (location.y - start.y).powi(2)).sqrt() >= dl::DRAG_DISTANCE;
+            let moved = ((location.x - start.x).powi(2) + (location.y - start.y).powi(2)).sqrt()
+                >= dl::DRAG_DISTANCE;
             if moved {
-                let held = !kind.needs_hold || p.pressed_at.elapsed().as_secs_f64() >= dl::HOLD_SECONDS;
+                let held =
+                    !kind.needs_hold || p.pressed_at.elapsed().as_secs_f64() >= dl::HOLD_SECONDS;
                 let mode = if kind.from_press {
                     // Moving first means the window (or nothing), as the
                     // hold's timer hasn't fired.
-                    if self.drags_window(kind, &panel, cx) { PressMode::Window } else { PressMode::Nothing }
+                    if self.drags_window(kind, &panel, cx) {
+                        PressMode::Window
+                    } else {
+                        PressMode::Nothing
+                    }
                 } else if held {
                     PressMode::Panel
                 } else if self.drags_window(kind, &panel, cx) {
@@ -368,12 +479,17 @@ impl DockView {
                     p._timer = None;
                 }
                 self.press_moved = matches!(mode, PressMode::Window | PressMode::Panel);
-                if mode == PressMode::Window && self.press.as_ref().is_some_and(|p| p.grab.is_none()) {
+                if mode == PressMode::Window
+                    && self.press.as_ref().is_some_and(|p| p.grab.is_none())
+                {
                     window.start_window_move();
                 }
             }
         }
-        let (mode, grab) = self.press.as_ref().map_or((None, None), |p| (Some(p.mode), p.grab));
+        let (mode, grab) = self
+            .press
+            .as_ref()
+            .map_or((None, None), |p| (Some(p.mode), p.grab));
         if mode == Some(PressMode::Panel) {
             self.suppress_click = true;
             self.drag_changed(&panel, start, location, cx);
@@ -399,7 +515,9 @@ impl DockView {
                     platform::move_grabbed_window(window, grab);
                 }
             }
-            PressMode::Waiting if self.drags_window(p.kind, &p.panel, cx) && event.click_count == 2 => {
+            PressMode::Waiting
+                if self.drags_window(p.kind, &p.panel, cx) && event.click_count == 2 =>
+            {
                 // A double-click that didn't move zooms the window (Swift's
                 // HoldDrag.ended).
                 window.zoom_window();
@@ -423,23 +541,47 @@ impl DockView {
     /// The panel was let go: the flight to where it landed starts here.
     fn drag_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.model.read(cx).controller.drag.clone();
-        let lift = self.lift.as_ref().map(|r| r.value(Instant::now()) as f64).unwrap_or(1.);
-        self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.drag_ended()));
+        let lift = self
+            .lift
+            .as_ref()
+            .map(|r| r.value(Instant::now()) as f64)
+            .unwrap_or(1.);
+        self.model
+            .update(cx, |m, cx| m.update_controller(cx, |c| c.drag_ended()));
         self.after_drop(before, lift, window, cx);
     }
 
     /// Starts the flight for a drop or a cancel. `drag` is the drag as it
     /// was just before it ended.
-    fn after_drop(&mut self, drag: Option<dl::DragState>, lift: f64, window: &mut Window, cx: &mut Context<Self>) {
+    fn after_drop(
+        &mut self,
+        drag: Option<dl::DragState>,
+        lift: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.lift = None;
         self.update_preview(None);
-        self.windows.update_outline(None, SharedString::default(), self.options.header_height, self.options.accent, cx);
+        self.windows.update_outline(
+            None,
+            SharedString::default(),
+            self.options.header_height,
+            self.options.accent,
+            cx,
+        );
         let landing = self.model.read(cx).controller.landing.clone();
         if let (Some(d), Some(landing)) = (drag, landing) {
-            self.landing = Some(LandingRun::new(dl::DockController::ghost_rect(&d, lift), landing.to, d.panel.clone(), d.source_frame.size()));
+            self.landing = Some(LandingRun::new(
+                dl::DockController::ghost_rect(&d, lift),
+                landing.to,
+                d.panel.clone(),
+                d.source_frame.size(),
+            ));
             // Swift: after 300 ms the landing clears with a 120 ms fade.
             cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs_f64(dl::LANDING_SECONDS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(dl::LANDING_SECONDS))
+                    .await;
                 let _ = this.update(cx, |this, cx| {
                     this.model.update(cx, |m, _| m.controller.clear_landing());
                     if let Some(run) = &mut this.landing {
@@ -447,7 +589,9 @@ impl DockView {
                     }
                     cx.notify();
                 });
-                cx.background_executor().timer(Duration::from_secs_f64(dl::LANDING_FADE_SECONDS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(dl::LANDING_FADE_SECONDS))
+                    .await;
                 let _ = this.update(cx, |this, cx| {
                     this.landing = None;
                     cx.notify();
@@ -466,38 +610,85 @@ impl DockView {
         if before.is_none() {
             return false;
         }
-        let lift = self.lift.as_ref().map(|r| r.value(Instant::now()) as f64).unwrap_or(1.);
-        self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.cancel_drag(None)));
+        let lift = self
+            .lift
+            .as_ref()
+            .map(|r| r.value(Instant::now()) as f64)
+            .unwrap_or(1.);
+        self.model
+            .update(cx, |m, cx| m.update_controller(cx, |c| c.cancel_drag(None)));
         self.after_drop(before, lift, window, cx);
         true
     }
 
     // MARK: Dividers
 
-    fn begin_divider(&mut self, split: &DockSplit, index: usize, shown: Vec<usize>, position: Point<Pixels>, cx: &mut Context<Self>) {
+    fn begin_divider(
+        &mut self,
+        split: &DockSplit,
+        index: usize,
+        shown: Vec<usize>,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         let p = self.dock_point(position);
-        let start = if split.axis == SplitAxis::Horizontal { p.x } else { p.y };
-        let length = self.split_lengths.borrow().get(&split.id).copied().unwrap_or(0.);
+        let start = if split.axis == SplitAxis::Horizontal {
+            p.x
+        } else {
+            p.y
+        };
+        let length = self
+            .split_lengths
+            .borrow()
+            .get(&split.id)
+            .copied()
+            .unwrap_or(0.);
         let available = length - GAP as f64 * (shown.len().saturating_sub(1)) as f64;
-        self.divider =
-            Some(DividerDrag { split: split.id.clone(), index, axis: split.axis, start, start_fractions: split.fractions.clone(), shown, available });
+        self.divider = Some(DividerDrag {
+            split: split.id.clone(),
+            index,
+            axis: split.axis,
+            start,
+            start_fractions: split.fractions.clone(),
+            shown,
+            available,
+        });
         cx.notify();
     }
 
     fn divider_moved(&mut self, location: dl::Point, cx: &mut Context<Self>) {
         let Some(d) = &self.divider else { return };
-        let t = if d.axis == SplitAxis::Horizontal { location.x } else { location.y } - d.start;
+        let t = if d.axis == SplitAxis::Horizontal {
+            location.x
+        } else {
+            location.y
+        } - d.start;
         let available = d.available.max(1.);
-        let visible = dl::normalized(&d.shown.iter().map(|&i| d.start_fractions[i]).collect::<Vec<_>>());
+        let visible = dl::normalized(
+            &d.shown
+                .iter()
+                .map(|&i| d.start_fractions[i])
+                .collect::<Vec<_>>(),
+        );
         let moved = dl::resized(&visible, d.index, t / available, dl::MIN_PANEL / available);
         let all = dl::merged(&moved, &d.start_fractions, &d.shown);
         let split = d.split.clone();
-        self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.layout.set_fractions(&split, &all)));
+        self.model.update(cx, |m, cx| {
+            m.update_controller(cx, |c| c.layout.set_fractions(&split, &all))
+        });
     }
 
     // MARK: Rendering
 
-    fn node(&mut self, node: &DockNode, layout: &DockLayout, theme: &DockTheme, available: &Rc<HashSet<PanelId>>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn node(
+        &mut self,
+        node: &DockNode,
+        layout: &DockLayout,
+        theme: &DockTheme,
+        available: &Rc<HashSet<PanelId>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match node {
             DockNode::Group(g) => self.group(g, layout, theme, available, window, cx),
             DockNode::Split(s) => self.split(s, layout, theme, available, window, cx),
@@ -509,10 +700,17 @@ impl DockView {
     /// Reduce Motion. One already running starts again from where its groups
     /// are drawn now, as SwiftUI's does.
     fn start_motion(&mut self, layout: &DockLayout, available: &Rc<HashSet<PanelId>>, cx: &App) {
-        let before = std::mem::replace(&mut self.last_layout, Some(layout.clone()));
-        let Some(before) = before.filter(|b| b.root != layout.root) else { return };
+        let before = self.last_layout.replace(layout.clone());
+        let Some(before) = before.filter(|b| b.root != layout.root) else {
+            return;
+        };
         let controller = &self.model.read(cx).controller;
-        if self.divider.is_some() || controller.drag.is_some() || cx.reduce_motion() || controller.bounds.width <= 0. || controller.bounds.height <= 0. {
+        if self.divider.is_some()
+            || controller.drag.is_some()
+            || cx.reduce_motion()
+            || controller.bounds.width <= 0.
+            || controller.bounds.height <= 0.
+        {
             return;
         }
         let avail = available.clone();
@@ -522,32 +720,76 @@ impl DockView {
         // (it's made from the new layout), but it was showing.
         let now_in = layout.clone();
         let was_available = |p: &str| is_available(p) || !now_in.contains(p);
-        let was: Vec<String> = dl::group_frames(&before.root, controller.bounds, &was_available, GAP as f64).into_iter().map(|(id, _)| id).collect();
-        let from: HashMap<String, dl::Rect> = was.iter().filter_map(|id| controller.frames.get(id).map(|r| (id.clone(), *r))).collect();
-        let to: HashMap<String, dl::Rect> = dl::group_frames(&layout.root, controller.bounds, &is_available, GAP as f64).into_iter().collect();
-        let leaving = from.iter().filter(|(id, _)| !to.contains_key(*id)).map(|(_, r)| *r).collect();
-        let by_panel = |frames: &HashMap<String, dl::Rect>, layout: &DockLayout| -> HashMap<PanelId, dl::Rect> {
-            frames.iter().filter_map(|(id, r)| layout.group(id).map(|g| (dl::visible_group(&g, &was_available).selected, *r))).collect()
+        let was: Vec<String> =
+            dl::group_frames(&before.root, controller.bounds, &was_available, GAP as f64)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+        let from: HashMap<String, dl::Rect> = was
+            .iter()
+            .filter_map(|id| controller.frames.get(id).map(|r| (id.clone(), *r)))
+            .collect();
+        let to: HashMap<String, dl::Rect> =
+            dl::group_frames(&layout.root, controller.bounds, &is_available, GAP as f64)
+                .into_iter()
+                .collect();
+        let leaving = from
+            .iter()
+            .filter(|(id, _)| !to.contains_key(*id))
+            .map(|(_, r)| *r)
+            .collect();
+        let by_panel = |frames: &HashMap<String, dl::Rect>,
+                        layout: &DockLayout|
+         -> HashMap<PanelId, dl::Rect> {
+            frames
+                .iter()
+                .filter_map(|(id, r)| {
+                    layout
+                        .group(id)
+                        .map(|g| (dl::visible_group(&g, &was_available).selected, *r))
+                })
+                .collect()
         };
         self.last_motion = Some((by_panel(&from, &before), by_panel(&to, layout)));
-        self.motion = Some(LayoutMotion { from, leaving, spring: SpringRun::new(dl::SETTLE, 0., 1.) });
+        self.motion = Some(LayoutMotion {
+            from,
+            leaving,
+            spring: SpringRun::new(dl::SETTLE, 0., 1.),
+        });
     }
 
     /// The groups mid-glide, each placed by hand (`LayoutMotion`).
-    fn moving(&mut self, motion: &LayoutMotion, layout: &DockLayout, theme: &DockTheme, available: &Rc<HashSet<PanelId>>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn moving(
+        &mut self,
+        motion: &LayoutMotion,
+        layout: &DockLayout,
+        theme: &DockTheme,
+        available: &Rc<HashSet<PanelId>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = motion.spring.value(Instant::now()) as f64;
         let fade = p.clamp(0., 1.) as f32;
         let avail = available.clone();
         let is_available = move |p: &str| avail.contains(p);
         let bounds = self.model.read(cx).controller.bounds;
-        let place = |r: dl::Rect| div().absolute().left(px(r.x as f32)).top(px(r.y as f32)).w(px(r.width as f32)).h(px(r.height as f32));
+        let place = |r: dl::Rect| {
+            div()
+                .absolute()
+                .left(px(r.x as f32))
+                .top(px(r.y as f32))
+                .w(px(r.width as f32))
+                .h(px(r.height as f32))
+        };
         let mut layer = div().absolute().top_0().left_0().size_full();
         // Under the rest, which take its room as it goes.
         for r in &motion.leaving {
             layer = layer.child(place(*r).bg(theme.panel).opacity(1. - fade));
         }
         for (id, to) in dl::group_frames(&layout.root, bounds, &is_available, GAP as f64) {
-            let Some(group) = layout.group(&id) else { continue };
+            let Some(group) = layout.group(&id) else {
+                continue;
+            };
             let element = self.group(&group, layout, theme, available, window, cx);
             layer = layer.child(match motion.from.get(&id) {
                 Some(from) => place(lerp_rect(*from, to, p)).child(element),
@@ -557,7 +799,15 @@ impl DockView {
         layer.into_any_element()
     }
 
-    fn split(&mut self, split: &DockSplit, layout: &DockLayout, theme: &DockTheme, available: &Rc<HashSet<PanelId>>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn split(
+        &mut self,
+        split: &DockSplit,
+        layout: &DockLayout,
+        theme: &DockTheme,
+        available: &Rc<HashSet<PanelId>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let avail = available.clone();
         let is_available = move |p: &str| avail.contains(p);
         // Children with nothing to show right now (a thread's patch panel,
@@ -566,11 +816,20 @@ impl DockView {
         // tabs are within a group. The layout keeps them, so they're back
         // when there's something to show again.
         let shown = dl::shown_indices(split, &is_available);
-        let fractions = dl::normalized(&shown.iter().map(|&i| split.fractions[i]).collect::<Vec<_>>());
+        let fractions = dl::normalized(
+            &shown
+                .iter()
+                .map(|&i| split.fractions[i])
+                .collect::<Vec<_>>(),
+        );
         let horizontal = split.axis == SplitAxis::Horizontal;
 
         let mut row = div().flex().size_full().min_w(px(0.)).min_h(px(0.));
-        row = if horizontal { row.flex_row() } else { row.flex_col() };
+        row = if horizontal {
+            row.flex_row()
+        } else {
+            row.flex_col()
+        };
         for (k, &i) in shown.iter().enumerate() {
             let child = self.node(&split.children[i], layout, theme, available, window, cx);
             row = row.child(flex_cell(fractions[k]).child(child));
@@ -583,7 +842,11 @@ impl DockView {
         // in the flow would be under it), in a second row with the same
         // shares so each lands on its gap without knowing the pixels.
         let mut rail = div().absolute().top_0().left_0().size_full().flex();
-        rail = if horizontal { rail.flex_row() } else { rail.flex_col() };
+        rail = if horizontal {
+            rail.flex_row()
+        } else {
+            rail.flex_col()
+        };
         for (k, _) in shown.iter().enumerate() {
             rail = rail.child(flex_cell(fractions[k]));
             if k + 1 < shown.len() {
@@ -597,8 +860,14 @@ impl DockView {
             .relative()
             .size_full()
             .child(measure(move |bounds, _, _| {
-                let length = if horizontal { bounds.size.width } else { bounds.size.height };
-                lengths.borrow_mut().insert(id.clone(), length.as_f32() as f64);
+                let length = if horizontal {
+                    bounds.size.width
+                } else {
+                    bounds.size.height
+                };
+                lengths
+                    .borrow_mut()
+                    .insert(id.clone(), length.as_f32() as f64);
             }))
             .child(row)
             .child(rail)
@@ -607,21 +876,46 @@ impl DockView {
 
     /// The invisible strip over a hairline that resizes the panels either
     /// side: 14 pt wide, lit in the accent as you hover (Mike, 30 Oct).
-    fn divider(&self, split: &DockSplit, k: usize, shown: Vec<usize>, horizontal: bool, theme: &DockTheme, cx: &mut Context<Self>) -> Div {
-        let dragging_this = self.divider.as_ref().is_some_and(|d| d.split == split.id && d.index == k);
+    fn divider(
+        &self,
+        split: &DockSplit,
+        k: usize,
+        shown: Vec<usize>,
+        horizontal: bool,
+        theme: &DockTheme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let dragging_this = self
+            .divider
+            .as_ref()
+            .is_some_and(|d| d.split == split.id && d.index == k);
         let group = SharedString::from(format!("dock-divider-{}-{}", split.id, k));
         let accent = theme.accent;
         let split_for_press = split.clone();
         // The strip extends 6.5 each side of the 1 pt gap: 14 pt to grab.
         let strip = div()
-            .id(ElementId::Name(format!("dock-divider-strip-{}-{}", split.id, k).into()))
+            .id(ElementId::Name(
+                format!("dock-divider-strip-{}-{}", split.id, k).into(),
+            ))
             .group(group.clone())
             .absolute()
             .flex()
             .items_center()
             .justify_center()
-            .when(horizontal, |d| d.left(px(-6.5)).top_0().bottom_0().w(px(14.)).cursor(CursorStyle::ResizeLeftRight))
-            .when(!horizontal, |d| d.top(px(-6.5)).left_0().right_0().h(px(14.)).cursor(CursorStyle::ResizeUpDown))
+            .when(horizontal, |d| {
+                d.left(px(-6.5))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(14.))
+                    .cursor(CursorStyle::ResizeLeftRight)
+            })
+            .when(!horizontal, |d| {
+                d.top(px(-6.5))
+                    .left_0()
+                    .right_0()
+                    .h(px(14.))
+                    .cursor(CursorStyle::ResizeUpDown)
+            })
             .child(
                 div()
                     .when(horizontal, |d| d.w(px(3.)).h_full())
@@ -637,10 +931,23 @@ impl DockView {
                     cx.stop_propagation();
                 }),
             );
-        div().flex_none().relative().when(horizontal, |d| d.w(px(GAP))).when(!horizontal, |d| d.h(px(GAP))).child(strip)
+        div()
+            .flex_none()
+            .relative()
+            .when(horizontal, |d| d.w(px(GAP)))
+            .when(!horizontal, |d| d.h(px(GAP)))
+            .child(strip)
     }
 
-    fn group(&mut self, group: &DockGroup, layout: &DockLayout, theme: &DockTheme, available: &Rc<HashSet<PanelId>>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn group(
+        &mut self,
+        group: &DockGroup,
+        layout: &DockLayout,
+        theme: &DockTheme,
+        available: &Rc<HashSet<PanelId>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let avail = available.clone();
         let is_available = move |p: &str| avail.contains(p);
         // The tabs with something to show; the layout keeps the rest.
@@ -649,14 +956,21 @@ impl DockView {
         let tabbed = visible.panels.len() > 1;
         let (lifted, landing) = {
             let ctrl = &self.model.read(cx).controller;
-            let lifted = ctrl.drag.as_ref().is_some_and(|d| d.lifted && d.window.is_none() && d.panel == visible.selected);
-            let landing = ctrl.landing.as_ref().is_some_and(|l| l.panel == visible.selected);
+            let lifted = ctrl
+                .drag
+                .as_ref()
+                .is_some_and(|d| d.lifted && d.window.is_none() && d.panel == visible.selected);
+            let landing = ctrl
+                .landing
+                .as_ref()
+                .is_some_and(|l| l.panel == visible.selected);
             (lifted, landing)
         };
         let header = layout.shows_header(&visible);
         // Under the traffic lights, in a window without a title bar: the
         // bar stays (empty, if the title's hidden) so they've somewhere to sit.
-        let corner = self.options.traffic_lights > 0. && dl::top_leading_group_id(&layout.root, &is_available) == group.id;
+        let corner = self.options.traffic_lights > 0.
+            && dl::top_leading_group_id(&layout.root, &is_available) == group.id;
         let header_height = self.options.header_height;
 
         let frames_model = self.model.clone();
@@ -719,20 +1033,45 @@ impl DockView {
                     m.controller.frames.insert(frame_group.clone(), rect);
                 });
             }))
-            .when(header, |d| d.child(self.header(&visible, corner, theme, window, cx)))
-            .when(!header && corner, |d| d.child(self.corner_bar(panel.clone(), header_height, theme, cx)))
+            .when(header, |d| {
+                d.child(self.header(&visible, corner, theme, window, cx))
+            })
+            .when(!header && corner, |d| {
+                d.child(self.corner_bar(panel.clone(), header_height, theme, cx))
+            })
             .child(body)
-            .when(hidden_strip, |d| d.child(self.hidden_strip(panel.clone(), theme, cx)))
+            .when(hidden_strip, |d| {
+                d.child(self.hidden_strip(panel.clone(), theme, cx))
+            })
             .when(lifted, |d| {
                 // The hole it left behind.
-                d.child(div().absolute().inset(px(6.)).rounded(px(8.)).border_1().border_dashed().border_color(theme.faint))
+                d.child(
+                    div()
+                        .absolute()
+                        .inset(px(6.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_dashed()
+                        .border_color(theme.faint),
+                )
             })
             .into_any_element()
     }
 
-    fn header(&mut self, group: &DockGroup, corner: bool, theme: &DockTheme, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn header(
+        &mut self,
+        group: &DockGroup,
+        corner: bool,
+        theme: &DockTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let single = group.panels.len() == 1;
-        let leading = if corner { self.options.traffic_lights } else { 0. };
+        let leading = if corner {
+            self.options.traffic_lights
+        } else {
+            0.
+        };
         let moves_window_strip = corner && self.options.corner_moves_window && leading > 0.;
         let root_bounds = self.root_bounds.clone();
         let (group_id, group_id2) = (group.id.clone(), group.id.clone());
@@ -760,18 +1099,28 @@ impl DockView {
         }));
         // The strip beside the traffic lights: moves the window, double-click zooms.
         if moves_window_strip {
-            bar = bar.child(div().id("dock-window-space").absolute().left_0().top_0().bottom_0().w(px(leading)).on_mouse_down(
-                MouseButton::Left,
-                |e: &MouseDownEvent, window, _| {
-                    if e.click_count == 2 {
-                        window.zoom_window();
-                    } else {
-                        window.start_window_move();
-                    }
-                },
-            ));
+            bar = bar.child(
+                div()
+                    .id("dock-window-space")
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(leading))
+                    .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
+                        if e.click_count == 2 {
+                            window.zoom_window();
+                        } else {
+                            window.start_window_move();
+                        }
+                    }),
+            );
         }
-        let custom = if single { self.content.header(&selected, window, cx) } else { None };
+        let custom = if single {
+            self.content.header(&selected, window, cx)
+        } else {
+            None
+        };
         let fills = custom.is_some() && self.content.header_fills(&selected, cx);
         // A custom header takes the tab's place, and its × with it: without
         // one at the bar's end, a thread's own panel could only be closed
@@ -791,7 +1140,9 @@ impl DockView {
                     // Lowest priority: the header's own buttons and chips win.
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, e: &MouseDownEvent, window, cx| this.begin_press(press_panel.clone(), BAR_PRESS, e, window, cx)),
+                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                            this.begin_press(press_panel.clone(), BAR_PRESS, e, window, cx)
+                        }),
                     )
                     .context_menu(self.panel_menu(selected.clone(), false)),
             );
@@ -800,12 +1151,17 @@ impl DockView {
         } else {
             // Tabs that don't fit scroll, rather than running off the bar's
             // trailing edge where no one could reach them (Ville, 11 Nov 2026).
-            let (handle, shown) = self.tab_scrolls.entry(group.id.clone()).or_insert_with(|| (ScrollHandle::new(), PanelId::default())).clone();
+            let (handle, shown) = self
+                .tab_scrolls
+                .entry(group.id.clone())
+                .or_insert_with(|| (ScrollHandle::new(), PanelId::default()))
+                .clone();
             if shown != group.selected {
                 if let Some(i) = group.panels.iter().position(|p| *p == group.selected) {
                     handle.scroll_to_item(i);
                 }
-                self.tab_scrolls.insert(group.id.clone(), (handle.clone(), group.selected.clone()));
+                self.tab_scrolls
+                    .insert(group.id.clone(), (handle.clone(), group.selected.clone()));
             }
             let mut strip = h_flex()
                 .id(ElementId::Name(format!("dock-tabs-{}", group.id).into()))
@@ -817,7 +1173,14 @@ impl DockView {
                 .overflow_x_scroll()
                 .track_scroll(&handle);
             for panel in &group.panels {
-                strip = strip.child(div().flex_none().child(self.tab(panel, *panel == group.selected, false, theme, window, cx)));
+                strip = strip.child(div().flex_none().child(self.tab(
+                    panel,
+                    *panel == group.selected,
+                    false,
+                    theme,
+                    window,
+                    cx,
+                )));
             }
             bar = bar.child(strip);
         }
@@ -826,7 +1189,9 @@ impl DockView {
         let space_root = root_bounds;
         bar = bar.child(
             div()
-                .id(ElementId::Name(format!("dock-bar-space-{}", group.id).into()))
+                .id(ElementId::Name(
+                    format!("dock-bar-space-{}", group.id).into(),
+                ))
                 // Gives way to a header that fills, or they'd share the space.
                 .when(!fills, |d| d.flex_1())
                 .h_full()
@@ -835,12 +1200,16 @@ impl DockView {
                     let origin = space_root.get().origin;
                     let min_x = (bounds.origin.x - origin.x).as_f32() as f64;
                     model2.update(cx, |m, _| {
-                        m.controller.bar_space_starts.insert(group_id2.clone(), min_x);
+                        m.controller
+                            .bar_space_starts
+                            .insert(group_id2.clone(), min_x);
                     });
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, e: &MouseDownEvent, window, cx| this.begin_press(press_panel.clone(), BAR_PRESS, e, window, cx)),
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        this.begin_press(press_panel.clone(), BAR_PRESS, e, window, cx)
+                    }),
                 )
                 .context_menu(self.panel_menu(selected.clone(), !single)),
         );
@@ -852,7 +1221,9 @@ impl DockView {
             let close = selected.clone();
             bar = bar.child(
                 div()
-                    .id(ElementId::Name(format!("dock-header-close-{}", group.id).into()))
+                    .id(ElementId::Name(
+                        format!("dock-header-close-{}", group.id).into(),
+                    ))
                     .flex_none()
                     .size(px(24.))
                     .flex()
@@ -861,10 +1232,19 @@ impl DockView {
                     .rounded(px(6.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.tab_hover))
-                    .child(svg().path(Lucide::Close.path()).size(px(13.)).text_color(theme.secondary))
-                    .tooltip(move |window, cx| Tooltip::new(format!("Close {title}")).build(window, cx))
+                    .child(
+                        svg()
+                            .path(Lucide::Close.path())
+                            .size(px(13.))
+                            .text_color(theme.secondary),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(format!("Close {title}")).build(window, cx)
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.model.update(cx, |m, cx| m.close(&close, cx)))),
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.model.update(cx, |m, cx| m.close(&close, cx))
+                    })),
             );
         }
         bar
@@ -872,7 +1252,15 @@ impl DockView {
 
     /// A tab, or the title when the panel's alone (TabItem): picks up the
     /// panel when dragged, selects on click, × to close, middle-click closes.
-    fn tab(&mut self, panel: &str, selected: bool, single: bool, theme: &DockTheme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn tab(
+        &mut self,
+        panel: &str,
+        selected: bool,
+        single: bool,
+        theme: &DockTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let content = self.content.clone();
         let title = content.title(panel, cx);
         let icon = content.icon(panel, window, cx);
@@ -913,22 +1301,36 @@ impl DockView {
             // in a narrow pane with two tabs (11 Nov).
             .when(!single, |d| d.min_w(px(0.)).flex_shrink_1())
             .when(selected && !single, |d| d.bg(theme.tab_selected))
-            .when(!(selected && !single), |d| d.hover(|s| s.bg(theme.tab_hover)));
+            .when(!(selected && !single), |d| {
+                d.hover(|s| s.bg(theme.tab_hover))
+            });
 
         if let Some(icon) = icon {
-            row = row.child(div().relative().flex_none().child(icon).when_some(badge, |d, b| d.child(div().absolute().right(px(-2.)).bottom(px(-2.)).child(b))));
+            row = row.child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(icon)
+                    .when_some(badge, |d, b| {
+                        d.child(div().absolute().right(px(-2.)).bottom(px(-2.)).child(b))
+                    }),
+            );
         }
         row = row.child(
             div()
                 .text_size(px(title_size))
                 .when(selected, |d| d.font_weight(FontWeight::SEMIBOLD))
-                .text_color(if selected { theme.header_text } else { theme.secondary })
+                .text_color(if selected {
+                    theme.header_text
+                } else {
+                    theme.secondary
+                })
                 .min_w(px(0.))
                 .truncate()
                 .child(title),
         );
         if closable {
-            let close_group = group_name.clone();
+            let close_group = group_name;
             let title_for_tip = content.title(panel, cx);
             row = row.child(
                 div()
@@ -941,16 +1343,27 @@ impl DockView {
                     .rounded(px(4.))
                     .invisible_unless_hover(close_group, selected && !single)
                     .hover(|s| s.bg(theme.tab_selected))
-                    .child(svg().path(Lucide::Close.path()).size(px(10.)).text_color(theme.secondary))
-                    .tooltip(move |window, cx| Tooltip::new(format!("Close {title_for_tip}")).build(window, cx))
+                    .child(
+                        svg()
+                            .path(Lucide::Close.path())
+                            .size(px(10.))
+                            .text_color(theme.secondary),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(format!("Close {title_for_tip}")).build(window, cx)
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.model.update(cx, |m, cx| m.close(&close_x, cx)))),
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.model.update(cx, |m, cx| m.close(&close_x, cx))
+                    })),
             );
         }
 
         row.on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, e: &MouseDownEvent, window, cx| this.begin_press(press.clone(), TAB_PRESS, e, window, cx)),
+            cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                this.begin_press(press.clone(), TAB_PRESS, e, window, cx)
+            }),
         )
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             // After a drag the mouse-up lands on the tab that was dragged.
@@ -961,17 +1374,24 @@ impl DockView {
         // Middle-click closes a tab, on release and only over the tab, as
         // in a browser: pressing then sliding off lets you change your mind.
         .when(closable, |d| {
-            d.on_mouse_down(MouseButton::Middle, cx.listener(move |this, _: &MouseDownEvent, _, _| this.windows.middle_down = Some(middle_down.clone())))
-                .on_mouse_up(
-                    MouseButton::Middle,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        if this.windows.middle_down.take().as_deref() == Some(middle_up.as_str()) {
-                            this.model.update(cx, |m, cx| m.close(&close1, cx));
-                        }
-                    }),
-                )
+            d.on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, _: &MouseDownEvent, _, _| {
+                    this.windows.middle_down = Some(middle_down.clone())
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if this.windows.middle_down.take().as_deref() == Some(middle_up.as_str()) {
+                        this.model.update(cx, |m, cx| m.close(&close1, cx));
+                    }
+                }),
+            )
         })
-        .tooltip(move |window, cx| Tooltip::new(is_hidden_tip.as_str().to_string()).build(window, cx))
+        .tooltip(move |window, cx| {
+            Tooltip::new(is_hidden_tip.as_str().to_string()).build(window, cx)
+        })
         .context_menu(self.panel_menu(close2, !single))
         .into_any_element()
     }
@@ -991,32 +1411,60 @@ impl DockView {
 
     /// Right-click on a title, a tab, the strip of a panel without a title,
     /// or a panel's background (PanelMenu).
-    pub(crate) fn panel_menu(&self, panel: PanelId, tabbed: bool) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    pub(crate) fn panel_menu(
+        &self,
+        panel: PanelId,
+        tabbed: bool,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let model = self.model.clone();
         let content = self.content.clone();
         move |menu, _, cx| {
             let (hidden, floating, can_float) = {
                 let layout = &model.read(cx).controller.layout;
-                (layout.hidden_titles.contains(&panel), layout.is_floating(&panel), layout.can_float(&panel))
+                (
+                    layout.hidden_titles.contains(&panel),
+                    layout.is_floating(&panel),
+                    layout.can_float(&panel),
+                )
             };
             let m1 = model.clone();
             let p1 = panel.clone();
             let mut menu = if hidden {
-                menu.item(PopupMenuItem::new("Show Title").icon(Icon::new(Lucide::Eye)).on_click(move |_, _, cx| m1.update(cx, |m, cx| m.set_title_hidden(&p1, false, cx))))
+                menu.item(
+                    PopupMenuItem::new("Show Title")
+                        .icon(Icon::new(Lucide::Eye))
+                        .on_click(move |_, _, cx| {
+                            m1.update(cx, |m, cx| m.set_title_hidden(&p1, false, cx))
+                        }),
+                )
             } else {
                 // With tabs the bar has to stay, so say when it'll take effect.
-                let label = if tabbed { "Hide Title When on Its Own" } else { "Hide Title" };
-                menu.item(PopupMenuItem::new(label).icon(Icon::new(Lucide::EyeOff)).on_click(move |_, _, cx| m1.update(cx, |m, cx| m.set_title_hidden(&p1, true, cx))))
+                let label = if tabbed {
+                    "Hide Title When on Its Own"
+                } else {
+                    "Hide Title"
+                };
+                menu.item(
+                    PopupMenuItem::new(label)
+                        .icon(Icon::new(Lucide::EyeOff))
+                        .on_click(move |_, _, cx| {
+                            m1.update(cx, |m, cx| m.set_title_hidden(&p1, true, cx))
+                        }),
+                )
             };
             if floating {
                 let (m2, p2) = (model.clone(), panel.clone());
                 menu = menu.item(
-                    PopupMenuItem::new("Put Back in Main Window").icon(Icon::new(Lucide::PanelLeftClose)).on_click(move |_, _, cx| m2.update(cx, |m, cx| m.put_back(&p2, cx))),
+                    PopupMenuItem::new("Put Back in Main Window")
+                        .icon(Icon::new(Lucide::PanelLeftClose))
+                        .on_click(move |_, _, cx| m2.update(cx, |m, cx| m.put_back(&p2, cx))),
                 );
             } else if can_float {
                 let (m2, p2) = (model.clone(), panel.clone());
                 menu = menu.item(
-                    PopupMenuItem::new("Open in New Window").icon(Icon::new(Lucide::ExternalLink)).on_click(move |_, _, cx| m2.update(cx, |m, cx| m.open_in_window(&p2, cx))),
+                    PopupMenuItem::new("Open in New Window")
+                        .icon(Icon::new(Lucide::ExternalLink))
+                        .on_click(move |_, _, cx| m2.update(cx, |m, cx| m.open_in_window(&p2, cx))),
                 );
             }
             for extra in content.menu_items(&panel, cx) {
@@ -1025,7 +1473,11 @@ impl DockView {
             if content.closable(&panel, cx) {
                 let (m3, p3) = (model.clone(), panel.clone());
                 let title = content.title(&panel, cx);
-                menu = menu.separator().item(PopupMenuItem::new(format!("Close {title}")).icon(Icon::new(Lucide::Close)).on_click(move |_, _, cx| m3.update(cx, |m, cx| m.close(&p3, cx))));
+                menu = menu.separator().item(
+                    PopupMenuItem::new(format!("Close {title}"))
+                        .icon(Icon::new(Lucide::Close))
+                        .on_click(move |_, _, cx| m3.update(cx, |m, cx| m.close(&p3, cx))),
+                );
             }
             menu
         }
@@ -1034,12 +1486,19 @@ impl DockView {
     /// In place of the title bar for a panel that hides its title: a strip
     /// along the top that shows a grab handle on hover, to drag the panel by
     /// and right-click for the title back.
-    fn hidden_strip(&self, panel: PanelId, theme: &DockTheme, cx: &mut Context<Self>) -> AnyElement {
+    fn hidden_strip(
+        &self,
+        panel: PanelId,
+        theme: &DockTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let group = SharedString::from(format!("dock-strip-{}", panel_key(&panel)));
         let press = panel.clone();
         let grip = theme.header_text.opacity(0.28);
         div()
-            .id(ElementId::Name(format!("dock-hidden-strip-{}", panel_key(&panel)).into()))
+            .id(ElementId::Name(
+                format!("dock-hidden-strip-{}", panel_key(&panel)).into(),
+            ))
             .group(group.clone())
             .absolute()
             .top_0()
@@ -1050,12 +1509,25 @@ impl DockView {
             .justify_center()
             .items_center()
             .cursor(CursorStyle::OpenHand)
-            .child(div().w(px(34.)).h(px(4.)).rounded_full().group_hover(group, move |s| s.bg(grip)))
+            .child(
+                div()
+                    .w(px(34.))
+                    .h(px(4.))
+                    .rounded_full()
+                    .group_hover(group, move |s| s.bg(grip)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, e: &MouseDownEvent, window, cx| this.begin_press(press.clone(), BODY_PRESS, e, window, cx)),
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    this.begin_press(press.clone(), BODY_PRESS, e, window, cx)
+                }),
             )
-            .tooltip(|window, cx| Tooltip::new("Press and hold, then drag to move this panel. Right-click to show its title.").build(window, cx))
+            .tooltip(|window, cx| {
+                Tooltip::new(
+                    "Press and hold, then drag to move this panel. Right-click to show its title.",
+                )
+                .build(window, cx)
+            })
             .context_menu(self.panel_menu(panel, false))
             .into_any_element()
     }
@@ -1064,27 +1536,52 @@ impl DockView {
     /// the window (or the panel, with a title bar), with the grab handle on
     /// hover to move the panel by. In Threadbear that's the sidebar's bar,
     /// the one place left to grab the window by.
-    fn corner_bar(&self, panel: PanelId, height: f32, theme: &DockTheme, cx: &mut Context<Self>) -> AnyElement {
+    fn corner_bar(
+        &self,
+        panel: PanelId,
+        height: f32,
+        theme: &DockTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let leading = self.options.traffic_lights;
         let press = panel.clone();
         let mut row = h_flex().flex_none().w_full().h(px(height));
         row = if self.options.corner_moves_window {
-            row.child(div().id("dock-corner-window").flex_1().h_full().on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
-                if e.click_count == 2 {
-                    window.zoom_window();
-                } else {
-                    window.start_window_move();
-                }
-            }))
+            row.child(
+                div()
+                    .id("dock-corner-window")
+                    .flex_1()
+                    .h_full()
+                    .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
+                        if e.click_count == 2 {
+                            window.zoom_window();
+                        } else {
+                            window.start_window_move();
+                        }
+                    }),
+            )
         } else {
             row.child(div().flex_none().w(px(leading))).child(
-                div().id("dock-corner-space").flex_1().h_full().on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, e: &MouseDownEvent, window, cx| this.begin_press(press.clone(), BAR_PRESS, e, window, cx)),
-                ),
+                div()
+                    .id("dock-corner-space")
+                    .flex_1()
+                    .h_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                            this.begin_press(press.clone(), BAR_PRESS, e, window, cx)
+                        }),
+                    ),
             )
         };
-        row = row.child(div().relative().flex_none().w(px(60.)).h_full().child(self.hidden_strip(panel, theme, cx)));
+        row = row.child(
+            div()
+                .relative()
+                .flex_none()
+                .w(px(60.))
+                .h_full()
+                .child(self.hidden_strip(panel, theme, cx)),
+        );
         row = row.child(div().flex_none().w(px(12.)));
         row.into_any_element()
     }
@@ -1107,7 +1604,13 @@ impl Render for DockView {
         let layout = self.model.read(cx).controller.layout.clone();
         let available: Rc<HashSet<PanelId>> = {
             let content = self.content.clone();
-            Rc::new(layout.panels().into_iter().filter(|p| content.available(p, cx)).collect())
+            Rc::new(
+                layout
+                    .panels()
+                    .into_iter()
+                    .filter(|p| content.available(p, cx))
+                    .collect(),
+            )
         };
 
         // Measures the dock before anything else in the frame, so frames
@@ -1120,7 +1623,12 @@ impl Render for DockView {
             let viewport = window.viewport_size();
             measure_model.update(cx, |m, _| {
                 let c = &mut m.controller;
-                c.bounds = dl::Rect::new(0., 0., bounds.size.width.as_f32() as f64, bounds.size.height.as_f32() as f64);
+                c.bounds = dl::Rect::new(
+                    0.,
+                    0.,
+                    bounds.size.width.as_f32() as f64,
+                    bounds.size.height.as_f32() as f64,
+                );
                 // The window's content area in dock coordinates, and where the
                 // dock's corner is on screen. Windows in this dock have full-size
                 // content, so the window's frame origin is the content's.
@@ -1170,7 +1678,14 @@ impl Render for DockView {
             .bg(theme.panel)
             .text_color(theme.header_text)
             .child(measure_root)
-            .child(div().absolute().top_0().left_0().size_full().bg(theme.hairline))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.hairline),
+            )
             .child(tree)
             .child(overlay)
             // Last, so the drag's cursor wins over what's under the pointer.
@@ -1183,12 +1698,20 @@ impl Render for DockView {
 
 /// While a press, drag or divider is live: window-level mouse listeners, so
 /// moves and the release are seen wherever they happen, and the drag's cursor.
-fn listeners(view: WeakEntity<DockView>, dragging: bool, divider_axis: Option<SplitAxis>) -> impl IntoElement {
+fn listeners(
+    view: WeakEntity<DockView>,
+    dragging: bool,
+    divider_axis: Option<SplitAxis>,
+) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |_, _, window, _| {
             if let Some(axis) = divider_axis {
-                window.set_window_cursor_style(if axis == SplitAxis::Horizontal { CursorStyle::ResizeLeftRight } else { CursorStyle::ResizeUpDown });
+                window.set_window_cursor_style(if axis == SplitAxis::Horizontal {
+                    CursorStyle::ResizeLeftRight
+                } else {
+                    CursorStyle::ResizeUpDown
+                });
             } else if dragging {
                 window.set_window_cursor_style(CursorStyle::ClosedHand);
             }
@@ -1198,7 +1721,7 @@ fn listeners(view: WeakEntity<DockView>, dragging: bool, divider_axis: Option<Sp
                     let _ = moved.update(cx, |v, cx| v.pointer_moved(e, window, cx));
                 }
             });
-            let released = view.clone();
+            let released = view;
             window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
                 if phase == DispatchPhase::Capture {
                     let _ = released.update(cx, |v, cx| v.pointer_up(e, window, cx));
@@ -1216,23 +1739,45 @@ fn listeners(view: WeakEntity<DockView>, dragging: bool, divider_axis: Option<Sp
 /// together, so with the 1 pt gaps each gets the same share of what's left that
 /// Swift's SplitLayout gives it.
 fn flex_cell(fraction: f64) -> Div {
-    div().flex_basis(relative(fraction as f32)).flex_shrink_1().min_w(px(0.)).min_h(px(0.)).overflow_hidden()
+    div()
+        .flex_basis(relative(fraction as f32))
+        .flex_shrink_1()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
 }
 
 fn gap_cell(horizontal: bool) -> Div {
-    div().flex_none().when(horizontal, |d| d.w(px(GAP))).when(!horizontal, |d| d.h(px(GAP)))
+    div()
+        .flex_none()
+        .when(horizontal, |d| d.w(px(GAP)))
+        .when(!horizontal, |d| d.h(px(GAP)))
 }
 
 /// Reports an element's bounds each frame, for hit testing.
-fn measure(on_bounds: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static) -> impl IntoElement {
+fn measure(
+    on_bounds: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     // With explicit insets: an absolute child with none sits where it would
     // have been in the flow, after whatever comes before it.
-    canvas(move |bounds, window, cx| on_bounds(bounds, window, cx), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+    canvas(
+        move |bounds, window, cx| on_bounds(bounds, window, cx),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 fn lerp_rect(a: dl::Rect, b: dl::Rect, t: f64) -> dl::Rect {
     let at = |x: f64, y: f64| x + (y - x) * t;
-    dl::Rect::new(at(a.x, b.x), at(a.y, b.y), at(a.width, b.width).max(0.), at(a.height, b.height).max(0.))
+    dl::Rect::new(
+        at(a.x, b.x),
+        at(a.y, b.y),
+        at(a.width, b.width).max(0.),
+        at(a.height, b.height).max(0.),
+    )
 }
 
 fn bounds_to_rect(bounds: Bounds<Pixels>, origin: Point<Pixels>) -> dl::Rect {

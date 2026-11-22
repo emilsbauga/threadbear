@@ -162,10 +162,14 @@ struct DesignReviewsView: View {
         defer { loading = false }
         do {
             let command = try await backend.designReviews(threadId: threadId, reviewId: id)
-            guard let status = await model.commandOutcome(command), !Task.isCancelled else { return }
-            guard status.state == .done, let result = status.designReviews else {
-                throw TransportError.server(status.note ?? "Couldn't load the review. Try again.")
+            let state = await model.commands.outcome(.review(threadId), commandId: command)
+            guard !Task.isCancelled else { return }
+            if let note = state.timedOutNote { throw TransportError.server(note) }
+            guard case let .done(_, status) = state else {
+                if state == .idle { return }
+                throw TransportError.server(state.failure("Couldn't load the review. Try again.") ?? "Couldn't load the review. Try again.")
             }
+            guard let result = status?.designReviews else { throw TransportError.server("Couldn't load the review. Try again.") }
             if let loaded = result.review {
                 let kept = preserveDraft && review?.id == loaded.id
                 review = loaded
@@ -199,9 +203,18 @@ struct DesignReviewsView: View {
         defer { sending = false }
         do {
             let command = try await backend.respondReview(threadId: threadId, review: review, draft: draft)
-            guard let status = await model.commandOutcome(command) else { return }
-            guard status.state == .done else { throw TransportError.server(status.note ?? "The answer wasn't accepted.") }
-            dismiss()
+            let state = await model.commands.outcome(.review(threadId), commandId: command)
+            if let note = state.timedOutNote {
+                // Still on its way: it lands when the Mac is back, so nothing's reloaded over it.
+                problem = note
+                return
+            }
+            switch state {
+            case .done: dismiss()
+            case .idle: return
+            case .sending, .queued, .taken, .timedOut, .failed:
+                throw TransportError.server(state.failure("The answer wasn't accepted.") ?? "The answer wasn't accepted.")
+            }
         } catch {
             problem = "\(error.localizedDescription) Your answer is kept. Reload before sending again."
             // Never retry a write automatically against a newer revision.

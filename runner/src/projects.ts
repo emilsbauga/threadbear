@@ -1,4 +1,4 @@
-// Projects: a grouping above folders (docs/protocol.md, "Projects"). A
+// Projects: a grouping above folders (docs/protocol/projects.md, "Projects"). A
 // project can have several folders, a thread can be in several projects,
 // and each keeps goals, state and notes that carry forward from thread to
 // thread. Nobody has to make them: the librarian (librarian.ts) and the
@@ -81,7 +81,7 @@ export type UpdateProjectParams = {
   notion?: string;
   archived?: boolean;
   // Makes it a part of that project (id, id prefix or title), or with ''
-  // a project of its own again (docs/protocol.md, Projects, "Parts").
+  // a project of its own again (docs/protocol/projects.md, Projects, "Parts").
   parent?: string;
   // Who's changing the title, kept as titleBy. Absent counts as Mike, so a
   // name from somewhere unknown is never renamed by the librarian.
@@ -287,7 +287,7 @@ export class Projects {
   }
 
   // What a session starting on the thread is told about its projects
-  // (docs/protocol.md, "The brief"), or undefined when it's in none.
+  // (docs/protocol/projects.md, "The brief"), or undefined when it's in none.
   brief(rec: ThreadRecord): string | undefined {
     const projects = (rec.projects ?? []).map((m) => this.items.get(m.id)).filter((p): p is ProjectRecord => Boolean(p && !p.archived));
     if (!projects.length) return undefined;
@@ -990,7 +990,7 @@ function bool(p: Record<string, unknown>, k: string): boolean | undefined {
 export const DRAIN_PROJECT_OPS = ['list', 'get', 'find', 'create', 'update', 'editNotes', 'appendNote', 'addLinks', 'removeLinks', 'changeMembership', 'chooseIcon'] as const;
 export type DrainProjectOp = (typeof DRAIN_PROJECT_OPS)[number];
 
-// drain.projects (docs/protocol.md, "Handovers"): a kept thread's project
+// drain.projects (docs/protocol/updates.md, "Handovers"): a kept thread's project
 // tool call, made here because projects.json is this runner's now. The
 // arguments are the ones the tool built on the draining runner, maker
 // included, so an agent's change still counts as the agent's.

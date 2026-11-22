@@ -33,7 +33,10 @@ pub(crate) struct DraggedFile {
 
 impl DraggedFile {
     pub(crate) fn new(path: PathBuf) -> Self {
-        Self { path, grabbed: Rc::default() }
+        Self {
+            path,
+            grabbed: Rc::default(),
+        }
     }
 
     /// The drag's begun: which file it is now is the one it carries.
@@ -44,7 +47,10 @@ impl DraggedFile {
     /// Where the grabbed file is, while its path still leads to that same
     /// file; None once it doesn't (gone, or swapped for something else).
     pub(crate) fn still_grabbed(&self) -> Option<PathBuf> {
-        let then = self.grabbed.get_or_init(|| FileIdentity::of(&self.path)).clone()?;
+        let then = self
+            .grabbed
+            .get_or_init(|| FileIdentity::of(&self.path))
+            .clone()?;
         then.still_at(&self.path).then(|| then.real().to_path_buf())
     }
 }
@@ -79,11 +85,23 @@ impl Render for DragPicture {
                         .justify_center()
                         // Read only if it really is a picture file, as every
                         // picture a thread names is (`picture_file`).
-                        .child(img(crate::rows::markdown::file_picture(&path)).max_w(side).max_h(side).rounded(px(6.)).object_fit(ObjectFit::Contain).shadow(vec![BoxShadow::new(zero, px(2.), hsla(0., 0., 0., 0.3)).blur_radius(px(8.))])),
+                        .child(
+                            img(crate::rows::markdown::file_picture(&path))
+                                .max_w(side)
+                                .max_h(side)
+                                .rounded(px(6.))
+                                .object_fit(ObjectFit::Contain)
+                                .shadow(vec![BoxShadow::new(zero, px(2.), hsla(0., 0., 0., 0.3))
+                                    .blur_radius(px(8.))]),
+                        ),
                 )
                 .into_any_element();
         }
-        let name = self.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path);
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(path);
         let chip = h_flex()
             .gap(px(6.))
             .px(px(8.))
@@ -92,11 +110,31 @@ impl Render for DragPicture {
             .bg(cx.theme().popover)
             .border_1()
             .border_color(cx.theme().border)
-            .shadow(vec![BoxShadow::new(gpui_kit::px(0.), px(2.), hsla(0., 0., 0., 0.25)).blur_radius(px(8.))])
+            .shadow(vec![BoxShadow::new(
+                gpui_kit::px(0.),
+                px(2.),
+                hsla(0., 0., 0., 0.25),
+            )
+            .blur_radius(px(8.))])
             .text_size(px(style::size::LABEL))
-            .child(crate::icons::symbol(if threadbear_core::open_policy::local_metadata(&self.path).is_ok_and(|m| m.is_dir()) { "folder" } else { "doc" }).with_size(px(14.)))
+            .child(
+                crate::icons::symbol(
+                    if threadbear_core::open_policy::local_metadata(&self.path)
+                        .is_ok_and(|m| m.is_dir())
+                    {
+                        "folder"
+                    } else {
+                        "doc"
+                    },
+                )
+                .with_size(px(14.)),
+            )
             .child(name);
-        div().pl((self.grabbed.x - px(14.)).max(zero)).pt((self.grabbed.y - px(12.)).max(zero)).child(chip).into_any_element()
+        div()
+            .pl((self.grabbed.x - px(14.)).max(zero))
+            .pt((self.grabbed.y - px(12.)).max(zero))
+            .child(chip)
+            .into_any_element()
     }
 }
 
@@ -105,10 +143,16 @@ impl Render for DragPicture {
 pub(crate) trait FileDragExt: StatefulInteractiveElement + Sized {
     fn file_drag(self, path: Option<String>) -> Self {
         let Some(path) = path else { return self };
-        self.on_drag(DraggedFile::new(PathBuf::from(path)), |file, grabbed, _, cx| {
-            file.note_grabbed();
-            cx.new(|_| DragPicture { path: file.path.clone(), grabbed })
-        })
+        self.on_drag(
+            DraggedFile::new(PathBuf::from(path)),
+            |file, grabbed, _, cx| {
+                file.note_grabbed();
+                cx.new(|_| DragPicture {
+                    path: file.path.clone(),
+                    grabbed,
+                })
+            },
+        )
         .external_drag_payload(|file: &DraggedFile, _, _| outside(file))
     }
 }
@@ -120,8 +164,12 @@ impl<E: StatefulInteractiveElement + Sized> FileDragExt for E {}
 /// `FileDrag.writer` has it.
 fn outside(file: &DraggedFile) -> Option<ExternalDragPayload> {
     let real = file.still_grabbed()?;
-    let is_dir = threadbear_core::open_policy::local_metadata(&real).ok()?.is_dir();
-    Some(ExternalDragPayload::Files(FileDragPaths::new([(real, is_dir)])))
+    let is_dir = threadbear_core::open_policy::local_metadata(&real)
+        .ok()?
+        .is_dir();
+    Some(ExternalDragPayload::Files(FileDragPaths::new([(
+        real, is_dir,
+    )])))
 }
 
 /// `path` grabbed now, for a drag that starts later with no element to hang
@@ -141,8 +189,15 @@ pub(crate) fn start(file: DraggedFile, window: &mut Window, cx: &mut App) {
     // moves its picture back under it from there, as it does a grabbed
     // element's corner.
     let grabbed = point(gpui_kit::px(PICTURE), gpui_kit::px(PICTURE));
-    let view = cx.new(|_| DragPicture { path: file.path.clone(), grabbed });
+    let view = cx.new(|_| DragPicture {
+        path: file.path.clone(),
+        grabbed,
+    });
     let leaving = file.clone();
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "GPUI's AnyDrag holds its value as an Arc, and a drag never leaves the main thread"
+    )]
     let drag = AnyDrag {
         view: view.into(),
         value: std::sync::Arc::new(file),
@@ -160,7 +215,12 @@ pub(crate) fn start(file: DraggedFile, window: &mut Window, cx: &mut App) {
 /// row), `"pane": true` (the picture open in the pane) or `"link": words`
 /// (a file link in a reply, the last one or `"row"`'s).
 #[cfg(feature = "automation")]
-pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
+pub(crate) async fn file_drag_command(
+    app: &WeakEntity<crate::app::Threadbear>,
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     let app = app.upgrade().ok_or("the app has gone")?;
     let from = cx
@@ -168,7 +228,13 @@ pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, 
             window.render_frame(cx);
             // A file link in a reply, by its words: where the kit drew them.
             if let Some(words) = cmd["link"].as_str() {
-                let at = crate::reply_links::link_point(&app, cmd["row"].as_str().unwrap_or(""), words, window, cx)?;
+                let at = crate::reply_links::link_point(
+                    &app,
+                    cmd["row"].as_str().unwrap_or(""),
+                    words,
+                    window,
+                    cx,
+                )?;
                 crate::thread::scripted_input(|| {
                     window.pointer_move(at, None, cx);
                     window.pointer_down(at, MouseButton::Left, cx);
@@ -178,9 +244,14 @@ pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, 
             let found = if let Some(index) = cmd["tile"].as_u64() {
                 // A tile's label is its file's name (rows/images.rs).
                 let count = cmd["count"].as_u64().unwrap_or(1) as usize;
-                let images = app.update(cx, |t, cx| t.update_pane(cx, |p, _| p.last_row_images(count)))??;
+                let images = app.update(cx, |t, cx| {
+                    t.update_pane(cx, |p, _| p.last_row_images(count))
+                })??;
                 let image = images.get(index as usize).ok_or("no such picture")?;
-                let name = std::path::Path::new(&image.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let name = std::path::Path::new(&image.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 window.find_all_by_label(&name)
             } else if let Some(title) = cmd["highlight"].as_str() {
                 window.find_all_by_label(title)
@@ -189,7 +260,12 @@ pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, 
             } else {
                 return Err("file-drag takes tile, highlight, pane or link".into());
             };
-            let at = found.into_iter().filter(|e| e.visible()).last().map(|e| e.visible_bounds().center()).ok_or("nothing like that on screen to drag")?;
+            let at = found
+                .into_iter()
+                .filter(|e| e.visible())
+                .next_back()
+                .map(|e| e.visible_bounds().center())
+                .ok_or("nothing like that on screen to drag")?;
             crate::thread::scripted_input(|| {
                 window.pointer_move(at, None, cx);
                 window.pointer_down(at, MouseButton::Left, cx);
@@ -200,18 +276,38 @@ pub(crate) async fn file_drag_command(app: &WeakEntity<crate::app::Threadbear>, 
     // `onto: "box"`: let go over the message box's words, the one place over
     // the thread that takes the app's own drags.
     let to = if cmd["onto"].as_str() == Some("box") {
-        cx.update(|cx| app.read(cx).composer(cx).map(|c| c.read(cx).input.read(cx).input_bounds().center())).ok_or("no message box")?
+        cx.update(|cx| {
+            app.read(cx)
+                .composer(cx)
+                .map(|c| c.read(cx).input.read(cx).input_bounds().center())
+        })
+        .ok_or("no message box")?
     } else {
-        point(gpui_kit::px(cmd["x"].as_f64().unwrap_or(650.) as f32), gpui_kit::px(cmd["y"].as_f64().unwrap_or(300.) as f32))
+        point(
+            gpui_kit::px(cmd["x"].as_f64().unwrap_or(650.) as f32),
+            gpui_kit::px(cmd["y"].as_f64().unwrap_or(300.) as f32),
+        )
     };
     let steps = 12;
     for step in 1..=steps {
         let t = step as f32 / steps as f32;
         let at = point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-        cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| window.pointer_move(at, Some(MouseButton::Left), cx))).map_err(|e| e.to_string())?;
-        cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
+        cx.update_window(window, |_, window, cx| {
+            crate::thread::scripted_input(|| window.pointer_move(at, Some(MouseButton::Left), cx))
+        })
+        .map_err(|e| e.to_string())?;
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(16))
+            .await;
     }
     let dragging = cx.update(|cx| cx.has_active_drag());
-    cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| window.pointer_up(to, MouseButton::Left, cx))).map_err(|e| e.to_string())?;
-    Ok(serde_json::json!(if dragging { "ok dropped" } else { "ok no drag started" }))
+    cx.update_window(window, |_, window, cx| {
+        crate::thread::scripted_input(|| window.pointer_up(to, MouseButton::Left, cx))
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!(if dragging {
+        "ok dropped"
+    } else {
+        "ok no drag started"
+    }))
 }

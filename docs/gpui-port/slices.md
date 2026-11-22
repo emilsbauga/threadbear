@@ -28,7 +28,7 @@ the Swift Mac app does, done in the GPUI app and proved to be the same.
    reads the same isn't done. Read colours with care: the Swift pictures carry the
    display's colour profile and the GPUI ones none, so the same colour reads a few
    steps apart, and the GPUI shot has no traffic lights (it's drawn in-process).
-7. **Log it** in `PARITY.md`: what changed, files, what's left, and a
+7. **Log it** in `LOG.md`: what changed, files, what's left, and a
    `Verification:` line that names a spec run or a screenshot. A slice with no
    runtime check doesn't count.
 

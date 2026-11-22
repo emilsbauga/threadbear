@@ -177,12 +177,18 @@ while [ "$(now)" -lt "$stop" ]; do
   # set -m gives the round its own process group, so the stop reaches all of it.
   cap=$(( (round_min + 40) * 60 ))
   set -m
-  bash "$root/desktop/scripts/remote.sh" local --desk $try -- "${cmd[@]}" >"$dir.log" 2>&1 </dev/null &
+  THREADBEAR_REMOTE_TRACE=1 bash "$root/desktop/scripts/remote.sh" local --desk $try -- "${cmd[@]}" >"$dir.log" 2>&1 </dev/null &
   pid=$!
   set +m
   while kill -0 "$pid" 2>/dev/null; do
     if [ $(( $(now) - started )) -ge "$cap" ]; then
       say "round $n: $kind still going after $(( cap / 60 )) min: stopping it (hung)"
+      # Where it sticks, in its log before it's stopped: each process of the
+      # round with its state (U is stuck in the kernel, as 18 Nov's mkdir was)
+      # and what it was running; remote.sh's timed lines above say the step.
+      { echo "--- hung: the round's processes as it was stopped"
+        ps -A -o pid=,pgid=,ppid=,stat=,etime=,command= | awk -v g="$pid" '$2 == g'
+      } >>"$dir.log" 2>&1 || true
       kill -TERM -- "-$pid" 2>/dev/null; sleep 30; kill -KILL -- "-$pid" 2>/dev/null
       break
     fi

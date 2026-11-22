@@ -1,6 +1,6 @@
 import Foundation
 
-/// A reply button as a message row carries it (backend API 59, docs/protocol.md
+/// A reply button as a message row carries it (backend API 59, docs/protocol/events.md
 /// "Reply buttons"): what it says and where it goes, never the brief or
 /// message behind it, which stay on the Mac.
 public struct MessageButton: Codable, Sendable, Hashable, Identifiable {
@@ -73,6 +73,22 @@ public enum ReplyButtons {
         if status?.state == .failed { return .failed(status?.note ?? "The runner couldn't press it.") }
         if let failed = button.failed { return .failed(failed) }
         return .ready
+    }
+
+    /// What a button shows with this phone's press as a PendingCommand: one
+    /// the Mac hasn't picked up in time can be pressed again (the runner
+    /// presses it once however many times it's asked), saying why, rather
+    /// than spinning for ever.
+    public static func look(_ button: MessageButton, pending: PendingCommand) -> Look {
+        switch pending {
+        case .idle: return look(button, status: nil, asking: false)
+        case .sending, .queued, .taken: return look(button, status: nil, asking: true)
+        case let .done(_, result): return look(button, status: result ?? CommandStatus(state: .done), asking: false)
+        case let .failed(_, reason): return look(button, status: CommandStatus(state: .failed, note: reason), asking: false)
+        case .timedOut:
+            if let id = button.pressedThreadId { return .pressed(threadId: id) }
+            return .failed(pending.timedOutNote ?? "The Mac hasn't picked this up yet.")
+        }
     }
 
     /// What VoiceOver says, and where it goes.

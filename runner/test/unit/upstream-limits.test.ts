@@ -9,7 +9,7 @@ import { tmpDir } from '../helpers/fakes.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { type GitOptions, MAC_SK_PROVIDER, TOUCH_SIGN_TIMEOUT_MS, touchKey, gitAsync, SETTLE_MS, signersPath } from '../../src/upstream.ts';
 import { ADD_DELAY_MS, keyStatePath, revokedPath } from '../../src/release-keys.ts';
-import { alive, commit, git, hangAlias, kept, key, keyLine, LATER, objectsIn, pinnedKeys, pubOf, release, signedTag, startedPid, upstreamFor, world } from '../helpers/upstream-harness.ts';
+import { alive, commit, git, hangAlias, key, keyLine, LATER, objectsIn, pinnedKeys, pubOf, release, signedTag, startedPid, upstreamFor, world } from '../helpers/upstream-harness.ts';
 
 test('a fetch bigger than the limit is stopped, and brings nothing into the checkout', async () => {
   const w = world();

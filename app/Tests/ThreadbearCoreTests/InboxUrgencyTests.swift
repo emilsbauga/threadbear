@@ -3,7 +3,7 @@ import XCTest
 @testable import ThreadbearCore
 
 /// The Mac's sidebar order and Dock badge against the cases the phone and
-/// website run too (app/Tests/Fixtures/inbox-urgency-cases.json).
+/// website run too (shared/cases/inbox-urgency.json).
 final class InboxUrgencyTests: XCTestCase {
     struct Cases: Decodable {
         struct Case: Decodable {
@@ -22,8 +22,9 @@ final class InboxUrgencyTests: XCTestCase {
     }
 
     func testTheSharedCases() throws {
+        // app/Tests/ThreadbearCoreTests/ -> the repo.
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/inbox-urgency-cases.json")
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("shared/cases/inbox-urgency.json")
         let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: url)).cases
         XCTAssertGreaterThanOrEqual(cases.count, 9)
         let now = Date()

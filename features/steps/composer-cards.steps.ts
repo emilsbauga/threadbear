@@ -107,7 +107,7 @@ When('I tick follow-up {int} on the card', async function (this: ThreadbearWorld
 // A sample picture the runner can read, as sending.steps.ts has it.
 const samplePicture = fileURLToPath(new URL('../support/sample.png', import.meta.url));
 
-// What another lab's review left on the turn that answered it (docs/protocol.md,
+// What another lab's review left on the turn that answered it (docs/protocol/needs-you.md,
 // "Review by another lab"), through the mock's streamed turn.
 When('the agent there finishes a turn another lab reviewed', async function (this: ThreadbearWorld) {
   const d = await this.app.dump();
@@ -248,10 +248,11 @@ When('I pick {string} from the Archive menu', async function (this: ThreadbearWo
 
 // What the runner got with the archive: the verdict, or "" for none.
 Then('the runner was told I archived {string} as {string}', async function (this: ThreadbearWorld, title: string, verdict: string) {
-  let last: { threadId?: string; verdict?: string | null } | null = null;
+  type Archived = { threadId?: string; verdict?: string | null };
+  let last: Archived | null = null;
   for (let tries = 0; tries < 50 && !last; tries += 1) {
     const text = await this.app.do({ cmd: 'mock', method: 'lastArchive', params: {} });
-    last = ((typeof text === 'string' ? JSON.parse(text) : text) as { params?: typeof last }).params ?? null;
+    last = ((typeof text === 'string' ? JSON.parse(text) : text) as { params?: Archived }).params ?? null;
     if (!last) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const d = await this.app.dump();

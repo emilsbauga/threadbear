@@ -1,4 +1,4 @@
-// Slash commands from the message box (docs/protocol.md, "Slash commands"):
+// Slash commands from the message box (docs/protocol/threads.md, "Slash commands"):
 // the ones the runner does itself, and the picker's list.
 // Each method's `this` is the Runner; runner.ts puts them on its prototype.
 import crypto from 'node:crypto';
@@ -108,7 +108,7 @@ export const commandsPart = {
           delete rec.messageRecoveries;
           // A fresh native session from the next message; the CLI that has
           // the old one goes once this turn is over.
-          if (rt.session) rt.releaseWhenIdle = true;
+          if (rt.session) this.cli(st, { kind: 'leave' });
           rec.nativeSessionId = crypto.randomUUID();
           rec.sessionUsed = false;
           rec.sessionCostTotal = 0;

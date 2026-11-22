@@ -6,14 +6,22 @@
 # its saves started failing (THREADBEAR-1R).
 #
 #   trim-remote-cache.sh <this checkout's key> [active target folder]
-#   trim-remote-cache.sh -
+#   trim-remote-cache.sh - [held]
 #
 # Exit 3: too little disk left to build on. With - (scripts/check-remote.sh,
 # finding the host short for a check of its own) there's no checkout of ours
-# here: it only gives room back, and never refuses.
+# here: it only gives room back, and never refuses. "held": a check that has
+# this host's check lock already, so it isn't waited for (its --on-host part,
+# about to build Rust on a host that's short).
 set -u
 own="${1:?usage: trim-remote-cache.sh <key>|-}"
-active_target="${2:-target-$own}"
+held=0
+if [ "$own" = - ]; then
+  [ "${2:-}" != held ] || held=1
+  active_target="target--"
+else
+  active_target="${2:-target-$own}"
+fi
 
 # Under this, idle checkouts lose their target folders: room for a build from
 # nothing (a debug target has reached 7 GiB) with some to spare.
@@ -35,7 +43,7 @@ MAX_TARGETS=4
 
 free_gib() {
   local kb
-  kb="$(df -Pk . | awk 'NR==2 {print $4}')"
+  kb="$(df -Pk "${1:-.}" | awk 'NR==2 {print $4}')"
   case "$kb" in
     # A filesystem past its reserved blocks can report less than nothing.
     -[0123456789]*) echo 0; return ;;
@@ -101,6 +109,7 @@ if [ "$own" = - ]; then
   fd=5
   for lockfile in "$HOME/.cache/threadbear-perf.lock" "$HOME/.cache/threadbear-check/lock"; do
     [ -e "$lockfile" ] || continue
+    [ "$held" = 0 ] || [ "$lockfile" != "$HOME/.cache/threadbear-check/lock" ] || continue
     eval "exec $fd>>\"\$lockfile\"" || exit 0
     if command -v flock >/dev/null 2>&1; then got=0; flock -n "$fd" && got=1
     else got=0; perl -e 'use Fcntl ":flock"; open(my $f, ">&=", $ARGV[0]) or exit 1; flock($f, LOCK_EX | LOCK_NB) or exit 1' "$fd" && got=1; fi
@@ -146,6 +155,38 @@ if [ -d tmp ]; then
         else case "$f" in *_gpui_src_*) [ -e src ] && continue ;; esac; fi ;;
     esac
     rm -rf "$f"
+  done
+fi
+
+# Cargo target folders in the check folder itself (one up from here) that
+# no script of ours makes: ones agents built into by hand, with a
+# CARGO_TARGET_DIR of their own (kit-target, kx-target and the like, 13 GiB of
+# them on the cloud box on 21 Nov, which nothing gave back). Told by cargo's
+# CACHEDIR.TAG at the top. The check's own is a level down (build/), so it's
+# never one. Idle ones go when that disk is short, longest unused first, and
+# any nothing has touched for three days whatever the room. Idle is two
+# hours here, not BUSY_MINUTES: nothing of ours marks these in use, and a
+# long test run can leave its target untouched for a while (Codex's review).
+# They're moved aside beside where they are, as gpui/ can be another disk
+# (Tinker Desk's SSD), where a move would be a copy (Gemini's review).
+STRAY_IDLE_MINUTES=$((3 * 24 * 60))
+STRAY_BUSY_MINUTES=120
+if [ "${PWD##*/}" = gpui ]; then
+  find .. -mindepth 1 -maxdepth 1 -name 'stray-gone-*' -exec rm -rf {} + 2>/dev/null
+  ls -dtr ../*/ 2>/dev/null | while IFS= read -r t; do
+    t="${t%/}"
+    name="${t##*/}"
+    case "$name" in gpui|build|deps|mirror|runs|web-runtimes|*[!A-Za-z0-9._-]*) continue ;; esac
+    [ -f "$t/CACHEDIR.TAG" ] && [ ! -L "$t" ] || continue
+    [ -z "$(find "$t" -mmin -"$STRAY_BUSY_MINUTES" 2>/dev/null | head -1)" ] || continue
+    if [ -n "$(find "$t" -mmin -"$STRAY_IDLE_MINUTES" 2>/dev/null | head -1)" ]; then
+      [ "$(free_gib ..)" -lt "$TRIM_GIB" ] || continue
+      echo "Short of disk on this host, so removing ~/.cache/threadbear-check/$name, a cargo build folder made by hand that nothing has used lately." >&2
+    else
+      echo "Removing ~/.cache/threadbear-check/$name, a cargo build folder made by hand that nothing has used for three days." >&2
+    fi
+    gone="../stray-gone-$$-$name"
+    mv "$t" "$gone" && rm -rf "$gone"
   done
 fi
 

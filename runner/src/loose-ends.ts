@@ -1,4 +1,4 @@
-// Loose ends (docs/protocol.md, "Loose ends"): what's
+// Loose ends (docs/protocol/threads.md, "Loose ends"): what's
 // still open on a thread whose last turn said it's done, checked by the
 // runner so the done card can say whether Archive is safe without Mike
 // asking the agent. The nightly retro counted 27 typed "anything else, or

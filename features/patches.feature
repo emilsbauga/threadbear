@@ -29,6 +29,17 @@ Feature: What a folder's patches give a thread
     When I trust the patch "release"
     Then the patch "release" gives "action Upload build"
 
+  # Nightly retro, 20 Nov 2026: asked most days after his own merges, Mike
+  # trusted in a second without reading. A re-ask says which file changed,
+  # in which commits, and shows the lines.
+  @patches.list @swift-pending
+  Scenario: A patch that changed since it was trusted says what changed and where from
+    When I open the thread "Pick a colour for the new Share button"
+    And I show the "threadbear.patches" section of the pane
+    Then the patch "stats" is waiting to be trusted, saying "Changed since you trusted it"
+    And the patch "stats" says "package.json changed, in a commit: 5c3fc77 Upgrade fluent-convex to 0.15 (#57)"
+    And the patch "stats" shows the changed lines of "package.json"
+
   @panel.list
   Scenario: A list panel draws its rows under their headings
     When I open the thread "Rebuild the three landing pages"

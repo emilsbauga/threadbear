@@ -1,0 +1,11 @@
+# The Rust that checks desktop/ (cargo fmt, clippy) here, on the check hosts
+# and in .github/workflows/desktop.yml, so a format or lint check means the
+# same everywhere. rustup reads it and fetches it the first time. Moving it
+# can change what rustfmt writes: run `cd desktop && cargo fmt --all` with
+# the new one and commit that with it, and fix what the new clippy finds.
+# The installed app's own build (desktop/scripts/stage-update.sh) still asks
+# for rustup's stable, as forks' Macs have that already.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

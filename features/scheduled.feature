@@ -79,6 +79,20 @@ Feature: Scheduled messages
     And I press the row button "Schedule a message for later"
     Then the schedule editor is open on a new schedule that repeats on "0 9 * * 1-5"
 
+  # Mike's Main pool of Claude and OpenCode logins (21 Nov): the editor
+  # listed only one kind's models, and a run went on whichever kind the
+  # model's name suggested.
+  @schedule.editor @swift-pending
+  Scenario: A schedule on a pool of Codex and Claude logins lists both, and keeps the kind picked under
+    Given there's a thread called "Tidy the garden notes" on alex+3 in the Personal pool
+    When I open the thread "Tidy the garden notes"
+    And I start a schedule from this thread that starts a new thread each time
+    Then the schedule editor's model menu has a row "## Claude"
+    And the schedule editor's model menu has a row "## Codex"
+    When I pick "GPT-6.1-Sol" under "Codex" in the schedule editor's model menu
+    Then the schedule would start its threads on "codex"
+    And the schedule editor's model menu has a row "[x] GPT-6.1-Sol"
+
   @schedule.editor
   Scenario: A schedule opens in the editor with what it sends and when
     When I click "Scheduled" in the activity bar

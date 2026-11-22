@@ -1,4 +1,4 @@
-// Reply buttons (docs/protocol.md, "Reply buttons"): an agent's add_button
+// Reply buttons (docs/protocol/events.md, "Reply buttons"): an agent's add_button
 // makes one, its reply links button:<id>, and Mike's press starts a thread
 // with the brief or sends the message, once, or opens another folder's patch
 // panel beside the thread, every time.

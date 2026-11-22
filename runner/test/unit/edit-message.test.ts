@@ -1,4 +1,4 @@
-// Editing an earlier message (docs/protocol.md, "Editing a message").
+// Editing an earlier message (docs/protocol/threads.md, "Editing a message").
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

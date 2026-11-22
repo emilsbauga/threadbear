@@ -2,7 +2,7 @@
 // Highlights, HighlightSections, HighlightFold, HighlightProjects, PreviewRules,
 // FileIcon, HighlightText, PanelIcon, PanelItem.headings, ScheduleRows,
 // StartedThreadRows and PatchGroups, with the protocol types they read
-// (docs/protocol.md, "Highlights" and "Patches"). `desktop/gpui/src/highlights.rs`
+// (docs/protocol/panels.md, "Highlights" and "Patches"). `desktop/gpui/src/highlights.rs`
 // draws from these, and the tests are the Swift ones (HighlightsTests,
 // StartedThreadRowsTests).
 use crate::inbox::{parse_ms, Project, ThreadSummary};
@@ -93,7 +93,13 @@ impl Highlight {
         let id = field(item, "id")?;
         let path = field(item, "path");
         let url = field(item, "url");
-        let title = field(item, "title").unwrap_or_else(|| path.as_deref().map(last_component).or(url.as_deref()).unwrap_or(&id).to_owned());
+        let title = field(item, "title").unwrap_or_else(|| {
+            path.as_deref()
+                .map(last_component)
+                .or(url.as_deref())
+                .unwrap_or(&id)
+                .to_owned()
+        });
         let seq = item.get("seq").and_then(Value::as_i64).unwrap_or(0);
         Some(Highlight {
             kind: HighlightKind::parse(item.get("kind").and_then(Value::as_str).unwrap_or("")),
@@ -136,9 +142,25 @@ impl ThreadHighlights {
     /// is empty, an entry with no id is skipped.
     pub fn decode(value: &Value) -> ThreadHighlights {
         ThreadHighlights {
-            highlights: value.get("highlights").and_then(Value::as_array).into_iter().flatten().filter_map(Highlight::decode).collect(),
-            edited: value.get("edited").and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
-            brief: value.get("brief").and_then(|b| b.get("text")).and_then(Value::as_str).map(str::to_owned),
+            highlights: value
+                .get("highlights")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Highlight::decode)
+                .collect(),
+            edited: value
+                .get("edited")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+            brief: value
+                .get("brief")
+                .and_then(|b| b.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         }
     }
 }
@@ -178,12 +200,23 @@ impl ProjectInfo {
     /// `projects.list`'s answer, one project at a time so one that won't read
     /// can't lose the rest.
     pub fn list(value: &Value) -> Vec<ProjectInfo> {
-        value.as_array().into_iter().flatten().filter_map(|p| crate::wire::read(p.clone())).collect()
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| crate::wire::read(p.clone()))
+            .collect()
     }
 
     /// `ProjectTasks.openCount`: cards in a column that isn't a Done one.
     pub fn open_task_count(&self) -> usize {
-        let Some(tasks) = self.tasks.as_ref().filter(|t| t.get("loading").and_then(Value::as_bool) != Some(true)) else { return 0 };
+        let Some(tasks) = self
+            .tasks
+            .as_ref()
+            .filter(|t| t.get("loading").and_then(Value::as_bool) != Some(true))
+        else {
+            return 0;
+        };
         let done: HashSet<&str> = tasks
             .get("columns")
             .and_then(Value::as_array)
@@ -192,7 +225,17 @@ impl ProjectInfo {
             .filter(|c| c.get("kind").and_then(Value::as_str) == Some("done"))
             .filter_map(|c| c.get("name").and_then(Value::as_str))
             .collect();
-        tasks.get("items").and_then(Value::as_array).into_iter().flatten().filter(|i| !i.get("status").and_then(Value::as_str).is_some_and(|s| done.contains(s))).count()
+        tasks
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|i| {
+                !i.get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| done.contains(s))
+            })
+            .count()
     }
 }
 
@@ -260,14 +303,29 @@ impl HighlightSections {
                 }
             }
         }
-        let listed: HashSet<&str> = out.pinned.iter().chain(&out.files).filter_map(|h| h.path.as_deref()).collect();
+        let listed: HashSet<&str> = out
+            .pinned
+            .iter()
+            .chain(&out.files)
+            .filter_map(|h| h.path.as_deref())
+            .collect();
         let mut seen: HashSet<&str> = HashSet::new();
-        out.edited = highlights.edited.iter().filter(|p| !listed.contains(p.as_str()) && seen.insert(p.as_str())).cloned().collect();
+        out.edited = highlights
+            .edited
+            .iter()
+            .filter(|p| !listed.contains(p.as_str()) && seen.insert(p.as_str()))
+            .cloned()
+            .collect();
         out
     }
 
     pub fn is_empty(&self) -> bool {
-        self.brief.is_none() && self.pinned.is_empty() && self.files.is_empty() && self.links.is_empty() && self.commits.is_empty() && self.edited.is_empty()
+        self.brief.is_none()
+            && self.pinned.is_empty()
+            && self.files.is_empty()
+            && self.links.is_empty()
+            && self.commits.is_empty()
+            && self.edited.is_empty()
     }
 
     /// The first `limit` of a group (they come newest first) and how many more
@@ -308,7 +366,10 @@ pub struct ProjectRow {
     pub membership: Project,
 }
 
-pub fn project_rows(thread: &ThreadSummary, project: impl Fn(&str) -> Option<ProjectInfo>) -> Vec<ProjectRow> {
+pub fn project_rows(
+    thread: &ThreadSummary,
+    project: impl Fn(&str) -> Option<ProjectInfo>,
+) -> Vec<ProjectRow> {
     let mut seen = HashSet::new();
     thread
         .projects
@@ -319,7 +380,10 @@ pub fn project_rows(thread: &ThreadSummary, project: impl Fn(&str) -> Option<Pro
                 return None;
             }
             let found = project(&member.id).filter(|p| !p.archived)?;
-            Some(ProjectRow { project: found, membership: member.clone() })
+            Some(ProjectRow {
+                project: found,
+                membership: member.clone(),
+            })
         })
         .collect()
 }
@@ -365,7 +429,11 @@ fn extension(path: &str) -> String {
 /// The name at the end of a path, ignoring a trailing slash (`lastPathComponent`).
 pub fn last_component(path: &str) -> &str {
     let path = path.trim_end_matches('/');
-    let split = if crate::reducer::text::is_windows_path(path) { path.rsplit_once(['/', '\\']) } else { path.rsplit_once('/') };
+    let split = if crate::reducer::text::is_windows_path(path) {
+        path.rsplit_once(['/', '\\'])
+    } else {
+        path.rsplit_once('/')
+    };
     match split {
         Some((_, name)) => name,
         None => path,
@@ -383,7 +451,18 @@ pub fn is_markdown(path: &str) -> bool {
     matches!(extension(path).as_str(), "md" | "markdown" | "mdx")
 }
 
-const TEXT_EXTENSIONS: &[&str] = &["txt", "text", "csv", "tsv", "log", "env", "gitignore", "editorconfig", "ndjson", "jsonl"];
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt",
+    "text",
+    "csv",
+    "tsv",
+    "log",
+    "env",
+    "gitignore",
+    "editorconfig",
+    "ndjson",
+    "jsonl",
+];
 
 /// The highlight.js language for a code file, by extension or name
 /// (`PreviewRules.codeLanguage`). The same names as gpui-kit's highlighter,
@@ -433,7 +512,8 @@ pub fn viewer_for_path(path: &str) -> Viewer {
     if ext == "html" || ext == "htm" {
         return Viewer::Web;
     }
-    if is_markdown(path) || TEXT_EXTENSIONS.contains(&ext.as_str()) || code_language(path).is_some() {
+    if is_markdown(path) || TEXT_EXTENSIONS.contains(&ext.as_str()) || code_language(path).is_some()
+    {
         return Viewer::Text;
     }
     // A dotfile's name is all it has (`.env`, `.gitignore`).
@@ -462,8 +542,8 @@ pub fn looks_like_text(sample: &[u8]) -> bool {
 /// below, every kind of code the pane colours, as code an agent links to is
 /// there to be looked over, and the pane opens it ready to type in.
 const REVIEW_EXTENSIONS: &[&str] = &[
-    "md", "html", "htm", "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "mov", "txt", "text",
-    // data and logs
+    "md", "html", "htm", "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "mov", "txt",
+    "text", // data and logs
     "json", "jsonc", "jsonl", "ndjson", "yaml", "yml", "toml", "csv", "tsv", "log",
 ];
 
@@ -477,12 +557,48 @@ pub fn previews_in_pane(path: &str) -> bool {
 /// else (a `.command` posing as one) never gets there (`LinkPolicy.runsCode`
 /// and the viewer's own decode are the rest of the rule).
 pub fn looks_like_picture(path: &str) -> bool {
-    matches!(extension(path).as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "heif" | "ico")
+    matches!(
+        extension(path).as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "heif" | "ico"
+    )
 }
 
 /// Extensions that run something when opened, which this app never hands to
 /// its default app without asking (`LinkPolicy.codeExtensions`).
-const CODE_EXTENSIONS: &[&str] = &["app", "command", "tool", "terminal", "workflow", "action", "scpt", "scptd", "pkg", "mpkg", "webloc", "inetloc", "fileloc", "url", "shortcut", "mobileconfig", "prefpane", "saver", "qlgenerator", "appex", "kext", "osax", "jar", "jnlp", "exe", "bat", "cmd", "msi", "ps1", "vbs", "desktop", "sh"];
+const CODE_EXTENSIONS: &[&str] = &[
+    "app",
+    "command",
+    "tool",
+    "terminal",
+    "workflow",
+    "action",
+    "scpt",
+    "scptd",
+    "pkg",
+    "mpkg",
+    "webloc",
+    "inetloc",
+    "fileloc",
+    "url",
+    "shortcut",
+    "mobileconfig",
+    "prefpane",
+    "saver",
+    "qlgenerator",
+    "appex",
+    "kext",
+    "osax",
+    "jar",
+    "jnlp",
+    "exe",
+    "bat",
+    "cmd",
+    "msi",
+    "ps1",
+    "vbs",
+    "desktop",
+    "sh",
+];
 
 pub fn runs_code(path: &str) -> bool {
     CODE_EXTENSIONS.contains(&extension(path).as_str())
@@ -531,12 +647,28 @@ pub fn preview_private(path: &str, home: &str) -> bool {
     let home = home.trim_end_matches('/');
     if !home.is_empty() {
         if let Some(rest) = path.strip_prefix(home).and_then(|r| r.strip_prefix('/')) {
-            if rest.split('/').next().is_some_and(|top| top.starts_with('.') && rest.contains('/')) {
+            if rest
+                .split('/')
+                .next()
+                .is_some_and(|top| top.starts_with('.') && rest.contains('/'))
+            {
                 return true;
             }
         }
     }
-    const WORDS: &[&str] = &["secret", "credential", "password", "passwd", "token", "private", "id_rsa", "id_ed25519", "apikey", "api_key", "api-key"];
+    const WORDS: &[&str] = &[
+        "secret",
+        "credential",
+        "password",
+        "passwd",
+        "token",
+        "private",
+        "id_rsa",
+        "id_ed25519",
+        "apikey",
+        "api_key",
+        "api-key",
+    ];
     const EXTENSIONS: &[&str] = &["pem", "key", "p12", "pfx", "keychain", "env", "jks", "kdbx"];
     WORDS.iter().any(|w| name.contains(w)) || EXTENSIONS.contains(&extension(&name).as_str())
 }
@@ -562,7 +694,11 @@ pub mod text {
     pub fn folder(path: &str, cwd: Option<&str>, home: &str) -> String {
         // One separator to look for, whichever system the runner's on.
         use crate::reducer::text::forward_slashes;
-        let (path, cwd, home) = (forward_slashes(path), cwd.map(forward_slashes), forward_slashes(home));
+        let (path, cwd, home) = (
+            forward_slashes(path),
+            cwd.map(forward_slashes),
+            forward_slashes(home),
+        );
         let (path, cwd, home) = (path.as_str(), cwd.as_deref(), home.as_str());
         let parent = parent_path(path);
         if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
@@ -599,7 +735,11 @@ pub mod text {
 
     /// "pushed" or "not pushed yet", after the branch.
     pub fn commit_line(commit: &Highlight) -> String {
-        let state = if commit.pushed { "pushed" } else { "not pushed yet" };
+        let state = if commit.pushed {
+            "pushed"
+        } else {
+            "not pushed yet"
+        };
         match commit.branch.as_deref().filter(|b| !b.is_empty()) {
             Some(branch) => format!("{branch} · {state}"),
             None => state.to_owned(),
@@ -607,7 +747,11 @@ pub mod text {
     }
 
     pub fn edited_count(count: usize) -> String {
-        if count == 1 { "1 file edited".to_owned() } else { format!("{count} files edited") }
+        if count == 1 {
+            "1 file edited".to_owned()
+        } else {
+            format!("{count} files edited")
+        }
     }
 }
 
@@ -662,7 +806,10 @@ impl PanelOrigin {
         if let Some(id) = project_id.or_else(|| info.and_then(|p| p.project_id.as_deref())) {
             return PanelOrigin::Project(id.to_owned());
         }
-        if let Some(matched) = info.and_then(|p| p.matched.as_ref()).filter(|m| !m.is_empty()) {
+        if let Some(matched) = info
+            .and_then(|p| p.matched.as_ref())
+            .filter(|m| !m.is_empty())
+        {
             return PanelOrigin::Tool(matched.clone());
         }
         match info.map(|p| p.source.as_str()) {
@@ -686,9 +833,22 @@ impl PanelOrigin {
     /// The tooltip: "Convex, from the Threadbear project".
     pub fn tip(&self, title: &str, project_title: Option<&str>) -> String {
         match self {
-            PanelOrigin::Project(_) => format!("{title}, {}", project_title.map_or("from a project".to_owned(), |t| format!("from the {t} project"))),
+            PanelOrigin::Project(_) => format!(
+                "{title}, {}",
+                project_title.map_or("from a project".to_owned(), |t| format!(
+                    "from the {t} project"
+                ))
+            ),
             PanelOrigin::Tool(matched) => {
-                let names: Vec<&str> = matched.iter().map(|m| m.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(m)).collect();
+                let names: Vec<&str> = matched
+                    .iter()
+                    .map(|m| {
+                        m.trim_end_matches(['/', '\\'])
+                            .rsplit(['/', '\\'])
+                            .next()
+                            .unwrap_or(m)
+                    })
+                    .collect();
                 format!("{title}, for {}", names.join(", "))
             }
             PanelOrigin::Home => format!("{title}, from ~/.threadbear"),
@@ -717,12 +877,19 @@ impl ActionShelf {
             let index = match shelves.iter().position(|s| s.origin == origin) {
                 Some(i) => i,
                 None => {
-                    shelves.push(ActionShelf { origin, patches: Vec::new() });
+                    shelves.push(ActionShelf {
+                        origin,
+                        patches: Vec::new(),
+                    });
                     shelves.len() - 1
                 }
             };
             let shelf = &mut shelves[index];
-            match shelf.patches.iter_mut().find(|g| g.first().is_some_and(|a| a.patch == action.patch)) {
+            match shelf
+                .patches
+                .iter_mut()
+                .find(|g| g.first().is_some_and(|a| a.patch == action.patch))
+            {
                 Some(group) => group.push(action.clone()),
                 None => shelf.patches.push(vec![action.clone()]),
             }
@@ -776,24 +943,39 @@ pub struct StartedRow {
 
 fn started_by_thread(t: &ThreadSummary) -> Option<&str> {
     let by = t.started_by.as_ref()?;
-    (by.get("kind").and_then(Value::as_str) == Some("thread")).then(|| by.get("threadId").and_then(Value::as_str)).flatten()
+    (by.get("kind").and_then(Value::as_str) == Some("thread"))
+        .then(|| by.get("threadId").and_then(Value::as_str))
+        .flatten()
 }
 
 /// Every thread `parent` started, and any it's waiting on that it didn't,
 /// newest first within each state (`StartedThreadRows.rows`).
-pub fn started_rows<'a>(parent: &ThreadSummary, threads: impl Iterator<Item = &'a ThreadSummary>, now_ms: i64) -> Vec<StartedRow> {
-    let waited: HashSet<&str> = parent.waiting_on.iter().flatten().filter_map(|w| w.get("threadId").and_then(Value::as_str)).collect();
+pub fn started_rows<'a>(
+    parent: &ThreadSummary,
+    threads: impl Iterator<Item = &'a ThreadSummary>,
+    now_ms: i64,
+) -> Vec<StartedRow> {
+    let waited: HashSet<&str> = parent
+        .waiting_on
+        .iter()
+        .flatten()
+        .filter_map(|w| w.get("threadId").and_then(Value::as_str))
+        .collect();
     let mut rows: Vec<StartedRow> = threads
         .filter_map(|t| {
             if t.id == parent.id {
                 return None;
             }
             let started = started_by_thread(t) == Some(parent.id.as_str());
-            (started || waited.contains(t.id.as_str())).then(|| StartedRow { thread: t.clone(), state: started_state(t, now_ms), started })
+            (started || waited.contains(t.id.as_str())).then(|| StartedRow {
+                thread: t.clone(),
+                state: started_state(t, now_ms),
+                started,
+            })
         })
         .collect();
     // Keys worked out once per row: a time is text to read (inbox.rs, `sections_ordered`).
-    rows.sort_by_cached_key(|r| (r.state.clone(), std::cmp::Reverse(r.thread.activity_ms())));
+    rows.sort_by_cached_key(|r| (r.state, std::cmp::Reverse(r.thread.activity_ms())));
     rows
 }
 
@@ -809,7 +991,10 @@ pub fn started_state(t: &ThreadSummary, now_ms: i64) -> StartedState {
         StartedState::NeedsYou
     } else if t.status == "error" {
         StartedState::Failed
-    } else if t.busy() || t.agents_still_working() || t.background.as_ref().is_some_and(|b| !b.is_empty()) {
+    } else if t.busy()
+        || t.agents_still_working()
+        || t.background.as_ref().is_some_and(|b| !b.is_empty())
+    {
         StartedState::Working
     } else {
         StartedState::Done
@@ -853,7 +1038,10 @@ pub fn thread_status<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Str
         }
     }
     match t.status.as_str() {
-        "running" | "starting" => format!("Working {}", sidebar::working_label(t.activity_ms(), now_ms)),
+        "running" | "starting" => format!(
+            "Working {}",
+            sidebar::working_label(t.activity_ms(), now_ms)
+        ),
         "waiting" => "Needs you".into(),
         "error" => "Failed".into(),
         "stopped" => "Stopped".into(),
@@ -876,8 +1064,16 @@ pub fn thread_status<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Str
 
 /// The row's second line (`StartedThreadRows.detail`).
 pub fn started_detail<Tz: TimeZone>(row: &StartedRow, now: &DateTime<Tz>) -> String {
-    let status = if row.state == StartedState::NeedsYou { "Needs you".to_owned() } else { thread_status(&row.thread, now) };
-    if row.started { status } else { format!("Waiting on it · {status}") }
+    let status = if row.state == StartedState::NeedsYou {
+        "Needs you".to_owned()
+    } else {
+        thread_status(&row.thread, now)
+    };
+    if row.started {
+        status
+    } else {
+        format!("Waiting on it · {status}")
+    }
 }
 
 // ---------------------------------------------------------------- schedules
@@ -914,6 +1110,10 @@ pub struct Schedule {
     pub account_id: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub pool_id: Option<String>,
+    /// With `pool_id`: the kind of login its threads start on, in a pool of
+    /// several kinds.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub provider: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub model: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
@@ -935,7 +1135,7 @@ pub struct Schedule {
     pub runs: i64,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub last_run: Option<LastRun>,
-    /// The runner it runs on, its name and icon (docs/protocol.md, "Schedules").
+    /// The runner it runs on, its name and icon (docs/protocol/projects.md, "Schedules").
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub runner_id: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
@@ -966,7 +1166,12 @@ pub struct LastRun {
 
 impl Schedule {
     pub fn list(value: &Value) -> Vec<Schedule> {
-        value.as_array().into_iter().flatten().filter_map(|s| crate::wire::read(s.clone())).collect()
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| crate::wire::read(s.clone()))
+            .collect()
     }
     pub fn is_finished(&self) -> bool {
         self.finished_at.is_some()
@@ -983,7 +1188,8 @@ impl Schedule {
         matches!((self.runner_id.as_deref(), self_runner_id), (Some(runner), Some(own)) if runner != own)
     }
     fn belongs(&self, thread_id: &str) -> bool {
-        self.thread_id.as_deref() == Some(thread_id) || self.created_by.as_deref() == Some(thread_id)
+        self.thread_id.as_deref() == Some(thread_id)
+            || self.created_by.as_deref() == Some(thread_id)
     }
     pub fn next_ms(&self) -> Option<i64> {
         self.next_run_at.as_deref().and_then(parse_ms)
@@ -1020,28 +1226,51 @@ pub fn schedule_relative(date_ms: i64, now_ms: i64) -> String {
         return format!("in {hours}h");
     }
     let days = (seconds / 86_400.).round() as i64;
-    if days == 1 { "in 1 day".into() } else { format!("in {days} days") }
+    if days == 1 {
+        "in 1 day".into()
+    } else {
+        format!("in {days} days")
+    }
 }
 
 /// Active ones soonest first, then paused ones; a one-off that has run is left
 /// out, unless it's the schedule that started the thread (`ScheduleRows.rows`).
-pub fn schedule_rows(thread: &ThreadSummary, schedules: &[Schedule], now_ms: i64, target: impl Fn(&Schedule) -> String) -> Vec<ScheduleRow> {
-    let origin = thread.schedule.as_ref().and_then(|s| s.get("id")).and_then(Value::as_str);
-    let mut kept: Vec<&Schedule> = schedules.iter().filter(|s| s.belongs(&thread.id) || Some(s.id.as_str()) == origin).filter(|s| !s.is_finished() || Some(s.id.as_str()) == origin).collect();
+pub fn schedule_rows(
+    thread: &ThreadSummary,
+    schedules: &[Schedule],
+    now_ms: i64,
+    target: impl Fn(&Schedule) -> String,
+) -> Vec<ScheduleRow> {
+    let origin = thread
+        .schedule
+        .as_ref()
+        .and_then(|s| s.get("id"))
+        .and_then(Value::as_str);
+    let mut kept: Vec<&Schedule> = schedules
+        .iter()
+        .filter(|s| s.belongs(&thread.id) || Some(s.id.as_str()) == origin)
+        .filter(|s| !s.is_finished() || Some(s.id.as_str()) == origin)
+        .collect();
     kept.sort_by(|a, b| {
-        b.is_active().cmp(&a.is_active()).then_with(|| match (a.next_ms(), b.next_ms()) {
-            (Some(x), Some(y)) => x.cmp(&y),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.created_at.cmp(&b.created_at),
-        })
+        b.is_active()
+            .cmp(&a.is_active())
+            .then_with(|| match (a.next_ms(), b.next_ms()) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.created_at.cmp(&b.created_at),
+            })
     });
     kept.into_iter()
         .map(|s| {
             // "Started this thread" leads, so a long cron can't push it off
             // the end of the line.
             let is_origin = Some(s.id.as_str()) == origin;
-            let mut parts: Vec<String> = if is_origin { vec!["Started this thread".to_owned()] } else { vec![] };
+            let mut parts: Vec<String> = if is_origin {
+                vec!["Started this thread".to_owned()]
+            } else {
+                vec![]
+            };
             if !s.when_text.is_empty() {
                 parts.push(s.when_text.clone());
             }
@@ -1053,9 +1282,21 @@ pub fn schedule_rows(thread: &ThreadSummary, schedules: &[Schedule], now_ms: i64
             } else if s.is_finished() {
                 None
             } else {
-                s.next_ms().map(|ms| schedule_relative(ms, now_ms)).map(|w| if w == "now" { "due now".to_owned() } else { w })
+                s.next_ms()
+                    .map(|ms| schedule_relative(ms, now_ms))
+                    .map(|w| if w == "now" { "due now".to_owned() } else { w })
             };
-            ScheduleRow { id: s.id.clone(), title: if s.title.is_empty() { "Untitled".into() } else { s.title.clone() }, when, detail: parts.join(" · "), paused: s.paused }
+            ScheduleRow {
+                id: s.id.clone(),
+                title: if s.title.is_empty() {
+                    "Untitled".into()
+                } else {
+                    s.title.clone()
+                },
+                when,
+                detail: parts.join(" · "),
+                paused: s.paused,
+            }
         })
         .collect()
 }
@@ -1089,7 +1330,7 @@ pub struct Panel {
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub project_id: Option<String>,
     /// The built-in Convex panel's deployment: shown as Convex's embedded
-    /// dashboard rather than `url` (docs/protocol.md, "The Convex panel").
+    /// dashboard rather than `url` (docs/protocol/patches.md, "The Convex panel").
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub convex: Option<crate::convex_panel::Deployment>,
 }
@@ -1176,13 +1417,55 @@ pub struct PatchInfo {
     pub helpers: Option<Vec<String>>,
     #[serde(default)]
     pub grants: Option<Vec<String>>,
+    /// With `untrusted` "changed": what differs from the version last
+    /// trusted there (docs/protocol/trust.md, "What changed"). Says only.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub changes: Option<PatchChanges>,
+}
+
+/// `PatchChanges`: what changed in a waiting patch since it was last trusted.
+/// Read strictly inside: anything malformed drops all of it (`changes` is
+/// read with `wire::field`), never part, so a list can't come out shorter
+/// than the runner sent or lose its "not committed" (Gemini's review).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PatchChanges {
+    pub since: Option<String>,
+    pub recheck: Option<bool>,
+    pub files: Option<Vec<ChangedFile>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    /// "changed", "added" or "removed".
+    pub was: String,
+    #[serde(default)]
+    pub commits: Option<Vec<ChangedCommit>>,
+    #[serde(default)]
+    pub more_commits: Option<u32>,
+    #[serde(default)]
+    pub uncommitted: Option<bool>,
+    #[serde(default)]
+    pub diff: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ChangedCommit {
+    pub sha: String,
+    pub subject: String,
 }
 
 impl PatchInfo {
     /// A Trust button needs complete, understood disclosures and an actual
     /// target. Unknown sources remain readable without offering to run code.
     pub fn can_trust(&self) -> bool {
-        self.untrusted.is_some() && matches!(self.source.as_str(), "builtin" | "home" | "project" | "claude")
+        self.untrusted.is_some()
+            && matches!(
+                self.source.as_str(),
+                "builtin" | "home" | "project" | "claude"
+            )
             && self.file.as_deref().is_some_and(|s| !s.is_empty())
             && self.hash.as_deref().is_some_and(|s| !s.is_empty())
     }
@@ -1225,7 +1508,7 @@ pub struct PanelItem {
     pub toggle: Option<PanelToggle>,
 }
 
-/// A list row's switch (`PanelItem.toggle`, docs/protocol.md "Row toggles").
+/// A list row's switch (`PanelItem.toggle`, docs/protocol/patches.md "Row toggles").
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct PanelToggle {
@@ -1242,17 +1525,31 @@ pub struct PanelToggle {
 impl PanelToggle {
     /// Its icon, "power" when the patch gave none.
     pub fn symbol(&self) -> &str {
-        self.icon.as_deref().filter(|i| !i.is_empty()).unwrap_or("power")
+        self.icon
+            .as_deref()
+            .filter(|i| !i.is_empty())
+            .unwrap_or("power")
     }
 
     /// Its tooltip: the patch's words and what a press does, or that one is
     /// on its way while `pending`.
     pub fn tip(&self, pending: bool) -> String {
-        let what = self.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("Switch");
+        let what = self
+            .title
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .unwrap_or("Switch");
         if pending {
             return format!("{what}: switching {}…", if self.on { "on" } else { "off" });
         }
-        format!("{what}: {}", if self.on { "on. Click to turn off." } else { "off. Click to turn on." })
+        format!(
+            "{what}: {}",
+            if self.on {
+                "on. Click to turn off."
+            } else {
+                "off. Click to turn on."
+            }
+        )
     }
 }
 
@@ -1265,13 +1562,19 @@ impl PanelItem {
     /// Every row's switch whose id is `id` set to `on`: what a press shows
     /// at once, before the runner answers, and what a failure puts back.
     pub fn set_switch(items: &mut [PanelItem], id: &str, on: bool) {
-        for t in items.iter_mut().filter_map(|i| i.toggle.as_mut()).filter(|t| t.id == id) {
+        for t in items
+            .iter_mut()
+            .filter_map(|i| i.toggle.as_mut())
+            .filter(|t| t.id == id)
+        {
             t.on = on;
         }
     }
 
     pub fn tone_kind(&self) -> Option<&str> {
-        self.tone.as_deref().filter(|t| matches!(*t, "attention" | "failed" | "warning" | "working" | "done"))
+        self.tone
+            .as_deref()
+            .filter(|t| matches!(*t, "attention" | "failed" | "warning" | "working" | "done"))
     }
 
     /// The row's own icon, else one for its tone, else none (`ListPanel.icon`).
@@ -1312,7 +1615,11 @@ impl PanelItem {
         items
             .iter()
             .map(|item| {
-                let heading = item.section.as_deref().filter(|s| !s.is_empty() && Some(*s) != last).map(str::to_owned);
+                let heading = item
+                    .section
+                    .as_deref()
+                    .filter(|s| !s.is_empty() && Some(*s) != last)
+                    .map(str::to_owned);
                 last = item.section.as_deref();
                 heading
             })
@@ -1332,7 +1639,11 @@ impl PanelRender {
     pub fn decode(v: &Value) -> PanelRender {
         PanelRender {
             image: v.get("image").and_then(crate::reducer::ImageRef::decode),
-            items: v.get("items").and_then(Value::as_array).map(|a| a.iter().filter_map(|i| crate::wire::read(i.clone())).collect()),
+            items: v.get("items").and_then(Value::as_array).map(|a| {
+                a.iter()
+                    .filter_map(|i| crate::wire::read(i.clone()))
+                    .collect()
+            }),
             note: v.get("note").and_then(Value::as_str).map(str::to_owned),
         }
     }
@@ -1356,7 +1667,11 @@ pub mod patches {
     pub fn waiting_text(patch: &PatchInfo) -> &'static str {
         let changed = patch.untrusted.as_deref() == Some("changed");
         if patch.source == "claude" {
-            if changed { "Changed since you trusted them, so they're skipped" } else { "Hooks, commands and environment settings skipped until you trust them" }
+            if changed {
+                "Changed since you trusted them, so they're skipped"
+            } else {
+                "Hooks, commands and environment settings skipped until you trust them"
+            }
         } else if changed {
             "Changed since you trusted it"
         } else {
@@ -1364,20 +1679,177 @@ pub mod patches {
         }
     }
 
+    /// One line per file a waiting patch changed in since it was last
+    /// trusted, saying where the change came from: "package.json changed, in
+    /// 2952b9c Lint with mikecann-lint (#66)", "go.sh changed, not committed".
+    /// The 6 Nov recheck says it's that, not a change. Empty when the runner
+    /// has nothing on record (or is too old to say).
+    pub fn change_lines(patch: &PatchInfo) -> Vec<String> {
+        if patch.untrusted.as_deref() != Some("changed") {
+            return vec![];
+        }
+        let Some(changes) = &patch.changes else {
+            return vec![];
+        };
+        if changes.recheck == Some(true) {
+            return vec!["This folder's trust is from before Threadbear changed how it checks patches on 6 Nov, so it can't say whether this patch was trusted before or what changed. Read the file before you trust it.".to_owned()];
+        }
+        let files = changes.files.as_deref().unwrap_or_default();
+        files
+            .iter()
+            .map(|f| {
+                let what = match f.was.as_str() {
+                    "added" => format!("{} now runs too", plain(&f.path)),
+                    "removed" => format!("{} no longer runs", plain(&f.path)),
+                    _ => format!("{} changed", plain(&f.path)),
+                };
+                if f.was == "removed" {
+                    return what;
+                }
+                let commits = f.commits.as_deref().unwrap_or_default();
+                let mut where_ = Vec::new();
+                if !commits.is_empty() {
+                    let named: Vec<String> = commits
+                        .iter()
+                        .map(|c| format!("{} {}", plain(&c.sha), plain(&c.subject)))
+                        .collect();
+                    let more = f
+                        .more_commits
+                        .filter(|n| *n > 0)
+                        .map(|n| format!(" and {n} more"))
+                        .unwrap_or_default();
+                    where_.push(format!(
+                        "in {}: {}{more}",
+                        if commits.len() == 1 && more.is_empty() {
+                            "a commit"
+                        } else {
+                            "commits"
+                        },
+                        named.join("; ")
+                    ));
+                }
+                if f.uncommitted == Some(true) {
+                    where_.push("not committed".to_owned());
+                }
+                if where_.is_empty() {
+                    what
+                } else {
+                    format!("{what}, {}", where_.join(", and "))
+                }
+            })
+            .collect()
+    }
+
+    /// The chip's tooltip for a single waiting patch that changed: which
+    /// patch, in which folder, and which files, so a re-ask after your own
+    /// merge reads differently from new code. None for anything else.
+    pub fn changed_tip(patch: &PatchInfo) -> Option<String> {
+        if patch.untrusted.as_deref() != Some("changed") || patch.source == "claude" {
+            return None;
+        }
+        let changes = patch.changes.as_ref()?;
+        // A file's name is the repo's text: one plain line.
+        let id = plain(&patch.id);
+        let folder = patch
+            .folder
+            .clone()
+            .or_else(|| {
+                let file = std::path::Path::new(patch.file.as_deref()?);
+                Some(
+                    file.parent()?
+                        .parent()?
+                        .parent()?
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            })
+            .map(|f| plain(&crate::inbox::folder_name(&f)))
+            .unwrap_or_default();
+        let place = if folder.is_empty() {
+            String::new()
+        } else {
+            format!(" in {folder}")
+        };
+        if changes.recheck == Some(true) {
+            return Some(format!("The {id} patch{place} is waiting. Its folder's trust is from before Threadbear changed how it checks patches on 6 Nov, so it can't say whether this patch was trusted before or what changed. A patch is code that runs on your Mac. Open Patches to read and trust it"));
+        }
+        let files = changes.files.as_deref().unwrap_or_default();
+        if files.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = files.iter().take(3).map(|f| plain(&f.path)).collect();
+        let more = if files.len() > 3 {
+            format!(" and {} more", files.len() - 3)
+        } else {
+            String::new()
+        };
+        Some(format!("The {id} patch{place} changed since you trusted it: {}{more}. A patch is code that runs on your Mac. Open Patches to see what changed and trust it", names.join(", ")))
+    }
+
+    /// Repo text as one plain line: control, line-breaking and
+    /// direction-changing characters become `?`.
+    pub fn plain(s: &str) -> String {
+        s.chars()
+            .map(|c| {
+                let n = c as u32;
+                if c.is_control()
+                    || matches!(n, 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029 | 0x202a..=0x202e | 0x2066..=0x2069)
+                {
+                    '?'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
+
     /// "actions Typecheck, Reseed · panel Storybook · hook Typecheck".
-    pub fn gives(patch_id: &str, actions: &[Action], panels: &[Panel], hooks: &[HookInfo]) -> String {
+    pub fn gives(
+        patch_id: &str,
+        actions: &[Action],
+        panels: &[Panel],
+        hooks: &[HookInfo],
+    ) -> String {
         let mut parts = Vec::new();
-        let titles: Vec<&str> = actions.iter().filter(|a| a.patch == patch_id).map(|a| a.title.as_str()).collect();
+        let titles: Vec<&str> = actions
+            .iter()
+            .filter(|a| a.patch == patch_id)
+            .map(|a| a.title.as_str())
+            .collect();
         if !titles.is_empty() {
-            parts.push(format!("{} {}", if titles.len() == 1 { "action" } else { "actions" }, titles.join(", ")));
+            parts.push(format!(
+                "{} {}",
+                if titles.len() == 1 {
+                    "action"
+                } else {
+                    "actions"
+                },
+                titles.join(", ")
+            ));
         }
-        let titles: Vec<&str> = panels.iter().filter(|p| p.patch == patch_id).map(|p| p.title.as_str()).collect();
+        let titles: Vec<&str> = panels
+            .iter()
+            .filter(|p| p.patch == patch_id)
+            .map(|p| p.title.as_str())
+            .collect();
         if !titles.is_empty() {
-            parts.push(format!("{} {}", if titles.len() == 1 { "panel" } else { "panels" }, titles.join(", ")));
+            parts.push(format!(
+                "{} {}",
+                if titles.len() == 1 { "panel" } else { "panels" },
+                titles.join(", ")
+            ));
         }
-        let titles: Vec<&str> = hooks.iter().filter(|h| h.patch == patch_id).map(|h| h.title.as_str()).collect();
+        let titles: Vec<&str> = hooks
+            .iter()
+            .filter(|h| h.patch == patch_id)
+            .map(|h| h.title.as_str())
+            .collect();
         if !titles.is_empty() {
-            parts.push(format!("{} {}", if titles.len() == 1 { "hook" } else { "hooks" }, titles.join(", ")));
+            parts.push(format!(
+                "{} {}",
+                if titles.len() == 1 { "hook" } else { "hooks" },
+                titles.join(", ")
+            ));
         }
         parts.join(" · ")
     }
@@ -1393,15 +1865,36 @@ pub mod patches {
     /// One group with no title when nothing came from a project
     /// (`PatchGroups.group`). `project_title` is `projects.list`'s title for an
     /// id the thread isn't in any more.
-    pub fn group(thread: &ThreadSummary, patches: &[PatchInfo], project_title: impl Fn(&str) -> Option<String>) -> Vec<PatchGroup> {
-        let own: Vec<PatchInfo> = patches.iter().filter(|p| p.project_id.is_none()).cloned().collect();
-        let from_projects: Vec<&PatchInfo> = patches.iter().filter(|p| p.project_id.is_some()).collect();
+    pub fn group(
+        thread: &ThreadSummary,
+        patches: &[PatchInfo],
+        project_title: impl Fn(&str) -> Option<String>,
+    ) -> Vec<PatchGroup> {
+        let own: Vec<PatchInfo> = patches
+            .iter()
+            .filter(|p| p.project_id.is_none())
+            .cloned()
+            .collect();
+        let from_projects: Vec<&PatchInfo> =
+            patches.iter().filter(|p| p.project_id.is_some()).collect();
         if from_projects.is_empty() {
-            return if own.is_empty() { vec![] } else { vec![PatchGroup { project_id: None, title: None, patches: own }] };
+            return if own.is_empty() {
+                vec![]
+            } else {
+                vec![PatchGroup {
+                    project_id: None,
+                    title: None,
+                    patches: own,
+                }]
+            };
         }
         let mut groups = Vec::new();
         if !own.is_empty() {
-            groups.push(PatchGroup { project_id: None, title: None, patches: own });
+            groups.push(PatchGroup {
+                project_id: None,
+                title: None,
+                patches: own,
+            });
         }
         // The thread's projects in its order, then any it isn't in any more
         // (a summary a moment behind).
@@ -1414,12 +1907,26 @@ pub mod patches {
             }
         }
         for id in ids {
-            let list: Vec<PatchInfo> = from_projects.iter().filter(|p| p.project_id.as_deref() == Some(id.as_str())).map(|p| (*p).clone()).collect();
+            let list: Vec<PatchInfo> = from_projects
+                .iter()
+                .filter(|p| p.project_id.as_deref() == Some(id.as_str()))
+                .map(|p| (*p).clone())
+                .collect();
             if list.is_empty() {
                 continue;
             }
-            let title = thread_projects.iter().find(|p| p.id == id).map(|p| p.title.clone()).filter(|t| !t.is_empty()).or_else(|| project_title(&id)).unwrap_or_else(|| "A project".into());
-            groups.push(PatchGroup { project_id: Some(id), title: Some(title), patches: list });
+            let title = thread_projects
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.title.clone())
+                .filter(|t| !t.is_empty())
+                .or_else(|| project_title(&id))
+                .unwrap_or_else(|| "A project".into());
+            groups.push(PatchGroup {
+                project_id: Some(id),
+                title: Some(title),
+                patches: list,
+            });
         }
         groups
     }
@@ -1427,6 +1934,57 @@ pub mod patches {
 
 #[cfg(test)]
 mod tests {
+    /// A re-ask says which files changed and where from, so his own merge
+    /// reads differently from new code (nightly retro, 20 Nov 2026).
+    #[test]
+    fn a_changed_patch_says_what_changed_and_where_from() {
+        use super::{patches as words, PatchInfo};
+        let patch: PatchInfo = serde_json::from_value(serde_json::json!({
+            "id": "cannvas", "source": "project", "untrusted": "changed", "hash": "h",
+            "file": "/Users/m/dev/cannvas/.threadbear/patches/cannvas.ts",
+            "changes": { "since": "2026-11-18T01:33:17Z", "files": [
+                { "path": "package.json", "was": "changed", "commits": [{ "sha": "2952b9c", "subject": "Lint with mikecann-lint 0.1.1 (#66)" }], "diff": "- a\n+ b" },
+                { "path": "go.sh", "was": "added", "uncommitted": true },
+                { "path": "old.sh", "was": "removed" }
+            ] }
+        }))
+        .unwrap();
+        assert_eq!(
+            words::change_lines(&patch),
+            vec![
+                "package.json changed, in a commit: 2952b9c Lint with mikecann-lint 0.1.1 (#66)",
+                "go.sh now runs too, not committed",
+                "old.sh no longer runs",
+            ]
+        );
+        assert_eq!(
+            words::changed_tip(&patch).unwrap(),
+            "The cannvas patch in cannvas changed since you trusted it: package.json, go.sh, old.sh. A patch is code that runs on your Mac. Open Patches to see what changed and trust it"
+        );
+        let recheck: PatchInfo = serde_json::from_value(serde_json::json!({
+            "id": "pool", "source": "project", "untrusted": "changed", "hash": "h",
+            "file": "/Users/m/dev/pool/.threadbear/patches/pool.ts", "changes": { "recheck": true }
+        }))
+        .unwrap();
+        assert!(words::change_lines(&recheck)[0]
+            .contains("can't say whether this patch was trusted before"));
+        // Malformed inside: none of it, never part.
+        let partial: PatchInfo = serde_json::from_value(serde_json::json!({
+            "id": "p", "source": "project", "untrusted": "changed", "hash": "h", "file": "/x/.threadbear/patches/p.ts",
+            "changes": { "files": [{ "path": "a.sh", "was": "changed" }, { "path": 5, "was": "changed" }] }
+        }))
+        .unwrap();
+        assert!(partial.changes.is_none());
+        // A runner too old to say, or a change it can't read: as before.
+        let bare: PatchInfo = serde_json::from_value(serde_json::json!({
+            "id": "p", "source": "project", "untrusted": "changed", "hash": "h", "file": "/x/.threadbear/patches/p.ts", "changes": 7
+        }))
+        .unwrap();
+        assert!(words::change_lines(&bare).is_empty());
+        assert!(words::changed_tip(&bare).is_none());
+        assert!(bare.can_trust());
+    }
+
     #[test]
     fn previews_keep_keys_and_home_dotfolders_to_themselves() {
         use super::preview_private as private;
@@ -1453,32 +2011,76 @@ mod tests {
     fn chips_sit_on_a_shelf_for_each_place_they_came_from_grouped_by_patch() {
         let patch = |id: &str, extra: serde_json::Value| {
             let mut v = serde_json::json!({ "id": id, "source": "folder" });
-            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
             serde_json::from_value::<PatchInfo>(v).unwrap()
         };
         let patches = vec![
             patch("app-store", serde_json::json!({})),
             patch("checks", serde_json::json!({})),
             patch("convex", serde_json::json!({ "projectId": "p1" })),
-            patch("tandem", serde_json::json!({ "matched": ["/Users/alex/v/cut.tandem"] })),
+            patch(
+                "tandem",
+                serde_json::json!({ "matched": ["/Users/alex/v/cut.tandem"] }),
+            ),
             patch("mine", serde_json::json!({ "source": "home" })),
         ];
-        let action = |id: &str, patch: &str| Action { id: id.into(), title: id.into(), kind: "url".into(), patch: patch.into(), ..Default::default() };
-        let actions = vec![action("site", "app-store"), action("dash", "convex"), action("land", "checks"), action("sentry", "app-store"), action("cut", "tandem"), action("note", "mine")];
+        let action = |id: &str, patch: &str| Action {
+            id: id.into(),
+            title: id.into(),
+            kind: "url".into(),
+            patch: patch.into(),
+            ..Default::default()
+        };
+        let actions = vec![
+            action("site", "app-store"),
+            action("dash", "convex"),
+            action("land", "checks"),
+            action("sentry", "app-store"),
+            action("cut", "tandem"),
+            action("note", "mine"),
+        ];
         let shelves = ActionShelf::shelves(&actions, &patches);
-        let shape: Vec<(PanelOrigin, Vec<Vec<&str>>)> = shelves.iter().map(|s| (s.origin.clone(), s.patches.iter().map(|g| g.iter().map(|a| a.id.as_str()).collect()).collect())).collect();
+        let shape: Vec<(PanelOrigin, Vec<Vec<&str>>)> = shelves
+            .iter()
+            .map(|s| {
+                (
+                    s.origin.clone(),
+                    s.patches
+                        .iter()
+                        .map(|g| g.iter().map(|a| a.id.as_str()).collect())
+                        .collect(),
+                )
+            })
+            .collect();
         assert_eq!(
             shape,
             vec![
-                (PanelOrigin::Folder, vec![vec!["site", "sentry"], vec!["land"]]),
+                (
+                    PanelOrigin::Folder,
+                    vec![vec!["site", "sentry"], vec!["land"]]
+                ),
                 (PanelOrigin::Project("p1".into()), vec![vec!["dash"]]),
-                (PanelOrigin::Tool(vec!["/Users/alex/v/cut.tandem".into()]), vec![vec!["cut"]]),
+                (
+                    PanelOrigin::Tool(vec!["/Users/alex/v/cut.tandem".into()]),
+                    vec![vec!["cut"]]
+                ),
                 (PanelOrigin::Home, vec![vec!["note"]]),
             ]
         );
-        assert_eq!(PanelOrigin::Tool(vec!["/Users/alex/v/cut.tandem".into()]).tip("Cut", None), "Cut, for cut.tandem");
-        assert_eq!(PanelOrigin::Project("p1".into()).tip("Convex", Some("Threadbear")), "Convex, from the Threadbear project");
-        assert_eq!(action_glyph(&action("x", "app-store")), "arrow.up.right.square");
+        assert_eq!(
+            PanelOrigin::Tool(vec!["/Users/alex/v/cut.tandem".into()]).tip("Cut", None),
+            "Cut, for cut.tandem"
+        );
+        assert_eq!(
+            PanelOrigin::Project("p1".into()).tip("Convex", Some("Threadbear")),
+            "Convex, from the Threadbear project"
+        );
+        assert_eq!(
+            action_glyph(&action("x", "app-store")),
+            "arrow.up.right.square"
+        );
     }
 
     use super::*;
@@ -1505,7 +2107,11 @@ mod tests {
     #[test]
     fn decodes_highlights_tolerantly() {
         let decoded = ThreadHighlights::decode(&sample());
-        assert_eq!(decoded.highlights.len(), 7, "the one without an id is skipped, the rest kept");
+        assert_eq!(
+            decoded.highlights.len(),
+            7,
+            "the one without an id is skipped, the rest kept"
+        );
         let pin = &decoded.highlights[0];
         assert_eq!(pin.kind, HighlightKind::File);
         assert!(pin.is_pinned());
@@ -1519,25 +2125,41 @@ mod tests {
         assert_eq!(decoded.highlights[5].how.word(), "");
         assert_eq!(decoded.edited.len(), 4);
         // An older runner's empty answer, or one with nothing at all.
-        assert_eq!(ThreadHighlights::decode(&json!({})), ThreadHighlights::default());
+        assert_eq!(
+            ThreadHighlights::decode(&json!({})),
+            ThreadHighlights::default()
+        );
     }
 
     #[test]
     fn sections_group_pins_files_links_and_commits() {
         let decoded = ThreadHighlights::decode(&sample());
         let sections = HighlightSections::build(&decoded);
-        assert_eq!(sections.brief.as_deref(), Some("The three pages are rebuilt; Quick Ask's copy still needs a pass."));
+        assert_eq!(
+            sections.brief.as_deref(),
+            Some("The three pages are rebuilt; Quick Ask's copy still needs a pass.")
+        );
         let titles = |list: &[Highlight]| list.iter().map(|h| h.title.clone()).collect::<Vec<_>>();
         assert_eq!(titles(&sections.pinned), ["hero.html"]);
         assert_eq!(titles(&sections.files), ["copy.md"]);
         // The unknown kind with a url is a link; the one with neither is left out.
-        assert_eq!(titles(&sections.links), ["m/site#14", "localhost:4321", "A future link"]);
+        assert_eq!(
+            titles(&sections.links),
+            ["m/site#14", "localhost:4321", "A future link"]
+        );
         assert_eq!(sections.commits[0].sha.as_deref(), Some("abc1234"));
         // A file already listed isn't repeated under edited, nor is a repeat.
-        assert_eq!(sections.edited, ["/w/site/src/Hero.tsx", "/w/site/src/app.css"]);
+        assert_eq!(
+            sections.edited,
+            ["/w/site/src/Hero.tsx", "/w/site/src/app.css"]
+        );
         assert!(!sections.is_empty());
         assert!(HighlightSections::build(&ThreadHighlights::default()).is_empty());
-        assert!(HighlightSections::build(&ThreadHighlights { brief: Some("  ".into()), ..Default::default() }).is_empty());
+        assert!(HighlightSections::build(&ThreadHighlights {
+            brief: Some("  ".into()),
+            ..Default::default()
+        })
+        .is_empty());
     }
 
     #[test]
@@ -1547,7 +2169,10 @@ mod tests {
             ["Added the Tandem card", "Panel follows the thread", "Waiting on Alex to test"]
         );
         // An older paragraph brief stays one point.
-        assert_eq!(HighlightSections::points("Rebuilt the pages; copy needs a pass."), ["Rebuilt the pages; copy needs a pass."]);
+        assert_eq!(
+            HighlightSections::points("Rebuilt the pages; copy needs a pass."),
+            ["Rebuilt the pages; copy needs a pass."]
+        );
     }
 
     #[test]
@@ -1564,7 +2189,19 @@ mod tests {
 
     #[test]
     fn text_files_get_the_text_view() {
-        for path in ["/a/INSTALL.md", "/a/notes.MD", "/a/b.markdown", "/a/readme.txt", "/a/data.csv", "/a/.env", "/a/x.log", "/a/app.ts", "/a/Package.swift", "/a/config.json", "/a/Makefile"] {
+        for path in [
+            "/a/INSTALL.md",
+            "/a/notes.MD",
+            "/a/b.markdown",
+            "/a/readme.txt",
+            "/a/data.csv",
+            "/a/.env",
+            "/a/x.log",
+            "/a/app.ts",
+            "/a/Package.swift",
+            "/a/config.json",
+            "/a/Makefile",
+        ] {
             assert_eq!(viewer_for_path(path), Viewer::Text, "{path}");
         }
         assert!(is_markdown("/a/INSTALL.md"));
@@ -1573,7 +2210,10 @@ mod tests {
 
     #[test]
     fn code_files_get_their_language() {
-        assert_eq!(code_language("/r/runner/test/unit/release.test.ts"), Some("typescript"));
+        assert_eq!(
+            code_language("/r/runner/test/unit/release.test.ts"),
+            Some("typescript")
+        );
         assert_eq!(code_language("/r/App.SWIFT"), Some("swift"));
         assert_eq!(code_language("/r/Makefile"), Some("makefile"));
         assert_eq!(code_language("/r/README.md"), None);
@@ -1595,12 +2235,31 @@ mod tests {
 
     #[test]
     fn transcript_links_to_review_files_preview_in_the_pane() {
-        for path in ["/tmp/a.md", "/tmp/b.HTML", "/tmp/c.pdf", "/tmp/d.png", "/tmp/e.mov", "/tmp/f.csv", "/tmp/g.svg"] {
+        for path in [
+            "/tmp/a.md",
+            "/tmp/b.HTML",
+            "/tmp/c.pdf",
+            "/tmp/d.png",
+            "/tmp/e.mov",
+            "/tmp/f.csv",
+            "/tmp/g.svg",
+        ] {
             assert!(previews_in_pane(path), "{path}");
         }
         // Data and logs, drawn by the pane's text view rather than left to
         // whichever IDE claims them (Xcode takes `.json`).
-        for path in ["/tmp/put-1.json", "/tmp/a.JSONC", "/tmp/b.jsonl", "/tmp/c.ndjson", "/tmp/d.yaml", "/tmp/e.yml", "/tmp/f.toml", "/tmp/g.tsv", "/tmp/h.log", "/tmp/i.text"] {
+        for path in [
+            "/tmp/put-1.json",
+            "/tmp/a.JSONC",
+            "/tmp/b.jsonl",
+            "/tmp/c.ndjson",
+            "/tmp/d.yaml",
+            "/tmp/e.yml",
+            "/tmp/f.toml",
+            "/tmp/g.tsv",
+            "/tmp/h.log",
+            "/tmp/i.text",
+        ] {
             assert!(previews_in_pane(path), "{path}");
             assert_eq!(viewer_for_path(path), Viewer::Text, "{path}");
         }
@@ -1623,7 +2282,13 @@ mod tests {
             assert_eq!(code_language(path), Some(language), "{path}");
         }
         // Not a plist, which can be binary; not folders, archives or bundles.
-        for path in ["/tmp/Info.plist", "/tmp/folder", "/tmp/c.zip", "/tmp/d.xcodeproj", "/tmp/e.command"] {
+        for path in [
+            "/tmp/Info.plist",
+            "/tmp/folder",
+            "/tmp/c.zip",
+            "/tmp/d.xcodeproj",
+            "/tmp/e.command",
+        ] {
             assert!(!previews_in_pane(path), "{path}");
         }
     }
@@ -1657,30 +2322,83 @@ mod tests {
         assert_eq!(file_symbol("/a/shot.PNG"), "photo");
         assert_eq!(file_symbol("/a/demo.mov"), "film");
         assert_eq!(file_symbol("/a/data.csv"), "tablecells");
-        assert_eq!(file_symbol("/a/App.swift"), "chevron.left.forwardslash.chevron.right");
+        assert_eq!(
+            file_symbol("/a/App.swift"),
+            "chevron.left.forwardslash.chevron.right"
+        );
         assert_eq!(file_symbol("/a/Makefile"), "doc");
-        let pr = Highlight { id: "pr:1".into(), kind: HighlightKind::Pr, title: "m/s#1".into(), ..Default::default() };
+        let pr = Highlight {
+            id: "pr:1".into(),
+            kind: HighlightKind::Pr,
+            title: "m/s#1".into(),
+            ..Default::default()
+        };
         assert_eq!(highlight_symbol(&pr), "arrow.triangle.pull");
-        let link = Highlight { id: "link:1".into(), kind: HighlightKind::Link, title: "x".into(), ..Default::default() };
+        let link = Highlight {
+            id: "link:1".into(),
+            kind: HighlightKind::Link,
+            title: "x".into(),
+            ..Default::default()
+        };
         assert_eq!(highlight_symbol(&link), "link");
     }
 
     #[test]
     fn a_windows_path_sits_in_its_folder_the_same_way() {
-        assert_eq!(text::folder(r"C:\work\site\mockups\home.html", Some(r"C:\work\site"), r"C:\Users\alex"), "mockups");
-        assert_eq!(last_component(r"C:\work\site\mockups\home.html"), "home.html");
+        assert_eq!(
+            text::folder(
+                r"C:\work\site\mockups\home.html",
+                Some(r"C:\work\site"),
+                r"C:\Users\alex"
+            ),
+            "mockups"
+        );
+        assert_eq!(
+            last_component(r"C:\work\site\mockups\home.html"),
+            "home.html"
+        );
     }
 
     #[test]
     fn folder_is_relative_to_the_threads_folder_else_home() {
         let cwd = Some("/Users/alex/dev/site");
-        assert_eq!(text::folder("/Users/alex/dev/site/docs/mockups/a.html", cwd, "/Users/alex"), "docs/mockups");
-        assert_eq!(text::folder("/Users/alex/dev/site/README.md", Some("/Users/alex/dev/site/"), "/Users/alex"), "site");
-        assert_eq!(text::folder("/Users/alex/dev/site-old/a.md", cwd, "/Users/alex"), "~/dev/site-old");
+        assert_eq!(
+            text::folder(
+                "/Users/alex/dev/site/docs/mockups/a.html",
+                cwd,
+                "/Users/alex"
+            ),
+            "docs/mockups"
+        );
+        assert_eq!(
+            text::folder(
+                "/Users/alex/dev/site/README.md",
+                Some("/Users/alex/dev/site/"),
+                "/Users/alex"
+            ),
+            "site"
+        );
+        assert_eq!(
+            text::folder("/Users/alex/dev/site-old/a.md", cwd, "/Users/alex"),
+            "~/dev/site-old"
+        );
         assert_eq!(text::folder("/tmp/a.md", cwd, "/Users/alex"), "/tmp");
-        assert_eq!(text::address("https://www.github.com/m/site/pull/14/"), "github.com/m/site/pull/14");
-        let commit = |branch: Option<&str>, pushed: bool| Highlight { id: "c".into(), kind: HighlightKind::Commit, title: "x".into(), branch: branch.map(str::to_owned), pushed, ..Default::default() };
-        assert_eq!(text::commit_line(&commit(Some("main"), true)), "main · pushed");
+        assert_eq!(
+            text::address("https://www.github.com/m/site/pull/14/"),
+            "github.com/m/site/pull/14"
+        );
+        let commit = |branch: Option<&str>, pushed: bool| Highlight {
+            id: "c".into(),
+            kind: HighlightKind::Commit,
+            title: "x".into(),
+            branch: branch.map(str::to_owned),
+            pushed,
+            ..Default::default()
+        };
+        assert_eq!(
+            text::commit_line(&commit(Some("main"), true)),
+            "main · pushed"
+        );
         assert_eq!(text::commit_line(&commit(None, false)), "not pushed yet");
         // Agents often commit without the branch showing: no empty " · ".
         assert_eq!(text::commit_line(&commit(Some(""), true)), "pushed");
@@ -1695,14 +2413,34 @@ mod tests {
         assert_eq!(shown, [1, 2, 3, 4, 5]);
         assert_eq!(more, 10);
         assert_eq!(HighlightSections::capped(&commits, 5, true).0.len(), 15);
-        assert_eq!(HighlightSections::capped(&(1..=5).collect::<Vec<i32>>(), 5, false).1, 0);
+        assert_eq!(
+            HighlightSections::capped(&(1..=5).collect::<Vec<i32>>(), 5, false).1,
+            0
+        );
     }
 
     #[test]
     fn list_panel_headings_change_where_the_section_does() {
-        let item = |section: Option<&str>| PanelItem { title: "x".into(), section: section.map(str::to_owned), ..Default::default() };
-        let items = [item(Some("This branch")), item(Some("This branch")), item(Some("Elsewhere")), item(None)];
-        assert_eq!(PanelItem::headings(&items), [Some("This branch".to_owned()), None, Some("Elsewhere".to_owned()), None]);
+        let item = |section: Option<&str>| PanelItem {
+            title: "x".into(),
+            section: section.map(str::to_owned),
+            ..Default::default()
+        };
+        let items = [
+            item(Some("This branch")),
+            item(Some("This branch")),
+            item(Some("Elsewhere")),
+            item(None),
+        ];
+        assert_eq!(
+            PanelItem::headings(&items),
+            [
+                Some("This branch".to_owned()),
+                None,
+                Some("Elsewhere".to_owned()),
+                None
+            ]
+        );
     }
 
     #[test]
@@ -1725,7 +2463,10 @@ mod tests {
         let second = items[1].switch().expect("a switch");
         assert_eq!((second.symbol(), second.on), ("power", true));
         assert_eq!(second.tip(false), "Switch: on. Click to turn off.");
-        assert!(items[0].switch().expect("a switch").on, "only the row whose id it is");
+        assert!(
+            items[0].switch().expect("a switch").on,
+            "only the row whose id it is"
+        );
     }
 
     #[test]
@@ -1748,13 +2489,24 @@ mod tests {
         assert_eq!(items[1].symbol(), Some("exclamationmark.circle.fill"));
         assert_eq!(items[2].symbol(), Some("xmark.diamond.fill"));
         assert_eq!(items[3].symbol(), Some("checkmark"));
-        assert_eq!(items[4].symbol(), None, "a tone this app doesn't know is plain");
+        assert_eq!(
+            items[4].symbol(),
+            None,
+            "a tone this app doesn't know is plain"
+        );
         assert_eq!(items[4].tone_kind(), None);
         assert_eq!(items[6].symbol(), Some("exclamationmark.triangle.fill"));
         assert_eq!(items[7].symbol(), Some("circle.dashed"));
         assert_eq!(items[7].tone_kind(), Some("working"));
-        let own = PanelItem { icon: Some("globe".into()), ..items[2].clone() };
-        assert_eq!((own.symbol(), own.tone_symbol()), (Some("globe"), Some("xmark.diamond.fill")), "its own icon, and its tone's shape beside");
+        let own = PanelItem {
+            icon: Some("globe".into()),
+            ..items[2].clone()
+        };
+        assert_eq!(
+            (own.symbol(), own.tone_symbol()),
+            (Some("globe"), Some("xmark.diamond.fill")),
+            "its own icon, and its tone's shape beside"
+        );
         assert!(render.note.is_none());
     }
 
@@ -1770,38 +2522,120 @@ mod tests {
 
     #[test]
     fn patches_say_what_they_give() {
-        let actions = vec![Action { title: "Typecheck".into(), patch: "tools".into(), ..Default::default() }, Action { title: "Reseed".into(), patch: "tools".into(), ..Default::default() }];
-        let panels = vec![Panel { title: "Storybook".into(), patch: "tools".into(), ..Default::default() }];
-        let hooks = vec![HookInfo { patch: "tools".into(), title: "Typecheck".into() }];
-        assert_eq!(patches::gives("tools", &actions, &panels, &hooks), "actions Typecheck, Reseed · panel Storybook · hook Typecheck");
+        let actions = vec![
+            Action {
+                title: "Typecheck".into(),
+                patch: "tools".into(),
+                ..Default::default()
+            },
+            Action {
+                title: "Reseed".into(),
+                patch: "tools".into(),
+                ..Default::default()
+            },
+        ];
+        let panels = vec![Panel {
+            title: "Storybook".into(),
+            patch: "tools".into(),
+            ..Default::default()
+        }];
+        let hooks = vec![HookInfo {
+            patch: "tools".into(),
+            title: "Typecheck".into(),
+        }];
+        assert_eq!(
+            patches::gives("tools", &actions, &panels, &hooks),
+            "actions Typecheck, Reseed · panel Storybook · hook Typecheck"
+        );
         assert_eq!(patches::gives("other", &actions, &panels, &hooks), "");
         assert_eq!(patches::source_name("builtin"), "built in");
         assert_eq!(patches::source_name("home"), "~/.threadbear");
         assert_eq!(patches::source_name("project"), "project");
-        let waiting = PatchInfo { source: "project".into(), untrusted: Some("new".into()), ..Default::default() };
+        let waiting = PatchInfo {
+            source: "project".into(),
+            untrusted: Some("new".into()),
+            ..Default::default()
+        };
         assert_eq!(patches::waiting_text(&waiting), "Not run yet");
-        let changed = PatchInfo { source: "claude".into(), untrusted: Some("changed".into()), ..Default::default() };
-        assert_eq!(patches::waiting_text(&changed), "Changed since you trusted them, so they're skipped");
+        let changed = PatchInfo {
+            source: "claude".into(),
+            untrusted: Some("changed".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            patches::waiting_text(&changed),
+            "Changed since you trusted them, so they're skipped"
+        );
     }
 
     #[test]
     fn patch_groups_put_own_folder_first_then_projects_in_order() {
-        let thread = ThreadSummary { id: "t".into(), projects: Some(vec![Project { id: "p2".into(), title: "Walkies".into(), ..Default::default() }, Project { id: "p1".into(), title: "Site".into(), ..Default::default() }]), ..Default::default() };
-        let patch = |id: &str, project: Option<&str>| PatchInfo { id: id.into(), project_id: project.map(str::to_owned), ..Default::default() };
-        let list = vec![patch("own", None), patch("a", Some("p1")), patch("b", Some("p2")), patch("gone", Some("p9"))];
-        let groups = patches::group(&thread, &list, |id| (id == "p9").then(|| "Old project".to_owned()));
-        assert_eq!(groups.iter().map(|g| g.title.clone()).collect::<Vec<_>>(), [None, Some("Walkies".into()), Some("Site".into()), Some("Old project".into())]);
-        assert_eq!(patches::group(&thread, &[patch("own", None)], |_| None).len(), 1, "one group, no title, when nothing came from a project");
+        let thread = ThreadSummary {
+            id: "t".into(),
+            projects: Some(vec![
+                Project {
+                    id: "p2".into(),
+                    title: "Walkies".into(),
+                    ..Default::default()
+                },
+                Project {
+                    id: "p1".into(),
+                    title: "Site".into(),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let patch = |id: &str, project: Option<&str>| PatchInfo {
+            id: id.into(),
+            project_id: project.map(str::to_owned),
+            ..Default::default()
+        };
+        let list = vec![
+            patch("own", None),
+            patch("a", Some("p1")),
+            patch("b", Some("p2")),
+            patch("gone", Some("p9")),
+        ];
+        let groups = patches::group(&thread, &list, |id| {
+            (id == "p9").then(|| "Old project".to_owned())
+        });
+        assert_eq!(
+            groups.iter().map(|g| g.title.clone()).collect::<Vec<_>>(),
+            [
+                None,
+                Some("Walkies".into()),
+                Some("Site".into()),
+                Some("Old project".into())
+            ]
+        );
+        assert_eq!(
+            patches::group(&thread, &[patch("own", None)], |_| None).len(),
+            1,
+            "one group, no title, when nothing came from a project"
+        );
         assert!(patches::group(&thread, &[], |_| None).is_empty());
     }
 
     #[test]
     fn project_words_say_who_and_whether_it_can_be_kept() {
-        let m = |by: &str, pinned: bool| Project { id: "p".into(), title: "x".into(), by: by.into(), pinned, why: None };
+        let m = |by: &str, pinned: bool| Project {
+            id: "p".into(),
+            title: "x".into(),
+            by: by.into(),
+            pinned,
+            why: None,
+        };
         assert_eq!(project_why(&m("mike", true)).0, "You put it here.");
         assert_eq!(project_why(&m("agent", true)).0, "Its agent put it here.");
-        assert_eq!(project_why(&m("librarian", true)).0, "The librarian put it here, and you kept it.");
-        assert_eq!(project_why(&m("librarian", false)).0, "The librarian put it here.");
+        assert_eq!(
+            project_why(&m("librarian", true)).0,
+            "The librarian put it here, and you kept it."
+        );
+        assert_eq!(
+            project_why(&m("librarian", false)).0,
+            "The librarian put it here."
+        );
         assert!(can_keep(&m("librarian", false)));
         assert!(!can_keep(&m("librarian", true)));
         assert!(!can_keep(&m("mike", false)));
@@ -1811,37 +2645,80 @@ mod tests {
     fn project_rows_skip_archived_and_unknown_and_repeats() {
         let thread = ThreadSummary {
             id: "t".into(),
-            projects: Some(vec![Project { id: "a".into(), ..Default::default() }, Project { id: "b".into(), ..Default::default() }, Project { id: "a".into(), ..Default::default() }, Project { id: "c".into(), ..Default::default() }]),
+            projects: Some(vec![
+                Project {
+                    id: "a".into(),
+                    ..Default::default()
+                },
+                Project {
+                    id: "b".into(),
+                    ..Default::default()
+                },
+                Project {
+                    id: "a".into(),
+                    ..Default::default()
+                },
+                Project {
+                    id: "c".into(),
+                    ..Default::default()
+                },
+            ]),
             ..Default::default()
         };
         let rows = project_rows(&thread, |id| match id {
-            "a" => Some(ProjectInfo { id: "a".into(), title: "A".into(), ..Default::default() }),
-            "b" => Some(ProjectInfo { id: "b".into(), archived: true, ..Default::default() }),
+            "a" => Some(ProjectInfo {
+                id: "a".into(),
+                title: "A".into(),
+                ..Default::default()
+            }),
+            "b" => Some(ProjectInfo {
+                id: "b".into(),
+                archived: true,
+                ..Default::default()
+            }),
             _ => None,
         });
-        assert_eq!(rows.iter().map(|r| r.project.id.clone()).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.project.id.clone())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
     }
 
     #[test]
     fn open_tasks_are_counted_from_the_columns() {
         let project = ProjectInfo {
-            tasks: Some(json!({"columns": [{"name": "Doing", "kind": "progress"}, {"name": "Done", "kind": "done"}], "items": [{"status": "Doing"}, {"status": "Done"}, {"status": "Doing"}]})),
+            tasks: Some(
+                json!({"columns": [{"name": "Doing", "kind": "progress"}, {"name": "Done", "kind": "done"}], "items": [{"status": "Doing"}, {"status": "Done"}, {"status": "Doing"}]}),
+            ),
             ..Default::default()
         };
         assert_eq!(project.open_task_count(), 2);
-        let loading = ProjectInfo { tasks: Some(json!({"loading": true, "items": [{"status": "Doing"}]})), ..Default::default() };
+        let loading = ProjectInfo {
+            tasks: Some(json!({"loading": true, "items": [{"status": "Doing"}]})),
+            ..Default::default()
+        };
         assert_eq!(loading.open_task_count(), 0);
     }
 
     fn summary(id: &str, status: &str) -> ThreadSummary {
-        ThreadSummary { id: id.into(), title: id.into(), status: status.into(), last_activity_at: "2026-11-09T10:00:00Z".into(), ..Default::default() }
+        ThreadSummary {
+            id: id.into(),
+            title: id.into(),
+            status: status.into(),
+            last_activity_at: "2026-11-09T10:00:00Z".into(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn started_threads_list_what_needs_mike_first() {
         let mut parent = summary("parent", "idle");
         parent.waiting_on = Some(vec![json!({"threadId": "waited", "title": "waited"})]);
-        let by = |t: &mut ThreadSummary| t.started_by = Some(json!({"kind": "thread", "threadId": "parent"}));
+        let by = |t: &mut ThreadSummary| {
+            t.started_by = Some(json!({"kind": "thread", "threadId": "parent"}))
+        };
         let mut failed = summary("failed", "error");
         by(&mut failed);
         let mut working = summary("working", "running");
@@ -1853,7 +2730,12 @@ mod tests {
         let threads = [parent.clone(), failed, working, asking, waited, stranger];
         let now = parse_ms("2026-11-09T11:00:00Z").unwrap();
         let rows = started_rows(&parent, threads.iter(), now);
-        assert_eq!(rows.iter().map(|r| r.thread.id.as_str()).collect::<Vec<_>>(), ["asking", "failed", "working", "waited"]);
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["asking", "failed", "working", "waited"]
+        );
         assert_eq!(rows[0].state, StartedState::NeedsYou);
         assert_eq!(started_icon(rows[1].state), "xmark");
         assert_eq!(started_icon(rows[3].state), "checkmark");
@@ -1866,16 +2748,21 @@ mod tests {
     #[test]
     fn schedule_rows_list_active_first_and_say_where() {
         let now = parse_ms("2026-11-09T10:00:00Z").unwrap();
-        let schedule = |id: &str, next: Option<&str>, paused: bool, thread: Option<&str>| Schedule {
-            id: id.into(),
-            title: id.into(),
-            when_text: "Weekdays at 9:00".into(),
-            thread_id: thread.map(str::to_owned),
-            paused,
-            next_run_at: next.map(str::to_owned),
+        let schedule =
+            |id: &str, next: Option<&str>, paused: bool, thread: Option<&str>| Schedule {
+                id: id.into(),
+                title: id.into(),
+                when_text: "Weekdays at 9:00".into(),
+                thread_id: thread.map(str::to_owned),
+                paused,
+                next_run_at: next.map(str::to_owned),
+                ..Default::default()
+            };
+        let thread = ThreadSummary {
+            id: "t".into(),
+            schedule: Some(json!({"id": "started-it"})),
             ..Default::default()
         };
-        let thread = ThreadSummary { id: "t".into(), schedule: Some(json!({"id": "started-it"})), ..Default::default() };
         let mut finished = schedule("done-once", None, false, Some("t"));
         finished.finished_at = Some("2026-11-08T10:00:00Z".into());
         let mut origin = schedule("started-it", None, false, None);
@@ -1885,12 +2772,20 @@ mod tests {
             schedule("later", Some("2026-11-09T13:00:00Z"), false, Some("t")),
             schedule("soon", Some("2026-11-09T10:12:00Z"), false, Some("t")),
             schedule("paused", Some("2026-11-09T10:01:00Z"), true, Some("t")),
-            schedule("someone-elses", Some("2026-11-09T10:01:00Z"), false, Some("other")),
+            schedule(
+                "someone-elses",
+                Some("2026-11-09T10:01:00Z"),
+                false,
+                Some("other"),
+            ),
             finished,
             origin,
         ];
         let rows = schedule_rows(&thread, &list, now, |_| "New thread in misc".into());
-        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["soon", "later", "paused", "started-it"]);
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["soon", "later", "paused", "started-it"]
+        );
         assert_eq!(rows[0].when.as_deref(), Some("in 12m"));
         assert_eq!(rows[1].when.as_deref(), Some("in 3h"));
         assert_eq!(rows[2].when.as_deref(), Some("paused"));

@@ -1,0 +1,687 @@
+# Runner protocol: Agents, settings and pools
+
+Part of the runner protocol. [docs/protocol.md](../protocol.md) has the rules for all of it and which file each section is in.
+
+## ACP agents
+
+Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
+(runner/src/adapters/acp/) run as one process per live thread, over stdio.
+Where one's CLI isn't installed and logged in, no account or pool of its
+appears. `runner.json`'s `cursorPath`,
+`opencodePath`, `grokPath` and `antigravityPath` set a binary by hand; otherwise each is found
+where it installs (Antigravity: an `agy_acp_server.par` on the PATH).
+
+- **One login each**, per machine, ids `opencode-main`, `cursor-main`,
+  `grok-main` (signed in: `~/.grok/auth.json` exists, never opened) and
+  `antigravity-main` (signed in: `$GEMINI_HOME/antigravity-acp/acp_token.json`,
+  `~/.gemini` by default, exists, never opened). No
+  usage readings, so a pool can't move a thread by room.
+- **Which program.** The process must say it's that agent in `initialize`, or
+  the thread doesn't start. `agent` is a generic name: a file only counts as
+  Cursor's by where it really lives (`~/.local/share/cursor-agent/...`), and
+  only as Grok's when that's named `grok` or `grok-<version>...`. Antigravity's
+  `agy_acp_server.par` and the `localharness_external` beside it must both be
+  signed by Google (team `EQHXZ8M8AV`, checked with `codesign` on a Mac), and
+  it must call itself `antigravity-acp`.
+- **Asking.** Every tool comes to the runner first. OpenCode gets `*: ask` as
+  inline config, with `OPENCODE_DISABLE_PROJECT_CONFIG=1` (and 2's
+  `OPENCODE_CONFIG_PROJECT_DISABLE=1`), `OPENCODE_CONFIG` blanked, a config
+  folder of the runner's own (`OPENCODE_CONFIG_DIR`, which on 2 replaces
+  `~/.config/opencode`) and, on 1, `--pure`: a folder's `opencode.json`
+  outranks inline config, and plugins are imported as a session opens, before
+  any rule can turn them off. OpenCode 1 imports a folder's
+  `.opencode/plugins/*.js` whatever it's told, so on 1 an asking thread or a
+  small job doesn't start under a folder that has some. Each request is answered from the thread's mode when it comes
+  (Full: allow; otherwise the card). Only the once options are ever chosen, as
+  an agent remembers "always" past the thread; "Always allow" is the runner's
+  rule (`acp:edit`, or the exact plain command in the folder it runs in: the
+  call's `workdir`, `cwd`, `workingDirectory`, `directory` or `dir`, else the
+  thread's, as the disk has it: links followed before any `..`, so a link
+  pointed somewhere new isn't the folder its rule was for). A folder that
+  isn't there, or that reads differently tidied first (`link/..`), isn't
+  covered by a rule either. The card shows the folder resolved, and as the call
+  gave it when that differs, and an allow is refused if it resolves somewhere
+  else by the time it's answered. A command call naming two different folders, or carrying anything
+  but those, `command`, `description` and `timeout` (an env, a shell), isn't
+  covered by a rule and can't be always allowed, and its card shows all of it.
+  An edit of a file that runs as
+  code asks every time, and so does an edit whose arguments aren't the plain file
+  tools' (nothing can say where else it writes). Auto acts like Ask.
+- **Questions.** A thread offers forms (`clientCapabilities.elicitation.form`).
+  An `elicitation/create` in form mode becomes question cards, one per field:
+  its description is the question, its title the header, a list a multiple
+  choice. Only the last card takes typed words, so a field with no choices goes
+  last (a form with two can't be shown, and is declined with a note), and
+  words typed in place of a choice go to the field's `<key>_custom`, where it
+  has one. The answer is `accept` with the content, `decline` when the card is
+  dismissed or a required field has no usable answer, and `cancel` when the
+  turn stops; URL mode is declined with a note. OpenCode 2's question tool
+  asks this way, so `question` is allowed in threads. Small jobs offer no
+  forms and deny it.
+- **Cursor** can't be told to always ask (its allow-list and a folder's
+  `.cursor/cli.json` can approve things), so Ask, Auto and Plan first run in its
+  read-only `ask` and `plan` modes; a thread that can't be put in one doesn't start.
+- **Grok** has no setting a client can force: its mode comes from its config
+  and from `~/.claude/settings.json` (`defaultMode: "auto"` there made 1.0.77
+  run a write and a command with no request, 15 Nov 2026). So it runs as
+  `grok agent --no-leader --plugin-dir <data dir>/grok-guard/threadbear-<16 hex>
+  stdio`, a plugin made for that start: its PreToolUse hook (`guard-ask.mjs`,
+  run by the runner's node, `failClosed`) answers `ask` for every call but a
+  read (`read_file`, `list_dir`, `grep`, its tool search, its to-do list, a
+  command's output) naming nothing outside the thread's folder, links
+  followed, with no `..` anywhere. A hook's `ask` reaches
+  `session/request_permission` whatever Grok's mode, saved grants, read-only
+  commands or a folder's rules say. Leader mode ignores `--plugin-dir`, hence
+  `--no-leader`. A folder can turn a plugin off by name (`[plugins] disabled`
+  in its `.grok/config.toml`, untrusted too), hence the random name, and the
+  plugin's UserPromptSubmit hook: Grok reports each hook it ran
+  (`_x.ai/session_notification`, `hook_execution`), and a turn where the
+  model says anything before that report names the plugin, or a
+  `user_prompt_submit` or `pre_tool_use` report without it, ends the process
+  there with an error (small jobs fail the same way). A folder Grok trusts
+  (`~/.grok/trusted_folders.toml`, or one above it, and always the home folder
+  and a disk's root) runs its own hooks, which can act at session start and
+  rewrite a call after the guard has looked: a Grok thread there starts only
+  on Full, and the guard asks for everything there. Trusted when the process
+  started stays so for its life (the start's plugin passes `trusted` to the
+  guard), so leaving Full stops it even if the folder has left the file since. Grok has no session modes, so nothing else changes with the
+  thread's mode; in its auto mode its classifier still looks first and may
+  refuse a call. Grok adds the hook to a request's title (`— hook '...'
+  asks: ...`), which the card leaves off, and its MCP calls go through
+  `use_tool` naming `<server>__<tool>`: one of the session's own
+  `threadbear__` tools is allowed as it comes, as the MCP server gates it. A
+  rejected call ends Grok's turn (`stopReason: "cancelled"`).
+- **Antigravity** (Google's `antigravity-acp`, shown as Gemini) asks before
+  every tool in its `default` mode, so it's never moved off it (`auto_edit`
+  and `yolo` would approve by themselves), and each request is answered from
+  the thread's mode. A read whose files are all inside the thread's folder
+  (as the disk has them, links followed) goes ahead without a card. It writes
+  `skills/system/run-workflow/SKILL.md` into the folder its session opens in,
+  so each session (new or resumed) opens in an empty temp folder of its own,
+  removed when the session ends, with the thread's folder in
+  `additionalDirectories`, and the first message says where the work is. Its
+  shell tool's `CommandLine` and `Cwd` are read as `command` and `cwd`, and
+  its MCP calls say `_meta.mcp: { server, tool }`. Keys for Google's API in
+  the runner's environment are blanked, so its Google sign-in is what's used.
+  It has no updater, so Update does nothing for it.
+- **Cards for ACP tools.** Every frame of a tool call (its updates and its
+  permission requests) is kept by id for the session, and a call is judged
+  on all of them: what it said earlier can't be washed out by a later
+  frame. Only two cards are short: a plain shell command whose single
+  folder is known (the phone may allow it) and a plain edit of files inside
+  the folder (every frame a plain edit, every path spelled whole, no
+  `..`, `~`, dangling link or unreadable patch header). Every other card
+  shows which tool it is, its arguments as sent, whatever earlier frames
+  said differently and every file it names as spelled; only the Mac allows
+  it. A saved command rule needs every frame to agree and no files named
+  beside the command; the edit rule covers only files inside the folder.
+  Another server's MCP tool never counts as a local command or edit, and
+  Threadbear's own MCP tools go ahead unasked only when every frame that
+  carried anything named that tool.
+- **Plan first** uses the agent's plan mode, and the last reply of a turn is
+  proposed as the plan.
+- **The threadbear tools** reach the agent as an MCP server over HTTP on
+  `127.0.0.1` (a port per live session), with a random bearer token in a
+  header; loopback `Host` and no `Origin` required. They go through the same
+  gate as a Codex thread's, so `delete_thread` always asks.
+- **Small jobs** (titles, summaries; `models.run`) run on OpenCode or Grok only when
+  Settings picks a pool with no Claude login in it (never on Cursor, whose read
+  tools can't be turned off), so the built-in `claude`
+  pool never becomes another agent. The agent starts in an empty folder with no
+  MCP servers and every tool denied (Grok: the `threadbear-deny` plugin, whose
+  hook denies every call, reads too), in its read-only mode where it has one;
+  every request it makes is refused, and the prompt goes over stdin, never in
+  its arguments.
+- **Updates.** Threadbear never updates these CLIs by itself, as they have no
+  version feed to compare with: `clis.list` has a row for each, and
+  `clis.update` runs the agent's own updater when asked. `clis.setPolicy` does
+  nothing for them, and `THREADBEAR_CLI_UPDATES=off` turns updating off.
+- **Not offered:** rewind, steering
+  (a message sent during a turn runs next).
+
+## Settings and models
+
+The runner makes small model calls of its own (classify, extract,
+summarise, generate) for features like titles, the librarian and "wake
+when" (`src/models/`). Features ask for a job, not a model: `ROUTES` says
+which model answers it, Haiku for everything but `decide`, which is Opus.
+Every call runs on the official `claude` CLI on one of the Claude logins
+in the pool `models.pool` names: the same CLI and logins as threads, so
+it needs no key and costs nothing beyond the login's usage.
+
+There used to be OpenRouter as well, with a key, a daily budget and a
+spend to show. It went on 29 Oct 2026: every feature is Haiku or Opus,
+which the pool runs anyway, and a key was one more thing to set up. An
+older runner's `openRouterKey`, `dailyBudgetUsd`, `spentTodayUsd` and
+`spentMonthUsd` in `Settings.models` are ignored by clients, and
+`secrets/openrouter-key`, if there is one, is no longer read.
+
+- **Consent.** A call sends thread text to Anthropic on Mike's own login,
+  as the thread itself does.
+- **The pool.** `models.pool` in `runner.json` is a pool id, `"claude"`
+  when it isn't set, or `null` for none, which turns titles and the
+  librarian off. Only its Claude logins are used. A call runs on the one
+  it ran on last while that's OK to run on (see Pools), else the one with
+  the most room. The CLI runs as `claude -p` at low effort in an empty
+  folder (`models/cli` in the data dir), with no tools, MCP servers,
+  settings, hooks, CLAUDE.md, skills or saved session (`--tools ""
+  --strict-mcp-config --setting-sources "" --disable-slash-commands
+  --no-session-persistence`), the job's own system prompt, and
+  `--json-schema` for classify and extract. A login that answers that
+  it's out of room counts as run dry, as it does for a turn, and the next
+  one is tried. At most 2 calls run at once, and each times out after 60
+  seconds.
+- **Private folders.** `models.privateFolders` in `runner.json` lists
+  folders whose threads are never sent anywhere, for client work and the
+  like. A call for a thread in one of them, or anywhere under one,
+  doesn't go out.
+- **Usage.** Each call that goes out adds a line to `models/usage.ndjson`
+  in the data dir: `{ ts, feature, job, model, ok, ms, inputTokens?,
+  outputTokens?, accountId?, notionalUsd?, error? }`. `notionalUsd` is
+  what the CLI says it would have cost on the API, which isn't spent. No
+  text from the call is kept.
+- **Titles.** A new thread's title is the first line of its first
+  message, as before; a few seconds later a small model's title replaces
+  it, unless someone has set one meanwhile. Threads from before any
+  model could be reached keep their first line until `threads.retitle`
+  names them too. Later, the librarian renames a thread whose title no
+  longer says what it's about (see Projects).
+- **Failures.** A call never throws: it says why it didn't answer
+  (`no-pool`: no pool, or none of its logins is a Claude one; `no-room`:
+  every login is out of room; `off`: this runner makes no model calls;
+  private folder, timed out, error), and the feature falls back to what
+  it did before there was a model to ask.
+
+## Standing instructions
+
+`runner/src/instructions.ts`. After Wayne Sutton's PR (7 Nov 2026); an
+experiment until 11 Nov, standard since. Text Mike writes in Settings > General, given
+to every session on every login, Claude and Codex alike, which a login's
+`CLAUDE.md` or `AGENTS.md` can't do.
+
+```ts
+type StandingInstructions = {
+  text: string    // what's saved, up to 20,000 characters; "" for none
+  outside?: true  // instructions.md isn't what Settings last saved, so no
+                  // agent is given it. `text` is what the file holds now
+                  // ("" if it's gone or can't be read), to read and decide
+}
+```
+
+- **Who's told.** A fresh session gets them first in its instructions
+  (Claude's appended system prompt, Codex's developer instructions). A live
+  or resumed one is told a change once, before Mike's next message that isn't
+  a command, sent into a running turn too, as a resumed Claude session keeps
+  its first system prompt, and the thread gets a `system.note` saying so.
+  `instructionsTold` on the thread record is the hash it last heard (`cleared`
+  once told they've gone; `rewound` when what it holds isn't known, so the next
+  message says what's current: after going back in the session, Claude's
+  `/clear`, a session id already in use, or a turn that didn't complete after
+  news went out in it), set once the CLI has taken the message, and absent while
+  it has never held any. With nothing ever set, nothing is added and the field isn't written.
+- **Where.** `instructions.md` in the data dir, and beside it
+  `instructions.sig`: the hex HMAC-SHA-256 of the file's bytes, after the line
+  `threadbear-standing-instructions-v1`, keyed by the runner's RPC token as
+  it was when the runner started, never the file read again.
+- **Only `instructions.set` makes them count.** They reach every future
+  session in every folder, Ask and Auto threads included, so a thread that can
+  write a file mustn't be able to brief all the others. Each read is one read
+  of the file, checked against the signature, and what's given is those bytes.
+  A file that doesn't match, a signature or file that's missing while the
+  other is there, a link, a FIFO or a file over 64 KB gives nothing, and
+  `outside` says so. The runner says it once per version with a `runner.notice`
+  (`warning`, and after `hello` while it lasts) and `instructions.updated`, and
+  live sessions hear they no longer apply. Nothing comes back until Mike saves
+  in Settings, which sends the text on his screen, not "trust the file". That
+  text stays as it was while he reads, with a button for a newer version, so
+  a file changed while he reads isn't what gets signed.
+- **Agent edits.** Both files are in the data dir, so outside Full access an
+  Edit, MultiEdit, Write or Codex patch of either always asks, with no "Always
+  allow" ("Agent writes that run as code"). A shell write that gets past Auto's
+  classifier, or any write on Full access, trips the signature instead.
+- **Who can call it.** Only a client holding the runner's token. The agent
+  tools have no such method, and neither the backend nor another runner can
+  reach it: `relay.ts` and `sync.ts` pass only the methods they list.
+- **The limit.** Writing them takes the runner's token, however it's done. A
+  Full access agent runs as Mike, so one that sets out to can read
+  `secrets/runner-token` and call `instructions.set` or sign a file, as it can
+  call `patches.trust`. That's the line Full access already draws: this stops
+  a write that leaves the credential alone, and makes anything else a deliberate
+  act against it. Replacing `secrets/runner-token` needs no read of the old one,
+  and picks the key from the runner's next start (the app reads the new token
+  when it reconnects, so nothing asks). The same replacement hands over all of
+  the runner's RPC, which isn't special to this. Nor does it stop an older signed
+  pair being put back: those are Mike's own words from before. And news told by
+  message, not in a fresh session's instructions, can fade in a compaction, as a
+  project's joined line can.
+
+## Shared memory
+
+`runner/src/memory-sync.ts`, `convex/memorySync.ts` (API 84). The
+`sharedMemory` experiment, on each runner that takes part. What Claude Code
+loads before the first message (the global `CLAUDE.md`, and the project's
+memory folder with its `MEMORY.md`) is most of what makes a thread know
+Mike, and it lived on the main Mac alone.
+
+- **Paths.** `global/CLAUDE.md`, or `memory/~<rest>/<name>.md`, where
+  `~<rest>` is Claude Code's project slug with the home folder's slug cut off
+  (`-Users-m5-mike-dev-me-misc` is `~-dev-me-misc`, and lands in
+  `-Users-bruce-dev-me-misc` on Bruce). Folders outside home, and under
+  `~/Library`, aren't shared. Files are up to 128 KB; both sides check the
+  same pattern.
+- **The main Mac** (the owner key) scans each Claude login's `CLAUDE.md`
+  (`~/.claude`'s first) and `projects/*/memory/*.md` once a minute, masks
+  secret values it knows of, and sends what changed or went to `putMemory`.
+  Each change takes the next `seq`; a deleted file stays as a `gone` row.
+- **The others** read `memorySince(after)` a page at a time into
+  `memory-cache/` in the data dir, then each pass make every Claude login (and
+  Codex's `AGENTS.md` for the global file, where there's a Codex home) match
+  it, so a login added later, or a file deleted by hand, catches up. Only
+  places whose real path is inside a login's folder, a Codex home or
+  `~/.agents` are written. `memory-sync.json` records, for each file on disk,
+  the hash sync last wrote there:
+  - missing: written; already the main Mac's version: adopted (kept up to
+    date, never deleted);
+  - something else there before sync wrote to it, or a file too big or not a
+    plain file: left alone for good, and offered once;
+  - changed since sync wrote it: offered, and kept until the main Mac has a
+    newer version, which then replaces it;
+  - every write and delete happens after the pass's offers have gone, and
+    only if the file is still as it was read, so an edit landing in between
+    waits for the next pass.
+- **Offers** are a runner key's agents' new or changed files, one row per
+  version (two logins' different edits of one file are two offers), at most
+  200 waiting per runner (`memoryOfferCounts`). Only the owner reads them
+  (`memoryOffers`, 20 at a time), and it writes each to
+  `memory-offers/<runnerId>/<path>/<hash>.md` in its data dir, never into
+  memory, then `takeMemoryOffers`; past 20 MB there it stops taking them, so a
+  runner key can't fill its disk. Folding them in is for Mike or a scheduled
+  job (the nightly retro on Mike's Mac). A runner key can't write
+  `memoryFiles`, so it can't change what the main Mac's agents, or any other
+  runner's, are told.
+- **Sizes.** At most 50 files and 2 MB of text a call (the runner sends up to
+  1 MB). A stopping or handing-over runner stops syncing first.
+- **The limit.** Anything that can write a memory file on the main Mac can
+  brief every runner's agents, as it already briefs every thread in that
+  folder there. Memory goes to the backend in the clear, as transcripts do.
+
+## Explain
+
+Mike can select words in a thread's transcript and pick Explain from the
+little bar that shows above them. The explanation opens in the pane beside
+the transcript, with a box under it for a follow-up question. It's a mini
+fork of the thread for that one thing: `threads.explain` sends the
+selection, the message it came from, the thread's first message and
+its last 8 messages to the small model (job `generate`, feature `explain`,
+so Haiku on the pool first), and the answer goes back to the app alone.
+Nothing goes into the thread's events, so the agent never sees it and its
+context doesn't grow. The side conversation lives in the app (one per
+thread, gone on quit); each follow-up sends the earlier answers again as
+`earlier`. Private folders, the pool and the budget apply as for any
+model call.
+
+## Hibernate in words
+
+Besides the presets and a picked time, Mike can say when a thread should
+come back in his own words: "at the weekend", "in a few weeks", "next
+time I talk about woodworking". `threads.hibernateWhen` hibernates it
+straight away (`snoozedUntil` 9999-12-31, `wakeWhen: { said, pending:
+true }`), then asks Opus (job `decide`: Opus on the pool; feature
+`wake-when`) with the local time and time zone, the
+thread's title, first message and brief, and his words. It answers with a
+time, a topic, or both:
+
+- **A time** becomes `snoozedUntil`, and the thread wakes as any snooze
+  does.
+- **A topic** ("woodworking") waits for the librarian. While any thread is
+  waiting on one, every look lists them, and its answer's `wake` names the
+  ones Mike's own messages in the looked-at thread are about. Each wakes,
+  unread, with a `system.note` saying where ("Woke up: you talked about
+  woodworking in "Router table jig"."). A topic with no time has the far-off
+  `snoozedUntil`; with one, whichever comes first wakes it.
+
+The thread's own agent can ask the same in end_turn's snooze ("until the
+GPUI app replaces the Swift app"). Then the model is told it's an agent
+waiting for something to happen, and a topic is that thing said as done
+("the GPUI app has replaced the Swift app"). The runner keeps who asked
+(`by: 'agent'`, never in a `ThreadSummary`), the librarian's look lists
+those separately and wakes one only when the looked-at thread shows it has
+happened, not when it's planned or talked about, and the thread wakes
+("Woke up: to check whether …, from "GPUI Port Coordinator".") with a
+runner message giving the agent a turn to check for itself and snooze again
+with the same words if it hasn't. That message names the other thread's id
+only when send_message would let it without a card.
+
+The thread gets a `system.note` saying what was worked out ("Hibernating
+until Saturday 31 October, 9 am. You said "at the weekend"."). A model
+that can't say (no pool room, an answer that isn't a time or a topic)
+puts the thread back and fails the call. A private folder's thread is
+asked about with his words alone. Any other snooze, a wake or a message
+clears `wakeWhen`, and a runner that restarts while one is pending wakes
+the thread, as the answer is lost.
+
+## Usage history
+
+The Usage panel shows more than what's left: how many tokens each login
+has spent today, how fast, and how its limits have gone down over the
+week. `usage.stats` answers with what the runner has kept:
+
+```ts
+type UsageStats = {
+  generatedAt: string
+  // Whether the first read of the CLIs' transcripts has finished. Until it
+  // has, `tokens` is partial and the app says so.
+  ready: boolean
+  // Per login, the hours it spent anything in, oldest first. Each hour is
+  // [startMs, input, output, cacheRead, cacheWrite]: startMs is the start
+  // of the hour (UTC, so the app buckets days in its own time zone).
+  // Claude's input excludes cache reads and writes; Codex's input excludes
+  // its cached input (counted as cacheRead).
+  tokens: { accountId: string, hours: [number, number, number, number, number][] }[]
+  // Per login, readings of its 5-hour and weekly windows over time, oldest
+  // first: [atMs, remainingPercent]. A sample is kept when a window moves
+  // by half a point or more, at a reset, and at least every 30 minutes
+  // while readings keep coming, so a flat line still has points. A model's
+  // own week ("Weekly Fable") is kept too, as `weekly_model` with the
+  // window's `title`, one entry per title, after the main two. An app
+  // matches it to the window by kind and title, and skips kinds it
+  // doesn't know.
+  limits: { accountId: string, kind: "five_hour" | "weekly" | "weekly_model", title?: string, samples: [number, number][] }[]
+}
+```
+
+- **Tokens** come from the CLIs' own transcripts, not just Threadbear's
+  threads, so turns run in a terminal or another app count too: Claude's
+  `<configDir>/projects/**/*.jsonl` (assistant lines, each message id
+  counted once at its biggest, as Claude Code writes a message several
+  times while it streams), and Codex's `<configDir>/sessions` and
+  `archived_sessions` (`token_count` events, the difference between one
+  total and the last). The runner reads only what's new since its last
+  look, once a minute, and keeps the hourly totals and where it got to in
+  each file in `<data dir>/token-tally.json`, so a restart doesn't read
+  everything again. The first read goes back 14 days and takes a while
+  (`ready: false` until it's done). Hours older than 15 days are dropped.
+  `THREADBEAR_TOKEN_TALLY=off` turns the reading off (dev runners and the
+  e2e tests set it): `tokens` stays empty and `ready` false.
+- **Limit readings** are whatever `accounts.updated` would show, sampled
+  as above into `<data dir>/usage-history.json`, kept for 8 days.
+- A draining runner (Handovers) keeps neither file: both are the new
+  runner's to write.
+
+## Sandboxed threads (taken out)
+
+An experiment from 6 Nov 2026 ran a thread's Claude Code in a Docker
+container when its folder was under one of `runner.json`'s `sandbox:
+{ folders }`. It was taken out on 16 Nov 2026, unfinished and before
+anyone relied on it. What's left fails closed for a copy that had it on:
+a thread in a folder `sandbox.folders` still names, or one whose record
+says it ran shut in one (`confined`), isn't started (`threads.create`
+refuses, and a message to an old one gets a note saying why) rather than
+running on the machine instead; taking `sandbox` out of runner.json says
+that's fine. Such a thread counts as the least access there is, below
+even Ask, so its title and words reach no other thread without a card
+(a quiet-inbox wait), and it gets no lab review (which would run its
+tests on the machine). `threads.create` with `confined: true` (an older runner
+handing over a sandboxed agent's call) is refused. A thread's move still
+says `unconfine: false` for an agent's to an older runner across a
+handover (the phone's path too), and the runner reads `unconfine: false`
+from one as `byAgent`.
+
+## Pools
+
+A pool is a named, ordered list of logins, of any provider. Mike picks a
+pool and a model; the runner picks which login runs each turn, and moves a
+thread to another login when the one it's on runs out of room.
+
+- **The list.** Built in, worked out from the logins the runner finds: one
+  pool per provider (`claude`, `codex`) holding every login of that
+  provider without a note, and one per noted login, titled from its note's
+  first word (`convex` for claude-2's "Convex work only", with folders
+  `["~/dev/convex"]` from the code). `runner.json`'s `pools` replaces the
+  whole list; `pools.save` writes it. A pool's `accountIds` order only
+  decides which provider comes first; within one provider the runner goes
+  by room.
+- **Shared between runners** (backend API 38). With a backend, the list
+  lives in its `pools` table and every runner follows it, so a pool is the
+  same on each machine. A shared pool names its logins by provider and
+  email (`members: [{ provider, email }]`), since login ids are each
+  runner's own (`claude-main` is a different login on each machine); a
+  login with no email known is named by `{ provider, runnerId, accountId }`
+  and only counts on that runner. Two logins of one provider on a runner
+  can share an email (two config folders signed in to one account), so
+  from backend API 75 a member saved from one of those carries both,
+  `{ provider, email, runnerId, accountId }`: its own runner takes it by
+  id (by email if that login has gone), and every other runner by email,
+  as usual. `sync:pools` gives another runner's key such a member without
+  the ids. Before 75 the runner sends the email alone, as the older
+  backend hid any member with a runner id from other runners' keys; a
+  list saved then still reads, by email. A save on another runner keeps a
+  pinned member as it was while that runner's pool still has the login it
+  matches by email. Each runner turns the list into its own
+  `Pool[]`, with `accountIds` its logins that match, in member order, and
+  leaves out a pool none of its logins are in. `pools.list`, `hello` and
+  `pools.updated` carry that, so clients see no difference. `pools.save`
+  on any runner writes the shared list: the pools it was given, in that
+  order, each keeping the members this runner has no login for, then the
+  pools it couldn't see, unchanged. The first runner to meet API 38 with
+  `pools` in its `runner.json` puts them in the table if it's empty
+  (`sync:adoptPools`, first one wins); until the table has pools, each
+  runner keeps its own as before. The runner keeps the last list it saw in
+  `shared-pools.json` in its data folder, so it starts with it while the
+  backend can't be reached. `runner.json`'s `pools` is left as it was, and
+  is used again only with sync off. `defaults.poolId` stays each runner's.
+- **Shared readings** (backend API 39). A subscription is one limit
+  wherever it's signed in, so each runner also reads the other runners'
+  latest usage readings every 5 minutes (`sync:sharedUsage`, from their
+  `accounts` rows; a query on a timer, not a subscription, since that re-ran
+  on every other runner's login write)
+  and counts one of the same provider and email as a third source beside
+  Token Stats and its own turns: the newest reading wins, window by
+  window, and `usage.source` is `"shared"` when another runner's was the
+  newest. A shared reading Token Stats called stale is left out, and one
+  that says `blocked`, taken after this runner last read the login,
+  blocks it here too until a window at its limit resets. Only readings
+  marked `byOwnerKey` (backend API 53) count, the ones the main Mac's key
+  wrote; a runner key's go to nobody, and a runner takes no unmarked one
+  (all of them, from an older backend). Which logins a runner key's
+  runner gets them for is the owner's word (Runner keys, "Shared
+  logins").
+- **New threads.** A `threads.create` without `accountId` picks the pool:
+  `poolId` if given, else the pool whose `folders` holds `cwd` (the
+  longest match), else `defaults.poolId` (`runner.json`'s, the pool last
+  named in a `threads.create`; failing that, the pool holding
+  `defaults.accountId`). Then, if a `model` is named whose provider has no
+  login in that pool (and no `poolId` was given), the first pool that has
+  one. The thread's provider is its model's, or the pool's first provider;
+  its login is the pool's pick of that provider (below, "Which login"). A dev
+  runner's `keepAccount` pins new threads to its account instead, unless
+  that login's plan has ended (`planEnded`).
+  `defaults.poolId` in `hello` is folder-blind: the app applies folders
+  itself (`poolForFolder`, with the shared cases in
+  `runner/test/fixtures/pool-folder-cases.json`).
+- **Year-long tokens.** A Claude sign-in lasts about 28 days and can't be
+  renewed; `claude setup-token` makes a token that lasts a year. Mike opts
+  a login in with Year-long token… on its Usage row: the app opens
+  Terminal on its own helper (`desktop/core/src/claude_token.py`), which
+  runs `claude setup-token` for that login and writes
+  `threadbear-token.json` in the login's folder (0600: `{ token, madeAt }`).
+  Not settings.json's `env`, which Mike's logins share through symlinks.
+  The runner watches each Claude login's folder for that file, so it
+  sees it as soon as it lands (or at its 10-second rescan where a folder
+  can't be watched), sets `yearToken`, and passes the token to that login's CLI as
+  `CLAUDE_CODE_OAUTH_TOKEN` (cliEnv), where it takes over from the
+  Keychain sign-in; never to another login, a client, Convex or the log,
+  and Claude Code keeps it out of its tools' shells. `claude auth status`
+  calls any token signed in, with no end, so a token login isn't asked:
+  its `loginEndsAt` is `madeAt` plus 365 days, and the usual warning comes
+  three days ahead, with New token…. A refused turn holds it out as for
+  any login, until a new token. A token only runs models: claude.ai's own
+  connectors and Remote Control don't work on it. Usage readings come from
+  turns as before. Deleting the file goes back to the sign-in. When a
+  login's `yearToken` changes, its CLIs let go of their sessions once
+  their turns end, so the next turn runs on the new token, and a refusal
+  on it is taken back. Each token read, whole and without its prefix, is
+  a known value to the secret scrubbing, and the file a secrets file.
+- **Year-long tokens on another runner.** The Usage panel's Terminal
+  helper only reaches this Mac's logins. For another runner's (bruce,
+  Tinker Desk, a Windows PC), the Runners panel's details for that runner
+  list its Claude logins with Year-long token… (`accounts.yearToken`
+  with its `runnerId`). That runner runs `claude setup-token` for the
+  login itself, under a small Python helper in a pseudo-terminal 1000
+  columns wide (`runner/src/year-token-maker.ts`), with the login's own
+  environment and no token in it. The helper picks the claude.ai page
+  (the one whose `redirect_uri` is `platform.claude.com`'s code page) out
+  of what setup-token prints and says only that, `done` or `failed` to
+  the runner, never anything else setup-token printed. The app opens the
+  page in Mike's browser; after Authorize the page shows a code, which he
+  copies and the app takes from the clipboard on Paste code, checking its
+  state is the page's. The runner checks the code's shape and state
+  again, types it in, then Enter on its own half a second later (sent
+  together, setup-token shows the code and never takes it), and the
+  helper writes `threadbear-token.json` (0600) from what setup-token
+  prints, as the Terminal helper does. The runner's watch picks the file
+  up as for any token. The token never leaves that machine: not in an
+  answer, Convex, the relay, the app or the log. The code is single-use
+  and worthless without the verifier only that setup-token holds; the
+  backend keeps a `call`'s args only until it's finished. Through
+  Convex it's the owner key's alone (`relay:queueCommand`), so a runner
+  key can't start one. Needs `python3` and a Mac or Linux runner.
+- **Which login.** Of the pool's logins of a provider that are OK to run
+  on, the one whose weekly window resets soonest, since whatever is left
+  in it then is lost; the most room breaks a tie. Logins with no weekly
+  reset known (or one already past) come after those with one, and a
+  login with room unknown after those with room known.
+- **OK to run on.** A login is OK when it isn't blocked or signed out and
+  its room (the tighter of the 5-hour and weekly windows) is at least 1%,
+  or its usage isn't known.
+- **Before a turn** (a send, a queued message, a schedule): if the thread's
+  login isn't OK, or isn't in its pool any more, it moves first. A thread
+  stays on one login as long as it can, since every move costs a cold
+  prompt cache.
+- **Where it moves.** The pool's pick of the thread's provider (Which
+  login), leaving out the one it's on. If none has room, the first other provider in pool order that
+  has a login with room: a cross-provider move, a handoff like any
+  provider change, onto that provider's default model
+  (`defaults.models[provider]`, else the account's own) and effort. A
+  thread that spilled over stays there; it doesn't move back by itself. If
+  nothing in the pool has room before a turn, the turn starts where it is.
+- **A turn that hits the limit.** A pool thread's turn that ends `failed`
+  with `errorKind: "usageLimit"` marks its login blocked (until the window
+  at its limit resets, or 30 minutes if no reset is known), moves, and
+  sends a runner-origin message: "Your last login hit its usage limit
+  partway through that turn, so this thread has moved to another one.
+  Carry on from where you left off." If that carry-on turn hits the limit
+  too, it moves on again while another login has room (since 12 Nov 2026;
+  it used to wait after one move). It can't loop: each login that runs dry
+  stays blocked until its window resets.
+- **Signed out** (since 16 Nov 2026). From Claude Code 2.1.325 a Claude
+  sign-in ends 28 days after it was made, and the CLI can't renew it: every
+  turn fails with `errorKind: "auth"` until someone signs in again through
+  claude.ai's captcha. The runner asks each Claude login's CLI
+  `claude auth status --json` (in that login's environment, never the
+  Keychain) at start, every 10 minutes and after a refused turn. A login is
+  `signedOut` when the CLI says `loggedIn: false`, when its
+  `loginExpiresAt` has passed (the CLI goes on saying `loggedIn` for a few
+  hours after, on an access token it can't renew), or for an hour after a
+  turn on it was refused, unless a new sign-in (another `loginExpiresAt`)
+  or a working turn is seen first. The hour is so a one-off refusal
+  doesn't keep a good login out until its end date. `loginEndsAt` is that `loginExpiresAt`. Pools and
+  new threads skip a signed-out login whatever its room. A pool thread
+  whose turn on a Claude login is refused moves like one at its limit
+  (only Claude: a Codex refusal isn't remembered, so moving on it could
+  bounce a thread between two refused logins), with the
+  runner-origin message "Your last login was signed out, so this thread
+  has moved to another one. Carry on from where you left off." and the
+  note "Moved to <login>: <login> is signed out."; with nowhere to go, or
+  pinned, it stays put with the app's sign-in line, which names the login.
+  A signed-out login brings no wait: nothing says when it's back.
+  A schedule's new thread pinned to a signed-out Claude login starts on a
+  pool holding that login instead (the folder's pool first), on another
+  Claude login there that's OK, with the same note marked `login`. A
+  login alone in its pools has nowhere to go: its run makes its thread as
+  usual, and while that thread is still out, failed, on the same login,
+  later runs skip with the note "<login> is signed out. The last run's
+  thread says so and offers the sign-in." A pinned thread Mike starts
+  himself never stands in.
+- **Waiting.** When nothing in the pool has room the thread gets
+  `waitingForRoom: { until, accountId? }`: the earliest time one of the
+  pool's logins is back, plus a minute (30 minutes from now if no reset
+  time is known). At `until` it looks again: if a login has room it moves
+  there if need be and carries on by itself; if not, it waits again. It
+  also looks again, and stops waiting early, whenever the logins, their
+  usage readings or the pools change, and when a thread comes over from
+  another runner: `until` is only a guess from what the runner knew then
+  (12 Nov 2026: a draining runner that had started before a new login
+  joined the pool set a wait though that login had 81% left). Any
+  message that starts a turn ends the wait (and goes through the before-a-
+  turn check). The wait is kept in `thread.json`, so it survives a restart.
+- **A pinned thread at its limit** (since 10 Nov 2026). A thread with no
+  pool never moves, but a turn of its that ends `failed` with `errorKind:
+  "usageLimit"` waits the same way for its own login: `waitingForRoom: {
+  until, accountId }` with its login's id, `until` the reset of the window
+  at its limit plus a minute (30 minutes from now if none is known), with a
+  `system.note`. At `until` it carries on with the "has room again"
+  message if its login has room, and waits again if not. Its login isn't
+  marked blocked by this.
+- **Usage resets** (since 16 Nov 2026). Codex hands out free "Full reset"
+  credits (two at a time on Mike's Pro Lite, each expiring a month after
+  it's granted) that restore a login's 5-hour and weekly limits at once.
+  Each Codex read of a login's limits (`account/rateLimits/read`, at every
+  app-server start) brings the count, which goes into `usage.resets`.
+  Threadbear never spends one by itself, as Codex's own setting for its
+  assistant promises for its resets: when a thread's limit box is up (a
+  pool that's all out, or a pinned login at its limit) and a Codex login it
+  would carry on with has resets left, the box offers Use a reset, and
+  `accounts.useReset` spends the one that expires soonest
+  (`account/rateLimitResetCredit/consume`, one idempotency key per click),
+  then reads the login's limits again. That reading lifts the block like
+  any other, so a thread waiting for room carries on by itself.
+- **Rechecking a login that's out** (since 17 Nov 2026). Readings only
+  come from turns, and pools skip a login that reads as out, so a login
+  reset outside Threadbear (a reset used in Codex) read 0% until its old
+  reset time. Every 10 minutes (the first a minute after start) the runner
+  reads each login whose reading says blocked or under 1% again, if that
+  reading is 10 minutes old or more and its provider can read without a
+  turn (Codex: `account/rateLimits/read` in a short-lived app-server;
+  `runner/src/limit-recheck.ts`). The answer goes into the usage store
+  like a turn's, so room lifts the block and threads waiting for room
+  carry on by themselves. Signed-out and plan-ended logins aren't read.
+- **Carrying on by itself is Mike's to turn off**, per thread:
+  `threads.update { carryOnAtReset: false }` ends any wait for room (with
+  a note) and stops later limits starting one; pool moves to a login with
+  room still happen. The summary has `carryOnAtReset: false` while it's
+  off. `true` turns it back on and, if the thread's last turn stopped at
+  the limit and nothing has started since, starts the wait then.
+- **A turn that lost the network.** Not only pool threads: any turn
+  that ends `failed` with `errorKind: "network"` (the CLI couldn't reach
+  the API at all, after its own retries: DNS, no route, a dropped or
+  refused connection) waits, with a `system.note` ("Lost the connection
+  to the API partway through that turn. This thread carries on by itself
+  once it's back."). The runner probes the provider's API host (a TCP
+  connection to api.anthropic.com or chatgpt.com on 443, or a CONNECT
+  through `HTTPS_PROXY`, over TLS with its certificate checked when that's
+  an `https://` URL; each probe gets 5 seconds in all and reads at most
+  1 KB of the proxy's answer) 5, 10, 20, 40 seconds apart and then every
+  minute, and once it answers sends a runner-origin message: "The
+  connection to the API dropped partway through that turn and is back
+  now. Carry on from where you left off." A carry-on that can't get
+  through either waits again, with no new note; after five carry-ons, or
+  six hours from the first failure, it stops with a note saying to send
+  a message. A message already queued goes instead of a carry-on, and
+  any turn ends the wait. The thread's summary has
+  `waitingForNetwork: { since }` while it waits, kept in `thread.json`
+  so it survives a restart. Other failures never
+  retry by themselves.
+- **Moves in the transcript.** Each move and wait is a `system.note`:
+  "Moved to mike@example.org: mike@example.net hit its 5-hour limit,
+  back at 6:10 pm." or "Every login in Claude is out of room. Carrying on
+  at 5:00 am when mike@studio.example is back."
+- **Claude to Claude.** A move between two Claude logins copies the
+  session's transcript from the old login's `projects/` folder to the new
+  one's and resumes it there, so nothing is lost (a real e2e checks the
+  CLI resumes another login's transcript). If the copy or the resume
+  fails, the new session starts with a short handoff note instead.
+- **Pinning.** A thread with no `poolId` is pinned to its `accountId` and
+  never moves. Threads from before pools stay pinned. A pool's logins
+  include noted ones only when it lists them, so a "Convex work only"
+  login only runs threads in a pool that names it.

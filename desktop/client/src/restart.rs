@@ -23,7 +23,10 @@ pub enum Phase {
     None,
     /// Waiting for this many threads. `thread_ids` is empty until
     /// `runner.status` answers (a notice only has the count).
-    Pending { count: usize, thread_ids: Vec<String> },
+    Pending {
+        count: usize,
+        thread_ids: Vec<String>,
+    },
     /// Shutting down, or down and about to come back.
     Restarting { since: Instant },
 }
@@ -55,7 +58,12 @@ impl PendingRestart {
         }
         Some(PendingRestart {
             when: v["when"].as_str().unwrap_or("idle").to_owned(),
-            waiting_for: v["waitingFor"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(str::to_owned)).collect(),
+            waiting_for: v["waitingFor"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str().map(str::to_owned))
+                .collect(),
         })
     }
 }
@@ -70,7 +78,10 @@ pub struct RunnerRestart {
 
 impl RunnerRestart {
     pub fn new(phase: Phase) -> RunnerRestart {
-        RunnerRestart { phase, notice_on_you: 0 }
+        RunnerRestart {
+            phase,
+            notice_on_you: 0,
+        }
     }
 
     /// The runner's restart notices (`pendingMessage` and the cancel in
@@ -86,25 +97,44 @@ impl RunnerRestart {
             return Some(Notice::Cancelled);
         }
         let rest = message.strip_prefix("The runner will restart when ")?;
-        let count = rest.split(|c: char| !c.is_ascii_digit()).filter_map(|n| n.parse::<usize>().ok()).fold(0usize, usize::saturating_add);
+        let count = rest
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|n| n.parse::<usize>().ok())
+            .fold(0usize, usize::saturating_add);
         let on_you = rest.find("you answer ").and_then(|at| {
-            let digits: String = rest[at + "you answer ".len()..].chars().take_while(char::is_ascii_digit).collect();
+            let digits: String = rest[at + "you answer ".len()..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
             digits.parse().ok()
         });
-        Some(Notice::Pending { count: count.max(1), on_you: on_you.unwrap_or(0) })
+        Some(Notice::Pending {
+            count: count.max(1),
+            on_you: on_you.unwrap_or(0),
+        })
     }
 
     /// Returns true when the notice was about a restart, so the caller can
     /// ask `runner.status` for the details.
     pub fn notice(&mut self, message: &str, now: Instant) -> bool {
-        let Some(notice) = Self::parse(message) else { return false };
+        let Some(notice) = Self::parse(message) else {
+            return false;
+        };
         match notice {
             Notice::Pending { count, on_you } => {
                 self.notice_on_you = on_you;
                 // Keep the thread list from the last status if it still fits.
                 self.phase = match &self.phase {
-                    Phase::Pending { thread_ids, .. } if thread_ids.len() == count => Phase::Pending { count, thread_ids: thread_ids.clone() },
-                    _ => Phase::Pending { count, thread_ids: vec![] },
+                    Phase::Pending { thread_ids, .. } if thread_ids.len() == count => {
+                        Phase::Pending {
+                            count,
+                            thread_ids: thread_ids.clone(),
+                        }
+                    }
+                    _ => Phase::Pending {
+                        count,
+                        thread_ids: vec![],
+                    },
                 };
             }
             Notice::Restarting => {
@@ -134,7 +164,10 @@ impl RunnerRestart {
         if pending.when == "now" || pending.waiting_for.is_empty() {
             self.phase = Phase::Restarting { since: now };
         } else {
-            self.phase = Phase::Pending { count: pending.waiting_for.len(), thread_ids: pending.waiting_for.clone() };
+            self.phase = Phase::Pending {
+                count: pending.waiting_for.len(),
+                thread_ids: pending.waiting_for.clone(),
+            };
         }
     }
 
@@ -181,8 +214,14 @@ impl RunnerRestart {
     /// `waiting_on_you` picks (waiting on an approval or a question) apart:
     /// those won't finish until Mike answers.
     pub fn pending_text(&self, waiting_on_you: impl Fn(&str) -> bool) -> Option<String> {
-        let Phase::Pending { count, thread_ids } = &self.phase else { return None };
-        let on_you = if thread_ids.is_empty() { self.notice_on_you.min(*count) } else { thread_ids.iter().filter(|id| waiting_on_you(id)).count() };
+        let Phase::Pending { count, thread_ids } = &self.phase else {
+            return None;
+        };
+        let on_you = if thread_ids.is_empty() {
+            self.notice_on_you.min(*count)
+        } else {
+            thread_ids.iter().filter(|id| waiting_on_you(id)).count()
+        };
         Some(Self::text(*count, on_you))
     }
 
@@ -190,23 +229,43 @@ impl RunnerRestart {
     pub fn text(waiting: usize, on_you: usize) -> String {
         let answer = on_you.min(waiting);
         let finishing = waiting - answer;
-        let finish = if finishing == 1 { "1 thread finishes".to_owned() } else { format!("{finishing} threads finish") };
+        let finish = if finishing == 1 {
+            "1 thread finishes".to_owned()
+        } else {
+            format!("{finishing} threads finish")
+        };
         if answer == 0 {
             return format!("The runner will restart when {finish}.");
         }
         if finishing == 0 {
-            return format!("The runner will restart when you answer {}.", if answer == 1 { "1 thread".to_owned() } else { format!("{answer} threads") });
+            return format!(
+                "The runner will restart when you answer {}.",
+                if answer == 1 {
+                    "1 thread".to_owned()
+                } else {
+                    format!("{answer} threads")
+                }
+            );
         }
         format!("The runner will restart when {finish} and you answer {answer}.")
     }
 
     /// The threads it's waiting for, by title, for the banner's tooltip.
     pub fn waiting_for_text(&self, title: impl Fn(&str) -> Option<String>) -> Option<String> {
-        let Phase::Pending { thread_ids, .. } = &self.phase else { return None };
+        let Phase::Pending { thread_ids, .. } = &self.phase else {
+            return None;
+        };
         if thread_ids.is_empty() {
             return None;
         }
-        let names: Vec<String> = thread_ids.iter().map(|id| title(id).filter(|t| !t.is_empty()).unwrap_or_else(|| id.clone())).collect();
+        let names: Vec<String> = thread_ids
+            .iter()
+            .map(|id| {
+                title(id)
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect();
         Some(format!("Waiting for {}", names.join(", ")))
     }
 }
@@ -216,19 +275,47 @@ mod tests {
     use super::*;
 
     fn pending(waiting_for: &[&str]) -> PendingRestart {
-        PendingRestart { when: "idle".into(), waiting_for: waiting_for.iter().map(|s| s.to_string()).collect() }
+        PendingRestart {
+            when: "idle".into(),
+            waiting_for: waiting_for.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     #[test]
     fn parses_the_runners_notices() {
         let p = |count, on_you| Some(Notice::Pending { count, on_you });
-        assert_eq!(RunnerRestart::parse("The runner will restart when 2 threads finish."), p(2, 0));
-        assert_eq!(RunnerRestart::parse("The runner will restart when 1 thread finishes."), p(1, 0));
-        assert_eq!(RunnerRestart::parse("The runner will restart when 1 thread finishes and you answer 2."), p(3, 2));
-        assert_eq!(RunnerRestart::parse("The runner will restart when you answer 2 threads."), p(2, 2));
-        assert_eq!(RunnerRestart::parse("The runner is restarting now."), Some(Notice::Restarting));
-        assert_eq!(RunnerRestart::parse("The pending runner restart was cancelled."), Some(Notice::Cancelled));
-        assert_eq!(RunnerRestart::parse("Release X kept crashing at startup, so the runner went back to Y."), None);
+        assert_eq!(
+            RunnerRestart::parse("The runner will restart when 2 threads finish."),
+            p(2, 0)
+        );
+        assert_eq!(
+            RunnerRestart::parse("The runner will restart when 1 thread finishes."),
+            p(1, 0)
+        );
+        assert_eq!(
+            RunnerRestart::parse(
+                "The runner will restart when 1 thread finishes and you answer 2."
+            ),
+            p(3, 2)
+        );
+        assert_eq!(
+            RunnerRestart::parse("The runner will restart when you answer 2 threads."),
+            p(2, 2)
+        );
+        assert_eq!(
+            RunnerRestart::parse("The runner is restarting now."),
+            Some(Notice::Restarting)
+        );
+        assert_eq!(
+            RunnerRestart::parse("The pending runner restart was cancelled."),
+            Some(Notice::Cancelled)
+        );
+        assert_eq!(
+            RunnerRestart::parse(
+                "Release X kept crashing at startup, so the runner went back to Y."
+            ),
+            None
+        );
         assert_eq!(RunnerRestart::parse("claude isn't on PATH"), None);
     }
 
@@ -237,19 +324,40 @@ mod tests {
         let now = Instant::now();
         let mut restart = RunnerRestart::default();
         assert!(restart.notice("The runner will restart when 2 threads finish.", now));
-        assert_eq!(restart.pending_text(|_| false).as_deref(), Some("The runner will restart when 2 threads finish."));
+        assert_eq!(
+            restart.pending_text(|_| false).as_deref(),
+            Some("The runner will restart when 2 threads finish.")
+        );
         // The notice has the count; runner.status names the threads.
         restart.status(Some(&pending(&["a", "b"])), now);
-        assert_eq!(restart.phase, Phase::Pending { count: 2, thread_ids: vec!["a".into(), "b".into()] });
-        assert_eq!(restart.waiting_for_text(|id| (id == "a").then(|| "Fix the build".to_owned())).as_deref(), Some("Waiting for Fix the build, b"));
+        assert_eq!(
+            restart.phase,
+            Phase::Pending {
+                count: 2,
+                thread_ids: vec!["a".into(), "b".into()]
+            }
+        );
+        assert_eq!(
+            restart
+                .waiting_for_text(|id| (id == "a").then(|| "Fix the build".to_owned()))
+                .as_deref(),
+            Some("Waiting for Fix the build, b")
+        );
         // One finishes.
         restart.status(Some(&pending(&["b"])), now);
-        assert_eq!(restart.pending_text(|_| false).as_deref(), Some("The runner will restart when 1 thread finishes."));
+        assert_eq!(
+            restart.pending_text(|_| false).as_deref(),
+            Some("The runner will restart when 1 thread finishes.")
+        );
         assert!(restart.notice("The runner is restarting now.", now));
         assert!(restart.is_restarting(now + Duration::from_secs(5)));
         assert_eq!(restart.pending_text(|_| false), None);
         restart.disconnected(now + Duration::from_secs(1));
-        assert_eq!(restart.phase, Phase::Restarting { since: now }, "losing the connection keeps when it started");
+        assert_eq!(
+            restart.phase,
+            Phase::Restarting { since: now },
+            "losing the connection keeps when it started"
+        );
         restart.connected();
         assert_eq!(restart.phase, Phase::None);
     }
@@ -260,22 +368,46 @@ mod tests {
     fn threads_waiting_on_you_are_counted_apart() {
         let now = Instant::now();
         let mut restart = RunnerRestart::default();
-        assert!(restart.notice("The runner will restart when 1 thread finishes and you answer 2.", now));
-        assert_eq!(restart.pending_text(|_| false).as_deref(), Some("The runner will restart when 1 thread finishes and you answer 2."));
+        assert!(restart.notice(
+            "The runner will restart when 1 thread finishes and you answer 2.",
+            now
+        ));
+        assert_eq!(
+            restart.pending_text(|_| false).as_deref(),
+            Some("The runner will restart when 1 thread finishes and you answer 2.")
+        );
         restart.status(Some(&pending(&["a", "b", "c"])), now);
-        assert_eq!(restart.pending_text(|id| id != "a").as_deref(), Some("The runner will restart when 1 thread finishes and you answer 2."));
+        assert_eq!(
+            restart.pending_text(|id| id != "a").as_deref(),
+            Some("The runner will restart when 1 thread finishes and you answer 2.")
+        );
         // Mike answers one; it's running again until it finishes.
-        assert_eq!(restart.pending_text(|id| id == "c").as_deref(), Some("The runner will restart when 2 threads finish and you answer 1."));
+        assert_eq!(
+            restart.pending_text(|id| id == "c").as_deref(),
+            Some("The runner will restart when 2 threads finish and you answer 1.")
+        );
         restart.status(Some(&pending(&["c"])), now);
-        assert_eq!(restart.pending_text(|id| id == "c").as_deref(), Some("The runner will restart when you answer 1 thread."));
-        assert_eq!(RunnerRestart::text(2, 2), "The runner will restart when you answer 2 threads.");
-        assert_eq!(RunnerRestart::text(3, 0), "The runner will restart when 3 threads finish.");
+        assert_eq!(
+            restart.pending_text(|id| id == "c").as_deref(),
+            Some("The runner will restart when you answer 1 thread.")
+        );
+        assert_eq!(
+            RunnerRestart::text(2, 2),
+            "The runner will restart when you answer 2 threads."
+        );
+        assert_eq!(
+            RunnerRestart::text(3, 0),
+            "The runner will restart when 3 threads finish."
+        );
     }
 
     #[test]
     fn other_notices_change_nothing() {
         let mut restart = RunnerRestart::default();
-        assert!(!restart.notice("Release X kept crashing at startup, so the runner went back to Y.", Instant::now()));
+        assert!(!restart.notice(
+            "Release X kept crashing at startup, so the runner went back to Y.",
+            Instant::now()
+        ));
         assert_eq!(restart.phase, Phase::None);
     }
 
@@ -283,7 +415,10 @@ mod tests {
     fn losing_the_connection_while_pending_means_it_began() {
         let now = Instant::now();
         // The "restarting now" notice can go down with the socket.
-        let mut restart = RunnerRestart::new(Phase::Pending { count: 1, thread_ids: vec!["a".into()] });
+        let mut restart = RunnerRestart::new(Phase::Pending {
+            count: 1,
+            thread_ids: vec!["a".into()],
+        });
         restart.disconnected(now);
         assert!(restart.is_restarting(now));
         // A plain drop with nothing pending is just a drop.
@@ -304,10 +439,16 @@ mod tests {
     #[test]
     fn cancel_and_an_empty_status_clear_a_pending_restart() {
         let now = Instant::now();
-        let mut restart = RunnerRestart::new(Phase::Pending { count: 2, thread_ids: vec![] });
+        let mut restart = RunnerRestart::new(Phase::Pending {
+            count: 2,
+            thread_ids: vec![],
+        });
         restart.notice("The pending runner restart was cancelled.", now);
         assert_eq!(restart.phase, Phase::None);
-        let mut restart = RunnerRestart::new(Phase::Pending { count: 2, thread_ids: vec![] });
+        let mut restart = RunnerRestart::new(Phase::Pending {
+            count: 2,
+            thread_ids: vec![],
+        });
         restart.status(None, now);
         assert_eq!(restart.phase, Phase::None);
     }
@@ -329,7 +470,13 @@ mod tests {
         restart.status(Some(&pending(&[])), now);
         assert!(restart.is_restarting(now));
         let mut now_restart = RunnerRestart::default();
-        now_restart.status(Some(&PendingRestart { when: "now".into(), waiting_for: vec!["a".into()] }), now);
+        now_restart.status(
+            Some(&PendingRestart {
+                when: "now".into(),
+                waiting_for: vec!["a".into()],
+            }),
+            now,
+        );
         assert!(now_restart.is_restarting(now));
     }
 
@@ -338,6 +485,9 @@ mod tests {
         let v: Value = serde_json::from_str(r#"{"when":"idle","requestedAt":"2026-10-27T10:00:00Z","waitingFor":["a","b"],"resumeThreadId":"c"}"#).unwrap();
         assert_eq!(PendingRestart::decode(&v), Some(pending(&["a", "b"])));
         assert_eq!(PendingRestart::decode(&Value::Null), None);
-        assert_eq!(PendingRestart::decode(&serde_json::json!({})), Some(pending(&[])));
+        assert_eq!(
+            PendingRestart::decode(&serde_json::json!({})),
+            Some(pending(&[]))
+        );
     }
 }

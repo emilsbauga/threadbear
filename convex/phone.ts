@@ -1,7 +1,7 @@
 // The phone's API (ios/, thread f5247e5b). Every function takes the phone
 // token and throws ConvexError({ kind: "auth" }) for a bad or expired one.
 // Queries read the mirror; mutations only ever add a row to `commands`,
-// which the owning runner applies (step 3 of docs/convex-backend.md) and
+// which the owning runner applies (docs/convex-backend.md, section 5) and
 // marks done or failed. Nothing here touches a runner directly.
 import { ConvexError, v, type Infer } from 'convex/values';
 import { action, internalMutation, internalQuery, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
@@ -841,7 +841,7 @@ export const cancel = mutation({
   },
 });
 
-// A reply button's press (API 59, docs/protocol.md "Reply buttons"): queued
+// A reply button's press (API 59, docs/protocol/events.md "Reply buttons"): queued
 // for the thread's runner, which calls buttons.press. A button already
 // pressed comes back as it is there, so a second tap starts nothing.
 export const press = mutation({
@@ -856,7 +856,7 @@ export const press = mutation({
 });
 
 // The slash commands a thread can run, for the phone's palette (API 62,
-// docs/protocol.md "Slash commands"): the thread's runner answers with its
+// docs/protocol/threads.md "Slash commands"): the thread's runner answers with its
 // threads.commands list, which phone:command returns as `result`.
 export const slashCommands = mutation({
   args: { token: v.string(), threadId: v.string() },
@@ -868,7 +868,7 @@ export const slashCommands = mutation({
   },
 });
 
-// Design reviews (API 86; docs/protocol.md, "Reviews on the phone"). Each is
+// Design reviews (API 86; docs/protocol/events.md, "Reviews on the phone"). Each is
 // a command the thread's runner answers from its own reviews.list, get and
 // respond, so the Mac's revision checks and retry rules hold as they are.
 // reviewImages follows a review's stills, which its runner puts up only once
@@ -969,7 +969,7 @@ export const answer = mutation({
   },
 });
 
-// An answer to a secret card (API 35, docs/protocol.md "Secrets"): sealed
+// An answer to a secret card (API 35, docs/protocol/threads.md "Secrets"): sealed
 // on the phone to the runner's key, so only that runner can open it.
 // finishCommand drops `sealed` once the runner has taken it.
 export const secret = mutation({
@@ -1165,7 +1165,7 @@ export const discardImage = mutation({
 
 // A quick ask the phone has already answered out loud (API 10), kept as a
 // thread so Mike can carry on in it. The runner writes the exchange with
-// no turn run (docs/protocol.md, Sync, "quickAsk"); phone:command gives the
+// no turn run (docs/protocol/moves.md, Sync, "quickAsk"); phone:command gives the
 // new thread's id once it's done. Targets a runner as create does.
 export const quickAsk = mutation({
   args: {
@@ -1193,7 +1193,7 @@ export const quickAsk = mutation({
 // Where a phone's new thread goes when the phone doesn't say: the first
 // runner online in the order Mike set on the phone (API 56; a phone from
 // before it never says). With no order, or none of its runners online, the
-// online runner heartbeating with the owner key (byOwner, docs/protocol.md
+// online runner heartbeating with the owner key (byOwner, docs/protocol/keys.md
 // "Runner keys") with the most threads, which is the Mac Mike really works
 // on, with his repos and printer. With none online it's "any", which only
 // the owner key takes, so it waits for that Mac rather than going to one

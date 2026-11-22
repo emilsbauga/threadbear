@@ -4,7 +4,6 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import { reachable } from '../net-probe.ts';
 import type { Provider } from '../protocol.ts';
 import type { ThreadState } from '../runner.ts';
 import { CARRY_ON_NETWORK, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS } from '../runner.ts';

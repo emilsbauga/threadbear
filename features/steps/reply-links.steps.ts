@@ -24,7 +24,7 @@ Given('a file {string} saying {string} in a folder of its own', function (this: 
 Given('a picture {string} in a folder of its own', function (this: LinkWorld, name: string) {
   const dir = tempFolder('tb-links-');
   this.file = path.join(dir, name);
-  fs.copyFileSync(new URL('../../app/Tools/mock-runner/fixtures/demo-upload-resume/media/progress-before.png', import.meta.url), this.file);
+  fs.copyFileSync(new URL('../../mock-runner/fixtures/demo-upload-resume/media/progress-before.png', import.meta.url), this.file);
 });
 
 const file = (world: LinkWorld): string => {

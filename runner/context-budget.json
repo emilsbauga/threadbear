@@ -1,8 +1,8 @@
 {
   "claude": {
-    "instructions": 3100,
+    "instructions": 3095,
     "tools": 40664,
-    "total": 43764
+    "total": 43759
   },
   "codex": {
     "instructions": 2269,
@@ -11,14 +11,14 @@
   },
   "pi": {
     "full": {
-      "instructions": 3100,
+      "instructions": 3095,
       "tools": 41211,
-      "total": 44311
+      "total": 44306
     },
     "compact": {
-      "instructions": 3297,
+      "instructions": 3292,
       "tools": 1657,
-      "total": 4954
+      "total": 4949
     }
   },
   "worktreeInstructions": 591,

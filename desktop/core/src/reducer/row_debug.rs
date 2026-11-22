@@ -35,13 +35,32 @@ impl RowDebug {
                 }
             }
             RowContent::Approval(item) => match &item.resolution {
-                Some(resolution) => format!("{} ({})", item.request.title, resolution.decision.as_str()),
+                Some(resolution) => {
+                    format!("{} ({})", item.request.title, resolution.decision.as_str())
+                }
                 None => item.request.title.clone(),
             },
-            RowContent::Question(item) => item.request.questions.iter().map(|q| q.question.clone()).collect::<Vec<_>>().join(" / "),
-            RowContent::Secret(item) => item.resolved_text().unwrap_or_else(|| item.request.label.clone()),
-            RowContent::Review(review) => format!("{} · {} images · {}", review.title, review.options.len(), review.status),
-            RowContent::Plan(entries) => entries.iter().map(|e| e.text.clone()).collect::<Vec<_>>().join("; "),
+            RowContent::Question(item) => item
+                .request
+                .questions
+                .iter()
+                .map(|q| q.question.clone())
+                .collect::<Vec<_>>()
+                .join(" / "),
+            RowContent::Secret(item) => item
+                .resolved_text()
+                .unwrap_or_else(|| item.request.label.clone()),
+            RowContent::Review(review) => format!(
+                "{} · {} images · {}",
+                review.title,
+                review.options.len(),
+                review.status
+            ),
+            RowContent::Plan(entries) => entries
+                .iter()
+                .map(|e| e.text.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
             RowContent::PlanCard(card) => {
                 let state = match card.state {
                     PlanCardState::Waiting => "waiting",
@@ -52,11 +71,21 @@ impl RowDebug {
                     // Its title too, as the card draws it over the plan (the
                     // nightly parity run looks for both).
                     match PlanCardText::split(&card.text).0 {
-                        Some(title) => format!("plan ({state}): {title}: {}", PlanCardText::summary(&card.text)),
+                        Some(title) => format!(
+                            "plan ({state}): {title}: {}",
+                            PlanCardText::summary(&card.text)
+                        ),
                         None => format!("plan ({state}): {}", PlanCardText::summary(&card.text)),
                     }
                 } else {
-                    format!("plan ({state}), {}", card.entries.iter().map(|e| e.text.clone()).collect::<Vec<_>>().join("; "))
+                    format!(
+                        "plan ({state}), {}",
+                        card.entries
+                            .iter()
+                            .map(|e| e.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
                 }
             }
             RowContent::Asks(card) => {
@@ -67,21 +96,57 @@ impl RowDebug {
                         Some(ends) if ends.is_empty() => ", loose ends: none".to_owned(),
                         Some(ends) => {
                             // A booked check-in is drawn under its own label.
-                            let booked: Vec<String> = ends.iter().filter(|e| e.is_booked()).map(|e| e.text.clone()).collect();
-                            let coming = if booked.is_empty() { String::new() } else { format!(", Coming back: {}", booked.join("; ")) };
-                            format!(", loose ends: {}{coming}", ends.iter().map(|e| e.text.clone()).collect::<Vec<_>>().join("; "))
+                            let booked: Vec<String> = ends
+                                .iter()
+                                .filter(|e| e.is_booked())
+                                .map(|e| e.text.clone())
+                                .collect();
+                            let coming = if booked.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", Coming back: {}", booked.join("; "))
+                            };
+                            format!(
+                                ", loose ends: {}{coming}",
+                                ends.iter()
+                                    .map(|e| e.text.clone())
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            )
                         }
                     };
                     let next = if card.next.is_empty() {
                         String::new()
                     } else {
-                        let items: Vec<String> =
-                            card.next.iter().enumerate().map(|(i, n)| format!("{}{n}", if picked(&card.picked_next, i) { "[x] " } else { "" })).collect();
+                        let items: Vec<String> = card
+                            .next
+                            .iter()
+                            .enumerate()
+                            .map(|(i, n)| {
+                                format!(
+                                    "{}{n}",
+                                    if picked(&card.picked_next, i) {
+                                        "[x] "
+                                    } else {
+                                        ""
+                                    }
+                                )
+                            })
+                            .collect();
                         format!(", next: {}", items.join("; "))
                     };
                     return format!("{openness}, nothing needed{loose}{next}");
                 }
-                format!("{openness}, {} of {} ticked: {}", card.ticked_count(), card.asks.len(), card.asks.iter().map(|a| a.action.clone()).collect::<Vec<_>>().join("; "))
+                format!(
+                    "{openness}, {} of {} ticked: {}",
+                    card.ticked_count(),
+                    card.asks.len(),
+                    card.asks
+                        .iter()
+                        .map(|a| a.action.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
             }
             RowContent::Footer(completion) => {
                 let mut words = duration(completion.duration_ms);
@@ -95,7 +160,11 @@ impl RowDebug {
                 // `footer_text`: one with a kind has a box of its own).
                 // Another runner's failed turn says nothing else, and the
                 // parity run reads it here.
-                if let Some(error) = completion.error.as_deref().filter(|e| !e.is_empty() && completion.error_kind.is_none()) {
+                if let Some(error) = completion
+                    .error
+                    .as_deref()
+                    .filter(|e| !e.is_empty() && completion.error_kind.is_none())
+                {
                     words.push_str(&format!(": {}", error.lines().next().unwrap_or("")));
                 }
                 // Codex's footer shows only the time; its tokens are here.
@@ -113,7 +182,19 @@ impl RowDebug {
             RowContent::Gap(gap) => gap.label(),
             // Another lab's review, as the Swift RowDebug says it.
             RowContent::LabReview(r) => {
-                format!("{}{}", r.heading(), r.findings.iter().map(|f| format!("; #{} {}: {}", f.id, f.outcome.as_deref().unwrap_or("no answer"), f.claim)).collect::<String>())
+                format!(
+                    "{}{}",
+                    r.heading(),
+                    r.findings
+                        .iter()
+                        .map(|f| format!(
+                            "; #{} {}: {}",
+                            f.id,
+                            f.outcome.as_deref().unwrap_or("no answer"),
+                            f.claim
+                        ))
+                        .collect::<String>()
+                )
             }
         }
     }
@@ -126,11 +207,18 @@ impl RowDebug {
                 Pending::Queued => "queued",
                 Pending::WaitingForRunner => "waiting for the runner",
             };
-            let plain = UserMessage { pending: None, ..message.clone() };
+            let plain = UserMessage {
+                pending: None,
+                ..message.clone()
+            };
             return format!("({word}) {}", Self::user_text(&plain));
         }
         if message.text.is_empty() {
-            return if message.images.len() == 1 { "1 image".to_owned() } else { format!("{} images", message.images.len()) };
+            return if message.images.len() == 1 {
+                "1 image".to_owned()
+            } else {
+                format!("{} images", message.images.len())
+            };
         }
         // A dump should say it wasn't Mike, as the transcript does.
         if message.is_from_runner() {
@@ -146,7 +234,11 @@ impl RowDebug {
     /// same Unicode property as char::is_whitespace) as one space, cut to
     /// `limit` characters.
     pub fn one_line(words: &str, limit: usize) -> String {
-        let joined = words.split(char::is_whitespace).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ");
+        let joined = words
+            .split(char::is_whitespace)
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         if text::count(&joined) <= limit {
             return joined;
         }
@@ -168,8 +260,18 @@ pub enum EventsSource {
 
 /// What "Copy debug info" says: enough for an agent to find the row and the
 /// events behind it (`RowDebug.info`).
-pub fn info(thread_id: &str, row: &Row, seqs: &[i64], runner_version: &str, source: &EventsSource) -> String {
-    let mut lines = vec![format!("thread: {thread_id}"), format!("row: {}", row.id), format!("kind: {}", row.kind().as_str())];
+pub fn info(
+    thread_id: &str,
+    row: &Row,
+    seqs: &[i64],
+    runner_version: &str,
+    source: &EventsSource,
+) -> String {
+    let mut lines = vec![
+        format!("thread: {thread_id}"),
+        format!("row: {}", row.id),
+        format!("kind: {}", row.kind().as_str()),
+    ];
     if let Some(turn) = row.turn_id.as_deref().filter(|t| !t.is_empty()) {
         lines.push(format!("turn: {turn}"));
     }
@@ -183,8 +285,22 @@ pub fn info(thread_id: &str, row: &Row, seqs: &[i64], runner_version: &str, sour
             lines.push(format!("error kind: {}", kind.as_str()));
         }
     }
-    lines.push(format!("events: {}", if seqs.is_empty() { "none loaded".to_owned() } else { seq_ranges(seqs) }));
-    lines.push(format!("runner: {}", if runner_version.is_empty() { "unknown" } else { runner_version }));
+    lines.push(format!(
+        "events: {}",
+        if seqs.is_empty() {
+            "none loaded".to_owned()
+        } else {
+            seq_ranges(seqs)
+        }
+    ));
+    lines.push(format!(
+        "runner: {}",
+        if runner_version.is_empty() {
+            "unknown"
+        } else {
+            runner_version
+        }
+    ));
     // The command that prints those events, ready to run.
     if let (Some(first), Some(last)) = (seqs.iter().min(), seqs.iter().max()) {
         lines.push(match source {
@@ -205,7 +321,11 @@ pub fn info(thread_id: &str, row: &Row, seqs: &[i64], runner_version: &str, sour
 /// characters, in single quotes otherwise (the default data folder has a
 /// space; another runner's thread id could have anything).
 pub fn shell_word(text: &str) -> String {
-    if !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c)) {
+    if !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
+    {
         text.to_owned()
     } else {
         crate::sign_in::quoted(text)
@@ -215,7 +335,12 @@ pub fn shell_word(text: &str) -> String {
 /// "3, 7-9, 12": runs of seqs written as ranges, so a big group's events
 /// stay one short line.
 pub fn seq_ranges(seqs: &[i64]) -> String {
-    let sorted: Vec<i64> = seqs.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
+    let sorted: Vec<i64> = seqs
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let mut parts = Vec::new();
     let mut index = 0;
     while index < sorted.len() {
@@ -223,7 +348,11 @@ pub fn seq_ranges(seqs: &[i64]) -> String {
         while end + 1 < sorted.len() && sorted[end + 1] == sorted[end] + 1 {
             end += 1;
         }
-        parts.push(if end > index { format!("{}-{}", sorted[index], sorted[end]) } else { sorted[index].to_string() });
+        parts.push(if end > index {
+            format!("{}-{}", sorted[index], sorted[end])
+        } else {
+            sorted[index].to_string()
+        });
         index = end + 1;
     }
     parts.join(", ")
@@ -235,21 +364,45 @@ pub fn seq_ranges(seqs: &[i64]) -> String {
 /// edits; the turn's start for the working line.
 pub fn source_seqs(model: &super::model::TranscriptModel, row_id: &str) -> Vec<i64> {
     let mut wanted: BTreeSet<String> = BTreeSet::from([row_id.to_owned()]);
-    match model.row(row_id).or_else(|| model.item(row_id)).map(|r| &r.content) {
+    match model
+        .row(row_id)
+        .or_else(|| model.item(row_id))
+        .map(|r| &r.content)
+    {
         Some(RowContent::Group(group)) => wanted = group.member_ids.iter().cloned().collect(),
         Some(RowContent::Changes(card)) => {
-            wanted = model.items().iter().filter(|i| i.turn_id.as_deref() == Some(card.turn_id.as_str()) && i.kind() == super::row::RowKind::Diff).map(|i| i.id.clone()).collect();
+            wanted = model
+                .items()
+                .iter()
+                .filter(|i| {
+                    i.turn_id.as_deref() == Some(card.turn_id.as_str())
+                        && i.kind() == super::row::RowKind::Diff
+                })
+                .map(|i| i.id.clone())
+                .collect();
         }
         _ => {}
     }
     let mut plan_rows = std::collections::HashMap::new();
-    model.events().iter().filter(|e| row_ids_for(e, &mut plan_rows).iter().any(|id| wanted.contains(id))).map(|e| e.seq).collect()
+    model
+        .events()
+        .iter()
+        .filter(|e| {
+            row_ids_for(e, &mut plan_rows)
+                .iter()
+                .any(|id| wanted.contains(id))
+        })
+        .map(|e| e.seq)
+        .collect()
 }
 
 /// The item and derived rows an event feeds, with the ids the reducer gives
 /// them. `plan_rows` carries each turn's plan row along, since every update
 /// of a turn's plan goes to its first one.
-fn row_ids_for(event: &super::event::Event, plan_rows: &mut std::collections::HashMap<String, String>) -> Vec<String> {
+fn row_ids_for(
+    event: &super::event::Event,
+    plan_rows: &mut std::collections::HashMap<String, String>,
+) -> Vec<String> {
     use super::event::{ActionRun, EventPayload as P};
     let seq = event.seq;
     match &event.payload {
@@ -270,15 +423,31 @@ fn row_ids_for(event: &super::event::Event, plan_rows: &mut std::collections::Ha
         P::QuestionRequested(request) => vec![format!("q:{}", request.approval_id)],
         P::SecretRequested(request) => vec![format!("s:{}", request.approval_id)],
         P::ReviewUpdated(review) => vec![format!("review:{}", review.id)],
-        P::ApprovalResolved(resolution) => vec![format!("ap:{}", resolution.approval_id), format!("q:{}", resolution.approval_id), format!("s:{}", resolution.approval_id)],
-        P::PlanProposed { item_id, .. } | P::PlanResolved { item_id, .. } => vec![format!("pl:{item_id}")],
+        P::ApprovalResolved(resolution) => vec![
+            format!("ap:{}", resolution.approval_id),
+            format!("q:{}", resolution.approval_id),
+            format!("s:{}", resolution.approval_id),
+        ],
+        P::PlanProposed { item_id, .. } | P::PlanResolved { item_id, .. } => {
+            vec![format!("pl:{item_id}")]
+        }
         P::PlanUpdated(_) => {
             let key = event.turn_id.clone().unwrap_or_else(|| format!("seq{seq}"));
-            let id = plan_rows.entry(key).or_insert_with(|| format!("p:{seq}")).clone();
+            let id = plan_rows
+                .entry(key)
+                .or_insert_with(|| format!("p:{seq}"))
+                .clone();
             vec![id]
         }
         P::TurnStarted { .. } => vec![format!("w:{}", event.turn_id.as_deref().unwrap_or(""))],
-        P::TurnCompleted(done) => vec![format!("f:{}", if done.turn_id.is_empty() { event.turn_id.clone().unwrap_or_else(|| format!("seq{seq}")) } else { done.turn_id.clone() })],
+        P::TurnCompleted(done) => vec![format!(
+            "f:{}",
+            if done.turn_id.is_empty() {
+                event.turn_id.clone().unwrap_or_else(|| format!("seq{seq}"))
+            } else {
+                done.turn_id.clone()
+            }
+        )],
         P::SystemNote(_) => vec![format!("n:{seq}")],
         P::ThreadRewound(_) => vec![format!("rw:{seq}")],
         P::Error(_) => vec![format!("e:{seq}")],

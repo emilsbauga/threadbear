@@ -27,7 +27,10 @@ pub struct DiffBuilder;
 
 impl DiffBuilder {
     pub fn is_edit_tool(call: &ToolCall) -> bool {
-        matches!(call.name.as_str(), "Edit" | "MultiEdit" | "Write" | "NotebookEdit") || matches!(call.kind, ToolKind::Edit | ToolKind::Write)
+        matches!(
+            call.name.as_str(),
+            "Edit" | "MultiEdit" | "Write" | "NotebookEdit"
+        ) || matches!(call.kind, ToolKind::Edit | ToolKind::Write)
     }
 
     /// A diff from an Edit, MultiEdit or Write call's input, for when the
@@ -38,18 +41,30 @@ impl DiffBuilder {
         }
         let input = &call.input;
         let string = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
-        let path = string(input, "file_path").or_else(|| string(input, "path")).unwrap_or_else(|| call.title.clone());
+        let path = string(input, "file_path")
+            .or_else(|| string(input, "path"))
+            .unwrap_or_else(|| call.title.clone());
         if let (Some(old), Some(new)) = (string(input, "old_string"), string(input, "new_string")) {
-            return Some(EditDiff { item_id: call.item_id.clone(), path, hunks: Self::hunks(&old, &new, 3) });
+            return Some(EditDiff {
+                item_id: call.item_id.clone(),
+                path,
+                hunks: Self::hunks(&old, &new, 3),
+            });
         }
         if let Some(edits) = input.get("edits").and_then(Value::as_array) {
             let mut all = Vec::new();
             for edit in edits {
-                if let (Some(old), Some(new)) = (string(edit, "old_string"), string(edit, "new_string")) {
+                if let (Some(old), Some(new)) =
+                    (string(edit, "old_string"), string(edit, "new_string"))
+                {
                     all.extend(Self::hunks(&old, &new, 3));
                 }
             }
-            return Some(EditDiff { item_id: call.item_id.clone(), path, hunks: all });
+            return Some(EditDiff {
+                item_id: call.item_id.clone(),
+                path,
+                hunks: all,
+            });
         }
         if let Some(content) = string(input, "content") {
             let lines = Self::split_lines(&content);
@@ -57,9 +72,19 @@ impl DiffBuilder {
                 Vec::new()
             } else {
                 let count = lines.len() as i64;
-                vec![DiffHunk { old_start: 0, old_lines: 0, new_start: 1, new_lines: count, lines: lines.iter().map(|l| format!("+{l}")).collect() }]
+                vec![DiffHunk {
+                    old_start: 0,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: count,
+                    lines: lines.iter().map(|l| format!("+{l}")).collect(),
+                }]
             };
-            return Some(EditDiff { item_id: call.item_id.clone(), path, hunks });
+            return Some(EditDiff {
+                item_id: call.item_id.clone(),
+                path,
+                hunks,
+            });
         }
         None
     }
@@ -68,7 +93,10 @@ impl DiffBuilder {
         if text.is_empty() {
             return Vec::new();
         }
-        let mut lines: Vec<String> = self::text::split_lf(text).into_iter().map(str::to_owned).collect();
+        let mut lines: Vec<String> = self::text::split_lf(text)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         if lines.last().map(String::as_str) == Some("") {
             lines.pop();
         }
@@ -80,7 +108,11 @@ impl DiffBuilder {
     }
 
     /// Unified-diff hunks with `context` lines around each change.
-    pub fn hunks_of_lines(old_lines: &[String], new_lines: &[String], context: usize) -> Vec<DiffHunk> {
+    pub fn hunks_of_lines(
+        old_lines: &[String],
+        new_lines: &[String],
+        context: usize,
+    ) -> Vec<DiffHunk> {
         let (removed, inserted) = myers_changes(old_lines, new_lines);
         if removed.is_empty() && inserted.is_empty() {
             return Vec::new();
@@ -96,13 +128,25 @@ impl DiffBuilder {
         let (mut i, mut j) = (0usize, 0usize);
         while i < old_lines.len() || j < new_lines.len() {
             if i < old_lines.len() && removed.contains(&i) {
-                script.push(Step { mark: '-', old: i, new: j });
+                script.push(Step {
+                    mark: '-',
+                    old: i,
+                    new: j,
+                });
                 i += 1;
             } else if j < new_lines.len() && inserted.contains(&j) {
-                script.push(Step { mark: '+', old: i, new: j });
+                script.push(Step {
+                    mark: '+',
+                    old: i,
+                    new: j,
+                });
                 j += 1;
             } else {
-                script.push(Step { mark: ' ', old: i, new: j });
+                script.push(Step {
+                    mark: ' ',
+                    old: i,
+                    new: j,
+                });
                 i += 1;
                 j += 1;
             }
@@ -111,7 +155,10 @@ impl DiffBuilder {
         let mut result = Vec::new();
         let mut position = 0usize;
         while position < script.len() {
-            let Some(change_start) = (position..script.len()).find(|&p| script[p].mark != ' ') else { break };
+            let Some(change_start) = (position..script.len()).find(|&p| script[p].mark != ' ')
+            else {
+                break;
+            };
             let start = change_start.saturating_sub(context);
             let mut end = change_start;
             // Extend while the next change is within 2 * context lines.
@@ -150,9 +197,17 @@ impl DiffBuilder {
             }
             let first = &script[start];
             result.push(DiffHunk {
-                old_start: if old_count == 0 { first.old as i64 } else { first.old as i64 + 1 },
+                old_start: if old_count == 0 {
+                    first.old as i64
+                } else {
+                    first.old as i64 + 1
+                },
                 old_lines: old_count,
-                new_start: if new_count == 0 { first.new as i64 } else { first.new as i64 + 1 },
+                new_start: if new_count == 0 {
+                    first.new as i64
+                } else {
+                    first.new as i64 + 1
+                },
                 new_lines: new_count,
                 lines,
             });
@@ -192,7 +247,10 @@ impl DiffBuilder {
                     kind: DiffLineKind::HunkHeader,
                     old_number: None,
                     new_number: None,
-                    text: format!("@@ -{},{} +{},{} @@", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines),
+                    text: format!(
+                        "@@ -{},{} +{},{} @@",
+                        hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+                    ),
                 });
             }
             let mut old_number = hunk.old_start;
@@ -205,15 +263,30 @@ impl DiffBuilder {
                 let body = text::drop_first(raw, 1).to_owned();
                 match mark {
                     Some('+') => {
-                        lines.push(DiffDisplayLine { kind: DiffLineKind::Added, old_number: None, new_number: Some(new_number), text: body });
+                        lines.push(DiffDisplayLine {
+                            kind: DiffLineKind::Added,
+                            old_number: None,
+                            new_number: Some(new_number),
+                            text: body,
+                        });
                         new_number += 1;
                     }
                     Some('-') => {
-                        lines.push(DiffDisplayLine { kind: DiffLineKind::Removed, old_number: Some(old_number), new_number: None, text: body });
+                        lines.push(DiffDisplayLine {
+                            kind: DiffLineKind::Removed,
+                            old_number: Some(old_number),
+                            new_number: None,
+                            text: body,
+                        });
                         old_number += 1;
                     }
                     _ => {
-                        lines.push(DiffDisplayLine { kind: DiffLineKind::Context, old_number: Some(old_number), new_number: Some(new_number), text: body });
+                        lines.push(DiffDisplayLine {
+                            kind: DiffLineKind::Context,
+                            old_number: Some(old_number),
+                            new_number: Some(new_number),
+                            text: body,
+                        });
                         old_number += 1;
                         new_number += 1;
                     }
@@ -221,9 +294,18 @@ impl DiffBuilder {
             }
         }
         let shown = lines.len();
-        let full_count = if diff.hunks.len() > 1 { total } else { total - diff.hunks.len() };
+        let full_count = if diff.hunks.len() > 1 {
+            total
+        } else {
+            total - diff.hunks.len()
+        };
         if shown < full_count {
-            lines.push(DiffDisplayLine { kind: DiffLineKind::Elided, old_number: None, new_number: None, text: format!("{} more lines", full_count - shown) });
+            lines.push(DiffDisplayLine {
+                kind: DiffLineKind::Elided,
+                old_number: None,
+                new_number: None,
+                text: format!("{} more lines", full_count - shown),
+            });
         }
         lines
     }
@@ -247,7 +329,10 @@ fn myers_changes(a: &[String], b: &[String]) -> (HashSet<usize>, HashSet<usize>)
         prefix += 1;
     }
     let mut suffix = 0;
-    while suffix < a.len() - prefix && suffix < b.len() - prefix && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix] {
+    while suffix < a.len() - prefix
+        && suffix < b.len() - prefix
+        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
+    {
         suffix += 1;
     }
     let (a, b) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
@@ -261,7 +346,11 @@ fn myers_changes(a: &[String], b: &[String]) -> (HashSet<usize>, HashSet<usize>)
     for d in (1..trace.len() as i64).rev() {
         let v = &trace[d as usize];
         let k = x - y;
-        let prev_k = if k == -d || (k != d && v.get(k - 1) < v.get(k + 1)) { k + 1 } else { k - 1 };
+        let prev_k = if k == -d || (k != d && v.get(k - 1) < v.get(k + 1)) {
+            k + 1
+        } else {
+            k - 1
+        };
         let prev_x = v.get(prev_k);
         let prev_y = prev_x - prev_k;
         while x > prev_x && y > prev_y {
@@ -290,7 +379,9 @@ struct V {
 impl V {
     fn new(max_index: i64) -> V {
         // One slot for each of -d, -d+2, ... d, however the stdlib rounds it.
-        V { a: vec![0; (max_index.max(1) + 1) as usize] }
+        V {
+            a: vec![0; (max_index.max(1) + 1) as usize],
+        }
     }
 
     fn transform(index: i64) -> usize {

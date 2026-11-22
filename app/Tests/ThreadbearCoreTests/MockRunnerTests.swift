@@ -2,10 +2,10 @@ import Foundation
 import XCTest
 @testable import ThreadbearCore
 
-/// End to end over a real WebSocket: starts Tools/mock-runner (which speaks
+/// End to end over a real WebSocket: starts the mock runner (mock-runner/ at the repo's top, which speaks
 /// docs/protocol.md) in a temp data folder and drives it with the real
 /// `WebSocketTransport` and `RPCClient`. Skipped when node or the mock's
-/// `ws` dependency isn't installed (`npm install` in Tools/mock-runner).
+/// `ws` dependency isn't installed (`npm install` in mock-runner/).
 final class MockRunnerTests: XCTestCase {
     private var process: Process?
     private var dataDir: URL!
@@ -15,9 +15,9 @@ final class MockRunnerTests: XCTestCase {
     }
 
     override func setUp() async throws {
-        let mock = Self.appRoot.appendingPathComponent("Tools/mock-runner")
+        let mock = Self.appRoot.appendingPathComponent("../mock-runner").standardizedFileURL
         guard FileManager.default.fileExists(atPath: mock.appendingPathComponent("node_modules/ws").path) else {
-            throw try Self.missing("Tools/mock-runner has no node_modules; run npm install there")
+            throw try Self.missing("mock-runner/ has no node_modules; run npm install there")
         }
         guard let node = Self.findNode() else { throw try Self.missing("node isn't on PATH") }
         dataDir = FileManager.default.temporaryDirectory.appendingPathComponent("tb-mock-test-\(UUID().uuidString)", isDirectory: true)
@@ -238,7 +238,7 @@ final class MockRunnerTests: XCTestCase {
         let dated = try await client.updateThread("demo_settings_tabs", ThreadUpdate(snoozedUntil: .some(nil)))
         XCTAssertFalse(dated.snoozedUntilRestart)
 
-        let png = Self.appRoot.appendingPathComponent("Tools/mock-runner/fixtures/demo-upload-resume/media/upload-times.png")
+        let png = Self.appRoot.appendingPathComponent("../mock-runner/fixtures/demo-upload-resume/media/upload-times.png").standardizedFileURL
         let image = try await client.importMedia(path: png.path)
         XCTAssertEqual(image.mediaType, "image/png")
         XCTAssertEqual(image.width, 760)

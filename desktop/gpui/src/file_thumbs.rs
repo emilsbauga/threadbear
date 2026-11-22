@@ -55,7 +55,10 @@ impl Asset for FileThumb {
     type Source = (String, i64);
     type Output = Thumb;
 
-    fn load((path, _version): Self::Source, cx: &mut App) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+    fn load(
+        (path, _version): Self::Source,
+        cx: &mut App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let renderer = cx.svg_renderer();
         let background = cx.background_executor().clone();
         // One at a time, so a thread with forty videos doesn't start forty
@@ -64,7 +67,10 @@ impl Asset for FileThumb {
         async move {
             let _turn = ONE_AT_A_TIME.lock().await;
             match background.spawn(async move { make(&path) }).await {
-                Made::Png(bytes) => Image::from_bytes(ImageFormat::Png, bytes).to_image_data(renderer).map(Thumb::Picture).unwrap_or(Thumb::Symbol),
+                Made::Png(bytes) => Image::from_bytes(ImageFormat::Png, bytes)
+                    .to_image_data(renderer)
+                    .map(Thumb::Picture)
+                    .unwrap_or(Thumb::Symbol),
                 Made::Lines(lines) => Thumb::Lines(lines),
                 Made::Nothing => Thumb::Symbol,
             }
@@ -86,17 +92,29 @@ fn make(path: &str) -> Made {
     match rules::peek_picture(path) {
         PeekPicture::Image => picture(path).map_or(Made::Nothing, Made::Png),
         PeekPicture::Thumbnail => {
-            let Ok(meta) = policy::local_metadata(Path::new(path)) else { return Made::Nothing };
+            let Ok(meta) = policy::local_metadata(Path::new(path)) else {
+                return Made::Nothing;
+            };
             if !meta.is_file() {
                 return Made::Nothing;
             }
-            open_gate::media_thumbnail(path, Origin::ThisMac, policy::media_version(&meta)).and_then(|png| shrunk(&png)).map_or(Made::Nothing, Made::Png)
+            open_gate::media_thumbnail(path, Origin::ThisMac, policy::media_version(&meta))
+                .and_then(|png| shrunk(&png))
+                .map_or(Made::Nothing, Made::Png)
         }
         PeekPicture::Lines => {
-            let Ok(sample) = policy::local_read(Path::new(path), 2048) else { return Made::Nothing };
+            let Ok(sample) = policy::local_read(Path::new(path), 2048) else {
+                return Made::Nothing;
+            };
             match rules::first_lines(&sample, 12, 60) {
                 // Blank lines carry nothing at this size.
-                Some(lines) => Made::Lines(lines.into_iter().filter(|l| !l.trim().is_empty()).take(6).collect()),
+                Some(lines) => Made::Lines(
+                    lines
+                        .into_iter()
+                        .filter(|l| !l.trim().is_empty())
+                        .take(6)
+                        .collect(),
+                ),
                 None => Made::Nothing,
             }
         }
@@ -116,26 +134,45 @@ fn picture(path: &str) -> Option<Vec<u8>> {
 /// Any picture's bytes as a small PNG filling the box (cropped, like the
 /// row shows it). Limits keep a made-up giant from taking the memory.
 fn shrunk(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
     let mut limits = image::Limits::default();
     // Any shape, a full-page phone shot too: max_alloc is what holds it.
     limits.max_image_width = Some(65_536);
     limits.max_image_height = Some(65_536);
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
-    let small = reader.decode().ok()?.resize_to_fill(PIXELS.0, PIXELS.1, image::imageops::FilterType::Triangle);
+    let small = reader.decode().ok()?.resize_to_fill(
+        PIXELS.0,
+        PIXELS.1,
+        image::imageops::FilterType::Triangle,
+    );
     let mut png = Vec::new();
-    small.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    small
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
     Some(png)
 }
 
 /// The preview so far: None while it's being made (the symbol shows).
-pub(crate) fn current(path: &str, version: i64, window: &mut Window, cx: &mut App) -> Option<Thumb> {
+pub(crate) fn current(
+    path: &str,
+    version: i64,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Thumb> {
     window.use_asset::<FileThumb>(&(path.to_owned(), version), cx)
 }
 
 /// The box a Files row shows in place of its symbol.
-pub(crate) fn element(path: &str, thumb: Option<&Thumb>, symbol: &str, p: Palette, cx: &App) -> AnyElement {
+pub(crate) fn element(
+    path: &str,
+    thumb: Option<&Thumb>,
+    symbol: &str,
+    p: Palette,
+    cx: &App,
+) -> AnyElement {
     let frame = div()
         .flex_none()
         .w(px(WIDTH))
@@ -150,7 +187,11 @@ pub(crate) fn element(path: &str, thumb: Option<&Thumb>, symbol: &str, p: Palett
             let video = matches!(policy::media_kind(path), Some(policy::Media::Video));
             frame
                 .relative()
-                .child(img(ImageSource::Render(image.clone())).size_full().object_fit(ObjectFit::Cover))
+                .child(
+                    img(ImageSource::Render(image.clone()))
+                        .size_full()
+                        .object_fit(ObjectFit::Cover),
+                )
                 // A video says so, bottom left, as a play mark.
                 .when(video, |f| {
                     f.child(
@@ -172,7 +213,12 @@ pub(crate) fn element(path: &str, thumb: Option<&Thumb>, symbol: &str, p: Palett
         Some(Thumb::Lines(lines)) => {
             // A page of its first lines: too small to read, enough to tell a
             // script from a plan. A markdown heading reads as the title.
-            let mut page = v_flex().size_full().px(px(4.)).py(px(3.)).gap(px(0.5)).overflow_hidden();
+            let mut page = v_flex()
+                .size_full()
+                .px(px(4.))
+                .py(px(3.))
+                .gap(px(0.5))
+                .overflow_hidden();
             for (i, line) in lines.iter().enumerate() {
                 let heading = line.starts_with('#');
                 let words = line.trim_start_matches('#').trim().to_owned();
@@ -189,6 +235,11 @@ pub(crate) fn element(path: &str, thumb: Option<&Thumb>, symbol: &str, p: Palett
             }
             frame.child(page).into_any_element()
         }
-        _ => frame.flex().items_center().justify_center().child(crate::highlights::icon(symbol, 14., p.icon)).into_any_element(),
+        _ => frame
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(crate::highlights::icon(symbol, 14., p.icon))
+            .into_any_element(),
     }
 }

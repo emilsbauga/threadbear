@@ -76,7 +76,7 @@ export function sessionTranscriptPath(configDir: string, cwd: string, sessionId:
 }
 
 // Where to cut a session back to so it forgets the user message with this
-// uuid and everything after it (docs/protocol.md, "Editing a message").
+// uuid and everything after it (docs/protocol/threads.md, "Editing a message").
 // The runner sends each message with its own id as the uuid, so the CLI's
 // transcript has the message under that id; the entry before it in the
 // chain is where a resume with resumeSessionAt picks up. `first` when no

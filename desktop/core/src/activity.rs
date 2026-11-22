@@ -90,14 +90,21 @@ pub struct ActivityEvent {
 
 impl ActivityEvent {
     pub fn new(kind: &str, at: chrono::DateTime<chrono::Local>) -> ActivityEvent {
-        ActivityEvent { at: at.to_rfc3339_opts(chrono::SecondsFormat::Millis, false), kind: kind.to_owned(), ..Default::default() }
+        ActivityEvent {
+            at: at.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+            kind: kind.to_owned(),
+            ..Default::default()
+        }
     }
 
     /// The event as one line of JSON, without the newline, its keys sorted
     /// as the Swift app's are.
     pub fn line(&self) -> String {
         let value = serde_json::to_value(self).unwrap_or_default();
-        let sorted: BTreeMap<String, serde_json::Value> = value.as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+        let sorted: BTreeMap<String, serde_json::Value> = value
+            .as_object()
+            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
         serde_json::to_string(&sorted).unwrap_or_default()
     }
 
@@ -136,13 +143,23 @@ pub fn file_name(date: chrono::NaiveDate) -> String {
 /// The day files from before the last `KEEP_DAYS` days, to delete. Anything
 /// not named like a day file is left alone.
 pub fn expired(names: &[String], today: chrono::NaiveDate) -> Vec<String> {
-    let Some(cutoff) = today.checked_sub_signed(chrono::Duration::days(KEEP_DAYS)) else { return Vec::new() };
+    let Some(cutoff) = today.checked_sub_signed(chrono::Duration::days(KEEP_DAYS)) else {
+        return Vec::new();
+    };
     let oldest = file_name(cutoff);
     names
         .iter()
         .filter(|n| {
             let b = n.as_bytes();
-            n.len() == 16 && n.ends_with(".jsonl") && b[..10].iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+            n.len() == 16
+                && n.ends_with(".jsonl")
+                && b[..10].iter().enumerate().all(|(i, c)| {
+                    if i == 4 || i == 7 {
+                        *c == b'-'
+                    } else {
+                        c.is_ascii_digit()
+                    }
+                })
         })
         // Zero-padded dates sort as text.
         .filter(|n| n.as_str() < oldest.as_str())
@@ -152,14 +169,26 @@ pub fn expired(names: &[String], today: chrono::NaiveDate) -> Vec<String> {
 
 /// The keys held, in the order macOS menus show them.
 pub fn modifiers(command: bool, control: bool, option: bool, shift: bool) -> String {
-    format!("{}{}{}{}", if control { "⌃" } else { "" }, if option { "⌥" } else { "" }, if shift { "⇧" } else { "" }, if command { "⌘" } else { "" })
+    format!(
+        "{}{}{}{}",
+        if control { "⌃" } else { "" },
+        if option { "⌥" } else { "" },
+        if shift { "⇧" } else { "" },
+        if command { "⌘" } else { "" }
+    )
 }
 
 /// Which key presses go in the log, by GPUI's name for the key: only
 /// shortcuts, a key with ⌘ or ⌃ held, and Escape. Anything else could be
 /// typing, and typing is never recorded, not even which keys. The name is as
 /// a menu shows it ("⌘N", "⌥⌘P", "⌘↩").
-pub fn shortcut(key: &str, command: bool, control: bool, option: bool, shift: bool) -> Option<String> {
+pub fn shortcut(
+    key: &str,
+    command: bool,
+    control: bool,
+    option: bool,
+    shift: bool,
+) -> Option<String> {
     let name = key_name(key);
     if !command && !control {
         return (key == "escape").then_some(name);
@@ -183,7 +212,9 @@ fn key_name(key: &str) -> String {
         "end" => "End".into(),
         "pageup" => "Page Up".into(),
         "pagedown" => "Page Down".into(),
-        f if f.len() > 1 && f.starts_with('f') && f[1..].chars().all(|c| c.is_ascii_digit()) => f.to_uppercase(),
+        f if f.len() > 1 && f.starts_with('f') && f[1..].chars().all(|c| c.is_ascii_digit()) => {
+            f.to_uppercase()
+        }
         "" => "key".into(),
         other => other.to_uppercase(),
     }
@@ -203,37 +234,65 @@ mod tests {
     /// A line has what was set and nothing else, and reads back the same.
     #[test]
     fn a_line_round_trips() {
-        let at = chrono::Local.timestamp_millis_opt(1_793_239_331_500).unwrap();
+        let at = chrono::Local
+            .timestamp_millis_opt(1_793_239_331_500)
+            .unwrap();
         let mut event = ActivityEvent::new("click", at);
         event.target = Some("Archive (⌘E)".into());
         event.button = Some("right".into());
         event.thread = Some("2072de5b-8d67-48d5-b814-2c8eb26e5eb4".into());
         let line = event.line();
         assert!(!line.contains('\n'));
-        let object: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&line).unwrap();
-        assert_eq!(object.keys().cloned().collect::<std::collections::BTreeSet<_>>(), ["at", "button", "kind", "target", "thread"].map(String::from).into_iter().collect());
+        let object: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            object
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["at", "button", "kind", "target", "thread"]
+                .map(String::from)
+                .into_iter()
+                .collect()
+        );
         // Sorted, as the Swift app writes them.
         assert!(line.starts_with(r#"{"at":"#) && line.find("\"button\"") < line.find("\"kind\""));
         // Local time, with the offset written the way JavaScript reads it.
         let stamp = object["at"].as_str().unwrap();
-        assert_eq!(stamp.len(), "2026-10-29T09:15:31.500+08:00".len(), "{stamp}");
+        assert_eq!(
+            stamp.len(),
+            "2026-10-29T09:15:31.500+08:00".len(),
+            "{stamp}"
+        );
         assert_eq!(&stamp[19..23], ".500");
-        assert_eq!(chrono::DateTime::parse_from_rfc3339(stamp).unwrap().timestamp_millis(), 1_793_239_331_500);
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(stamp)
+                .unwrap()
+                .timestamp_millis(),
+            1_793_239_331_500
+        );
         assert_eq!(ActivityEvent::parse(&line), Some(event));
     }
 
     /// The Swift app's lines read the same.
     #[test]
     fn reads_the_swift_apps_lines() {
-        let line = r#"{"at":"2026-11-11T09:01:02.003+08:00","images":2,"kind":"send","thread":"t1"}"#;
+        let line =
+            r#"{"at":"2026-11-11T09:01:02.003+08:00","images":2,"kind":"send","thread":"t1"}"#;
         let event = ActivityEvent::parse(line).unwrap();
-        assert_eq!((event.kind.as_str(), event.images, event.thread.as_deref()), ("send", Some(2), Some("t1")));
+        assert_eq!(
+            (event.kind.as_str(), event.images, event.thread.as_deref()),
+            ("send", Some(2), Some("t1"))
+        );
         assert_eq!(event.line(), line);
     }
 
     #[test]
     fn a_label_is_the_first_line_and_short() {
-        assert_eq!(ActivityEvent::label("Fix the sidebar\n~/code/threadbear").as_deref(), Some("Fix the sidebar"));
+        assert_eq!(
+            ActivityEvent::label("Fix the sidebar\n~/code/threadbear").as_deref(),
+            Some("Fix the sidebar")
+        );
         assert_eq!(ActivityEvent::label("  \n"), None);
         let long = ActivityEvent::label(&"a".repeat(300)).unwrap();
         assert_eq!(long.chars().count(), 120);
@@ -245,22 +304,57 @@ mod tests {
     fn expired_files() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 29).unwrap();
         assert_eq!(file_name(today), "2026-10-29.jsonl");
-        let names = ["2026-09-28.jsonl", "2026-09-29.jsonl", "2026-10-29.jsonl", "2025-12-31.jsonl", "notes.txt", "2026-09-01.jsonl.tmp"].map(String::from);
-        assert_eq!(expired(&names, today), ["2026-09-28.jsonl", "2025-12-31.jsonl"]);
+        let names = [
+            "2026-09-28.jsonl",
+            "2026-09-29.jsonl",
+            "2026-10-29.jsonl",
+            "2025-12-31.jsonl",
+            "notes.txt",
+            "2026-09-01.jsonl.tmp",
+        ]
+        .map(String::from);
+        assert_eq!(
+            expired(&names, today),
+            ["2026-09-28.jsonl", "2025-12-31.jsonl"]
+        );
     }
 
     /// Shortcuts are recorded by name; typing never is, not even with ⌥ or ⇧
     /// held, and Escape is the one bare key that is.
     #[test]
     fn only_shortcuts_are_recorded() {
-        assert_eq!(shortcut("n", true, false, false, false).as_deref(), Some("⌘N"));
-        assert_eq!(shortcut("p", true, false, true, false).as_deref(), Some("⌥⌘P"));
-        assert_eq!(shortcut("c", true, false, false, true).as_deref(), Some("⇧⌘C"));
-        assert_eq!(shortcut("s", true, true, false, false).as_deref(), Some("⌃⌘S"));
-        assert_eq!(shortcut("enter", true, false, false, false).as_deref(), Some("⌘↩"));
-        assert_eq!(shortcut("[", true, false, false, false).as_deref(), Some("⌘["));
-        assert_eq!(shortcut("escape", false, false, false, false).as_deref(), Some("Esc"));
-        assert_eq!(shortcut("f5", true, false, false, false).as_deref(), Some("⌘F5"));
+        assert_eq!(
+            shortcut("n", true, false, false, false).as_deref(),
+            Some("⌘N")
+        );
+        assert_eq!(
+            shortcut("p", true, false, true, false).as_deref(),
+            Some("⌥⌘P")
+        );
+        assert_eq!(
+            shortcut("c", true, false, false, true).as_deref(),
+            Some("⇧⌘C")
+        );
+        assert_eq!(
+            shortcut("s", true, true, false, false).as_deref(),
+            Some("⌃⌘S")
+        );
+        assert_eq!(
+            shortcut("enter", true, false, false, false).as_deref(),
+            Some("⌘↩")
+        );
+        assert_eq!(
+            shortcut("[", true, false, false, false).as_deref(),
+            Some("⌘[")
+        );
+        assert_eq!(
+            shortcut("escape", false, false, false, false).as_deref(),
+            Some("Esc")
+        );
+        assert_eq!(
+            shortcut("f5", true, false, false, false).as_deref(),
+            Some("⌘F5")
+        );
         assert_eq!(shortcut("a", false, false, false, false), None);
         assert_eq!(shortcut("a", false, false, false, true), None);
         assert_eq!(shortcut("e", false, false, true, false), None);

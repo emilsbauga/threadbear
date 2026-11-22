@@ -42,7 +42,13 @@ thread_local! {
 /// came up over its own menu, the pointer still on the button (12 Nov).
 /// `which` is the menu's bit: 1, the sidebar's (its row and heading menus).
 pub(crate) fn menu_up(which: u8, up: bool) {
-    MENU_UP.with(|m| m.set(if up { m.get() | which } else { m.get() & !which }));
+    MENU_UP.with(|m| {
+        m.set(if up {
+            m.get() | which
+        } else {
+            m.get() & !which
+        })
+    });
 }
 
 /// Whether any of those menus is up, which an update's restart waits for.
@@ -61,7 +67,9 @@ impl Render for NoTip {
 
 fn anchor(text: SharedString) -> impl IntoElement {
     canvas(
-        |bounds, window, _| crate::activity::is_on().then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal)),
+        |bounds, window, _| {
+            crate::activity::is_on().then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal))
+        },
         move |bounds, hitbox, window, _| {
             #[cfg(feature = "automation")]
             placed(&text, bounds, window);
@@ -126,15 +134,31 @@ fn placed(text: &SharedString, bounds: Bounds<Pixels>, window: &Window) {
 /// A press on the control with this tip, as the activity log sees one, with
 /// nothing pressed (the Swift app's `activity` with `click`).
 #[cfg(feature = "automation")]
-pub(crate) fn simulate_press(tip: &str, button: MouseButton, window: &mut Window, cx: &mut App) -> Result<(), String> {
+pub(crate) fn simulate_press(
+    tip: &str,
+    button: MouseButton,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<(), String> {
     use gpui_kit::test::TestWindowExt as _;
     // Everything drawn afresh, cached views too, so where each tip is is now.
     window.refresh();
     window.render_frame(cx);
-    let key = (window.window_handle().window_id().as_u64(), SharedString::from(tip.to_owned()));
-    let Some(bounds) = PLACED.with(|p| p.borrow().get(&key).copied()) else { return Err(format!("no control with the tip {tip}")) };
+    let key = (
+        window.window_handle().window_id().as_u64(),
+        SharedString::from(tip.to_owned()),
+    );
+    let Some(bounds) = PLACED.with(|p| p.borrow().get(&key).copied()) else {
+        return Err(format!("no control with the tip {tip}"));
+    };
     let at = bounds.center();
-    let down = MouseDownEvent { button, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+    let down = MouseDownEvent {
+        button,
+        position: at,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    };
     SIMULATING.with(|s| s.set(true));
     window.dispatch_event(down.to_platform_input(), cx);
     SIMULATING.with(|s| s.set(false));

@@ -1,4 +1,4 @@
-// Threadbear's own patch (docs/protocol.md, "Patches"): how threads work in
+// Threadbear's own patch (docs/protocol/patches.md, "Patches"): how threads work in
 // this repo, the worktrees panel and a typecheck after each turn. No buttons
 // for the checks, as Mike never pressed them and agents run ./check.sh anyway.
 export default {

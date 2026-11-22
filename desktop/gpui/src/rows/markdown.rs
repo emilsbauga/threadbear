@@ -35,17 +35,38 @@ pub(crate) fn reading_style(cx: &App) -> TextViewStyle {
         cx.theme().mono_font_family.clone(),
     );
     let rem = f32::from(cx.theme().font_size);
-    let code_block = StyleRefinement::default().rounded(px(7.)).border_0().p(px(CODE_PAD)).text_size(px(size::CODE)).line_height(px(size::CODE_LINE)).font_family(mono.clone());
+    let code_block = StyleRefinement::default()
+        .rounded(px(7.))
+        .border_0()
+        .p(px(CODE_PAD))
+        .text_size(px(size::CODE))
+        .line_height(px(size::CODE_LINE))
+        .font_family(mono.clone());
     // The pill behind inline code, with a little room either side (pillPad);
     // the kit reads padding and radius from this.
-    let inline_code = StyleRefinement::default().bg(inline_bg).rounded(px(4.)).px(px(2.5)).py(px(1.)).text_size(px(size::CODE)).font_family(mono.clone()).text_color(label);
+    let inline_code = StyleRefinement::default()
+        .bg(inline_bg)
+        .rounded(px(4.))
+        .px(px(2.5))
+        .py(px(1.))
+        .text_size(px(size::CODE))
+        .font_family(mono)
+        .text_color(label);
     // A rule under the header and hairlines between rows, none around them
     // (renderTable). No cell backgrounds.
     let table = StyleRefinement::default().border_0().rounded(px(0.));
-    let table_head = StyleRefinement::default().text_size(px(size::LABEL)).font_weight(FontWeight::SEMIBOLD).text_color(muted).bg(gpui_kit::transparent_black()).border_color(border);
+    let table_head = StyleRefinement::default()
+        .text_size(px(size::LABEL))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(muted)
+        .bg(gpui_kit::transparent_black())
+        .border_color(border);
     // Transparent: the kit draws a column divider in the cell border colour, and
     // the rows carry the rules (renderTable has no vertical lines).
-    let table_cell = StyleRefinement::default().py(px(4.)).px(px(12.)).border_color(gpui_kit::transparent_black());
+    let table_cell = StyleRefinement::default()
+        .py(px(4.))
+        .px(px(12.))
+        .border_color(gpui_kit::transparent_black());
     TextViewStyle::default()
         .with_foreground(label)
         .with_muted_foreground(muted)
@@ -67,17 +88,35 @@ pub(crate) fn reading_style(cx: &App) -> TextViewStyle {
                 2 => (16., 23.),
                 _ => (15., 21.),
             };
-            StyleRefinement::default().text_size(px(font)).line_height(px(line)).font_weight(FontWeight::SEMIBOLD).pt(px(6.)).pb(px(6.))
+            StyleRefinement::default()
+                .text_size(px(font))
+                .line_height(px(line))
+                .font_weight(FontWeight::SEMIBOLD)
+                .pt(px(6.))
+                .pb(px(6.))
         })
         .with_code_block(code_block)
-        .with_inline_code(HighlightStyle { background_color: Some(inline_bg), ..Default::default() })
+        .with_inline_code(HighlightStyle {
+            background_color: Some(inline_bg),
+            ..Default::default()
+        })
         .with_inline_code_style(inline_code)
         // The kit right-aligns a marker in the indent. Swift starts a bullet
         // 18 before the text and a number 22 before (markerStart): ending
         // them 11.2 short of the text puts the bullet and "1." where the
         // Swift ones are (a two-figure number sits a little further out).
-        .with_list_style(StyleRefinement::default().text_color(label).min_w(px(LIST_INDENT)).pr(px(MARKER_END)))
-        .with_blockquote_style(StyleRefinement::default().border_l(px(0.)).pl(px(14.)).text_color(muted))
+        .with_list_style(
+            StyleRefinement::default()
+                .text_color(label)
+                .min_w(px(LIST_INDENT))
+                .pr(px(MARKER_END)),
+        )
+        .with_blockquote_style(
+            StyleRefinement::default()
+                .border_l(px(0.))
+                .pl(px(14.))
+                .text_color(muted),
+        )
         .with_table(table)
         .with_table_head(table_head)
         .with_table_cell(table_cell)
@@ -105,16 +144,35 @@ pub(crate) fn pictures(text: &str, local: bool) -> std::borrow::Cow<'_, str> {
     if !text.contains("![") {
         return Cow::Borrowed(text);
     }
-    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else { return Cow::Borrowed(text) };
+    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else {
+        return Cow::Borrowed(text);
+    };
     let mut swaps: Vec<(usize, usize, String)> = Vec::new();
     collect_images(&tree, &mut |image| {
         let Some(at) = &image.position else { return };
         if local && picture_path(&image.url).is_some_and(|path| is_picture_file(&path)) {
             return;
         }
-        let alt = if image.alt.is_empty() { image.url.as_str() } else { image.alt.as_str() };
-        let words: String = alt.chars().flat_map(|c| if matches!(c, '[' | ']' | '\\') { vec!['\\', c] } else { vec![c] }).collect();
-        swaps.push((at.start.offset, at.end.offset, format!("[\\[{words}\\]](<{}>)", image.url.replace('>', "%3E"))));
+        let alt = if image.alt.is_empty() {
+            image.url.as_str()
+        } else {
+            image.alt.as_str()
+        };
+        let words: String = alt
+            .chars()
+            .flat_map(|c| {
+                if matches!(c, '[' | ']' | '\\') {
+                    vec!['\\', c]
+                } else {
+                    vec![c]
+                }
+            })
+            .collect();
+        swaps.push((
+            at.start.offset,
+            at.end.offset,
+            format!("[\\[{words}\\]](<{}>)", image.url.replace('>', "%3E")),
+        ));
     });
     if swaps.is_empty() {
         return Cow::Borrowed(text);
@@ -123,7 +181,11 @@ pub(crate) fn pictures(text: &str, local: bool) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(text.len() + 16);
     let mut at = 0;
     for (start, end, link) in swaps {
-        if start < at || end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+        if start < at
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
             continue;
         }
         out.push_str(&text[at..start]);
@@ -143,18 +205,42 @@ pub(crate) fn live_pages(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains("![") || !text.contains(".htm") {
         return Cow::Borrowed(text);
     }
-    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else { return Cow::Borrowed(text) };
+    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else {
+        return Cow::Borrowed(text);
+    };
     let mut swaps: Vec<(usize, usize, String)> = Vec::new();
     collect_images(&tree, &mut |image| {
         let Some(at) = &image.position else { return };
-        let Some(path) = picture_path(&image.url) else { return };
+        let Some(path) = picture_path(&image.url) else {
+            return;
+        };
         let path = path.to_string_lossy().into_owned();
         let lower = path.to_ascii_lowercase();
-        if !(lower.ends_with(".html") || lower.ends_with(".htm")) || path.contains(['\n', '\r', '`']) {
+        if !(lower.ends_with(".html") || lower.ends_with(".htm"))
+            || path.contains(['\n', '\r', '`'])
+        {
             return;
         }
-        let title: String = image.alt.chars().map(|c| if c == '\n' || c == '\r' || c == '`' { ' ' } else { c }).collect();
-        swaps.push((at.start.offset, at.end.offset, format!("\n\n```{}\n{path}\n{}\n```\n\n", crate::live_pages::fence(), title.trim())));
+        let title: String = image
+            .alt
+            .chars()
+            .map(|c| {
+                if c == '\n' || c == '\r' || c == '`' {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect();
+        swaps.push((
+            at.start.offset,
+            at.end.offset,
+            format!(
+                "\n\n```{}\n{path}\n{}\n```\n\n",
+                crate::live_pages::fence(),
+                title.trim()
+            ),
+        ));
     });
     if swaps.is_empty() {
         return Cow::Borrowed(text);
@@ -163,7 +249,11 @@ pub(crate) fn live_pages(text: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(text.len() + 64);
     let mut at = 0;
     for (start, end, block) in swaps {
-        if start < at || end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+        if start < at
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
             continue;
         }
         out.push_str(&text[at..start]);
@@ -202,7 +292,9 @@ pub(crate) fn dead_file_links(text: &str, local: bool) -> std::borrow::Cow<'_, s
     // text, so a file that turns up is seen soon without parsing each frame.
     use std::hash::{Hash, Hasher};
     use std::sync::{LazyLock, Mutex};
-    static SEEN: LazyLock<Mutex<std::collections::HashMap<u64, (std::time::Instant, Option<String>)>>> = LazyLock::new(Default::default);
+    static SEEN: LazyLock<
+        Mutex<std::collections::HashMap<u64, (std::time::Instant, Option<String>)>>,
+    > = LazyLock::new(Default::default);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     let key = hasher.finish();
@@ -226,9 +318,20 @@ fn unlink_dead_files(text: &str) -> Option<String> {
     let tree = markdown::to_mdast(text, &markdown::ParseOptions::gfm()).ok()?;
     let mut swaps: Vec<(usize, usize, usize, usize)> = Vec::new();
     collect_links(&tree, &mut |link| {
-        let (Some(at), Some(first), Some(last)) = (&link.position, link.children.first().and_then(|c| c.position()), link.children.last().and_then(|c| c.position())) else { return };
+        let (Some(at), Some(first), Some(last)) = (
+            &link.position,
+            link.children.first().and_then(|c| c.position()),
+            link.children.last().and_then(|c| c.position()),
+        ) else {
+            return;
+        };
         if dead_file_url(&link.url) {
-            swaps.push((at.start.offset, at.end.offset, first.start.offset, last.end.offset));
+            swaps.push((
+                at.start.offset,
+                at.end.offset,
+                first.start.offset,
+                last.end.offset,
+            ));
         }
     });
     if swaps.is_empty() {
@@ -239,7 +342,12 @@ fn unlink_dead_files(text: &str) -> Option<String> {
     let mut at = 0;
     for (start, end, words_start, words_end) in swaps {
         let bounds = [start, end, words_start, words_end];
-        if start < at || end > text.len() || words_start < start || words_end > end || bounds.iter().any(|&b| !text.is_char_boundary(b)) {
+        if start < at
+            || end > text.len()
+            || words_start < start
+            || words_end > end
+            || bounds.iter().any(|&b| !text.is_char_boundary(b))
+        {
             continue;
         }
         out.push_str(&text[at..start]);
@@ -270,7 +378,9 @@ fn dead_file_url(url: &str) -> bool {
     let texts = match url.strip_prefix("tbpath:") {
         Some(rest) => vec![percent_decode(rest.strip_prefix("?p=").unwrap_or(rest))],
         None => {
-            let path = url.strip_prefix("file://").map_or(url, |rest| rest.strip_prefix("localhost").unwrap_or(rest));
+            let path = url
+                .strip_prefix("file://")
+                .map_or(url, |rest| rest.strip_prefix("localhost").unwrap_or(rest));
             // Cut before decoding too: an encoded %23 is part of the name.
             let cut = path.split(['?', '#']).next().unwrap_or("");
             vec![path.to_owned(), percent_decode(path), percent_decode(cut)]
@@ -289,7 +399,10 @@ fn dead_file_url(url: &str) -> bool {
             } else {
                 continue;
             };
-            if ["/Volumes/", "/Network/", "/net/"].iter().any(|share| full.starts_with(share)) {
+            if ["/Volumes/", "/Network/", "/net/"]
+                .iter()
+                .any(|share| full.starts_with(share))
+            {
                 return false;
             }
             looked = true;
@@ -313,7 +426,9 @@ pub(crate) fn picture_path(url: &str) -> Option<std::path::PathBuf> {
     {
         if let Some(rest) = url.strip_prefix("file://") {
             let path = rest.strip_prefix("localhost").unwrap_or(rest);
-            return path.starts_with('/').then(|| crate::files::percent_decode(path).into());
+            return path
+                .starts_with('/')
+                .then(|| crate::files::percent_decode(path).into());
         }
         url.starts_with('/').then(|| url.into())
     }
@@ -331,8 +446,14 @@ fn windows_picture_path(url: &str) -> Option<std::path::PathBuf> {
         url.to_owned()
     };
     let bytes = path.as_bytes();
-    let drive = bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':') && bytes.get(2).is_some_and(|b| matches!(b, b'/' | b'\\'));
-    if !drive || path.chars().any(char::is_control) || path[2..].contains(':') || path.split(['/', '\\']).any(is_device_name) {
+    let drive = bytes.first().is_some_and(u8::is_ascii_alphabetic)
+        && bytes.get(1) == Some(&b':')
+        && bytes.get(2).is_some_and(|b| matches!(b, b'/' | b'\\'));
+    if !drive
+        || path.chars().any(char::is_control)
+        || path[2..].contains(':')
+        || path.split(['/', '\\']).any(is_device_name)
+    {
         return None;
     }
     Some(path.into())
@@ -345,8 +466,14 @@ const PICTURE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 /// A picture the app can draw, there now: a raster picture file
 /// (`raster_file`) with a picture's extension.
 fn is_picture_file(path: &std::path::Path) -> bool {
-    let kind = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    let picture = matches!(kind.as_deref(), Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff"));
+    let kind = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let picture = matches!(
+        kind.as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff")
+    );
     // Windows' asset loader checks the file and its bytes off the drawing
     // thread. A guard walk per picture per frame would make scrolling stall.
     #[cfg(windows)]
@@ -368,8 +495,17 @@ fn is_picture_file(path: &std::path::Path) -> bool {
 /// time, as rows ask on every frame.
 fn raster_file(path: &std::path::Path) -> bool {
     use std::sync::{LazyLock, Mutex};
-    static SEEN: LazyLock<Mutex<std::collections::HashMap<(std::path::PathBuf, u64, Option<std::time::SystemTime>), bool>>> = LazyLock::new(Default::default);
-    let Ok(meta) = threadbear_core::open_policy::local_metadata(path) else { return false };
+    static SEEN: LazyLock<
+        Mutex<
+            std::collections::HashMap<
+                (std::path::PathBuf, u64, Option<std::time::SystemTime>),
+                bool,
+            >,
+        >,
+    > = LazyLock::new(Default::default);
+    let Ok(meta) = threadbear_core::open_policy::local_metadata(path) else {
+        return false;
+    };
     if !meta.is_file() || meta.len() > PICTURE_MAX_BYTES {
         return false;
     }
@@ -377,7 +513,8 @@ fn raster_file(path: &std::path::Path) -> bool {
     if let Some(known) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return *known;
     }
-    let raster = threadbear_core::open_policy::local_read(path, 12).is_ok_and(|head| raster_signature(&head));
+    let raster = threadbear_core::open_policy::local_read(path, 12)
+        .is_ok_and(|head| raster_signature(&head));
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     if seen.len() > 2000 {
         seen.clear();
@@ -425,14 +562,18 @@ pub(crate) fn picture_source(uri: &gpui_kit::SharedUri, local: bool) -> gpui_kit
     {
         return match picture_path(uri.as_ref()).filter(|_| local) {
             Some(path) => file_picture(&path.to_string_lossy()),
-            None => ImageSource::Resource(Resource::Path(std::sync::Arc::from(std::path::Path::new("")))),
+            None => ImageSource::Resource(Resource::Path(std::sync::Arc::from(
+                std::path::Path::new(""),
+            ))),
         };
     }
     #[cfg(not(windows))]
     {
         match picture_path(uri.as_ref()).filter(|path| local && is_picture_file(path)) {
             Some(path) => file_picture(&path.to_string_lossy()),
-            None => gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(std::sync::Arc::from(std::path::Path::new("")))),
+            None => gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(
+                std::sync::Arc::from(std::path::Path::new("")),
+            )),
         }
     }
 }
@@ -449,7 +590,12 @@ pub(crate) fn file_picture(path: &str) -> ImageSource {
             if result.as_ref().is_some_and(|r| r.is_ok()) {
                 cx.default_global::<PictureRetries>().attempts.remove(&path);
             }
-            if result.as_ref().is_some_and(|r| r.is_err()) && cx.default_global::<PictureRetries>().pending.insert(path.clone()) {
+            if result.as_ref().is_some_and(|r| r.is_err())
+                && cx
+                    .default_global::<PictureRetries>()
+                    .pending
+                    .insert(path.clone())
+            {
                 let retries = cx.default_global::<PictureRetries>();
                 if retries.attempts.len() > 2000 {
                     retries.attempts.clear();
@@ -459,7 +605,9 @@ pub(crate) fn file_picture(path: &str) -> ImageSource {
                 *attempt = attempt.saturating_add(1);
                 let path = path.clone();
                 cx.spawn(async move |cx| {
-                    cx.background_executor().timer(std::time::Duration::from_secs(delay)).await;
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(delay))
+                        .await;
                     let _ = cx.update(|cx| {
                         cx.remove_asset::<LocalPicture>(&path);
                         cx.default_global::<PictureRetries>().pending.remove(&path);
@@ -478,10 +626,18 @@ pub(crate) fn file_picture(path: &str) -> ImageSource {
         // nothing: read and shrunk to fit instead (fit_picture.rs).
         // Keyed by its size and time too, so a picture written again at the
         // same path is read again.
-        let meta = threadbear_core::open_policy::local_metadata(&path).ok().filter(|_| !path.as_os_str().is_empty());
-        let Some(meta) = meta.filter(|meta| crate::fit_picture::file_size(&path, meta).is_some_and(crate::fit_picture::too_big)) else { return path.into() };
+        let meta = threadbear_core::open_policy::local_metadata(&path)
+            .ok()
+            .filter(|_| !path.as_os_str().is_empty());
+        let Some(meta) = meta.filter(|meta| {
+            crate::fit_picture::file_size(&path, meta).is_some_and(crate::fit_picture::too_big)
+        }) else {
+            return path.into();
+        };
         let key = (path, meta.len(), meta.modified().ok());
-        ImageSource::Custom(std::sync::Arc::new(move |window, cx| crate::fit_picture::use_fitted(&key, window, cx)))
+        ImageSource::Custom(std::sync::Arc::new(move |window, cx| {
+            crate::fit_picture::use_fitted(&key, window, cx)
+        }))
     }
 }
 
@@ -509,7 +665,8 @@ pub(crate) fn checked_picture_bytes(path: &std::path::Path) -> std::io::Result<V
     if !raster_signature(&bytes) {
         return Err(std::io::Error::other("Not a raster picture"));
     }
-    file.take(PICTURE_MAX_BYTES + 1 - bytes.len() as u64).read_to_end(&mut bytes)?;
+    file.take(PICTURE_MAX_BYTES + 1 - bytes.len() as u64)
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > PICTURE_MAX_BYTES {
         return Err(std::io::Error::other("Picture is too big"));
     }
@@ -521,13 +678,20 @@ impl Asset for LocalPicture {
     type Source = std::path::PathBuf;
     type Output = Result<std::sync::Arc<RenderImage>, ImageCacheError>;
 
-    fn load(path: Self::Source, cx: &mut App) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+    fn load(
+        path: Self::Source,
+        cx: &mut App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let renderer = cx.svg_renderer();
         async move {
             let bytes = checked_picture_bytes(&path)?;
-            let format = crate::viewer::format_of(&path.to_string_lossy(), &bytes).ok_or_else(|| std::io::Error::other("Not a picture"))?;
-            let (format, bytes) = crate::fit_picture::fit_bytes(format, bytes).ok_or_else(|| std::io::Error::other(crate::fit_picture::TOO_BIG))?;
-            Image::from_bytes(format, bytes).to_image_data(renderer).map_err(Into::into)
+            let format = crate::viewer::format_of(&path.to_string_lossy(), &bytes)
+                .ok_or_else(|| std::io::Error::other("Not a picture"))?;
+            let (format, bytes) = crate::fit_picture::fit_bytes(format, bytes)
+                .ok_or_else(|| std::io::Error::other(crate::fit_picture::TOO_BIG))?;
+            Image::from_bytes(format, bytes)
+                .to_image_data(renderer)
+                .map_err(Into::into)
         }
     }
 }
@@ -535,7 +699,9 @@ impl Asset for LocalPicture {
 /// A reply's text in `thread`'s transcript, ready to parse: its buttons
 /// that aren't `thread`'s own as words (`unknown_as_words`).
 pub(crate) fn prepare(text: &str, thread: &str) -> String {
-    link_code_paths(&escape_work_links(&crate::reply_buttons::unknown_as_words(text, thread)))
+    link_code_paths(&escape_work_links(&crate::reply_buttons::unknown_as_words(
+        text, thread,
+    )))
 }
 
 fn escape_work_links(text: &str) -> String {
@@ -618,7 +784,9 @@ fn link_spans_in_line(line: &str, out: &mut String) {
         // A run of backticks opens a span closed by a run of the same length.
         let run = bytes[i..].iter().take_while(|b| **b == b'`').count();
         let search_from = i + run;
-        let close = line[search_from..].find(&"`".repeat(run)).map(|n| search_from + n);
+        let close = line[search_from..]
+            .find(&"`".repeat(run))
+            .map(|n| search_from + n);
         let Some(close) = close.filter(|c| *c >= search_from) else {
             out.push_str(&line[i..i + run]);
             i += run;
@@ -647,7 +815,13 @@ fn link_spans_in_line(line: &str, out: &mut String) {
 /// `../`) or ending in a file name with an extension; folders need the leading
 /// root or a slash in them; single spaces only where they can't be a command.
 pub(crate) fn looks_like_path(text: &str) -> bool {
-    if text.is_empty() || text.chars().count() >= 400 || text.contains("://") || text.contains('*') || text.contains('<') || text.contains('`') {
+    if text.is_empty()
+        || text.chars().count() >= 400
+        || text.contains("://")
+        || text.contains('*')
+        || text.contains('<')
+        || text.contains('`')
+    {
         return false;
     }
     let path = strip_line(split_query(text).0);
@@ -662,7 +836,11 @@ pub(crate) fn looks_like_path(text: &str) -> bool {
     }
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    let good_ext = !ext.is_empty() && ext.chars().count() <= 10 && ext.chars().all(char::is_alphanumeric) && ext.chars().any(char::is_alphabetic) && name.chars().count() > ext.chars().count() + 1;
+    let good_ext = !ext.is_empty()
+        && ext.chars().count() <= 10
+        && ext.chars().all(char::is_alphanumeric)
+        && ext.chars().any(char::is_alphabetic)
+        && name.chars().count() > ext.chars().count() + 1;
     if !good_ext {
         // `runner/src/` and the like: a folder inside the project.
         return path.ends_with('/') && path[..path.len() - 1].contains('/');
@@ -676,17 +854,32 @@ const DOMAIN_ENDINGS: [&str; 9] = ["com", "org", "net", "io", "dev", "co", "ai",
 /// `spacedPathOK`: single spaces only, after the first folder, no flags or
 /// shell punctuation, and a spaced last part needs an extension.
 fn spaced_path_ok(path: &str) -> bool {
-    if !path.contains(' ') || path.chars().any(|c| c.is_whitespace() && c != ' ') || path.starts_with(' ') || path.ends_with(' ') || path.contains("  ") {
+    if !path.contains(' ')
+        || path.chars().any(|c| c.is_whitespace() && c != ' ')
+        || path.starts_with(' ')
+        || path.ends_with(' ')
+        || path.contains("  ")
+    {
         return false;
     }
-    if path.chars().any(|c| matches!(c, '|' | ';' | '$' | '>' | '"' | '\'')) || path.contains("&&") {
+    if path
+        .chars()
+        .any(|c| matches!(c, '|' | ';' | '$' | '>' | '"' | '\''))
+        || path.contains("&&")
+    {
         return false;
     }
-    let (Some(slash), Some(space)) = (path.find('/'), path.find(' ')) else { return false };
+    let (Some(slash), Some(space)) = (path.find('/'), path.find(' ')) else {
+        return false;
+    };
     if slash > space || path.split(' ').any(|w| w.starts_with('-')) {
         return false;
     }
-    let last = if path.ends_with('/') { "" } else { path.rsplit('/').next().unwrap_or("") };
+    let last = if path.ends_with('/') {
+        ""
+    } else {
+        path.rsplit('/').next().unwrap_or("")
+    };
     !last.contains(' ') || last.rsplit_once('.').is_some()
 }
 
@@ -720,37 +913,19 @@ fn encode_component(text: &str) -> String {
 
 /// `%20` and friends back to what the link's words were.
 pub(crate) fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(a), Some(b)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
-                out.push(a * 16 + b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    threadbear_core::reply_links::percent_decode(text)
 }
 
 impl ThreadPane {
     /// The kit's document for a row, kept so scrolling a row away and back
     /// doesn't parse it again, and so a streaming reply only parses what's new
     /// (`set_text` appends when the text extends what's there).
-    pub(crate) fn markdown_state(&mut self, key: &str, text: &str, cx: &mut Context<Self>) -> Entity<TextViewState> {
+    pub(crate) fn markdown_state(
+        &mut self,
+        key: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextViewState> {
         let state = match self.rows.documents.get(key) {
             Some(state) => state.clone(),
             None => {
@@ -760,7 +935,9 @@ impl ThreadPane {
                 // Only text added to what's there fades: a row drawn whole,
                 // or replaced, is there at once, and none of it under Reduce
                 // Motion.
-                let motion = gpui_kit::base::TextViewMotion::default().with_stream_fade(threadbear_core::juice::REPLY_FADE).with_stream_fade_stagger(threadbear_core::juice::REPLY_FADE_WORD);
+                let motion = gpui_kit::base::TextViewMotion::default()
+                    .with_stream_fade(threadbear_core::juice::REPLY_FADE)
+                    .with_stream_fade_stagger(threadbear_core::juice::REPLY_FADE_WORD);
                 let state = cx.new(|cx| TextViewState::markdown(text, cx).motion(motion));
                 if self.rows.documents.len() >= DOCUMENTS_KEPT {
                     // Far more than a screen's worth; the oldest are the least
@@ -782,7 +959,13 @@ impl ThreadPane {
     /// Where a link goes when it's clicked with no key held (a ⌘-click comes
     /// through `linked_text`): reply_links.rs's `follow_link`, as it says
     /// what each kind of link does.
-    pub(crate) fn link_clicked(&mut self, url: &str, row_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn link_clicked(
+        &mut self,
+        url: &str,
+        row_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.follow_link(url, row_id, false, window, cx);
     }
 
@@ -808,10 +991,17 @@ mod tests {
             (r"C:\pictures\shot.png", r"C:\pictures\shot.png"),
             ("c:/pictures/shot.png", "c:/pictures/shot.png"),
             ("file:///C:/pictures/a%20b.png", "C:/pictures/a b.png"),
-            ("file://localhost/C:/pictures/shot.png", "C:/pictures/shot.png"),
+            (
+                "file://localhost/C:/pictures/shot.png",
+                "C:/pictures/shot.png",
+            ),
             (r"file://C:\pictures\shot.png", r"C:\pictures\shot.png"),
         ] {
-            assert_eq!(super::windows_picture_path(url), Some(std::path::PathBuf::from(path)), "{url}");
+            assert_eq!(
+                super::windows_picture_path(url),
+                Some(std::path::PathBuf::from(path)),
+                "{url}"
+            );
         }
         for url in [
             r"\\host\share\shot.png",
@@ -851,30 +1041,53 @@ mod tests {
             dead_file_links(&reply, true),
             format!("**Attach:** `clip.mp4`. Kept: [clip]({here}), [web](https://x.dev/a), [rel](docs/nope.md), [mail](mailto:a@b.c), home.\n\n```\n[block]({gone})\n```"),
         );
-        assert_eq!(dead_file_links(&reply, false), reply, "another Mac's thread keeps its links");
+        assert_eq!(
+            dead_file_links(&reply, false),
+            reply,
+            "another Mac's thread keeps its links"
+        );
         // A path in backticks `prepare` linked, a link whose words are that
         // path in backticks (which `prepare` would link again if it ran
         // after), and an autolink.
-        let code = format!("Gone: `{gone}`, kept: `{here}`, and [`{gone}`]({gone}), <file://{gone}>.");
+        let code =
+            format!("Gone: `{gone}`, kept: `{here}`, and [`{gone}`]({gone}), <file://{gone}>.");
         assert_eq!(
             dead_file_links(&prepare(&code, "t"), true),
-            prepare(&format!("Gone: `{gone}`, kept: `{here}`, and `{gone}`, file://{gone}."), "t").replace(&format!("[`{gone}`](tbpath:?p={})", super::encode_component(&gone)), &format!("`{gone}`")),
+            prepare(
+                &format!("Gone: `{gone}`, kept: `{here}`, and `{gone}`, file://{gone}."),
+                "t"
+            )
+            .replace(
+                &format!("[`{gone}`](tbpath:?p={})", super::encode_component(&gone)),
+                &format!("`{gone}`")
+            ),
         );
         // Kept: a query or heading after a real file, a literal %20 in its
         // name, a share that could hang the frame. Gone: spaces round it.
         let literal = dir.join("a%20b.mp4");
         std::fs::write(&literal, b"x").unwrap();
         let literal = literal.to_string_lossy().into_owned();
-        let kept = format!("`{here}?view=full` [h]({here}#top) [l]({literal}) [s](/Volumes/no-such-share/x.mp4)");
-        assert_eq!(dead_file_links(&prepare(&kept, "t"), true), prepare(&kept, "t"));
+        let kept = format!(
+            "`{here}?view=full` [h]({here}#top) [l]({literal}) [s](/Volumes/no-such-share/x.mp4)"
+        );
+        assert_eq!(
+            dead_file_links(&prepare(&kept, "t"), true),
+            prepare(&kept, "t")
+        );
         assert_eq!(dead_file_links(&format!("[clip]( {gone} )"), true), "clip");
         assert_eq!(dead_file_links(&format!("[clip](\t{gone})"), true), "clip");
         let hashed = dir.join("report#final.md");
         std::fs::write(&hashed, b"x").unwrap();
-        let hashed = format!("[r](file://{}#section)", hashed.to_string_lossy().replace('#', "%23"));
+        let hashed = format!(
+            "[r](file://{}#section)",
+            hashed.to_string_lossy().replace('#', "%23")
+        );
         assert_eq!(dead_file_links(&hashed, true), hashed);
         let plain = "No links to files here, [web](https://x.dev).";
-        assert!(matches!(dead_file_links(plain, true), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(
+            dead_file_links(plain, true),
+            std::borrow::Cow::Borrowed(_)
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -884,10 +1097,23 @@ mod tests {
     #[test]
     fn a_page_in_a_reply_becomes_a_live_page_card() {
         let fence = crate::live_pages::fence();
-        assert_eq!(live_pages("Turn it: ![Garden lights](/w/garden.html) there"), format!("Turn it: \n\n```{fence}\n/w/garden.html\nGarden lights\n```\n\n there"));
-        assert_eq!(live_pages("![](file:///w/a%20b.htm)"), format!("\n\n```{fence}\n/w/a b.htm\n\n```\n\n"));
-        assert_eq!(live_pages("![shot](/w/a.png) ![web](https://x.io/p.html)"), "![shot](/w/a.png) ![web](https://x.io/p.html)", "pictures and web pages aren't pages here");
-        assert_eq!(live_pages("`![g](/w/g.html)` in code"), "`![g](/w/g.html)` in code");
+        assert_eq!(
+            live_pages("Turn it: ![Garden lights](/w/garden.html) there"),
+            format!("Turn it: \n\n```{fence}\n/w/garden.html\nGarden lights\n```\n\n there")
+        );
+        assert_eq!(
+            live_pages("![](file:///w/a%20b.htm)"),
+            format!("\n\n```{fence}\n/w/a b.htm\n\n```\n\n")
+        );
+        assert_eq!(
+            live_pages("![shot](/w/a.png) ![web](https://x.io/p.html)"),
+            "![shot](/w/a.png) ![web](https://x.io/p.html)",
+            "pictures and web pages aren't pages here"
+        );
+        assert_eq!(
+            live_pages("`![g](/w/g.html)` in code"),
+            "`![g](/w/g.html)` in code"
+        );
         let fenced = live_pages("![g](/w/g.html)").into_owned();
         let tree = markdown::to_mdast(&fenced, &markdown::ParseOptions::gfm()).unwrap();
         let mut codes = Vec::new();
@@ -900,22 +1126,43 @@ mod tests {
             }
         }
         walk(&tree, &mut codes);
-        assert_eq!(codes, vec![(Some(fence.to_owned()), "/w/g.html\ng".to_owned())]);
+        assert_eq!(
+            codes,
+            vec![(Some(fence.to_owned()), "/w/g.html\ng".to_owned())]
+        );
     }
 
     #[test]
     fn a_web_picture_or_another_macs_stays_a_link() {
-        assert_eq!(pictures("see ![chart](https://x.y/c.png)", true), "see [\\[chart\\]](<https://x.y/c.png>)");
-        assert_eq!(pictures("![](/nowhere/gone.png)", true), "[\\[/nowhere/gone.png\\]](</nowhere/gone.png>)", "a file that's gone");
+        assert_eq!(
+            pictures("see ![chart](https://x.y/c.png)", true),
+            "see [\\[chart\\]](<https://x.y/c.png>)"
+        );
+        assert_eq!(
+            pictures("![](/nowhere/gone.png)", true),
+            "[\\[/nowhere/gone.png\\]](</nowhere/gone.png>)",
+            "a file that's gone"
+        );
         assert_eq!(pictures("no pictures here", true), "no pictures here");
-        assert_eq!(pictures("`![x](https://a.b)` in code", true), "`![x](https://a.b)` in code", "code is left as written");
+        assert_eq!(
+            pictures("`![x](https://a.b)` in code", true),
+            "`![x](https://a.b)` in code",
+            "code is left as written"
+        );
         let dir = std::env::temp_dir().join(format!("tb-pictures-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let shot = dir.join("shot.png");
         std::fs::write(&shot, b"\x89PNG\r\n\x1a\n, a png's first bytes").unwrap();
         let reply = format!("![shot]({})", shot.display());
-        assert_eq!(pictures(&reply, true), reply, "a picture on this Mac is drawn");
-        assert!(pictures(&reply, false).starts_with("[\\[shot\\]]"), "another Mac's thread draws none from here");
+        assert_eq!(
+            pictures(&reply, true),
+            reply,
+            "a picture on this Mac is drawn"
+        );
+        assert!(
+            pictures(&reply, false).starts_with("[\\[shot\\]]"),
+            "another Mac's thread draws none from here"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -923,8 +1170,13 @@ mod tests {
     /// or the empty path that draws nothing.
     fn source_path(url: &str, local: bool) -> String {
         match super::picture_source(&url.to_owned().into(), local) {
-            gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(path)) => path.to_string_lossy().into_owned(),
-            gpui_kit::ImageSource::Custom(_) => super::picture_path(url).filter(|p| super::checked_picture_bytes(p).is_ok()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            gpui_kit::ImageSource::Resource(gpui_kit::Resource::Path(path)) => {
+                path.to_string_lossy().into_owned()
+            }
+            gpui_kit::ImageSource::Custom(_) => super::picture_path(url)
+                .filter(|p| super::checked_picture_bytes(p).is_ok())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             _ => panic!("a path"),
         }
     }
@@ -938,10 +1190,28 @@ mod tests {
         let shot = dir.join("shot.png");
         std::fs::write(&shot, b"\x89PNG\r\n\x1a\n and the rest").unwrap();
         let shown = shot.to_string_lossy().into_owned();
-        assert_eq!(source_path(&shown, true), shown, "a picture on this Mac's thread");
-        assert_eq!(source_path(&["file://", shown.as_str()].concat(), true), shown);
-        assert_eq!(source_path(&shown, false), "", "another Mac's thread names no file here");
-        for url in ["file:///dev/zero", "/dev/zero", "/dev/urandom", "file:///etc/passwd", "/tmp", "https://x.y/c.png"] {
+        assert_eq!(
+            source_path(&shown, true),
+            shown,
+            "a picture on this Mac's thread"
+        );
+        assert_eq!(
+            source_path(&["file://", shown.as_str()].concat(), true),
+            shown
+        );
+        assert_eq!(
+            source_path(&shown, false),
+            "",
+            "another Mac's thread names no file here"
+        );
+        for url in [
+            "file:///dev/zero",
+            "/dev/zero",
+            "/dev/urandom",
+            "file:///etc/passwd",
+            "/tmp",
+            "https://x.y/c.png",
+        ] {
             assert_eq!(source_path(url, true), "", "{url}");
         }
         // A link to a device with a picture's name, a folder with one, and
@@ -958,16 +1228,30 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         assert_eq!(source_path(&folder.to_string_lossy(), true), "");
         let big = dir.join("big.png");
-        std::fs::File::create(&big).unwrap().set_len(super::PICTURE_MAX_BYTES + 1).unwrap();
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(super::PICTURE_MAX_BYTES + 1)
+            .unwrap();
         assert_eq!(source_path(&big.to_string_lossy(), true), "");
         // A path from a thread for any other picture (a review's shot, a
         // tool's picture): only a regular file of a sane size.
-        assert_eq!(super::picture_file(&shown), std::path::PathBuf::from(&shown));
+        assert_eq!(
+            super::picture_file(&shown),
+            std::path::PathBuf::from(&shown)
+        );
         for path in ["/dev/zero", "/tmp", ""] {
-            assert_eq!(super::picture_file(path), std::path::PathBuf::new(), "{path}");
+            assert_eq!(
+                super::picture_file(path),
+                std::path::PathBuf::new(),
+                "{path}"
+            );
         }
         for path in [&device, &folder, &big] {
-            assert_eq!(super::picture_file(&path.to_string_lossy()), std::path::PathBuf::new(), "{path:?}");
+            assert_eq!(
+                super::picture_file(&path.to_string_lossy()),
+                std::path::PathBuf::new(),
+                "{path:?}"
+            );
         }
         // An SVG named as a picture, whose <image> would have the loader
         // read /dev/zero, and text: neither starts as a picture does.
@@ -977,10 +1261,21 @@ mod tests {
         let text = dir.join("notes.jpg");
         std::fs::write(&text, b"hello").unwrap();
         for path in [&svg, &text] {
-            assert_eq!(super::picture_file(&path.to_string_lossy()), std::path::PathBuf::new(), "{path:?}");
+            assert_eq!(
+                super::picture_file(&path.to_string_lossy()),
+                std::path::PathBuf::new(),
+                "{path:?}"
+            );
             assert_eq!(source_path(&path.to_string_lossy(), true), "", "{path:?}");
         }
-        for head in [&b"\xFF\xD8\xFF\xE0"[..], b"GIF89a..", b"RIFF\0\0\0\0WEBPVP8 ", b"BM....", b"II*\0", b"MM\0*"] {
+        for head in [
+            &b"\xFF\xD8\xFF\xE0"[..],
+            b"GIF89a..",
+            b"RIFF\0\0\0\0WEBPVP8 ",
+            b"BM....",
+            b"II*\0",
+            b"MM\0*",
+        ] {
             assert!(super::raster_signature(head), "{head:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -988,11 +1283,32 @@ mod tests {
 
     #[test]
     fn reads_paths_as_paths_and_commands_as_commands() {
-        for path in ["app/Sources/Foo.swift", "Foo.swift:12", "/tmp/a.txt:12:4", "src/a.ts:121-125", "~/.zshrc", "./check.sh", "runner/src/", "guide.md#links"] {
+        for path in [
+            "app/Sources/Foo.swift",
+            "Foo.swift:12",
+            "/tmp/a.txt:12:4",
+            "src/a.ts:121-125",
+            "~/.zshrc",
+            "./check.sh",
+            "runner/src/",
+            "guide.md#links",
+        ] {
             assert!(looks_like_path(path), "{path} should read as a path");
         }
-        for not_path in ["npm test", "tb land", "example.com", "readme", "-rf", "a*b", "https://x.y/z", "open exports/a.mp4"] {
-            assert!(!looks_like_path(not_path), "{not_path} shouldn't read as a path");
+        for not_path in [
+            "npm test",
+            "tb land",
+            "example.com",
+            "readme",
+            "-rf",
+            "a*b",
+            "https://x.y/z",
+            "open exports/a.mp4",
+        ] {
+            assert!(
+                !looks_like_path(not_path),
+                "{not_path} shouldn't read as a path"
+            );
         }
         // Spaces only where they can't be a command.
         assert!(looks_like_path("exports/Threadbear Launch.mp4"));
@@ -1001,14 +1317,26 @@ mod tests {
 
     #[test]
     fn code_paths_become_links_outside_fences_and_links() {
-        assert_eq!(prepare("see `src/a.rs` here", "t"), "see [`src/a.rs`](tbpath:?p=src/a.rs) here");
+        assert_eq!(
+            prepare("see `src/a.rs` here", "t"),
+            "see [`src/a.rs`](tbpath:?p=src/a.rs) here"
+        );
         // With its lines, which the click takes to the pane.
-        assert_eq!(prepare("see `src/a.ts:121-125`", "t"), "see [`src/a.ts:121-125`](tbpath:?p=src/a.ts%3A121-125)");
+        assert_eq!(
+            prepare("see `src/a.ts:121-125`", "t"),
+            "see [`src/a.ts:121-125`](tbpath:?p=src/a.ts%3A121-125)"
+        );
         assert_eq!(prepare("`npm test` stays", "t"), "`npm test` stays");
         // Already a link's words, or in a code block: left as they are.
-        assert_eq!(prepare("[`src/a.rs`](https://x.y)", "t"), "[`src/a.rs`](https://x.y)");
+        assert_eq!(
+            prepare("[`src/a.rs`](https://x.y)", "t"),
+            "[`src/a.rs`](https://x.y)"
+        );
         assert_eq!(prepare("```\n`src/a.rs`\n```", "t"), "```\n`src/a.rs`\n```");
         // Work links keep their words, gain the arrow and escape their spaces.
-        assert_eq!(prepare("[tests](work:npm test)", "t"), "[tests\u{2009}↑](work:npm%20test)");
+        assert_eq!(
+            prepare("[tests](work:npm test)", "t"),
+            "[tests\u{2009}↑](work:npm%20test)"
+        );
     }
 }

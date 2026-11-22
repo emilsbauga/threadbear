@@ -6,7 +6,7 @@ import type { Logger } from './log.ts';
 import type { Runner } from './runner.ts';
 
 // Telling a thread when the Mac app has restarted onto a new build
-// (docs/protocol.md, "App restarts"). An agent that changed the app asks
+// (docs/protocol/updates.md, "App restarts"). An agent that changed the app asks
 // Mike to Restart to Update and ends its turn; the app says `hello` with
 // its build when it comes back, and each thread waiting for that gets a
 // note and a message, so it can check its change in the running app.

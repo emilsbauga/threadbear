@@ -4,7 +4,10 @@ use super::metrics::*;
 use crate::thread::ThreadPane;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::*;
-use threadbear_core::reducer::{cost_text, duration, ApprovalDecision, DiffHunk, Event, EventsPage, PlanCardState, PlanStatus, Row, RowContent, RowKind, TranscriptModel, TurnOutcome};
+use threadbear_core::reducer::{
+    cost_text, duration, ApprovalDecision, DiffHunk, Event, EventsPage, PlanCardState, PlanStatus,
+    Row, RowContent, RowKind, TranscriptModel, TurnOutcome,
+};
 
 /// The row's own content, for "Copy message". None for rows with nothing to
 /// copy (the working line, the background line).
@@ -12,19 +15,42 @@ pub(crate) fn message_text(row: &Row) -> Option<String> {
     Some(match &row.content {
         RowContent::User(message) => {
             let mut parts = vec![message.text.clone()];
-            parts.extend(message.images.iter().map(|i| format!("![image]({})", i.path)));
+            parts.extend(
+                message
+                    .images
+                    .iter()
+                    .map(|i| format!("![image]({})", i.path)),
+            );
             parts.join("\n\n")
         }
         RowContent::Assistant(item) => item.text.clone(),
-        RowContent::Reasoning(item) => item.text.split('\n').map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n"),
+        RowContent::Reasoning(item) => item
+            .text
+            .split('\n')
+            .map(|l| format!("> {l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
         RowContent::Tool(tool) => {
             let mut text = format!("**{}**: `{}`", tool.name(), tool.title().replace('`', "'"));
-            let diffs: Vec<_> = tool.effective_diffs().into_iter().filter(|d| !d.hunks.is_empty()).collect();
+            let diffs: Vec<_> = tool
+                .effective_diffs()
+                .into_iter()
+                .filter(|d| !d.hunks.is_empty())
+                .collect();
             if !diffs.is_empty() {
                 let several = diffs.len() > 1;
                 for diff in &diffs {
-                    let body = diff.hunks.iter().map(hunk_text).collect::<Vec<_>>().join("\n");
-                    let header = if several && !diff.path.is_empty() { format!("--- {}\n", diff.path) } else { String::new() };
+                    let body = diff
+                        .hunks
+                        .iter()
+                        .map(hunk_text)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let header = if several && !diff.path.is_empty() {
+                        format!("--- {}\n", diff.path)
+                    } else {
+                        String::new()
+                    };
                     text.push_str(&format!("\n\n```diff\n{header}{body}\n```"));
                 }
             } else if let Some(result) = tool.result.as_ref().filter(|r| !r.text.is_empty()) {
@@ -32,16 +58,37 @@ pub(crate) fn message_text(row: &Row) -> Option<String> {
             }
             text
         }
-        RowContent::Images { images, .. } => images.iter().map(|i| format!("![image]({})", i.path)).collect::<Vec<_>>().join("\n"),
+        RowContent::Images { images, .. } => images
+            .iter()
+            .map(|i| format!("![image]({})", i.path))
+            .collect::<Vec<_>>()
+            .join("\n"),
         RowContent::Approval(item) => {
-            let decision = item.resolution.as_ref().map(|r| format!(" ({})", decision_label(r.decision))).unwrap_or_default();
+            let decision = item
+                .resolution
+                .as_ref()
+                .map(|r| format!(" ({})", decision_label(r.decision)))
+                .unwrap_or_default();
             format!("**Approval**: {}{decision}", item.request.title)
         }
-        RowContent::Question(item) => item.request.questions.iter().map(|q| format!("**Question**: {}", q.question)).collect::<Vec<_>>().join("\n"),
+        RowContent::Question(item) => item
+            .request
+            .questions
+            .iter()
+            .map(|q| format!("**Question**: {}", q.question))
+            .collect::<Vec<_>>()
+            .join("\n"),
         // The card's text only: the app never has the value.
-        RowContent::Secret(item) => format!("**Asked for a secret**: {}", item.resolved_text().unwrap_or_else(|| item.request.label.clone())),
+        RowContent::Secret(item) => format!(
+            "**Asked for a secret**: {}",
+            item.resolved_text()
+                .unwrap_or_else(|| item.request.label.clone())
+        ),
         RowContent::Review(review) => {
-            let mut lines = vec![format!("**Design review**: {} ({})", review.title, review.status)];
+            let mut lines = vec![format!(
+                "**Design review**: {} ({})",
+                review.title, review.status
+            )];
             lines.extend(review.note.clone());
             let response = review.response.as_ref().unwrap_or(&review.draft);
             for option in &review.options {
@@ -74,7 +121,21 @@ pub(crate) fn message_text(row: &Row) -> Option<String> {
             };
             format!("**Plan**{state}\n\n{}", card.text)
         }
-        RowContent::Plan(entries) => entries.iter().map(|e| format!("- {} {}", if e.status == PlanStatus::Completed { "[x]" } else { "[ ]" }, e.text)).collect::<Vec<_>>().join("\n"),
+        RowContent::Plan(entries) => entries
+            .iter()
+            .map(|e| {
+                format!(
+                    "- {} {}",
+                    if e.status == PlanStatus::Completed {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    },
+                    e.text
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         // The asks card's export comes with the composer card (Decisions).
         RowContent::Asks(_) => return None,
         RowContent::Footer(completion) => {
@@ -93,21 +154,34 @@ pub(crate) fn message_text(row: &Row) -> Option<String> {
         RowContent::Working(_) | RowContent::Background(_) => return None,
         RowContent::Changes(card) => {
             let mut lines = vec![format!("{}:", card.title())];
-            lines.extend(card.files.iter().map(|f| format!("- `{}` +{} −{}", f.path, f.added, f.removed)));
+            lines.extend(
+                card.files
+                    .iter()
+                    .map(|f| format!("- `{}` +{} −{}", f.path, f.added, f.removed)),
+            );
             lines.join("\n")
         }
         RowContent::Gap(gap) => format!("_{}_", gap.label()),
         // As MarkdownExport's: the heading, then each finding and its answer.
         RowContent::LabReview(review) => {
             let mut lines = vec![format!("_{}_", review.heading())];
-            lines.extend(review.findings.iter().map(|f| format!("- {}: {}", f.outcome.as_deref().unwrap_or("no answer"), f.claim)));
+            lines.extend(review.findings.iter().map(|f| {
+                format!(
+                    "- {}: {}",
+                    f.outcome.as_deref().unwrap_or("no answer"),
+                    f.claim
+                )
+            }));
             lines.join("\n")
         }
     })
 }
 
 fn hunk_text(hunk: &DiffHunk) -> String {
-    let mut lines = vec![format!("@@ -{},{} +{},{} @@", hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines)];
+    let mut lines = vec![format!(
+        "@@ -{},{} +{},{} @@",
+        hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+    )];
     lines.extend(hunk.lines.iter().cloned());
     lines.join("\n")
 }
@@ -127,9 +201,18 @@ pub(crate) fn row_menu(row: &Row, open: bool) -> Vec<(&'static str, RowMenuActio
     let mut items = vec![];
     if message_text(row).is_some() {
         items.push(("Copy message", RowMenuAction::CopyMessage));
-        let folding_review = matches!(&row.content, RowContent::LabReview(review) if review.folds());
-        if folding_review || matches!(row.kind(), RowKind::Tool | RowKind::Reasoning | RowKind::Diff | RowKind::Group) {
-            items.push((if open { "Collapse" } else { "Expand" }, RowMenuAction::Toggle));
+        let folding_review =
+            matches!(&row.content, RowContent::LabReview(review) if review.folds());
+        if folding_review
+            || matches!(
+                row.kind(),
+                RowKind::Tool | RowKind::Reasoning | RowKind::Diff | RowKind::Group
+            )
+        {
+            items.push((
+                if open { "Collapse" } else { "Expand" },
+                RowMenuAction::Toggle,
+            ));
         }
     }
     items.push(("Copy transcript as Markdown", RowMenuAction::CopyTranscript));
@@ -195,12 +278,25 @@ fn transcript_text(title: &str, rows: &[Row]) -> String {
 impl ThreadPane {
     /// `menu(forRow:)`: Copy message, Expand or Collapse, Copy transcript as
     /// Markdown, and what an agent needs to find this row again.
-    pub(crate) fn row_context_menu(row: Row, menu: PopupMenu, pane: WeakEntity<ThreadPane>, open: bool, window: &mut Window, cx: &mut App) -> PopupMenu {
+    pub(crate) fn row_context_menu(
+        row: Row,
+        menu: PopupMenu,
+        pane: WeakEntity<ThreadPane>,
+        open: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> PopupMenu {
         let copying = pane.upgrade().is_some_and(|p| {
             let p = p.read(cx);
-            p.app.upgrade().is_some_and(|app| app.read(cx).busy_notes.iter().any(|(key, _)| key == &format!("copying/{}", p.summary.id)))
+            p.app.upgrade().is_some_and(|app| {
+                app.read(cx)
+                    .busy_notes
+                    .iter()
+                    .any(|(key, _)| key == &format!("copying/{}", p.summary.id))
+            })
         });
-        let mut menu = crate::native_text::context_items(menu, pane.clone(), window, cx).min_w(px(CARD_PAD * 16.));
+        let mut menu = crate::native_text::context_items(menu, pane.clone(), window, cx)
+            .min_w(px(CARD_PAD * 16.));
         for (title, action) in row_menu(&row, open) {
             if action == RowMenuAction::CopyDebugInfo {
                 menu = menu.separator();
@@ -215,16 +311,26 @@ impl ThreadPane {
             let busy = copying && action == RowMenuAction::CopyTranscript;
             let title = if busy { "Copying transcript…" } else { title };
             let (row, pane) = (row.clone(), pane.clone());
-            menu = menu.item(PopupMenuItem::new(title).icon(crate::icons::symbol(symbol)).disabled(busy).on_click(move |_, _, cx| {
-                let row = row.clone();
-                let _ = pane.update(cx, |this, cx| this.run_row_menu(action, &row, cx));
-            }));
+            menu = menu.item(
+                PopupMenuItem::new(title)
+                    .icon(crate::icons::symbol(symbol))
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| {
+                        let row = row.clone();
+                        let _ = pane.update(cx, |this, cx| this.run_row_menu(action, &row, cx));
+                    }),
+            );
         }
         menu
     }
 
     /// What a choice from the row's menu does.
-    pub(crate) fn run_row_menu(&mut self, action: RowMenuAction, row: &Row, cx: &mut Context<Self>) {
+    pub(crate) fn run_row_menu(
+        &mut self,
+        action: RowMenuAction,
+        row: &Row,
+        cx: &mut Context<Self>,
+    ) {
         match action {
             RowMenuAction::CopyMessage => {
                 if let Some(text) = message_text(row) {
@@ -244,14 +350,34 @@ impl ThreadPane {
     /// choosing it would. Copies land on the clipboard, read back with
     /// `clipboard`.
     #[cfg(feature = "automation")]
-    pub fn menu_command(&mut self, row: &str, click: Option<&str>, cx: &mut Context<Self>) -> Result<String, String> {
-        let Some(found) = self.feed.model().rows().iter().find(|r| r.id.starts_with(row)).cloned() else { return Err(format!("no row starting {row:?}")) };
+    pub fn menu_command(
+        &mut self,
+        row: &str,
+        click: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let Some(found) = self
+            .feed
+            .model()
+            .rows()
+            .iter()
+            .find(|r| r.id.starts_with(row))
+            .cloned()
+        else {
+            return Err(format!("no row starting {row:?}"));
+        };
         let open = self.row_open(&found);
         let items = row_menu(&found, open);
         let Some(title) = click else {
-            return Ok(format!("ok {}", serde_json::to_string(&items.iter().map(|(t, _)| *t).collect::<Vec<_>>()).unwrap_or_default()));
+            return Ok(format!(
+                "ok {}",
+                serde_json::to_string(&items.iter().map(|(t, _)| *t).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            ));
         };
-        let Some((_, action)) = items.iter().find(|(t, _)| *t == title).copied() else { return Err(format!("no item {title:?}")) };
+        let Some((_, action)) = items.iter().find(|(t, _)| *t == title).copied() else {
+            return Err(format!("no item {title:?}"));
+        };
         self.run_row_menu(action, &found, cx);
         Ok("ok".to_owned())
     }
@@ -260,11 +386,19 @@ impl ThreadPane {
     /// behind it (`RowDebug.info`).
     pub(crate) fn debug_info(&self, row: &Row) -> String {
         let runner_version = match self.client_handle().status() {
-            threadbear_client::runner::Status::Connected { hello, .. } => hello["runnerVersion"].as_str().unwrap_or("").to_owned(),
+            threadbear_client::runner::Status::Connected { hello, .. } => {
+                hello["runnerVersion"].as_str().unwrap_or("").to_owned()
+            }
             _ => String::new(),
         };
         let seqs = threadbear_core::reducer::row_debug::source_seqs(self.feed.model(), &row.id);
-        threadbear_core::reducer::row_debug::info(&self.summary.id, row, &seqs, &runner_version, &events_source(&runner_version))
+        threadbear_core::reducer::row_debug::info(
+            &self.summary.id,
+            row,
+            &seqs,
+            &runner_version,
+            &events_source(&runner_version),
+        )
     }
 
     /// `copyTranscript`: fetches any older pages first, then copies the whole
@@ -274,7 +408,12 @@ impl ThreadPane {
     /// nothing else to show it, and a long thread's older pages take a
     /// while. A second copy of the same thread meanwhile does nothing.
     pub(crate) fn copy_transcript(&mut self, cx: &mut Context<Self>) {
-        let (client, id, title, root) = (self.client_handle(), self.summary.id.clone(), self.summary.title.clone(), self.summary.cwd.clone());
+        let (client, id, title, root) = (
+            self.client_handle(),
+            self.summary.id.clone(),
+            self.summary.title.clone(),
+            self.summary.cwd.clone(),
+        );
         let mut events: Vec<Event> = self.feed.model().events().to_vec();
         let mut before = self.feed.model().first_seq();
         let more = self.feed.model().has_older_events();
@@ -282,13 +421,23 @@ impl ThreadPane {
         let key = format!("copying/{id}");
         cx.spawn(async move |this, cx| {
             // From the app's own update (a menu), so not from inside this one.
-            if !app.update(cx, |app, cx| app.begin_note(&key, "Copying the transcript…", cx)).unwrap_or(true) {
+            if !app
+                .update(cx, |app, cx| {
+                    app.begin_note(&key, "Copying the transcript…", cx)
+                })
+                .unwrap_or(true)
+            {
                 return;
             }
             let mut at_start = !more;
             let mut failed = None;
             while !at_start && before > 1 {
-                let page = crate::call(client.clone(), "threads.events", serde_json::json!({ "threadId": id, "beforeSeq": before, "limit": 500 })).await;
+                let page = crate::call(
+                    client.clone(),
+                    "threads.events",
+                    serde_json::json!({ "threadId": id, "beforeSeq": before, "limit": 500 }),
+                )
+                .await;
                 let page = match page {
                     Ok(v) => EventsPage::decode(&v),
                     Err(e) => {
@@ -297,10 +446,16 @@ impl ThreadPane {
                     }
                 };
                 let Some(page) = page else {
-                    failed = Some("The runner sent a page of the thread this app couldn't read.".to_owned());
+                    failed = Some(
+                        "The runner sent a page of the thread this app couldn't read.".to_owned(),
+                    );
                     break;
                 };
-                let mut older: Vec<Event> = page.events.into_iter().filter(|e| !e.is_transient() && e.seq < before).collect();
+                let mut older: Vec<Event> = page
+                    .events
+                    .into_iter()
+                    .filter(|e| !e.is_transient() && e.seq < before)
+                    .collect();
                 if older.is_empty() {
                     break;
                 }
@@ -346,7 +501,10 @@ fn events_source(runner_version: &str) -> threadbear_core::reducer::row_debug::E
     if own.is_file() {
         return EventsSource::Tb(shell_quoted(&own.to_string_lossy()));
     }
-    EventsSource::Tb(format!("THREADBEAR_HOME={} tb", shell_quoted(&home.to_string_lossy())))
+    EventsSource::Tb(format!(
+        "THREADBEAR_HOME={} tb",
+        shell_quoted(&home.to_string_lossy())
+    ))
 }
 
 /// As a shell would need it typed: the default data folder has a space.

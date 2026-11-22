@@ -14,7 +14,6 @@ import type {
   CommandExecutionRequestApprovalParams,
   DynamicToolCallParams,
   DynamicToolCallResponse,
-  ElicitationProperty,
   ExecCommandApprovalParams,
   FileChangeRequestApprovalParams,
   McpServerElicitationRequestParams,
@@ -387,7 +386,7 @@ export class CodexApprovals {
   // switch to Full while it shows allows it (ToolApprovalRequest.fullAllows).
   private ask(id: RequestId, method: string, req: Omit<ToolApprovalRequest, 'signal'>, answer: (a: ToolApprovalAnswer) => unknown): void {
     const p = this.open(id, method);
-    this.deps
+    void this.deps
       .requestApproval({ ...req, signal: p.abort.signal, fullAllows: true })
       .catch((e: unknown): ToolApprovalAnswer => {
         this.deps.log.warn('approval request failed', { threadId: this.deps.label, method, error: String(e) });
@@ -506,7 +505,7 @@ export class CodexApprovals {
       return out;
     });
     const pending = this.open(id, 'item/tool/requestUserInput');
-    this.deps
+    void this.deps
       .requestQuestion({ toolUseId: fromChild ? undefined : p.itemId, questions, signal: pending.abort.signal })
       .catch((): QuestionAnswer => ({ answers: null }))
       .then((a) => {
@@ -545,7 +544,7 @@ export class CodexApprovals {
         })
       : [{ question: message, header: server.slice(0, 30), multiSelect: false, options: [{ label: 'Accept' }, { label: 'Decline' }] }];
     const pending = this.open(id, 'mcpServer/elicitation/request');
-    this.deps
+    void this.deps
       .requestQuestion({ questions, signal: pending.abort.signal })
       .catch((): QuestionAnswer => ({ answers: null }))
       .then((a) => {
@@ -566,7 +565,7 @@ export class CodexApprovals {
 
   private toolCall(id: RequestId, p: DynamicToolCallParams, fromChild: boolean): void {
     const pending = this.open(id, 'item/tool/call');
-    this.deps
+    void this.deps
       .callTool(p, { fromChild, signal: pending.abort.signal })
       .catch((e: unknown): DynamicToolCallResponse => ({ contentItems: [{ type: 'inputText', text: (e as Error)?.message ?? String(e) }], success: false }))
       .then((r) => this.settle(id, r));

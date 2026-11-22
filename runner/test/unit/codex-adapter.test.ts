@@ -19,7 +19,7 @@ import { SessionNotFoundError, type AdapterOutput, type QuestionRequest, type Se
 import { ProcessRegistry } from '../../src/proc.ts';
 import { nullLogger } from '../../src/log.ts';
 import type { Account } from '../../src/protocol.ts';
-import { FakeCodex, type FakeConn } from '../helpers/fake-app-server.ts';
+import { FakeCodex } from '../helpers/fake-app-server.ts';
 import { PATIENCE_MS } from '../helpers/patience.ts';
 
 const dirs: string[] = [];
@@ -332,7 +332,7 @@ test('a send before start is held, then sent as turn/start with images first', a
   await h.session.end();
 });
 
-// docs/protocol.md, "Pictures in a message".
+// docs/protocol/threads.md, "Pictures in a message".
 test('pictures go to Codex where their [Picture N] markers are, the rest before the words', async () => {
   const h = await open();
   await started(h);
@@ -1105,7 +1105,7 @@ test('skills() reads enabled skills in the selected folder without starting a tu
   assert.deepEqual(adapter.binariesInUse(), []);
 });
 
-// Slash commands (docs/protocol.md, "Slash commands"): the ones Codex's
+// Slash commands (docs/protocol/threads.md, "Slash commands"): the ones Codex's
 // terminal app runs become the app-server calls that do them.
 test('/compact is thread/compact/start, and its turn (id from turn/started) answers the message', async () => {
   const h = await open();

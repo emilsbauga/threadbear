@@ -105,7 +105,12 @@ impl Media {
     /// # Safety
     /// `view` is null or a view from `tb_media_open` that nothing else owns.
     pub(crate) unsafe fn from_native(view: *mut c_void, kind: Kind) -> Option<Media> {
-        (!view.is_null()).then(|| Media { view, kind, hidden: Cell::new(true), placed: Cell::new(None) })
+        (!view.is_null()).then(|| Media {
+            view,
+            kind,
+            hidden: Cell::new(true),
+            placed: Cell::new(None),
+        })
     }
 
     fn place(&self, bounds: Bounds<Pixels>) {
@@ -114,28 +119,55 @@ impl Media {
         }
         self.placed.set(Some(bounds));
         #[cfg(target_os = "macos")]
+        // SAFETY: `self.view` is the live view this Media owns (from_native's
+        // contract) until Drop closes it; Media isn't Send, so this is on the
+        // main thread. The rest are plain numbers.
         unsafe {
-            tb_media_place(self.view, f64::from(bounds.origin.x), f64::from(bounds.origin.y), f64::from(bounds.size.width), f64::from(bounds.size.height))
+            tb_media_place(
+                self.view,
+                f64::from(bounds.origin.x),
+                f64::from(bounds.origin.y),
+                f64::from(bounds.size.width),
+                f64::from(bounds.size.height),
+            )
         };
     }
 
     fn set_hidden(&self, hidden: bool) {
-        if self.hidden.replace(hidden) == hidden {
-            return;
-        }
+        let changed = self.hidden.replace(hidden) != hidden;
         #[cfg(target_os = "macos")]
-        unsafe {
-            tb_media_set_hidden(self.view, hidden)
-        };
+        if changed {
+            // SAFETY: `self.view` is the live view this Media owns until
+            // Drop, on the main thread, as in `place`.
+            unsafe { tb_media_set_hidden(self.view, hidden) };
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = changed;
     }
 
     pub(crate) fn state(&self) -> MediaState {
+        #[cfg_attr(
+            not(target_os = "macos"),
+            allow(unused_mut, reason = "only the Mac's view fills it in")
+        )]
         let mut out = NativeState::default();
         #[cfg(target_os = "macos")]
+        // SAFETY: `self.view` is the live view this Media owns, and `out` is a
+        // NativeState, repr(C) to match TBMediaState field for field.
         unsafe {
             tb_media_state(self.view, &mut out)
         };
-        MediaState { width: out.width, height: out.height, playing: out.playing, muted: out.muted, controls: out.controls, looping: out.looping, volume: out.volume, pages: out.pages, loading: out.loading }
+        MediaState {
+            width: out.width,
+            height: out.height,
+            playing: out.playing,
+            muted: out.muted,
+            controls: out.controls,
+            looping: out.looping,
+            volume: out.volume,
+            pages: out.pages,
+            loading: out.loading,
+        }
     }
 
     /// Why AVFoundation couldn't play the film, once it's said.
@@ -143,8 +175,16 @@ impl Media {
         #[cfg(target_os = "macos")]
         {
             let mut buffer = [0 as std::ffi::c_char; 512];
+            // SAFETY: `self.view` is the live view this Media owns, and the
+            // buffer is `buffer.len()` bytes, which strlcpy stays within.
             if unsafe { tb_media_failure(self.view, buffer.as_mut_ptr(), buffer.len() as i32) } {
-                return Some(unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }.to_string_lossy().into_owned());
+                return Some(
+                    // SAFETY: tb_media_failure returned true, so strlcpy wrote
+                    // a NUL-terminated string inside the buffer.
+                    unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
         None
@@ -154,6 +194,8 @@ impl Media {
 impl Drop for Media {
     fn drop(&mut self) {
         #[cfg(target_os = "macos")]
+        // SAFETY: the view this Media owns, closed once here as it's dropped,
+        // and never used after.
         unsafe {
             tb_media_close(self.view)
         };
@@ -211,7 +253,9 @@ pub(crate) fn init(cx: &mut App) {
                 // Through the gate as any link in a thread is: a web page in
                 // the browser, a file asking first if it's a program, any
                 // other scheme asking. Never PDFKit's own opener.
-                Said::Link { url, base } => crate::open_gate::open_link(&url, crate::open_gate::Origin::ThisMac, &base, cx),
+                Said::Link { url, base } => {
+                    crate::open_gate::open_link(&url, crate::open_gate::Origin::ThisMac, &base, cx)
+                }
                 Said::Changed => cx.refresh_windows(),
             });
         }
@@ -233,11 +277,33 @@ fn say(said: Said) {
 }
 
 /// native/media_views.m: a PDF's link was clicked.
+///
+/// # Safety
+///
+/// `url` and `base` are each null or a NUL-terminated string that stays
+/// alive through the call.
 #[cfg(target_os = "macos")]
 #[no_mangle]
-pub extern "C" fn tb_media_said_link(url: *const std::ffi::c_char, base: *const std::ffi::c_char) {
-    let text = |p: *const std::ffi::c_char| if p.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned() };
-    say(Said::Link { url: text(url), base: text(base) });
+pub unsafe extern "C" fn tb_media_said_link(
+    url: *const std::ffi::c_char,
+    base: *const std::ffi::c_char,
+) {
+    let text = |p: *const std::ffi::c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            // SAFETY: non-null, and media_views.m passes an NSString's
+            // UTF8String or a fileSystemRepresentation, both NUL-terminated
+            // and alive through this call.
+            unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    say(Said::Link {
+        url: text(url),
+        base: text(base),
+    });
 }
 
 /// native/media_views.m: a view's state changed.
@@ -263,20 +329,48 @@ fn drag_folder() -> Option<std::path::PathBuf> {
 /// native/media_views.m: a private copy of the open file `fd` (still the
 /// view's, not closed here) named `name`, for a drag out, its path written
 /// into `out` (`threadbear_core::private_file::snapshot`).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string, and `out` is null or writable
+/// for `capacity` bytes, both alive through the call; `fd` is an open file the
+/// caller keeps open until it returns.
 #[cfg(target_os = "macos")]
 #[no_mangle]
-pub extern "C" fn tb_media_snapshot(fd: i32, name: *const std::ffi::c_char, out: *mut std::ffi::c_char, capacity: i32) -> bool {
-    let Some(folder) = drag_folder() else { return false };
+pub unsafe extern "C" fn tb_media_snapshot(
+    fd: i32,
+    name: *const std::ffi::c_char,
+    out: *mut std::ffi::c_char,
+    capacity: i32,
+) -> bool {
+    let Some(folder) = drag_folder() else {
+        return false;
+    };
     snapshot_fd(fd, name, out, capacity, &folder, DRAG_COPY_LIMIT).is_ok()
 }
 
 /// Quick Look reads a private copy too, made off the main thread. It is
 /// removed after thumbnail generation; interrupted copies expire in a day.
+///
+/// # Safety
+///
+/// As `tb_media_snapshot`: `name` null or NUL-terminated, `out` null or
+/// writable for `capacity` bytes, `fd` open, all through the call.
 #[cfg(target_os = "macos")]
 #[no_mangle]
-pub extern "C" fn tb_preview_snapshot(fd: i32, name: *const std::ffi::c_char, out: *mut std::ffi::c_char, capacity: i32, limit: u64) -> i32 {
-    if limit == 0 || limit > 256 * 1024 * 1024 { return -1 }
-    let Some(folder) = drag_folder().and_then(|p| p.parent().map(|p| p.join("previews"))) else { return 0 };
+pub unsafe extern "C" fn tb_preview_snapshot(
+    fd: i32,
+    name: *const std::ffi::c_char,
+    out: *mut std::ffi::c_char,
+    capacity: i32,
+    limit: u64,
+) -> i32 {
+    if limit == 0 || limit > 256 * 1024 * 1024 {
+        return -1;
+    }
+    let Some(folder) = drag_folder().and_then(|p| p.parent().map(|p| p.join("previews"))) else {
+        return 0;
+    };
     match snapshot_fd(fd, name, out, capacity, &folder, limit) {
         Ok(()) => 1,
         Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => -1,
@@ -285,32 +379,60 @@ pub extern "C" fn tb_preview_snapshot(fd: i32, name: *const std::ffi::c_char, ou
 }
 
 #[cfg(target_os = "macos")]
-fn snapshot_fd(fd: i32, name: *const std::ffi::c_char, out: *mut std::ffi::c_char, capacity: i32, folder: &std::path::Path, limit: u64) -> std::io::Result<()> {
+fn snapshot_fd(
+    fd: i32,
+    name: *const std::ffi::c_char,
+    out: *mut std::ffi::c_char,
+    capacity: i32,
+    folder: &std::path::Path,
+    limit: u64,
+) -> std::io::Result<()> {
     use std::os::fd::FromRawFd as _;
     use std::os::unix::ffi::OsStrExt as _;
     if fd < 0 || name.is_null() || out.is_null() || capacity <= 0 {
         return Err(std::io::Error::other("No snapshot destination"));
     }
-    let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
-    // Borrowed: the view still owns and closes it.
+    // SAFETY: checked non-null; callers pass a NUL-terminated name that
+    // outlives this call.
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: `fd` is non-negative and an open descriptor the caller (the
+    // view) owns for this call. Borrowed: ManuallyDrop means it's never closed
+    // here, so the view still owns and closes it.
     let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
     let meta = file.metadata()?;
     // Drag exports use an unlimited clone (limit 0); previews have a hard
     // byte cap even on APFS, where a clone itself needn't copy any bytes.
     if limit > 0 && meta.is_file() && meta.len() > limit {
-        return Err(std::io::Error::new(std::io::ErrorKind::FileTooLarge, "The document is too big to preview"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "The document is too big to preview",
+        ));
     }
     let path = if meta.is_dir() {
         threadbear_core::private_file::snapshot_package(&file, folder, &name, limit)
     } else {
         threadbear_core::private_file::snapshot(&file, folder, &name, limit)
     }?;
-    let too_big = limit > 0 && std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() > limit);
+    let too_big =
+        limit > 0 && std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() > limit);
     let bytes = path.as_os_str().as_bytes();
     if too_big || bytes.len() + 1 > capacity as usize || bytes.contains(&0) {
-        if let Some(parent) = path.parent() { let _ = std::fs::remove_dir_all(parent); }
-        return Err(std::io::Error::new(if too_big { std::io::ErrorKind::FileTooLarge } else { std::io::ErrorKind::InvalidInput }, "The document couldn't be previewed"));
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+        return Err(std::io::Error::new(
+            if too_big {
+                std::io::ErrorKind::FileTooLarge
+            } else {
+                std::io::ErrorKind::InvalidInput
+            },
+            "The document couldn't be previewed",
+        ));
     }
+    // SAFETY: `out` is non-null with room for `capacity` bytes, checked above
+    // to be at least bytes.len() + 1, and can't overlap our own PathBuf.
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr().cast(), out, bytes.len());
         *out.add(bytes.len()) = 0;
@@ -332,23 +454,52 @@ pub(crate) struct Opening {
 /// The view for `key`, placed where this element's drawn in `window`: made
 /// now the first time, by `open` (which goes through the open gate), or why
 /// it couldn't be, for the caller to say instead.
-pub(crate) fn slot(key: &str, window: &Window, open: impl FnOnce(Opening) -> Result<Media, String>) -> Result<AnyElement, String> {
+pub(crate) fn slot(
+    key: &str,
+    window: &Window,
+    open: impl FnOnce(Opening) -> Result<Media, String>,
+) -> Result<AnyElement, String> {
     let id = window.window_handle().window_id();
     // Only a window that places its views every frame (one with a
     // `sweeper`) can show one: elsewhere it would sit unplaced and never go
     // (a panel in a window of its own, Codex's review, 12 Nov).
     if !FRAMES.with(|f| f.borrow().contains_key(&id)) {
-        return Err("Videos, PDFs and document previews show here when the pane is in the main window.".to_owned());
+        return Err(
+            "Videos, PDFs and document previews show here when the pane is in the main window."
+                .to_owned(),
+        );
     }
     // A film AVFoundation couldn't play says why in its place, from then on.
-    let failed = SLOTS.with(|s| s.borrow().iter().find(|s| s.key == key && s.window == id).and_then(|s| s.media.as_ref().ok()).and_then(Media::failure));
+    let failed = SLOTS.with(|s| {
+        s.borrow()
+            .iter()
+            .find(|s| s.key == key && s.window == id)
+            .and_then(|s| s.media.as_ref().ok())
+            .and_then(Media::failure)
+    });
     if let Some(why) = failed {
         // Every key ends with the file's path.
         let name = threadbear_core::highlights::last_component(key).to_owned();
-        let pdf = SLOTS.with(|s| s.borrow().iter().any(|s| s.key == key && s.window == id && s.media.as_ref().is_ok_and(|m| matches!(m.kind, Kind::PaneDocument | Kind::PaneQuickLook))));
-        let said = format!("Threadbear couldn't {} {name}: {why}", if pdf { "show" } else { "play" });
+        let pdf = SLOTS.with(|s| {
+            s.borrow().iter().any(|s| {
+                s.key == key
+                    && s.window == id
+                    && s.media
+                        .as_ref()
+                        .is_ok_and(|m| matches!(m.kind, Kind::PaneDocument | Kind::PaneQuickLook))
+            })
+        });
+        let said = format!(
+            "Threadbear couldn't {} {name}: {why}",
+            if pdf { "show" } else { "play" }
+        );
         // Taken out of the list before it's dropped, which closes it.
-        let gone = SLOTS.with(|s| s.borrow_mut().iter_mut().find(|s| s.key == key && s.window == id).map(|slot| std::mem::replace(&mut slot.media, Err(said))));
+        let gone = SLOTS.with(|s| {
+            s.borrow_mut()
+                .iter_mut()
+                .find(|s| s.key == key && s.window == id)
+                .map(|slot| std::mem::replace(&mut slot.media, Err(said)))
+        });
         drop(gone);
     }
     let found = SLOTS.with(|s| {
@@ -359,7 +510,12 @@ pub(crate) fn slot(key: &str, window: &Window, open: impl FnOnce(Opening) -> Res
         if slot.media.is_err() {
             slot.drawn.set((frame_of(id), Bounds::default()));
         }
-        Some(slot.media.as_ref().map(|_| slot.drawn.clone()).map_err(Clone::clone))
+        Some(
+            slot.media
+                .as_ref()
+                .map(|_| slot.drawn.clone())
+                .map_err(Clone::clone),
+        )
     });
     let drawn = match found {
         Some(found) => found?,
@@ -372,34 +528,68 @@ pub(crate) fn slot(key: &str, window: &Window, open: impl FnOnce(Opening) -> Res
                     let live: Vec<(WindowId, Kind, (bool, f32))> = SLOTS.with(|s| {
                         s.borrow()
                             .iter()
-                            .filter_map(|s| s.media.as_ref().ok().filter(|m| m.kind == Kind::StageVideo).map(|m| (s.window, m.kind, m.state())))
+                            .filter_map(|s| {
+                                s.media
+                                    .as_ref()
+                                    .ok()
+                                    .filter(|m| m.kind == Kind::StageVideo)
+                                    .map(|m| (s.window, m.kind, m.state()))
+                            })
                             .map(|(w, k, st)| (w, k, (st.muted, st.volume)))
                             .collect()
                     });
-                    let audio = stage_audio(live, id, STAGE_AUDIO.with(|a| a.borrow().get(&id).copied()));
+                    let audio =
+                        stage_audio(live, id, STAGE_AUDIO.with(|a| a.borrow().get(&id).copied()));
                     open(Opening { parent, audio })
                 }
                 None => Err("This window has no view to show it in.".to_owned()),
             };
-            let drawn = Rc::new(Cell::new((if media.is_err() { frame_of(id) } else { 0 }, Bounds::default())));
+            let drawn = Rc::new(Cell::new((
+                if media.is_err() { frame_of(id) } else { 0 },
+                Bounds::default(),
+            )));
             let made = media.as_ref().map(|_| drawn.clone()).map_err(Clone::clone);
-            SLOTS.with(|s| s.borrow_mut().push(Slot { key: key.to_owned(), window: id, media, drawn }));
+            SLOTS.with(|s| {
+                s.borrow_mut().push(Slot {
+                    key: key.to_owned(),
+                    window: id,
+                    media,
+                    drawn,
+                })
+            });
             made?
         }
     };
-    Ok(canvas(move |bounds, window, _| drawn.set((frame_of(window.window_handle().window_id()), bounds)), |_, _, _, _| {}).size_full().into_any_element())
+    Ok(canvas(
+        move |bounds, window, _| drawn.set((frame_of(window.window_handle().window_id()), bounds)),
+        |_, _, _, _| {},
+    )
+    .size_full()
+    .into_any_element())
 }
 
 /// The mute and volume a new stage clip in `window` starts at: that of the
 /// stage clip up there now, about to go as this one takes its place, or
 /// failing that the last one's that went (`left`).
-fn stage_audio<W: PartialEq>(live: impl IntoIterator<Item = (W, Kind, (bool, f32))>, window: W, left: Option<(bool, f32)>) -> Option<(bool, f32)> {
-    live.into_iter().find(|(w, kind, _)| *w == window && *kind == Kind::StageVideo).map(|(_, _, audio)| audio).or(left)
+fn stage_audio<W: PartialEq>(
+    live: impl IntoIterator<Item = (W, Kind, (bool, f32))>,
+    window: W,
+    left: Option<(bool, f32)>,
+) -> Option<(bool, f32)> {
+    live.into_iter()
+        .find(|(w, kind, _)| *w == window && *kind == Kind::StageVideo)
+        .map(|(_, _, audio)| audio)
+        .or(left)
 }
 
 /// Whether `key`'s view is up in some window, and what it's showing.
 pub(crate) fn state_of(key: &str) -> Option<MediaState> {
-    SLOTS.with(|s| s.borrow().iter().find(|s| s.key == key).and_then(|s| s.media.as_ref().ok().map(Media::state)))
+    SLOTS.with(|s| {
+        s.borrow()
+            .iter()
+            .find(|s| s.key == key)
+            .and_then(|s| s.media.as_ref().ok().map(Media::state))
+    })
 }
 
 /// The play button of `key`'s film, for the scripted app: false when there's
@@ -407,15 +597,20 @@ pub(crate) fn state_of(key: &str) -> Option<MediaState> {
 #[cfg(feature = "automation")]
 pub(crate) fn play(key: &str) -> bool {
     SLOTS.with(|s| {
-        s.borrow().iter().find(|s| s.key == key).and_then(|s| s.media.as_ref().ok()).is_some_and(|m| {
-            #[cfg(target_os = "macos")]
-            return unsafe { tb_media_play(m.view) };
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = m;
-                false
-            }
-        })
+        s.borrow()
+            .iter()
+            .find(|s| s.key == key)
+            .and_then(|s| s.media.as_ref().ok())
+            .is_some_and(|m| {
+                #[cfg(target_os = "macos")]
+                // SAFETY: a live Media's own view, on the main thread.
+                return unsafe { tb_media_play(m.view) };
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = m;
+                    false
+                }
+            })
     })
 }
 
@@ -424,21 +619,31 @@ pub(crate) fn play(key: &str) -> bool {
 #[cfg(feature = "automation")]
 pub(crate) fn click_link(key: &str) -> bool {
     SLOTS.with(|s| {
-        s.borrow().iter().find(|s| s.key == key).and_then(|s| s.media.as_ref().ok()).is_some_and(|m| {
-            #[cfg(target_os = "macos")]
-            return unsafe { tb_media_click_link(m.view) };
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = m;
-                false
-            }
-        })
+        s.borrow()
+            .iter()
+            .find(|s| s.key == key)
+            .and_then(|s| s.media.as_ref().ok())
+            .is_some_and(|m| {
+                #[cfg(target_os = "macos")]
+                // SAFETY: a live Media's own view, on the main thread.
+                return unsafe { tb_media_click_link(m.view) };
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = m;
+                    false
+                }
+            })
     })
 }
 
 /// Why `key`'s view couldn't be made, if it couldn't.
 pub(crate) fn failure_of(key: &str) -> Option<String> {
-    SLOTS.with(|s| s.borrow().iter().find(|s| s.key == key).and_then(|s| s.media.as_ref().err().cloned()))
+    SLOTS.with(|s| {
+        s.borrow()
+            .iter()
+            .find(|s| s.key == key)
+            .and_then(|s| s.media.as_ref().err().cloned())
+    })
 }
 
 /// What could be over a window's views this frame.
@@ -462,27 +667,48 @@ pub(crate) fn sweeper(window: &Window, cover: Cover) -> AnyElement {
         *n += 1;
         *n
     });
-    canvas(move |_, window, cx| sweep(id, frame, &cover, window, cx), |_, _, _, _| {}).absolute().size_0().into_any_element()
+    canvas(
+        move |_, window, cx| sweep(id, frame, &cover, window, cx),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
+    .into_any_element()
 }
 
 fn sweep(id: WindowId, frame: u64, cover: &Cover, window: &mut Window, cx: &mut App) {
     use gpui_kit::component::WindowExt as _;
     let kit_menu = menu_open(window, cx);
-    let modal = cover.everything || window.has_active_dialog(cx) || window.has_active_sheet(cx) || kit_menu;
-    if kit_menu && SLOTS.with(|s| s.borrow().iter().any(|slot| slot.window == id && slot.media.is_ok())) {
+    let modal =
+        cover.everything || window.has_active_dialog(cx) || window.has_active_sheet(cx) || kit_menu;
+    if kit_menu
+        && SLOTS.with(|s| {
+            s.borrow()
+                .iter()
+                .any(|slot| slot.window == id && slot.media.is_ok())
+        })
+    {
         look_again_soon(window, cx);
     }
     let gone = SLOTS.with(|s| {
         let mut slots = s.borrow_mut();
-        let (keep, gone): (Vec<Slot>, Vec<Slot>) = std::mem::take(&mut *slots).into_iter().partition(|slot| slot.window != id || slot.drawn.get().0 == frame);
+        let (keep, gone): (Vec<Slot>, Vec<Slot>) = std::mem::take(&mut *slots)
+            .into_iter()
+            .partition(|slot| slot.window != id || slot.drawn.get().0 == frame);
         *slots = keep;
         for slot in slots.iter().filter(|s| s.window == id) {
             let Ok(media) = &slot.media else { continue };
             let (_, b) = slot.drawn.get();
             // A menu opens down and to the right of where it was asked for,
             // about this wide (web_panels.rs's rule).
-            let menu_over = cover.menus.iter().any(|at| at.x + gpui_kit::px(300.) > b.origin.x && at.x < b.origin.x + b.size.width);
-            if !modal && !menu_over && f32::from(b.size.width) >= 1. && f32::from(b.size.height) >= 1. {
+            let menu_over = cover.menus.iter().any(|at| {
+                at.x + gpui_kit::px(300.) > b.origin.x && at.x < b.origin.x + b.size.width
+            });
+            if !modal
+                && !menu_over
+                && f32::from(b.size.width) >= 1.
+                && f32::from(b.size.height) >= 1.
+            {
                 media.place(b);
                 media.set_hidden(false);
             } else {
@@ -515,7 +741,12 @@ pub(crate) fn open_menus(window: &Window, cx: &App) -> Vec<Bounds<Pixels>> {
     MENUS.with(|m| {
         let mut menus = m.borrow_mut();
         menus.retain(|menu| menu.upgrade().is_some());
-        menus.iter().filter_map(WeakEntity::upgrade).filter_map(|menu| menu.read(cx).showing(window, cx)).flatten().collect()
+        menus
+            .iter()
+            .filter_map(WeakEntity::upgrade)
+            .filter_map(|menu| menu.read(cx).showing(window, cx))
+            .flatten()
+            .collect()
     })
 }
 
@@ -529,7 +760,9 @@ pub(crate) fn look_again_soon(window: &Window, cx: &mut App) {
         return;
     }
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(250))
+            .await;
         RECHECK.with(|r| r.borrow_mut().remove(&handle.window_id()));
         let _ = handle.update(cx, |_, window, _| window.refresh());
     })
@@ -538,9 +771,17 @@ pub(crate) fn look_again_soon(window: &Window, cx: &mut App) {
 
 /// A stage clip going: its mute and volume are where the next one starts.
 fn remember_audio(slot: &Slot) {
-    if let Some(media) = slot.media.as_ref().ok().filter(|m| m.kind == Kind::StageVideo) {
+    if let Some(media) = slot
+        .media
+        .as_ref()
+        .ok()
+        .filter(|m| m.kind == Kind::StageVideo)
+    {
         let state = media.state();
-        STAGE_AUDIO.with(|a| a.borrow_mut().insert(slot.window, (state.muted, state.volume)));
+        STAGE_AUDIO.with(|a| {
+            a.borrow_mut()
+                .insert(slot.window, (state.muted, state.volume))
+        });
     }
 }
 
@@ -548,7 +789,9 @@ fn remember_audio(slot: &Slot) {
 pub(crate) fn close_window(id: WindowId) {
     let gone: Vec<Slot> = SLOTS.with(|s| {
         let mut slots = s.borrow_mut();
-        let (gone, keep) = std::mem::take(&mut *slots).into_iter().partition(|slot| slot.window == id);
+        let (gone, keep) = std::mem::take(&mut *slots)
+            .into_iter()
+            .partition(|slot| slot.window == id);
         *slots = keep;
         gone
     });
@@ -611,15 +854,27 @@ mod tests {
     #[test]
     fn a_pdf_links_menu_opens_nothing_itself() {
         extern "C" {
-            fn tb_media_menu_for_tests(link: *const std::ffi::c_char, buffer: *mut std::ffi::c_char, capacity: i32) -> i32;
+            fn tb_media_menu_for_tests(
+                link: *const std::ffi::c_char,
+                buffer: *mut std::ffi::c_char,
+                capacity: i32,
+            ) -> i32;
         }
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
         super::SAID.with(|s| *s.borrow_mut() = Some(tx));
         let link = std::ffi::CString::new("file:///tmp/payload.command").unwrap();
         let mut buffer = [0 as std::ffi::c_char; 1024];
+        // SAFETY: `link` is a live CString, and the buffer is
+        // `buffer.len()` bytes, which strlcpy stays within.
         unsafe { tb_media_menu_for_tests(link.as_ptr(), buffer.as_mut_ptr(), buffer.len() as i32) };
-        let left = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }.to_string_lossy().into_owned();
-        assert_eq!(left, "Open Link|openLinkThroughGate:\nCopy Link|copyLink:\n-|\nZoom In|zoomIn:\n");
+        // SAFETY: strlcpy NUL-terminated what it wrote inside the buffer.
+        let left = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            left,
+            "Open Link|openLinkThroughGate:\nCopy Link|copyLink:\n-|\nZoom In|zoomIn:\n"
+        );
         // Choosing Open Link reached the gate's way in, with the link.
         match rx.try_recv() {
             Ok(super::Said::Link { url, base }) => {
@@ -633,46 +888,138 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn quicklook_snapshots_use_the_descriptor_and_each_callers_byte_cap() {
-        use std::{ffi::{CStr, CString}, os::{fd::AsRawFd, unix::{ffi::OsStrExt, fs::symlink}}};
-        let work=tempfile::tempdir().unwrap();
-        let source=work.path().join("source.pdf");
-        std::fs::write(&source,b"held document").unwrap();
-        let file=std::fs::File::open(&source).unwrap();
+        use std::{
+            ffi::{CStr, CString},
+            os::{
+                fd::AsRawFd,
+                unix::{ffi::OsStrExt, fs::symlink},
+            },
+        };
+        let work = tempfile::tempdir().unwrap();
+        let source = work.path().join("source.pdf");
+        std::fs::write(&source, b"held document").unwrap();
+        let file = std::fs::File::open(&source).unwrap();
         std::fs::remove_file(&source).unwrap();
-        symlink("/missing/replaced-source",&source).unwrap();
-        let name=CString::new("document.pdf").unwrap();
-        let mut path=[0 as std::ffi::c_char;4096];
-        let folder=work.path().join("previews");
-        super::snapshot_fd(file.as_raw_fd(),name.as_ptr(),path.as_mut_ptr(),path.len() as i32,&folder,16*1024*1024).unwrap();
-        let copied=std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe{CStr::from_ptr(path.as_ptr())}.to_bytes()));
-        assert_eq!(std::fs::read(copied).unwrap(),b"held document");
-        assert!(file.metadata().is_ok(),"snapshot borrows the gate's descriptor");
-        let large=std::fs::File::create(work.path().join("large.pdf")).unwrap();
-        large.set_len(16*1024*1024+1).unwrap();
-        let error=super::snapshot_fd(large.as_raw_fd(),name.as_ptr(),path.as_mut_ptr(),path.len() as i32,&folder,16*1024*1024).unwrap_err();
-        assert_eq!(error.kind(),std::io::ErrorKind::FileTooLarge);
-        let large=std::fs::File::open(work.path().join("large.pdf")).unwrap();
-        super::snapshot_fd(large.as_raw_fd(),name.as_ptr(),path.as_mut_ptr(),path.len() as i32,&folder,256*1024*1024).unwrap();
-        let copied=std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe{CStr::from_ptr(path.as_ptr())}.to_bytes()));
-        assert_eq!(std::fs::metadata(copied).unwrap().len(),16*1024*1024+1);
+        symlink("/missing/replaced-source", &source).unwrap();
+        let name = CString::new("document.pdf").unwrap();
+        let mut path = [0 as std::ffi::c_char; 4096];
+        let folder = work.path().join("previews");
+        super::snapshot_fd(
+            file.as_raw_fd(),
+            name.as_ptr(),
+            path.as_mut_ptr(),
+            path.len() as i32,
+            &folder,
+            16 * 1024 * 1024,
+        )
+        .unwrap();
+        let copied = std::path::Path::new(std::ffi::OsStr::from_bytes(
+            // SAFETY: snapshot_fd succeeded, so it wrote a NUL-terminated
+            // path inside the 4096-byte buffer.
+            unsafe { CStr::from_ptr(path.as_ptr()) }.to_bytes(),
+        ));
+        assert_eq!(std::fs::read(copied).unwrap(), b"held document");
+        assert!(
+            file.metadata().is_ok(),
+            "snapshot borrows the gate's descriptor"
+        );
+        let large = std::fs::File::create(work.path().join("large.pdf")).unwrap();
+        large.set_len(16 * 1024 * 1024 + 1).unwrap();
+        let error = super::snapshot_fd(
+            large.as_raw_fd(),
+            name.as_ptr(),
+            path.as_mut_ptr(),
+            path.len() as i32,
+            &folder,
+            16 * 1024 * 1024,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
+        let large = std::fs::File::open(work.path().join("large.pdf")).unwrap();
+        super::snapshot_fd(
+            large.as_raw_fd(),
+            name.as_ptr(),
+            path.as_mut_ptr(),
+            path.len() as i32,
+            &folder,
+            256 * 1024 * 1024,
+        )
+        .unwrap();
+        let copied = std::path::Path::new(std::ffi::OsStr::from_bytes(
+            // SAFETY: snapshot_fd succeeded, so it wrote a NUL-terminated
+            // path inside the 4096-byte buffer.
+            unsafe { CStr::from_ptr(path.as_ptr()) }.to_bytes(),
+        ));
+        assert_eq!(
+            std::fs::metadata(copied).unwrap().len(),
+            16 * 1024 * 1024 + 1
+        );
         // Packages carry length zero through the pane; snapshot_fd still
         // walks held directory descriptors and enforces the total byte cap.
-        let package=work.path().join("deck.key");
+        let package = work.path().join("deck.key");
         std::fs::create_dir(&package).unwrap();
-        std::fs::write(package.join("slide.bin"),b"held slide").unwrap();
-        let directory=std::fs::File::open(&package).unwrap();
-        let package_name=CString::new("deck.key").unwrap();
-        super::snapshot_fd(directory.as_raw_fd(),package_name.as_ptr(),path.as_mut_ptr(),path.len() as i32,&folder,256*1024*1024).unwrap();
-        let copied=std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe{CStr::from_ptr(path.as_ptr())}.to_bytes()));
-        assert_eq!(std::fs::read(copied.join("slide.bin")).unwrap(),b"held slide");
-        let large_slide=std::fs::File::create(package.join("oversize.bin")).unwrap();
-        large_slide.set_len(16*1024*1024+1).unwrap();
-        assert_eq!(super::snapshot_fd(directory.as_raw_fd(),package_name.as_ptr(),path.as_mut_ptr(),path.len() as i32,&folder,16*1024*1024).unwrap_err().kind(),std::io::ErrorKind::FileTooLarge);
+        std::fs::write(package.join("slide.bin"), b"held slide").unwrap();
+        let directory = std::fs::File::open(&package).unwrap();
+        let package_name = CString::new("deck.key").unwrap();
+        super::snapshot_fd(
+            directory.as_raw_fd(),
+            package_name.as_ptr(),
+            path.as_mut_ptr(),
+            path.len() as i32,
+            &folder,
+            256 * 1024 * 1024,
+        )
+        .unwrap();
+        let copied = std::path::Path::new(std::ffi::OsStr::from_bytes(
+            // SAFETY: snapshot_fd succeeded, so it wrote a NUL-terminated
+            // path inside the 4096-byte buffer.
+            unsafe { CStr::from_ptr(path.as_ptr()) }.to_bytes(),
+        ));
+        assert_eq!(
+            std::fs::read(copied.join("slide.bin")).unwrap(),
+            b"held slide"
+        );
+        let large_slide = std::fs::File::create(package.join("oversize.bin")).unwrap();
+        large_slide.set_len(16 * 1024 * 1024 + 1).unwrap();
+        assert_eq!(
+            super::snapshot_fd(
+                directory.as_raw_fd(),
+                package_name.as_ptr(),
+                path.as_mut_ptr(),
+                path.len() as i32,
+                &folder,
+                16 * 1024 * 1024
+            )
+            .unwrap_err()
+            .kind(),
+            std::io::ErrorKind::FileTooLarge
+        );
         std::fs::remove_file(package.join("oversize.bin")).unwrap();
-        symlink("/missing/package-link",package.join("link")).unwrap();
-        assert!(super::snapshot_fd(directory.as_raw_fd(),package_name.as_ptr(),path.as_mut_ptr(),path.len() as i32,&folder,256*1024*1024).is_err());
-        assert_eq!(super::tb_preview_snapshot(-1,std::ptr::null(),std::ptr::null_mut(),0,0),-1);
-        assert_eq!(super::tb_preview_snapshot(-1,std::ptr::null(),std::ptr::null_mut(),0,256*1024*1024+1),-1);
+        symlink("/missing/package-link", package.join("link")).unwrap();
+        assert!(super::snapshot_fd(
+            directory.as_raw_fd(),
+            package_name.as_ptr(),
+            path.as_mut_ptr(),
+            path.len() as i32,
+            &folder,
+            256 * 1024 * 1024
+        )
+        .is_err());
+        // SAFETY: null pointers are allowed, and the limit is checked first.
+        let refused =
+            unsafe { super::tb_preview_snapshot(-1, std::ptr::null(), std::ptr::null_mut(), 0, 0) };
+        assert_eq!(refused, -1);
+        // SAFETY: null pointers are allowed, and the limit is checked first.
+        let refused = unsafe {
+            super::tb_preview_snapshot(
+                -1,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0,
+                256 * 1024 * 1024 + 1,
+            )
+        };
+        assert_eq!(refused, -1);
     }
 
     /// Stepping from one clip to the next on the stage: the next starts at
@@ -682,9 +1029,25 @@ mod tests {
     fn the_next_stage_clip_starts_where_the_last_was_left() {
         let muted = (true, 0.4);
         let older = (false, 1.0);
-        assert_eq!(stage_audio([(1, Kind::StageVideo, muted)], 1, Some(older)), Some(muted));
+        assert_eq!(
+            stage_audio([(1, Kind::StageVideo, muted)], 1, Some(older)),
+            Some(muted)
+        );
         // Only this window's stage clip, not a cell or another window's.
-        assert_eq!(stage_audio([(1, Kind::CellVideo, (true, 1.0)), (2, Kind::StageVideo, muted)], 1, Some(older)), Some(older));
-        assert_eq!(stage_audio(Vec::<(u8, Kind, (bool, f32))>::new(), 1, None), None);
+        assert_eq!(
+            stage_audio(
+                [
+                    (1, Kind::CellVideo, (true, 1.0)),
+                    (2, Kind::StageVideo, muted)
+                ],
+                1,
+                Some(older)
+            ),
+            Some(older)
+        );
+        assert_eq!(
+            stage_audio(Vec::<(u8, Kind, (bool, f32))>::new(), 1, None),
+            None
+        );
     }
 }

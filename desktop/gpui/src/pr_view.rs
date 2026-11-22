@@ -1,7 +1,7 @@
 // A GitHub pull request open as a tab in the side pane (the inlinePrs
 // experiment): a PR link clicked in a reply or in Highlights opens here
 // rather than in the browser, with what's needed to decide on it and the
-// buttons to act (docs/protocol.md, "Pull requests"; the rules and words are
+// buttons to act (docs/protocol/panels.md, "Pull requests"; the rules and words are
 // threadbear_core::pull_requests). Mike picked this layout, option A of three
 // mockups (18 Nov 2026), after trying Capy.
 //
@@ -23,7 +23,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use threadbear_core::inbox::{ago, parse_ms, ThreadSummary};
-use threadbear_core::pull_requests::{self as rules, CachedPr, CheckState, MergeMethod, PrFiles, PrRef, PrState, PrTab, PrView};
+use threadbear_core::pull_requests::{
+    self as rules, CachedPr, CheckState, MergeMethod, PrFiles, PrRef, PrState, PrTab, PrView,
+};
 
 /// The tip on a PR's buttons while the copy kept from an earlier run is
 /// read again.
@@ -89,7 +91,10 @@ impl PrPanes {
     /// 768 Macs, 18 Nov).
     #[cfg(feature = "automation")]
     pub(crate) fn shown_scroll(&self) -> Option<ScrollHandle> {
-        self.shown.as_ref().and_then(|url| self.ui.get(url)).map(|ui| ui.scroll.clone())
+        self.shown
+            .as_ref()
+            .and_then(|url| self.ui.get(url))
+            .map(|ui| ui.scroll.clone())
     }
 
     #[cfg(feature = "automation")]
@@ -132,7 +137,11 @@ impl SidePane {
             Some(p) if matches!(p.target, Target::Pr(_)) => p.from.clone(),
             _ => self.section_for(thread),
         };
-        self.show_preview(PanePreview::new(Target::Pr(url), r.tab_title(), from), &thread.id, cx);
+        self.show_preview(
+            PanePreview::new(Target::Pr(url), r.tab_title(), from),
+            &thread.id,
+            cx,
+        );
     }
 
     /// From `begin_preview`: read it the first time it shows, or again if
@@ -140,7 +149,11 @@ impl SidePane {
     /// or GitHub turned down), or behind what's showing once that was read
     /// a while ago.
     pub(crate) fn begin_pr(&mut self, url: &str, cx: &mut Context<Self>) {
-        let stale = self.prs.read_at.get(url).is_some_and(|at| now_ms() - at > rules::PR_FRESH_MS);
+        let stale = self
+            .prs
+            .read_at
+            .get(url)
+            .is_some_and(|at| now_ms() - at > rules::PR_FRESH_MS);
         let refreshing = self.prs.ui.get(url).is_some_and(|u| u.refreshing);
         match self.prs.loads.get(url) {
             None | Some(PrLoad::Failed(_)) => self.load_pr(url, cx),
@@ -170,7 +183,9 @@ impl SidePane {
     /// shows as an earlier run kept it (`cache`) while GitHub's is read.
     fn load_pr(&mut self, url: &str, cx: &mut Context<Self>) {
         match self.prs.loads.get(url) {
-            Some(PrLoad::Ready(_)) => self.prs.ui.entry(url.to_owned()).or_default().refreshing = true,
+            Some(PrLoad::Ready(_)) => {
+                self.prs.ui.entry(url.to_owned()).or_default().refreshing = true
+            }
             _ => {
                 self.prs.loads.insert(url.to_owned(), PrLoad::Loading);
                 let url = url.to_owned();
@@ -180,7 +195,8 @@ impl SidePane {
                 });
                 cx.spawn(async move |this, cx| {
                     let Some(kept) = read.await else { return };
-                    this.update(cx, |this, cx| this.pr_from_cache(&url, kept, cx)).ok();
+                    this.update(cx, |this, cx| this.pr_from_cache(&url, kept, cx))
+                        .ok();
                 })
                 .detach();
             }
@@ -191,7 +207,8 @@ impl SidePane {
             let (client, url) = (client.clone(), url.clone());
             async move |this, cx| {
                 let res = call(client, "github.prFiles", json!({ "url": url })).await;
-                this.update(cx, |this, cx| this.pr_files_read(&url, res, cx)).ok();
+                this.update(cx, |this, cx| this.pr_files_read(&url, res, cx))
+                    .ok();
             }
         })
         .detach();
@@ -208,7 +225,8 @@ impl SidePane {
                             if pr.files_later {
                                 if let Some(files) = this.prs.early_files.remove(&url) {
                                     pr = pr.with_files(files);
-                                } else if let Some(PrLoad::Ready(before)) = this.prs.loads.get(&url) {
+                                } else if let Some(PrLoad::Ready(before)) = this.prs.loads.get(&url)
+                                {
                                     pr = pr.keeping_files_of(before);
                                 }
                             }
@@ -217,7 +235,9 @@ impl SidePane {
                         Err(e) => PrLoad::Failed(format!("Couldn't read the PR: {e}")),
                     },
                     // An older runner: no PRs here, so its page in the browser.
-                    Err(e) if e.code == -32601 => PrLoad::Failed("This runner can't read PRs yet. Open it on GitHub instead.".into()),
+                    Err(e) if e.code == -32601 => PrLoad::Failed(
+                        "This runner can't read PRs yet. Open it on GitHub instead.".into(),
+                    ),
                     Err(e) => PrLoad::Failed(e.message),
                 };
                 // A refresh that failed keeps what was showing, with why.
@@ -245,17 +265,30 @@ impl SidePane {
     /// `github.prFiles` answered: into the PR if it's read and waiting for
     /// them, kept for it if it isn't read yet. An older runner doesn't know
     /// the call, and its `github.pr` brought the files anyway.
-    fn pr_files_read(&mut self, url: &str, res: Result<serde_json::Value, threadbear_client::runner::RpcError>, cx: &mut Context<Self>) {
+    fn pr_files_read(
+        &mut self,
+        url: &str,
+        res: Result<serde_json::Value, threadbear_client::runner::RpcError>,
+        cx: &mut Context<Self>,
+    ) {
         let files = match res {
-            Ok(v) => serde_json::from_value::<PrFiles>(v).unwrap_or_else(|e| PrFiles { files_error: Some(e.to_string()), ..Default::default() }),
+            Ok(v) => serde_json::from_value::<PrFiles>(v).unwrap_or_else(|e| PrFiles {
+                files_error: Some(e.to_string()),
+                ..Default::default()
+            }),
             Err(e) if e.code == -32601 => return,
-            Err(e) => PrFiles { files_error: Some(e.message), ..Default::default() },
+            Err(e) => PrFiles {
+                files_error: Some(e.message),
+                ..Default::default()
+            },
         };
         let refreshing = self.prs.ui.get(url).is_some_and(|u| u.refreshing);
         match self.prs.loads.get(url) {
             Some(PrLoad::Ready(pr)) if pr.files_later => {
                 let pr = PrView::clone(pr).with_files(files);
-                self.prs.loads.insert(url.to_owned(), PrLoad::Ready(Arc::new(pr)));
+                self.prs
+                    .loads
+                    .insert(url.to_owned(), PrLoad::Ready(Arc::new(pr)));
                 self.keep_pr(url, cx);
             }
             // The PR (or a refresh of it) still to come: it takes them.
@@ -281,7 +314,9 @@ impl SidePane {
         if self.prs.states.insert(url.to_owned(), kept.pr.state) != Some(kept.pr.state) {
             cx.refresh_windows();
         }
-        self.prs.loads.insert(url.to_owned(), PrLoad::Ready(Arc::new(kept.pr)));
+        self.prs
+            .loads
+            .insert(url.to_owned(), PrLoad::Ready(Arc::new(kept.pr)));
         self.prs.read_at.insert(url.to_owned(), kept.read_at);
         self.prs.from_cache.insert(url.to_owned());
         self.prs.ui.entry(url.to_owned()).or_default().refreshing = true;
@@ -291,12 +326,18 @@ impl SidePane {
     /// A whole read (its files too) goes in the cache for the next run,
     /// written off the main thread.
     fn keep_pr(&self, url: &str, cx: &mut Context<Self>) {
-        let Some(PrLoad::Ready(pr)) = self.prs.loads.get(url) else { return };
+        let Some(PrLoad::Ready(pr)) = self.prs.loads.get(url) else {
+            return;
+        };
         if pr.files_later || pr.files_error.is_some() || self.prs.from_cache.contains(url) {
             return;
         }
-        let kept = CachedPr { read_at: self.prs.read_at.get(url).copied().unwrap_or_else(now_ms), pr: PrView::clone(pr) };
-        cx.background_spawn(async move { cache::write(&kept) }).detach();
+        let kept = CachedPr {
+            read_at: self.prs.read_at.get(url).copied().unwrap_or_else(now_ms),
+            pr: PrView::clone(pr),
+        };
+        cx.background_spawn(async move { cache::write(&kept) })
+            .detach();
     }
 
     /// A PR link's state for its row's colour, asked of the runner the first
@@ -311,13 +352,19 @@ impl SidePane {
     /// been asked about, in one `github.prStates`. The answer redraws every
     /// window, as the marks in replies are drawn from it too.
     pub(crate) fn ask_pr_states(&mut self, urls: &[String], cx: &mut Context<Self>) {
-        let new: Vec<String> = urls.iter().filter_map(|u| pr_url(u)).filter(|u| !self.prs.states.contains_key(u) && self.prs.asked.insert(u.clone())).collect();
+        let new: Vec<String> = urls
+            .iter()
+            .filter_map(|u| pr_url(u))
+            .filter(|u| !self.prs.states.contains_key(u) && self.prs.asked.insert(u.clone()))
+            .collect();
         if new.is_empty() {
             return;
         }
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let Ok(v) = call(client, "github.prStates", json!({ "urls": new })).await else { return };
+            let Ok(v) = call(client, "github.prStates", json!({ "urls": new })).await else {
+                return;
+            };
             this.update(cx, |this, cx| {
                 for url in &new {
                     if let Some(s) = v["states"][url].as_str().and_then(PrState::parse) {
@@ -332,7 +379,14 @@ impl SidePane {
     }
 
     /// A button's work on GitHub: busy until it lands, then the PR read again.
-    fn pr_act(&mut self, url: &str, key: &'static str, params: Value, window: &mut Window, cx: &mut Context<Self>) {
+    fn pr_act(
+        &mut self,
+        url: &str,
+        key: &'static str,
+        params: Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ui = self.prs.ui.entry(url.to_owned()).or_default();
         if ui.busy.is_some() {
             return;
@@ -372,11 +426,18 @@ impl SidePane {
     /// Closes a PR's tab; the one in front goes back to the section, or
     /// on to the tab beside it.
     fn close_pr_tab(&mut self, thread_id: &str, url: &str, cx: &mut Context<Self>) {
-        let Some(tabs) = self.prs.tabs.get_mut(thread_id) else { return };
+        let Some(tabs) = self.prs.tabs.get_mut(thread_id) else {
+            return;
+        };
         let at = tabs.iter().position(|u| u == url);
         tabs.retain(|u| u != url);
-        let next = at.and_then(|i| tabs.get(i.min(tabs.len().saturating_sub(1)))).cloned();
-        let showing = self.previews.get(thread_id).is_some_and(|p| p.target == Target::Pr(url.to_owned()));
+        let next = at
+            .and_then(|i| tabs.get(i.min(tabs.len().saturating_sub(1))))
+            .cloned();
+        let showing = self
+            .previews
+            .get(thread_id)
+            .is_some_and(|p| p.target == Target::Pr(url.to_owned()));
         if showing {
             match (next, self.thread(cx)) {
                 (Some(next), Some(thread)) => self.open_pr(&next, &thread, cx),
@@ -388,12 +449,31 @@ impl SidePane {
 
     /// The header for a PR: Back to the section, then a tab per PR this
     /// thread opened, the one in front marked, each with its close.
-    pub(crate) fn render_pr_header(&mut self, thread: &ThreadSummary, url: &str, from_title: String, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_pr_header(
+        &mut self,
+        thread: &ThreadSummary,
+        url: &str,
+        from_title: String,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let thread_id = thread.id.clone();
         let mut row = h_flex().flex_1().min_w_0().gap(px(2.)).items_center();
         let back_id = thread_id.clone();
-        row = row.child(self.header_button("hl-back", "chevron.left", format!("Back to {from_title}"), p, cx, move |this, cx| this.preview_back(&back_id, cx)));
-        let tabs = self.prs.tabs.get(&thread.id).cloned().unwrap_or_else(|| vec![url.to_owned()]);
+        row = row.child(self.header_button(
+            "hl-back",
+            "chevron.left",
+            format!("Back to {from_title}"),
+            p,
+            cx,
+            move |this, cx| this.preview_back(&back_id, cx),
+        ));
+        let tabs = self
+            .prs
+            .tabs
+            .get(&thread.id)
+            .cloned()
+            .unwrap_or_else(|| vec![url.to_owned()]);
         for (i, tab) in tabs.iter().enumerate() {
             let front = tab == url;
             let r = PrRef::parse(tab);
@@ -403,25 +483,34 @@ impl SidePane {
             };
             let title = r.as_ref().map_or_else(|| tab.clone(), |r| r.tab_title());
             let tip = match (&r, self.prs.loads.get(tab)) {
-                (_, Some(PrLoad::Ready(pr))) => format!("{}/{}#{}: {}", r.as_ref().map_or("", |r| r.owner.as_str()), r.as_ref().map_or("", |r| r.repo.as_str()), pr.number, pr.title),
+                (_, Some(PrLoad::Ready(pr))) => format!(
+                    "{}/{}#{}: {}",
+                    r.as_ref().map_or("", |r| r.owner.as_str()),
+                    r.as_ref().map_or("", |r| r.repo.as_str()),
+                    pr.number,
+                    pr.title
+                ),
                 _ => title.clone(),
             };
             let (open_url, close_url) = (tab.clone(), tab.clone());
             let (open_thread, close_thread) = (thread.clone(), thread_id.clone());
             let hover = p.hover;
-            let close = tipped(div()
-                .id(("pr-tab-close", i))
-                .size(px(16.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.))
-                .hover(move |s| s.bg(hover))
-                .child(icon("xmark", 9., p.faint)), "Close this tab")
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.close_pr_tab(&close_thread, &close_url, cx);
-                }));
+            let close = tipped(
+                div()
+                    .id(("pr-tab-close", i))
+                    .size(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .hover(move |s| s.bg(hover))
+                    .child(icon("xmark", 9., p.faint)),
+                "Close this tab",
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.close_pr_tab(&close_thread, &close_url, cx);
+            }));
             let tab_el = div()
                 .id(("pr-tab", i))
                 .h(px(24.))
@@ -434,30 +523,71 @@ impl SidePane {
                 .cursor_pointer()
                 .when(front, |d| d.bg(p.hover))
                 .hover(move |s| s.bg(hover))
-                .child(icon("arrow.triangle.pull", 11., state.map_or(p.secondary, |s| state_colour(s, cx))))
-                .child(div().text_size(px(style::size::LABEL)).when(front, |d| d.font_semibold()).text_color(if front { p.fg } else { p.secondary }).child(title))
+                .child(icon(
+                    "arrow.triangle.pull",
+                    11.,
+                    state.map_or(p.secondary, |s| state_colour(s, cx)),
+                ))
+                .child(
+                    div()
+                        .text_size(px(style::size::LABEL))
+                        .when(front, |d| d.font_semibold())
+                        .text_color(if front { p.fg } else { p.secondary })
+                        .child(title),
+                )
                 .child(close);
-            row = row.child(tipped(tab_el, tip).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pr(&open_url, &open_thread, cx))));
+            row = row.child(tipped(tab_el, tip).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| this.open_pr(&open_url, &open_thread, cx),
+            )));
         }
         let mut out = h_flex().flex_1().min_w_0().items_center().child(row);
         let (refresh_url, open_url) = (url.to_owned(), url.to_owned());
-        let refreshing = self.prs.ui.get(url).is_some_and(|u| u.refreshing) || matches!(self.prs.loads.get(url), Some(PrLoad::Loading));
+        let refreshing = self.prs.ui.get(url).is_some_and(|u| u.refreshing)
+            || matches!(self.prs.loads.get(url), Some(PrLoad::Loading));
         if refreshing {
-            let spinner = div().id("pr-reading").size(px(26.)).flex().items_center().justify_center().child(crate::spinner::TurningArc::new(12., p.secondary));
+            let spinner = div()
+                .id("pr-reading")
+                .size(px(26.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::spinner::TurningArc::new(12., p.secondary));
             out = out.child(tipped(spinner, "Reading it from GitHub".to_owned()));
         } else {
-            out = out.child(self.header_button("pr-refresh", "arrow.clockwise", "Read it again from GitHub".to_owned(), p, cx, move |this, cx| this.load_pr(&refresh_url, cx)));
+            out = out.child(self.header_button(
+                "pr-refresh",
+                "arrow.clockwise",
+                "Read it again from GitHub".to_owned(),
+                p,
+                cx,
+                move |this, cx| this.load_pr(&refresh_url, cx),
+            ));
         }
-        out = out.child(self.header_button("pr-open", "arrow.up.right", "Open on GitHub".to_owned(), p, cx, move |_, cx| crate::files::open_web(&open_url, cx)));
+        out = out.child(self.header_button(
+            "pr-open",
+            "arrow.up.right",
+            "Open on GitHub".to_owned(),
+            p,
+            cx,
+            move |_, cx| crate::files::open_web(&open_url, cx),
+        ));
         out.into_any_element()
     }
 
     /// The PR's tab: its Overview, Diff or Checks, under the title and the
     /// buttons.
-    pub(crate) fn render_pr(&mut self, thread: &ThreadSummary, url: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_pr(
+        &mut self,
+        thread: &ThreadSummary,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let pr = match self.prs.loads.get(url) {
-            None | Some(PrLoad::Loading) => return pr_skeleton(style::primary_opacity(cx, 0.07)).into_any_element(),
+            None | Some(PrLoad::Loading) => {
+                return pr_skeleton(style::primary_opacity(cx, 0.07)).into_any_element()
+            }
             Some(PrLoad::Failed(e)) => {
                 let (again, open) = (url.to_owned(), url.to_owned());
                 return v_flex()
@@ -466,17 +596,38 @@ impl SidePane {
                     .justify_center()
                     .gap(px(10.))
                     .p(px(24.))
-                    .child(div().text_center().text_size(px(style::size::LABEL)).text_color(p.secondary).child(format!("Couldn't read this PR: {e}")))
+                    .child(
+                        div()
+                            .text_center()
+                            .text_size(px(style::size::LABEL))
+                            .text_color(p.secondary)
+                            .child(format!("Couldn't read this PR: {e}")),
+                    )
                     .child(
                         h_flex()
                             .gap(px(8.))
-                            .child(crate::push_button::PushButton::new("pr-again", "Try again", "Read it from GitHub again").render(cx, {
-                                let side = cx.entity().downgrade();
-                                move |_, _, cx| {
-                                    let _ = side.update(cx, |this, cx| this.load_pr(&again, cx));
-                                }
-                            }))
-                            .child(crate::push_button::PushButton::new("pr-browser", "Open on GitHub", "Open it in the browser").render(cx, move |_, _, cx| crate::files::open_web(&open, cx))),
+                            .child(
+                                crate::push_button::PushButton::new(
+                                    "pr-again",
+                                    "Try again",
+                                    "Read it from GitHub again",
+                                )
+                                .render(cx, {
+                                    let side = cx.entity().downgrade();
+                                    move |_, _, cx| {
+                                        let _ =
+                                            side.update(cx, |this, cx| this.load_pr(&again, cx));
+                                    }
+                                }),
+                            )
+                            .child(
+                                crate::push_button::PushButton::new(
+                                    "pr-browser",
+                                    "Open on GitHub",
+                                    "Open it in the browser",
+                                )
+                                .render(cx, move |_, _, cx| crate::files::open_web(&open, cx)),
+                            ),
                     )
                     .into_any_element();
             }
@@ -497,19 +648,37 @@ impl SidePane {
         v_flex()
             .size_full()
             .child(self.pr_bar(url, &pr, p, cx))
-            .child(div().id("pr-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&scroll).child(v_flex().px(px(18.)).pt(px(4.)).pb(px(24.)).child(body)))
+            .child(
+                div()
+                    .id("pr-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .child(v_flex().px(px(18.)).pt(px(4.)).pb(px(24.)).child(body)),
+            )
             .into_any_element()
     }
 
     /// Overview, Diff, Checks, and on the right Review and Merge.
-    fn pr_bar(&mut self, url: &str, pr: &Arc<PrView>, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn pr_bar(
+        &mut self,
+        url: &str,
+        pr: &Arc<PrView>,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let ui = &self.prs.ui[url];
         let (tab_now, busy) = (ui.tab, ui.busy);
         // A copy from an earlier run could say it can merge when it's merged
         // since: its buttons wait for GitHub's answer.
         let checking = ui.refreshing && self.prs.from_cache.contains(url);
         let held = busy.is_some() || checking;
-        let mut tabs = h_flex().p(px(2.)).gap(px(2.)).rounded(px(7.)).bg(style::chip_fill(cx));
+        let mut tabs = h_flex()
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(7.))
+            .bg(style::chip_fill(cx));
         for tab in PrTab::ALL {
             let on = tab == tab_now;
             let label = match tab {
@@ -530,8 +699,14 @@ impl SidePane {
                         .rounded(px(5.))
                         .text_size(px(style::size::LABEL))
                         .cursor_pointer()
-                        .when(on, |d| d.bg(style::chip_hover_fill(cx)).text_color(p.fg).font_semibold())
-                        .when(!on, |d| d.text_color(p.secondary).hover(move |s| s.bg(hover)))
+                        .when(on, |d| {
+                            d.bg(style::chip_hover_fill(cx))
+                                .text_color(p.fg)
+                                .font_semibold()
+                        })
+                        .when(!on, |d| {
+                            d.text_color(p.secondary).hover(move |s| s.bg(hover))
+                        })
                         .child(label),
                     tab.title(),
                 )
@@ -544,27 +719,104 @@ impl SidePane {
         let mut right = h_flex().gap(px(6.)).items_center();
         if pr.can_merge {
             let review_url = url.to_owned();
-            right = right.child(self.menu_button("pr-review", "Review", busy.is_some_and(|b| matches!(b, "approve" | "requestChanges")), held, false, if checking { CHECKING } else { "Approve it, or ask for changes" }, p, cx, move |this, position, window, cx| this.open_review_menu(&review_url, position, window, cx)));
-            let method = rules::merge_method(&pr.merge_methods, crate::reply_links::pr_merge_method());
+            right = right.child(self.menu_button(
+                "pr-review",
+                "Review",
+                busy.is_some_and(|b| matches!(b, "approve" | "requestChanges")),
+                held,
+                false,
+                if checking {
+                    CHECKING
+                } else {
+                    "Approve it, or ask for changes"
+                },
+                p,
+                cx,
+                move |this, position, window, cx| {
+                    this.open_review_menu(&review_url, position, window, cx)
+                },
+            ));
+            let method =
+                rules::merge_method(&pr.merge_methods, crate::reply_links::pr_merge_method());
             if let Some(method) = method.filter(|_| pr.state == PrState::Open) {
                 let merge_url = url.to_owned();
-                let label = if busy == Some("merge") { "Merging…" } else { "Merge" };
-                let tip = if checking { CHECKING.to_owned() } else { format!("{} (the arrow picks another way)", method.title()) };
-                right = right.child(self.menu_button("pr-merge", label, busy == Some("merge"), held, true, &tip, p, cx, move |this, position, window, cx| this.open_merge_menu(&merge_url, position, window, cx)));
+                let label = if busy == Some("merge") {
+                    "Merging…"
+                } else {
+                    "Merge"
+                };
+                let tip = if checking {
+                    CHECKING.to_owned()
+                } else {
+                    format!("{} (the arrow picks another way)", method.title())
+                };
+                right = right.child(self.menu_button(
+                    "pr-merge",
+                    label,
+                    busy == Some("merge"),
+                    held,
+                    true,
+                    &tip,
+                    p,
+                    cx,
+                    move |this, position, window, cx| {
+                        this.open_merge_menu(&merge_url, position, window, cx)
+                    },
+                ));
             }
         }
         // The buttons go under the views when the pane's too narrow for both.
-        let bar = h_flex().flex_none().flex_wrap().px(px(14.)).py(px(8.)).gap(px(8.)).items_center().child(tabs).child(div().flex_1()).child(right);
+        let bar = h_flex()
+            .flex_none()
+            .flex_wrap()
+            .px(px(14.))
+            .py(px(8.))
+            .gap(px(8.))
+            .items_center()
+            .child(tabs)
+            .child(div().flex_1())
+            .child(right);
         let read_at = self.prs.read_at.get(url).copied();
-        v_flex().flex_none().child(bar).when_some(read_at.filter(|_| checking), |col, at| {
-            col.child(div().px(px(18.)).pb(px(4.)).text_size(px(style::size::DETAIL)).text_color(p.faint).child(format!("As it was {}. Checking GitHub for changes…", ago_words(at))))
-        })
+        v_flex()
+            .flex_none()
+            .child(bar)
+            .when_some(read_at.filter(|_| checking), |col, at| {
+                col.child(
+                    div()
+                        .px(px(18.))
+                        .pb(px(4.))
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(p.faint)
+                        .child(format!(
+                            "As it was {}. Checking GitHub for changes…",
+                            ago_words(at)
+                        )),
+                )
+            })
     }
 
     /// A button that opens its menu below itself; `primary` is Merge's fill.
-    #[allow(clippy::too_many_arguments)]
-    fn menu_button(&self, id: &'static str, label: &str, spinning: bool, held: bool, primary: bool, tip: &str, p: Palette, cx: &mut Context<Self>, open: impl Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>) + 'static) -> impl IntoElement {
-        let fill = if primary { hsla(0.36, 0.45, 0.33, 1.) } else { style::button_fill(cx) };
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+    )]
+    fn menu_button(
+        &self,
+        id: &'static str,
+        label: &str,
+        spinning: bool,
+        held: bool,
+        primary: bool,
+        tip: &str,
+        p: Palette,
+        cx: &mut Context<Self>,
+        open: impl Fn(&mut SidePane, Point<Pixels>, &mut Window, &mut Context<SidePane>) + 'static,
+    ) -> impl IntoElement {
+        let fill = if primary {
+            hsla(0.36, 0.45, 0.33, 1.)
+        } else {
+            style::button_fill(cx)
+        };
         let text = if primary { gpui::white() } else { p.fg };
         let mut b = div()
             .id(id)
@@ -581,7 +833,9 @@ impl SidePane {
         if spinning {
             b = b.child(crate::spinner::TurningArc::new(11., text));
         }
-        b = b.child(label.to_owned()).child(icon("chevron.down", 9., text));
+        b = b
+            .child(label.to_owned())
+            .child(icon("chevron.down", 9., text));
         if held {
             b = b.opacity(0.7);
         } else {
@@ -596,14 +850,35 @@ impl SidePane {
         }))
     }
 
-    fn open_merge_menu(&mut self, url: &str, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(PrLoad::Ready(pr)) = self.prs.loads.get(url) else { return };
+    fn open_merge_menu(
+        &mut self,
+        url: &str,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(PrLoad::Ready(pr)) = self.prs.loads.get(url) else {
+            return;
+        };
         let starred = rules::merge_method(&pr.merge_methods, crate::reply_links::pr_merge_method());
         let mut items: Vec<crate::highlights::MenuItem> = pr
             .merge_methods
             .iter()
             // The starred one is what the Merge button means.
-            .map(|m| crate::highlights::MenuItem::action(m.title(), if Some(*m) == starred { "star.fill" } else { "arrow.triangle.merge" }, crate::highlights::MenuAction::PrMerge { url: url.to_owned(), method: m.id().to_owned() }))
+            .map(|m| {
+                crate::highlights::MenuItem::action(
+                    m.title(),
+                    if Some(*m) == starred {
+                        "star.fill"
+                    } else {
+                        "arrow.triangle.merge"
+                    },
+                    crate::highlights::MenuAction::PrMerge {
+                        url: url.to_owned(),
+                        method: m.id().to_owned(),
+                    },
+                )
+            })
             .collect();
         // The default, set from the same menu and marked (AGENTS.md's rule
         // for menus that pick one of several).
@@ -611,53 +886,152 @@ impl SidePane {
         let choices = pr
             .merge_methods
             .iter()
-            .map(|m| crate::highlights::MenuItem { title: m.title().to_owned(), symbol: Some("star"), action: Some(crate::highlights::MenuAction::PrMergeDefault { method: m.id().to_owned() }), checked: Some(*m) == starred, children: vec![] })
+            .map(|m| crate::highlights::MenuItem {
+                title: m.title().to_owned(),
+                symbol: Some("star"),
+                action: Some(crate::highlights::MenuAction::PrMergeDefault {
+                    method: m.id().to_owned(),
+                }),
+                checked: Some(*m) == starred,
+                children: vec![],
+            })
             .collect();
-        items.push(crate::highlights::MenuItem::submenu("Default", "star", choices));
+        items.push(crate::highlights::MenuItem::submenu(
+            "Default", "star", choices,
+        ));
         self.open_menu(items, position, window, cx);
     }
 
-    fn open_review_menu(&mut self, url: &str, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_review_menu(
+        &mut self,
+        url: &str,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::highlights::{MenuAction, MenuItem};
         let items = vec![
-            MenuItem::action("Approve", "checkmark", MenuAction::PrReview { url: url.to_owned(), action: "approve".into() }),
-            MenuItem::action("Request changes", "exclamationmark.triangle", MenuAction::PrReview { url: url.to_owned(), action: "requestChanges".into() }),
+            MenuItem::action(
+                "Approve",
+                "checkmark",
+                MenuAction::PrReview {
+                    url: url.to_owned(),
+                    action: "approve".into(),
+                },
+            ),
+            MenuItem::action(
+                "Request changes",
+                "exclamationmark.triangle",
+                MenuAction::PrReview {
+                    url: url.to_owned(),
+                    action: "requestChanges".into(),
+                },
+            ),
         ];
         self.open_menu(items, position, window, cx);
     }
 
     /// A merge or review chosen from its menu.
-    pub(crate) fn pr_menu_action(&mut self, url: &str, action: &str, method: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pr_menu_action(
+        &mut self,
+        url: &str,
+        action: &str,
+        method: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match action {
             "merge" => {
-                let Some(method) = method.and_then(MergeMethod::parse) else { return };
-                self.pr_act(url, "merge", json!({ "action": "merge", "method": method.id() }), window, cx);
+                let Some(method) = method.and_then(MergeMethod::parse) else {
+                    return;
+                };
+                self.pr_act(
+                    url,
+                    "merge",
+                    json!({ "action": "merge", "method": method.id() }),
+                    window,
+                    cx,
+                );
             }
             "approve" | "requestChanges" => {
-                let body = self.prs.ui.get(url).and_then(|u| u.comment.as_ref()).map(|c| c.read(cx).value().to_string()).unwrap_or_default();
+                let body = self
+                    .prs
+                    .ui
+                    .get(url)
+                    .and_then(|u| u.comment.as_ref())
+                    .map(|c| c.read(cx).value().to_string())
+                    .unwrap_or_default();
                 if action == "requestChanges" && body.trim().is_empty() {
                     let ui = self.prs.ui.entry(url.to_owned()).or_default();
-                    ui.error = Some("Say what to change in the comment box, then Request changes.".into());
+                    ui.error =
+                        Some("Say what to change in the comment box, then Request changes.".into());
                     ui.tab = PrTab::Overview;
                     cx.notify();
                     return;
                 }
-                let key = if action == "approve" { "approve" } else { "requestChanges" };
-                self.pr_act(url, key, json!({ "action": action, "body": body }), window, cx);
+                let key = if action == "approve" {
+                    "approve"
+                } else {
+                    "requestChanges"
+                };
+                self.pr_act(
+                    url,
+                    key,
+                    json!({ "action": action, "body": body }),
+                    window,
+                    cx,
+                );
             }
             _ => {}
         }
     }
 
-    fn pr_overview(&mut self, thread: &ThreadSummary, url: &str, pr: &Arc<PrView>, p: Palette, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "baselined at 286 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
+    )]
+    fn pr_overview(
+        &mut self,
+        thread: &ThreadSummary,
+        url: &str,
+        pr: &Arc<PrView>,
+        p: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let now = now_ms();
         let mut col = v_flex().gap(px(0.));
         // Title, and who and when.
-        col = col.child(div().text_size(px(17.)).line_height(px(23.)).font_semibold().text_color(p.fg).child(pr.title.clone()));
-        let when = parse_ms(&pr.created_at).map(|ms| format!(" · {} ago", ago(ms, now))).unwrap_or_default();
-        col = col.child(div().mt(px(3.)).text_size(px(style::size::DETAIL)).text_color(p.secondary).child(format!("{}{when}", pr.author)));
+        col = col.child(
+            div()
+                .text_size(px(17.))
+                .line_height(px(23.))
+                .font_semibold()
+                .text_color(p.fg)
+                .child(pr.title.clone()),
+        );
+        let when = parse_ms(&pr.created_at)
+            .map(|ms| format!(" · {} ago", ago(ms, now)))
+            .unwrap_or_default();
+        col = col.child(
+            div()
+                .mt(px(3.))
+                .text_size(px(style::size::DETAIL))
+                .text_color(p.secondary)
+                .child(format!("{}{when}", pr.author)),
+        );
         if let Some(e) = self.prs.ui.get(url).and_then(|u| u.error.clone()) {
-            col = col.child(div().mt(px(10.)).px(px(10.)).py(px(7.)).rounded(px(7.)).bg(style::error_background(cx)).text_size(px(style::size::DETAIL)).text_color(style::failed_text(cx)).child(e));
+            col = col.child(
+                div()
+                    .mt(px(10.))
+                    .px(px(10.))
+                    .py(px(7.))
+                    .rounded(px(7.))
+                    .bg(style::error_background(cx))
+                    .text_size(px(style::size::DETAIL))
+                    .text_color(style::failed_text(cx))
+                    .child(e),
+            );
         }
         // The fields.
         let (checks_words, failed) = rules::checks_summary(&pr.checks);
@@ -668,42 +1042,74 @@ impl SidePane {
             h_flex()
                 .gap(px(5.))
                 .min_w_0()
-                .child(div().font_family(mono.clone()).text_size(px(style::size::DETAIL)).truncate().child(pr.head.clone()))
+                .child(
+                    div()
+                        .font_family(mono.clone())
+                        .text_size(px(style::size::DETAIL))
+                        .truncate()
+                        .child(pr.head.clone()),
+                )
                 .child(div().text_color(p.faint).child("→"))
-                .child(div().font_family(mono).text_size(px(style::size::DETAIL)).child(pr.base.clone()))
-                .child(div().ml(px(4.)).text_color(style::added_text(cx)).child(format!("+{}", pr.additions)))
-                .child(div().text_color(style::removed_text(cx)).child(format!("−{}", pr.deletions)))
+                .child(
+                    div()
+                        .font_family(mono)
+                        .text_size(px(style::size::DETAIL))
+                        .child(pr.base.clone()),
+                )
+                .child(
+                    div()
+                        .ml(px(4.))
+                        .text_color(style::added_text(cx))
+                        .child(format!("+{}", pr.additions)),
+                )
+                .child(
+                    div()
+                        .text_color(style::removed_text(cx))
+                        .child(format!("−{}", pr.deletions)),
+                )
                 .into_any_element(),
             p,
         ));
         fields = fields.child(field(
             "Status",
-            h_flex().gap(px(6.)).items_center().child(icon("arrow.triangle.pull", 11., state_colour(pr.state, cx))).child(rules::status_words(pr)).into_any_element(),
+            h_flex()
+                .gap(px(6.))
+                .items_center()
+                .child(icon("arrow.triangle.pull", 11., state_colour(pr.state, cx)))
+                .child(rules::status_words(pr))
+                .into_any_element(),
             p,
         ));
         let to_checks = url.to_owned();
         fields = fields.child(field(
             "Checks",
-            tipped(div()
-                .id("pr-checks-row")
-                .cursor_pointer()
-                .child(
+            tipped(
+                div().id("pr-checks-row").cursor_pointer().child(
                     h_flex()
                         .gap(px(4.))
                         .child(checks_words)
-                        .when_some(failed, |d, f| d.child(div().text_color(style::failed_text(cx)).child(format!("· {f}")))),
-                ), "See each check")
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.prs.ui.entry(to_checks.clone()).or_default().tab = PrTab::Checks;
-                    cx.notify();
-                }))
-                .into_any_element(),
+                        .when_some(failed, |d, f| {
+                            d.child(
+                                div()
+                                    .text_color(style::failed_text(cx))
+                                    .child(format!("· {f}")),
+                            )
+                        }),
+                ),
+                "See each check",
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.prs.ui.entry(to_checks.clone()).or_default().tab = PrTab::Checks;
+                cx.notify();
+            }))
+            .into_any_element(),
             p,
         ));
         col = col.child(fields);
         // Claude: a thread to review it, or to work on it.
         let starting = self.prs.starting.is_some();
-        let (review_pr, work_pr, review_thread, work_thread) = (pr.clone(), pr.clone(), thread.clone(), thread.clone());
+        let (review_pr, work_pr, review_thread, work_thread) =
+            (pr.clone(), pr.clone(), thread.clone(), thread.clone());
         // Two buttons that wrap onto a second line in a narrow pane, rather
         // than words saying what they're for: their tips say that.
         col = col.child(
@@ -712,27 +1118,65 @@ impl SidePane {
                 .flex_wrap()
                 .gap(px(8.))
                 .items_center()
-                .child(crate::push_button::PushButton::new("pr-claude-work", "Start a thread", "A new thread in this folder, with the PR in its message box").small().render(cx, {
-                    let side = cx.entity().downgrade();
-                    move |_, window, cx| {
-                        let _ = side.update(cx, |this, cx| this.start_pr_draft(&work_pr, &work_thread, window, cx));
-                    }
-                }))
-                .child(crate::push_button::PushButton::new("pr-claude-review", "Ask Claude to review", "Starts a thread in this folder that reads it and says whether to merge").small().busy(starting).render(cx, {
-                    let side = cx.entity().downgrade();
-                    move |_, window, cx| {
-                        let _ = side.update(cx, |this, cx| this.start_pr_review(&review_pr, &review_thread, window, cx));
-                    }
-                })),
+                .child(
+                    crate::push_button::PushButton::new(
+                        "pr-claude-work",
+                        "Start a thread",
+                        "A new thread in this folder, with the PR in its message box",
+                    )
+                    .small()
+                    .render(cx, {
+                        let side = cx.entity().downgrade();
+                        move |_, window, cx| {
+                            let _ = side.update(cx, |this, cx| {
+                                this.start_pr_draft(&work_pr, &work_thread, window, cx)
+                            });
+                        }
+                    }),
+                )
+                .child(
+                    crate::push_button::PushButton::new(
+                        "pr-claude-review",
+                        "Ask Claude to review",
+                        "Starts a thread in this folder that reads it and says whether to merge",
+                    )
+                    .small()
+                    .busy(starting)
+                    .render(cx, {
+                        let side = cx.entity().downgrade();
+                        move |_, window, cx| {
+                            let _ = side.update(cx, |this, cx| {
+                                this.start_pr_review(&review_pr, &review_thread, window, cx)
+                            });
+                        }
+                    }),
+                ),
         );
         // The description.
         if !pr.body.trim().is_empty() {
             let doc = self.pr_markdown(url, None, &pr.body, cx);
-            col = col.child(div().mt(px(16.)).pt(px(12.)).border_t_1().border_color(p.hairline).text_size(px(style::size::LABEL)).line_height(px(20.)).child(self.pr_text(&doc, thread, cx)));
+            col = col.child(
+                div()
+                    .mt(px(16.))
+                    .pt(px(12.))
+                    .border_t_1()
+                    .border_color(p.hairline)
+                    .text_size(px(style::size::LABEL))
+                    .line_height(px(20.))
+                    .child(self.pr_text(&doc, thread, cx)),
+            );
         }
         // What's happened on it.
         if !pr.activity.is_empty() {
-            col = col.child(div().mt(px(18.)).mb(px(6.)).text_size(px(style::size::LABEL)).font_semibold().text_color(p.fg).child("Activity"));
+            col = col.child(
+                div()
+                    .mt(px(18.))
+                    .mb(px(6.))
+                    .text_size(px(style::size::LABEL))
+                    .font_semibold()
+                    .text_color(p.fg)
+                    .child("Activity"),
+            );
             for (i, a) in pr.activity.iter().enumerate() {
                 let what = match a.review.as_deref() {
                     Some("approved") => "approved",
@@ -740,11 +1184,23 @@ impl SidePane {
                     _ if a.kind == "review" => "reviewed",
                     _ => "commented",
                 };
-                let when = parse_ms(&a.at).map(|ms| format!(" · {}", ago(ms, now))).unwrap_or_default();
-                let mut entry = v_flex().py(px(6.)).gap(px(3.)).child(div().text_size(px(style::size::DETAIL)).text_color(p.secondary).child(format!("{} {what}{when}", a.author)));
+                let when = parse_ms(&a.at)
+                    .map(|ms| format!(" · {}", ago(ms, now)))
+                    .unwrap_or_default();
+                let mut entry = v_flex().py(px(6.)).gap(px(3.)).child(
+                    div()
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(p.secondary)
+                        .child(format!("{} {what}{when}", a.author)),
+                );
                 if !a.body.trim().is_empty() {
                     let doc = self.pr_markdown(url, Some(i), &a.body, cx);
-                    entry = entry.child(div().text_size(px(style::size::LABEL)).line_height(px(20.)).child(self.pr_text(&doc, thread, cx)));
+                    entry = entry.child(
+                        div()
+                            .text_size(px(style::size::LABEL))
+                            .line_height(px(20.))
+                            .child(self.pr_text(&doc, thread, cx)),
+                    );
                 }
                 col = col.child(entry);
             }
@@ -760,41 +1216,93 @@ impl SidePane {
                 .border_1()
                 .border_color(p.card_border)
                 .bg(style::composer_fill(cx))
-                .child(div().px(px(4.)).pt(px(2.)).child(Textarea::new(&box_).h(px(64.)).appearance(false)))
                 .child(
-                    h_flex().px(px(8.)).pb(px(8.)).child(div().flex_1()).child(crate::push_button::PushButton::new("pr-comment", "Comment", "Posts it on the PR on GitHub, as your gh account").small().busy(busy == Some("comment")).render(cx, {
-                        let side = cx.entity().downgrade();
-                        let input = box_.clone();
-                        move |_, window, cx| {
-                            let text = input.read(cx).value().to_string();
-                            let _ = side.update(cx, |this, cx| {
-                                if text.trim().is_empty() {
-                                    return;
-                                }
-                                this.pr_act(&send_url, "comment", json!({ "action": "comment", "body": text }), window, cx);
-                            });
-                        }
-                    })),
+                    div()
+                        .px(px(4.))
+                        .pt(px(2.))
+                        .child(Textarea::new(&box_).h(px(64.)).appearance(false)),
+                )
+                .child(
+                    h_flex().px(px(8.)).pb(px(8.)).child(div().flex_1()).child(
+                        crate::push_button::PushButton::new(
+                            "pr-comment",
+                            "Comment",
+                            "Posts it on the PR on GitHub, as your gh account",
+                        )
+                        .small()
+                        .busy(busy == Some("comment"))
+                        .render(cx, {
+                            let side = cx.entity().downgrade();
+                            let input = box_.clone();
+                            move |_, window, cx| {
+                                let text = input.read(cx).value().to_string();
+                                let _ = side.update(cx, |this, cx| {
+                                    if text.trim().is_empty() {
+                                        return;
+                                    }
+                                    this.pr_act(
+                                        &send_url,
+                                        "comment",
+                                        json!({ "action": "comment", "body": text }),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                        }),
+                    ),
                 ),
         );
         // Closing (or opening it again) is rare and final enough to sit
         // at the bottom, not beside Merge.
         if pr.can_merge || pr.state == PrState::Closed {
-            let (label, action) = if pr.state == PrState::Closed { ("Reopen", "reopen") } else { ("Close without merging", "close") };
+            let (label, action) = if pr.state == PrState::Closed {
+                ("Reopen", "reopen")
+            } else {
+                ("Close without merging", "close")
+            };
             if pr.state != PrState::Merged {
                 let act_url = url.to_owned();
-                col = col.child(h_flex().mt(px(10.)).child(div().flex_1()).child(crate::push_button::PushButton::new("pr-close", label, if action == "close" { "Closes the PR on GitHub" } else { "Opens the PR again on GitHub" }).small().busy(busy == Some(if action == "close" { "close" } else { "reopen" })).render(cx, {
-                    let side = cx.entity().downgrade();
-                    move |_, window, cx| {
-                        let _ = side.update(cx, |this, cx| this.pr_act(&act_url, if action == "close" { "close" } else { "reopen" }, json!({ "action": action }), window, cx));
-                    }
-                })));
+                col = col.child(
+                    h_flex().mt(px(10.)).child(div().flex_1()).child(
+                        crate::push_button::PushButton::new(
+                            "pr-close",
+                            label,
+                            if action == "close" {
+                                "Closes the PR on GitHub"
+                            } else {
+                                "Opens the PR again on GitHub"
+                            },
+                        )
+                        .small()
+                        .busy(busy == Some(if action == "close" { "close" } else { "reopen" }))
+                        .render(cx, {
+                            let side = cx.entity().downgrade();
+                            move |_, window, cx| {
+                                let _ = side.update(cx, |this, cx| {
+                                    this.pr_act(
+                                        &act_url,
+                                        if action == "close" { "close" } else { "reopen" },
+                                        json!({ "action": action }),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }
+                        }),
+                    ),
+                );
             }
         }
         col.into_any_element()
     }
 
-    fn pr_comment_box(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<TextareaState> {
+    fn pr_comment_box(
+        &mut self,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextareaState> {
         if let Some(c) = self.prs.ui.get(url).and_then(|u| u.comment.clone()) {
             return c;
         }
@@ -805,7 +1313,13 @@ impl SidePane {
 
     /// A markdown view kept for the description (`None`) or a comment, made
     /// again only when its words change.
-    fn pr_markdown(&mut self, url: &str, at: Option<usize>, text: &str, cx: &mut Context<Self>) -> Entity<TextViewState> {
+    fn pr_markdown(
+        &mut self,
+        url: &str,
+        at: Option<usize>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextViewState> {
         let ui = self.prs.ui.entry(url.to_owned()).or_default();
         let kept = match at {
             None => ui.body.as_ref(),
@@ -830,26 +1344,55 @@ impl SidePane {
 
     /// PR words, drawn as a reply's, their links going where a reply's go
     /// from the pane (another PR opens as its own tab).
-    fn pr_text(&self, doc: &Entity<TextViewState>, thread: &ThreadSummary, cx: &mut Context<Self>) -> impl IntoElement {
+    fn pr_text(
+        &self,
+        doc: &Entity<TextViewState>,
+        thread: &ThreadSummary,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let side = cx.entity().downgrade();
         let style = crate::rows::reading_style(cx);
         // Through the open gate's view, its click handler replaced by the
         // pane's, which still opens only through the gate (or as a PR tab).
-        crate::open_gate::text_view(doc, crate::open_gate::Origin::ThisMac, &thread.cwd).selectable(true).style(style).on_link_click(move |url: &SharedString, _: &ClickEvent, _: &mut Window, cx: &mut App| {
-            let url = url.to_string();
-            let _ = side.update(cx, |this, cx| this.follow_link(&url, cx));
-        })
+        crate::open_gate::text_view(doc, crate::open_gate::Origin::ThisMac, &thread.cwd)
+            .selectable(true)
+            .style(style)
+            .on_link_click(
+                move |url: &SharedString, _: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    let url = url.to_string();
+                    let _ = side.update(cx, |this, cx| this.follow_link(&url, cx));
+                },
+            )
     }
 
-    fn pr_diff(&mut self, url: &str, pr: &Arc<PrView>, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn pr_diff(
+        &mut self,
+        url: &str,
+        pr: &Arc<PrView>,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if pr.files.is_empty() && pr.files_later {
             return files_skeleton(style::primary_opacity(cx, 0.07)).into_any_element();
         }
         if pr.files.is_empty() {
-            let note = pr.files_error.clone().map_or_else(|| "No changes.".to_owned(), |e| format!("Couldn't read the diff: {e}"));
-            return div().pt(px(20.)).text_size(px(style::size::LABEL)).text_color(p.secondary).child(note).into_any_element();
+            let note = pr.files_error.clone().map_or_else(
+                || "No changes.".to_owned(),
+                |e| format!("Couldn't read the diff: {e}"),
+            );
+            return div()
+                .pt(px(20.))
+                .text_size(px(style::size::LABEL))
+                .text_color(p.secondary)
+                .child(note)
+                .into_any_element();
         }
-        let folded = self.prs.ui.get(url).map(|u| u.folded.clone()).unwrap_or_default();
+        let folded = self
+            .prs
+            .ui
+            .get(url)
+            .map(|u| u.folded.clone())
+            .unwrap_or_default();
         let mut col = v_flex().gap(px(6.));
         for (i, f) in pr.files.iter().enumerate() {
             let shut = folded.contains(&f.path);
@@ -858,29 +1401,68 @@ impl SidePane {
                 Some(from) => format!("{from} → {}", f.path),
                 None => f.path.clone(),
             };
-            let head = tipped(h_flex()
-                .id(("pr-file", i))
-                .gap(px(6.))
-                .py(px(4.))
-                .items_center()
-                .cursor_pointer()
-                .child(icon(if shut { "chevron.right" } else { "chevron.down" }, 10., p.faint))
-                .child(div().flex_1().min_w_0().truncate().font_family(cx.theme().mono_font_family.clone()).text_size(px(style::size::DETAIL)).child(name))
-                .child(div().text_size(px(style::size::DETAIL)).text_color(style::added_text(cx)).child(format!("+{}", f.additions)))
-                .child(div().text_size(px(style::size::DETAIL)).text_color(style::removed_text(cx)).child(format!("−{}", f.deletions))), if shut { "Show this file's changes" } else { "Hide this file's changes" })
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    let ui = this.prs.ui.entry(key.clone()).or_default();
-                    if !ui.folded.remove(&path) {
-                        ui.folded.insert(path.clone());
-                    }
-                    cx.notify();
-                }));
+            let head = tipped(
+                h_flex()
+                    .id(("pr-file", i))
+                    .gap(px(6.))
+                    .py(px(4.))
+                    .items_center()
+                    .cursor_pointer()
+                    .child(icon(
+                        if shut {
+                            "chevron.right"
+                        } else {
+                            "chevron.down"
+                        },
+                        10.,
+                        p.faint,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_size(px(style::size::DETAIL))
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(style::size::DETAIL))
+                            .text_color(style::added_text(cx))
+                            .child(format!("+{}", f.additions)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(style::size::DETAIL))
+                            .text_color(style::removed_text(cx))
+                            .child(format!("−{}", f.deletions)),
+                    ),
+                if shut {
+                    "Show this file's changes"
+                } else {
+                    "Hide this file's changes"
+                },
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                let ui = this.prs.ui.entry(key.clone()).or_default();
+                if !ui.folded.remove(&path) {
+                    ui.folded.insert(path.clone());
+                }
+                cx.notify();
+            }));
             col = col.child(head);
             if shut {
                 continue;
             }
             if f.binary {
-                col = col.child(div().pl(px(16.)).text_size(px(style::size::DETAIL)).text_color(p.secondary).child("Binary file"));
+                col = col.child(
+                    div()
+                        .pl(px(16.))
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(p.secondary)
+                        .child("Binary file"),
+                );
             } else if !f.hunks.is_empty() {
                 let diff = f.edit_diff(&format!("{url}#{i}"));
                 col = col.child(
@@ -890,20 +1472,42 @@ impl SidePane {
                         .border_color(p.card_border)
                         .py(px(4.))
                         .overflow_hidden()
-                        .child(crate::rows::diff::diff_with_note(SharedString::from(format!("pr-diff-{i}")), std::slice::from_ref(&diff), usize::MAX, 8., None, crate::rows::diff::DiffNote::None, cx)),
+                        .child(crate::rows::diff::diff_with_note(
+                            SharedString::from(format!("pr-diff-{i}")),
+                            std::slice::from_ref(&diff),
+                            usize::MAX,
+                            8.,
+                            None,
+                            crate::rows::diff::DiffNote::None,
+                            cx,
+                        )),
                 );
             }
         }
         if let Some(cut) = pr.files_cut {
-            col = col.child(div().pt(px(6.)).text_size(px(style::size::DETAIL)).text_color(p.secondary).child(format!("{cut} more lines are on GitHub.")));
+            col = col.child(
+                div()
+                    .pt(px(6.))
+                    .text_size(px(style::size::DETAIL))
+                    .text_color(p.secondary)
+                    .child(format!("{cut} more lines are on GitHub.")),
+            );
         }
         col.into_any_element()
     }
 
     /// Start a thread on it: the new-thread box in this thread's folder,
     /// with the PR's link and name in it for Mike to say what to do.
-    fn start_pr_draft(&mut self, pr: &PrView, thread: &ThreadSummary, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(app) = self.app.upgrade() else { return };
+    fn start_pr_draft(
+        &mut self,
+        pr: &PrView,
+        thread: &ThreadSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         let (text, cwd) = (rules::work_prompt(pr), thread.cwd.clone());
         app.update(cx, |app, cx| {
             app.new_thread(cx);
@@ -917,7 +1521,13 @@ impl SidePane {
 
     /// Ask Claude to review: a new thread in this folder that reads it and
     /// says whether to merge, opened once the runner has made it.
-    fn start_pr_review(&mut self, pr: &PrView, thread: &ThreadSummary, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_pr_review(
+        &mut self,
+        pr: &PrView,
+        thread: &ThreadSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.prs.starting.is_some() {
             return;
         }
@@ -931,7 +1541,10 @@ impl SidePane {
                 this.prs.starting = None;
                 match res {
                     Ok(v) => {
-                        if let (Ok(t), Some(app)) = (serde_json::from_value::<ThreadSummary>(v["thread"].clone()), app.upgrade()) {
+                        if let (Ok(t), Some(app)) = (
+                            serde_json::from_value::<ThreadSummary>(v["thread"].clone()),
+                            app.upgrade(),
+                        ) {
                             app.update(cx, |app, cx| {
                                 let id = t.id.clone();
                                 app.threads.insert(t.id.clone(), Arc::new(t));
@@ -940,7 +1553,19 @@ impl SidePane {
                         }
                     }
                     Err(e) => {
-                        if let Some(ui) = this.prs.ui.get_mut(&this.previews.values().find_map(|p| if let Target::Pr(u) = &p.target { Some(u.clone()) } else { None }).unwrap_or_default()) {
+                        if let Some(ui) = this.prs.ui.get_mut(
+                            &this
+                                .previews
+                                .values()
+                                .find_map(|p| {
+                                    if let Target::Pr(u) = &p.target {
+                                        Some(u.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_default(),
+                        ) {
                             ui.error = Some(format!("Couldn't start the review: {}", e.message));
                         }
                     }
@@ -959,7 +1584,13 @@ fn field(name: &'static str, value: AnyElement, p: Palette) -> impl IntoElement 
         .gap(px(10.))
         .items_center()
         .text_size(px(style::size::LABEL))
-        .child(div().w(px(64.)).flex_none().text_color(p.secondary).child(name))
+        .child(
+            div()
+                .w(px(64.))
+                .flex_none()
+                .text_color(p.secondary)
+                .child(name),
+        )
         .child(div().flex_1().min_w_0().text_color(p.fg).child(value))
 }
 
@@ -976,7 +1607,12 @@ pub(crate) fn state_colour(state: PrState, cx: &App) -> Hsla {
 
 fn pr_checks(pr: &PrView, p: Palette, cx: &mut App) -> AnyElement {
     if pr.checks.is_empty() {
-        return div().pt(px(20.)).text_size(px(style::size::LABEL)).text_color(p.secondary).child("No checks on this PR.").into_any_element();
+        return div()
+            .pt(px(20.))
+            .text_size(px(style::size::LABEL))
+            .text_color(p.secondary)
+            .child("No checks on this PR.")
+            .into_any_element();
     }
     let mut col = v_flex().pt(px(4.));
     for (i, c) in pr.checks.iter().enumerate() {
@@ -994,11 +1630,29 @@ fn pr_checks(pr: &PrView, p: Palette, cx: &mut App) -> AnyElement {
             .items_center()
             .text_size(px(style::size::LABEL))
             .child(icon(symbol, 12., colour))
-            .child(div().flex_1().min_w_0().truncate().text_color(p.fg).child(c.name.clone()))
-            .when_some(c.seconds, |d, s| d.child(div().text_size(px(style::size::DETAIL)).text_color(p.faint).child(rules::duration(s))));
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(p.fg)
+                    .child(c.name.clone()),
+            )
+            .when_some(c.seconds, |d, s| {
+                d.child(
+                    div()
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(p.faint)
+                        .child(rules::duration(s)),
+                )
+            });
         if let Some(url) = c.url.clone() {
             let hover = p.hover;
-            row = row.cursor_pointer().rounded(px(5.)).hover(move |s| s.bg(hover)).on_click(move |_, _, cx| crate::files::open_web(&url, cx));
+            row = row
+                .cursor_pointer()
+                .rounded(px(5.))
+                .hover(move |s| s.bg(hover))
+                .on_click(move |_, _, cx| crate::files::open_web(&url, cx));
             col = col.child(tipped(row, "Open its log on GitHub"));
         } else {
             col = col.child(row);
@@ -1023,15 +1677,33 @@ impl gpui_kit::base::text::MarkdownPlugin for PrMarks {
         "pr-link-mark"
     }
 
-    fn parse(&self, node: &markdown::mdast::Node, _cx: &gpui_kit::base::text::MarkdownParseContext<'_>) -> Option<gpui_kit::base::text::MarkdownNode> {
-        let markdown::mdast::Node::Link(link) = node else { return None };
+    fn parse(
+        &self,
+        node: &markdown::mdast::Node,
+        _cx: &gpui_kit::base::text::MarkdownParseContext<'_>,
+    ) -> Option<gpui_kit::base::text::MarkdownNode> {
+        let markdown::mdast::Node::Link(link) = node else {
+            return None;
+        };
         let url = link.url.strip_prefix(rules::MARK_SCHEME)?.to_owned();
-        Some(gpui_kit::base::text::MarkdownNode::new("pr-link-mark", PrMarkRef { url }).text("").markdown(""))
+        Some(
+            gpui_kit::base::text::MarkdownNode::new("pr-link-mark", PrMarkRef { url })
+                .text("")
+                .markdown(""),
+        )
     }
 
-    fn render_inline(&self, node: &gpui_kit::base::text::MarkdownNode, _context: &gpui_kit::base::text::InlineRenderContext, _window: &mut Window, cx: &mut App) -> Option<gpui_kit::base::text::InlineElement> {
+    fn render_inline(
+        &self,
+        node: &gpui_kit::base::text::MarkdownNode,
+        _context: &gpui_kit::base::text::InlineRenderContext,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<gpui_kit::base::text::InlineElement> {
         let mark = node.data::<PrMarkRef>()?.clone();
-        let app = cx.try_global::<crate::open_gate::GateNotices>().and_then(|n| n.0.upgrade());
+        let app = cx
+            .try_global::<crate::open_gate::GateNotices>()
+            .and_then(|n| n.0.upgrade());
         let state = app.and_then(|a| a.read(cx).side.read(cx).prs.states.get(&mark.url).copied());
         let colour = state.map_or(style::faint_text(cx), |s| state_colour(s, cx));
         let mark_el = div()
@@ -1052,7 +1724,10 @@ pub(crate) fn dump_read(text: &str, app: &crate::app::Threadbear, cx: &App) -> O
         return None;
     }
     let loads = &app.side.read(cx).prs.loads;
-    let out: Vec<String> = rules::pr_links(text).into_iter().filter(|u| loads.contains_key(u)).collect();
+    let out: Vec<String> = rules::pr_links(text)
+        .into_iter()
+        .filter(|u| loads.contains_key(u))
+        .collect();
     (!out.is_empty()).then_some(out)
 }
 
@@ -1060,12 +1735,24 @@ pub(crate) fn dump_read(text: &str, app: &crate::app::Threadbear, cx: &App) -> O
 /// request" until the runner says), in order. None with the experiment off
 /// or no PR links.
 #[cfg(feature = "automation")]
-pub(crate) fn dump_marks(text: &str, app: &crate::app::Threadbear, cx: &App) -> Option<Vec<String>> {
+pub(crate) fn dump_marks(
+    text: &str,
+    app: &crate::app::Threadbear,
+    cx: &App,
+) -> Option<Vec<String>> {
     if !on(app) {
         return None;
     }
     let states = &app.side.read(cx).prs.states;
-    let out: Vec<String> = rules::pr_links(text).into_iter().map(|u| format!("{u}: {}", states.get(&u).map_or("Pull request", |s| s.words()))).collect();
+    let out: Vec<String> = rules::pr_links(text)
+        .into_iter()
+        .map(|u| {
+            format!(
+                "{u}: {}",
+                states.get(&u).map_or("Pull request", |s| s.words())
+            )
+        })
+        .collect();
     (!out.is_empty()).then_some(out)
 }
 
@@ -1082,28 +1769,82 @@ fn ago_words(at: i64) -> String {
 /// (sidebar.rs `render_loading_rows`). Mike asked for skeletons (19 Nov).
 fn pr_skeleton(fill: Hsla) -> impl IntoElement {
     // Widths as parts of the pane, as it's often narrow.
-    let bar = |w: f32, h: f32| div().flex_none().w(relative(w)).h(px(h)).rounded_full().bg(fill);
+    let bar = |w: f32, h: f32| {
+        div()
+            .flex_none()
+            .w(relative(w))
+            .h(px(h))
+            .rounded_full()
+            .bg(fill)
+    };
     let block = |w: f32, h: f32| div().flex_none().w(px(w)).h(px(h)).rounded(px(6.)).bg(fill);
-    let field = move |label: f32, value: f32| h_flex().w_full().gap(px(14.)).items_center().child(div().flex_none().w(px(label)).h(px(8.)).rounded_full().bg(fill)).child(div().flex_1().child(bar(value, 8.)));
+    let field = move |label: f32, value: f32| {
+        h_flex()
+            .w_full()
+            .gap(px(14.))
+            .items_center()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(label))
+                    .h(px(8.))
+                    .rounded_full()
+                    .bg(fill),
+            )
+            .child(div().flex_1().child(bar(value, 8.)))
+    };
     v_flex()
         .id("pr-skeleton")
         .size_full()
         .min_w_0()
         .overflow_hidden()
-        .with_animation("pr-skeleton", Animation::new(std::time::Duration::from_millis(1800)).repeat().with_easing(bounce(ease_in_out)), |el, delta| el.opacity(1. - delta * 0.5))
+        .with_animation(
+            "pr-skeleton",
+            Animation::new(std::time::Duration::from_millis(1800))
+                .repeat()
+                .with_easing(bounce(ease_in_out)),
+            |el, delta| el.opacity(1. - delta * 0.5),
+        )
         // Nothing here may be wider than a narrow pane, or it widens the
         // whole skeleton past the pane's edge.
-        .child(h_flex().min_w_0().px(px(14.)).py(px(8.)).gap(px(8.)).items_center().child(div().flex_1().min_w_0().child(div().w(relative(0.6)).h(px(26.)).rounded(px(6.)).bg(fill))).child(block(64., 24.)))
+        .child(
+            h_flex()
+                .min_w_0()
+                .px(px(14.))
+                .py(px(8.))
+                .gap(px(8.))
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().w(relative(0.6)).h(px(26.)).rounded(px(6.)).bg(fill)),
+                )
+                .child(block(64., 24.)),
+        )
         .child(
             v_flex()
                 .px(px(18.))
                 .pt(px(12.))
                 .gap(px(14.))
-                .child(v_flex().gap(px(8.)).child(bar(0.85, 13.)).child(bar(0.5, 13.)))
+                .child(
+                    v_flex()
+                        .gap(px(8.))
+                        .child(bar(0.85, 13.))
+                        .child(bar(0.5, 13.)),
+                )
                 .child(field(52., 0.4))
                 .child(field(52., 0.65))
                 .child(field(52., 0.5))
-                .child(v_flex().pt(px(8.)).gap(px(8.)).child(bar(0.95, 8.)).child(bar(0.85, 8.)).child(bar(0.9, 8.)).child(bar(0.55, 8.))),
+                .child(
+                    v_flex()
+                        .pt(px(8.))
+                        .gap(px(8.))
+                        .child(bar(0.95, 8.))
+                        .child(bar(0.85, 8.))
+                        .child(bar(0.9, 8.))
+                        .child(bar(0.55, 8.)),
+                ),
         )
 }
 
@@ -1116,15 +1857,32 @@ fn files_skeleton(fill: Hsla) -> impl IntoElement {
         .w_full()
         .pt(px(6.))
         .gap(px(12.))
-        .with_animation("pr-files-skeleton", Animation::new(std::time::Duration::from_millis(1800)).repeat().with_easing(bounce(ease_in_out)), |el, delta| el.opacity(1. - delta * 0.5))
+        .with_animation(
+            "pr-files-skeleton",
+            Animation::new(std::time::Duration::from_millis(1800))
+                .repeat()
+                .with_easing(bounce(ease_in_out)),
+            |el, delta| el.opacity(1. - delta * 0.5),
+        )
         .children(NAMES.into_iter().map(move |w| {
             h_flex()
                 .w_full()
                 .gap(px(8.))
                 .items_center()
                 .child(div().flex_none().size(px(9.)).rounded(px(2.)).bg(fill))
-                .child(div().flex_1().child(div().w(relative(w)).h(px(9.)).rounded_full().bg(fill)))
-                .child(div().flex_none().w(px(46.)).h(px(9.)).rounded_full().bg(fill))
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().w(relative(w)).h(px(9.)).rounded_full().bg(fill)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(46.))
+                        .h(px(9.))
+                        .rounded_full()
+                        .bg(fill),
+                )
         }))
 }
 
@@ -1144,7 +1902,11 @@ mod cache {
             return Some(file.parent()?.join("prs"));
         }
         let home = PathBuf::from(std::env::var_os("HOME").filter(|h| !h.is_empty())?);
-        Some(if cfg!(target_os = "macos") { home.join("Library/Caches/Threadbear/prs") } else { home.join(".cache/threadbear/prs") })
+        Some(if cfg!(target_os = "macos") {
+            home.join("Library/Caches/Threadbear/prs")
+        } else {
+            home.join(".cache/threadbear/prs")
+        })
     }
 
     pub(super) fn read(url: &str) -> Option<CachedPr> {
@@ -1156,15 +1918,21 @@ mod cache {
     /// Written whole and moved into place, this user's only (private repos'
     /// PRs are in it), so a read never finds half.
     pub(super) fn write(kept: &CachedPr) {
-        let (Some(dir), Some(r)) = (folder(), PrRef::parse(&kept.pr.url)) else { return };
-        let Ok(bytes) = serde_json::to_vec(kept) else { return };
+        let (Some(dir), Some(r)) = (folder(), PrRef::parse(&kept.pr.url)) else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec(kept) else {
+            return;
+        };
         if threadbear_core::private_file::write(&dir.join(r.cache_name()), &bytes).is_ok() {
             prune(&dir);
         }
     }
 
     fn prune(dir: &std::path::Path) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -1173,7 +1941,7 @@ mod cache {
         if files.len() <= KEEP {
             return;
         }
-        files.sort_by(|a, b| b.0.cmp(&a.0));
+        files.sort_by_key(|a| std::cmp::Reverse(a.0));
         for (_, path) in files.drain(KEEP..) {
             let _ = std::fs::remove_file(path);
         }

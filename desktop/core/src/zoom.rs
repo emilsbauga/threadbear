@@ -8,11 +8,13 @@ pub const DEFAULT_PERCENT: u32 = 100;
 
 /// The saved percent, or 100 for anything that isn't one of the steps.
 pub fn sanitize(saved: Option<u32>) -> u32 {
-    saved.filter(|p| STEPS.contains(p)).unwrap_or(DEFAULT_PERCENT)
+    saved
+        .filter(|p| STEPS.contains(p))
+        .unwrap_or(DEFAULT_PERCENT)
 }
 
 pub fn can_zoom_in(percent: u32) -> bool {
-    percent < *STEPS.last().unwrap()
+    percent < STEPS[STEPS.len() - 1]
 }
 
 pub fn can_zoom_out(percent: u32) -> bool {
@@ -20,11 +22,20 @@ pub fn can_zoom_out(percent: u32) -> bool {
 }
 
 pub fn zoom_in(percent: u32) -> u32 {
-    STEPS.iter().copied().find(|s| *s > percent).unwrap_or(percent)
+    STEPS
+        .iter()
+        .copied()
+        .find(|s| *s > percent)
+        .unwrap_or(percent)
 }
 
 pub fn zoom_out(percent: u32) -> u32 {
-    STEPS.iter().rev().copied().find(|s| *s < percent).unwrap_or(percent)
+    STEPS
+        .iter()
+        .rev()
+        .copied()
+        .find(|s| *s < percent)
+        .unwrap_or(percent)
 }
 
 /// `size` at this zoom: to a whole point, except at 100% where the design sizes
@@ -90,11 +101,38 @@ mod tests {
 
     #[test]
     fn a_frame_mostly_off_every_screen_isnt_used() {
-        let screen = Rect { x: 0., y: 0., width: 1600., height: 1000. };
-        let frame = |x: f64, y: f64| Rect { x, y, width: 1000., height: 800. };
+        let screen = Rect {
+            x: 0.,
+            y: 0.,
+            width: 1600.,
+            height: 1000.,
+        };
+        let frame = |x: f64, y: f64| Rect {
+            x,
+            y,
+            width: 1000.,
+            height: 800.,
+        };
         assert!(on_screen(frame(100., 50.), &[screen]));
-        assert!(!on_screen(frame(3000., 0.), &[screen]), "on a display that's gone");
-        assert!(!on_screen(frame(1500., 0.), &[screen]), "under half on the screen");
-        assert!(!on_screen(Rect { x: 0., y: 0., width: 50., height: 50. }, &[screen]), "too small to be a real frame");
+        assert!(
+            !on_screen(frame(3000., 0.), &[screen]),
+            "on a display that's gone"
+        );
+        assert!(
+            !on_screen(frame(1500., 0.), &[screen]),
+            "under half on the screen"
+        );
+        assert!(
+            !on_screen(
+                Rect {
+                    x: 0.,
+                    y: 0.,
+                    width: 50.,
+                    height: 50.
+                },
+                &[screen]
+            ),
+            "too small to be a real frame"
+        );
     }
 }

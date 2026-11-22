@@ -141,11 +141,11 @@ test('patch trust follows find-node.sh all the way, and it adds no problem to th
 });
 
 // No script, test or doc pins a Node to one machine's nvm version again.
-// docs/step4-plan.md is history (where Codex was on 1 Nov), and
+// docs/archive/step4-plan.md is history (where Codex was on 1 Nov), and
 // update.test.ts uses such a path as a sample of a binary that isn't an app.
 test("nothing in the repo names one nvm Node version's path", () => {
   const r = spawnSync('git', ['grep', '-n', '-I', '-E', String.raw`\.nvm/versions/node/v[0-9]+\.[0-9]+\.[0-9]+/bin`, '--', '.',
-    ':!docs/step4-plan.md', ':!runner/test/unit/update.test.ts', ':!runner/test/unit/find-node.test.ts'], { cwd: REPO, encoding: 'utf8' });
+    ':!docs/archive/step4-plan.md', ':!runner/test/unit/update.test.ts', ':!runner/test/unit/find-node.test.ts'], { cwd: REPO, encoding: 'utf8' });
   assert.equal(r.stdout, '', `pinned Node paths:\n${r.stdout}`);
   assert.equal(r.status, 1, r.stderr);
 });

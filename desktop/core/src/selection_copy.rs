@@ -54,7 +54,10 @@ impl Tags {
 pub fn selection_html(markdown_source: &str) -> String {
     let mut spans: Vec<(Tags, String)> = Vec::new();
     if let Ok(tree) = markdown::to_mdast(markdown_source, &markdown::ParseOptions::gfm()) {
-        let mut out = Spans { spans: &mut spans, started: false };
+        let mut out = Spans {
+            spans: &mut spans,
+            started: false,
+        };
         walk(&tree, &Tags::default(), &mut out);
     }
     let body: String = spans
@@ -62,7 +65,16 @@ pub fn selection_html(markdown_source: &str) -> String {
         .map(|(tags, text)| {
             let (open, close) = tags.open_close();
             // Each line wraps on its own, so a tag never spans a <br>.
-            text.split('\n').map(|line| if line.is_empty() { String::new() } else { format!("{open}{}{close}", escape(line)) }).collect::<Vec<_>>().join("<br>")
+            text.split('\n')
+                .map(|line| {
+                    if line.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{open}{}{close}", escape(line))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("<br>")
         })
         .collect();
     format!("<meta charset=\"utf-8\">{body}")
@@ -98,21 +110,60 @@ impl Spans<'_> {
 fn walk(node: &Node, tags: &Tags, out: &mut Spans) {
     match node {
         Node::Text(text) => out.push(tags, &text.value),
-        Node::InlineCode(code) => out.push(&Tags { code: true, ..tags.clone() }, &code.value),
+        Node::InlineCode(code) => out.push(
+            &Tags {
+                code: true,
+                ..tags.clone()
+            },
+            &code.value,
+        ),
         Node::InlineMath(math) => out.push(tags, &math.value),
         Node::Break(_) => out.push(&Tags::default(), "\n"),
-        Node::Strong(_) => children(node, &Tags { bold: true, ..tags.clone() }, out),
-        Node::Emphasis(_) => children(node, &Tags { italic: true, ..tags.clone() }, out),
+        Node::Strong(_) => children(
+            node,
+            &Tags {
+                bold: true,
+                ..tags.clone()
+            },
+            out,
+        ),
+        Node::Emphasis(_) => children(
+            node,
+            &Tags {
+                italic: true,
+                ..tags.clone()
+            },
+            out,
+        ),
         Node::Link(link) => {
-            let tags = if web_link(&link.url) { Tags { link: Some(link.url.clone()), ..tags.clone() } } else { tags.clone() };
+            let tags = if web_link(&link.url) {
+                Tags {
+                    link: Some(link.url.clone()),
+                    ..tags.clone()
+                }
+            } else {
+                tags.clone()
+            };
             children(node, &tags, out);
         }
         // A picture and Threadbear's own raw HTML have no words to copy.
-        Node::Image(_) | Node::ImageReference(_) | Node::Definition(_) | Node::FootnoteDefinition(_) | Node::FootnoteReference(_) | Node::ThematicBreak(_) => {}
+        Node::Image(_)
+        | Node::ImageReference(_)
+        | Node::Definition(_)
+        | Node::FootnoteDefinition(_)
+        | Node::FootnoteReference(_)
+        | Node::ThematicBreak(_) => {}
         Node::Html(html) => out.push(tags, &html.value),
         Node::Heading(_) => {
             out.new_line();
-            children(node, &Tags { bold: true, ..tags.clone() }, out);
+            children(
+                node,
+                &Tags {
+                    bold: true,
+                    ..tags.clone()
+                },
+                out,
+            );
         }
         Node::Paragraph(_) => {
             out.new_line();
@@ -120,20 +171,31 @@ fn walk(node: &Node, tags: &Tags, out: &mut Spans) {
         }
         Node::Code(code) => {
             out.new_line();
-            out.push(&Tags { code: true, ..tags.clone() }, &code.value);
+            out.push(
+                &Tags {
+                    code: true,
+                    ..tags.clone()
+                },
+                &code.value,
+            );
         }
         Node::Math(math) => {
             out.new_line();
             out.push(tags, &math.value);
         }
         Node::List(list) => {
-            let mut number = list.start.unwrap_or(1);
-            for item in &list.children {
+            for (number, item) in (list.start.unwrap_or(1)..).zip(&list.children) {
                 out.new_line();
                 // The marker, as the reply draws it, and the item's words
                 // on the same line.
-                out.push(&Tags::default(), &if list.ordered { format!("{number}. ") } else { "• ".to_owned() });
-                number += 1;
+                out.push(
+                    &Tags::default(),
+                    &if list.ordered {
+                        format!("{number}. ")
+                    } else {
+                        "• ".to_owned()
+                    },
+                );
                 let mut first = true;
                 for child in item.children().into_iter().flatten() {
                     if first && matches!(child, Node::Paragraph(_)) {
@@ -173,7 +235,10 @@ fn web_link(url: &str) -> bool {
 }
 
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 // ---------------------------------------------------------------- quoting
@@ -184,7 +249,11 @@ pub fn quote(selection: &str) -> String {
     if words.is_empty() {
         return String::new();
     }
-    words.split('\n').map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
+    words
+        .split('\n')
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The thread's draft with the quote at its end, ready for Mike to say what
@@ -206,7 +275,10 @@ pub fn quote_into(draft: &str, selection: &str) -> Option<(usize, String)> {
     if draft.trim().is_empty() {
         return Some((0, format!("{quote}\n\n")));
     }
-    Some((draft.trim_end_matches('\n').len(), format!("\n\n{quote}\n\n")))
+    Some((
+        draft.trim_end_matches('\n').len(),
+        format!("\n\n{quote}\n\n"),
+    ))
 }
 
 #[cfg(test)]
@@ -215,44 +287,86 @@ mod tests {
 
     #[test]
     fn links_bold_and_code_are_kept_and_nothing_else() {
-        assert_eq!(selection_html("See [the PR](https://github.com/a/b/pull/1) and **ship** it."), r#"<meta charset="utf-8">See <a href="https://github.com/a/b/pull/1">the PR</a> and <b>ship</b> it."#);
-        assert_eq!(selection_html("Run `tb land` *now*"), r#"<meta charset="utf-8">Run <code>tb land</code> <i>now</i>"#);
+        assert_eq!(
+            selection_html("See [the PR](https://github.com/a/b/pull/1) and **ship** it."),
+            r#"<meta charset="utf-8">See <a href="https://github.com/a/b/pull/1">the PR</a> and <b>ship</b> it."#
+        );
+        assert_eq!(
+            selection_html("Run `tb land` *now*"),
+            r#"<meta charset="utf-8">Run <code>tb land</code> <i>now</i>"#
+        );
         // A bold link: the link outside, bold within.
-        assert_eq!(selection_html("[**big**](https://x.dev)"), r#"<meta charset="utf-8"><a href="https://x.dev"><b>big</b></a>"#);
+        assert_eq!(
+            selection_html("[**big**](https://x.dev)"),
+            r#"<meta charset="utf-8"><a href="https://x.dev"><b>big</b></a>"#
+        );
         // Code is code, whatever it's in.
-        assert_eq!(selection_html("**`a`**"), r#"<meta charset="utf-8"><code>a</code>"#);
+        assert_eq!(
+            selection_html("**`a`**"),
+            r#"<meta charset="utf-8"><code>a</code>"#
+        );
     }
 
     #[test]
     fn links_that_mean_nothing_off_this_computer_are_their_words() {
         assert_eq!(selection_html("[`src/a.rs`](tbpath:?p=src/a.rs) and [tests ↑](work:npm%20test) and [f](file:///tmp/a.md)"), r#"<meta charset="utf-8"><code>src/a.rs</code> and tests ↑ and f"#);
-        assert_eq!(selection_html("[mail me](mailto:a@b.c)"), r#"<meta charset="utf-8"><a href="mailto:a@b.c">mail me</a>"#);
+        assert_eq!(
+            selection_html("[mail me](mailto:a@b.c)"),
+            r#"<meta charset="utf-8"><a href="mailto:a@b.c">mail me</a>"#
+        );
     }
 
     #[test]
     fn blocks_are_lines_and_a_tag_never_spans_one() {
-        assert_eq!(selection_html("One\n\nTwo"), r#"<meta charset="utf-8">One<br>Two"#);
-        assert_eq!(selection_html("# Title\n\n- a\n- **b**\n\n1. c"), r#"<meta charset="utf-8"><b>Title</b><br>• a<br>• <b>b</b><br>1. c"#);
-        assert_eq!(selection_html("```\nlet a = 1;\nlet b = 2;\n```"), r#"<meta charset="utf-8"><code>let a = 1;</code><br><code>let b = 2;</code>"#);
+        assert_eq!(
+            selection_html("One\n\nTwo"),
+            r#"<meta charset="utf-8">One<br>Two"#
+        );
+        assert_eq!(
+            selection_html("# Title\n\n- a\n- **b**\n\n1. c"),
+            r#"<meta charset="utf-8"><b>Title</b><br>• a<br>• <b>b</b><br>1. c"#
+        );
+        assert_eq!(
+            selection_html("```\nlet a = 1;\nlet b = 2;\n```"),
+            r#"<meta charset="utf-8"><code>let a = 1;</code><br><code>let b = 2;</code>"#
+        );
         assert_eq!(selection_html("a  \nb"), r#"<meta charset="utf-8">a<br>b"#);
     }
 
     #[test]
     fn what_it_says_is_escaped() {
-        assert_eq!(selection_html(r#"5 < 6 & "x""#), r#"<meta charset="utf-8">5 &lt; 6 &amp; &quot;x&quot;"#);
-        assert_eq!(selection_html("[a](https://x.dev/?a=1&b=\"2\")"), r#"<meta charset="utf-8"><a href="https://x.dev/?a=1&amp;b=&quot;2&quot;">a</a>"#);
+        assert_eq!(
+            selection_html(r#"5 < 6 & "x""#),
+            r#"<meta charset="utf-8">5 &lt; 6 &amp; &quot;x&quot;"#
+        );
+        assert_eq!(
+            selection_html("[a](https://x.dev/?a=1&b=\"2\")"),
+            r#"<meta charset="utf-8"><a href="https://x.dev/?a=1&amp;b=&quot;2&quot;">a</a>"#
+        );
         assert_eq!(selection_html(""), r#"<meta charset="utf-8">"#);
     }
 
     #[test]
     fn a_quote_goes_under_the_draft_with_room_after_it() {
         assert_eq!(quote("  one\n\ntwo \n"), "> one\n> \n> two");
-        assert_eq!(quoted_draft("", "the words").as_deref(), Some("> the words\n\n"));
-        assert_eq!(quoted_draft("  \n", "the words").as_deref(), Some("> the words\n\n"));
-        assert_eq!(quoted_draft("About this:\n\n\n", "a\nb").as_deref(), Some("About this:\n\n> a\n> b\n\n"));
+        assert_eq!(
+            quoted_draft("", "the words").as_deref(),
+            Some("> the words\n\n")
+        );
+        assert_eq!(
+            quoted_draft("  \n", "the words").as_deref(),
+            Some("> the words\n\n")
+        );
+        assert_eq!(
+            quoted_draft("About this:\n\n\n", "a\nb").as_deref(),
+            Some("About this:\n\n> a\n> b\n\n")
+        );
         assert_eq!(quoted_draft("Hi", "   "), None);
         // As an edit: what's kept stays put, so a chip in it does too.
-        assert_eq!(quote_into("Look \u{FFFC} here\n", "x"), Some(("Look \u{FFFC} here".len(), "\n\n> x\n\n".to_owned())));
+        assert_eq!(
+            quote_into("Look \u{FFFC} here\n", "x"),
+            Some(("Look \u{FFFC} here".len(), "\n\n> x\n\n".to_owned()))
+        );
         assert_eq!(quote_into(" \n", "x"), Some((0, "> x\n\n".to_owned())));
     }
 }

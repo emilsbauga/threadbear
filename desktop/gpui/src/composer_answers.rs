@@ -11,8 +11,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
-use threadbear_core::composer::{picked_answer_label, OWN_ANSWER};
 use crate::tips::Tip as _;
+use threadbear_core::composer::{picked_answer_label, OWN_ANSWER};
 
 /// What the × on a chip says, and is called.
 const TAKE_BACK: &str = "Take this answer back";
@@ -37,7 +37,12 @@ impl Composer {
                 let index = usize::try_from(ask).ok()?;
                 let the_ask = card.asks.get(index)?;
                 let label = picked_answer_label(the_ask, pick, self.card.notes.get(&ask))?;
-                Some((index, label, pick, threadbear_core::sidebar::preview_plain(&the_ask.action)))
+                Some((
+                    index,
+                    label,
+                    pick,
+                    threadbear_core::sidebar::preview_plain(&the_ask.action),
+                ))
             })
             .collect();
         (!chips.is_empty()).then_some((card.asks.len(), chips))
@@ -48,9 +53,15 @@ impl Composer {
         let (asks, chips) = self.answer_chips(cx)?;
         let accent = style::accent(cx);
         let secondary = style::secondary_label(cx);
-        let mut row = h_flex().id("answer-chips").w_full().gap(px(6.)).overflow_x_scroll();
+        let mut row = h_flex()
+            .id("answer-chips")
+            .w_full()
+            .gap(px(6.))
+            .overflow_x_scroll();
         for (index, label, pick, action) in chips {
-            let take_back = cx.listener(move |this, _: &ClickEvent, window, cx| this.pick_answer(index, pick, window, cx));
+            let take_back = cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.pick_answer(index, pick, window, cx)
+            });
             row = row.child(
                 h_flex()
                     .id(("answer-chip", index))
@@ -65,16 +76,35 @@ impl Composer {
                     .text_size(px(size::CHIP))
                     .line_height(px(style::natural_line(size::CHIP)))
                     .tip(action.clone())
-                    .when(asks > 1, |s| s.child(div().text_color(secondary).child((index + 1).to_string())))
-                    .when(pick == OWN_ANSWER, |s| s.child(crate::icons::symbol("pencil").with_size(px(10.)).text_color(secondary)))
-                    .child(div().max_w(px(260.)).truncate().text_color(style::label_text(cx)).child(label))
+                    .when(asks > 1, |s| {
+                        s.child(div().text_color(secondary).child((index + 1).to_string()))
+                    })
+                    .when(pick == OWN_ANSWER, |s| {
+                        s.child(
+                            crate::icons::symbol("pencil")
+                                .with_size(px(10.))
+                                .text_color(secondary),
+                        )
+                    })
+                    .child(
+                        div()
+                            .max_w(px(260.))
+                            .truncate()
+                            .text_color(style::label_text(cx))
+                            .child(label),
+                    )
                     .child(
                         div()
                             .id(("answer-chip-remove", index))
                             .test_support()
-                            .role(Role::Button).aria_label(TAKE_BACK)
+                            .role(Role::Button)
+                            .aria_label(TAKE_BACK)
                             .cursor_pointer()
-                            .child(gpui_kit::component::Icon::from(gpui_kit::assets::IconName::X).with_size(px(10.)).text_color(secondary))
+                            .child(
+                                gpui_kit::component::Icon::from(gpui_kit::assets::IconName::X)
+                                    .with_size(px(10.))
+                                    .text_color(secondary),
+                            )
                             .tip(TAKE_BACK)
                             .on_click(take_back),
                     ),
@@ -88,7 +118,12 @@ impl Composer {
     #[cfg(feature = "automation")]
     pub(crate) fn answer_chip_lines(&self, cx: &App) -> Option<Vec<String>> {
         let (_, chips) = self.answer_chips(cx)?;
-        Some(chips.into_iter().map(|(index, label, _, _)| format!("{}: {label}", index + 1)).collect())
+        Some(
+            chips
+                .into_iter()
+                .map(|(index, label, _, _)| format!("{}: {label}", index + 1))
+                .collect(),
+        )
     }
 }
 

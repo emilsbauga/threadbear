@@ -27,7 +27,10 @@ impl FolderWatch {
     /// A watch that calls `changed` on its owner with the folders (as they
     /// were asked for) something happened in, or to, and the paths the system
     /// named (real ones), for a watch on one file in its folder to pick out.
-    pub(crate) fn new<T: 'static>(cx: &mut Context<T>, changed: impl Fn(&mut T, Vec<String>, Vec<PathBuf>, &mut Context<T>) + 'static) -> Option<Self> {
+    pub(crate) fn new<T: 'static>(
+        cx: &mut Context<T>,
+        changed: impl Fn(&mut T, Vec<String>, Vec<PathBuf>, &mut Context<T>) + 'static,
+    ) -> Option<Self> {
         let folders: Arc<Mutex<HashMap<PathBuf, String>>> = Arc::default();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -47,7 +50,9 @@ impl FolderWatch {
                     let mut out: Vec<String> = Vec::new();
                     for path in &paths {
                         // The folder itself, or the one it's in.
-                        let found = folders.get(path).or_else(|| path.parent().and_then(|p| folders.get(p)));
+                        let found = folders
+                            .get(path)
+                            .or_else(|| path.parent().and_then(|p| folders.get(p)));
                         if let Some(folder) = found {
                             if !out.contains(folder) {
                                 out.push(folder.clone());
@@ -59,18 +64,31 @@ impl FolderWatch {
                 if touched.is_empty() {
                     continue;
                 }
-                if this.update(cx, |this, cx| changed(this, touched, paths, cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| changed(this, touched, paths, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
         });
-        Some(FolderWatch { watcher, folders, _task: task })
+        Some(FolderWatch {
+            watcher,
+            folders,
+            _task: task,
+        })
     }
 
     /// Watches exactly `wanted`: new ones start, ones no longer wanted stop.
     pub(crate) fn set(&mut self, wanted: &HashSet<String>) {
-        let Ok(mut folders) = self.folders.lock() else { return };
-        let gone: Vec<PathBuf> = folders.iter().filter(|(_, asked)| !wanted.contains(*asked)).map(|(real, _)| real.clone()).collect();
+        let Ok(mut folders) = self.folders.lock() else {
+            return;
+        };
+        let gone: Vec<PathBuf> = folders
+            .iter()
+            .filter(|(_, asked)| !wanted.contains(*asked))
+            .map(|(real, _)| real.clone())
+            .collect();
         for real in gone {
             let _ = self.watcher.unwatch(&real);
             folders.remove(&real);
@@ -79,14 +97,17 @@ impl FolderWatch {
             if folders.values().any(|a| a == asked) {
                 continue;
             }
-            let watched = threadbear_core::open_policy::with_local_path(Path::new(asked), |local| {
-                #[cfg(windows)]
-                let real = local.to_path_buf();
-                #[cfg(not(windows))]
-                let real = std::fs::canonicalize(local)?;
-                self.watcher.watch(&real, RecursiveMode::NonRecursive).map_err(std::io::Error::other)?;
-                Ok(real)
-            });
+            let watched =
+                threadbear_core::open_policy::with_local_path(Path::new(asked), |local| {
+                    #[cfg(windows)]
+                    let real = local.to_path_buf();
+                    #[cfg(not(windows))]
+                    let real = std::fs::canonicalize(local)?;
+                    self.watcher
+                        .watch(&real, RecursiveMode::NonRecursive)
+                        .map_err(std::io::Error::other)?;
+                    Ok(real)
+                });
             if let Ok(real) = watched {
                 folders.insert(real, asked.clone());
             }
@@ -95,6 +116,9 @@ impl FolderWatch {
 
     /// The folders watched now, as they were asked for.
     pub(crate) fn watching(&self) -> HashSet<String> {
-        self.folders.lock().map(|f| f.values().cloned().collect()).unwrap_or_default()
+        self.folders
+            .lock()
+            .map(|f| f.values().cloned().collect())
+            .unwrap_or_default()
     }
 }

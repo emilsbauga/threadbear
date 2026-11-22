@@ -67,7 +67,7 @@ When('I press {string} in the {word} panel', async function (this: ThreadbearWor
 });
 
 // What the mock runner says about the gateway and its own update
-// (mock.connectors and mock.updates, app/Tools/mock-runner/server.mjs).
+// (mock.connectors and mock.updates, mock-runner/server.mjs).
 
 When("the gateway can't be reached", async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'mock', method: 'connectors', params: { state: 'unreachable', error: 'timed out' } });

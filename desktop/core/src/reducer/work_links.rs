@@ -32,24 +32,39 @@ fn score(row: &Row, q: &str) -> i32 {
     match &row.content {
         RowContent::Tool(tool) => {
             let input = tool.call.as_ref().map(|c| &c.input);
-            let command: Option<String> = input.and_then(|i| i.get("command")).and_then(|v| match v {
-                Value::String(s) => Some(s.clone()),
-                Value::Array(parts) => Some(parts.iter().filter_map(|p| p.as_str().map(str::to_owned)).collect::<Vec<_>>().join(" ")),
-                _ => None,
-            });
+            let command: Option<String> =
+                input.and_then(|i| i.get("command")).and_then(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Array(parts) => Some(
+                        parts
+                            .iter()
+                            .filter_map(|p| p.as_str().map(str::to_owned))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    _ => None,
+                });
             if let Some(command) = &command {
                 // Not inside quotes: `git commit -m "...; npm test passes"`
                 // isn't a test run.
                 let bare = strip_quoted(command);
                 let parts = normal(&bare);
-                if parts.split(['&', ';', '|']).any(|part| trim_cd(part).starts_with(q)) {
+                if parts
+                    .split(['&', ';', '|'])
+                    .any(|part| trim_cd(part).starts_with(q))
+                {
                     return 4;
                 }
             }
             // The input's title is the step's own name where a tool takes
             // one: Codex's computer-use calls are all "cua_repl: js" as rows,
             // and "Reconnect to Chrome desktop" only there.
-            let field = |key: &str| input.and_then(|i| i.get(key)).and_then(Value::as_str).map(str::to_owned);
+            let field = |key: &str| {
+                input
+                    .and_then(|i| i.get(key))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            };
             let named = [
                 command,
                 field("description"),
@@ -61,10 +76,18 @@ fn score(row: &Row, q: &str) -> i32 {
                 field("title"),
                 tool.call.as_ref().map(|c| c.title.clone()),
             ];
-            if named.iter().any(|n| n.as_ref().map(|s| normal(s).contains(q)).unwrap_or(false)) {
+            if named
+                .iter()
+                .any(|n| n.as_ref().map(|s| normal(s).contains(q)).unwrap_or(false))
+            {
                 return 3;
             }
-            if tool.result.as_ref().map(|r| normal(&r.text).contains(q)).unwrap_or(false) {
+            if tool
+                .result
+                .as_ref()
+                .map(|r| normal(&r.text).contains(q))
+                .unwrap_or(false)
+            {
                 return 2;
             }
             0
@@ -85,13 +108,7 @@ fn score(row: &Row, q: &str) -> i32 {
                 0
             }
         }
-        RowContent::Note(note) => {
-            if normal(note).contains(q) {
-                3
-            } else {
-                0
-            }
-        }
+        RowContent::Note(note) if normal(note).contains(q) => 3,
         _ => 0,
     }
 }
@@ -143,7 +160,9 @@ fn strip_quoted(command: &str) -> String {
 /// "cd app && npm test" starts with "npm test" too.
 fn trim_cd(part: &str) -> String {
     let t = text::trim_whitespace(part);
-    let Some(after) = t.strip_prefix("cd ") else { return t.to_owned() };
+    let Some(after) = t.strip_prefix("cd ") else {
+        return t.to_owned();
+    };
     match after.find(' ') {
         Some(space) => text::trim_whitespace(&after[space..]).to_owned(),
         None => t.to_owned(),
@@ -162,7 +181,10 @@ pub(crate) fn normal(s: &str) -> String {
             continue;
         }
         let space = matches!(c, '\t' | '\n' | '\u{000C}' | '\r')
-            || matches!(c as u32, 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000);
+            || matches!(
+                c as u32,
+                0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000
+            );
         if space {
             if !in_space {
                 out.push(' ');

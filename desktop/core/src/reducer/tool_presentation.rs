@@ -48,7 +48,11 @@ impl ToolPresentation {
 
     /// The title on one line, home folder shortened to ~, capped in length.
     pub fn short_title(title: &str, limit: usize) -> String {
-        let mut line = text::split_lf(title).into_iter().find(|p| !p.is_empty()).unwrap_or(title).to_owned();
+        let mut line = text::split_lf(title)
+            .into_iter()
+            .find(|p| !p.is_empty())
+            .unwrap_or(title)
+            .to_owned();
         let home = text::home_directory();
         if !home.is_empty() && line.contains(&home) {
             line = line.replace(&home, "~");
@@ -74,7 +78,9 @@ impl ToolPresentation {
             _ => return None,
         };
         let input = &tool.call.as_ref()?.input;
-        let path = field(input, "file_path").or_else(|| field(input, "notebook_path")).or_else(|| field(input, "path"))?;
+        let path = field(input, "file_path")
+            .or_else(|| field(input, "notebook_path"))
+            .or_else(|| field(input, "path"))?;
         if path.is_empty() {
             return None;
         }
@@ -92,7 +98,11 @@ impl ToolPresentation {
 
     /// The tool output preview shown when a tool row is expanded.
     pub fn output_preview(tool: &ToolItem, max_lines: usize) -> String {
-        let source = tool.result.as_ref().map(|r| r.text.as_str()).unwrap_or(&tool.live_output);
+        let source = tool
+            .result
+            .as_ref()
+            .map(|r| r.text.as_str())
+            .unwrap_or(&tool.live_output);
         let mut lines = 0;
         let mut end = 0;
         let bytes = source.as_bytes();
@@ -135,26 +145,48 @@ impl ToolPresentation {
         match tool.tool_kind() {
             ToolKind::Command => {
                 if let Some(command) = field(input, "command") {
-                    return Detail::Command { command: command.to_owned(), output };
+                    return Detail::Command {
+                        command: command.to_owned(),
+                        output,
+                    };
                 }
             }
             ToolKind::Read => {
                 let path = field(input, "file_path").or_else(|| field(input, "path"));
-                if let (Some(path), true) = (path, tool.result.as_ref().map(|r| r.ok).unwrap_or(true)) {
+                if let (Some(path), true) =
+                    (path, tool.result.as_ref().map(|r| r.ok).unwrap_or(true))
+                {
                     // The model writes the offset: never trust it to fit.
-                    let offset = input.get("offset").and_then(Value::as_f64).and_then(int_checked).map(|o| o.max(1).min(1_000_000_000)).unwrap_or(1);
-                    return Detail::File { path: Self::short_title(path, 400), lines: Self::numbered_lines(&output, offset) };
+                    let offset = input
+                        .get("offset")
+                        .and_then(Value::as_f64)
+                        .and_then(int_checked)
+                        .map(|o| o.clamp(1, 1_000_000_000))
+                        .unwrap_or(1);
+                    return Detail::File {
+                        path: Self::short_title(path, 400),
+                        lines: Self::numbered_lines(&output, offset),
+                    };
                 }
             }
             ToolKind::Search => {
                 if let Some(query) = field(input, "pattern").or_else(|| field(input, "query")) {
-                    let scope = field(input, "path").or_else(|| field(input, "glob")).map(|s| Self::short_title(s, 200));
-                    return Detail::Search { query: query.to_owned(), scope, output };
+                    let scope = field(input, "path")
+                        .or_else(|| field(input, "glob"))
+                        .map(|s| Self::short_title(s, 200));
+                    return Detail::Search {
+                        query: query.to_owned(),
+                        scope,
+                        output,
+                    };
                 }
             }
             _ => {}
         }
-        Detail::Fields { fields: Self::fields(input, false), output }
+        Detail::Fields {
+            fields: Self::fields(input, false),
+            output,
+        }
     }
 
     /// The input as `key: value` lines: strings as they are, other values as
@@ -163,7 +195,11 @@ impl ToolPresentation {
     pub fn fields(input: &Value, whole: bool) -> Vec<Field> {
         let Some(object) = input.as_object() else {
             let compact = compact_text(input);
-            return if compact.is_empty() || compact == "null" { Vec::new() } else { vec![Field::new("input", &compact)] };
+            return if compact.is_empty() || compact == "null" {
+                Vec::new()
+            } else {
+                vec![Field::new("input", &compact)]
+            };
         };
         let mut keys: Vec<&String> = object.keys().collect();
         keys.sort();
@@ -193,7 +229,13 @@ impl ToolPresentation {
 
     /// The widest "key:" in `fields`, in characters, capped at `cap`.
     pub fn key_width(fields: &[Field], cap: usize) -> usize {
-        cap.min(fields.iter().map(|f| text::count(&f.key) + 1).max().unwrap_or(0))
+        cap.min(
+            fields
+                .iter()
+                .map(|f| text::count(&f.key) + 1)
+                .max()
+                .unwrap_or(0),
+        )
     }
 
     /// A line of a failed tool's output that says what went wrong
@@ -201,7 +243,9 @@ impl ToolPresentation {
     pub fn is_error_line(line: &str) -> bool {
         let trimmed = line.trim_start_matches([' ', '\t']);
         for word in ["error", "fatal"] {
-            if text::count(trimmed) <= word.len() || text::prefix(trimmed, word.len()).to_lowercase() != word {
+            if text::count(trimmed) <= word.len()
+                || text::prefix(trimmed, word.len()).to_lowercase() != word
+            {
                 continue;
             }
             let next = trimmed.chars().nth(word.len());
@@ -226,7 +270,10 @@ impl ToolPresentation {
             if let Some(numbered) = Self::parse_numbered(line) {
                 parsed.push(numbered);
             } else if line.starts_with('…') || line.is_empty() {
-                parsed.push(NumberedLine { number: None, text: (*line).to_owned() });
+                parsed.push(NumberedLine {
+                    number: None,
+                    text: (*line).to_owned(),
+                });
             } else {
                 all_numbered = false;
                 break;
@@ -239,9 +286,15 @@ impl ToolPresentation {
             .enumerate()
             .map(|(index, line)| {
                 if *line == "…" {
-                    NumberedLine { number: None, text: "…".to_owned() }
+                    NumberedLine {
+                        number: None,
+                        text: "…".to_owned(),
+                    }
                 } else {
-                    NumberedLine { number: Some(start + index as i64), text: (*line).to_owned() }
+                    NumberedLine {
+                        number: Some(start + index as i64),
+                        text: (*line).to_owned(),
+                    }
                 }
             })
             .collect()
@@ -260,7 +313,10 @@ impl ToolPresentation {
         if separator != '→' && separator != '\t' {
             return None;
         }
-        Some(NumberedLine { number: Some(number), text: chars.as_str().to_owned() })
+        Some(NumberedLine {
+            number: Some(number),
+            text: chars.as_str().to_owned(),
+        })
     }
 }
 
@@ -284,10 +340,23 @@ pub struct FileTitle {
 /// What an expanded tool row shows (`ToolPresentation.Detail`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Detail {
-    Command { command: String, output: String },
-    File { path: String, lines: Vec<NumberedLine> },
-    Search { query: String, scope: Option<String>, output: String },
-    Fields { fields: Vec<Field>, output: String },
+    Command {
+        command: String,
+        output: String,
+    },
+    File {
+        path: String,
+        lines: Vec<NumberedLine>,
+    },
+    Search {
+        query: String,
+        scope: Option<String>,
+        output: String,
+    },
+    Fields {
+        fields: Vec<Field>,
+        output: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -298,7 +367,10 @@ pub struct Field {
 
 impl Field {
     pub fn new(key: &str, value: &str) -> Field {
-        Field { key: key.to_owned(), value: value.to_owned() }
+        Field {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        }
     }
 }
 
@@ -365,7 +437,14 @@ mod windows_path_display_tests {
 
     #[test]
     fn a_windows_path_is_named_relative_to_its_thread_the_same_way() {
-        assert_eq!(PathDisplay::folder_relative(r"C:\work\site\mockups\home.html", Some(r"C:\work\site")), "mockups");
-        assert_eq!(PathDisplay::relative_path(r"C:\work\site\src\components\Hero.astro", r"C:\work\site").as_deref(), Some("src/components/Hero.astro"));
+        assert_eq!(
+            PathDisplay::folder_relative(r"C:\work\site\mockups\home.html", Some(r"C:\work\site")),
+            "mockups"
+        );
+        assert_eq!(
+            PathDisplay::relative_path(r"C:\work\site\src\components\Hero.astro", r"C:\work\site")
+                .as_deref(),
+            Some("src/components/Hero.astro")
+        );
     }
 }

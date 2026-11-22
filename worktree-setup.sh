@@ -68,7 +68,7 @@ refresh_main() {
   rmdir "$lock"
 }
 
-for dir in . runner app/Tools/mock-runner; do
+for dir in . runner mock-runner; do
   here="$ROOT/$dir"
   there="${MAIN:+$MAIN/$dir}"
   if [ -e "$here/node_modules" ] || [ -L "$here/node_modules" ]; then
@@ -115,4 +115,11 @@ fi
 if [ -f "$ROOT/scripts/merge-lines.mjs" ]; then
   git -C "$ROOT" config merge.lines.name "one-line entries, in any order (scripts/merge-lines.mjs)"
   git -C "$ROOT" config merge.lines.driver "'$NODE' scripts/merge-lines.mjs %O %A %B"
+fi
+# eslint-suppressions.json merges by count the same way
+# (scripts/merge-suppressions.mjs), so two landings that each fix or record
+# lint problems don't stop each other on a text conflict.
+if [ -f "$ROOT/scripts/merge-suppressions.mjs" ]; then
+  git -C "$ROOT" config merge.suppressions.name "lint suppressions, by count (scripts/merge-suppressions.mjs)"
+  git -C "$ROOT" config merge.suppressions.driver "'$NODE' scripts/merge-suppressions.mjs %O %A %B"
 fi

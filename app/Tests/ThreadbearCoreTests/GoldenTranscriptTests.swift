@@ -44,7 +44,7 @@ final class GoldenTranscriptTests: XCTestCase {
 
     private static let repo = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    private static let fixtures = repo.appendingPathComponent("app/Tools/mock-runner/fixtures")
+    private static let fixtures = repo.appendingPathComponent("mock-runner/fixtures")
     private static let golden = repo.appendingPathComponent("desktop/core/tests/golden")
 
     private let updating = ProcessInfo.processInfo.environment["UPDATE_GOLDEN"] == "1"

@@ -1,4 +1,4 @@
-// Shared memory (docs/protocol.md, "Shared memory"; the sharedMemory
+// Shared memory (docs/protocol/settings.md, "Shared memory"; the sharedMemory
 // experiment). What makes a thread on the M5 know Mike is mostly what Claude
 // Code loads before the first message: the global CLAUDE.md and the memory
 // folder of the project it's in (MEMORY.md and its files, which agents write

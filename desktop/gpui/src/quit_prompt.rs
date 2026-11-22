@@ -45,10 +45,17 @@ fn ask() -> Answer {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSControlStateValueOn};
     use objc2_foundation::NSString;
-    let Some(mtm) = MainThreadMarker::new() else { return Answer { quit: true, dont_ask_again: false } };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Answer {
+            quit: true,
+            dont_ask_again: false,
+        };
+    };
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str("Quit Threadbear?"));
-    alert.setInformativeText(&NSString::from_str("Your threads keep running on the runner while Threadbear is closed."));
+    alert.setInformativeText(&NSString::from_str(
+        "Your threads keep running on the runner while Threadbear is closed.",
+    ));
     alert.addButtonWithTitle(&NSString::from_str("Quit"));
     alert.addButtonWithTitle(&NSString::from_str("Cancel"));
     alert.setShowsSuppressionButton(true);
@@ -58,11 +65,17 @@ fn ask() -> Answer {
     }
     let quit = alert.runModal() == NSAlertFirstButtonReturn;
     let dont_ask_again = suppression.is_some_and(|b| b.state() == NSControlStateValueOn);
-    Answer { quit, dont_ask_again }
+    Answer {
+        quit,
+        dont_ask_again,
+    }
 }
 
 // Elsewhere it quits as asked, until there's a dialog of the app's own here.
 #[cfg(not(target_os = "macos"))]
 fn ask() -> Answer {
-    Answer { quit: true, dont_ask_again: false }
+    Answer {
+        quit: true,
+        dont_ask_again: false,
+    }
 }

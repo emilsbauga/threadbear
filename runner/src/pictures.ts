@@ -1,4 +1,4 @@
-// Where a message's pictures go among its words (docs/protocol.md,
+// Where a message's pictures go among its words (docs/protocol/threads.md,
 // "Pictures in a message"). `[Picture N]` stands for images[N-1], and the
 // picture goes straight after the first marker naming it, so "this
 // [Picture 1] next to this [Picture 2]" reaches the agent with each

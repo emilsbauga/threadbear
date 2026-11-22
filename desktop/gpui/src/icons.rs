@@ -62,16 +62,24 @@ const CODEX_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 const GROK_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/></svg>"#;
 const OPENCODE_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M16 6H8v12h8V6zm4 16H4V2h16v20z"/></svg>"#;
 const CURSOR_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/></svg>"#;
+/// Gemini's four-pointed star, from the same set, for the Antigravity provider
+/// (Gemini on a Google plan), which shows as Gemini.
+const GEMINI_LOGO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill-rule="evenodd"><path fill="black" d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg>"#;
 
-/// A provider's logo ("claude", "codex", "grok", "opencode", "cursor"), or its symbol where there's no logo
+/// A provider's logo ("claude", "codex", "grok", "opencode", "cursor", "antigravity"), or its symbol where there's no logo
 /// (`ProviderMark`, with `ModelPicker.providerSymbol`'s fallbacks).
 pub fn provider_mark(provider: &str) -> Icon {
-    match if provider.is_empty() { "claude" } else { provider } {
+    match if provider.is_empty() {
+        "claude"
+    } else {
+        provider
+    } {
         "claude" => Icon::default().data(CLAUDE_LOGO),
         "codex" => Icon::default().data(CODEX_LOGO),
         "grok" => Icon::default().data(GROK_LOGO),
         "opencode" => Icon::default().data(OPENCODE_LOGO),
         "cursor" => Icon::default().data(CURSOR_LOGO),
+        "antigravity" => Icon::default().data(GEMINI_LOGO),
         _ => symbol("cpu"),
     }
 }
@@ -215,7 +223,9 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         "doc.plaintext" => IconName::FileText,
         "safari" => IconName::Compass,
         "exclamationmark.triangle" => IconName::TriangleAlert,
-        "exclamationmark.triangle.fill" => return Some(Icon::default().data(TRIANGLE_ALERT_FILLED)),
+        "exclamationmark.triangle.fill" => {
+            return Some(Icon::default().data(TRIANGLE_ALERT_FILLED))
+        }
         "exclamationmark.circle.fill" => return Some(Icon::default().data(CIRCLE_ALERT_FILLED)),
         "xmark.diamond.fill" => return Some(Icon::default().data(DIAMOND_X_FILLED)),
         "bolt.horizontal" | "bolt.horizontal.circle" => IconName::Zap,

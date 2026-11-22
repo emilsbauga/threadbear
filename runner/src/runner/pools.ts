@@ -1,4 +1,4 @@
-// Pools: picking a login for a thread, noticing one at its limit, waiting for room and moving the thread to another login (docs/protocol.md, "Pools").
+// Pools: picking a login for a thread, noticing one at its limit, waiting for room and moving the thread to another login (docs/protocol/settings.md, "Pools").
 // Part of the Runner (runner.ts), split out on 4 Nov 2026 as a plain move so a
 // fork's change to one area doesn't clash with another's. Each method's `this`
 // is the Runner; runner.ts puts them on its prototype.
@@ -136,7 +136,7 @@ export const poolsPart = {
   // first) with the most room, else one of another provider with room,
   // else the first of its provider. undefined when no pool has a login
   // this runner can use.
-  pickForNew(this: Runner, p: { poolId?: string; cwd: string; model?: string }): { poolId: string; accountId: string } | undefined {
+  pickForNew(this: Runner, p: { poolId?: string; cwd: string; model?: string; provider?: Provider }): { poolId: string; accountId: string } | undefined {
     const accounts = this.usableAccounts();
     const pools = this.pools().filter((x) => poolAccounts(x, accounts).length);
     let pool: Pool | undefined;
@@ -144,7 +144,9 @@ export const poolsPart = {
       pool = pools.find((x) => x.id === p.poolId);
       if (!pool) throw new RpcError(ErrorCode.badParams, `No pool called ${p.poolId}. Pools: ${pools.map((x) => x.id).join(', ') || 'none'}`);
     }
-    const wanted = p.model ? this.modelProvider(p.model) : undefined;
+    // The provider the picker's pick was under, when it says: a model id
+    // can be claimed by several (OpenCode lists gpt-… ids too).
+    const wanted = (p.poolId !== undefined ? p.provider : undefined) ?? (p.model ? this.modelProvider(p.model) : undefined);
     if (!pool) {
       pool = poolForFolder(pools, p.cwd) ?? pools.find((x) => x.id === this.defaultPoolId(pools, accounts)) ?? pools[0];
       if (!pool) return undefined;
@@ -269,7 +271,7 @@ export const poolsPart = {
       note += ` It's on ${providerName(to.provider)} now, with ${model}${rec.sessionUsed ? ' and a summary of the thread so far' : ''}.`;
     }
     if (rt.session) {
-      rt.releaseWhenIdle = true;
+      this.cli(st, { kind: 'leave' });
       if (!rt.turn) this.releaseSession(st);
     }
     rec.updatedAt = this.isoNow();

@@ -1,4 +1,4 @@
-// The runner RPC's challenge auth (docs/protocol.md, "Auth"): neither side
+// The runner RPC's challenge auth (docs/protocol/connection.md, "Auth"): neither side
 // ever sends the token, each proves it has it with an HMAC over both sides'
 // fresh nonces. Only node:crypto, so the .mjs tools (scripts/rpc-client.mjs,
 // the mock and fake runners) can import it too.
@@ -11,7 +11,7 @@ export type AuthRole = 'client' | 'runner';
 
 const THREAD_KEY_CONTEXT = 'threadbear-thread-key-v1';
 
-// A thread's own credential (docs/protocol.md, "A thread's own key"): what its
+// A thread's own credential (docs/protocol/connection.md, "A thread's own key"): what its
 // CLI gets in place of the runner's token, and what the runner can work out
 // again from the id alone, so it stores nothing per thread and a key only ever
 // names the thread it was made for.
@@ -43,7 +43,7 @@ export function isNonce(x: unknown): x is string {
 // and the TCP port it listens on. Both proofs are bound to it, so a
 // challenge relayed from a runner on another port (a draining one, say, by
 // whatever took the main port while the runner was down) can't be answered
-// by a client that connected here (docs/protocol.md, "Auth").
+// by a client that connected here (docs/protocol/connection.md, "Auth").
 export type AuthServer = 'primary' | 'drain';
 export type AuthChannel = { server: AuthServer; port: number };
 

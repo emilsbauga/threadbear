@@ -10,7 +10,9 @@
 // runner keeps its own copy beside the review (runner/reviews.ts
 // keepReplyImages), which the box then points at.
 use super::ReviewWindow;
-use crate::composer::{is_picture, keep_picture, picture_chip, picture_token, save_pasted_image, unstage};
+use crate::composer::{
+    is_picture, keep_picture, picture_chip, picture_token, save_pasted_image, unstage,
+};
 use gpui_kit::component::input::{InlineTokenContext, InputContent, TextareaState};
 use gpui_kit::*;
 use serde_json::json;
@@ -54,12 +56,21 @@ impl ReplyPictures {
                 out.push(c);
                 continue;
             }
-            let Some(image) = placed.next().and_then(|i| images.get(i)).cloned() else { continue };
+            let Some(image) = placed.next().and_then(|i| images.get(i)).cloned() else {
+                continue;
+            };
             let id = self.fresh_id();
             let start = out.len();
             out.push_str(PICTURE_MARK_STR);
             tokens.push((start..out.len(), picture_token(&id)));
-            self.chips.insert(id, ReplyPicture { source: PathBuf::from(&image.path), image: Some(image), failed: false });
+            self.chips.insert(
+                id,
+                ReplyPicture {
+                    source: PathBuf::from(&image.path),
+                    image: Some(image),
+                    failed: false,
+                },
+            );
         }
         let mut content = InputContent::new(out);
         for (range, token) in tokens {
@@ -70,7 +81,11 @@ impl ReplyPictures {
 
     /// The chips in the box, in order.
     fn ids(state: &TextareaState) -> Vec<SharedString> {
-        state.tokens().iter().map(|span| span.token().id().clone()).collect()
+        state
+            .tokens()
+            .iter()
+            .map(|span| span.token().id().clone())
+            .collect()
     }
 
     /// The reply and its pictures as the draft keeps them, each picture's
@@ -82,7 +97,11 @@ impl ReplyPictures {
             return None;
         }
         let text = state.value().to_string();
-        let mut spans: Vec<_> = state.tokens().iter().map(|span| (span.range(), span.token().id().clone())).collect();
+        let mut spans: Vec<_> = state
+            .tokens()
+            .iter()
+            .map(|span| (span.range(), span.token().id().clone()))
+            .collect();
         spans.sort_by_key(|(range, _)| range.start);
         let mut reply = String::with_capacity(text.len());
         let mut images = Vec::new();
@@ -104,24 +123,36 @@ impl ReplyPictures {
 
     /// Whether a picture in the box is still being copied in.
     pub(super) fn loading(&self, state: &TextareaState) -> bool {
-        Self::ids(state).iter().any(|id| self.chips.get(id).is_some_and(|c| c.image.is_none() && !c.failed))
+        Self::ids(state).iter().any(|id| {
+            self.chips
+                .get(id)
+                .is_some_and(|c| c.image.is_none() && !c.failed)
+        })
     }
-
 
     /// Each picture chip's file, in the box's order: the runner's copy once
     /// it's in, else the one it came from.
     fn paths(&self, state: &TextareaState) -> Vec<(SharedString, String)> {
-        Self::ids(state).into_iter().filter_map(|id| {
-            let chip = self.chips.get(&id)?;
-            let path = chip.image.as_ref().map_or_else(|| chip.source.to_string_lossy().into_owned(), |i| i.path.clone());
-            Some((id, path))
-        }).collect()
+        Self::ids(state)
+            .into_iter()
+            .filter_map(|id| {
+                let chip = self.chips.get(&id)?;
+                let path = chip.image.as_ref().map_or_else(
+                    || chip.source.to_string_lossy().into_owned(),
+                    |i| i.path.clone(),
+                );
+                Some((id, path))
+            })
+            .collect()
     }
 
     /// The runner's own copies, once a save has them: the same pictures in
     /// the same order, so the box points at the copies that last.
     pub(super) fn adopt(&mut self, state: &TextareaState, images: &[ImageRef]) {
-        let ids: Vec<_> = Self::ids(state).into_iter().filter(|id| self.chips.get(id).is_some_and(|c| c.image.is_some())).collect();
+        let ids: Vec<_> = Self::ids(state)
+            .into_iter()
+            .filter(|id| self.chips.get(id).is_some_and(|c| c.image.is_some()))
+            .collect();
         if ids.len() != images.len() {
             return;
         }
@@ -132,19 +163,42 @@ impl ReplyPictures {
         }
     }
 
-    pub(super) fn render(&self, ctx: &InlineTokenContext, state: &TextareaState, cx: &App) -> AnyElement {
+    pub(super) fn render(
+        &self,
+        ctx: &InlineTokenContext,
+        state: &TextareaState,
+        cx: &App,
+    ) -> AnyElement {
         let id = ctx.token().id();
         let chip = self.chips.get(id);
-        let number = Self::ids(state).iter().position(|c| c == id).map_or(1, |i| i + 1);
-        let path = chip.map(|c| c.image.as_ref().map_or_else(|| c.source.clone(), |i| PathBuf::from(&i.path)));
-        picture_chip(path, number, chip.is_none_or(|c| c.image.is_none()), ctx.is_selected(), cx)
+        let number = Self::ids(state)
+            .iter()
+            .position(|c| c == id)
+            .map_or(1, |i| i + 1);
+        let path = chip.map(|c| {
+            c.image
+                .as_ref()
+                .map_or_else(|| c.source.clone(), |i| PathBuf::from(&i.path))
+        });
+        picture_chip(
+            path,
+            number,
+            chip.is_none_or(|c| c.image.is_none()),
+            ctx.is_selected(),
+            cx,
+        )
     }
 }
 
 impl ReviewWindow {
     /// A paste into the reply: pictures and files first, as the thread's box
     /// takes them; words paste as words. Whether it took the paste.
-    pub(super) fn take_reply_clipboard(&mut self, item: Option<&ClipboardItem>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn take_reply_clipboard(
+        &mut self,
+        item: Option<&ClipboardItem>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.session.editable() {
             return false;
         }
@@ -183,20 +237,42 @@ impl ReviewWindow {
 
     /// Files pasted or dropped: pictures become chips where the cursor is, and
     /// anything else goes in as its path, for the agent to open where it is.
-    pub(super) fn take_reply_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn take_reply_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.session.editable() {
             return;
         }
-        let (pictures, others): (Vec<_>, Vec<_>) = paths.into_iter().map(keep_picture).partition(|p| is_picture(p));
+        let (pictures, others): (Vec<_>, Vec<_>) = paths
+            .into_iter()
+            .map(keep_picture)
+            .partition(|p| is_picture(p));
         let target = self.reply.clone();
         let (text, selection) = {
             let state = target.read(cx);
             (state.value().to_string(), state.selected_range())
         };
-        let ids: Vec<SharedString> = pictures.iter().map(|_| self.reply_pictures.fresh_id()).collect();
-        let mut piece_paths = words::path_text(&others.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>());
-        let prev_is_space = text[..selection.start].chars().next_back().map_or(true, char::is_whitespace);
-        let next_is_space = text[selection.end..].chars().next().is_some_and(char::is_whitespace);
+        let ids: Vec<SharedString> = pictures
+            .iter()
+            .map(|_| self.reply_pictures.fresh_id())
+            .collect();
+        let mut piece_paths = words::path_text(
+            &others
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+        );
+        let prev_is_space = text[..selection.start]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        let next_is_space = text[selection.end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace);
         target.update(cx, |s, cx| {
             if !selection.is_empty() {
                 s.replace("", window, cx);
@@ -223,7 +299,14 @@ impl ReviewWindow {
             crate::web_panels::keyboard_to_app(window);
         });
         for (id, path) in ids.into_iter().zip(pictures) {
-            self.reply_pictures.chips.insert(id.clone(), ReplyPicture { source: path.clone(), image: None, failed: false });
+            self.reply_pictures.chips.insert(
+                id.clone(),
+                ReplyPicture {
+                    source: path.clone(),
+                    image: None,
+                    failed: false,
+                },
+            );
             self.import_reply_picture(id, path, cx);
         }
         cx.notify();
@@ -240,14 +323,25 @@ impl ReviewWindow {
             futures::pin_mut!(ready, timeout);
             let prepared = match futures::future::select(ready, timeout).await {
                 futures::future::Either::Left((result, _)) => result,
-                futures::future::Either::Right(_) => Err("The picture took too long to arrive".into()),
+                futures::future::Either::Right(_) => {
+                    Err("The picture took too long to arrive".into())
+                }
             };
             let (result, staged) = match prepared {
                 Ok(mut prepared) => {
                     // A legacy file promise can bring several; the first is this chip's.
                     let staged = std::mem::take(&mut prepared.paths);
                     let first = staged.first().cloned().unwrap_or_else(|| path.clone());
-                    (crate::call(client, "media.import", json!({ "path": first.to_string_lossy() })).await.map_err(|e| e.message), staged)
+                    (
+                        crate::call(
+                            client,
+                            "media.import",
+                            json!({ "path": first.to_string_lossy() }),
+                        )
+                        .await
+                        .map_err(|e| e.message),
+                        staged,
+                    )
                 }
                 Err(message) => (Err(message), Vec::new()),
             };
@@ -257,13 +351,22 @@ impl ReviewWindow {
             for staged in &staged {
                 unstage(staged);
             }
-            this.update(cx, |this, cx| this.settle_reply_picture(id, result, cx)).ok();
+            this.update(cx, |this, cx| this.settle_reply_picture(id, result, cx))
+                .ok();
         })
         .detach();
     }
 
-    fn settle_reply_picture(&mut self, id: SharedString, result: Result<serde_json::Value, String>, cx: &mut Context<Self>) {
-        let image = result.and_then(|v| ImageRef::decode(&v["image"]).ok_or_else(|| "The runner's answer didn't make sense.".to_owned()));
+    fn settle_reply_picture(
+        &mut self,
+        id: SharedString,
+        result: Result<serde_json::Value, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let image = result.and_then(|v| {
+            ImageRef::decode(&v["image"])
+                .ok_or_else(|| "The runner's answer didn't make sense.".to_owned())
+        });
         match image {
             Ok(image) => {
                 if let Some(chip) = self.reply_pictures.chips.get_mut(&id) {
@@ -288,7 +391,13 @@ impl ReviewWindow {
     /// every picture in it is in.
     pub(super) fn reply_to_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for id in std::mem::take(&mut self.pending_chip_removal) {
-            let range = self.reply.read(cx).tokens().iter().find(|span| span.token().id() == &id).map(|span| span.range());
+            let range = self
+                .reply
+                .read(cx)
+                .tokens()
+                .iter()
+                .find(|span| span.token().id() == &id)
+                .map(|span| span.range());
             if let Some(range) = range {
                 self.reply.update(cx, |s, cx| {
                     s.set_selected_range(range, cx);
@@ -308,10 +417,27 @@ impl ReviewWindow {
     /// A plain click on a picture's chip in the reply: the picture full size
     /// over this window, stepping through the reply's others, as a chip in
     /// the thread's box opens (composer.rs `open_picture`).
-    pub(super) fn open_reply_picture(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_reply_picture(
+        &mut self,
+        id: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let paths = self.reply_pictures.paths(self.reply.read(cx));
-        let Some(chosen) = paths.iter().find(|(chip, _)| chip == id).map(|(_, path)| path.clone()) else { return };
-        crate::viewer::open(self, paths.into_iter().map(|(_, path)| path).collect(), &chosen, window, cx);
+        let Some(chosen) = paths
+            .iter()
+            .find(|(chip, _)| chip == id)
+            .map(|(_, path)| path.clone())
+        else {
+            return;
+        };
+        crate::viewer::open(
+            self,
+            paths.into_iter().map(|(_, path)| path).collect(),
+            &chosen,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn reply_loading(&self, cx: &App) -> bool {

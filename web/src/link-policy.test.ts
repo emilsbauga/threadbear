@@ -4,6 +4,7 @@
 // and what isn't an address is its words.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { classifyLink } from './link-policy.ts';
 
 const BASE = 'https://threadbear.example/t/abc';
@@ -40,4 +41,17 @@ test('what runs in the page or reads files is never a link', () => {
 test("an address too long to show whole isn't a link", () => {
   assert.equal(classifyLink('https://example.com/' + 'a'.repeat(3000), BASE).kind, 'never');
   assert.equal(classifyLink('slack://open?x=' + 'a'.repeat(3000), BASE).kind, 'never');
+});
+
+// The cases the desktop, iPhone and Android apps run too
+// (shared/cases/link-policy.json): never is refuse there.
+test('links follow the shared cases', () => {
+  type Case = { name: string; input: string; expect: 'web' | 'ask' | 'file' | 'refuse'; differs?: Record<string, string> };
+  const file = new URL('../../shared/cases/link-policy.json', import.meta.url);
+  const { cases } = JSON.parse(readFileSync(file, 'utf8')) as { cases: Case[] };
+  assert.ok(cases.length >= 40);
+  for (const c of cases.filter((c) => !c.differs?.web)) {
+    const kind = classifyLink(c.input, BASE).kind;
+    assert.equal(kind === 'never' ? 'refuse' : kind, c.expect, c.name);
+  }
 });

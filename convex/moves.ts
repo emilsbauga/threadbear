@@ -1,4 +1,4 @@
-// Moving a thread to another runner (docs/protocol.md, "Moving a thread to
+// Moving a thread to another runner (docs/protocol/moves.md, "Moving a thread to
 // another runner", API 64). The main Mac's runner (the owner key) starts a
 // move; after that each runner watches the moves it's in (`moves`) and
 // takes its step when the state says it's its turn: the runner that has the

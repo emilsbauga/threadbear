@@ -7,7 +7,7 @@ import XCTest
 /// took the hand away (AppKit working the cursor out again when a tip comes
 /// up or a click redraws the card) only happens with a real pointer, so
 /// `PointerButton.cursorWatch` isn't covered here: see "A cursor bug" in
-/// AGENTS.md for how it was checked.
+/// desktop/README.md for how it was checked.
 @MainActor
 final class PointerButtonTests: XCTestCase {
     private func moved(_ point: NSPoint, in window: NSWindow) -> NSEvent {

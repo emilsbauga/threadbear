@@ -81,7 +81,7 @@ export class ProcessRegistry {
   private scanning = false;
 
   // `name` is children.json for the runner that owns the data dir. A
-  // draining runner (docs/protocol.md, "Handovers") moves its list to
+  // draining runner (docs/protocol/updates.md, "Handovers") moves its list to
   // children-<pid>.json, so the new runner's sweep leaves its CLIs alone,
   // and sweeps that file only if it dies.
   constructor(runDir: string, log: Logger, name = 'children.json') {

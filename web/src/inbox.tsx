@@ -48,6 +48,7 @@ export function InboxProvider({ token, children }: { token: string; children: Re
     const next = mergeChanges(rows ?? [], since, changes);
     setRows(next.rows);
     if (next.since !== since) setSince(next.since);
+    return undefined;
     // Only an answer starts this: rows and since follow from it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [changes]);

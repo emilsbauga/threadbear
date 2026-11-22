@@ -1,4 +1,4 @@
-// Box mode's refused token (docs/protocol.md, Box mode, "A refused token"):
+// Box mode's refused token (docs/protocol/boxes.md, Box mode, "A refused token"):
 // `claude auth status` calls any token signed in, so a dead cloud token only
 // shows when a turn is refused (errorKind auth). The runner holds the thread
 // (Runner.holdForToken) and this tells the backend (boxes:tokenRefused, which

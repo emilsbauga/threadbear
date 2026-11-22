@@ -1,5 +1,5 @@
 // A runner's request for a new thread on another runner, as a state machine
-// (docs/lifecycles.md; docs/protocol.md "Asking another runner"). A runner
+// (docs/lifecycles.md; docs/protocol/runners.md "Asking another runner"). A runner
 // on a runner key files it, the main Mac shows Mike its card, and on his
 // answer the main Mac's runner (the owner key) claims it, starts the thread
 // and marks it allowed, or says no. Runners authenticate with keys in their

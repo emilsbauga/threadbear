@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { GiB, setup, shortHome, test } from '../helpers/check-remote-harness.ts';
+import { setup, shortHome, test } from '../helpers/check-remote-harness.ts';
 
 test('a slow copy that loses the race waits on its host with the same copy, even with another free', () => {
   const s = setup({ h1: { state: 'free', lose: 1 }, h2: { state: 'free' } });

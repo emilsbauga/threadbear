@@ -10,7 +10,7 @@ export type Pane = {
   brief?: string[] | null;
   cards?: string[] | null;
   sections?: PaneSection[] | null;
-  patches?: { id: string; source: string; waiting?: string | null; trusting?: boolean | null; gives?: string | null; error?: string | null; file?: string | null }[] | null;
+  patches?: { id: string; source: string; waiting?: string | null; trusting?: boolean | null; gives?: string | null; error?: string | null; file?: string | null; changes?: string[]; diffs?: string[] }[] | null;
   list?: PaneSection[] | null;
   image?: string | null;
   previewKind?: string | null;

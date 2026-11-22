@@ -38,6 +38,9 @@ let dock = cx.new(|cx| DockView::new(model.clone(), Rc::new(MyPanels), DockOptio
 `select`, `set_title_hidden`, `put_back`, `open_in_window`, `open_in_new_window`,
 `set_layout`), and `model.read(cx).layout().summary()` is the one-line dump.
 `DockView::set_options` changes the bars' size afterwards (the app's zoom does).
+`DockView::widen_panel` makes a panel's group at least so many points wide for
+content that needs the room, and `restore_width` puts it back unless a divider
+has been dragged since.
 
 A window hosting the dock must have no title bar over it and let the app own
 title bar drags, or AppKit moves the window on a drag of a panel's bar before

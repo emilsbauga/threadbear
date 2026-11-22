@@ -34,7 +34,9 @@ pub(crate) fn run_once(settings: &mut Settings, cx: &App) -> Option<String> {
     if stand_in.is_none() && !crate::installed::on_real_data() {
         return None;
     }
-    let done = |settings: &Settings, part: &str| settings.saved.swift_import_parts.iter().any(|p| p == part);
+    let done = |settings: &Settings, part: &str| {
+        settings.saved.swift_import_parts.iter().any(|p| p == part)
+    };
     let mut retry = None;
     let defaults = match read_defaults(stand_in.as_deref()) {
         Ok(defaults) => Some(defaults),
@@ -48,8 +50,13 @@ pub(crate) fn run_once(settings: &mut Settings, cx: &App) -> Option<String> {
         // The settings and the record that they came go in the one file, together.
         let before = settings.saved.clone();
         // AppKit's frames are measured up from the bottom of the main screen.
-        let screen = cx.primary_display().map_or(900., |d| f64::from(d.bounds().size.height));
-        let mut current = serde_json::to_value(&settings.saved).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let screen = cx
+            .primary_display()
+            .map_or(900., |d| f64::from(d.bounds().size.height));
+        let mut current = serde_json::to_value(&settings.saved)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
         let came = rules::fill_missing(&mut current, rules::settings(defaults, screen));
         if let Ok(saved) = serde_json::from_value(Value::Object(current)) {
             settings.saved = saved;
@@ -116,13 +123,18 @@ pub(crate) fn tour_once(settings: &mut Settings) {
         match read_defaults(stand_in.as_deref()) {
             Ok(defaults) => defaults,
             Err(e) => {
-                eprintln!("threadbear: the Swift app's tour will be looked for again next launch: {e}");
+                eprintln!(
+                    "threadbear: the Swift app's tour will be looked for again next launch: {e}"
+                );
                 return;
             }
         }
     };
     let before = settings.saved.clone();
-    let mut current = serde_json::to_value(&settings.saved).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let mut current = serde_json::to_value(&settings.saved)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
     rules::fill_missing(&mut current, rules::tour_state(&defaults));
     if let Ok(saved) = serde_json::from_value(Value::Object(current)) {
         settings.saved = saved;
@@ -159,14 +171,18 @@ fn read_some(path: &Path) -> Result<Option<Vec<u8>>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("couldn't look at {}: {e}", path.display())),
         Ok(meta) if meta.len() > MOST_BYTES => Ok(None),
-        Ok(_) => std::fs::read(path).map(Some).map_err(|e| format!("couldn't read {}: {e}", path.display())),
+        Ok(_) => std::fs::read(path)
+            .map(Some)
+            .map_err(|e| format!("couldn't read {}: {e}", path.display())),
     }
 }
 
 /// The Swift app's settings, or the stand-in's: empty when there's no Swift
 /// app (`defaults` gives an empty list then), an error when they couldn't be
 /// read, so that part is tried again.
-fn read_defaults(stand_in: Option<&std::ffi::OsStr>) -> Result<std::collections::BTreeMap<String, Plist>, String> {
+fn read_defaults(
+    stand_in: Option<&std::ffi::OsStr>,
+) -> Result<std::collections::BTreeMap<String, Plist>, String> {
     let xml = match stand_in {
         Some(file) => read_some(Path::new(file))?.map(|d| String::from_utf8_lossy(&d).into_owned()),
         None => export()?,
@@ -193,11 +209,16 @@ pub(crate) fn milestone_shown() -> Option<usize> {
 #[cfg(target_os = "macos")]
 fn export() -> Result<Option<String>, String> {
     use std::process::{Command, Stdio};
-    let out = Command::new("/usr/bin/defaults").args(["export", "com.mikerosoft.threadbear", "-"]).stderr(Stdio::null()).output().map_err(|e| format!("couldn't run defaults: {e}"))?;
+    let out = Command::new("/usr/bin/defaults")
+        .args(["export", "com.mikerosoft.threadbear", "-"])
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("couldn't run defaults: {e}"))?;
     if !out.status.success() {
         return Err(format!("defaults export failed ({})", out.status));
     }
-    Ok((out.stdout.len() as u64 <= MOST_BYTES).then(|| String::from_utf8_lossy(&out.stdout).into_owned()))
+    Ok((out.stdout.len() as u64 <= MOST_BYTES)
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -215,10 +236,19 @@ fn export() -> Result<Option<String>, String> {
 /// read, so the part is tried again.
 fn read_drafts(home: &Path) -> Result<Option<(std::path::PathBuf, Vec<u8>, usize)>, String> {
     // A file that isn't JSON won't be by next time, so it's nothing to bring.
-    let Some(swift) = read_some(&home.join("app-drafts.json"))?.and_then(|d| serde_json::from_slice::<Value>(&d).ok()) else { return Ok(None) };
+    let Some(swift) = read_some(&home.join("app-drafts.json"))?
+        .and_then(|d| serde_json::from_slice::<Value>(&d).ok())
+    else {
+        return Ok(None);
+    };
     let path = home.join("desktop-drafts.json");
     let mut current = if path.exists() {
-        let Some(map) = read_some(&path)?.and_then(|d| serde_json::from_slice::<Value>(&d).ok()).and_then(|v| v.as_object().cloned()) else { return Ok(None) };
+        let Some(map) = read_some(&path)?
+            .and_then(|d| serde_json::from_slice::<Value>(&d).ok())
+            .and_then(|v| v.as_object().cloned())
+        else {
+            return Ok(None);
+        };
         map
     } else {
         Default::default()
@@ -235,14 +265,22 @@ fn read_drafts(home: &Path) -> Result<Option<(std::path::PathBuf, Vec<u8>, usize
 /// defaults when this app hasn't one yet. Says the keys that came. After its
 /// record is saved, so one that fails isn't tried again: the Swift app still
 /// has the setting.
-fn bring_side_files(home: &Path, defaults: &std::collections::BTreeMap<String, Plist>) -> Vec<String> {
+fn bring_side_files(
+    home: &Path,
+    defaults: &std::collections::BTreeMap<String, Plist>,
+) -> Vec<String> {
     let mut filled = Vec::new();
     for (file, value, key) in rules::side_files(defaults) {
         let path = home.join(file);
         if path.exists() {
             continue;
         }
-        let written = serde_json::to_string_pretty(&value).map_err(|e| e.to_string()).and_then(|text| threadbear_core::private_file::write(&path, text.as_bytes()).map_err(|e| e.to_string()));
+        let written = serde_json::to_string_pretty(&value)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                threadbear_core::private_file::write(&path, text.as_bytes())
+                    .map_err(|e| e.to_string())
+            });
         match written {
             Ok(()) => filled.push(key.to_owned()),
             Err(e) => eprintln!("threadbear: couldn't write {}: {e}", path.display()),
@@ -257,7 +295,9 @@ impl Threadbear {
     pub(crate) fn show_import_note(&mut self, text: String, cx: &mut Context<Self>) {
         self.import_note = Some(text.clone());
         cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_secs(10)).await;
+            cx.background_executor()
+                .timer(Duration::from_secs(10))
+                .await;
             let keep = this.update(cx, |this, cx| {
                 if this.import_note.as_deref() != Some(text.as_str()) {
                     return false;
@@ -279,7 +319,11 @@ impl Threadbear {
 
     /// The note as the inbox-end note looks (`InboxEndToast`): its words and,
     /// quieter, what came; a click takes it down.
-    pub(crate) fn render_import_note(&mut self, text: String, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_import_note(
+        &mut self,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (secondary, accent) = (crate::style::secondary_text(cx), crate::style::accent(cx));
         let (title, detail) = text.split_once(": ").unwrap_or((text.as_str(), ""));
         self.toast_capsule("import-note", cx)
@@ -290,9 +334,19 @@ impl Threadbear {
                 cx.notify();
             }))
             .tip(text.clone())
-            .child(crate::icons::symbol("square.and.arrow.down").with_size(px(crate::style::size::LABEL)).text_color(accent))
+            .child(
+                crate::icons::symbol("square.and.arrow.down")
+                    .with_size(px(crate::style::size::LABEL))
+                    .text_color(accent),
+            )
             .child(div().flex_none().child(title.to_owned()))
-            .child(div().min_w_0().truncate().text_color(secondary).child(detail.to_owned()))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(secondary)
+                    .child(detail.to_owned()),
+            )
             .into_any_element()
     }
 }

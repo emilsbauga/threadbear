@@ -123,7 +123,7 @@ export class GpuiDriver implements Driver {
       }
       return;
     }
-    if (c.pid && process.platform !== 'win32') {
+    if (c.pid) {
       try {
         process.kill(-c.pid, 'SIGTERM');
         return;
@@ -246,7 +246,7 @@ export class GpuiDriver implements Driver {
     // TB_MOCK_REMOTE: a scenario about other machines (@remote-threads).
     const fixtures = process.env.TB_MOCK_FIXTURES ? ['--fixtures', process.env.TB_MOCK_FIXTURES] : [];
     if (!process.env.TB_RUNNER_HOME) {
-      this.child(process.execPath, [path.join(root, 'app/Tools/mock-runner/server.mjs'), '--data-dir', this.home, '--port', '0', '--quiet', '--ready-file', ready, ...fixtures], { TB_MOCK_NO_REMOTE: process.env.TB_MOCK_REMOTE ? '' : '1' });
+      this.child(process.execPath, [path.join(root, 'mock-runner/server.mjs'), '--data-dir', this.home, '--port', '0', '--quiet', '--ready-file', ready, ...fixtures], { TB_MOCK_NO_REMOTE: process.env.TB_MOCK_REMOTE ? '' : '1' });
       await waitForFile(ready, 'The mock runner', 15_000);
     }
     await this.launchApp();

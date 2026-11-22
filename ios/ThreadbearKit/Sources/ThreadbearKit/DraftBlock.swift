@@ -44,6 +44,90 @@ public struct DraftBlock: Hashable, Sendable {
         return lowered.contains("slack") || lowered.contains("email") || lowered.contains("draft")
     }
 
+    private static let editedOne = "I edited your draft. Use my version below exactly as it is, not yours:"
+    private static let editedMany = "I edited your drafts. Use my versions below exactly as they are, not yours:"
+
+    /// A sent message with the Mac's edited drafts on its end
+    /// (desktop/core's draft_block.rs, `split_edited`; the website's
+    /// `splitEdited`): his own words, and each draft he changed, so his
+    /// bubble shows a chip for each rather than the line asking the agent
+    /// to use them and the raw fences. Nil when it doesn't end that way.
+    public static func splitEdited(_ text: String) -> (words: String, drafts: [DraftBlock])? {
+        // Worked on as Unicode scalars, as the Mac and the website count, so
+        // a "\r\n" isn't one Character that hides the "\n" before a fence.
+        let plain = text
+        // From the first one: a draft can hold the line itself, and his own
+        // words can too, so each place it starts a paragraph is tried until
+        // one is followed by nothing but drafts.
+        var starts: [(Range<String.Index>, String)] = []
+        for intro in [editedOne, editedMany] {
+            var from = plain.startIndex
+            while let found = plain.range(of: intro, options: .literal, range: from..<plain.endIndex) {
+                starts.append((found, intro))
+                from = plain.unicodeScalars.index(after: found.lowerBound)
+            }
+        }
+        starts.sort { $0.0.lowerBound < $1.0.lowerBound }
+        for (range, intro) in starts {
+            if let split = splitAt(plain, range, intro) { return split }
+        }
+        return nil
+    }
+
+    private static func splitAt(_ text: String, _ range: Range<String.Index>, _ intro: String) -> (words: String, drafts: [DraftBlock])? {
+        let before = text[..<range.lowerBound]
+        guard before.isEmpty || Array(before.unicodeScalars.suffix(2)) == ["\n", "\n"] else { return nil }
+        var rest = Substring(text[range.upperBound...]).unicodeScalars
+        var drafts: [DraftBlock] = []
+        while rest.starts(with: "\n\n".unicodeScalars) {
+            let after = rest.dropFirst(2)
+            let ticks = after.prefix { $0 == "`" }.count
+            guard ticks >= 3, let lineEnd = after.firstIndex(of: "\n") else { return nil }
+            let word = String(String.UnicodeScalarView(after[after.index(after.startIndex, offsetBy: ticks)..<lineEnd]))
+            guard let kind = Kind(rawValue: word) else { return nil }
+            let body = after[after.index(after: lineEnd)...]
+            let close = "\n" + String(repeating: "`", count: ticks)
+            guard let end = closing(body, close) else { return nil }
+            // Whatever length it is: what was sent is shown.
+            let source = String(String.UnicodeScalarView(body[..<end.lowerBound])).replacingOccurrences(of: "\r\n", with: "\n")
+            guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            drafts.append(DraftBlock(kind: kind, source: source))
+            rest = body[end.upperBound...]
+        }
+        let tail = String(String.UnicodeScalarView(rest))
+        guard !drafts.isEmpty, tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (intro == editedOne) == (drafts.count == 1) else { return nil }
+        var words = String(before)
+        while let last = words.last, last.isWhitespace { words.removeLast() }
+        return (words, drafts)
+    }
+
+    /// Where a draft's closing fence is: on a line of its own, with only
+    /// the end or a new paragraph after it.
+    private static func closing(_ text: String.UnicodeScalarView.SubSequence, _ close: String) -> Range<String.UnicodeScalarView.Index>? {
+        let close = Array(close.unicodeScalars)
+        var from = text.startIndex
+        while from < text.endIndex {
+            guard let first = text[from...].firstIndex(of: close[0]) else { return nil }
+            let candidate = text[first...]
+            if candidate.starts(with: close) {
+                let end = text.index(first, offsetBy: close.count)
+                let after = String(String.UnicodeScalarView(text[end...]))
+                if after.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || after.hasPrefix("\n\n") { return first..<end }
+            }
+            from = text.index(after: first)
+        }
+        return nil
+    }
+
+    /// What the chip for his changed draft calls it.
+    public var editedLabel: String {
+        switch kind {
+        case .slack: return "Your edited Slack message"
+        case .email: return "Your edited email"
+        case .draft: return "Your edited draft"
+        }
+    }
+
     /// What the box's header calls it.
     public var label: String {
         switch kind {
@@ -208,9 +292,20 @@ public struct DraftBlock: Hashable, Sendable {
             return .mention("\(first)\(name)")
         }
         guard !target.contains(" "), let url = URL(string: target), let scheme = url.scheme?.lowercased(),
-              ["http", "https", "mailto"].contains(scheme) else { return nil }
+              ["http", "https", "mailto"].contains(scheme), names(target, scheme: scheme) else { return nil }
         let shown = label.map(decode) ?? (scheme == "mailto" ? String(target.dropFirst("mailto:".count)) : target)
         return .link(url, shown)
+    }
+
+    /// Enough of an address to be one: a web one names a host, a mail one
+    /// someone. URL(string:) takes "https://" and "mailto:" alone, which
+    /// go nowhere (the desktop app's is_address; shared/cases/draft-blocks.json).
+    private static func names(_ target: String, scheme: String) -> Bool {
+        let rest = target.dropFirst(scheme.count + 1)
+        guard !rest.isEmpty else { return false }
+        if scheme == "mailto" { return true }
+        guard let first = rest.drop(while: { $0 == "/" }).first else { return false }
+        return first != "?" && first != "#"
     }
 
     enum Piece: Equatable {

@@ -17,20 +17,20 @@ pub use download::Progress;
 
 #[cfg(target_os = "macos")]
 pub use mac::host::{bundle_identifier, initialize_called, retry, start, status, Launch, Status};
-#[cfg(target_os = "macos")]
-pub use mac::offscreen::{picture, png_size, Offscreen, Options, Reply};
-/// The transcript's diagrams and pages, drawn into pictures (mac/rich.rs).
-#[cfg(target_os = "macos")]
-pub use mac::rich::{data_url, draw_diagram, draw_page, reset as reset_rich, Drawn};
-/// A page in a native view, placed from a GPUI layout slot (mac/page.rs).
-#[cfg(target_os = "macos")]
-pub use mac::page::Page;
 /// A web panel's page: a patch's site or the Convex dashboard (mac/panel.rs),
 /// and the native menu for controls over one.
 #[cfg(target_os = "macos")]
 pub use mac::host::{keyboard_holder, popup_menu, send_click, send_keys, take_keyboard, MenuItem};
 #[cfg(target_os = "macos")]
+pub use mac::offscreen::{picture, png_size, Offscreen, Options, Reply};
+/// A page in a native view, placed from a GPUI layout slot (mac/page.rs).
+#[cfg(target_os = "macos")]
+pub use mac::page::Page;
+#[cfg(target_os = "macos")]
 pub use mac::panel::PanelPage;
+/// The transcript's diagrams and pages, drawn into pictures (mac/rich.rs).
+#[cfg(target_os = "macos")]
+pub use mac::rich::{data_url, draw_diagram, draw_page, reset as reset_rich, Drawn};
 pub use panel_rules::{site, Event as PanelEvent, Kind as PanelKind};
 pub use preview_rules::PreviewSite;
 
@@ -141,21 +141,41 @@ mod elsewhere {
         pub checked: bool,
     }
 
-    pub fn popup_menu(_view: *mut std::ffi::c_void, _x: f32, _y: f32, _items: &[MenuItem]) -> Option<usize> {
+    /// # Safety
+    ///
+    /// As mac/host.rs's: nothing here reads `view`.
+    pub unsafe fn popup_menu(
+        _view: *mut std::ffi::c_void,
+        _x: f32,
+        _y: f32,
+        _items: &[MenuItem],
+    ) -> Option<usize> {
         None
     }
 
     /// No pages here to take the keyboard from GPUI's view.
-    pub fn keyboard_holder(_view: *mut std::ffi::c_void) -> crate::KeyboardHolder {
+    /// # Safety
+    ///
+    /// As mac/host.rs's: nothing here reads `view`.
+    pub unsafe fn keyboard_holder(_view: *mut std::ffi::c_void) -> crate::KeyboardHolder {
         crate::KeyboardHolder::App
     }
 
-    pub fn take_keyboard(_view: *mut std::ffi::c_void) -> bool {
+    /// # Safety
+    ///
+    /// As mac/host.rs's: nothing here reads `view`.
+    pub unsafe fn take_keyboard(_view: *mut std::ffi::c_void) -> bool {
         false
     }
 
-    pub fn send_keys(_view: *mut std::ffi::c_void, _text: &str) {}
-    pub fn send_click(_view: *mut std::ffi::c_void, _x: f32, _y: f32) -> String {
+    /// # Safety
+    ///
+    /// As mac/host.rs's: nothing here reads `view`.
+    pub unsafe fn send_keys(_view: *mut std::ffi::c_void, _text: &str) {}
+    /// # Safety
+    ///
+    /// As mac/host.rs's: nothing here reads `view`.
+    pub unsafe fn send_click(_view: *mut std::ffi::c_void, _x: f32, _y: f32) -> String {
         String::new()
     }
 
@@ -164,10 +184,24 @@ mod elsewhere {
     pub struct PanelPage(());
 
     impl PanelPage {
-        pub fn open(_parent: *mut std::ffi::c_void, _url: &str, _kind: crate::PanelKind) -> Result<(PanelPage, futures::channel::mpsc::UnboundedReceiver<crate::PanelEvent>), String> {
+        pub fn open(
+            _parent: *mut std::ffi::c_void,
+            _url: &str,
+            _kind: crate::PanelKind,
+        ) -> Result<
+            (
+                PanelPage,
+                futures::channel::mpsc::UnboundedReceiver<crate::PanelEvent>,
+            ),
+            String,
+        > {
             Err("there's no web runtime for this system yet".into())
         }
-        pub fn devtools(&self, _method: &str, _params: serde_json::Value) -> futures::channel::oneshot::Receiver<Result<serde_json::Value, String>> {
+        pub fn devtools(
+            &self,
+            _method: &str,
+            _params: serde_json::Value,
+        ) -> futures::channel::oneshot::Receiver<Result<serde_json::Value, String>> {
             let (tx, rx) = futures::channel::oneshot::channel();
             let _ = tx.send(Err("there's no web runtime for this system yet".into()));
             rx
@@ -190,8 +224,12 @@ mod elsewhere {
             String::new()
         }
         pub fn go_back(&self) {}
-        pub fn move_to(&self, _parent: *mut std::ffi::c_void) {}
-        pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32, _parent_height: f32) {}
+        /// # Safety
+        ///
+        /// As mac/panel.rs's: nothing here reads `parent`.
+        pub unsafe fn move_to(&self, _parent: *mut std::ffi::c_void) {}
+        pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32, _parent_height: f32) {
+        }
         pub fn bounds(&self) -> (f32, f32, f32, f32) {
             (0., 0., 0., 0.)
         }

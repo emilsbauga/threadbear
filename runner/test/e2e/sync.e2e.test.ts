@@ -143,7 +143,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     else if (fs.existsSync(envLocalPath)) fs.rmSync(envLocalPath);
   });
 
-  // Step 6 (docs/protocol.md, Schedules, "Runners"): with an API 9 backend
+  // Step 6 (docs/protocol/projects.md, Schedules, "Runners"): with an API 9 backend
   // the runner moves its schedules into the table, makes them there, takes
   // each due run with a claim, runs what another runner asked for, and can
   // put one on another runner (here a pretend "mac-mini" that only heartbeats).
@@ -218,7 +218,7 @@ describe('convex mirror e2e', { skip: LOCAL ? false : 'no local Convex deploymen
     await api('mutation', 'sync:bye', { key, runnerId: 'e2e-mac-mini' });
   });
 
-  // Step 6 part 2 (docs/protocol.md, "Other runners' threads"): the runner
+  // Step 6 part 2 (docs/protocol/runners.md, "Other runners' threads"): the runner
   // writes its sidebar rows, and hands the app another runner's rows (here a
   // pretend "e2e-other" that only heartbeats and writes its index).
   test('API 45: the sidebar\'s schedule rows, figures only while watched, and schedule commands', async () => {

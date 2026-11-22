@@ -18,9 +18,13 @@ use threadbear_core::spelling::{Found, Outcome};
 
 /// The Edit menu's switches for the message box, kept between runs (prefs).
 /// Spelling while typing is on, grammar off, and quotes and dashes off as the
-/// Swift composer had them (`isAutomaticQuoteSubstitutionEnabled = false`);
-/// correction and text replacement follow the Mac's own Keyboard settings
-/// until they're switched here.
+/// Swift composer had them (`isAutomaticQuoteSubstitutionEnabled = false`).
+/// Correction is off until it's switched on here, whatever the Mac's Keyboard
+/// settings say: on 20 Nov it turned Mike's "jank" into "tank", and words
+/// like that (names, commands, slang) are most of what's typed to an agent.
+/// `correct: None` is a file from when it followed the Mac's setting, and
+/// reads as off. Text replacement, which only puts in what the person set up
+/// themselves, still follows the Mac's setting until it's switched here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Checks {
@@ -34,13 +38,20 @@ pub struct Checks {
 
 impl Default for Checks {
     fn default() -> Self {
-        Checks { spelling: true, grammar: false, correct: None, quotes: false, dashes: false, replace: None }
+        Checks {
+            spelling: true,
+            grammar: false,
+            correct: None,
+            quotes: false,
+            dashes: false,
+            replace: None,
+        }
     }
 }
 
 impl Checks {
     pub fn correct(&self) -> bool {
-        self.correct.unwrap_or_else(system_correction)
+        self.correct.unwrap_or(false)
     }
     pub fn replace(&self) -> bool {
         self.replace.unwrap_or_else(system_replacement)
@@ -82,7 +93,7 @@ mod mac {
             }
             tag
         };
-        #[allow(deprecated)]
+        #[allow(deprecated, reason = "NSSpeechSynthesizer, which still speaks; AVSpeechSynthesizer is the replacement to move to")]
         static VOICE: Retained<objc2_app_kit::NSSpeechSynthesizer> = objc2_app_kit::NSSpeechSynthesizer::new();
     }
 
@@ -92,7 +103,10 @@ mod mac {
 
     fn ns_range(text: &str, range: Range<usize>) -> NSRange {
         let start = utf16_of_byte(text, range.start);
-        NSRange { location: start, length: utf16_of_byte(text, range.end) - start }
+        NSRange {
+            location: start,
+            length: utf16_of_byte(text, range.end) - start,
+        }
     }
 
     pub fn check(text: &str, within: Range<usize>, checks: &Checks, typing: bool) -> Vec<Found> {
@@ -124,7 +138,17 @@ mod mac {
         let tag = TAG.with(|t| *t);
         // SAFETY: no options, no orthography wanted, and a null word count,
         // which the method takes as "don't count".
-        let results = unsafe { checker().checkString_range_types_options_inSpellDocumentWithTag_orthography_wordCount(&string, ns_range(text, within), types.0, None, tag, None, std::ptr::null_mut()) };
+        let results = unsafe {
+            checker().checkString_range_types_options_inSpellDocumentWithTag_orthography_wordCount(
+                &string,
+                ns_range(text, within),
+                types.0,
+                None,
+                tag,
+                None,
+                std::ptr::null_mut(),
+            )
+        };
         let mut found = Vec::new();
         for result in results.iter() {
             let kind = match result.resultType() {
@@ -139,17 +163,37 @@ mod mac {
             let r = result.range();
             let range = byte_of_utf16(text, r.location)..byte_of_utf16(text, r.location + r.length);
             let replacement = result.replacementString().map(|s| s.to_string());
-            found.push(Found { range, kind, replacement });
+            found.push(Found {
+                range,
+                kind,
+                replacement,
+            });
         }
         // A plain check doesn't always offer corrections; AppKit's own
         // autocorrect asks for the one of the word just ended, so this does
         // too: the last misspelled word in what was checked.
         if typing && checks.correct() && !found.iter().any(|f| f.kind == Kind::Correction) {
-            if let Some(word) = found.iter().filter(|f| f.kind == Kind::Spelling).max_by_key(|f| f.range.end).cloned() {
+            if let Some(word) = found
+                .iter()
+                .filter(|f| f.kind == Kind::Spelling)
+                .max_by_key(|f| f.range.end)
+                .cloned()
+            {
                 let checker = checker();
                 let language = checker.language();
-                if let Some(with) = checker.correctionForWordRange_inString_language_inSpellDocumentWithTag(ns_range(text, word.range.clone()), &string, &language, tag) {
-                    found.push(Found { range: word.range, kind: Kind::Correction, replacement: Some(with.to_string()) });
+                if let Some(with) = checker
+                    .correctionForWordRange_inString_language_inSpellDocumentWithTag(
+                        ns_range(text, word.range.clone()),
+                        &string,
+                        &language,
+                        tag,
+                    )
+                {
+                    found.push(Found {
+                        range: word.range,
+                        kind: Kind::Correction,
+                        replacement: Some(with.to_string()),
+                    });
                 }
             }
         }
@@ -160,7 +204,12 @@ mod mac {
         let string = NSString::from_str(text);
         let tag = TAG.with(|t| *t);
         checker()
-            .guessesForWordRange_inString_language_inSpellDocumentWithTag(ns_range(text, range), &string, None, tag)
+            .guessesForWordRange_inString_language_inSpellDocumentWithTag(
+                ns_range(text, range),
+                &string,
+                None,
+                tag,
+            )
             .map(|list| list.iter().map(|s| s.to_string()).collect())
             .unwrap_or_default()
     }
@@ -183,8 +232,23 @@ mod mac {
         };
         let checker = checker();
         let language = checker.language();
-        let (correction, word) = (NSString::from_str(&outcome.correction), NSString::from_str(&outcome.word));
-        checker.recordResponse_toCorrection_forWord_language_inSpellDocumentWithTag(response, &correction, &word, Some(&language), tag);
+        let (correction, word) = (
+            NSString::from_str(&outcome.correction),
+            NSString::from_str(&outcome.word),
+        );
+        // Not from the scripted app: the Mac remembers these for good, in
+        // every app. The specs take the same corrections back on every run,
+        // and by 20 Nov Tinker Desk's checker had stopped correcting "teh"
+        // and "recieve" at all, so the specs that type them failed there.
+        if !cfg!(feature = "automation") {
+            checker.recordResponse_toCorrection_forWord_language_inSpellDocumentWithTag(
+                response,
+                &correction,
+                &word,
+                Some(&language),
+                tag,
+            );
+        }
         // A word whose correction was put back is what was meant, so it
         // isn't marked either while the app runs.
         if outcome.response == Response::Reverted {
@@ -192,7 +256,10 @@ mod mac {
         }
     }
 
-    #[allow(deprecated)]
+    #[allow(
+        deprecated,
+        reason = "NSSpeechSynthesizer, which still speaks; AVSpeechSynthesizer is the replacement to move to"
+    )]
     pub fn speak(text: &str) {
         VOICE.with(|v| {
             v.stopSpeaking();
@@ -200,18 +267,20 @@ mod mac {
         });
     }
 
-    #[allow(deprecated)]
+    #[allow(
+        deprecated,
+        reason = "NSSpeechSynthesizer, which still speaks; AVSpeechSynthesizer is the replacement to move to"
+    )]
     pub fn stop_speaking() {
         VOICE.with(|v| v.stopSpeaking());
     }
 
-    #[allow(deprecated)]
+    #[allow(
+        deprecated,
+        reason = "NSSpeechSynthesizer, which still speaks; AVSpeechSynthesizer is the replacement to move to"
+    )]
     pub fn speaking() -> bool {
         VOICE.with(|v| v.isSpeaking())
-    }
-
-    pub fn system_correction() -> bool {
-        NSSpellChecker::isAutomaticSpellingCorrectionEnabled()
     }
 
     pub fn system_replacement() -> bool {
@@ -234,9 +303,6 @@ mod mac {
     pub fn speak(_: &str) {}
     pub fn stop_speaking() {}
     pub fn speaking() -> bool {
-        false
-    }
-    pub fn system_correction() -> bool {
         false
     }
     pub fn system_replacement() -> bool {
@@ -286,11 +352,6 @@ pub(crate) fn speaking() -> bool {
     mac::speaking()
 }
 
-/// Keyboard settings' "Correct spelling automatically".
-pub(crate) fn system_correction() -> bool {
-    mac::system_correction()
-}
-
 /// Whether the Mac's text replacements are on (Keyboard > Text Input).
 pub(crate) fn system_replacement() -> bool {
     mac::system_replacement()
@@ -299,19 +360,38 @@ pub(crate) fn system_replacement() -> bool {
 /// Where the selected words are.
 #[derive(Clone)]
 pub(crate) enum SelectionSource {
-    TextBox { input: WeakEntity<TextareaState>, range: Range<usize> },
-    TextField { input: WeakEntity<gpui_kit::component::input::InputState>, range: Range<usize> },
-    Editor { input: WeakEntity<gpui_kit::component::input::EditorState>, range: Range<usize> },
+    TextBox {
+        input: WeakEntity<TextareaState>,
+        range: Range<usize>,
+    },
+    TextField {
+        input: WeakEntity<gpui_kit::component::input::InputState>,
+        range: Range<usize>,
+    },
+    Editor {
+        input: WeakEntity<gpui_kit::component::input::EditorState>,
+        range: Range<usize>,
+    },
     Reply,
 }
 
 impl SelectionSource {
     pub(crate) fn is_editable(&self, cx: &App) -> bool {
-        macro_rules! editable { ($input:expr) => { $input.upgrade().is_some_and(|input| { let state=input.read(cx); !state.is_sensitive() && !state.has_composition() && state.is_single_selection() && state.presentation().is_editable() }) }; }
+        macro_rules! editable {
+            ($input:expr) => {
+                $input.upgrade().is_some_and(|input| {
+                    let state = input.read(cx);
+                    !state.is_sensitive()
+                        && !state.has_composition()
+                        && state.is_single_selection()
+                        && state.presentation().is_editable()
+                })
+            };
+        }
         match self {
-            Self::TextBox {input,..} => editable!(input),
-            Self::TextField {input,..} => editable!(input),
-            Self::Editor {input,..} => editable!(input),
+            Self::TextBox { input, .. } => editable!(input),
+            Self::TextField { input, .. } => editable!(input),
+            Self::Editor { input, .. } => editable!(input),
             Self::Reply => false,
         }
     }
@@ -332,7 +412,12 @@ pub(crate) fn register_text_box(input: &Entity<TextareaState>) {
 
 /// The text box with the keyboard in `window`, if it's one of the app's.
 pub(crate) fn focused_text_box(window: &Window, cx: &App) -> Option<Entity<TextareaState>> {
-    BOXES.with_borrow(|boxes| boxes.iter().filter_map(|b| b.upgrade()).find(|b| b.read(cx).focus_handle(cx).is_focused(window)))
+    BOXES.with_borrow(|boxes| {
+        boxes
+            .iter()
+            .filter_map(|b| b.upgrade())
+            .find(|b| b.read(cx).focus_handle(cx).is_focused(window))
+    })
 }
 
 /// The words selected now, and where: the text box with the keyboard if it
@@ -343,40 +428,60 @@ pub(crate) fn focused_text_box(window: &Window, cx: &App) -> Option<Entity<Texta
 pub(crate) fn app_has_keyboard(window: &Window) -> bool {
     #[cfg(target_os = "macos")]
     if let Some(view) = crate::web_panels::native_view(window) {
-        return threadbear_web::keyboard_holder(view) == threadbear_web::KeyboardHolder::App;
+        // SAFETY: the content view of `window`, which is open while it's
+        // borrowed here, on the main thread GPUI's windows run on.
+        return unsafe { threadbear_web::keyboard_holder(view) }
+            == threadbear_web::KeyboardHolder::App;
     }
     let _ = window;
     true
 }
 
-pub(crate) fn front_selection(window: &mut Window, cx: &mut App) -> Option<(String, SelectionSource)> {
+pub(crate) fn front_selection(
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<(String, SelectionSource)> {
     use gpui_kit::component::{input::AnyInputState, WindowExt as _};
-    if !app_has_keyboard(window) || crate::terminal::has_focus(window,cx) { return None }
+    if !app_has_keyboard(window) || crate::terminal::has_focus(window, cx) {
+        return None;
+    }
     macro_rules! selection {
         ($input:expr, $variant:ident) => {{
-            let input=$input;
-            let state=input.read(cx);
-            if state.is_sensitive() { return None }
-            let range=state.selected_range();
-            if range.is_empty() || range.len()>1024*1024 { return None }
-            let selected=state.selected_text();
-            Some((selected.to_string(),SelectionSource::$variant {input:input.downgrade(),range}))
+            let input = $input;
+            let state = input.read(cx);
+            if state.is_sensitive() {
+                return None;
+            }
+            let range = state.selected_range();
+            if range.is_empty() || range.len() > 1024 * 1024 {
+                return None;
+            }
+            let selected = state.selected_text();
+            Some((
+                selected.to_string(),
+                SelectionSource::$variant {
+                    input: input.downgrade(),
+                    range,
+                },
+            ))
         }};
     }
     // All plain text fields participate. A secure or one-time-code field
     // must suppress a reply's older selection rather than exposing it.
-    if let Some(input)=window.focused_input(cx) {
+    if let Some(input) = window.focused_input(cx) {
         return match input {
-            AnyInputState::Input(input)=>selection!(input,TextField),
-            AnyInputState::Textarea(input)=>selection!(input,TextBox),
-            AnyInputState::Editor(input)=>selection!(input,Editor),
-            AnyInputState::Otp(_)=>None,
-        }
+            AnyInputState::Input(input) => selection!(input, TextField),
+            AnyInputState::Textarea(input) => selection!(input, TextBox),
+            AnyInputState::Editor(input) => selection!(input, Editor),
+            AnyInputState::Otp(_) => None,
+        };
     }
     // A just-focused composer can precede the registry's next paint.
-    if let Some(input)=focused_text_box(window,cx) { return selection!(input,TextBox) }
-    let words=gpui_kit::base::TextSelection::selected_text(window,cx);
-    (!words.is_empty() && words.len()<=1024*1024).then(||(words,SelectionSource::Reply))
+    if let Some(input) = focused_text_box(window, cx) {
+        return selection!(input, TextBox);
+    }
+    let words = gpui_kit::base::TextSelection::selected_text(window, cx);
+    (!words.is_empty() && words.len() <= 1024 * 1024).then(|| (words, SelectionSource::Reply))
 }
 
 /// A message's context menu must never use words selected in a different
@@ -392,145 +497,272 @@ pub(crate) fn reply_menu_selection(window: &mut Window, cx: &mut App) -> Option<
 /// that same text box, with that same range selected, holding `expected`:
 /// a Service's answer never lands somewhere the keyboard moved to since.
 /// It's one edit Undo takes back. `false` when nothing was changed.
-pub(crate) fn replace_if_unchanged(source: &SelectionSource, expected: &str, with: &str, window: &mut Window, cx: &mut App) -> bool {
-    if expected.contains('\u{fffc}') { return false }
+pub(crate) fn replace_if_unchanged(
+    source: &SelectionSource,
+    expected: &str,
+    with: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    if expected.contains('\u{fffc}') {
+        return false;
+    }
     macro_rules! replace {
         ($input:expr,$range:expr) => {{
-            let Some(input)=$input.upgrade() else{return false};
-            input.update(cx,|state,cx|{
-                if state.has_composition() || !state.is_single_selection() || state.is_sensitive() || !state.presentation().is_editable() || state.selected_range()!=*$range || state.selected_text().to_string()!=expected {return false}
-                state.replace(with.to_owned(),window,cx);
+            let Some(input) = $input.upgrade() else {
+                return false;
+            };
+            input.update(cx, |state, cx| {
+                if state.has_composition()
+                    || !state.is_single_selection()
+                    || state.is_sensitive()
+                    || !state.presentation().is_editable()
+                    || state.selected_range() != *$range
+                    || state.selected_text() != expected
+                {
+                    return false;
+                }
+                state.replace(with.to_owned(), window, cx);
                 true
             })
         }};
     }
     match source {
-        SelectionSource::TextBox {input,range}=>replace!(input,range),
-        SelectionSource::TextField {input,range}=>replace!(input,range),
-        SelectionSource::Editor {input,range}=>replace!(input,range),
-        SelectionSource::Reply=>false,
+        SelectionSource::TextBox { input, range } => replace!(input, range),
+        SelectionSource::TextField { input, range } => replace!(input, range),
+        SelectionSource::Editor { input, range } => replace!(input, range),
+        SelectionSource::Reply => false,
+    }
+}
+
+#[cfg(test)]
+mod checks_tests {
+    use super::Checks;
+
+    // Mike, 20 Nov: "jank" came out as "tank", because correction followed
+    // the Mac's Keyboard setting, which is on unless someone turns it off.
+    #[test]
+    fn correction_is_off_until_its_switched_on_here() {
+        assert!(!Checks::default().correct());
+        // A prefs file from when `null` meant "as the Mac has it".
+        let saved: Checks = serde_json::from_str(r#"{"spelling":true,"grammar":false,"correct":null,"quotes":false,"dashes":false,"replace":null}"#).unwrap();
+        assert!(!saved.correct());
+        let switched_on: Checks = serde_json::from_str(r#"{"correct":true}"#).unwrap();
+        assert!(switched_on.correct());
     }
 }
 
 #[cfg(all(test, feature = "automation"))]
 mod selection_tests {
     use super::{front_selection, replace_if_unchanged, SelectionSource};
-    use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState, Editor, EditorState, Undo};
+    use gpui_kit::component::input::{
+        Editor, EditorState, Input, InputState, Textarea, TextareaState, Undo,
+    };
     use gpui_kit::prelude::*;
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{div, Entity, EntityInputHandler as _, Focusable as _, TestAppContext, Window, WindowOptions};
+    use gpui_kit::{
+        div, Entity, EntityInputHandler as _, Focusable as _, TestAppContext, Window, WindowOptions,
+    };
 
-    struct Fields { input: Entity<InputState>, textarea: Entity<TextareaState>, editor: Entity<EditorState> }
+    struct Fields {
+        input: Entity<InputState>,
+        textarea: Entity<TextareaState>,
+        editor: Entity<EditorState>,
+    }
     impl Render for Fields {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().flex().flex_col().child(Input::new(&self.input)).child(Textarea::new(&self.textarea)).child(Editor::new(&self.editor))
+            div()
+                .flex()
+                .flex_col()
+                .child(Input::new(&self.input))
+                .child(Textarea::new(&self.textarea))
+                .child(Editor::new(&self.editor))
         }
     }
     fn fields(cx: &mut TestAppContext) -> (gpui_kit::AnyWindowHandle, Entity<Fields>) {
         cx.update(gpui_kit::init);
-        cx.update(|cx| gpui_kit::open_window(WindowOptions::default(),cx,|window,cx|cx.new(|cx|Fields {
-            input:cx.new(|cx|InputState::new(window,cx)),
-            textarea:cx.new(|cx|TextareaState::new(window,cx)),
-            editor:cx.new(|cx|EditorState::new(window,cx)),
-        })).unwrap())
+        cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| Fields {
+                    input: cx.new(|cx| InputState::new(window, cx)),
+                    textarea: cx.new(|cx| TextareaState::new(window, cx)),
+                    editor: cx.new(|cx| EditorState::new(window, cx)),
+                })
+            })
+            .unwrap()
+        })
     }
 
     #[gpui_kit::test]
     fn every_plain_text_field_is_a_selection_source(cx: &mut TestAppContext) {
-        let (handle,fields)=fields(cx);
-        cx.update_window(handle,|_,window,cx|{
-            let (input,textarea,editor)={let f=fields.read(cx);(f.input.clone(),f.textarea.clone(),f.editor.clone())};
+        let (handle, fields) = fields(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let (input, textarea, editor) = {
+                let f = fields.read(cx);
+                (f.input.clone(), f.textarea.clone(), f.editor.clone())
+            };
             macro_rules! check {
-                ($input:expr,$kind:ident)=>{{
-                    let input=$input;
-                    input.update(cx,|state,cx|{state.set_value("café 🐾",window,cx);state.set_selected_range(0..5,cx);state.focus(window,cx);
+                ($input:expr,$kind:ident) => {{
+                    let input = $input;
+                    input.update(cx, |state, cx| {
+                        state.set_value("café 🐾", window, cx);
+                        state.set_selected_range(0..5, cx);
+                        state.focus(window, cx);
                         crate::web_panels::keyboard_to_app(window);
                     });
                     window.render_frame(cx);
-                    let (words,source)=front_selection(window,cx).expect("plain selection");
-                    assert_eq!(words,"café");assert!(matches!(source,SelectionSource::$kind{..}));
-                    assert!(replace_if_unchanged(&source,&words,"coffee",window,cx));
-                    assert_eq!(&*input.read(cx).value(),"coffee 🐾");
-                    input.read(cx).focus_handle(cx).dispatch_action(&Undo,window,cx);
+                    let (words, source) = front_selection(window, cx).expect("plain selection");
+                    assert_eq!(words, "café");
+                    assert!(matches!(source, SelectionSource::$kind { .. }));
+                    assert!(replace_if_unchanged(&source, &words, "coffee", window, cx));
+                    assert_eq!(&*input.read(cx).value(), "coffee 🐾");
+                    input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .dispatch_action(&Undo, window, cx);
                     window.render_frame(cx);
-                    assert_eq!(&*input.read(cx).value(),"café 🐾");
+                    assert_eq!(&*input.read(cx).value(), "café 🐾");
                 }};
             }
-            check!(input,TextField);check!(textarea,TextBox);check!(editor,Editor);
-        }).unwrap();
+            check!(input, TextField);
+            check!(textarea, TextBox);
+            check!(editor, Editor);
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
-    fn service_returns_refuse_changed_range_text_readonly_and_expired_sources(cx: &mut TestAppContext) {
-        let (handle,fields)=fields(cx);
-        cx.update_window(handle,|_,window,cx|{
-            let input=fields.read(cx).input.clone();
-            input.update(cx,|s,cx|{s.set_value("first second",window,cx);s.set_selected_range(0..5,cx);});
-            let source=SelectionSource::TextField{input:input.downgrade(),range:0..5};
-            input.update(cx,|s,cx|s.set_selected_range(6..12,cx));
-            assert!(!replace_if_unchanged(&source,"first","wrong",window,cx));
-            input.update(cx,|s,cx|{s.set_value("other second",window,cx);s.set_selected_range(0..5,cx);});
-            assert!(!replace_if_unchanged(&source,"first","wrong",window,cx));
-            input.update(cx,|s,cx|s.set_readonly(true,cx));
-            assert!(!replace_if_unchanged(&source,"other","wrong",window,cx));
-            assert!(!replace_if_unchanged(&SelectionSource::Reply,"other","wrong",window,cx));
-            let temporary=cx.new(|cx|InputState::new(window,cx));
-            let expired=SelectionSource::TextField{input:temporary.downgrade(),range:0..1};
+    fn service_returns_refuse_changed_range_text_readonly_and_expired_sources(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, fields) = fields(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let input = fields.read(cx).input.clone();
+            input.update(cx, |s, cx| {
+                s.set_value("first second", window, cx);
+                s.set_selected_range(0..5, cx);
+            });
+            let source = SelectionSource::TextField {
+                input: input.downgrade(),
+                range: 0..5,
+            };
+            input.update(cx, |s, cx| s.set_selected_range(6..12, cx));
+            assert!(!replace_if_unchanged(&source, "first", "wrong", window, cx));
+            input.update(cx, |s, cx| {
+                s.set_value("other second", window, cx);
+                s.set_selected_range(0..5, cx);
+            });
+            assert!(!replace_if_unchanged(&source, "first", "wrong", window, cx));
+            input.update(cx, |s, cx| s.set_readonly(true, cx));
+            assert!(!replace_if_unchanged(&source, "other", "wrong", window, cx));
+            assert!(!replace_if_unchanged(
+                &SelectionSource::Reply,
+                "other",
+                "wrong",
+                window,
+                cx
+            ));
+            let temporary = cx.new(|cx| InputState::new(window, cx));
+            let expired = SelectionSource::TextField {
+                input: temporary.downgrade(),
+                range: 0..1,
+            };
             drop(temporary);
-            assert!(!replace_if_unchanged(&expired,"a","wrong",window,cx));
-        }).unwrap();
+            assert!(!replace_if_unchanged(&expired, "a", "wrong", window, cx));
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
     fn revealed_secret_fields_do_not_become_text_service_sources(cx: &mut TestAppContext) {
-        let (handle,fields)=fields(cx);
-        cx.update_window(handle,|_,window,cx|{
-            let input=fields.read(cx).input.clone();
-            input.update(cx,|s,cx|{s.set_value("secret",window,cx);s.set_selected_range(0..6,cx);s.focus(window,cx);
+        let (handle, fields) = fields(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let input = fields.read(cx).input.clone();
+            input.update(cx, |s, cx| {
+                s.set_value("secret", window, cx);
+                s.set_selected_range(0..6, cx);
+                s.focus(window, cx);
                 crate::web_panels::keyboard_to_app(window);
             });
             window.render_frame(cx);
-            input.update(cx,|s,_|s.set_accessibility(gpui_kit::base::input::InputAccessibility::new(None).with_value_exposed(false)));
-            assert!(front_selection(window,cx).is_none());
-            assert!(!replace_if_unchanged(&SelectionSource::TextField{input:input.downgrade(),range:0..6},"secret","wrong",window,cx));
-        }).unwrap();
+            input.update(cx, |s, _| {
+                s.set_accessibility(
+                    gpui_kit::base::input::InputAccessibility::new(None).with_value_exposed(false),
+                )
+            });
+            assert!(front_selection(window, cx).is_none());
+            assert!(!replace_if_unchanged(
+                &SelectionSource::TextField {
+                    input: input.downgrade(),
+                    range: 0..6
+                },
+                "secret",
+                "wrong",
+                window,
+                cx
+            ));
+        })
+        .unwrap();
     }
     #[gpui_kit::test]
     fn a_service_never_replaces_an_extra_caret_or_picture_selection(cx: &mut TestAppContext) {
-        let (handle,fields)=fields(cx);
-        cx.update_window(handle,|_,window,cx|{
-            let input=fields.read(cx).textarea.clone();
-            input.update(cx,|s,cx|{
-                s.set_value("first\n\u{fffc}\nsecond",window,cx);
-                s.set_selected_range(0..5,cx); // the active word
-                s.add_selection(6..9,cx); // a second selection on the picture
+        let (handle, fields) = fields(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let input = fields.read(cx).textarea.clone();
+            input.update(cx, |s, cx| {
+                s.set_value("first\n\u{fffc}\nsecond", window, cx);
+                s.set_selected_range(0..5, cx); // the active word
+                s.add_selection(6..9, cx); // a second selection on the picture
             });
-            let source=SelectionSource::TextBox{input:input.downgrade(),range:0..5};
-            assert!(!replace_if_unchanged(&source,"first","rewritten",window,cx));
-            assert_eq!(&*input.read(cx).value(),"first\n\u{fffc}\nsecond");
-            assert!(!source.is_editable(cx),"one returned string cannot target several selections");
-        }).unwrap();
+            let source = SelectionSource::TextBox {
+                input: input.downgrade(),
+                range: 0..5,
+            };
+            assert!(!replace_if_unchanged(
+                &source,
+                "first",
+                "rewritten",
+                window,
+                cx
+            ));
+            assert_eq!(&*input.read(cx).value(), "first\n\u{fffc}\nsecond");
+            assert!(
+                !source.is_editable(cx),
+                "one returned string cannot target several selections"
+            );
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
     fn a_reply_menu_never_takes_a_focused_fields_selection(cx: &mut TestAppContext) {
-        let (handle,fields)=fields(cx);
-        cx.update_window(handle,|_,window,cx|{
-            let input=fields.read(cx).input.clone();
-            input.update(cx,|s,cx|{s.set_value("private draft",window,cx);s.set_selected_range(0..13,cx);s.focus(window,cx);
+        let (handle, fields) = fields(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let input = fields.read(cx).input.clone();
+            input.update(cx, |s, cx| {
+                s.set_value("private draft", window, cx);
+                s.set_selected_range(0..13, cx);
+                s.focus(window, cx);
                 crate::web_panels::keyboard_to_app(window);
             });
             window.render_frame(cx);
-            assert_eq!(front_selection(window,cx).unwrap().0,"private draft");
-            assert!(super::reply_menu_selection(window,cx).is_none(),"a message's menu must not search, share or copy a field");
-        }).unwrap();
+            assert_eq!(front_selection(window, cx).unwrap().0, "private draft");
+            assert!(
+                super::reply_menu_selection(window, cx).is_none(),
+                "a message's menu must not search, share or copy a field"
+            );
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
     fn a_service_never_replaces_a_larger_ime_preedit(cx: &mut TestAppContext) {
-        let (handle,fields)=fields(cx);
-        cx.update_window(handle,|_,window,cx|{
-            let (input,textarea,editor)={let f=fields.read(cx);(f.input.clone(),f.textarea.clone(),f.editor.clone())};
+        let (handle, fields) = fields(cx);
+        cx.update_window(handle, |_, window, cx| {
+            let (input, textarea, editor) = {
+                let f = fields.read(cx);
+                (f.input.clone(), f.textarea.clone(), f.editor.clone())
+            };
             macro_rules! check { ($input:expr,$kind:ident)=>{{
                 let input=$input;
                 input.update(cx,|s,cx|{
@@ -547,8 +779,10 @@ mod selection_tests {
                 assert!(replace_if_unchanged(&source,"café","coffee",window,cx));
                 assert_eq!(&*input.read(cx).value(),"coffee 🐾");
             }}; }
-            check!(input,TextField);check!(textarea,TextBox);check!(editor,Editor);
-        }).unwrap();
+            check!(input, TextField);
+            check!(textarea, TextBox);
+            check!(editor, Editor);
+        })
+        .unwrap();
     }
-
 }

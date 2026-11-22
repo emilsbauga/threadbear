@@ -6,7 +6,7 @@
 #   scripts/shot.sh OUT_DIR [--home DIR] [--click X,Y | --type TEXT | --key KEY]...
 #                   [--wait S] [--record S]
 #
-# Without --home it starts the mock runner (app/Tools/mock-runner) in a temp
+# Without --home it starts the mock runner (mock-runner/) in a temp
 # dir. Each step (--click at window coordinates, --type some text, --key
 # a key such as Return) runs in order and takes another shot
 # (OUT_DIR/1.png, 2.png ...; 0.png is before any). --wait is how long to
@@ -50,7 +50,7 @@ trap cleanup EXIT
 
 if [ -z "$home" ]; then
   home="$tmp/home"
-  node "$here/../app/Tools/mock-runner/server.mjs" --data-dir "$home" --port 0 --quiet --ready-file "$tmp/ready" > "$tmp/mock.log" 2>&1 &
+  node "$here/../mock-runner/server.mjs" --data-dir "$home" --port 0 --quiet --ready-file "$tmp/ready" > "$tmp/mock.log" 2>&1 &
   pids+=($!)
   for _ in $(seq 100); do [ -f "$tmp/ready" ] && break; sleep 0.1; done
   [ -f "$tmp/ready" ] || { echo "the mock runner didn't start:" >&2; cat "$tmp/mock.log" >&2; exit 1; }

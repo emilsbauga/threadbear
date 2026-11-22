@@ -7,9 +7,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { makeHarness, tmpDir } from '../helpers/fakes.ts';
 import { checkSequence, checkSummary } from '../helpers/protocol-check.ts';
 import { automaticTrust, findWorktreePatch } from '../../src/patches.ts';
-import { cleanUpWorktree, git, gitLimits, land } from '../../src/worktrees.ts';
+import { cleanUpWorktree, git, gitLimits, land, makeWorktree } from '../../src/worktrees.ts';
 import { PatchTrust } from '../../src/patch-trust.ts';
-import { HUNG_GIT_LIMIT_MS, PATCH, TEARDOWN, capture, commit, harness, lines, makeBranch, makeRepo, notes, sh, swapDuringGit, teardowns, threadWithWorktree, trustedTeardownRepo, until, wrapGit, write } from '../helpers/worktrees-harness.ts';
+import { HUNG_GIT_LIMIT_MS, KEEP, PATCH, TEARDOWN, capture, commit, harness, lines, makeBranch, makeRepo, notes, sh, swapDuringGit, teardowns, threadWithWorktree, trustedTeardownRepo, until, wrapGit, write } from '../helpers/worktrees-harness.ts';
 
 test('archiving a thread whose branch is all on main removes its worktree and branch; it comes back in a fresh one', async () => {
   const { root, main } = makeRepo();
@@ -555,3 +555,36 @@ test('a handover waits for a running teardown as part of the cleanup', async () 
   assert.ok(saved.worktree.removedAt, 'saved once the cleanup after it finished');
   assert.equal(teardowns(h, id).length, 1);
 });
+
+// 21 Nov: the cleanup read the worktree's status once, then took a while
+// (listing spares, detaching, deleting the branch) before it locked the
+// folder as a spare or removed it with --force (for untracked files). An
+// edit to a tracked file made in that time went into the spare, where the
+// next thread's `git reset --hard` took it, or was removed with the folder.
+// borrows.ts already read the status again just before its lock.
+for (const keep of [true, false]) {
+  test(`an edit made while the cleanup works is kept: the worktree is ${keep ? 'not pooled as a spare' : 'not removed with --force'}`, async () => {
+    const { main } = makeRepo(keep ? KEEP : undefined);
+    const patch = (await findWorktreePatch(main, path.dirname(main)))!;
+    const made = await makeWorktree({ cwd: main, threadId: 'eeeeeeee-1', patch });
+    assert.ok(made.ok);
+    const w = made.worktree;
+    write(w.path, { 'scratch.txt': 'untracked, so a removal is --force\n' });
+    // The edit lands just after the cleanup's first status.
+    const restore = wrapGit('status', `out=$("$REAL" "$@"); code=$?; printf 'mid-cleanup edit\\n' > '${path.join(w.path, 'README.md')}'; printf '%s\\n' "$out"; exit $code`);
+    let result;
+    try {
+      result = await cleanUpWorktree(w);
+    } finally {
+      restore();
+    }
+    assert.equal(result.removed, false, JSON.stringify(result));
+    assert.equal(fs.readFileSync(path.join(w.path, 'README.md'), 'utf8'), 'mid-cleanup edit\n', 'the edit is still there');
+    assert.equal(sh(w.path, 'git rev-parse --abbrev-ref HEAD'), w.branch, 'back on its branch');
+    assert.ok(!sh(main, 'git worktree list --porcelain').includes('locked threadbear spare'), 'not a spare');
+    // And the next thread doesn't take it.
+    const next = await makeWorktree({ cwd: main, threadId: 'ffffffff-1', patch });
+    assert.ok(next.ok && next.worktree.path !== w.path);
+    assert.equal(fs.readFileSync(path.join(w.path, 'README.md'), 'utf8'), 'mid-cleanup edit\n');
+  });
+}

@@ -813,7 +813,7 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
       return 0;
     }
     case 'settings': {
-      // tb settings full on|off: full sync (docs/full-convex.md).
+      // tb settings full on|off: full sync (docs/convex-backend.md, "Full sync").
       if (args[0] === 'full') {
         const v = args[1];
         if (v !== 'on' && v !== 'off') {
@@ -1159,7 +1159,8 @@ async function tail(
 // Exit only once stdout has drained: into a pipe Node writes it
 // asynchronously, and exiting straight away cut `tb list --json | ...`
 // off partway (at 64 or 128 KB).
-main(process.argv.slice(2)).then((code) => process.stdout.write('', () => process.exit(code)));
+// A failure in main is Node's own: it prints the stack and exits 1.
+void main(process.argv.slice(2)).then((code) => process.stdout.write('', () => process.exit(code)));
 
 // ------------------------------------------------------------- projects
 

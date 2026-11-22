@@ -24,6 +24,9 @@ export type Row = {
   /** The chips a row draws among its words: "picture: Picture 1", "card:
    * Fix the button", "thread: Morning brief". */
   chips?: string[];
+  /** My message's changed drafts, drawn as chips under its words (GPUI):
+   * the words it shows and each chip's label. */
+  editedDrafts?: { words: string; chips: string[] };
   /** The web addresses my bubble draws as links (GPUI). */
   links?: string[];
   /** A gap row's words as drawn, from the row's own top, while it's on screen. */
@@ -77,7 +80,7 @@ export type Dump = {
   };
   /** The line under the bar when the thread can't go on where it is (LimitBanner). */
   limit?: { text: string; button?: string | null; carryOn?: string | null } | null;
-  composer: { draft: string; text: string; images?: number; editing?: number | null; chip?: string; chipBadge?: string | null; mode?: string; card?: string[] | null; cwd?: string; runner?: string | null; creating?: boolean };
+  composer: { draft: string; text: string; images?: number; editing?: number | null; chip?: string; chipBadge?: string | null; mode?: string; card?: string[] | null; drafts?: string[]; cwd?: string; runner?: string | null; creating?: boolean };
   /** The new-thread page while it's showing. */
   newThread?: { heading: string; note: string; project?: string | null; rooms: { label: string; line: string; selected: boolean; note?: string | null }[] } | null;
   /** The slash palette over the composer while it's open. */

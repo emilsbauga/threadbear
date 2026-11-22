@@ -39,6 +39,15 @@ Feature: The chips under the message box
     When I pick "High" from the "model" menu
     Then the model chip says "Claude · Fable 5.1 · High"
 
+  # A pool with logins of several providers lists each one's models under
+  # its name (the Swift picker's sections). The GPUI picker showed only the
+  # first login's provider until 20 Nov, so OpenCode's Gemini models in
+  # Mike's Main pool were nowhere to be picked.
+  @composer.modelpicker
+  Scenario: A pool of Codex and Claude logins lists both providers' models
+    Then the "model" menu has a row "## Codex"
+    And the "model" menu has a row "## Claude"
+
   # The Login line under the effort levels (Mike's pick, 12 Nov): the Swift
   # app is frozen with its "Pinned to … · Unpin" line, so these are GPUI's.
   @composer.modelpicker @swift-pending

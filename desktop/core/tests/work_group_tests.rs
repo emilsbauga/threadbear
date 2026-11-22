@@ -1,6 +1,9 @@
 // Ports of app/Tests/ThreadbearCoreTests/WorkGroupTests.swift: folding runs
 // of work into group rows, the working line and the changed files card.
-#![allow(non_snake_case)]
+#![allow(
+    non_snake_case,
+    reason = "test names follow the Swift tests they mirror (testSomethingHappens)"
+)]
 
 mod support;
 
@@ -19,11 +22,20 @@ fn started(seq: i64) -> Event {
 }
 
 fn started_turn(seq: i64, turn: &str) -> Event {
-    event_turn(seq, "turn.started", json!({"ts": "2026-10-26T10:00:00.250Z"}), Some(turn))
+    event_turn(
+        seq,
+        "turn.started",
+        json!({"ts": "2026-10-26T10:00:00.250Z"}),
+        Some(turn),
+    )
 }
 
 fn reasoning(seq: i64, item: &str) -> Event {
-    event(seq, "reasoning", json!({"itemId": item, "text": "Looking at it"}))
+    event(
+        seq,
+        "reasoning",
+        json!({"itemId": item, "text": "Looking at it"}),
+    )
 }
 
 fn edit(seq: i64, item: &str, path: &str) -> Event {
@@ -32,16 +44,28 @@ fn edit(seq: i64, item: &str, path: &str) -> Event {
 
 fn edit_with(seq: i64, item: &str, path: &str, old: &str, new: &str, name: &str) -> Event {
     let kind = if name == "Write" { "write" } else { "edit" };
-    let input = if name == "Write" { json!({"file_path": path, "content": new}) } else { json!({"file_path": path, "old_string": old, "new_string": new}) };
+    let input = if name == "Write" {
+        json!({"file_path": path, "content": new})
+    } else {
+        json!({"file_path": path, "old_string": old, "new_string": new})
+    };
     call_with(seq, item, name, kind, &format!("{name} {path}"), input)
 }
 
 fn asked(seq: i64, id: &str) -> Event {
-    event(seq, "approval.requested", json!({"approvalId": id, "name": "Bash", "title": "rm x", "input": {"command": "rm x"}, "options": ["allow", "deny"]}))
+    event(
+        seq,
+        "approval.requested",
+        json!({"approvalId": id, "name": "Bash", "title": "rm x", "input": {"command": "rm x"}, "options": ["allow", "deny"]}),
+    )
 }
 
 fn resolved(seq: i64, id: &str, decision: &str) -> Event {
-    event(seq, "approval.resolved", json!({"approvalId": id, "decision": decision}))
+    event(
+        seq,
+        "approval.resolved",
+        json!({"approvalId": id, "decision": decision}),
+    )
 }
 
 fn asked_for(seq: i64, id: &str, tool: Option<&str>) -> Event {
@@ -70,7 +94,12 @@ fn group_of<'a>(model: &'a TranscriptModel, id: &str) -> &'a WorkGroup {
 
 #[test]
 fn testARunOfOneIsShownAsItself() {
-    let model = from_events(vec![user(1, "Go"), call(2, "c1"), result(3, "c1"), text(4, "m1", "Done")]);
+    let model = from_events(vec![
+        user(1, "Go"),
+        call(2, "c1"),
+        result(3, "c1"),
+        text(4, "m1", "Done"),
+    ]);
     assert_eq!(ids(&model)[..3], ["u:1", "t:c1", "a:m1"]);
 }
 
@@ -97,7 +126,10 @@ fn testAFinishedTurnFoldsAllItsWorkIntoOneLine() {
     // Opening it shows everything, in order, above the reply.
     let mut open = model.clone();
     open.set_expanded("g:a:m0", true);
-    assert_eq!(ids(&open), ["u:1", "g:a:m0", "a:m0", "t:c1", "a:m1", "t:c2", "a:m2", "f:t1"]);
+    assert_eq!(
+        ids(&open),
+        ["u:1", "g:a:m0", "a:m0", "t:c1", "a:m1", "t:c2", "a:m2", "f:t1"]
+    );
     // Live, the turn's lines become the one as it finishes.
     let events = model.events().to_vec();
     let mut live = from_events(events[..events.len() - 1].to_vec());
@@ -116,24 +148,55 @@ fn testMessagesCardsPlansImagesAndErrorsEndARun() {
         result(4, "c1"),
         text(5, "m1", "First look done."),
         call(6, "c2"),
-        event(7, "plan.updated", json!({"entries": [{"text": "A", "status": "pending"}]})),
+        event(
+            7,
+            "plan.updated",
+            json!({"entries": [{"text": "A", "status": "pending"}]}),
+        ),
         call(8, "c3"),
         call(9, "c4"),
-        result_images(10, "c4", json!([{"path": "/tmp/a.png", "mediaType": "image/png"}])),
+        result_images(
+            10,
+            "c4",
+            json!([{"path": "/tmp/a.png", "mediaType": "image/png"}]),
+        ),
         call(11, "c5"),
         event(12, "error", json!({"message": "Oops"})),
         call(13, "c6"),
-        event(14, "system.note", json!({"text": "Compacted the conversation"})),
-        event(15, "approval.requested", json!({"approvalId": "ap1", "name": "Bash", "title": "rm x", "input": {}, "options": ["allow"]})),
+        event(
+            14,
+            "system.note",
+            json!({"text": "Compacted the conversation"}),
+        ),
+        event(
+            15,
+            "approval.requested",
+            json!({"approvalId": "ap1", "name": "Bash", "title": "rm x", "input": {}, "options": ["allow"]}),
+        ),
     ]);
-    assert_eq!(ids(&model), ["u:1", "g:r:r1", "a:m1", "t:c2", "p:7", "g:t:c3", "i:c4", "t:c5", "e:12", "g:t:c6", "ap:ap1"]);
+    assert_eq!(
+        ids(&model),
+        [
+            "u:1", "g:r:r1", "a:m1", "t:c2", "p:7", "g:t:c3", "i:c4", "t:c5", "e:12", "g:t:c6",
+            "ap:ap1"
+        ]
+    );
     let group = group_of(&model, "g:t:c6");
-    assert_eq!(group.member_ids, ["t:c6", "n:14"], "system notes fold in with the work");
+    assert_eq!(
+        group.member_ids,
+        ["t:c6", "n:14"],
+        "system notes fold in with the work"
+    );
 }
 
 #[test]
 fn testRunsDoNotCrossTurns() {
-    let model = from_events(vec![call(1, "c1"), result(2, "c1"), call_titled(3, "c2", "pwd").with_turn("t2"), call(4, "c3").with_turn("t2")]);
+    let model = from_events(vec![
+        call(1, "c1"),
+        result(2, "c1"),
+        call_titled(3, "c2", "pwd").with_turn("t2"),
+        call(4, "c3").with_turn("t2"),
+    ]);
     assert_eq!(ids(&model), ["t:c1", "g:t:c2"]);
 }
 
@@ -157,10 +220,19 @@ fn testAllowedApprovalsFoldIntoTheRun() {
     assert_eq!(ids(&allowed), ["u:1", "g:t:c1", "a:m1"]);
     let group = group_of(&allowed, "g:t:c1");
     assert_eq!(group.member_ids, ["t:c1", "ap:ap1", "t:c2"]);
-    assert_eq!(group.summary, "Ran 2 commands", "the approval isn't counted on top of the command it allowed");
+    assert_eq!(
+        group.summary, "Ran 2 commands",
+        "the approval isn't counted on top of the command it allowed"
+    );
 
     for decision in ["deny", "expired"] {
-        let model = from_events(vec![user(1, "Go"), call(2, "c1"), asked(3, "ap1"), resolved(4, "ap1", decision), call(5, "c2")]);
+        let model = from_events(vec![
+            user(1, "Go"),
+            call(2, "c1"),
+            asked(3, "ap1"),
+            resolved(4, "ap1", decision),
+            call(5, "c2"),
+        ]);
         assert_eq!(ids(&model), ["u:1", "t:c1", "ap:ap1", "t:c2"], "{decision}");
     }
     let waiting = from_events(vec![user(1, "Go"), call(2, "c1"), asked(3, "ap1")]);
@@ -169,9 +241,19 @@ fn testAllowedApprovalsFoldIntoTheRun() {
 
 #[test]
 fn testARunOfOnlyAnAllowedApprovalIsShownAsItself() {
-    let model = from_events(vec![user(1, "Go"), asked(2, "ap1"), resolved(3, "ap1", "allowAlways")]);
+    let model = from_events(vec![
+        user(1, "Go"),
+        asked(2, "ap1"),
+        resolved(3, "ap1", "allowAlways"),
+    ]);
     assert_eq!(ids(&model), ["u:1", "ap:ap1"]);
-    let two = from_events(vec![user(1, "Go"), asked(2, "ap1"), resolved(3, "ap1", "allow"), asked(4, "ap2"), resolved(5, "ap2", "allow")]);
+    let two = from_events(vec![
+        user(1, "Go"),
+        asked(2, "ap1"),
+        resolved(3, "ap1", "allow"),
+        asked(4, "ap2"),
+        resolved(5, "ap2", "allow"),
+    ]);
     assert_eq!(group_of(&two, "g:ap:ap1").summary, "Allowed 2 requests");
 }
 
@@ -180,7 +262,13 @@ fn testARunOfOnlyAnAllowedApprovalIsShownAsItself() {
 /// first group keeps its id, the card and the second group go.
 #[test]
 fn testAllowingACardMergesTheRunsAroundIt() {
-    let mut model = from_events(vec![user(1, "Go"), started(2), call(3, "c1"), call(4, "c2"), asked(5, "ap1")]);
+    let mut model = from_events(vec![
+        user(1, "Go"),
+        started(2),
+        call(3, "c1"),
+        call(4, "c2"),
+        asked(5, "ap1"),
+    ]);
     // A tool that ran in the background while the card waited.
     model.apply(vec![call(6, "c3"), call(7, "c4")]);
     assert_eq!(ids(&model), ["u:1", "g:t:c1", "ap:ap1", "g:t:c3"]);
@@ -190,7 +278,11 @@ fn testAllowingACardMergesTheRunsAroundIt() {
     let change = model.apply(vec![resolved(8, "ap1", "allow")]);
     replay(&change, &mut table, &model);
     assert_eq!(ids(&model), ["u:1", "g:t:c1", "w:t1"]);
-    assert_eq!(change.removed, set(&[2, 3]), "the card and the second group go");
+    assert_eq!(
+        change.removed,
+        set(&[2, 3]),
+        "the card and the second group go"
+    );
     assert_eq!(change.updated, set(&[1]));
     assert_ne!(model.row("g:t:c1").map(|r| r.version), group_version);
     let group = group_of(&model, "g:t:c1");
@@ -203,35 +295,80 @@ fn testAllowingACardMergesTheRunsAroundIt() {
 /// the approval can also come first (an older page, the mock).
 #[test]
 fn testASettledApprovalWithItsToolsRowDoesNotOpen() {
-    let call_first = from_events(vec![user(1, "Go"), edit_with(2, "w", "/a.sh", "a", "b", "Write"), asked_for(3, "ap1", Some("w")), resolved(4, "ap1", "allow"), result(5, "w")]);
-    assert_eq!(approval(&call_first, "ap:ap1").map(|a| a.tool_shown), Some(true));
-    assert_eq!(approval(&call_first, "ap:ap1").map(|a| a.opens()), Some(false));
+    let call_first = from_events(vec![
+        user(1, "Go"),
+        edit_with(2, "w", "/a.sh", "a", "b", "Write"),
+        asked_for(3, "ap1", Some("w")),
+        resolved(4, "ap1", "allow"),
+        result(5, "w"),
+    ]);
+    assert_eq!(
+        approval(&call_first, "ap:ap1").map(|a| a.tool_shown),
+        Some(true)
+    );
+    assert_eq!(
+        approval(&call_first, "ap:ap1").map(|a| a.opens()),
+        Some(false)
+    );
 
-    let mut approval_first = from_events(vec![user(1, "Go"), started(2), asked_for(3, "ap1", Some("w"))]);
-    assert_eq!(approval(&approval_first, "ap:ap1").map(|a| a.opens()), Some(true), "a waiting card always shows what it asks");
+    let mut approval_first = from_events(vec![
+        user(1, "Go"),
+        started(2),
+        asked_for(3, "ap1", Some("w")),
+    ]);
+    assert_eq!(
+        approval(&approval_first, "ap:ap1").map(|a| a.opens()),
+        Some(true),
+        "a waiting card always shows what it asks"
+    );
     approval_first.apply(vec![resolved(4, "ap1", "allow")]);
-    assert_eq!(approval(&approval_first, "ap:ap1").map(|a| a.opens()), Some(true), "nothing else shows the file yet");
+    assert_eq!(
+        approval(&approval_first, "ap:ap1").map(|a| a.opens()),
+        Some(true),
+        "nothing else shows the file yet"
+    );
     let version = approval_first.item("ap:ap1").map(|r| r.version);
     approval_first.apply(vec![edit_with(5, "w", "/a.sh", "a", "b", "Write")]);
-    assert_eq!(approval(&approval_first, "ap:ap1").map(|a| a.opens()), Some(false));
-    assert_ne!(approval_first.item("ap:ap1").map(|r| r.version), version, "the line is measured again without its chevron");
+    assert_eq!(
+        approval(&approval_first, "ap:ap1").map(|a| a.opens()),
+        Some(false)
+    );
+    assert_ne!(
+        approval_first.item("ap:ap1").map(|r| r.version),
+        version,
+        "the line is measured again without its chevron"
+    );
     // The result after it changes nothing more on the approval.
     let settled = approval_first.item("ap:ap1").map(|r| r.version);
     approval_first.apply(vec![result(6, "w")]);
     assert_eq!(approval_first.item("ap:ap1").map(|r| r.version), settled);
 
     // A subagent's tool has no item id and no row: its approval still opens.
-    let subagent = from_events(vec![user(1, "Go"), asked_for(2, "ap1", None), resolved(3, "ap1", "allow")]);
+    let subagent = from_events(vec![
+        user(1, "Go"),
+        asked_for(2, "ap1", None),
+        resolved(3, "ap1", "allow"),
+    ]);
     assert_eq!(approval(&subagent, "ap:ap1").map(|a| a.opens()), Some(true));
     // Denied with its tool shown: the line is the record, the tool row the detail.
-    let denied = from_events(vec![user(1, "Go"), edit_with(2, "w", "/a.sh", "a", "b", "Write"), asked_for(3, "ap1", Some("w")), resolved(4, "ap1", "deny")]);
+    let denied = from_events(vec![
+        user(1, "Go"),
+        edit_with(2, "w", "/a.sh", "a", "b", "Write"),
+        asked_for(3, "ap1", Some("w")),
+        resolved(4, "ap1", "deny"),
+    ]);
     assert_eq!(approval(&denied, "ap:ap1").map(|a| a.opens()), Some(false));
 }
 
 /// An open group shows the allowed approval as one of its lines.
 #[test]
 fn testAnOpenGroupListsItsAllowedApproval() {
-    let mut model = from_events(vec![call(1, "c1"), asked(2, "ap1"), resolved(3, "ap1", "allow"), call(4, "c2")]);
+    let mut model = from_events(vec![
+        call(1, "c1"),
+        asked(2, "ap1"),
+        resolved(3, "ap1", "allow"),
+        call(4, "c2"),
+    ]);
     model.set_expanded("g:t:c1", true);
     assert_eq!(ids(&model), ["g:t:c1", "t:c1", "ap:ap1", "t:c2"]);
     assert_eq!(model.row("ap:ap1").map(|r| r.in_group), Some(true));
@@ -242,9 +379,30 @@ fn testAnOpenGroupListsItsAllowedApproval() {
 #[test]
 fn testSummaryCountsWorkInTheOrderItHappened() {
     let model = from_events(vec![
-        call_with(1, "c1", "Read", "read", "Read a", json!({"file_path": "/a.swift"})),
-        call_with(2, "c2", "Read", "read", "Read b", json!({"file_path": "/b.swift"})),
-        call_with(3, "c3", "Read", "read", "Read a again", json!({"file_path": "/a.swift"})),
+        call_with(
+            1,
+            "c1",
+            "Read",
+            "read",
+            "Read a",
+            json!({"file_path": "/a.swift"}),
+        ),
+        call_with(
+            2,
+            "c2",
+            "Read",
+            "read",
+            "Read b",
+            json!({"file_path": "/b.swift"}),
+        ),
+        call_with(
+            3,
+            "c3",
+            "Read",
+            "read",
+            "Read a again",
+            json!({"file_path": "/a.swift"}),
+        ),
         call_with(4, "c4", "Grep", "search", "Search", json!({})),
         call_with(5, "c5", "Glob", "search", "Find", json!({})),
         edit(6, "c6", "/a.swift"),
@@ -255,8 +413,13 @@ fn testSummaryCountsWorkInTheOrderItHappened() {
         result_with(11, "c10", false, "lint failed", json!([])),
         reasoning(12, "r1"),
     ]);
-    let Some(RowContent::Group(group)) = model.rows().first().map(|r| &r.content) else { panic!("a group") };
-    assert_eq!(group.summary, "Read 2 files, searched twice, edited 2 files, ran 2 commands");
+    let Some(RowContent::Group(group)) = model.rows().first().map(|r| &r.content) else {
+        panic!("a group")
+    };
+    assert_eq!(
+        group.summary,
+        "Read 2 files, searched twice, edited 2 files, ran 2 commands"
+    );
     assert_eq!(group.failed_count, 1);
     assert_eq!(group.member_ids.len(), 11);
 }
@@ -264,13 +427,26 @@ fn testSummaryCountsWorkInTheOrderItHappened() {
 #[test]
 fn testSummaryWordsForOtherWork() {
     fn summary(events: Vec<Event>) -> String {
-        match from_events(events).rows().first().map(|r| r.content.clone()) {
+        match from_events(events)
+            .rows()
+            .first()
+            .map(|r| r.content.clone())
+        {
             Some(RowContent::Group(group)) => group.summary,
             _ => String::new(),
         }
     }
-    assert_eq!(summary(vec![reasoning(1, "r1"), reasoning(2, "r2")]), "Thought");
-    assert_eq!(summary(vec![call_with(1, "c1", "Task", "task", "Explore", json!({})), reasoning(2, "r1")]), "Ran an agent");
+    assert_eq!(
+        summary(vec![reasoning(1, "r1"), reasoning(2, "r2")]),
+        "Thought"
+    );
+    assert_eq!(
+        summary(vec![
+            call_with(1, "c1", "Task", "task", "Explore", json!({})),
+            reasoning(2, "r1")
+        ]),
+        "Ran an agent"
+    );
     assert_eq!(
         summary(vec![
             call_with(1, "c1", "WebFetch", "web", "Fetch a", json!({})),
@@ -287,7 +463,13 @@ fn testSummaryWordsForOtherWork() {
         ]),
         "Used 2 tools, ran a command"
     );
-    assert_eq!(summary(vec![event(1, "system.note", json!({"text": "Resumed session"})), event(2, "system.note", json!({"text": "Compacted"}))]), "Resumed session");
+    assert_eq!(
+        summary(vec![
+            event(1, "system.note", json!({"text": "Resumed session"})),
+            event(2, "system.note", json!({"text": "Compacted"}))
+        ]),
+        "Resumed session"
+    );
 }
 
 // MARK: Live updates
@@ -307,7 +489,14 @@ fn testAGroupKeepsItsIdAsItGrows() {
     assert_eq!(c.inserted, set(&[1]));
 
     // A second item turns the lone row into a group in its place.
-    c = model.apply(vec![call_with(4, "c1", "Bash", "command", "npm test", json!({"command": "npm test"}))]);
+    c = model.apply(vec![call_with(
+        4,
+        "c1",
+        "Bash",
+        "command",
+        "npm test",
+        json!({"command": "npm test"}),
+    )]);
     replay(&c, &mut table, &model);
     assert_eq!(ids(&model), ["u:1", "g:r:r1", "w:t1"]);
     assert_eq!(c.removed, set(&[1]));
@@ -315,7 +504,10 @@ fn testAGroupKeepsItsIdAsItGrows() {
     assert_eq!(c.updated, set(&[]), "the working line is left as it is");
 
     let version = model.rows()[1].version;
-    c = model.apply(vec![result(5, "c1"), call_with(6, "c2", "Read", "read", "Read a.swift", json!({}))]);
+    c = model.apply(vec![
+        result(5, "c1"),
+        call_with(6, "c2", "Read", "read", "Read a.swift", json!({})),
+    ]);
     replay(&c, &mut table, &model);
     assert_eq!(ids(&model), ["u:1", "g:r:r1", "w:t1"]);
     assert_eq!(c, change(&[], &[], &[1]));
@@ -342,17 +534,34 @@ fn testAGroupKeepsItsIdAsItGrows() {
 
 #[test]
 fn testAClosedGroupIgnoresOutputFromItsTools() {
-    let mut model = from_events(vec![started(1), call(2, "c1"), result(3, "c1"), call_titled(4, "c2", "npm test")]);
+    let mut model = from_events(vec![
+        started(1),
+        call(2, "c1"),
+        result(3, "c1"),
+        call_titled(4, "c2", "npm test"),
+    ]);
     assert_eq!(ids(&model), ["g:t:c1", "w:t1"]);
-    let c = model.apply(vec![event(4, "tool.output.delta", json!({"itemId": "c2", "text": "PASS a.test.ts\n"}))]);
+    let c = model.apply(vec![event(
+        4,
+        "tool.output.delta",
+        json!({"itemId": "c2", "text": "PASS a.test.ts\n"}),
+    )]);
     assert!(c.is_empty(), "nothing on screen changed");
-    let Some(RowContent::Tool(tool)) = model.item("t:c2").map(|r| &r.content) else { panic!("a tool") };
+    let Some(RowContent::Tool(tool)) = model.item("t:c2").map(|r| &r.content) else {
+        panic!("a tool")
+    };
     assert_eq!(tool.live_output, "PASS a.test.ts\n");
 }
 
 #[test]
 fn testOpeningAGroupInsertsItsItemsUnderIt() {
-    let mut model = from_events(vec![user(1, "Go"), reasoning(2, "r1"), call(3, "c1"), result(4, "c1"), text(5, "m1", "Done")]);
+    let mut model = from_events(vec![
+        user(1, "Go"),
+        reasoning(2, "r1"),
+        call(3, "c1"),
+        result(4, "c1"),
+        text(5, "m1", "Done"),
+    ]);
     let mut table = ids(&model);
     let version = model.rows()[1].version;
     let mut c = model.set_expanded("g:r:r1", true);
@@ -360,7 +569,15 @@ fn testOpeningAGroupInsertsItsItemsUnderIt() {
     assert_eq!(ids(&model), ["u:1", "g:r:r1", "r:r1", "t:c1", "a:m1"]);
     assert_eq!(c.inserted, set(&[2, 3]));
     assert_eq!(c.updated, set(&[1]), "the chevron turns");
-    assert_eq!(model.rows().iter().filter(|r| r.in_group).map(|r| r.id.clone()).collect::<Vec<_>>(), ["r:r1", "t:c1"]);
+    assert_eq!(
+        model
+            .rows()
+            .iter()
+            .filter(|r| r.in_group)
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        ["r:r1", "t:c1"]
+    );
     assert_ne!(model.rows()[1].version, version);
     assert!(group_of(&model, "g:r:r1").is_expanded);
 
@@ -391,13 +608,25 @@ fn testAnOpenGroupGainsNewItemsInPlace() {
 
 #[test]
 fn testOpenGroupsStayOpenWhenOlderEventsArePrepended() {
-    let mut model = from_events(vec![user(5, "Go"), call(6, "c1"), call(7, "c2"), text(8, "m1", "Done")]);
+    let mut model = from_events(vec![
+        user(5, "Go"),
+        call(6, "c1"),
+        call(7, "c2"),
+        text(8, "m1", "Done"),
+    ]);
     model.set_expanded("g:t:c1", true);
     let result = model.prepend(vec![user(3, "Earlier"), text(4, "m0", "Hi")]);
     assert!(result.keeps_order);
     assert_eq!(result.added, 2);
-    assert_eq!(ids(&model), ["u:3", "a:m0", "u:5", "g:t:c1", "t:c1", "t:c2", "a:m1"]);
-    assert_eq!(result.changed_ids, Vec::<String>::new(), "the group's content and version are unchanged");
+    assert_eq!(
+        ids(&model),
+        ["u:3", "a:m0", "u:5", "g:t:c1", "t:c1", "t:c2", "a:m1"]
+    );
+    assert_eq!(
+        result.changed_ids,
+        Vec::<String>::new(),
+        "the group's content and version are unchanged"
+    );
 }
 
 /// Whatever order events arrive in, applying them one at a time ends with
@@ -410,17 +639,36 @@ fn testIncrementalRowsMatchAFreshLoad() {
         reasoning(3, "r1"),
         call_with(4, "c1", "Grep", "search", "Search", json!({})),
         result(5, "c1"),
-        call_with(6, "c2", "Read", "read", "Read a", json!({"file_path": "/a"})),
+        call_with(
+            6,
+            "c2",
+            "Read",
+            "read",
+            "Read a",
+            json!({"file_path": "/a"}),
+        ),
         result(7, "c2"),
         text(8, "m1", "Found it."),
         edit(9, "c3", "/a"),
         result(10, "c3"),
         call_titled(11, "c4", "Screenshot"),
-        result_images(12, "c4", json!([{"path": "/tmp/s.png", "mediaType": "image/png"}])),
+        result_images(
+            12,
+            "c4",
+            json!([{"path": "/tmp/s.png", "mediaType": "image/png"}]),
+        ),
         call_titled(13, "c5", "npm test"),
         result(14, "c5"),
-        event(15, "approval.requested", json!({"approvalId": "ap1", "name": "Bash", "title": "rm x", "input": {}, "options": ["allow"]})),
-        event(16, "approval.resolved", json!({"approvalId": "ap1", "decision": "allow"})),
+        event(
+            15,
+            "approval.requested",
+            json!({"approvalId": "ap1", "name": "Bash", "title": "rm x", "input": {}, "options": ["allow"]}),
+        ),
+        event(
+            16,
+            "approval.resolved",
+            json!({"approvalId": "ap1", "decision": "allow"}),
+        ),
         call_titled(17, "c6", "rm x"),
         result(18, "c6"),
         text(19, "m2", "All done."),
@@ -433,7 +681,12 @@ fn testIncrementalRowsMatchAFreshLoad() {
             let c = model.apply(vec![ev.clone()]);
             replay(&c, &mut table, &model);
             if open {
-                let closed: Vec<String> = model.rows().iter().filter(|r| r.kind() == RowKind::Group && !model.is_expanded(&r.id)).map(|r| r.id.clone()).collect();
+                let closed: Vec<String> = model
+                    .rows()
+                    .iter()
+                    .filter(|r| r.kind() == RowKind::Group && !model.is_expanded(&r.id))
+                    .map(|r| r.id.clone())
+                    .collect();
                 for id in closed {
                     let c = model.set_expanded(&id, true);
                     replay(&c, &mut table, &model);
@@ -446,7 +699,12 @@ fn testIncrementalRowsMatchAFreshLoad() {
                 fresh.set_expanded(&key, true);
             }
             assert_eq!(ids(&model), ids(&fresh), "after event {}", step + 1);
-            assert_eq!(model.rows().iter().map(|r| &r.content).collect::<Vec<_>>(), fresh.rows().iter().map(|r| &r.content).collect::<Vec<_>>(), "after event {}", step + 1);
+            assert_eq!(
+                model.rows().iter().map(|r| &r.content).collect::<Vec<_>>(),
+                fresh.rows().iter().map(|r| &r.content).collect::<Vec<_>>(),
+                "after event {}",
+                step + 1
+            );
         }
     }
 }
@@ -457,16 +715,26 @@ fn testIncrementalRowsMatchAFreshLoad() {
 fn testTheWorkingLineShowsWhileATurnRunsAndNotWhileItWaits() {
     let mut model = from_events(vec![user(1, "Go"), started(2), call(3, "c1")]);
     assert_eq!(ids(&model), ["u:1", "t:c1", "w:t1"]);
-    let Some(RowContent::Working(status)) = model.rows().last().map(|r| &r.content) else { panic!("working") };
+    let Some(RowContent::Working(status)) = model.rows().last().map(|r| &r.content) else {
+        panic!("working")
+    };
     assert_eq!(status.turn_id, "t1");
     assert_eq!(status.started_at, Some(1_793_008_800.25));
     let mut table = ids(&model);
 
     let mut c = model.apply(vec![event(4, "approval.requested", json!({"approvalId": "ap1", "name": "Bash", "title": "rm x", "input": {}, "options": ["allow"]}))]);
     replay(&c, &mut table, &model);
-    assert_eq!(ids(&model), ["u:1", "t:c1", "ap:ap1"], "waiting on Mike isn't working");
+    assert_eq!(
+        ids(&model),
+        ["u:1", "t:c1", "ap:ap1"],
+        "waiting on Mike isn't working"
+    );
 
-    c = model.apply(vec![event(5, "approval.resolved", json!({"approvalId": "ap1", "decision": "allow"}))]);
+    c = model.apply(vec![event(
+        5,
+        "approval.resolved",
+        json!({"approvalId": "ap1", "decision": "allow"}),
+    )]);
     replay(&c, &mut table, &model);
     // Allowed, the card folds into the run with the command before it.
     assert_eq!(ids(&model), ["u:1", "g:t:c1", "w:t1"]);
@@ -482,7 +750,14 @@ fn testTheWorkingLineShowsWhileATurnRunsAndNotWhileItWaits() {
 /// finishes.
 #[test]
 fn testTheWorkingLineKeepsItsVersionAsWorkComesAndGoes() {
-    let working = |model: &TranscriptModel| model.rows().iter().rev().find(|r| r.kind() == RowKind::Working).map(|r| r.version);
+    let working = |model: &TranscriptModel| {
+        model
+            .rows()
+            .iter()
+            .rev()
+            .find(|r| r.kind() == RowKind::Working)
+            .map(|r| r.version)
+    };
     let mut model = from_events(vec![user(1, "Go"), started(2), call(3, "c1")]);
     let version = working(&model);
     assert!(version.is_some());
@@ -499,8 +774,13 @@ fn testTheWorkingLineKeepsItsVersionAsWorkComesAndGoes() {
 fn testATurnThatStartedOnAnOlderPageIsStillRunning() {
     let model = from_events(vec![call(600, "c1"), result(601, "c1")]);
     assert_eq!(model.open_turn(), Some("t1"));
-    let Some(RowContent::Working(status)) = model.rows().last().map(|r| &r.content) else { panic!("no working line") };
-    assert_eq!(status.started_at, None, "the start is on a page we haven't loaded");
+    let Some(RowContent::Working(status)) = model.rows().last().map(|r| &r.content) else {
+        panic!("no working line")
+    };
+    assert_eq!(
+        status.started_at, None,
+        "the start is on a page we haven't loaded"
+    );
 
     // A page that starts with the turn's message would have had its start.
     let finished = from_events(vec![user(600, "Go"), call(601, "c1")]);
@@ -524,16 +804,36 @@ fn testAChangedFilesCardComesBeforeTheFooter() {
         result_with(10, "c4", false, "old_string not found", json!([])),
         text(11, "m1", "Done."),
     ]);
-    assert!(model.rows().iter().all(|r| r.kind() != RowKind::Changes), "no card until the turn ends");
+    assert!(
+        model.rows().iter().all(|r| r.kind() != RowKind::Changes),
+        "no card until the turn ends"
+    );
     let mut table = ids(&model);
     let c = model.apply(vec![done(12)]);
     replay(&c, &mut table, &model);
-    assert_eq!(ids(&model)[ids(&model).len() - 3..], ["a:m1", "cf:t1", "f:t1"]);
-    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else { panic!("a card") };
+    assert_eq!(
+        ids(&model)[ids(&model).len() - 3..],
+        ["a:m1", "cf:t1", "f:t1"]
+    );
+    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else {
+        panic!("a card")
+    };
     assert_eq!(card.title(), "Edited 2 files");
-    assert_eq!(card.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(), ["/repo/Sources/A.swift", "/repo/README.md"]);
-    assert_eq!(card.files.iter().map(|f| f.added).collect::<Vec<_>>(), [3, 3]);
-    assert_eq!(card.files.iter().map(|f| f.removed).collect::<Vec<_>>(), [2, 0]);
+    assert_eq!(
+        card.files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect::<Vec<_>>(),
+        ["/repo/Sources/A.swift", "/repo/README.md"]
+    );
+    assert_eq!(
+        card.files.iter().map(|f| f.added).collect::<Vec<_>>(),
+        [3, 3]
+    );
+    assert_eq!(
+        card.files.iter().map(|f| f.removed).collect::<Vec<_>>(),
+        [2, 0]
+    );
     assert_eq!(card.files[0].diffs.len(), 2, "both edits to A.swift");
     assert_eq!(card.files[0].name(), "A.swift");
     assert_eq!(card.files[0].folder(), "repo/Sources");
@@ -542,8 +842,17 @@ fn testAChangedFilesCardComesBeforeTheFooter() {
     let index = model.index_of("cf:t1").unwrap();
     let c = model.set_expanded(&ChangedFiles::expansion_key("t1", "/repo/README.md"), true);
     assert_eq!(c, change(&[], &[], &[index]));
-    let Some(RowContent::Changes(opened)) = model.row("cf:t1").map(|r| &r.content) else { panic!("a card") };
-    assert_eq!(opened.files.iter().map(|f| f.is_expanded).collect::<Vec<_>>(), [false, true]);
+    let Some(RowContent::Changes(opened)) = model.row("cf:t1").map(|r| &r.content) else {
+        panic!("a card")
+    };
+    assert_eq!(
+        opened
+            .files
+            .iter()
+            .map(|f| f.is_expanded)
+            .collect::<Vec<_>>(),
+        [false, true]
+    );
     assert_ne!(model.row("cf:t1").map(|r| r.version), Some(version));
 }
 
@@ -552,8 +861,16 @@ fn testAChangedFilesCardComesBeforeTheFooter() {
 /// forgets that, so it opens short again.
 #[test]
 fn testShowingAllOfAChangedFilesDiffRoundTrips() {
-    let long: String = (1..=40).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
-    let mut model = from_events(vec![user(1, "Write it"), edit_with(2, "c1", "/repo/Long.swift", "a", &long, "Write"), result(3, "c1"), done(4)]);
+    let long: String = (1..=40)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut model = from_events(vec![
+        user(1, "Write it"),
+        edit_with(2, "c1", "/repo/Long.swift", "a", &long, "Write"),
+        result(3, "c1"),
+        done(4),
+    ]);
     fn file(model: &TranscriptModel) -> Option<ChangedFile> {
         match model.row("cf:t1").map(|r| &r.content) {
             Some(RowContent::Changes(card)) => card.files.first().cloned(),
@@ -571,7 +888,11 @@ fn testShowingAllOfAChangedFilesDiffRoundTrips() {
     let index = model.index_of("cf:t1").unwrap();
     let c = model.set_expanded(&all, true);
     assert_eq!(c, change(&[], &[], &[index]), "only the card changes");
-    assert_ne!(model.row("cf:t1").map(|r| r.version), Some(version), "so its height is measured again");
+    assert_ne!(
+        model.row("cf:t1").map(|r| r.version),
+        Some(version),
+        "so its height is measured again"
+    );
     assert_eq!(file(&model).map(|f| f.shows_all), Some(true));
     assert!(model.is_expanded(&all));
 
@@ -580,13 +901,21 @@ fn testShowingAllOfAChangedFilesDiffRoundTrips() {
     assert_eq!(file(&model).map(|f| f.shows_all), Some(false));
     assert!(!model.is_expanded(&all));
     model.set_expanded(&key, true);
-    assert_eq!(file(&model).map(|f| f.shows_all), Some(false), "opens short again");
+    assert_eq!(
+        file(&model).map(|f| f.shows_all),
+        Some(false),
+        "opens short again"
+    );
 }
 
 #[test]
 fn testADiffIsOnlyShortenedWhenThatHidesEnough() {
     assert_eq!(DiffPreview::shown(5), 5);
-    assert_eq!(DiffPreview::shown(15), 15, "not 12 and \"Show 3 more lines\"");
+    assert_eq!(
+        DiffPreview::shown(15),
+        15,
+        "not 12 and \"Show 3 more lines\""
+    );
     assert_eq!(DiffPreview::shown(18), 18);
     assert_eq!(DiffPreview::shown(19), 12);
     assert_eq!(DiffPreview::shown(400), 12);
@@ -598,7 +927,12 @@ fn testDiffPreviewKeysInASet() {
     let mut open = std::collections::HashSet::new();
     DiffPreview::set("t:c1", true, &mut open);
     DiffPreview::set(&DiffPreview::all_key("t:c1"), true, &mut open);
-    assert_eq!(open, ["t:c1".to_owned(), "t:c1|all".to_owned()].into_iter().collect());
+    assert_eq!(
+        open,
+        ["t:c1".to_owned(), "t:c1|all".to_owned()]
+            .into_iter()
+            .collect()
+    );
     DiffPreview::set("t:c1", false, &mut open);
     assert!(open.is_empty());
 }
@@ -609,9 +943,19 @@ fn testAThoughtIsSummedUpByItsFirstSentence() {
         WorkSummary::thought("Uploads are chunked already, so the missing piece is remembering which chunks the server confirmed. I should look at UploadTask first."),
         "Uploads are chunked already, so the missing piece is remembering which chunks the server confirmed."
     );
-    assert_eq!(WorkSummary::thought("Hmm. Let me look at the logs first and then decide."), "Hmm. Let me look at the logs first and then decide.", "too short a sentence to stand alone");
-    assert_eq!(WorkSummary::thought("One long line with no full stop at all"), "One long line with no full stop at all");
-    assert_eq!(WorkSummary::thought("First line only.\nSecond line"), "First line only.");
+    assert_eq!(
+        WorkSummary::thought("Hmm. Let me look at the logs first and then decide."),
+        "Hmm. Let me look at the logs first and then decide.",
+        "too short a sentence to stand alone"
+    );
+    assert_eq!(
+        WorkSummary::thought("One long line with no full stop at all"),
+        "One long line with no full stop at all"
+    );
+    assert_eq!(
+        WorkSummary::thought("First line only.\nSecond line"),
+        "First line only."
+    );
     assert_eq!(WorkSummary::thought(""), "");
 }
 
@@ -630,14 +974,30 @@ fn testALateDiffUpdatesItsTurnsCard() {
         done_turn(8, "t2"),
     ]);
     let mut table = ids(&model);
-    let after: Vec<u64> = model.rows()[model.rows().len() - 3..].iter().map(|r| r.version).collect();
+    let after: Vec<u64> = model.rows()[model.rows().len() - 3..]
+        .iter()
+        .map(|r| r.version)
+        .collect();
     let c = model.apply(vec![event(9, "edit.diff", json!({"itemId": "c1", "path": "/a.swift", "hunks": [
         {"oldStart": 40, "oldLines": 1, "newStart": 40, "newLines": 2, "lines": ["-a", "+b", "+c"]},
     ]}))]);
     replay(&c, &mut table, &model);
-    assert_eq!(c.updated, set(&[3]), "its turn's card; the edit is folded in the turn's line");
-    assert_eq!(model.rows()[model.rows().len() - 3..].iter().map(|r| r.version).collect::<Vec<_>>(), after, "the next turn's rows are untouched");
-    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else { panic!("a card") };
+    assert_eq!(
+        c.updated,
+        set(&[3]),
+        "its turn's card; the edit is folded in the turn's line"
+    );
+    assert_eq!(
+        model.rows()[model.rows().len() - 3..]
+            .iter()
+            .map(|r| r.version)
+            .collect::<Vec<_>>(),
+        after,
+        "the next turn's rows are untouched"
+    );
+    let Some(RowContent::Changes(card)) = model.row("cf:t1").map(|r| &r.content) else {
+        panic!("a card")
+    };
     assert_eq!(card.files.first().map(|f| f.added), Some(2));
 }
 
@@ -662,12 +1022,25 @@ fn testOpeningAnEarlyGroupLeavesLaterRowsAlone() {
     }
     let mut model = from_events(events);
     let mut table = ids(&model);
-    let later: Vec<String> = model.rows()[4..].iter().map(|r| format!("{}|{}", r.id, r.version)).collect();
+    let later: Vec<String> = model.rows()[4..]
+        .iter()
+        .map(|r| format!("{}|{}", r.id, r.version))
+        .collect();
     let c = model.set_expanded("g:t:a0", true);
     replay(&c, &mut table, &model);
     assert_eq!(c, change(&[], &[2, 3], &[1]));
-    assert_eq!(model.rows()[6..].iter().map(|r| format!("{}|{}", r.id, r.version)).collect::<Vec<_>>(), later);
-    assert_eq!(model.index_of("f:t19"), Some(model.rows().len() - 1), "rows after the group moved down in the index too");
+    assert_eq!(
+        model.rows()[6..]
+            .iter()
+            .map(|r| format!("{}|{}", r.id, r.version))
+            .collect::<Vec<_>>(),
+        later
+    );
+    assert_eq!(
+        model.index_of("f:t19"),
+        Some(model.rows().len() - 1),
+        "rows after the group moved down in the index too"
+    );
 }
 
 #[test]
@@ -677,7 +1050,12 @@ fn testASummarizedTurnHasNoCard() {
         started(2),
         edit_with(3, "c1", "/repo/Sources/A.swift", "a", "b", "Edit"),
         result(4, "c1"),
-        event_turn(5, "assistant.text", json!({"itemId": "m1", "text": "- Changed A", "summary": true}), Some("t1")),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "- Changed A", "summary": true}),
+            Some("t1"),
+        ),
         done(6),
     ]);
     assert!(model.row("a:m1").is_some());
@@ -693,7 +1071,12 @@ fn testAOneReplyTurnHasNoCard() {
         started(2),
         edit_with(3, "c1", "/repo/Sources/A.swift", "a", "b", "Edit"),
         result(4, "c1"),
-        event_turn(5, "assistant.text", json!({"itemId": "m1", "text": "Changed A.", "final": true}), Some("t1")),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "Changed A.", "final": true}),
+            Some("t1"),
+        ),
         done(6),
     ]);
     assert!(model.row("a:m1").is_some());
@@ -701,11 +1084,19 @@ fn testAOneReplyTurnHasNoCard() {
 }
 
 fn end_turn_call(seq: i64, id: &str) -> Event {
-    call_with(seq, id, "mcp__threadbear__end_turn", "mcp", "end_turn", json!({})).with_turn("t1")
+    call_with(
+        seq,
+        id,
+        "mcp__threadbear__end_turn",
+        "mcp",
+        "end_turn",
+        json!({}),
+    )
+    .with_turn("t1")
 }
 
 /// A sign-off shorter than the bullets loses to them, unless the summary
-/// was written with bullet replies off (docs/protocol.md, "The summary").
+/// was written with bullet replies off (docs/protocol/needs-you.md, "The summary").
 #[test]
 fn testASummaryThatGivesWayLosesToAShortMessage() {
     fn model(gives_way: bool) -> TranscriptModel {
@@ -728,10 +1119,13 @@ fn testASummaryThatGivesWayLosesToAShortMessage() {
     assert!(model(false).row("a:e1.summary").is_some());
     assert!(model(false).row("a:m1").is_none(), "folded into the work");
     assert!(model(true).row("a:m1").is_some());
-    assert!(model(true).row("a:e1.summary").is_none(), "folded into the work");
+    assert!(
+        model(true).row("a:e1.summary").is_none(),
+        "folded into the work"
+    );
 }
 
-/// One reply (docs/protocol.md, "One reply"): the message after end_turn is
+/// One reply (docs/protocol/needs-you.md, "One reply"): the message after end_turn is
 /// the reply, even under a longer message before it (a narration block or a
 /// draft), which folds into the work.
 #[test]
@@ -786,13 +1180,23 @@ fn testAfterAWakeAnEarlierFinalReplyGivesWay() {
         started(2),
         end_turn_call(3, "e1"),
         result_text(4, "e1", "Noted: this thread is done. Now write your reply.").with_turn("t1"),
-        event_turn(5, "assistant.text", json!({"itemId": "m1", "text": "Still landing.", "final": true}), Some("t1")),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "Still landing.", "final": true}),
+            Some("t1"),
+        ),
         event_turn(6, "system.note", wake, Some("t1")),
         call(7, "c2").with_turn("t1"),
         result(8, "c2").with_turn("t1"),
         text(9, "m2", "Landed on main and pushed.").with_turn("t1"),
         end_turn_call(10, "e2"),
-        result_text(11, "e2", "Noted: this thread is done. Stop here: your message above is the reply.").with_turn("t1"),
+        result_text(
+            11,
+            "e2",
+            "Noted: this thread is done. Stop here: your message above is the reply.",
+        )
+        .with_turn("t1"),
         done(12),
     ]);
     assert!(model.row("a:m2").is_some());
@@ -811,7 +1215,12 @@ fn testAfterAWakeAReplacedSummaryGivesWay() {
         result(4, "c1").with_turn("t1"),
         end_turn_call(5, "e1"),
         result_text(6, "e1", "Noted: this thread is done.").with_turn("t1"),
-        event_turn(7, "assistant.text", json!({"itemId": "e1.summary", "text": "- Still building, and landing once the check on build-box passes", "summary": true}), Some("t1")),
+        event_turn(
+            7,
+            "assistant.text",
+            json!({"itemId": "e1.summary", "text": "- Still building, and landing once the check on build-box passes", "summary": true}),
+            Some("t1"),
+        ),
         event_turn(8, "system.note", wake, Some("t1")),
         call(9, "c2").with_turn("t1"),
         result(10, "c2").with_turn("t1"),
@@ -845,8 +1254,14 @@ fn testAReplyWrittenAgainUnderACorrectedCardIsTheOnlyReply() {
         done(12),
     ]);
     assert!(model.row("a:e2.reply").is_some());
-    assert!(model.row("a:m1").is_none(), "the first copy folds into the work");
-    assert!(model.row("a:m0").is_none(), "and so does what came before the first end_turn");
+    assert!(
+        model.row("a:m1").is_none(),
+        "the first copy folds into the work"
+    );
+    assert!(
+        model.row("a:m0").is_none(),
+        "and so does what came before the first end_turn"
+    );
 }
 
 /// From Codex's review: one reply, woken, and stopped with no new card while
@@ -859,11 +1274,21 @@ fn testAfterAWakeWithNoNewCardTheReportShows() {
         started(2),
         end_turn_call(3, "e1"),
         result_text(4, "e1", "Noted: this thread is done. Now write your reply.").with_turn("t1"),
-        event_turn(5, "assistant.text", json!({"itemId": "m1", "text": "Still landing.", "final": true}), Some("t1")),
+        event_turn(
+            5,
+            "assistant.text",
+            json!({"itemId": "m1", "text": "Still landing.", "final": true}),
+            Some("t1"),
+        ),
         event_turn(6, "system.note", wake, Some("t1")),
         call(7, "c2").with_turn("t1"),
         result(8, "c2").with_turn("t1"),
-        event_turn(9, "assistant.text", json!({"itemId": "m2", "text": "Landed on main and pushed.", "final": true}), Some("t1")),
+        event_turn(
+            9,
+            "assistant.text",
+            json!({"itemId": "m2", "text": "Landed on main and pushed.", "final": true}),
+            Some("t1"),
+        ),
         done(10),
     ]);
     assert!(model.row("a:m2").is_some());
@@ -871,6 +1296,11 @@ fn testAfterAWakeWithNoNewCardTheReportShows() {
 
 #[test]
 fn testATurnWithNoEditsHasNoCard() {
-    let model = from_events(vec![user(1, "Hi"), call(2, "c1"), text(3, "m1", "Hello"), done(4)]);
+    let model = from_events(vec![
+        user(1, "Hi"),
+        call(2, "c1"),
+        text(3, "m1", "Hello"),
+        done(4),
+    ]);
     assert!(model.rows().iter().all(|r| r.kind() != RowKind::Changes));
 }

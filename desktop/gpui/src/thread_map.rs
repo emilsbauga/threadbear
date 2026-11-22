@@ -53,7 +53,13 @@ mod tests {
         let _ = m.get("x");
         let _ = m.values().count();
         assert_eq!(m.changes(), before, "reading doesn't count");
-        m.insert("a".into(), Arc::new(ThreadSummary { id: "a".into(), ..Default::default() }));
+        m.insert(
+            "a".into(),
+            Arc::new(ThreadSummary {
+                id: "a".into(),
+                ..Default::default()
+            }),
+        );
         let after_insert = m.changes();
         assert!(after_insert > before);
         if let Some(t) = m.get_mut("a").map(Arc::make_mut) {

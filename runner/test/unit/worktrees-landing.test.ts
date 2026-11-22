@@ -6,11 +6,11 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { makeHarness, tmpDir } from '../helpers/fakes.ts';
 import { findWorktreePatch } from '../../src/patches.ts';
-import { cleanUpWorktree, git, land, landTargetFromGit, makeWorktree, overwrittenFiles } from '../../src/worktrees.ts';
+import { cleanUpWorktree, land, landTargetFromGit, makeWorktree, overwrittenFiles } from '../../src/worktrees.ts';
 import { RpcServer } from '../../src/rpc.ts';
 import { readToken } from '../../src/config.ts';
 import { nullLogger } from '../../src/log.ts';
-import { PATCH, addBorrowScript, capture, commit, harness, holdUntil, isLocked, lines, makeBranch, makeRepo, notes, runTb, sh, startTb, threadWithWorktree, until, write } from '../helpers/worktrees-harness.ts';
+import { PATCH, addBorrowScript, capture, commit, harness, holdUntil, isLocked, makeBranch, makeRepo, notes, runTb, sh, startTb, threadWithWorktree, until, write } from '../helpers/worktrees-harness.ts';
 
 // --------------------------------------------------------------- landing
 

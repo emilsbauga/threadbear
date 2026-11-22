@@ -1,6 +1,6 @@
 //! BrowserBear (github.com/mikecann/browserbear), the agents' browser, as the
 //! app sees it: the Browser pane's pages and the sign-in handoff
-//! (docs/protocol.md, "The Browser panel" and "Showing panels"). A port of the
+//! (docs/protocol/panels.md, "The Browser panel" and "Showing panels"). A port of the
 //! Swift app's `AgentBrowserPanel.swift`, `BrowserBear.swift` and
 //! `BrowserBearPipe.swift`; the socket itself is the GPUI app's
 //! (`agent_browser.rs`), this is what's said over it and what it means.
@@ -102,7 +102,13 @@ impl AgentTab {
 
     /// "Personal · me@example.com".
     pub fn profile_title(&self) -> String {
-        [&self.profile_name, &self.profile_email].into_iter().flatten().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ")
+        [&self.profile_name, &self.profile_email]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     /// The page's host, or the whole address when it hasn't one.
@@ -112,14 +118,22 @@ impl AgentTab {
 
     /// Its title, or the host for a page without one yet.
     pub fn shown_title(&self) -> String {
-        if self.title.is_empty() { self.host() } else { self.title.clone() }
+        if self.title.is_empty() {
+            self.host()
+        } else {
+            self.title.clone()
+        }
     }
 
     /// Where its window is: a Chrome profile's name, else the agents' browser.
     pub fn place(&self, browser_name: &str) -> String {
         if self.bridge == Some(true) {
             let title = self.profile_title();
-            if title.is_empty() { "Chrome".to_owned() } else { title }
+            if title.is_empty() {
+                "Chrome".to_owned()
+            } else {
+                title
+            }
         } else {
             browser_name.to_owned()
         }
@@ -131,7 +145,11 @@ fn host(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if authority.starts_with('[') { authority.split_inclusive(']').next()? } else { authority.split(':').next()? };
+    let host = if authority.starts_with('[') {
+        authority.split_inclusive(']').next()?
+    } else {
+        authority.split(':').next()?
+    };
     (!host.is_empty()).then(|| host.to_owned())
 }
 
@@ -159,11 +177,18 @@ fn capped_tabs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<AgentTab>, 
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("a list of pages")
         }
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
             let mut tabs = vec![];
             for _ in 0..MAX_TABS {
                 match seq.next_element::<Value>()? {
-                    Some(value) => { if let Some(tab) = crate::wire::read(value) { tabs.push(tab); } }
+                    Some(value) => {
+                        if let Some(tab) = crate::wire::read(value) {
+                            tabs.push(tab);
+                        }
+                    }
                     None => return Ok(tabs),
                 }
             }
@@ -171,16 +196,41 @@ fn capped_tabs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<AgentTab>, 
             Ok(tabs)
         }
         // A wrongly typed tabs field leaves the host's other fields usable.
-        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-            while map.next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?.is_some() {}
-            crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![])
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            while map
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_some()
+            {}
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
         }
-        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> { crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![]) }
-        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> { crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![]) }
-        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> { crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![]) }
-        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> { crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![]) }
-        fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> { crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![]) }
-        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> { crate::wire::dropped::<AgentState>("tabs field"); Ok(vec![]) }
+        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
+        }
+        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
+        }
+        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
+        }
+        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
+        }
+        fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            crate::wire::dropped::<AgentState>("tabs field");
+            Ok(vec![])
+        }
     }
     d.deserialize_any(Capped)
 }
@@ -206,19 +256,36 @@ pub struct PanelState {
 /// each, a profile's winning a clash, in tab order.
 pub fn merge(agent: &[AgentTab], profiles: &[AgentTab]) -> Vec<AgentTab> {
     let mut all: std::collections::HashMap<String, AgentTab> = std::collections::HashMap::new();
-    for tab in agent.iter().take(MAX_TABS).chain(profiles.iter().filter(|t| t.bridge == Some(true)).take(MAX_TABS)) {
+    for tab in agent.iter().take(MAX_TABS).chain(
+        profiles
+            .iter()
+            .filter(|t| t.bridge == Some(true))
+            .take(MAX_TABS),
+    ) {
         all.insert(tab.id(), tab.clone());
     }
     let mut all: Vec<AgentTab> = all.into_values().collect();
-    all.sort_by(|a, b| a.tab_id.cmp(&b.tab_id).then_with(|| a.profile_id().cmp(b.profile_id())));
+    all.sort_by(|a, b| {
+        a.tab_id
+            .cmp(&b.tab_id)
+            .then_with(|| a.profile_id().cmp(b.profile_id()))
+    });
     all
 }
 
 /// A thread's pages as the pane lists them: waiting for Mike first, then the newest.
 pub fn for_thread(tabs: &[AgentTab], thread: &str) -> Vec<AgentTab> {
-    let mut mine: Vec<AgentTab> = tabs.iter().filter(|t| t.thread.as_deref() == Some(thread)).cloned().collect();
+    let mut mine: Vec<AgentTab> = tabs
+        .iter()
+        .filter(|t| t.thread.as_deref() == Some(thread))
+        .cloned()
+        .collect();
     let newest = |t: &AgentTab| t.opened_at.unwrap_or(t.tab_id as f64);
-    mine.sort_by(|a, b| b.yours().cmp(&a.yours()).then(newest(b).total_cmp(&newest(a))));
+    mine.sort_by(|a, b| {
+        b.yours()
+            .cmp(&a.yours())
+            .then(newest(b).total_cmp(&newest(a)))
+    });
     mine
 }
 
@@ -226,7 +293,11 @@ pub fn for_thread(tabs: &[AgentTab], thread: &str) -> Vec<AgentTab> {
 /// the pane opens by itself when this changes and has a page that's his.
 /// None while nothing is his.
 pub fn handoff_key(tabs: &[AgentTab], thread: &str) -> Option<String> {
-    let yours: Vec<String> = tabs.iter().filter(|t| t.thread.as_deref() == Some(thread) && t.yours()).map(|t| format!("{}:{}", t.id(), t.handoffs.unwrap_or(0))).collect();
+    let yours: Vec<String> = tabs
+        .iter()
+        .filter(|t| t.thread.as_deref() == Some(thread) && t.yours())
+        .map(|t| format!("{}:{}", t.id(), t.handoffs.unwrap_or(0)))
+        .collect();
     (!yours.is_empty()).then(|| format!("{thread}|{}", yours.join(",")))
 }
 
@@ -243,18 +314,25 @@ pub fn address(typed: &str) -> Option<String> {
     if text.contains('.') && !text.contains(' ') {
         return Some(format!("https://{text}"));
     }
-    let query: String = text.bytes().map(|b| match b {
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-        b' ' => "+".to_owned(),
-        other => format!("%{other:02X}"),
-    }).collect();
+    let query: String = text
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            b' ' => "+".to_owned(),
+            other => format!("%{other:02X}"),
+        })
+        .collect();
     Some(format!("https://www.google.com/search?q={query}"))
 }
 
 /// Whether a handoff's reply says the tab came to Mike: its own id and an
 /// explicit `ok: true`. Anything else opens the link in the browser as usual.
 pub fn handed_off(reply: &[u8], id: u64) -> bool {
-    let Ok(message) = serde_json::from_slice::<Value>(reply) else { return false };
+    let Ok(message) = serde_json::from_slice::<Value>(reply) else {
+        return false;
+    };
     message["id"].as_u64() == Some(id) && message["ok"].as_bool() == Some(true)
 }
 
@@ -279,7 +357,10 @@ pub fn request_line(id: u64, cmd: &str, args: Value, thread: Option<&str>) -> Ve
 #[derive(Clone, Debug, PartialEq)]
 pub enum Line {
     /// `{id, ok, result|error}`: the result, or what went wrong.
-    Reply { id: u64, answer: Result<Value, String> },
+    Reply {
+        id: u64,
+        answer: Result<Value, String>,
+    },
     /// Anything without an id.
     Event(Value),
 }
@@ -290,9 +371,14 @@ pub fn read_line(line: &[u8]) -> Option<Line> {
     if !message.is_object() {
         return None;
     }
-    let Some(id) = message["id"].as_u64() else { return Some(Line::Event(message)) };
+    let Some(id) = message["id"].as_u64() else {
+        return Some(Line::Event(message));
+    };
     let answer = if message["ok"].as_bool() == Some(false) {
-        Err(message["error"].as_str().unwrap_or("BrowserBear couldn't open this page.").to_owned())
+        Err(message["error"]
+            .as_str()
+            .unwrap_or("BrowserBear couldn't open this page.")
+            .to_owned())
     } else {
         Ok(match &message["result"] {
             Value::Object(_) => message["result"].clone(),
@@ -340,7 +426,9 @@ impl Lines {
 pub fn still(result: &Value) -> Option<(Vec<u8>, Option<f64>)> {
     use base64::Engine as _;
     let data = result["data"].as_str()?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
     Some((bytes, result["at"].as_f64()))
 }
 
@@ -363,22 +451,35 @@ mod tests {
 
     #[test]
     fn a_threads_tabs_decode_from_the_hosts_file() {
-        let t = tab(r#"{"tabId":1004,"targetId":"AB","url":"https://example.com/","title":"Example","thread":"t1","state":"yours","action":"over to you","finish":true,"status":"complete","handoffs":2,"openedAt":1,"popup":false}"#);
-        assert!(t.tab_id == 1004 && t.thread.as_deref() == Some("t1") && t.yours() && t.handoffs == Some(2));
+        let t = tab(
+            r#"{"tabId":1004,"targetId":"AB","url":"https://example.com/","title":"Example","thread":"t1","state":"yours","action":"over to you","finish":true,"status":"complete","handoffs":2,"openedAt":1,"popup":false}"#,
+        );
+        assert!(
+            t.tab_id == 1004
+                && t.thread.as_deref() == Some("t1")
+                && t.yours()
+                && t.handoffs == Some(2)
+        );
     }
 
     #[test]
     fn missing_and_unknown_fields_are_fine() {
-        let t = tab(r#"{"tabId":1,"targetId":"A","url":"about:blank","title":"","somethingNew":3}"#);
+        let t =
+            tab(r#"{"tabId":1,"targetId":"A","url":"about:blank","title":"","somethingNew":3}"#);
         assert!(t.thread.is_none() && t.handoffs.is_none());
         let state = agent_state(br#"{"port":9222,"socket":"/x","tabs":[{"tabId":1,"url":"https://a.com/","title":"A"}],"later":true}"#).unwrap();
-        assert_eq!((state.port, state.tabs.len(), state.browser), (9222, 1, None));
+        assert_eq!(
+            (state.port, state.tabs.len(), state.browser),
+            (9222, 1, None)
+        );
         assert!(agent_state(b"not json").is_none());
     }
 
     #[test]
     fn existing_chrome_tabs_keep_their_profile_and_thread() {
-        let t = tab(r#"{"tabId":24,"url":"https://github.com/","title":"GitHub","thread":"t1","bridge":true,"profile":"personal-id","profileName":"Personal","profileEmail":"me@example.com"}"#);
+        let t = tab(
+            r#"{"tabId":24,"url":"https://github.com/","title":"GitHub","thread":"t1","bridge":true,"profile":"personal-id","profileName":"Personal","profileEmail":"me@example.com"}"#,
+        );
         assert_eq!(t.profile_title(), "Personal · me@example.com");
         assert_eq!(t.id(), "personal-id/24");
         assert_eq!(t.place("Helium"), "Personal · me@example.com");
@@ -387,50 +488,86 @@ mod tests {
     #[test]
     fn a_tab_in_the_agents_browser_is_kept_apart_from_one_in_chrome() {
         let agent = tab(r#"{"tabId":24,"url":"https://github.com/","title":"GitHub"}"#);
-        assert_eq!((agent.profile_id(), agent.id()), (AGENTS_BROWSER, "agent-chrome/24".to_owned()));
-        let chrome = tab(r#"{"tabId":24,"url":"https://github.com/","title":"GitHub","bridge":true,"profile":"p"}"#);
+        assert_eq!(
+            (agent.profile_id(), agent.id()),
+            (AGENTS_BROWSER, "agent-chrome/24".to_owned())
+        );
+        let chrome = tab(
+            r#"{"tabId":24,"url":"https://github.com/","title":"GitHub","bridge":true,"profile":"p"}"#,
+        );
         // A profile tab not marked as bridged isn't one of the profiles' pages.
         let stray = tab(r#"{"tabId":25,"url":"https://x.com/","title":"X","profile":"p"}"#);
-        let merged = merge(&[agent.clone()], &[chrome.clone(), stray]);
-        assert_eq!(merged.iter().map(AgentTab::id).collect::<Vec<_>>(), vec!["agent-chrome/24", "p/24"]);
+        let merged = merge(std::slice::from_ref(&agent), &[chrome, stray]);
+        assert_eq!(
+            merged.iter().map(AgentTab::id).collect::<Vec<_>>(),
+            vec!["agent-chrome/24", "p/24"]
+        );
     }
 
     #[test]
     fn a_threads_pages_put_its_turn_first_then_the_newest() {
         let tabs = vec![
-            tab(r#"{"tabId":1,"url":"https://old.com/","title":"Old","thread":"t1","openedAt":10}"#),
-            tab(r#"{"tabId":2,"url":"https://new.com/","title":"New","thread":"t1","openedAt":30}"#),
-            tab(r#"{"tabId":3,"url":"https://login.com/","title":"Sign in","thread":"t1","state":"yours","openedAt":5}"#),
+            tab(
+                r#"{"tabId":1,"url":"https://old.com/","title":"Old","thread":"t1","openedAt":10}"#,
+            ),
+            tab(
+                r#"{"tabId":2,"url":"https://new.com/","title":"New","thread":"t1","openedAt":30}"#,
+            ),
+            tab(
+                r#"{"tabId":3,"url":"https://login.com/","title":"Sign in","thread":"t1","state":"yours","openedAt":5}"#,
+            ),
             tab(r#"{"tabId":4,"url":"https://other.com/","title":"Other","thread":"t2"}"#),
         ];
-        let titles: Vec<String> = for_thread(&tabs, "t1").into_iter().map(|t| t.title).collect();
+        let titles: Vec<String> = for_thread(&tabs, "t1")
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
         assert_eq!(titles, vec!["Sign in", "New", "Old"]);
     }
 
     #[test]
     fn the_handoff_key_moves_with_each_handoff_and_only_for_mikes_turn() {
-        let mut tabs = vec![tab(r#"{"tabId":1,"url":"https://a.com/","title":"A","thread":"t1","state":"working"}"#)];
+        let mut tabs = vec![tab(
+            r#"{"tabId":1,"url":"https://a.com/","title":"A","thread":"t1","state":"working"}"#,
+        )];
         assert_eq!(handoff_key(&tabs, "t1"), None);
         tabs[0].state = Some("yours".into());
         tabs[0].handoffs = Some(1);
         let first = handoff_key(&tabs, "t1").unwrap();
         tabs[0].handoffs = Some(2);
-        assert_ne!(handoff_key(&tabs, "t1").unwrap(), first, "handed over again");
+        assert_ne!(
+            handoff_key(&tabs, "t1").unwrap(),
+            first,
+            "handed over again"
+        );
         assert_eq!(handoff_key(&tabs, "t2"), None, "another thread's");
     }
 
     #[test]
     fn the_address_bar_takes_addresses_names_and_searches() {
         assert_eq!(address("  "), None);
-        assert_eq!(address("https://a.com/x").as_deref(), Some("https://a.com/x"));
+        assert_eq!(
+            address("https://a.com/x").as_deref(),
+            Some("https://a.com/x")
+        );
         assert_eq!(address("qantas.com").as_deref(), Some("https://qantas.com"));
-        assert_eq!(address("cheap flights & hotels").as_deref(), Some("https://www.google.com/search?q=cheap+flights+%26+hotels"));
+        assert_eq!(
+            address("cheap flights & hotels").as_deref(),
+            Some("https://www.google.com/search?q=cheap+flights+%26+hotels")
+        );
     }
 
     #[test]
     fn hosts() {
-        assert_eq!(tab(r#"{"tabId":1,"url":"https://user@www.qantas.com:443/login?x=1","title":""}"#).shown_title(), "www.qantas.com");
-        assert_eq!(tab(r#"{"tabId":1,"url":"about:blank","title":""}"#).host(), "about:blank");
+        assert_eq!(
+            tab(r#"{"tabId":1,"url":"https://user@www.qantas.com:443/login?x=1","title":""}"#)
+                .shown_title(),
+            "www.qantas.com"
+        );
+        assert_eq!(
+            tab(r#"{"tabId":1,"url":"about:blank","title":""}"#).host(),
+            "about:blank"
+        );
     }
 
     #[test]
@@ -438,14 +575,23 @@ mod tests {
         assert!(handed_off(br#"{"id":1,"ok":true,"result":{}}"#, 1));
         assert!(!handed_off(br#"{"id":1}"#, 1), "no ok");
         assert!(!handed_off(br#"{"id":1,"ok":"yes"}"#, 1));
-        assert!(!handed_off(br#"{"id":2,"ok":true}"#, 1), "another request's");
+        assert!(
+            !handed_off(br#"{"id":2,"ok":true}"#, 1),
+            "another request's"
+        );
         assert!(!handed_off(br#"{"id":1,"ok":false,"error":"no tab"}"#, 1));
         assert!(!handed_off(b"nonsense", 1));
     }
 
     #[test]
     fn a_huge_list_merges_quickly_and_is_capped() {
-        let many: Vec<AgentTab> = (0..100_000).map(|i| AgentTab { tab_id: i, url: format!("https://a{i}.com/"), ..Default::default() }).collect();
+        let many: Vec<AgentTab> = (0..100_000)
+            .map(|i| AgentTab {
+                tab_id: i,
+                url: format!("https://a{i}.com/"),
+                ..Default::default()
+            })
+            .collect();
         let started = std::time::Instant::now();
         assert_eq!(merge(&many, &many).len(), MAX_TABS);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
@@ -469,14 +615,43 @@ mod tests {
 
     #[test]
     fn requests_and_replies() {
-        let line = request_line(7, "panelShow", json!({ "tab": 3, "profile": "agent-chrome" }), Some("t1"));
+        let line = request_line(
+            7,
+            "panelShow",
+            json!({ "tab": 3, "profile": "agent-chrome" }),
+            Some("t1"),
+        );
         assert_eq!(*line.last().unwrap(), b'\n');
         let sent: Value = serde_json::from_slice(&line[..line.len() - 1]).unwrap();
-        assert_eq!(sent, json!({ "id": 7, "cmd": "panelShow", "args": { "tab": 3, "profile": "agent-chrome" }, "thread": "t1" }));
-        assert_eq!(read_line(br#"{"id":7,"ok":true,"result":{"tabs":[]}}"#), Some(Line::Reply { id: 7, answer: Ok(json!({ "tabs": [] })) }));
-        assert_eq!(read_line(br#"{"id":8,"ok":false,"error":"no such tab"}"#), Some(Line::Reply { id: 8, answer: Err("no such tab".into()) }));
-        assert_eq!(read_line(br#"{"id":9,"ok":true}"#), Some(Line::Reply { id: 9, answer: Ok(json!({})) }));
-        assert!(matches!(read_line(br#"{"method":"frame"}"#), Some(Line::Event(_))));
+        assert_eq!(
+            sent,
+            json!({ "id": 7, "cmd": "panelShow", "args": { "tab": 3, "profile": "agent-chrome" }, "thread": "t1" })
+        );
+        assert_eq!(
+            read_line(br#"{"id":7,"ok":true,"result":{"tabs":[]}}"#),
+            Some(Line::Reply {
+                id: 7,
+                answer: Ok(json!({ "tabs": [] }))
+            })
+        );
+        assert_eq!(
+            read_line(br#"{"id":8,"ok":false,"error":"no such tab"}"#),
+            Some(Line::Reply {
+                id: 8,
+                answer: Err("no such tab".into())
+            })
+        );
+        assert_eq!(
+            read_line(br#"{"id":9,"ok":true}"#),
+            Some(Line::Reply {
+                id: 9,
+                answer: Ok(json!({}))
+            })
+        );
+        assert!(matches!(
+            read_line(br#"{"method":"frame"}"#),
+            Some(Line::Event(_))
+        ));
         assert_eq!(read_line(b"garbage"), None);
     }
 
@@ -490,7 +665,10 @@ mod tests {
         let mut lines = Lines::default();
         let mut got = vec![];
         let mut i = 0;
-        for size in [5, 300_000, 400_036, 7, 650_000].into_iter().chain(std::iter::repeat(100_000)) {
+        for size in [5, 300_000, 400_036, 7, 650_000]
+            .into_iter()
+            .chain(std::iter::repeat(100_000))
+        {
             if i >= bytes.len() {
                 break;
             }
@@ -510,7 +688,10 @@ mod tests {
 
     #[test]
     fn stills_decode() {
-        assert_eq!(still(&json!({ "data": "/9j/", "at": 1000.0 })), Some((vec![0xff, 0xd8, 0xff], Some(1000.0))));
+        assert_eq!(
+            still(&json!({ "data": "/9j/", "at": 1000.0 })),
+            Some((vec![0xff, 0xd8, 0xff], Some(1000.0)))
+        );
         assert_eq!(still(&json!({ "data": null })), None);
     }
 
@@ -518,7 +699,15 @@ mod tests {
     fn a_scripted_app_never_finds_the_real_browserbear() {
         let user = Path::new("/Users/me");
         assert_eq!(home(None, user, true), None);
-        assert_eq!(home(None, user, false), Some(PathBuf::from("/Users/me/Library/Application Support/BrowserBear")));
-        assert_eq!(home(Some("/tmp/bear"), user, true), Some(PathBuf::from("/tmp/bear")));
+        assert_eq!(
+            home(None, user, false),
+            Some(PathBuf::from(
+                "/Users/me/Library/Application Support/BrowserBear"
+            ))
+        );
+        assert_eq!(
+            home(Some("/tmp/bear"), user, true),
+            Some(PathBuf::from("/tmp/bear"))
+        );
     }
 }

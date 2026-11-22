@@ -15,7 +15,17 @@ Then('the page of {string} flies from the transcript into the {string} heading',
   const t = await this.until(`a thread called "${title}"`, (d) => this.thread(d, title));
   this.flownFrom = t.id;
   const dest = to === 'archived' ? 'archive' : to;
-  const f = await this.until(`${title}'s page landed in its heading`, (d) => (d.flight?.thread === t.id && d.flight.to === dest && d.flight.landed ? d.flight : undefined));
+  let reduced = false;
+  const f = await this.until(`${title}'s page landed in its heading`, (d) => {
+    reduced = !!d.reduceMotion;
+    return d.flight?.thread === t.id && d.flight.to === dest && d.flight.landed ? d.flight : undefined;
+  });
+  // With Reduce Motion on the page fades where it is and aims nowhere
+  // (archive_flight.rs), so the stress run's motion condition checks that.
+  if (reduced) {
+    assert.equal(f.end ?? null, null, `aimed at ${JSON.stringify(f.end)} with Reduce Motion on`);
+    return;
+  }
   // It started as the transcript: a page, not a row, right of the sidebar.
   assert.ok(f.start.width > 200 && f.start.height > 150, `started as ${JSON.stringify(f.start)}`);
   assert.ok(f.onHeading && f.end, `aimed at ${JSON.stringify(f.end)}, not the heading`);

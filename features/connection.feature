@@ -35,6 +35,18 @@ Feature: Staying connected to the runner
     When I press Try again on the transcript
     Then the transcript shows the thread "Morning brief"
 
+  # A read starting again as the runner comes back goes back to the spinner, as
+  # Try again does: the failure used to stay up, Try again and all, until the
+  # new read answered, and pressing it then read the thread twice (21 Nov).
+  @thread.loadfailure @thread.loading @swift-pending
+  Scenario: A thread that couldn't be read shows the spinner while the runner's return reads it again
+    Given the thread "Morning brief" can't be read once
+    When I open the thread "Morning brief", which fails to load
+    Then the transcript says it couldn't be loaded
+    When the runner restarts and is gone for 2 seconds
+    Then as the app connects again the transcript is a spinner while it's read
+    And the transcript shows the thread "Morning brief"
+
   # The runner restarts onto main several times a day. A message sent while it's
   # away waits in the transcript and goes once it's back, rather than bouncing
   # back into the box (Mike, 9 Nov).

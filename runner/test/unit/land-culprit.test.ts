@@ -40,7 +40,7 @@ const runs = (root: string): { files: string; only: string; all: string }[] =>
     return { files: m[1].trim(), only: m[2], all: m[3] };
   });
 
-async function queued(root: string, main: string, a: LandTarget, others: { t: LandTarget; despiteRed?: boolean }[], check: string) {
+async function queued(root: string, _main: string, a: LandTarget, others: { t: LandTarget; despiteRed?: boolean }[], check: string) {
   const first = land({ ...a, check }, capture().opts);
   await until(() => fs.existsSync(path.join(root, 'checking')), "a's check");
   const caps = others.map(() => capture());

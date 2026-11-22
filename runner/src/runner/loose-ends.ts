@@ -1,5 +1,5 @@
 // Loose ends on the done card (loose-ends.ts;
-// docs/protocol.md, "Loose ends"). Checked when a turn ends with needs
+// docs/protocol/threads.md, "Loose ends"). Checked when a turn ends with needs
 // "nothing", and again when something they depend on may have moved: an
 // action ran (Land), Mike opened the thread, or a thread it started
 // finished a turn or was archived. Each method's `this` is the Runner;

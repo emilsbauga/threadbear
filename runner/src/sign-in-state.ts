@@ -1,5 +1,5 @@
 // Which Claude logins are signed out, and when each one's sign-in ends
-// (docs/protocol.md, Accounts, "Signed out").
+// (docs/protocol/settings.md, Accounts, "Signed out").
 //
 // Claude Code 2.1.325 gives every sign-in a hard lifetime, 28 days. Past it
 // the CLI refuses every turn ("this login reached its time limit and cannot

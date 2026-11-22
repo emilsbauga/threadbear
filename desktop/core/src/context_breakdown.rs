@@ -1,5 +1,5 @@
 // What fills a Claude thread's context, in Claude's own words
-// (`threads.contextUsage`, docs/protocol.md "Context breakdown"), as the
+// (`threads.contextUsage`, docs/protocol/threads.md "Context breakdown"), as the
 // composer's ring's popover shows it (ContextBreakdown.swift, after Ghostex's
 // panel): "32% used", "323k / 1M", a stacked bar, then a row each for what's
 // in the window, the buffer kept for compacting, the free space, and the tool
@@ -17,7 +17,11 @@ use serde_json::Value;
 pub const COUNT_LIMIT: i64 = 1 << 40;
 
 fn count(v: &Value) -> Option<i64> {
-    let n = v.as_i64().or_else(|| v.as_f64().filter(|f| f.fract() == 0. && f.abs() < 9e15).map(|f| f as i64))?;
+    let n = v.as_i64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.fract() == 0. && f.abs() < 9e15)
+            .map(|f| f as i64)
+    })?;
     (0..=COUNT_LIMIT).contains(&n).then_some(n)
 }
 
@@ -52,7 +56,14 @@ impl ContextUsage {
             .as_array()
             .map(|rows| {
                 rows.iter()
-                    .filter_map(|c| Some(Category { id: c["id"].as_str().map(str::to_owned), name: c["name"].as_str()?.to_owned(), tokens: count(&c["tokens"])?, kind: c["kind"].as_str()?.to_owned() }))
+                    .filter_map(|c| {
+                        Some(Category {
+                            id: c["id"].as_str().map(str::to_owned),
+                            name: c["name"].as_str()?.to_owned(),
+                            tokens: count(&c["tokens"])?,
+                            kind: c["kind"].as_str()?.to_owned(),
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -78,7 +89,11 @@ pub struct ContextAnswer {
 
 impl ContextAnswer {
     pub fn decode(v: &Value) -> ContextAnswer {
-        ContextAnswer { usage: ContextUsage::decode(&v["usage"]), live: v["live"].as_bool().unwrap_or(false), note: v["note"].as_str().map(str::to_owned) }
+        ContextAnswer {
+            usage: ContextUsage::decode(&v["usage"]),
+            live: v["live"].as_bool().unwrap_or(false),
+            note: v["note"].as_str().map(str::to_owned),
+        }
     }
 }
 
@@ -152,23 +167,50 @@ fn order(id: &str) -> Option<(usize, Swatch)> {
 
 impl ContextBreakdown {
     pub fn new(usage: &ContextUsage) -> Option<ContextBreakdown> {
-        let counted = usage.categories.iter().filter(|c| c.kind != "deferred").fold(0_i64, |sum, c| sum.saturating_add(c.tokens.max(0)));
-        let window = if usage.max_tokens > 0 { usage.max_tokens } else { counted };
+        let counted = usage
+            .categories
+            .iter()
+            .filter(|c| c.kind != "deferred")
+            .fold(0_i64, |sum, c| sum.saturating_add(c.tokens.max(0)));
+        let window = if usage.max_tokens > 0 {
+            usage.max_tokens
+        } else {
+            counted
+        };
         if window <= 0 {
             return None;
         }
         let rows = |kind: &str| -> Vec<BreakdownRow> {
-            let mut picked: Vec<(usize, &Category)> = usage.categories.iter().enumerate().filter(|(_, c)| c.kind == kind && (c.tokens > 0 || kind == "free")).collect();
-            picked.sort_by_key(|(offset, c)| c.id.as_deref().and_then(order).map_or(100 + offset, |(rank, _)| rank));
+            let mut picked: Vec<(usize, &Category)> = usage
+                .categories
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.kind == kind && (c.tokens > 0 || kind == "free"))
+                .collect();
+            picked.sort_by_key(|(offset, c)| {
+                c.id.as_deref()
+                    .and_then(order)
+                    .map_or(100 + offset, |(rank, _)| rank)
+            });
             picked
                 .into_iter()
                 .map(|(_, c)| {
                     let swatch = match kind {
                         "buffer" => Swatch::Buffer,
                         "free" => Swatch::Free,
-                        _ => c.id.as_deref().and_then(order).map_or(Swatch::Other, |(_, s)| s),
+                        _ => {
+                            c.id.as_deref()
+                                .and_then(order)
+                                .map_or(Swatch::Other, |(_, s)| s)
+                        }
                     };
-                    BreakdownRow { name: c.name.clone(), tokens: c.tokens, swatch, deferred: kind == "deferred", fraction: (kind != "deferred").then(|| c.tokens as f64 / window as f64) }
+                    BreakdownRow {
+                        name: c.name.clone(),
+                        tokens: c.tokens,
+                        swatch,
+                        deferred: kind == "deferred",
+                        fraction: (kind != "deferred").then(|| c.tokens as f64 / window as f64),
+                    }
                 })
                 .collect()
         };
@@ -176,22 +218,37 @@ impl ContextBreakdown {
         all.extend(rows("buffer"));
         all.extend(rows("free"));
         all.extend(rows("deferred"));
-        Some(ContextBreakdown { used: usage.total_tokens, window, at: usage.at, rows: all })
+        Some(ContextBreakdown {
+            used: usage.total_tokens,
+            window,
+            at: usage.at,
+            rows: all,
+        })
     }
 
     /// "32% used".
     pub fn headline(&self) -> String {
-        format!("{}% used", whole_percent(self.used as f64 / self.window as f64))
+        format!(
+            "{}% used",
+            whole_percent(self.used as f64 / self.window as f64)
+        )
     }
 
     /// "323k / 1M".
     pub fn amount(&self) -> String {
-        format!("{} / {}", ContextMeter::tokens(self.used), ContextMeter::tokens(self.window))
+        format!(
+            "{} / {}",
+            ContextMeter::tokens(self.used),
+            ContextMeter::tokens(self.window)
+        )
     }
 
     /// The bar's pieces, left to right: what's used, then the buffer.
     pub fn bar(&self) -> Vec<&BreakdownRow> {
-        self.rows.iter().filter(|r| !r.deferred && r.swatch != Swatch::Free).collect()
+        self.rows
+            .iter()
+            .filter(|r| !r.deferred && r.swatch != Swatch::Free)
+            .collect()
     }
 
     /// The popover as text, for the automation's `composer-menu`:
@@ -199,7 +256,17 @@ impl ContextBreakdown {
     pub fn lines(&self, now_ms: i64) -> Vec<String> {
         let mut lines = vec![format!("{} {}", self.headline(), self.amount())];
         for row in &self.rows {
-            lines.push([Some(row.name.clone()), Some(row.token_text()), row.percent_text()].into_iter().flatten().collect::<Vec<_>>().join(" "));
+            lines.push(
+                [
+                    Some(row.name.clone()),
+                    Some(row.token_text()),
+                    row.percent_text(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" "),
+            );
         }
         if let Some(at) = self.at {
             lines.push(format!("Breakdown from {}", age(at, now_ms)));
@@ -221,7 +288,7 @@ fn whole_percent(fraction: f64) -> i64 {
 pub fn share(fraction: f64) -> String {
     let p = fraction * 100.;
     // Not `p <= 0`: NaN is neither.
-    if !(p > 0.) {
+    if p.partial_cmp(&0.) != Some(std::cmp::Ordering::Greater) {
         return "0%".to_owned();
     }
     if p >= 10. {
@@ -247,7 +314,11 @@ pub fn age(at_ms: i64, now_ms: i64) -> String {
     }
     let hours = minutes / 60;
     if hours < 24 {
-        return if hours == 1 { "1 hour ago".to_owned() } else { format!("{hours} hours ago") };
+        return if hours == 1 {
+            "1 hour ago".to_owned()
+        } else {
+            format!("{hours} hours ago")
+        };
     }
     let days = hours / 24;
     if days == 1 {
@@ -285,14 +356,42 @@ mod tests {
         assert_eq!(breakdown.headline(), "64% used");
         assert_eq!(breakdown.amount(), "642k / 1M");
         let names: Vec<&str> = breakdown.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["Messages", "Memory files", "System prompt", "Something new", "Autocompact buffer", "Free space", "MCP tools (deferred)"], "rows it can't count are left out");
+        assert_eq!(
+            names,
+            [
+                "Messages",
+                "Memory files",
+                "System prompt",
+                "Something new",
+                "Autocompact buffer",
+                "Free space",
+                "MCP tools (deferred)"
+            ],
+            "rows it can't count are left out"
+        );
         assert_eq!(breakdown.rows[3].swatch, Swatch::Other);
         assert!(breakdown.rows[6].deferred && breakdown.rows[6].percent_text().is_none());
-        assert_eq!(breakdown.bar().len(), 5, "the bar has what's used and the buffer");
+        assert_eq!(
+            breakdown.bar().len(),
+            5,
+            "the bar has what's used and the buffer"
+        );
         let at = breakdown.at.unwrap();
-        assert_eq!(breakdown.lines(at + 5_000)[..3], ["64% used 642k / 1M".to_owned(), "Messages 610k 61%".to_owned(), "Memory files 15k 1.5%".to_owned()]);
-        assert_eq!(breakdown.lines(at + 5_000).last().map(String::as_str), Some("Breakdown from just now"));
-        assert!(breakdown.lines(at).contains(&"MCP tools (deferred) 173k".to_owned()));
+        assert_eq!(
+            breakdown.lines(at + 5_000)[..3],
+            [
+                "64% used 642k / 1M".to_owned(),
+                "Messages 610k 61%".to_owned(),
+                "Memory files 15k 1.5%".to_owned()
+            ]
+        );
+        assert_eq!(
+            breakdown.lines(at + 5_000).last().map(String::as_str),
+            Some("Breakdown from just now")
+        );
+        assert!(breakdown
+            .lines(at)
+            .contains(&"MCP tools (deferred) 173k".to_owned()));
     }
 
     #[test]
@@ -311,7 +410,9 @@ mod tests {
 
     #[test]
     fn nothing_to_count_is_no_breakdown() {
-        let empty = ContextUsage::decode(&json!({ "totalTokens": 5, "maxTokens": 0, "categories": [] })).unwrap();
+        let empty =
+            ContextUsage::decode(&json!({ "totalTokens": 5, "maxTokens": 0, "categories": [] }))
+                .unwrap();
         assert_eq!(ContextBreakdown::new(&empty), None);
         assert_eq!(ContextAnswer::decode(&json!({ "live": false })).usage, None);
     }

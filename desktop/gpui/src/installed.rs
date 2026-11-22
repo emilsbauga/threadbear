@@ -27,8 +27,13 @@ pub(crate) fn launch() -> &'static Launch {
         // A debug build, or one with the scripted control in it, is never the
         // installed app, wherever it is.
         let release = !cfg!(debug_assertions) && !cfg!(feature = "automation");
-        let installed = release && !scripted && bundle.as_deref().is_some_and(|b| same(b, &install_dir()));
-        Launch { build, installed, scripted }
+        let installed =
+            release && !scripted && bundle.as_deref().is_some_and(|b| same(b, &install_dir()));
+        Launch {
+            build,
+            installed,
+            scripted,
+        }
     })
 }
 
@@ -54,7 +59,13 @@ pub(crate) fn home_dir() -> PathBuf {
     // Without this the home was `.`, wherever the app was started from.
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
-        .or_else(|| if cfg!(windows) { std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()) } else { None })
+        .or_else(|| {
+            if cfg!(windows) {
+                std::env::var_os("USERPROFILE").filter(|h| !h.is_empty())
+            } else {
+                None
+            }
+        })
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }

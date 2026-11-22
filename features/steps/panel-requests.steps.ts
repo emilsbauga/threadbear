@@ -1,5 +1,5 @@
 // An agent's show_panel (features/panel-requests.feature), through the
-// mock's showPanel and panelState (docs/protocol.md, "Showing panels").
+// mock's showPanel and panelState (docs/protocol/panels.md, "Showing panels").
 import { Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

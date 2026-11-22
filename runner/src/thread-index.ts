@@ -1,4 +1,4 @@
-// The sidebar table (step 6 part 2, docs/step6-plan.md): this runner's
+// The sidebar table (step 6 part 2, docs/archive/step6-plan.md): this runner's
 // threads as small `threadIndex` rows in the backend, and the other
 // runners' rows watched live and handed to the Mac app as
 // `remoteThreads.updated`, so the app lists every runner's threads and only
@@ -38,13 +38,15 @@ export type IndexRow = {
   startedBy?: { kind: string; label: string; icon?: string; threadTitle?: string; why?: string };
   asked?: string;
   recap?: string;
+  // What Mike first asked it (API 96), for another Mac's Feed.
+  request?: string;
   keywords?: string;
   // Its access mode (API 88), so another Mac's composer shows what it
   // really is; left out by an older runner, and that Mac says it can't tell.
   permissionMode?: string;
 };
 
-// What the Mac app gets (docs/protocol.md, "Other runners' threads").
+// What the Mac app gets (docs/protocol/runners.md, "Other runners' threads").
 // `box`: a thread's box on a virtual runner (docs/virtual-runners.md), with
 // its state, which counts as online while it starts or sleeps (decision 6).
 // `waiting`: a message wants it woken, and its virtual runner has its
@@ -107,7 +109,7 @@ export function boxReachable(state: unknown): boolean {
 const WATCH_CHECK_MS = 15_000;
 const UNWATCH_AFTER_MS = 2 * 60_000;
 
-export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withKeywords = true, withMode = true, withBacklog = true, withBacklogged = true, withRecap = true): IndexRow {
+export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withKeywords = true, withMode = true, withBacklog = true, withBacklogged = true, withRecap = true, withRequest = true): IndexRow {
   const row: IndexRow = {
     threadId: t.id,
     title: t.title,
@@ -131,6 +133,8 @@ export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = t
   // costs no writes of its own.
   if (withAsked && t.asked) row.asked = t.asked;
   if (withRecap && t.recap) row.recap = t.recap;
+  // Set once, by his first message, so it costs no writes of its own either.
+  if (withRequest && t.request) row.request = t.request;
   // Changes after a look or once from the keyword sweep, so rarely.
   if (withKeywords && t.keywords) row.keywords = t.keywords;
   // Changes only when Mike picks another (or a plan ends), so rarely.
@@ -169,6 +173,8 @@ export class ThreadIndex {
     takesBacklog?: () => boolean;
     takesBacklogged?: () => boolean;
     takesRecap?: () => boolean;
+    // Whether it knows `request` (API 96).
+    takesRequest?: () => boolean;
     // Whether it knows `keywords` (API 74).
     takesKeywords?: () => boolean;
     // Whether it knows `permissionMode` (API 88).
@@ -427,7 +433,7 @@ export class ThreadIndex {
     );
   }
 
-  // Only the owner key reads other runners' threads (docs/protocol.md,
+  // Only the owner key reads other runners' threads (docs/protocol/keys.md,
   // "Runner keys"): with a runner key the watch is off for good, said
   // once, and this runner's app lists only its own threads. Writing this
   // runner's own rows carries on.
@@ -543,7 +549,7 @@ export class ThreadIndex {
   }
 
   private mark(t: ThreadSummary): void {
-    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesKeywords?.() ?? true, this.deps.takesMode?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true);
+    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesKeywords?.() ?? true, this.deps.takesMode?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true, this.deps.takesRequest?.() ?? true);
     if (this.sent.get(t.id) === writeKey(row)) {
       this.dirty.delete(t.id);
       return;

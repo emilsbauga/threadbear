@@ -30,7 +30,11 @@ pub struct Found {
 /// Which marks to draw, `true` for grammar (green) and `false` for spelling
 /// (red). As NSTextView, the word the caret is in or just after isn't marked
 /// while it's being typed; and nothing inside `skip` (a picture's chip) is.
-pub fn marks(found: &[Found], caret: Option<usize>, skip: &[Range<usize>]) -> Vec<(Range<usize>, bool)> {
+pub fn marks(
+    found: &[Found],
+    caret: Option<usize>,
+    skip: &[Range<usize>],
+) -> Vec<(Range<usize>, bool)> {
     found
         .iter()
         .filter_map(|f| match f.kind {
@@ -52,14 +56,21 @@ pub fn typed_boundary(old: &str, new: &str, caret: usize) -> Option<char> {
     }
     let typed = new[..caret].chars().next_back()?;
     let start = caret - typed.len_utf8();
-    if new.len() - old.len() != typed.len_utf8() || new.get(..start) != old.get(..start) || new.get(caret..) != old.get(start..) {
+    if new.len() - old.len() != typed.len_utf8()
+        || new.get(..start) != old.get(..start)
+        || new.get(caret..) != old.get(start..)
+    {
         return None;
     }
     ends_word(typed).then_some(typed)
 }
 
 fn ends_word(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '.' | ',' | '!' | '?' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '-')
+    c.is_whitespace()
+        || matches!(
+            c,
+            '.' | ',' | '!' | '?' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '-'
+        )
 }
 
 /// One substitution to make: what goes at `range`, and what kind of check
@@ -82,17 +93,28 @@ pub fn substitutions(found: &[Found], caret: usize, typed: char) -> Vec<Substitu
         .filter_map(|f| {
             let with = f.replacement.clone()?;
             let fits = match f.kind {
-                Kind::Correction | Kind::Replacement => f.range.end == before && !matches!(typed, '"' | '\'' | '-'),
+                Kind::Correction | Kind::Replacement => {
+                    f.range.end == before && !matches!(typed, '"' | '\'' | '-')
+                }
                 Kind::Dash => f.range.end == before || f.range.end == caret,
                 Kind::Quote => f.range == (before..caret),
                 Kind::Spelling | Kind::Grammar => false,
             };
-            (fits && f.range.start < f.range.end).then(|| Substitution { range: f.range.clone(), with, kind: f.kind })
+            (fits && f.range.start < f.range.end).then(|| Substitution {
+                range: f.range.clone(),
+                with,
+                kind: f.kind,
+            })
         })
         .collect();
     // A replacement and a correction of the same word: the replacement, as
     // the Mac does it.
-    out.sort_by(|a, b| b.range.start.cmp(&a.range.start).then((b.kind == Kind::Replacement).cmp(&(a.kind == Kind::Replacement))));
+    out.sort_by(|a, b| {
+        b.range
+            .start
+            .cmp(&a.range.start)
+            .then((b.kind == Kind::Replacement).cmp(&(a.kind == Kind::Replacement)))
+    });
     out.dedup_by(|later, earlier| later.range == earlier.range);
     out
 }
@@ -102,7 +124,11 @@ pub fn substitutions(found: &[Found], caret: usize, typed: char) -> Vec<Substitu
 pub fn ranges_after(subs: &[Substitution]) -> Vec<Range<usize>> {
     subs.iter()
         .map(|s| {
-            let shift: isize = subs.iter().filter(|o| o.range.start < s.range.start).map(|o| o.with.len() as isize - o.range.len() as isize).sum();
+            let shift: isize = subs
+                .iter()
+                .filter(|o| o.range.start < s.range.start)
+                .map(|o| o.with.len() as isize - o.range.len() as isize)
+                .sum();
             let start = (s.range.start as isize + shift) as usize;
             start..start + s.with.len()
         })
@@ -116,7 +142,10 @@ pub const OWN_WORDS: &[&str] = &["Threadbear"];
 
 /// Whether `word` is one of `OWN_WORDS`, in any case, possessive too.
 pub fn is_own_word(word: &str) -> bool {
-    let word = word.strip_suffix("'s").or_else(|| word.strip_suffix("’s")).unwrap_or(word);
+    let word = word
+        .strip_suffix("'s")
+        .or_else(|| word.strip_suffix("’s"))
+        .unwrap_or(word);
     OWN_WORDS.iter().any(|w| w.eq_ignore_ascii_case(word))
 }
 
@@ -124,7 +153,10 @@ pub fn is_own_word(word: &str) -> bool {
 pub fn without_own_words(text: &str, found: Vec<Found>) -> Vec<Found> {
     found
         .into_iter()
-        .filter(|f| !(matches!(f.kind, Kind::Spelling | Kind::Correction) && text.get(f.range.clone()).is_some_and(is_own_word)))
+        .filter(|f| {
+            !(matches!(f.kind, Kind::Spelling | Kind::Correction)
+                && text.get(f.range.clone()).is_some_and(is_own_word))
+        })
         .collect()
 }
 
@@ -183,12 +215,22 @@ fn wordy(c: char) -> bool {
 /// The one stretch `old` and `new` differ in: where it starts, and where it
 /// ends in each.
 fn changed(old: &str, new: &str) -> (usize, usize, usize) {
-    let mut prefix = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+    let mut prefix = old
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
     while !old.is_char_boundary(prefix) || !new.is_char_boundary(prefix) {
         prefix -= 1;
     }
     let room = old.len().min(new.len()) - prefix;
-    let mut suffix = old.bytes().rev().zip(new.bytes().rev()).take(room).take_while(|(a, b)| a == b).count();
+    let mut suffix = old
+        .bytes()
+        .rev()
+        .zip(new.bytes().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
     while !old.is_char_boundary(old.len() - suffix) || !new.is_char_boundary(new.len() - suffix) {
         suffix -= 1;
     }
@@ -206,17 +248,38 @@ impl Autocorrect {
     pub fn keep(&self, text: &str, found: Vec<Found>) -> Vec<Found> {
         without_own_words(text, found)
             .into_iter()
-            .filter(|f| !(f.kind == Kind::Correction && text.get(f.range.clone()).is_some_and(|w| self.declined(w))))
+            .filter(|f| {
+                !(f.kind == Kind::Correction
+                    && text.get(f.range.clone()).is_some_and(|w| self.declined(w)))
+            })
             .collect()
     }
 
     /// A correction was just made: `original` became `corrected`, now at
     /// `word` in `text` (the box), with what was typed after it up to
     /// `after`. The one before it is settled, and its outcome returned.
-    pub fn made(&mut self, text: &str, word: Range<usize>, after: usize, original: &str, corrected: &str) -> Option<Outcome> {
+    pub fn made(
+        &mut self,
+        text: &str,
+        word: Range<usize>,
+        after: usize,
+        original: &str,
+        corrected: &str,
+    ) -> Option<Outcome> {
         let before = self.settle();
-        if text.get(word.clone()) == Some(corrected) && after <= text.len() && text.is_char_boundary(after) {
-            self.last = Some(Made { text: text.to_owned(), now: corrected.to_owned(), word, after, original: original.to_owned(), corrected: corrected.to_owned(), touched: false });
+        if text.get(word.clone()) == Some(corrected)
+            && after <= text.len()
+            && text.is_char_boundary(after)
+        {
+            self.last = Some(Made {
+                text: text.to_owned(),
+                now: corrected.to_owned(),
+                word,
+                after,
+                original: original.to_owned(),
+                corrected: corrected.to_owned(),
+                touched: false,
+            });
         }
         before
     }
@@ -243,9 +306,13 @@ impl Autocorrect {
         let into_empty = made.word.is_empty() && start == made.word.start;
         if old_end <= made.word.start && !into_empty {
             // Before it: the word moves, unless what's typed joins onto it.
-            made.word = (made.word.start as isize + grew) as usize..(made.word.end as isize + grew) as usize;
+            made.word = (made.word.start as isize + grew) as usize
+                ..(made.word.end as isize + grew) as usize;
             made.after = (made.after as isize + grew) as usize;
-            if new.get(..made.word.start).is_none_or(|before| before.chars().next_back().is_some_and(wordy)) {
+            if new
+                .get(..made.word.start)
+                .is_none_or(|before| before.chars().next_back().is_some_and(wordy))
+            {
                 return self.settle();
             }
             return None;
@@ -253,7 +320,11 @@ impl Autocorrect {
         if start >= made.after && start > made.word.end {
             // After it: a new word started means it's been let be. (Right at
             // its end, with the space gone, is typing onto the word.)
-            return if new[start..new_end].chars().any(char::is_alphanumeric) { self.settle() } else { None };
+            return if new[start..new_end].chars().any(char::is_alphanumeric) {
+                self.settle()
+            } else {
+                None
+            };
         }
         if start < made.word.start || old_end > made.after {
             // Something bigger than the word (a select-all and delete): it's
@@ -261,7 +332,10 @@ impl Autocorrect {
             return self.settle();
         }
         // In the word, or the space after it: what does it read now?
-        let end = new[made.word.start..].char_indices().find(|(_, c)| !wordy(*c)).map_or(new.len(), |(i, _)| made.word.start + i);
+        let end = new[made.word.start..]
+            .char_indices()
+            .find(|(_, c)| !wordy(*c))
+            .map_or(new.len(), |(i, _)| made.word.start + i);
         made.word.end = end;
         made.now = new[made.word.start..end].to_owned();
         made.after = ((made.after as isize + grew) as usize).max(end);
@@ -269,10 +343,17 @@ impl Autocorrect {
         // The original back, or in another case so long as it isn't the
         // correction itself ("i" made "I" is still corrected with only the
         // space after it deleted).
-        if made.now == made.original || (made.now != made.corrected && made.now.to_lowercase() == made.original.to_lowercase()) {
+        if made.now == made.original
+            || (made.now != made.corrected
+                && made.now.to_lowercase() == made.original.to_lowercase())
+        {
             let made = self.last.take()?;
             self.declined.insert(made.original.to_lowercase());
-            return Some(Outcome { response: Response::Reverted, word: made.original, correction: made.corrected });
+            return Some(Outcome {
+                response: Response::Reverted,
+                word: made.original,
+                correction: made.corrected,
+            });
         }
         None
     }
@@ -280,8 +361,16 @@ impl Autocorrect {
     /// The last correction is done with: kept, or changed to something else.
     fn settle(&mut self) -> Option<Outcome> {
         let made = self.last.take()?;
-        let response = if made.touched && made.now != made.corrected { Response::Edited } else { Response::Accepted };
-        Some(Outcome { response, word: made.original, correction: made.corrected })
+        let response = if made.touched && made.now != made.corrected {
+            Response::Edited
+        } else {
+            Response::Accepted
+        };
+        Some(Outcome {
+            response,
+            word: made.original,
+            correction: made.corrected,
+        })
     }
 }
 
@@ -289,10 +378,24 @@ impl Autocorrect {
 /// is edited between checks: one changed stretch is found (what's the same
 /// at the start and the end), marks after it shift by what it grew or shrank,
 /// and a mark it touches goes until the next check.
-pub fn shift_marks(marks: &[(Range<usize>, bool)], old: &str, new: &str) -> Vec<(Range<usize>, bool)> {
-    let prefix = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+pub fn shift_marks(
+    marks: &[(Range<usize>, bool)],
+    old: &str,
+    new: &str,
+) -> Vec<(Range<usize>, bool)> {
+    let prefix = old
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
     let room = old.len().min(new.len()) - prefix;
-    let suffix = old.bytes().rev().zip(new.bytes().rev()).take(room).take_while(|(a, b)| a == b).count();
+    let suffix = old
+        .bytes()
+        .rev()
+        .zip(new.bytes().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
     let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
     let wordy = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '\'' || c == '’');
     marks
@@ -301,14 +404,19 @@ pub fn shift_marks(marks: &[(Range<usize>, bool)], old: &str, new: &str) -> Vec<
             if r.end <= prefix {
                 Some((r.clone(), *grammar))
             } else if r.start >= old_end {
-                Some(((r.start - old_end + new_end)..(r.end - old_end + new_end), *grammar))
+                Some((
+                    (r.start - old_end + new_end)..(r.end - old_end + new_end),
+                    *grammar,
+                ))
             } else {
                 None
             }
         })
         .filter(|(r, _)| new.is_char_boundary(r.start) && new.is_char_boundary(r.end))
         // A word typed onto at either end is a different word now.
-        .filter(|(r, _)| !wordy(new[r.end..].chars().next()) && !wordy(new[..r.start].chars().next_back()))
+        .filter(|(r, _)| {
+            !wordy(new[r.end..].chars().next()) && !wordy(new[..r.start].chars().next_back())
+        })
         .collect()
 }
 
@@ -326,7 +434,10 @@ pub fn byte_of_utf16(text: &str, utf16: usize) -> usize {
 
 /// UTF-16 offset of a byte offset in `text`.
 pub fn utf16_of_byte(text: &str, byte: usize) -> usize {
-    text[..byte.min(text.len())].chars().map(char::len_utf16).sum()
+    text[..byte.min(text.len())]
+        .chars()
+        .map(char::len_utf16)
+        .sum()
 }
 
 /// Edit > Transformations.
@@ -372,8 +483,16 @@ impl Transform {
 pub fn word_at(text: &str, at: usize) -> Range<usize> {
     let at = at.min(text.len());
     let in_word = |c: char| c.is_alphanumeric() || c == '\'' || c == '’' || c == '_';
-    let start = text[..at].char_indices().rev().take_while(|(_, c)| in_word(*c)).last().map_or(at, |(i, _)| i);
-    let end = text[at..].char_indices().find(|(_, c)| !in_word(*c)).map_or(text.len(), |(i, _)| at + i);
+    let start = text[..at]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| in_word(*c))
+        .last()
+        .map_or(at, |(i, _)| i);
+    let end = text[at..]
+        .char_indices()
+        .find(|(_, c)| !in_word(*c))
+        .map_or(text.len(), |(i, _)| at + i);
     start..end
 }
 
@@ -382,16 +501,26 @@ mod tests {
     use super::*;
 
     fn found(range: Range<usize>, kind: Kind, with: Option<&str>) -> Found {
-        Found { range, kind, replacement: with.map(str::to_owned) }
+        Found {
+            range,
+            kind,
+            replacement: with.map(str::to_owned),
+        }
     }
 
     fn subs(found: &[Found], caret: usize, typed: char) -> Vec<(Range<usize>, String)> {
-        substitutions(found, caret, typed).into_iter().map(|s| (s.range, s.with)).collect()
+        substitutions(found, caret, typed)
+            .into_iter()
+            .map(|s| (s.range, s.with))
+            .collect()
     }
 
     #[test]
     fn the_word_being_typed_isnt_marked() {
-        let f = [found(0..3, Kind::Spelling, None), found(4..8, Kind::Spelling, None)];
+        let f = [
+            found(0..3, Kind::Spelling, None),
+            found(4..8, Kind::Spelling, None),
+        ];
         // "teh wrod" with the caret at the end: only "teh".
         assert_eq!(marks(&f, Some(8), &[]), vec![(0..3, false)]);
         // Once the caret leaves, both.
@@ -400,8 +529,16 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "a selection of one range, as the editor passes them"
+    )]
     fn chips_and_substitutions_arent_marked() {
-        let f = [found(0..3, Kind::Spelling, None), found(5..9, Kind::Grammar, None), found(10..12, Kind::Correction, Some("x"))];
+        let f = [
+            found(0..3, Kind::Spelling, None),
+            found(5..9, Kind::Grammar, None),
+            found(10..12, Kind::Correction, Some("x")),
+        ];
         assert_eq!(marks(&f, None, &[1..2]), vec![(5..9, true)]);
     }
 
@@ -434,7 +571,10 @@ mod tests {
 
     #[test]
     fn a_replacement_wins_over_a_correction() {
-        let f = [found(0..3, Kind::Replacement, Some("on my way")), found(0..3, Kind::Correction, Some("omg"))];
+        let f = [
+            found(0..3, Kind::Replacement, Some("on my way")),
+            found(0..3, Kind::Correction, Some("omg")),
+        ];
         assert_eq!(substitutions(&f, 4, ' ').len(), 1);
         assert_eq!(substitutions(&f, 4, ' ')[0].kind, Kind::Replacement);
         // Whichever order the checker gave them in.
@@ -444,7 +584,10 @@ mod tests {
 
     #[test]
     fn quotes_and_dashes() {
-        let f = [found(3..4, Kind::Quote, Some("“")), found(0..2, Kind::Dash, Some("—"))];
+        let f = [
+            found(3..4, Kind::Quote, Some("“")),
+            found(0..2, Kind::Dash, Some("—")),
+        ];
         assert_eq!(subs(&f, 4, '"'), vec![(3..4, "“".to_owned())]);
         assert_eq!(subs(&f, 3, ' '), vec![(0..2, "—".to_owned())]);
     }
@@ -453,12 +596,24 @@ mod tests {
     fn marks_move_with_an_edit() {
         let marks = [(0..3, false), (8..12, false)];
         // "teh and wrod" with "big " typed at the start.
-        assert_eq!(shift_marks(&marks, "teh and wrod", "big teh and wrod"), vec![(4..7, false), (12..16, false)]);
+        assert_eq!(
+            shift_marks(&marks, "teh and wrod", "big teh and wrod"),
+            vec![(4..7, false), (12..16, false)]
+        );
         // Typing inside a marked word drops its mark until the next check.
-        assert_eq!(shift_marks(&marks, "teh and wrod", "tehh and wrod"), vec![(9..13, false)]);
+        assert_eq!(
+            shift_marks(&marks, "teh and wrod", "tehh and wrod"),
+            vec![(9..13, false)]
+        );
         // Deleting before one moves it back.
-        assert_eq!(shift_marks(&marks, "teh and wrod", "teh  wrod"), vec![(0..3, false), (5..9, false)]);
-        assert_eq!(shift_marks(&marks, "teh and wrod", "teh and wrod"), marks.to_vec());
+        assert_eq!(
+            shift_marks(&marks, "teh and wrod", "teh  wrod"),
+            vec![(0..3, false), (5..9, false)]
+        );
+        assert_eq!(
+            shift_marks(&marks, "teh and wrod", "teh and wrod"),
+            marks.to_vec()
+        );
     }
 
     #[test]
@@ -472,7 +627,10 @@ mod tests {
 
     #[test]
     fn transformations() {
-        assert_eq!(Transform::Capitalize.apply("hello wORLD it's"), "Hello World It's");
+        assert_eq!(
+            Transform::Capitalize.apply("hello wORLD it's"),
+            "Hello World It's"
+        );
         assert_eq!(Transform::Upper.apply("straße"), "STRASSE");
         assert_eq!(Transform::Lower.apply("ABC"), "abc");
     }
@@ -492,7 +650,11 @@ mod tests {
     }
 
     fn reverted(word: &str, correction: &str) -> Outcome {
-        Outcome { response: Response::Reverted, word: word.into(), correction: correction.into() }
+        Outcome {
+            response: Response::Reverted,
+            word: word.into(),
+            correction: correction.into(),
+        }
     }
 
     #[test]
@@ -504,9 +666,17 @@ mod tests {
             found(21..33, Kind::Spelling, None),
             found(0..1, Kind::Grammar, None),
         ];
-        assert_eq!(without_own_words(text, f.clone()), vec![found(0..1, Kind::Grammar, None)]);
-        assert_eq!(Autocorrect::default().keep(text, f), vec![found(0..1, Kind::Grammar, None)]);
-        assert!(is_own_word("THREADBEAR") && is_own_word("threadbear’s") && !is_own_word("threadbare"));
+        assert_eq!(
+            without_own_words(text, f.clone()),
+            vec![found(0..1, Kind::Grammar, None)]
+        );
+        assert_eq!(
+            Autocorrect::default().keep(text, f),
+            vec![found(0..1, Kind::Grammar, None)]
+        );
+        assert!(
+            is_own_word("THREADBEAR") && is_own_word("threadbear’s") && !is_own_word("threadbare")
+        );
     }
 
     #[test]
@@ -515,14 +685,26 @@ mod tests {
         // "teh " typed, corrected to "the ".
         assert_eq!(ac.made("the ", 0..3, 4, "teh", "the"), None);
         // Undo puts the word back, with or without the space.
-        assert_eq!(type_through(&mut ac, &["teh "]), vec![reverted("teh", "the")]);
+        assert_eq!(
+            type_through(&mut ac, &["teh "]),
+            vec![reverted("teh", "the")]
+        );
         assert!(ac.declined("teh") && ac.declined("TEH"));
         let mut ac = Autocorrect::default();
         ac.made("the ", 0..3, 4, "teh", "the");
-        assert_eq!(type_through(&mut ac, &["teh"]), vec![reverted("teh", "the")]);
+        assert_eq!(
+            type_through(&mut ac, &["teh"]),
+            vec![reverted("teh", "the")]
+        );
         // And it's not corrected again, though it's still marked.
-        let f = vec![found(3..6, Kind::Correction, Some("the")), found(3..6, Kind::Spelling, None)];
-        assert_eq!(ac.keep("ok teh ", f), vec![found(3..6, Kind::Spelling, None)]);
+        let f = vec![
+            found(3..6, Kind::Correction, Some("the")),
+            found(3..6, Kind::Spelling, None),
+        ];
+        assert_eq!(
+            ac.keep("ok teh ", f),
+            vec![found(3..6, Kind::Spelling, None)]
+        );
     }
 
     #[test]
@@ -531,7 +713,10 @@ mod tests {
         let mut ac = Autocorrect::default();
         ac.made("hi brains ", 3..9, 10, "brainz", "brains");
         let steps = ["hi brains", "hi brain", "hi brai", "hi brain", "hi brainz"];
-        assert_eq!(type_through(&mut ac, &steps), vec![reverted("brainz", "brains")]);
+        assert_eq!(
+            type_through(&mut ac, &steps),
+            vec![reverted("brainz", "brains")]
+        );
         assert!(ac.declined("brainz"));
         // Deleting it all and typing it again counts too.
         let mut ac = Autocorrect::default();
@@ -539,11 +724,17 @@ mod tests {
         let mut steps: Vec<String> = (0..7).rev().map(|n| "brains "[..n].to_owned()).collect();
         steps.extend((1..=6).map(|n| "brainz"[..n].to_owned()));
         let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
-        assert_eq!(type_through(&mut ac, &steps), vec![reverted("brainz", "brains")]);
+        assert_eq!(
+            type_through(&mut ac, &steps),
+            vec![reverted("brainz", "brains")]
+        );
         // Or typed back in one go (a paste, dictation).
         let mut ac = Autocorrect::default();
         ac.made("hi brains ", 3..9, 10, "brainz", "brains");
-        assert_eq!(type_through(&mut ac, &["hi brains", "hi ", "hi brainz"]), vec![reverted("brainz", "brains")]);
+        assert_eq!(
+            type_through(&mut ac, &["hi brains", "hi ", "hi brainz"]),
+            vec![reverted("brainz", "brains")]
+        );
     }
 
     #[test]
@@ -551,7 +742,14 @@ mod tests {
         let mut ac = Autocorrect::default();
         ac.made("the ", 0..3, 4, "teh", "the");
         let said = type_through(&mut ac, &["the c", "the ca"]);
-        assert_eq!(said, vec![Outcome { response: Response::Accepted, word: "teh".into(), correction: "the".into() }]);
+        assert_eq!(
+            said,
+            vec![Outcome {
+                response: Response::Accepted,
+                word: "teh".into(),
+                correction: "the".into()
+            }]
+        );
         assert!(!ac.declined("teh"));
         // Nothing more to say about it.
         assert_eq!(type_through(&mut ac, &["the c", "the "]), vec![]);
@@ -561,10 +759,20 @@ mod tests {
     fn changed_to_something_else_is_edited() {
         let mut ac = Autocorrect::default();
         ac.made("the ", 0..3, 4, "teh", "the");
-        assert_eq!(type_through(&mut ac, &["the", "th", "tho", "thou", "thou "]), vec![]);
+        assert_eq!(
+            type_through(&mut ac, &["the", "th", "tho", "thou", "thou "]),
+            vec![]
+        );
         // The next correction settles it.
         let said = ac.made("thou has ", 5..8, 9, "hsa", "has");
-        assert_eq!(said, Some(Outcome { response: Response::Edited, word: "teh".into(), correction: "the".into() }));
+        assert_eq!(
+            said,
+            Some(Outcome {
+                response: Response::Edited,
+                word: "teh".into(),
+                correction: "the".into()
+            })
+        );
         assert!(!ac.declined("teh"));
     }
 
@@ -573,7 +781,10 @@ mod tests {
         let mut ac = Autocorrect::default();
         ac.made("hi the ", 3..6, 7, "teh", "the");
         // A word typed before it, then Undo of the correction.
-        assert_eq!(type_through(&mut ac, &["hi, the ", "hi, teh "]), vec![reverted("teh", "the")]);
+        assert_eq!(
+            type_through(&mut ac, &["hi, the ", "hi, teh "]),
+            vec![reverted("teh", "the")]
+        );
         // Typed onto its front, it's a different word.
         let mut ac = Autocorrect::default();
         ac.made("hi the ", 3..6, 7, "teh", "the");
@@ -594,7 +805,10 @@ mod tests {
         // Typed over with something new, a later word isn't a take-back.
         let mut ac = Autocorrect::default();
         ac.made("the ", 0..3, 4, "teh", "the");
-        assert_eq!(type_through(&mut ac, &["s", "so", "so ", "so t", "so te", "so teh"]).len(), 1);
+        assert_eq!(
+            type_through(&mut ac, &["s", "so", "so ", "so t", "so te", "so teh"]).len(),
+            1
+        );
         assert!(!ac.declined("teh"));
     }
 
@@ -608,14 +822,24 @@ mod tests {
         // Retyped in another case than it was first typed still counts.
         let mut ac = Autocorrect::default();
         ac.made("threadbare ", 0..10, 11, "threadbear", "threadbare");
-        assert_eq!(type_through(&mut ac, &["threadbare", "threadbar", "threadba", "threadbEar"]).len(), 1);
+        assert_eq!(
+            type_through(
+                &mut ac,
+                &["threadbare", "threadbar", "threadba", "threadbEar"]
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
     fn option_backspace_on_a_lone_word_then_typing_it_back() {
         let mut ac = Autocorrect::default();
         ac.made("the ", 0..3, 4, "teh", "the");
-        assert_eq!(type_through(&mut ac, &["the", "", "teh"]), vec![reverted("teh", "the")]);
+        assert_eq!(
+            type_through(&mut ac, &["the", "", "teh"]),
+            vec![reverted("teh", "the")]
+        );
     }
 
     #[test]
@@ -624,7 +848,10 @@ mod tests {
         // in its place (three bytes for one), then Undo of the correction.
         let mut ac = Autocorrect::default();
         ac.made("the ", 0..3, 4, "teh", "the");
-        assert_eq!(type_through(&mut ac, &["\"the ", "“the ", "“teh "]), vec![reverted("teh", "the")]);
+        assert_eq!(
+            type_through(&mut ac, &["\"the ", "“the ", "“teh "]),
+            vec![reverted("teh", "the")]
+        );
         // Nothing it's handed panics, whatever the box became.
         for text in ["", "x", "é", "😀😀😀😀", "“", "hi the", "\u{fffc}the "] {
             let mut ac = Autocorrect::default();
@@ -643,8 +870,16 @@ mod tests {
         // "a--b teh " with a dash and a correction: the correction moves on a
         // byte, as the dash is three bytes in place of two.
         let s = vec![
-            Substitution { range: 5..8, with: "the".into(), kind: Kind::Correction },
-            Substitution { range: 1..3, with: "—".into(), kind: Kind::Dash },
+            Substitution {
+                range: 5..8,
+                with: "the".into(),
+                kind: Kind::Correction,
+            },
+            Substitution {
+                range: 1..3,
+                with: "—".into(),
+                kind: Kind::Dash,
+            },
         ];
         assert_eq!(ranges_after(&s), vec![6..9, 1..4]);
     }
@@ -653,6 +888,9 @@ mod tests {
     fn multibyte_edits() {
         let mut ac = Autocorrect::default();
         ac.made("hé café ", 4..9, 10, "cafe", "café");
-        assert_eq!(type_through(&mut ac, &["hé café", "hé caf", "hé cafe"]), vec![reverted("cafe", "café")]);
+        assert_eq!(
+            type_through(&mut ac, &["hé café", "hé caf", "hé cafe"]),
+            vec![reverted("cafe", "café")]
+        );
     }
 }

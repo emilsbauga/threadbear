@@ -1,4 +1,4 @@
-// A box's save and restore (src/box-save.ts, docs/protocol.md "Box mode"):
+// A box's save and restore (src/box-save.ts, docs/protocol/boxes.md "Box mode"):
 // the `save` command packs the thread (its folder, its transcript, its git
 // work with what's uncommitted), seals it with the thread's key, uploads it
 // and names it in boxSaved; a new box restores it on a fresh clone and the

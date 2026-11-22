@@ -27,6 +27,9 @@ type AcpToolContent = { type?: string; content?: AcpBlock; path?: string; newTex
 
 type Tool = {
   id: string;
+  // The row's item id: the call's own, or the request's it took over
+  // (askedFor).
+  row: string;
   emitted: boolean;
   done: boolean;
   acpKind?: string;
@@ -41,6 +44,18 @@ type Tool = {
   // tool it calls.
   wrapped?: boolean;
   resolved?: boolean;
+  // Known only from a permission request so far, with the previews it
+  // carried, kept apart from what the call's own updates later say.
+  asked?: boolean;
+  // Said by the agent to be running or over (in_progress, completed,
+  // failed): a frame that only proposes it (Antigravity's pending "Run
+  // create_file?") doesn't count.
+  ran?: boolean;
+  // Whether the request was let go ahead, once it's answered.
+  allowed?: boolean;
+  // The files the request named outright (namedFiles).
+  askedFiles?: string[];
+  askedDiffs?: AcpToolContent[];
 };
 
 function toolKind(acp: string | undefined): ToolKind {
@@ -66,17 +81,27 @@ function toolKind(acp: string | undefined): ToolKind {
 // and from the tool's own arguments, as one could say less than the other.
 // A check takes all of them: more names only makes it stricter.
 const PATH_KEY = /path|file|dest|target|document|^to$|^from$/i;
+const TEXT_KEY = /^(?:target|replacement|code)?content$|^instruction$|^description$/i;
 // The files a patch body names: unified diffs and the `*** Update File:` kind.
-const PATCH_HEADER = /^(?:\*\*\* (?:Add|Update|Delete) File: |\*\*\* Move to: |\+\+\+ |--- |Index: )(.+)$/gm;
+const PATCH_HEADER = /^(?:\*\*\* (?:Add|Update|Delete) File: |\*\*\* Move to: |\+\+\+ |--- |Index: |(?:rename|copy) (?:from|to) |diff --git )(.+)$/gm;
 
 function pathsIn(v: unknown, key: string, out: Set<string>, depth: number): void {
   if (depth > 8) return;
   if (typeof v === 'string') {
-    if (v && PATH_KEY.test(key)) out.add(v);
+    // A key about text (Antigravity's TargetContent, ReplacementContent,
+    // Instruction) holds words, not a file, whatever else it's called.
+    if (v && PATH_KEY.test(key) && !TEXT_KEY.test(key)) out.add(v);
     if (v.includes('\n')) {
       for (const m of v.matchAll(PATCH_HEADER)) {
-        const p = m[1].trim().replace(/^[ab]\//, '').split('\t')[0];
-        if (p && p !== '/dev/null') out.add(p);
+        // A git header names two (`diff --git a/x b/y`), and git quotes a
+        // name with odd characters in it: each one counts, unquoted
+        // (Gemini's tenth review, 20 Nov 2026).
+        const line = m[1].trim();
+        const names = m[0].startsWith('diff --git ') ? line.split(/ (?=["]?b\/)/) : [line];
+        for (const name of names) {
+          const p = name.trim().replace(/^"(.*)"$/, '$1').replace(/^[ab]\//, '').split('\t')[0].replace(/^"(.*)"$/, '$1');
+          if (p && p !== '/dev/null') out.add(p);
+        }
       }
     }
   } else if (Array.isArray(v)) {
@@ -84,6 +109,18 @@ function pathsIn(v: unknown, key: string, out: Set<string>, depth: number): void
   } else if (isPlainObject(v)) {
     for (const [k, x] of Object.entries(v)) pathsIn(x, k, out, depth + 1);
   }
+}
+
+// The files a call names outright: its locations and diffs, or failing
+// those, every path its arguments name. Not what requestPaths finds in a
+// file's new text (a `--- ` line in a Markdown file), which would keep a
+// call from being matched with its request (askedFor; Gemini's review, 20
+// Nov 2026).
+function namedFiles(call: AcpToolCall): string[] {
+  const out = new Set<string>();
+  for (const l of Array.isArray(call.locations) ? call.locations : []) if (typeof l?.path === 'string' && l.path) out.add(l.path);
+  for (const c of Array.isArray(call.content) ? call.content : []) if (c?.type === 'diff' && typeof c.path === 'string' && c.path) out.add(c.path);
+  return out.size ? [...out] : requestPaths(call);
 }
 
 export function requestPaths(call: AcpToolCall): string[] {
@@ -100,8 +137,39 @@ export function requestPaths(call: AcpToolCall): string[] {
 // of its tools as `variant` ("Write"), which names no place.
 const PLAIN_EDIT_KEYS = new Set(['filepath', 'file_path', 'path', 'content', 'oldstring', 'newstring', 'old_string', 'new_string', 'diff', 'replaceall', 'replace_all', 'description', 'variant']);
 
+// Whether a patch among the arguments has a file header that can't be read
+// for certain: a quoted or escaped name, a name with spaces in it, a tab
+// right after the marker, or a `diff --git` line without a/ and b/. Such a
+// patch could name a file the paths above don't (Gemini's eleventh review,
+// 20 Nov 2026), so it's an edit nobody has checked.
+const HEADER_LINE = /^(\*\*\* (?:Add|Update|Delete) File:|\*\*\* Move to:|\+\+\+|---|Index:|(?:rename|copy) (?:from|to)|diff --git)([ \t])(.*)$/gm;
+export function hasOddPatchHeader(v: unknown, depth = 0): boolean {
+  if (depth > 8) return true;
+  if (typeof v === 'string') {
+    if (!v.includes('\n')) return false;
+    for (const m of v.matchAll(HEADER_LINE)) {
+      const [, marker, sep, rest] = m;
+      if (marker === 'diff --git') {
+        if (!/^a\/\S+ b\/\S+$/.test(rest)) return true;
+        continue;
+      }
+      // A unified diff's name may be followed by a tab and a timestamp.
+      const name = rest.split('\t')[0];
+      if (sep !== ' ' || /[\s"\\]/.test(name)) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(v)) return v.some((x) => hasOddPatchHeader(x, depth + 1));
+  if (v && typeof v === 'object') return Object.values(v).some((x) => hasOddPatchHeader(x, depth + 1));
+  return false;
+}
+
+// Grok's tool names, as `variant`, that only write the files they name.
+const EDIT_VARIANTS = new Set(['Write', 'Edit', 'MultiEdit', 'StrReplace']);
+
 export function isPlainEdit(input: Record<string, unknown>): boolean {
-  return Object.entries(input).every(([k, v]) => PLAIN_EDIT_KEYS.has(k.toLowerCase()) && (typeof v === 'string' || typeof v === 'boolean'));
+  if (hasOddPatchHeader(input)) return false;
+  return Object.entries(input).every(([k, v]) => PLAIN_EDIT_KEYS.has(k.toLowerCase()) && (typeof v === 'string' || typeof v === 'boolean') && (k.toLowerCase() !== 'variant' || EDIT_VARIANTS.has(String(v))));
 }
 
 // Kinds whose paths say what a call will change.
@@ -147,8 +215,11 @@ export class AcpNormalizer {
   private lastAssistant = '';
   costUsd?: number;
 
-  constructor(ctx: NormalizerContext) {
+  private movesAskedCalls: boolean;
+
+  constructor(ctx: NormalizerContext, o: { movesAskedCalls?: boolean } = {}) {
     this.ctx = ctx;
+    this.movesAskedCalls = o.movesAskedCalls === true;
   }
 
   // The last reply's words, for a Plan first thread's plan card.
@@ -229,7 +300,7 @@ export class AcpNormalizer {
   private tool(id: string): Tool {
     let t = this.tools.get(id);
     if (!t) {
-      t = { id, emitted: false, done: false, input: {}, paths: [], output: [], diffed: new Set() };
+      t = { id, row: id, emitted: false, done: false, input: {}, paths: [], output: [], diffed: new Set() };
       this.tools.set(id, t);
       if (this.tools.size > 500) this.tools.delete(this.tools.keys().next().value!);
     }
@@ -254,21 +325,83 @@ export class AcpNormalizer {
     if (u.rawOutput !== undefined) t.rawOutput = u.rawOutput;
   }
 
-  // A permission request carries the call as the agent sees it then: a row
-  // for it comes before the card, which names the row.
-  noteCall(call: AcpToolCall): { paths: string[]; kind?: string; input: Record<string, unknown>; title?: string; events: AdapterOutput[] } {
+  // A permission request carries the call as the agent sees it then. Its
+  // row comes out only when a card is put up (showCall), as the card names
+  // it, or when the call's own updates say it runs: one allowed without a
+  // card may be run under another id (Antigravity's create_file, 20 Nov
+  // 2026), and a row for the request would be left open, then failed.
+  noteCall(call: AcpToolCall): { id: string; row: string; paths: string[]; kind?: string; input: Record<string, unknown>; title?: string } {
     const id = typeof call.toolCallId === 'string' && call.toolCallId ? call.toolCallId : crypto.randomUUID();
     const t = this.tool(id);
+    t.asked = true;
     this.merge(t, call);
-    const events: AdapterOutput[] = [];
-    this.emitCall(t, events);
-    this.emitDiffs(t, events);
-    return { paths: [...t.paths], kind: t.acpKind, input: t.input, title: t.title, events };
+    const diffs = (Array.isArray(call.content) ? call.content : []).filter((c) => c?.type === 'diff');
+    if (diffs.length) t.askedDiffs = diffs;
+    t.askedFiles = namedFiles(call);
+    return { id, row: t.row, paths: [...t.paths], kind: t.acpKind, input: t.input, title: t.title };
+  }
+
+  // How a request was answered: only one let go ahead can be the call an
+  // agent then runs under another id.
+  answered(id: string, allowed: boolean): void {
+    const t = this.tools.get(id);
+    if (t) t.allowed = allowed;
+  }
+
+  // The row for a request that's getting a card, with its preview.
+  showCall(id: string): AdapterOutput[] {
+    const t = this.tools.get(id);
+    if (!t) return [];
+    const out: AdapterOutput[] = [];
+    this.emitCall(t, out);
+    this.emitDiffs(t, out);
+    return out;
+  }
+
+  // A call the agent opens under a new id that is plainly the one an earlier
+  // request asked about, when nothing has been said under that request's id
+  // since: the same kind of file change, naming the same files, each by its
+  // whole path, and the request was let go ahead. Antigravity asks for
+  // create_file under one id and runs it as edit_file under its step's id,
+  // with no link between the two. The new call then shows on the request's
+  // row, so a card's row is the one that runs; what each call has said stays
+  // its own, as the permission checks read it (Codex's review, 20 Nov 2026).
+  private askedFor(u: AcpToolCall, kind = u.kind): Tool | undefined {
+    // Only for an agent known to do it, and only once the new call says it
+    // runs: a call that's only proposed may be another one entirely, still to
+    // be asked about (Codex's third review, 20 Nov 2026).
+    if (!this.movesAskedCalls || (u.status !== 'in_progress' && u.status !== 'completed')) return undefined;
+    if (!writesFiles(kind)) return undefined;
+    const paths = namedFiles(u);
+    if (!paths.length || !paths.every((p) => path.isAbsolute(p))) return undefined;
+    const same = (a: string[], b: string[]) => {
+      const x = new Set(a.map((p) => path.resolve(p)));
+      const y = new Set(b.map((p) => path.resolve(p)));
+      return x.size === y.size && [...x].every((p) => y.has(p));
+    };
+    // The oldest first: an agent runs what it asked for in turn.
+    const found = [...this.tools.values()].find((t) => t.asked && t.allowed === true && !t.ran && !t.done && t.acpKind === kind && (t.askedFiles ?? []).every((p) => path.isAbsolute(p)) && same(t.askedFiles ?? [], paths));
+    return found;
   }
 
   private toolUpdate(u: AcpToolCall, out: AdapterOutput[]): void {
     if (typeof u.toolCallId !== 'string' || !u.toolCallId) return;
+    // Tried again until the call's row is out, as its first frame may name
+    // no file yet (Codex's review, 20 Nov 2026).
+    const had = this.tools.get(u.toolCallId);
+    const asked = !had ? this.askedFor(u) : !had.emitted && had.allowed === undefined && !had.done && had.row === had.id ? this.askedFor(u, typeof u.kind === 'string' ? u.kind : had.acpKind) : undefined;
     const t = this.tool(u.toolCallId);
+    if (asked) {
+      asked.done = true;
+      t.row = asked.row;
+      t.emitted = asked.emitted;
+      t.diffed = asked.diffed;
+      t.askedDiffs = asked.askedDiffs;
+    }
+    // Closed at a turn's end before it was ever shown: a row now would never
+    // get its result.
+    if (t.done && !t.emitted) return;
+    if (u.status === 'in_progress' || u.status === 'completed' || u.status === 'failed') t.ran = true;
     this.merge(t, u);
     // Agents can open a call with nothing filled in yet (OpenCode: title
     // "write", rawInput {}), so the row waits for its input or its start.
@@ -294,14 +427,14 @@ export class AcpNormalizer {
     t.emitted = true;
     const name = canonicalToolName(t.name || t.title || t.acpKind || 'tool');
     const kind = name.startsWith('mcp__') ? 'mcp' : toolKind(t.acpKind);
-    out.push({ kind: 'event', event: { type: 'tool.call', itemId: t.id, name, kind, title: this.title(t), input: truncateInput(t.input) } });
+    out.push({ kind: 'event', event: { type: 'tool.call', itemId: t.row, name, kind, title: this.title(t), input: truncateInput(t.input) } });
   }
 
   private emitDiffs(t: Tool, out: AdapterOutput[]): void {
-    for (const c of t.output) {
+    for (const c of [...t.output, ...(t.askedDiffs ?? [])]) {
       if (c?.type !== 'diff' || typeof c.path !== 'string' || typeof c.newText !== 'string' || t.diffed.has(c.path)) continue;
       t.diffed.add(c.path);
-      out.push({ kind: 'event', event: { type: 'edit.diff', itemId: t.id, path: c.path, hunks: diffLines(typeof c.oldText === 'string' ? c.oldText : '', c.newText) } });
+      out.push({ kind: 'event', event: { type: 'edit.diff', itemId: t.row, path: c.path, hunks: diffLines(typeof c.oldText === 'string' ? c.oldText : '', c.newText) } });
     }
   }
 
@@ -314,7 +447,7 @@ export class AcpNormalizer {
       if (c.content.type === 'text' && typeof c.content.text === 'string') texts.push(c.content.text);
       else if (c.content.type === 'image' && typeof c.content.data === 'string' && typeof c.content.mimeType === 'string') {
         try {
-          images.push(this.ctx.saveImage(c.content.data, c.content.mimeType, t.id));
+          images.push(this.ctx.saveImage(c.content.data, c.content.mimeType, t.row));
         } catch {
           // Not an image this can save: the row still shows its text.
         }
@@ -327,7 +460,7 @@ export class AcpNormalizer {
       // error's). Dropped, end_turn's "Noted" never reached the runner.
       else if (isPlainObject(said)) for (const v of Object.values(said)) if (typeof v === 'string') texts.push(v);
     }
-    out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.id, ok, ...truncateResultText(texts.join('\n'), t.id, this.ctx), images } });
+    out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images } });
   }
 
   // The turn has ended, or the agent has gone: no more updates are coming
@@ -335,9 +468,13 @@ export class AcpNormalizer {
   closeOpen(reason: string): AdapterOutput[] {
     const out = this.flush();
     for (const t of this.tools.values()) {
-      if (t.done || !t.emitted) continue;
+      if (t.done) continue;
       t.done = true;
-      out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.id, ok: false, text: reason, truncated: false, images: [] } });
+      // Never shown (a request allowed without a card that didn't run): no
+      // row, and nothing later can take it over (askedFor).
+      if (!t.emitted) continue;
+      this.emitDiffs(t, out);
+      out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok: false, text: reason, truncated: false, images: [] } });
     }
     return out;
   }

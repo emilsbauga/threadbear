@@ -1,27 +1,30 @@
 // The Usage panel and the activity bar's honey pot, a port of the Swift app's
 // UsagePanel.swift and HoneyPot.swift. At the top of the panel, what's been
 // spent: today's tokens, the last hour's and the week's, and a chart by the
-// hour or the day with each login its own colour. Then a card per pool, each
-// login in it with its 5-hour and weekly room, how fast the week is going and
-// whether it lasts, and a model's own week (Fable's), which a Settings card
-// at the foot can hide. The numbers and words are worked out in
+// hour or the day with each login its own colour. Then a card per pool with a
+// row for each login in it: a ring with its week's room, its logo and name,
+// and one line saying whether it lasts. A click opens a row to its week's
+// chart, its 5-hour window, a model's own week (Fable's, which Settings can
+// hide) and its buttons. The numbers and words are worked out in
 // threadbear_core::usage; this draws them.
 //
 // The limits come with the runner's logins (hello, then `accounts.updated`
 // and `pools.updated`); the tokens and the readings over time from
 // `usage.stats`, asked for when the panel opens and once a minute while it's
 // on screen. Nothing here sends anything to the runner, so the only clicks
-// (the icon, the chart's range, the Settings switch) show at once.
+// (the icon, the chart's range, a login's row, the Settings switch) show at
+// once.
 use crate::app::Threadbear;
 use crate::{call, icons, now_ms, shell, style};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use std::collections::HashSet;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::collections::HashSet;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
+use crate::tips::Tip as _;
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -29,8 +32,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use threadbear_core::chrono::Local;
 use threadbear_core::logins::Account;
-use threadbear_core::usage::{self as rules, Card, Chart, LoginRow, LoginStatus, Meter, Range, Stats, Tile, Tone};
-use crate::tips::Tip as _;
+use threadbear_core::usage::{
+    self as rules, Card, Chart, LoginRow, LoginStatus, Meter, Range, Stats, Tile, Tone,
+};
 
 /// How often the panel asks again while it's open, and how often it checks
 /// it still is.
@@ -54,6 +58,9 @@ pub(crate) struct UsageState {
     /// Logins a Find work for it is on its way for (`find_work`): their
     /// button spins and takes no clicks until the runner answers.
     pub(crate) finding_work: HashSet<String>,
+    /// The logins' rows that are open to their charts and buttons, by pool
+    /// and login (`row_key`). Not remembered: the panel opens shut.
+    pub(crate) open: HashSet<String>,
     /// Asking while the panel's on screen.
     poll: Option<Task<()>>,
     /// The chart's slot under the pointer.
@@ -84,7 +91,10 @@ pub(crate) struct UsagePanelView {
 impl UsagePanelView {
     pub(crate) fn new(app: &Entity<Threadbear>, cx: &mut Context<Self>) -> Self {
         let app_changed = cx.observe(app, |_, _, cx| cx.notify());
-        Self { app: app.downgrade(), _app_changed: app_changed }
+        Self {
+            app: app.downgrade(),
+            _app_changed: app_changed,
+        }
     }
 }
 
@@ -105,6 +115,7 @@ impl UsageState {
             range: range.and_then(Range::from_name).unwrap_or_default(),
             show_model_weeks: show_model_weeks.unwrap_or(true),
             finding_work: HashSet::new(),
+            open: HashSet::new(),
             poll: None,
             hovered: None,
             plot: Rc::new(Cell::new(None)),
@@ -129,7 +140,9 @@ impl Threadbear {
             loop {
                 if asked.is_none_or(|at| at.elapsed() >= REFRESH) {
                     asked = Some(Instant::now());
-                    let Ok(client) = this.read_with(cx, |t, _| t.client.clone()) else { break };
+                    let Ok(client) = this.read_with(cx, |t, _| t.client.clone()) else {
+                        break;
+                    };
                     let res = call(client, "usage.stats", json!({ "days": 8 })).await;
                     let more = this.update(cx, |t, cx| {
                         match res {
@@ -150,7 +163,11 @@ impl Threadbear {
                     }
                 }
                 cx.background_executor().timer(CHECK).await;
-                let showing = this.read_with(cx, |t, cx| t.dock.read(cx).controller.is_showing(shell::USAGE)).unwrap_or(false);
+                let showing = this
+                    .read_with(cx, |t, cx| {
+                        t.dock.read(cx).controller.is_showing(shell::USAGE)
+                    })
+                    .unwrap_or(false);
                 if !showing {
                     break;
                 }
@@ -171,6 +188,15 @@ impl Threadbear {
         cx.notify();
     }
 
+    /// A login's row in the panel, opened or shut at once. Nothing goes to
+    /// the runner.
+    pub(crate) fn toggle_usage_row(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.usage.open.remove(key) {
+            self.usage.open.insert(key.to_owned());
+        }
+        cx.notify();
+    }
+
     /// Settings › General › Usage's switch: the meters go or come back at
     /// once, and it's remembered. Nothing goes to the runner.
     pub(crate) fn set_show_model_weeks(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -187,7 +213,9 @@ impl Threadbear {
     /// how full the pot is for it: this Mac's logins, or the other runner's a
     /// draft is set to start on.
     fn next_thread_room(&self) -> (f64, Option<String>) {
-        let Some(logins) = self.new_thread_logins() else { return (0., None) };
+        let Some(logins) = self.new_thread_logins() else {
+            return (0., None);
+        };
         let id = self.with_draft(logins, |d| d.account_id());
         let level = rules::honey_level(logins.account(&id).and_then(rules::usage).as_ref());
         (level, Some(id))
@@ -198,23 +226,44 @@ impl Threadbear {
     pub(crate) fn honey_pot(&mut self) -> (AnyElement, String) {
         let (level, login) = self.next_thread_room();
         self.usage.pot.see(level, login);
-        let tip = rules::icon_tooltip_with_sign_ins(&rules::groups(&self.logins.pools, &self.logins.accounts), &self.logins.accounts, now_ms(), &Local);
+        let tip = rules::icon_tooltip_with_sign_ins(
+            &rules::groups(&self.logins.pools, &self.logins.accounts),
+            &self.logins.accounts,
+            now_ms(),
+            &Local,
+        );
         (self.usage.pot.element(), tip)
     }
 
     /// The panel in the dock: its own view, drawn again only when it has to
     /// be. A drag's ghost of it is drawn in place, as the Threads panel's is.
-    pub(crate) fn usage_panel(&mut self, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn usage_panel(
+        &mut self,
+        ghost: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if ghost {
             return self.render_usage_panel(true, window, cx);
         }
         let app = cx.entity();
-        let view = self.usage.view.get_or_insert_with(|| cx.new(|cx| UsagePanelView::new(&app, cx))).clone();
-        AnyView::from(view).cached(StyleRefinement::default().size_full()).into_any_element()
+        let view = self
+            .usage
+            .view
+            .get_or_insert_with(|| cx.new(|cx| UsagePanelView::new(&app, cx)))
+            .clone();
+        AnyView::from(view)
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
     }
 
     /// The panel (`UsagePanel`).
-    pub(crate) fn render_usage_panel(&mut self, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_usage_panel(
+        &mut self,
+        ghost: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if !ghost {
             self.keep_usage_fresh(cx);
         }
@@ -224,12 +273,24 @@ impl Threadbear {
         let accounts = &self.logins.accounts;
         let stats = self.usage.stats.as_ref();
         // Until it's been drawn once, about the width it docks at.
-        let width = Some(self.usage.width.get()).filter(|w| *w > 0.).unwrap_or(style::zoomed(320.));
+        let width = Some(self.usage.width.get())
+            .filter(|w| *w > 0.)
+            .unwrap_or(style::zoomed(320.));
         let content = (width - style::zoomed(32.)).max(0.);
         let mut column = v_flex().w_full().p(px(16.)).gap(px(14.));
         if rules::needs_newer_runner(accounts) {
-            let note = if !accounts.is_empty() && accounts.iter().all(|a| a.provider_id() == "pi") { "Pi usage statistics are not available yet." } else { rules::NEWER_RUNNER };
-            column = column.child(div().text_size(px(12.)).line_height(px(15.)).text_color(p.secondary).child(note));
+            let note = if !accounts.is_empty() && accounts.iter().all(|a| a.provider_id() == "pi") {
+                "Pi usage statistics are not available yet."
+            } else {
+                rules::NEWER_RUNNER
+            };
+            column = column.child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(15.))
+                    .text_color(p.secondary)
+                    .child(note),
+            );
         }
         if let Some(stats) = stats.filter(|_| accounts.iter().any(|a| a.provider_id() != "pi")) {
             let tiles = rules::tiles(stats, accounts, now, &zone);
@@ -237,10 +298,32 @@ impl Threadbear {
             let measuring: &Window = window;
             let mut spend = v_flex()
                 .gap(px(12.))
-                .child(h_flex().items_start().gap(px(10.)).children(tiles.iter().enumerate().map(|(i, t)| stat_tile(i, t, content, &p, measuring))))
-                .child(tokens_chart(&chart, accounts, self.usage.hovered, self.usage.plot.clone(), self.usage.range, now, &p, cx));
+                .child(
+                    h_flex().items_start().gap(px(10.)).children(
+                        tiles
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| stat_tile(i, t, content, &p, measuring)),
+                    ),
+                )
+                .child(tokens_chart(
+                    &chart,
+                    accounts,
+                    self.usage.hovered,
+                    self.usage.plot.clone(),
+                    self.usage.range,
+                    now,
+                    &p,
+                    cx,
+                ));
             if !stats.ready {
-                spend = spend.child(div().text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).child(rules::PARTIAL));
+                spend = spend.child(
+                    div()
+                        .text_size(px(11.))
+                        .line_height(px(14.))
+                        .text_color(p.tertiary)
+                        .child(rules::PARTIAL),
+                );
             }
             column = column.child(spend);
         }
@@ -248,20 +331,48 @@ impl Threadbear {
         // Its settings (whether to show a model's own week, and the spare
         // week nudges) are in Settings › General › Usage since 18 Nov: Mike
         // didn't like them dumped at the foot of the panel.
-        let finding = &self.usage.finding_work;
-        for card in rules::cards_named(&self.logins.pools, accounts, stats, self.usage.show_model_weeks, now, &zone, |p| self.logins.provider_title(p)) {
-            column = column.child(pool_card(&card, accounts, finding, content, dark, now, &p, cx));
+        let (open, finding) = (&self.usage.open, &self.usage.finding_work);
+        for card in rules::cards_named(
+            &self.logins.pools,
+            accounts,
+            stats,
+            self.usage.show_model_weeks,
+            now,
+            &zone,
+            |p| self.logins.provider_title(p),
+        ) {
+            column = column.child(pool_card(
+                &card, accounts, open, finding, content, dark, now, &p, cx,
+            ));
         }
         if let Some(footer) = rules::footer(accounts, now, &zone) {
-            column = column.child(div().text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).child(footer));
+            column = column.child(
+                div()
+                    .text_size(px(11.))
+                    .line_height(px(14.))
+                    .text_color(p.tertiary)
+                    .child(footer),
+            );
         }
         let scroll = self.usage.scroll.clone();
         let measured = self.usage.width.clone();
         div()
             .relative()
             .size_full()
-            .child(div().id("usage-panel").size_full().overflow_y_scroll().track_scroll(&scroll).child(column))
-            .child(div().absolute().inset_0().child(div().size_full().vertical_scrollbar(&scroll)))
+            .child(
+                div()
+                    .id("usage-panel")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .child(column),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(div().size_full().vertical_scrollbar(&scroll)),
+            )
             .when(!ghost, |s| {
                 // The width for the next frame; a change draws it again at
                 // once, so the tiles and meters settle in the same moment.
@@ -319,6 +430,7 @@ impl Threadbear {
                 "today": card.today.as_ref().map(|t| &t.0),
                 "logins": card.sections.iter().flat_map(|section| section.logins.iter().map(move |l| json!({
                     "name": l.name,
+                    "open": self.usage.open.contains(&row_key(&card.id, &l.id)),
                     "provider": section.title,
                     "note": l.note,
                     "today": l.today.as_ref().map(|t| &t.0),
@@ -351,8 +463,20 @@ impl Threadbear {
 
 /// `TokensChart`: tokens by the hour today, or by the day for the last week,
 /// stacked by login. Hovering a bar shows what's in it.
-#[allow(clippy::too_many_arguments)]
-fn tokens_chart(chart: &Chart, accounts: &[Account], hovered: Option<i64>, plot: Rc<Cell<Option<Bounds<Pixels>>>>, range: Range, now: i64, p: &Palette, cx: &mut Context<Threadbear>) -> AnyElement {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn tokens_chart(
+    chart: &Chart,
+    accounts: &[Account],
+    hovered: Option<i64>,
+    plot: Rc<Cell<Option<Bounds<Pixels>>>>,
+    range: Range,
+    now: i64,
+    p: &Palette,
+    cx: &mut Context<Threadbear>,
+) -> AnyElement {
     let accounts = accounts.to_vec();
     let dark = cx.theme().is_dark();
     let hovered = hovered.filter(|h| chart.slots.iter().any(|(s, _)| s == h));
@@ -363,34 +487,68 @@ fn tokens_chart(chart: &Chart, accounts: &[Account], hovered: Option<i64>, plot:
         .rounded(px(5.))
         .bg(p.track)
         .test_support()
-        .role(Role::RadioGroup).aria_label("Show today by the hour, or the last 7 days by the day".to_owned())
+        .role(Role::RadioGroup)
+        .aria_label("Show today by the hour, or the last 7 days by the day".to_owned())
         .tip("Show today by the hour, or the last 7 days by the day")
-        .children([(Range::Today, "Today"), (Range::Week, "7 days")].map(|(r, title)| {
-            let on = r == range;
+        .children(
+            [(Range::Today, "Today"), (Range::Week, "7 days")].map(|(r, title)| {
+                let on = r == range;
+                div()
+                    .id(SharedString::from(format!("usage-range-{}", r.name())))
+                    .role(Role::RadioButton)
+                    .aria_toggled(if on { Toggled::True } else { Toggled::False })
+                    .aria_label(title)
+                    .w(px(53.))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.))
+                    .when(on, |s| s.bg(p.selected_segment))
+                    .text_size(px(11.))
+                    .text_color(p.fg)
+                    .cursor_pointer()
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| this.set_usage_range(r, cx)),
+                    )
+                    .child(title)
+            }),
+        );
+    let header = h_flex()
+        .items_center()
+        .child(
             div()
-                .id(SharedString::from(format!("usage-range-{}", r.name())))
-                .role(Role::RadioButton)
-                .aria_toggled(if on { Toggled::True } else { Toggled::False })
-                .aria_label(title)
-                .w(px(53.))
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.))
-                .when(on, |s| s.bg(p.selected_segment))
-                .text_size(px(11.))
+                .text_size(px(12.5))
+                .line_height(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(p.fg)
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.set_usage_range(r, cx)))
-                .child(title)
-        }));
-    let header = h_flex().items_center().child(div().text_size(px(12.5)).line_height(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child(chart.title)).child(div().flex_1()).child(segments);
+                .child(chart.title),
+        )
+        .child(div().flex_1())
+        .child(segments);
     let drawn = chart.clone();
     let names = accounts.clone();
     let (grid, rule, labels) = (p.grid, p.now_rule, p.secondary);
     let paint_plot = plot.clone();
-    let picture = canvas(|_, _, _| (), move |bounds, _, window, cx| paint_tokens(&drawn, &names, hovered, dark, grid, rule, labels, &paint_plot, bounds, window, cx)).size_full();
+    let picture = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            paint_tokens(
+                &drawn,
+                &names,
+                hovered,
+                dark,
+                grid,
+                rule,
+                labels,
+                &paint_plot,
+                bounds,
+                window,
+                cx,
+            )
+        },
+    )
+    .size_full();
     let mut area = div()
         .id("usage-chart")
         .relative()
@@ -400,10 +558,17 @@ fn tokens_chart(chart: &Chart, accounts: &[Account], hovered: Option<i64>, plot:
         .on_mouse_move(cx.listener({
             let chart = chart.clone();
             move |this, e: &MouseMoveEvent, _, cx| {
-                let slot = plot.get().filter(|b| b.contains(&e.position)).and_then(|b| {
-                    let along = f32::from(e.position.x - b.origin.x) / f32::from(b.size.width).max(1.);
-                    chart.slot_at(chart.start + ((chart.end - chart.start) as f64 * f64::from(along)) as i64)
-                });
+                let slot = plot
+                    .get()
+                    .filter(|b| b.contains(&e.position))
+                    .and_then(|b| {
+                        let along =
+                            f32::from(e.position.x - b.origin.x) / f32::from(b.size.width).max(1.);
+                        chart.slot_at(
+                            chart.start
+                                + ((chart.end - chart.start) as f64 * f64::from(along)) as i64,
+                        )
+                    });
                 if this.usage.hovered != slot {
                     this.usage.hovered = slot;
                     cx.notify();
@@ -419,21 +584,47 @@ fn tokens_chart(chart: &Chart, accounts: &[Account], hovered: Option<i64>, plot:
         area = area.child(hover_note(chart, slot, &accounts, dark, now, p, cx));
     }
     if let Some(empty) = chart.empty {
-        area = area.child(div().absolute().inset_0().flex().items_center().justify_center().text_size(px(11.)).text_color(p.tertiary).child(empty));
+        area = area.child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(11.))
+                .text_color(p.tertiary)
+                .child(empty),
+        );
     }
     // The key: only the logins that spent something here, in the logins'
     // own order, so the colours read without a hover. Wrapped a whole
     // name at a time, as the Swift one is.
     let key = (chart.spending.len() > 1).then(|| {
-        div().flex().flex_wrap().gap_x(px(12.)).gap_y(px(4.)).children(chart.spending.iter().map(|id| {
-            h_flex()
-                .flex_none()
-                .gap(px(5.))
-                .child(dot(login_colour(id, &accounts, dark), p))
-                .child(div().text_size(px(11.)).line_height(px(14.)).text_color(p.secondary).whitespace_nowrap().child(rules::login_label(id, &accounts)))
-        }))
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_x(px(12.))
+            .gap_y(px(4.))
+            .children(chart.spending.iter().map(|id| {
+                h_flex()
+                    .flex_none()
+                    .gap(px(5.))
+                    .child(dot(login_colour(id, &accounts, dark), p))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(14.))
+                            .text_color(p.secondary)
+                            .whitespace_nowrap()
+                            .child(rules::login_label(id, &accounts)),
+                    )
+            }))
     });
-    card_box(v_flex().gap(px(8.)).p(px(12.)), p).child(header).child(area).children(key).into_any_element()
+    card_box(v_flex().gap(px(8.)).p(px(12.)), p)
+        .child(header)
+        .child(area)
+        .children(key)
+        .into_any_element()
 }
 
 /// The colours the panel draws in, for this look.
@@ -460,7 +651,9 @@ struct Palette {
 
 fn palette(cx: &App) -> Palette {
     let dark = cx.theme().is_dark();
-    let system = |dark_hex: u32, light_hex: u32| -> Hsla { rgb(if dark { dark_hex } else { light_hex }).into() };
+    let system = |dark_hex: u32, light_hex: u32| -> Hsla {
+        rgb(if dark { dark_hex } else { light_hex }).into()
+    };
     let primary = |alpha: f32| style::primary_opacity(cx, alpha);
     Palette {
         fg: style::label_text(cx),
@@ -501,7 +694,14 @@ fn login_colour(id: &str, accounts: &[Account], dark: bool) -> Hsla {
 /// SwiftUI's strokeBorder in a background is; GPUI's own border pushed every
 /// card's insides 1 in and made each 2 taller.
 fn card_box(el: Div, p: &Palette) -> Div {
-    el.relative().rounded(px(8.)).bg(p.card).child(div().absolute().inset_0().rounded(px(8.)).border_1().border_color(p.card_edge))
+    el.relative().rounded(px(8.)).bg(p.card).child(
+        div()
+            .absolute()
+            .inset_0()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(p.card_edge),
+    )
 }
 
 /// `LoginDot`: a login's colour beside its name.
@@ -515,9 +715,29 @@ fn tabular() -> FontFeatures {
 }
 
 fn text_width(text: &str, size: f32, weight: FontWeight, window: &Window) -> f32 {
-    let font = Font { weight, ..window.text_style().font() };
-    let run = TextRun { len: text.len(), font, color: Hsla::default(), background_color: None, underline: None, strikethrough: None };
-    f32::from(window.text_system().shape_line(SharedString::from(text.to_owned()), gpui_kit::px(size), &[run], None).width)
+    let font = Font {
+        weight,
+        ..window.text_style().font()
+    };
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(
+                SharedString::from(text.to_owned()),
+                gpui_kit::px(size),
+                &[run],
+                None,
+            )
+            .width,
+    )
 }
 
 /// `StatTile`: a number with its name over it and a quiet line under it, or
@@ -527,34 +747,97 @@ fn stat_tile(index: usize, tile: &Tile, content: f32, p: &Palette, window: &Wind
     let inner = ((content - style::zoomed(20.)) / 3. - style::zoomed(20.)).max(0.);
     let size = style::zoomed(22.);
     let natural = text_width(&tile.value, size, FontWeight::SEMIBOLD, window);
-    let value_size = if natural > inner && natural > 0. { (inner / natural).max(0.6) * 22. } else { 22. };
-    let detail = tile.detail.clone().filter(|d| text_width(d, style::zoomed(11.), FontWeight::NORMAL, window) <= inner);
-    crate::highlights::tipped_as(card_box(div(), p).id(("usage-tile", index)).flex_1().min_w_0().p(px(10.)), tile.tip.clone(), gpui_kit::Role::GenericContainer)
-        .child(
-            v_flex()
-                .gap(px(2.))
-                .child(div().text_size(px(11.)).line_height(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.secondary).child(tile.title))
-                .child(div().text_size(px(value_size)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).font_features(tabular()).text_color(p.fg).whitespace_nowrap().child(tile.value.clone()))
-                .child(div().text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).whitespace_nowrap().child(detail.unwrap_or_else(|| " ".to_owned()))),
-        )
-        .into_any_element()
+    let value_size = if natural > inner && natural > 0. {
+        (inner / natural).max(0.6) * 22.
+    } else {
+        22.
+    };
+    let detail = tile
+        .detail
+        .clone()
+        .filter(|d| text_width(d, style::zoomed(11.), FontWeight::NORMAL, window) <= inner);
+    crate::highlights::tipped_as(
+        card_box(div(), p)
+            .id(("usage-tile", index))
+            .flex_1()
+            .min_w_0()
+            .p(px(10.)),
+        tile.tip.clone(),
+        gpui_kit::Role::GenericContainer,
+    )
+    .child(
+        v_flex()
+            .gap(px(2.))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .line_height(px(14.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.secondary)
+                    .child(tile.title),
+            )
+            .child(
+                div()
+                    .text_size(px(value_size))
+                    .line_height(px(26.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_features(tabular())
+                    .text_color(p.fg)
+                    .whitespace_nowrap()
+                    .child(tile.value.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .line_height(px(14.))
+                    .text_color(p.tertiary)
+                    .whitespace_nowrap()
+                    .child(detail.unwrap_or_else(|| " ".to_owned())),
+            ),
+    )
+    .into_any_element()
 }
 
 /// The chart itself: grid lines, the bars stacked by login, the dashed line
 /// at now on today's, and the axes' words. The pointer's slot stays as it is
 /// and the rest fade, as the Swift chart's selection does.
-#[allow(clippy::too_many_arguments)]
-fn paint_tokens(chart: &Chart, accounts: &[Account], hovered: Option<i64>, dark: bool, grid: Hsla, rule: Hsla, labels: Hsla, plot_out: &Cell<Option<Bounds<Pixels>>>, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn paint_tokens(
+    chart: &Chart,
+    accounts: &[Account],
+    hovered: Option<i64>,
+    dark: bool,
+    grid: Hsla,
+    rule: Hsla,
+    labels: Hsla,
+    plot_out: &Cell<Option<Bounds<Pixels>>>,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let z = style::zoomed;
     let label_size = z(11.);
-    let value_words: Vec<String> = chart.value_ticks.iter().map(|v| rules::tokens(*v)).collect();
-    let widest = value_words.iter().map(|w| text_width(w, label_size, FontWeight::NORMAL, window)).fold(0., f32::max);
+    let value_words: Vec<String> = chart
+        .value_ticks
+        .iter()
+        .map(|v| rules::tokens(*v))
+        .collect();
+    let widest = value_words
+        .iter()
+        .map(|w| text_width(w, label_size, FontWeight::NORMAL, window))
+        .fold(0., f32::max);
     // The value axis on the trailing side, its words 5 from the plot; the
     // time axis's words under it, 18 in all.
     let (left, top) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let width = (f32::from(bounds.size.width) - widest - z(5.)).max(1.);
     let height = (f32::from(bounds.size.height) - z(18.)).max(1.);
-    let plot = Bounds::new(point(gpui_kit::px(left), gpui_kit::px(top)), size(gpui_kit::px(width), gpui_kit::px(height)));
+    let plot = Bounds::new(
+        point(gpui_kit::px(left), gpui_kit::px(top)),
+        size(gpui_kit::px(width), gpui_kit::px(height)),
+    );
     plot_out.set(Some(plot));
     if !shown(bounds, window) {
         return;
@@ -566,16 +849,30 @@ fn paint_tokens(chart: &Chart, accounts: &[Account], hovered: Option<i64>, dark:
     // The time axis's lines are dashed, its words after each mark; the value
     // axis's lines solid, its words centred on them (Swift Charts' own look).
     for (at, _) in &chart.ticks {
-        hairline(point(x_of(*at), top), point(x_of(*at), top + height), true, grid, window);
+        hairline(
+            point(x_of(*at), top),
+            point(x_of(*at), top + height),
+            true,
+            grid,
+            window,
+        );
     }
-    hairline(point(left + width, top), point(left + width, top + height), true, grid, window);
+    hairline(
+        point(left + width, top),
+        point(left + width, top + height),
+        true,
+        grid,
+        window,
+    );
     for value in &chart.value_ticks {
         let y = y_of(*value as f32);
         hairline(point(left, y), point(left + width, y), false, grid, window);
     }
     let mut stacked: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     for bar in &chart.bars {
-        let Some(&(slot, length)) = chart.slots.iter().find(|(s, _)| *s == bar.start) else { continue };
+        let Some(&(slot, length)) = chart.slots.iter().find(|(s, _)| *s == bar.start) else {
+            continue;
+        };
         let below = *stacked.get(&slot).unwrap_or(&0);
         stacked.insert(slot, below.saturating_add(bar.tokens));
         let (x0, x1) = (x_of(slot), x_of(slot + length));
@@ -583,14 +880,45 @@ fn paint_tokens(chart: &Chart, accounts: &[Account], hovered: Option<i64>, dark:
         let inset = (x1 - x0) * 0.1;
         let (y_low, y_high) = (y_of(below as f32), y_of((below + bar.tokens) as f32));
         let colour = login_colour(&bar.account_id, accounts, dark);
-        let colour = if hovered.is_none_or(|h| h == slot) { colour } else { colour.opacity(0.45) };
-        window.paint_quad(gpui_kit::fill(Bounds::new(point(gpui_kit::px(x0 + inset), gpui_kit::px(y_high)), size(gpui_kit::px((x1 - x0 - 2. * inset).max(0.5)), gpui_kit::px((y_low - y_high).max(0.)))), colour));
+        let colour = if hovered.is_none_or(|h| h == slot) {
+            colour
+        } else {
+            colour.opacity(0.45)
+        };
+        window.paint_quad(gpui_kit::fill(
+            Bounds::new(
+                point(gpui_kit::px(x0 + inset), gpui_kit::px(y_high)),
+                size(
+                    gpui_kit::px((x1 - x0 - 2. * inset).max(0.5)),
+                    gpui_kit::px((y_low - y_high).max(0.)),
+                ),
+            ),
+            colour,
+        ));
     }
-    if let Some(at) = chart.now.filter(|at| *at >= chart.start && *at <= chart.end) {
-        dashed_line(point(x_of(at), top), point(x_of(at), top + height), 1., rule, window);
+    if let Some(at) = chart
+        .now
+        .filter(|at| *at >= chart.start && *at <= chart.end)
+    {
+        dashed_line(
+            point(x_of(at), top),
+            point(x_of(at), top + height),
+            1.,
+            rule,
+            window,
+        );
     }
     for (value, words) in chart.value_ticks.iter().zip(&value_words) {
-        paint_words(words, label_size, FontWeight::NORMAL, labels, point(left + width + z(5.), y_of(*value as f32)), Align::Left, window, cx);
+        paint_words(
+            words,
+            label_size,
+            FontWeight::NORMAL,
+            labels,
+            point(left + width + z(5.), y_of(*value as f32)),
+            Align::Left,
+            window,
+            cx,
+        );
     }
     // Each word after its mark, under the plot, unless it would run past the
     // plot's end into the value axis or into the word before (a narrow
@@ -603,7 +931,16 @@ fn paint_tokens(chart: &Chart, accounts: &[Account], hovered: Option<i64>, dark:
             continue;
         }
         clear = end + z(4.);
-        paint_words(words, label_size, FontWeight::NORMAL, labels, point(x, top + height + z(10.5)), Align::Left, window, cx);
+        paint_words(
+            words,
+            label_size,
+            FontWeight::NORMAL,
+            labels,
+            point(x, top + height + z(10.5)),
+            Align::Left,
+            window,
+            cx,
+        );
     }
 }
 
@@ -621,17 +958,51 @@ enum Align {
 }
 
 /// One line of words, its middle at `at.y`.
-#[allow(clippy::too_many_arguments)]
-fn paint_words(text: &str, size: f32, weight: FontWeight, colour: Hsla, at: Point<f32>, align: Align, window: &mut Window, cx: &mut App) {
-    let font = Font { weight, ..window.text_style().font() };
-    let run = TextRun { len: text.len(), font, color: colour, background_color: None, underline: None, strikethrough: None };
-    let line = window.text_system().shape_line(SharedString::from(text.to_owned()), gpui_kit::px(size), &[run], None);
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn paint_words(
+    text: &str,
+    size: f32,
+    weight: FontWeight,
+    colour: Hsla,
+    at: Point<f32>,
+    align: Align,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let font = Font {
+        weight,
+        ..window.text_style().font()
+    };
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: colour,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(
+        SharedString::from(text.to_owned()),
+        gpui_kit::px(size),
+        &[run],
+        None,
+    );
     let line_height = (size * 1.3).ceil();
     let x = match align {
         Align::Left => at.x,
         Align::Centre => at.x - f32::from(line.width()) / 2.,
     };
-    let _ = line.paint(point(gpui_kit::px(x), gpui_kit::px(at.y - line_height / 2.)), gpui_kit::px(line_height), TextAlign::Left, None, window, cx);
+    let _ = line.paint(
+        point(gpui_kit::px(x), gpui_kit::px(at.y - line_height / 2.)),
+        gpui_kit::px(line_height),
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
 }
 
 /// Swift Charts' grid line: half a point, dashed 3 on and 3 off down the time
@@ -645,14 +1016,24 @@ fn hairline(from: Point<f32>, to: Point<f32>, dashed: bool, colour: Hsla, window
     let snap = |v: f32| (v * scale).floor() / scale;
     let step = style::zoomed(3.);
     let vertical = (from.x - to.x).abs() < 0.01;
-    let (start, end) = if vertical { (from.y.min(to.y), from.y.max(to.y)) } else { (from.x.min(to.x), from.x.max(to.x)) };
+    let (start, end) = if vertical {
+        (from.y.min(to.y), from.y.max(to.y))
+    } else {
+        (from.x.min(to.x), from.x.max(to.x))
+    };
     let mut at = start;
     while at < end {
         let until = if dashed { (at + step).min(end) } else { end };
         let piece = if vertical {
-            Bounds::new(point(gpui_kit::px(snap(from.x)), gpui_kit::px(at)), size(gpui_kit::px(pixel), gpui_kit::px(until - at)))
+            Bounds::new(
+                point(gpui_kit::px(snap(from.x)), gpui_kit::px(at)),
+                size(gpui_kit::px(pixel), gpui_kit::px(until - at)),
+            )
         } else {
-            Bounds::new(point(gpui_kit::px(at), gpui_kit::px(snap(from.y))), size(gpui_kit::px(until - at), gpui_kit::px(pixel)))
+            Bounds::new(
+                point(gpui_kit::px(at), gpui_kit::px(snap(from.y))),
+                size(gpui_kit::px(until - at), gpui_kit::px(pixel)),
+            )
         };
         window.paint_quad(gpui_kit::fill(piece, colour));
         at = if dashed { at + 2. * step } else { end };
@@ -671,10 +1052,20 @@ fn dashed_line(from: Point<f32>, to: Point<f32>, width: f32, colour: Hsla, windo
 
 /// `HoverNote`: the hovered bar's hour or day, its total and each login's
 /// part, over the chart's top corner.
-fn hover_note(chart: &Chart, slot: i64, accounts: &[Account], dark: bool, now: i64, p: &Palette, _cx: &App) -> AnyElement {
+fn hover_note(
+    chart: &Chart,
+    slot: i64,
+    accounts: &[Account],
+    dark: bool,
+    now: i64,
+    p: &Palette,
+    _cx: &App,
+) -> AnyElement {
     let mut bars: Vec<&rules::Bar> = chart.bars_at(slot);
-    bars.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-    let total = bars.iter().fold(0i64, |sum, b| sum.saturating_add(b.tokens));
+    bars.sort_by_key(|a| std::cmp::Reverse(a.tokens));
+    let total = bars
+        .iter()
+        .fold(0i64, |sum, b| sum.saturating_add(b.tokens));
     v_flex()
         .absolute()
         .top_0()
@@ -687,7 +1078,19 @@ fn hover_note(chart: &Chart, slot: i64, accounts: &[Account], dark: bool, now: i
         .border_1()
         .border_color(p.note_edge)
         .shadow_sm()
-        .child(div().text_size(px(11.)).line_height(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).whitespace_nowrap().child(format!("{}  {}", chart.slot_words(slot, now, &Local), rules::tokens(total))))
+        .child(
+            div()
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.fg)
+                .whitespace_nowrap()
+                .child(format!(
+                    "{}  {}",
+                    chart.slot_words(slot, now, &Local),
+                    rules::tokens(total)
+                )),
+        )
         .children(bars.into_iter().map(|bar| {
             h_flex()
                 .gap(px(5.))
@@ -695,41 +1098,118 @@ fn hover_note(chart: &Chart, slot: i64, accounts: &[Account], dark: bool, now: i
                 .line_height(px(14.))
                 .text_color(p.secondary)
                 .child(dot(login_colour(&bar.account_id, accounts, dark), p))
-                .child(div().whitespace_nowrap().child(rules::login_label(&bar.account_id, accounts)))
+                .child(
+                    div()
+                        .whitespace_nowrap()
+                        .child(rules::login_label(&bar.account_id, accounts)),
+                )
                 .child(div().flex_1().min_w(px(8.)))
-                .child(div().font_features(tabular()).whitespace_nowrap().child(rules::tokens(bar.tokens)))
+                .child(
+                    div()
+                        .font_features(tabular())
+                        .whitespace_nowrap()
+                        .child(rules::tokens(bar.tokens)),
+                )
         }))
         .into_any_element()
 }
 
-/// `PoolCard`: the pool's icon, name and what it's spent today, then a card
-/// for each login in it (option B of the 17 Nov review). Each card carries
-/// its provider's logo, so a pool that mixes providers no longer names them
-/// over its logins.
-fn pool_card(card: &Card, accounts: &[Account], finding: &HashSet<String>, content: f32, dark: bool, now: i64, p: &Palette, cx: &mut Context<Threadbear>) -> AnyElement {
+/// `PoolCard`: the pool's icon, name and what it's spent today, then one
+/// card with a row for each login in it (option A of Mike's 20 Nov review:
+/// the per-login cards and their charts took a screen for two or three
+/// logins). A row opens to its charts and buttons when clicked.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn pool_card(
+    card: &Card,
+    accounts: &[Account],
+    open: &HashSet<String>,
+    finding: &HashSet<String>,
+    content: f32,
+    dark: bool,
+    now: i64,
+    p: &Palette,
+    cx: &mut Context<Threadbear>,
+) -> AnyElement {
     let header = h_flex()
         .gap(px(7.))
         .px(px(2.))
         .child(icon(&card.symbol, 14., p.secondary))
-        .child(div().text_size(px(13.)).line_height(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).truncate().child(card.title.clone()))
+        .child(
+            div()
+                .text_size(px(13.))
+                .line_height(px(16.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.fg)
+                .truncate()
+                .child(card.title.clone()),
+        )
         .child(div().flex_1())
-        .children(card.today.as_ref().map(|(words, tip)| today_words(SharedString::from(format!("usage-card-today-{}", card.id)), words, tip, p)));
-    let mut column = v_flex().gap(px(8.)).child(header);
+        .children(card.today.as_ref().map(|(words, tip)| {
+            today_words(
+                SharedString::from(format!("usage-card-today-{}", card.id)),
+                words,
+                tip,
+                p,
+            )
+        }));
+    let mut rows = v_flex().w_full().gap(px(2.)).p(px(4.));
     for (s, section) in card.sections.iter().enumerate() {
         for login in &section.logins {
-            column = column.child(login_row(&format!("{}-{s}", card.id), login, accounts, finding.contains(&login.id), content, dark, now, p, cx));
+            let key = row_key(&card.id, &login.id);
+            rows = rows.child(login_row(
+                &format!("{}-{s}", card.id),
+                &key,
+                login,
+                accounts,
+                open.contains(&key),
+                finding.contains(&login.id),
+                content,
+                dark,
+                now,
+                p,
+                cx,
+            ));
         }
     }
-    column.into_any_element()
+    v_flex()
+        .gap(px(8.))
+        .child(header)
+        .child(card_box(rows, p))
+        .into_any_element()
+}
+
+/// A login's row in a pool's card, for remembering it's open: a login can
+/// be in more than one pool.
+fn row_key(card: &str, login: &str) -> String {
+    format!("{card}/{login}")
 }
 
 fn icon(symbol: &str, size: f32, colour: Hsla) -> Icon {
-    icons::try_symbol(symbol).unwrap_or_else(|| icons::symbol("tray")).with_size(px(size)).text_color(colour)
+    icons::try_symbol(symbol)
+        .unwrap_or_else(|| icons::symbol("tray"))
+        .with_size(px(size))
+        .text_color(colour)
 }
 
 /// "86M today", with its breakdown in the tip.
 fn today_words(id: SharedString, words: &str, tip: &str, p: &Palette) -> AnyElement {
-    crate::highlights::tipped_as(div().id(id).flex_none().text_size(px(11.)).line_height(px(14.)).font_features(tabular()).text_color(p.secondary).whitespace_nowrap(), tip.to_owned(), gpui_kit::Role::GenericContainer).child(words.to_owned()).into_any_element()
+    crate::highlights::tipped_as(
+        div()
+            .id(id)
+            .flex_none()
+            .text_size(px(11.))
+            .line_height(px(14.))
+            .font_features(tabular())
+            .text_color(p.secondary)
+            .whitespace_nowrap(),
+        tip.to_owned(),
+        gpui_kit::Role::GenericContainer,
+    )
+    .child(words.to_owned())
+    .into_any_element()
 }
 
 /// A verdict's colour: red used up, orange runs out early, green room going
@@ -743,171 +1223,469 @@ fn tone_colour(tone: Tone, p: &Palette) -> (Hsla, bool) {
     }
 }
 
-/// `LoginRow`, as a card of its own: its provider's logo, its name and one
-/// line saying how it stands, a ring with the week's room at the right, then
-/// the week's chart, a model's own week, and at the foot the 5-hour window as
-/// a chip and what it's spent today. A login with no reading is just the top
-/// line, saying why, with a dashed ring.
-fn login_row(key: &str, login: &LoginRow, accounts: &[Account], finding: bool, content: f32, dark: bool, now: i64, p: &Palette, cx: &mut Context<Threadbear>) -> AnyElement {
+/// `LoginRow`, as one row of its pool's card: a ring with the week's room,
+/// the provider's logo and the login's name, one line saying how it stands,
+/// and what it's spent today. Clicked, it opens to the week's chart, a
+/// model's own week, the 5-hour window, Find work for it and the token
+/// buttons. A sign-in that's ending or gone stays in sight when it's shut,
+/// as that's the one thing that needs doing before a job fails overnight.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "baselined at 318 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
+)]
+fn login_row(
+    key: &str,
+    open_key: &str,
+    login: &LoginRow,
+    accounts: &[Account],
+    open: bool,
+    finding: bool,
+    content: f32,
+    dark: bool,
+    now: i64,
+    p: &Palette,
+    cx: &mut Context<Threadbear>,
+) -> AnyElement {
     let colour = login_colour(&login.id, accounts, dark);
     let id = |part: &str| SharedString::from(format!("usage-{key}-{}-{part}", login.id));
-    let name = crate::highlights::tipped_as(h_flex().id(id("name")).gap(px(6.)).items_center().min_w_0(), login.tip.clone(), gpui_kit::Role::GenericContainer)
-        .child(div().min_w_0().text_size(px(12.5)).line_height(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).truncate().child(login.name.clone()))
-        .children(login.note.as_ref().map(|note| div().min_w_0().text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).truncate().child(note.clone())));
+    let name = crate::highlights::tipped_as(
+        h_flex().id(id("name")).gap(px(6.)).items_center().min_w_0(),
+        login.tip.clone(),
+        gpui_kit::Role::GenericContainer,
+    )
+    .child(
+        icons::provider_mark(&login.provider)
+            .with_size(px(13.))
+            .text_color(p.secondary),
+    )
+    .child(
+        div()
+            .min_w_0()
+            .text_size(px(12.5))
+            .line_height(px(15.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.fg)
+            .truncate()
+            .child(login.name.clone()),
+    )
+    .children(login.note.as_ref().map(|note| {
+        div()
+            .min_w_0()
+            .text_size(px(11.))
+            .line_height(px(14.))
+            .text_color(p.tertiary)
+            .truncate()
+            .child(note.clone())
+    }));
     let line: Option<AnyElement> = if let Some(unknown) = &login.unknown {
-        Some(crate::highlights::tipped_as(div().id(id("why")).text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).line_clamp(2), unknown.tip.clone(), gpui_kit::Role::GenericContainer).child(unknown.text.clone()).into_any_element())
+        Some(
+            crate::highlights::tipped_as(
+                div()
+                    .id(id("why"))
+                    .text_size(px(11.))
+                    .line_height(px(14.))
+                    .text_color(p.tertiary)
+                    .line_clamp(2),
+                unknown.tip.clone(),
+                gpui_kit::Role::GenericContainer,
+            )
+            .child(unknown.text.clone())
+            .into_any_element(),
+        )
     } else {
         login.headline.as_ref().map(|v| {
             let (tone, loud) = tone_colour(v.tone, p);
-            div().text_size(px(11.)).line_height(px(14.)).when(loud, |d| d.font_weight(FontWeight::MEDIUM)).text_color(tone).line_clamp(2).child(v.text.clone()).into_any_element()
+            div()
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .when(loud, |d| d.font_weight(FontWeight::MEDIUM))
+                .text_color(tone)
+                .line_clamp(2)
+                .child(v.text.clone())
+                .into_any_element()
         })
     };
-    let ring_tip = login.meters.iter().find(|m| m.kind == "weekly").map(|m| m.tip.clone()).or_else(|| login.unknown.as_ref().map(|u| u.tip.clone())).unwrap_or_default();
-    let ring = crate::highlights::tipped_as(div().id(id("ring")).flex_none().size(px(RING)), ring_tip, gpui_kit::Role::GenericContainer).child(room_ring(login.ring, if login.ring.is_some_and(|r| r < 1.) { p.red } else { colour }, p));
-    let header = h_flex()
+    let ring_tip = login
+        .meters
+        .iter()
+        .find(|m| m.kind == "weekly")
+        .map(|m| m.tip.clone())
+        .or_else(|| login.unknown.as_ref().map(|u| u.tip.clone()))
+        .unwrap_or_default();
+    let ring = crate::highlights::tipped_as(
+        div().id(id("ring")).flex_none().size(px(RING)),
+        ring_tip,
+        gpui_kit::Role::GenericContainer,
+    )
+    .child(room_ring(
+        login.ring,
+        if login.ring.is_some_and(|r| r < 1.) {
+            p.red
+        } else {
+            colour
+        },
+        p,
+    ));
+    // Its own spend, without the "today" the pool's header already says.
+    let today = login
+        .today
+        .as_ref()
+        .map(|(words, tip)| today_words(id("today"), words.trim_end_matches(" today"), tip, p));
+    // Confetti pops from its name as it signs back in or a new token lands
+    // (confetti.rs), open or not.
+    let who = div()
+        .relative()
+        .min_w_0()
+        .child(name)
+        .child(crate::confetti::anchor(format!("signed-in:{}", login.id)))
+        .child(crate::confetti::anchor(format!("token:{}", login.id)));
+    let toggle = open_key.to_owned();
+    let hover = p.bar_track;
+    let row = h_flex()
+        .id(id("row"))
+        .role(gpui_kit::Role::Button)
+        .aria_expanded(open)
+        .aria_label(SharedString::from(login.name.clone()))
+        .w_full()
         .gap(px(10.))
         .items_center()
-        .child(icons::provider_mark(&login.provider).with_size(px(18.)).text_color(p.secondary))
-        .child(v_flex().flex_1().min_w_0().gap(px(1.)).child(div().relative().min_w_0().child(name).child(crate::confetti::anchor(format!("signed-in:{}", login.id)))).children(line))
-        .child(ring);
+        .px(px(8.))
+        .py(px(7.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .on_click(
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_usage_row(&toggle, cx)),
+        )
+        .child(ring)
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(1.))
+                .child(who)
+                .children(line),
+        )
+        .children(today)
+        .child(icon(
+            if open {
+                "chevron.down"
+            } else {
+                "chevron.right"
+            },
+            10.,
+            p.tertiary,
+        ));
     // Signed out, or its sign-in ending within days: say so, with the same
     // Sign in… as the thread's signed-out line (header.rs), so a scheduled
     // job on it doesn't fail overnight (14 Nov).
     let signed_out = login.status == Some(LoginStatus::SignedOut);
-    let ending = login.sign_in_ends.as_ref().filter(|_| !signed_out).map(|words| div().text_size(px(11.)).line_height(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.orange).child(words.clone()));
+    let ending = login
+        .sign_in_ends
+        .as_ref()
+        .filter(|_| !signed_out)
+        .map(|words| {
+            div()
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(p.orange)
+                .child(words.clone())
+        });
     let due = signed_out || login.sign_in_ends.is_some();
-    let small = |key: &str, tip: &'static str| crate::highlights::tipped(div().id(id(key)).flex_none().px(px(7.)).py(px(2.)).rounded(px(5.)).text_size(px(11.)).line_height(px(14.)).text_color(p.fg).bg(p.divider), tip);
+    let small = |key: &str, tip: &'static str| {
+        crate::highlights::tipped(
+            div()
+                .id(id(key))
+                .flex_none()
+                .px(px(7.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .text_color(p.fg)
+                .bg(p.divider),
+            tip,
+        )
+    };
     // A token login renews with a new token, not a sign-in.
     let sign_in = (due && login.year_token.is_none()).then(|| {
         let account = login.id.clone();
-        small("sign-in", "Opens Terminal on this login's own sign-in").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.sign_in_login(&account, cx))).child("Sign in…")
+        small("sign-in", "Opens Terminal on this login's own sign-in")
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.sign_in_login(&account, cx)),
+            )
+            .child("Sign in…")
     });
     // Year-long token…: a Claude sign-in lasts 28 days, a token from
     // `claude setup-token` a year (Mike, 17 Nov: opt in per login). Offered
-    // on every Claude login without one, and on a token login near its end.
-    let token = (login.can_token && (login.year_token.is_none() || due)).then(|| {
+    // on every Claude login without one, and on a token login near its end;
+    // the offer on one that isn't due waits in the open row.
+    let token = (login.can_token && (login.year_token.is_none() || due) && (open || due)).then(|| {
         let account = login.id.clone();
         let label = if login.year_token.is_some() { "New token…" } else { "Year-long token…" };
         small("token", "Opens Terminal on claude setup-token for this login: one sign-in, then it runs on that token for a year instead of signing in every 28 days. claude.ai's own connectors and Remote Control don't work on it")
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.make_year_token(&account, cx)))
             .child(label)
     });
-    // Confetti pops from here as a new token lands (confetti.rs).
-    let quiet = login.year_token.clone().filter(|_| !due).map(|words| div().relative().text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).child(words).child(crate::confetti::anchor(format!("token:{}", login.id))));
-    let sign_in = (sign_in.is_some() || token.is_some() || quiet.is_some()).then(|| h_flex().gap(px(8.)).items_center().children(ending).children(quiet).child(div().flex_1()).children(sign_in).children(token));
-    // The week's chart on its own: the ring says what's left and the line
-    // above what to do, so it needs no title. A model's own week keeps its
-    // meter's title, number and verdict.
-    let week = login.meters.iter().find(|m| m.kind == "weekly").map(|m| {
-        let chart = m.week_chart(now, &Local);
-        let (grid, plot, labels, orange) = (p.grid, p.plot, p.secondary, p.orange);
-        crate::highlights::tipped_as(div().id(id("week")).w_full(), m.tip.clone(), gpui_kit::Role::GenericContainer)
-            .child(canvas(|_, _, _| (), move |bounds, _, window, cx| paint_week(&chart, colour, grid, plot, labels, orange, bounds, window, cx)).w_full().h(px(58.)))
-    });
-    let others: Vec<Meter> = login.meters.iter().filter(|m| m.kind != "weekly" && m.kind != "five_hour").cloned().collect();
-    let others = (!others.is_empty()).then(|| meters_layout(&id(""), &others, colour, content - style::zoomed(24.), now, p));
-    let chip = login.five_hour.as_ref().map(|c| {
-        let text = match c.tone {
-            Tone::Out => p.red,
-            Tone::Short => p.orange,
-            _ => p.secondary,
-        };
-        crate::highlights::tipped_as(div().id(id("five-hour")).flex_none().px(px(7.)).py(px(1.)).rounded(px(8.)).bg(p.bar_track).text_size(px(11.)).line_height(px(15.)).font_features(tabular()).text_color(text), c.tip.clone(), gpui_kit::Role::GenericContainer).child(c.text.clone())
-    });
-    let today = login.today.as_ref().map(|(words, tip)| today_words(id("today"), words, tip, p));
-    // Find work for it, at the foot's right, on a week that will go partly
-    // unused (option C of Mike's 18 Nov review: the action beside the line
-    // that prompts it). It spins until the runner answers, then the thread
-    // opens.
-    // The same chip as Sign in… and Year-long token…, so the card's
-    // actions look alike; while it's on its way it spins, says so and
-    // takes no clicks.
-    let find_work = rules::can_find_work(login).then(|| {
-        let chip = small("find-work", rules::FIND_WORK_TIP);
-        if finding {
-            chip.opacity(0.7)
-                .child(h_flex().gap(px(5.)).items_center().child(crate::spinner::Spinner::new().with_size(px(10.)).color(p.secondary)).child(rules::FINDING_WORK))
-                .into_any_element()
-        } else {
-            let account = login.id.clone();
-            chip.cursor_pointer().on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.find_work(account.clone(), cx))).child(rules::FIND_WORK).into_any_element()
-        }
-    });
-    let foot = (chip.is_some() || today.is_some() || find_work.is_some()).then(|| h_flex().gap(px(8.)).items_center().children(chip).children(today).child(div().flex_1()).children(find_work));
-    let more = (!login.more.is_empty()).then(|| v_flex().gap(px(2.)).text_size(px(11.)).line_height(px(14.)).text_color(p.tertiary).children(login.more.iter().map(|line| div().child(line.clone()))));
+    let quiet = login
+        .year_token
+        .clone()
+        .filter(|_| !due && open)
+        .map(|words| {
+            div()
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .text_color(p.tertiary)
+                .child(words)
+        });
+    let sign_in = (ending.is_some() || sign_in.is_some() || token.is_some() || quiet.is_some())
+        .then(|| {
+            h_flex()
+                .gap(px(8.))
+                .items_center()
+                .children(ending)
+                .children(quiet)
+                .child(div().flex_1())
+                .children(sign_in)
+                .children(token)
+        });
+    let has_below = open || sign_in.is_some();
+    // Under the row, lined up with its name.
+    let inset = RING + 18.;
+    let mut below = v_flex()
+        .gap(px(8.))
+        .pl(px(inset))
+        .pr(px(8.))
+        .children(sign_in);
+    if open {
+        // The week's chart on its own: the ring says what's left and the
+        // line above what to do, so it needs no title. A model's own week
+        // keeps its meter's title, number and verdict.
+        let week = login.meters.iter().find(|m| m.kind == "weekly").map(|m| {
+            let chart = m.week_chart(now, &Local);
+            let (grid, plot, labels, orange) = (p.grid, p.plot, p.secondary, p.orange);
+            crate::highlights::tipped_as(
+                div().id(id("week")).w_full(),
+                m.tip.clone(),
+                gpui_kit::Role::GenericContainer,
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        paint_week(
+                            &chart, colour, grid, plot, labels, orange, bounds, window, cx,
+                        )
+                    },
+                )
+                .w_full()
+                .h(px(58.)),
+            )
+        });
+        let others: Vec<Meter> = login
+            .meters
+            .iter()
+            .filter(|m| m.kind != "weekly" && m.kind != "five_hour")
+            .cloned()
+            .collect();
+        let others = (!others.is_empty()).then(|| {
+            meters_layout(
+                &id(""),
+                &others,
+                colour,
+                content - style::zoomed(inset + 16.),
+                now,
+                p,
+            )
+        });
+        let chip = login.five_hour.as_ref().map(|c| {
+            let text = match c.tone {
+                Tone::Out => p.red,
+                Tone::Short => p.orange,
+                _ => p.secondary,
+            };
+            crate::highlights::tipped_as(
+                div()
+                    .id(id("five-hour"))
+                    .flex_none()
+                    .px(px(7.))
+                    .py(px(1.))
+                    .rounded(px(8.))
+                    .bg(p.bar_track)
+                    .text_size(px(11.))
+                    .line_height(px(15.))
+                    .font_features(tabular())
+                    .text_color(text),
+                c.tip.clone(),
+                gpui_kit::Role::GenericContainer,
+            )
+            .child(c.text.clone())
+        });
+        // Find work for it, on a week that will go partly unused (option C
+        // of Mike's 18 Nov review). It spins until the runner answers, then
+        // the thread opens, and takes no clicks while it's on its way.
+        let find_work = rules::can_find_work(login).then(|| {
+            let chip = small("find-work", rules::FIND_WORK_TIP);
+            if finding {
+                chip.opacity(0.7)
+                    .child(
+                        h_flex()
+                            .gap(px(5.))
+                            .items_center()
+                            .child(
+                                crate::spinner::Spinner::new()
+                                    .with_size(px(10.))
+                                    .color(p.secondary),
+                            )
+                            .child(rules::FINDING_WORK),
+                    )
+                    .into_any_element()
+            } else {
+                let account = login.id.clone();
+                chip.cursor_pointer()
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.find_work(account.clone(), cx)
+                    }))
+                    .child(rules::FIND_WORK)
+                    .into_any_element()
+            }
+        });
+        let foot = (chip.is_some() || find_work.is_some()).then(|| {
+            h_flex()
+                .gap(px(8.))
+                .items_center()
+                .children(chip)
+                .child(div().flex_1())
+                .children(find_work)
+        });
+        let more = (!login.more.is_empty()).then(|| {
+            v_flex()
+                .gap(px(2.))
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .text_color(p.tertiary)
+                .children(login.more.iter().map(|line| div().child(line.clone())))
+        });
+        below = below
+            .children(week)
+            .children(others)
+            .children(foot)
+            .children(more);
+    }
     // A lapsed plan stays listed, so Mike can see it's still there, but
     // faded: it isn't one to act on.
     let ended = login.status == Some(LoginStatus::PlanEnded);
-    let slim = login.unknown.is_some();
-    card_box(v_flex().w_full().gap(px(8.)).px(px(12.)).py(px(if slim { 8. } else { 10. })), p)
+    v_flex()
+        .w_full()
+        .rounded(px(6.))
+        .when(open, |d| d.bg(p.plot))
         .when(ended, |d| d.opacity(0.5))
-        .child(header)
-        .children(sign_in)
-        .children(week)
-        .children(others)
-        .children(foot)
-        .children(more)
+        .child(row)
+        .when(has_below, |d| d.child(below.pb(px(10.))))
         .into_any_element()
 }
 
 /// The ring's size, as the mockup has it.
-const RING: f32 = 40.;
+const RING: f32 = 34.;
 
 /// The ring at the right of a login's card: the week's room as an arc in the
 /// login's colour (red at nothing left) with the number inside, or a dashed
 /// ring with a "?" when there's no reading.
 fn room_ring(room: Option<f64>, colour: Hsla, p: &Palette) -> impl IntoElement {
     let (track, words, quiet) = (p.bar_track, p.fg, p.tertiary);
-    canvas(|_, _, _| (), move |bounds, _, window, cx| {
-        if !shown(bounds, window) {
-            return;
-        }
-        let z = style::zoomed;
-        let stroke = z(3.5);
-        let centre = point(f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2., f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.);
-        let radius = (f32::from(bounds.size.width).min(f32::from(bounds.size.height)) - stroke) / 2.;
-        let arc = |share: f32, colour: Hsla, dashed: bool, window: &mut Window| {
-            let mut builder = PathBuilder::stroke(gpui_kit::px(stroke));
-            if dashed {
-                let dash = gpui_kit::px(z(2.5));
-                builder = builder.dash_array(&[dash, dash]);
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            if !shown(bounds, window) {
+                return;
             }
-            // From the top, clockwise, in short straight pieces: smooth at
-            // this size, and no arc flags to get backwards.
-            let steps = ((64. * share).ceil() as usize).max(1);
-            let at = |i: usize| {
-                let angle = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * share * i as f32 / steps as f32;
-                point(gpui_kit::px(centre.x + radius * angle.cos()), gpui_kit::px(centre.y + radius * angle.sin()))
-            };
-            builder.move_to(at(0));
-            for i in 1..=steps {
-                builder.line_to(at(i));
-            }
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, colour);
-            }
-        };
-        match room {
-            Some(room) => {
-                arc(1., track, false, window);
-                let share = (room / 100.).clamp(0., 1.) as f32;
-                if share > 0.005 {
-                    arc(share, colour, false, window);
-                } else {
-                    // Nothing left: a dot of red at the top, so the ring
-                    // still says which way it went.
-                    let dot = z(2.);
-                    let top = Bounds::new(point(gpui_kit::px(centre.x - dot), gpui_kit::px(centre.y - radius - dot)), size(gpui_kit::px(dot * 2.), gpui_kit::px(dot * 2.)));
-                    window.paint_quad(gpui_kit::fill(top, colour).corner_radii(Corners::all(gpui_kit::px(dot))));
+            let z = style::zoomed;
+            let stroke = z(3.5);
+            let centre = point(
+                f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.,
+                f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.,
+            );
+            let radius =
+                (f32::from(bounds.size.width).min(f32::from(bounds.size.height)) - stroke) / 2.;
+            let arc = |share: f32, colour: Hsla, dashed: bool, window: &mut Window| {
+                let mut builder = PathBuilder::stroke(gpui_kit::px(stroke));
+                if dashed {
+                    let dash = gpui_kit::px(z(2.5));
+                    builder = builder.dash_array(&[dash, dash]);
                 }
-                paint_words(&format!("{}%", room.round() as i64), z(10.5), FontWeight::SEMIBOLD, words, centre, Align::Centre, window, cx);
+                // From the top, clockwise, in short straight pieces: smooth at
+                // this size, and no arc flags to get backwards.
+                let steps = ((64. * share).ceil() as usize).max(1);
+                let at = |i: usize| {
+                    let angle = -std::f32::consts::FRAC_PI_2
+                        + std::f32::consts::TAU * share * i as f32 / steps as f32;
+                    point(
+                        gpui_kit::px(centre.x + radius * angle.cos()),
+                        gpui_kit::px(centre.y + radius * angle.sin()),
+                    )
+                };
+                builder.move_to(at(0));
+                for i in 1..=steps {
+                    builder.line_to(at(i));
+                }
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, colour);
+                }
+            };
+            match room {
+                Some(room) => {
+                    arc(1., track, false, window);
+                    let share = (room / 100.).clamp(0., 1.) as f32;
+                    if share > 0.005 {
+                        arc(share, colour, false, window);
+                    } else {
+                        // Nothing left: a dot of red at the top, so the ring
+                        // still says which way it went.
+                        let dot = z(2.);
+                        let top = Bounds::new(
+                            point(
+                                gpui_kit::px(centre.x - dot),
+                                gpui_kit::px(centre.y - radius - dot),
+                            ),
+                            size(gpui_kit::px(dot * 2.), gpui_kit::px(dot * 2.)),
+                        );
+                        window.paint_quad(
+                            gpui_kit::fill(top, colour)
+                                .corner_radii(Corners::all(gpui_kit::px(dot))),
+                        );
+                    }
+                    paint_words(
+                        &format!("{}%", room.round() as i64),
+                        z(10.5),
+                        FontWeight::SEMIBOLD,
+                        words,
+                        centre,
+                        Align::Centre,
+                        window,
+                        cx,
+                    );
+                }
+                None => {
+                    arc(1., quiet, true, window);
+                    paint_words(
+                        "?",
+                        z(12.),
+                        FontWeight::MEDIUM,
+                        quiet,
+                        centre,
+                        Align::Centre,
+                        window,
+                        cx,
+                    );
+                }
             }
-            None => {
-                arc(1., quiet, true, window);
-                paint_words("?", z(12.), FontWeight::MEDIUM, quiet, centre, Align::Centre, window, cx);
-            }
-        }
-    })
+        },
+    )
     .size_full()
 }
 
@@ -916,23 +1694,45 @@ fn room_ring(room: Option<f64>, colour: Hsla, p: &Palette) -> impl IntoElement {
 /// narrow for that rather than three tall ones stacked, else one over the
 /// other. Each takes its share of the row: capped, they stopped two thirds of
 /// the way across a wide panel (Mike, 5 Nov).
-fn meters_layout(key: &str, meters: &[Meter], colour: Hsla, room: f32, now: i64, p: &Palette) -> AnyElement {
+fn meters_layout(
+    key: &str,
+    meters: &[Meter],
+    colour: Hsla,
+    room: f32,
+    now: i64,
+    p: &Palette,
+) -> AnyElement {
     let z = style::zoomed;
     let fits = |n: usize| n as f32 * z(170.) + (n.saturating_sub(1)) as f32 * z(18.) <= room + 0.5;
     let meter = |i: usize| window_meter(&format!("{key}{i}"), &meters[i], colour, now, p);
     if fits(meters.len()) {
-        return h_flex().items_start().gap(px(18.)).children((0..meters.len()).map(meter)).into_any_element();
+        return h_flex()
+            .items_start()
+            .gap(px(18.))
+            .children((0..meters.len()).map(meter))
+            .into_any_element();
     }
     if meters.len() > 2 && fits(2) {
         return v_flex()
             .gap(px(10.))
             .children((0..meters.len()).step_by(2).map(|i| {
-                let second = (i + 1 < meters.len()).then(|| meter(i + 1)).unwrap_or_else(|| div().flex_1().min_w(px(170.)).into_any_element());
-                h_flex().items_start().gap(px(18.)).child(meter(i)).child(second)
+                let second = if i + 1 < meters.len() {
+                    meter(i + 1)
+                } else {
+                    div().flex_1().min_w(px(170.)).into_any_element()
+                };
+                h_flex()
+                    .items_start()
+                    .gap(px(18.))
+                    .child(meter(i))
+                    .child(second)
             }))
             .into_any_element();
     }
-    v_flex().gap(px(10.)).children((0..meters.len()).map(meter)).into_any_element()
+    v_flex()
+        .gap(px(10.))
+        .children((0..meters.len()).map(meter))
+        .into_any_element()
 }
 
 /// `WindowMeter`: its name and what's left, a bar (the 5-hour) or a chart of
@@ -948,18 +1748,61 @@ fn window_meter(key: &str, meter: &Meter, colour: Hsla, now: i64, p: &Palette) -
     };
     let header = h_flex()
         .items_center()
-        .child(div().text_size(px(11.)).line_height(px(15.)).font_weight(FontWeight::MEDIUM).text_color(p.secondary).truncate().child(meter.title.clone()))
+        .child(
+            div()
+                .text_size(px(11.))
+                .line_height(px(15.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(p.secondary)
+                .truncate()
+                .child(meter.title.clone()),
+        )
         .child(div().flex_1().min_w(px(6.)))
-        .child(div().flex_none().text_size(px(12.)).line_height(px(15.)).font_weight(FontWeight::MEDIUM).font_features(tabular()).text_color(if meter.short { fill } else { p.fg }).child(meter.left.clone()));
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(12.))
+                .line_height(px(15.))
+                .font_weight(FontWeight::MEDIUM)
+                .font_features(tabular())
+                .text_color(if meter.short { fill } else { p.fg })
+                .child(meter.left.clone()),
+        );
     // The weekly chart already shows what's left (its line ends at it), so
     // only the 5-hour window gets a bar. A model's own week is charted too.
     let picture: AnyElement = if meter.is_week() {
         let chart = meter.week_chart(now, &Local);
         let (grid, plot, labels, orange) = (p.grid, p.plot, p.secondary, p.orange);
-        canvas(|_, _, _| (), move |bounds, _, window, cx| paint_week(&chart, colour, grid, plot, labels, orange, bounds, window, cx)).w_full().h(px(58.)).into_any_element()
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, cx| {
+                paint_week(
+                    &chart, colour, grid, plot, labels, orange, bounds, window, cx,
+                )
+            },
+        )
+        .w_full()
+        .h(px(58.))
+        .into_any_element()
     } else {
         let share = (meter.remaining / 100.).clamp(0., 1.) as f32;
-        div().relative().w_full().h(px(4.)).rounded_full().bg(p.bar_track).child(div().absolute().top_0().left_0().h_full().w(relative(share)).rounded_full().bg(fill)).into_any_element()
+        div()
+            .relative()
+            .w_full()
+            .h(px(4.))
+            .rounded_full()
+            .bg(p.bar_track)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .w(relative(share))
+                    .rounded_full()
+                    .bg(fill),
+            )
+            .into_any_element()
     };
     let verdict = meter.verdict.as_ref().map(|v| {
         let (tone, loud) = match v.tone {
@@ -968,16 +1811,47 @@ fn window_meter(key: &str, meter: &Meter, colour: Hsla, now: i64, p: &Palette) -
             Tone::Spare => (p.green, false),
             Tone::Fine => (p.tertiary, false),
         };
-        div().text_size(px(11.)).line_height(px(14.)).when(loud, |d| d.font_weight(FontWeight::MEDIUM)).text_color(tone).line_clamp(2).child(v.text.clone())
+        div()
+            .text_size(px(11.))
+            .line_height(px(14.))
+            .when(loud, |d| d.font_weight(FontWeight::MEDIUM))
+            .text_color(tone)
+            .line_clamp(2)
+            .child(v.text.clone())
     });
-    crate::highlights::tipped_as(v_flex().id(SharedString::from(format!("usage-meter-{key}"))).flex_1().min_w(px(170.)).gap(px(4.)), meter.tip.clone(), gpui_kit::Role::GenericContainer).child(header).child(picture).children(verdict).into_any_element()
+    crate::highlights::tipped_as(
+        v_flex()
+            .id(SharedString::from(format!("usage-meter-{key}")))
+            .flex_1()
+            .min_w(px(170.))
+            .gap(px(4.)),
+        meter.tip.clone(),
+        gpui_kit::Role::GenericContainer,
+    )
+    .child(header)
+    .child(picture)
+    .children(verdict)
+    .into_any_element()
 }
 
 /// `WeekChart`: what was left over the last seven days, last week's readings
 /// too, breaking at each reset, then this pace dashed on from now to the
 /// reset, a faint line at each midnight and the days along the bottom.
-#[allow(clippy::too_many_arguments)]
-fn paint_week(chart: &rules::WeekChart, colour: Hsla, grid: Hsla, plot_fill: Hsla, labels: Hsla, orange: Hsla, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn paint_week(
+    chart: &rules::WeekChart,
+    colour: Hsla,
+    grid: Hsla,
+    plot_fill: Hsla,
+    labels: Hsla,
+    orange: Hsla,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     if !shown(bounds, window) {
         return;
     }
@@ -986,18 +1860,34 @@ fn paint_week(chart: &rules::WeekChart, colour: Hsla, grid: Hsla, plot_fill: Hsl
     let width = f32::from(bounds.size.width).max(1.);
     // The plot, then 16 for the days' names.
     let height = (f32::from(bounds.size.height) - z(16.)).max(1.);
-    window.paint_quad(gpui_kit::fill(Bounds::new(point(gpui_kit::px(left), gpui_kit::px(top)), size(gpui_kit::px(width), gpui_kit::px(height))), plot_fill));
+    window.paint_quad(gpui_kit::fill(
+        Bounds::new(
+            point(gpui_kit::px(left), gpui_kit::px(top)),
+            size(gpui_kit::px(width), gpui_kit::px(height)),
+        ),
+        plot_fill,
+    ));
     let span = (chart.to - chart.from).max(1) as f32;
     let x_of = |at: i64| left + width * (at - chart.from) as f32 / span;
     // A little room top and bottom, so the dots at full and empty aren't cut
     // in half by the edge.
     let pad = z(3.);
-    let y_of = |left_percent: f64| top + pad + (height - 2. * pad) * (1. - (left_percent / 100.) as f32);
+    let y_of =
+        |left_percent: f64| top + pad + (height - 2. * pad) * (1. - (left_percent / 100.) as f32);
     for midnight in &chart.midnights {
-        hairline(point(x_of(*midnight), top), point(x_of(*midnight), top + height), true, grid, window);
+        hairline(
+            point(x_of(*midnight), top),
+            point(x_of(*midnight), top + height),
+            true,
+            grid,
+            window,
+        );
     }
     for run in &chart.runs {
-        let points: Vec<Point<f32>> = run.iter().map(|s| point(x_of(s.at), y_of(s.remaining))).collect();
+        let points: Vec<Point<f32>> = run
+            .iter()
+            .map(|s| point(x_of(s.at), y_of(s.remaining)))
+            .collect();
         if points.is_empty() {
             continue;
         }
@@ -1006,7 +1896,10 @@ fn paint_week(chart: &rules::WeekChart, colour: Hsla, grid: Hsla, plot_fill: Hsl
         area.move_to(point(gpui_kit::px(points[0].x), gpui_kit::px(floor)));
         area.line_to(px_point(points[0]));
         monotone(&mut area, &points);
-        area.line_to(point(gpui_kit::px(points[points.len() - 1].x), gpui_kit::px(floor)));
+        area.line_to(point(
+            gpui_kit::px(points[points.len() - 1].x),
+            gpui_kit::px(floor),
+        ));
         area.close();
         if let Ok(path) = area.build() {
             window.paint_path(path, colour.opacity(0.07));
@@ -1021,11 +1914,26 @@ fn paint_week(chart: &rules::WeekChart, colour: Hsla, grid: Hsla, plot_fill: Hsl
         }
     }
     if let [from, to] = chart.ahead.as_slice() {
-        dashed_line(point(x_of(from.at), y_of(from.remaining)), point(x_of(to.at), y_of(to.remaining)), z(1.), if chart.short { orange.opacity(0.8) } else { colour.opacity(0.6) }, window);
+        dashed_line(
+            point(x_of(from.at), y_of(from.remaining)),
+            point(x_of(to.at), y_of(to.remaining)),
+            z(1.),
+            if chart.short {
+                orange.opacity(0.8)
+            } else {
+                colour.opacity(0.6)
+            },
+            window,
+        );
     }
     // Swift Charts' symbolSize 18 is the dot's area.
     let radius = z((18f32 / std::f32::consts::PI).sqrt());
-    paint_dot(point(x_of(chart.now.at), y_of(chart.now.remaining)), radius, colour, window);
+    paint_dot(
+        point(x_of(chart.now.at), y_of(chart.now.remaining)),
+        radius,
+        colour,
+        window,
+    );
     if let Some(out) = chart.runs_out {
         paint_dot(point(x_of(out), y_of(0.)), radius, orange, window);
     }
@@ -1041,7 +1949,16 @@ fn paint_week(chart: &rules::WeekChart, colour: Hsla, grid: Hsla, plot_fill: Hsl
             continue;
         }
         clear = x + half + z(2.);
-        paint_words(day, z(9.5), FontWeight::NORMAL, labels, point(x, top + height + z(9.)), Align::Centre, window, cx);
+        paint_words(
+            day,
+            z(9.5),
+            FontWeight::NORMAL,
+            labels,
+            point(x, top + height + z(9.)),
+            Align::Centre,
+            window,
+            cx,
+        );
     }
 }
 
@@ -1050,7 +1967,13 @@ fn px_point(p: Point<f32>) -> Point<Pixels> {
 }
 
 fn paint_dot(centre: Point<f32>, radius: f32, colour: Hsla, window: &mut Window) {
-    let at = Bounds::new(point(gpui_kit::px(centre.x - radius), gpui_kit::px(centre.y - radius)), size(gpui_kit::px(radius * 2.), gpui_kit::px(radius * 2.)));
+    let at = Bounds::new(
+        point(
+            gpui_kit::px(centre.x - radius),
+            gpui_kit::px(centre.y - radius),
+        ),
+        size(gpui_kit::px(radius * 2.), gpui_kit::px(radius * 2.)),
+    );
     window.paint_quad(gpui_kit::fill(at, colour).corner_radii(Corners::all(gpui_kit::px(radius))));
 }
 
@@ -1075,7 +1998,11 @@ fn monotone(builder: &mut PathBuilder, points: &[Point<f32>]) {
     tangents[0] = slopes[0];
     tangents[n - 1] = slopes[n - 2];
     for i in 1..n - 1 {
-        tangents[i] = if slopes[i - 1] * slopes[i] <= 0. { 0. } else { (slopes[i - 1] + slopes[i]) / 2. };
+        tangents[i] = if slopes[i - 1] * slopes[i] <= 0. {
+            0.
+        } else {
+            (slopes[i - 1] + slopes[i]) / 2.
+        };
     }
     for i in 0..n - 1 {
         if slopes[i] == 0. {
@@ -1112,7 +2039,13 @@ const DRIP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 
 /// The honey's colour: the only amber on the rail, and faint, as usage is the
 /// one place amber means something.
 fn honey() -> Hsla {
-    Rgba { r: 217. / 255., g: 164. / 255., b: 65. / 255., a: 1. }.into()
+    Rgba {
+        r: 217. / 255.,
+        g: 164. / 255.,
+        b: 65. / 255.,
+        a: 1.,
+    }
+    .into()
 }
 
 /// What the pot shows, and the change it's part way through.
@@ -1150,7 +2083,9 @@ impl Pot {
 
     /// What's on show now: part way through a change, the level it's got to.
     fn shown(&self) -> f64 {
-        let Some(since) = self.since else { return self.level };
+        let Some(since) = self.since else {
+            return self.level;
+        };
         let t = (since.elapsed().as_secs_f32() / self.duration().as_secs_f32()).min(1.);
         self.from + (self.level - self.from) * f64::from((self.easing())(t))
     }
@@ -1160,7 +2095,13 @@ impl Pot {
     /// last one has got to.
     fn see(&mut self, level: f64, login: Option<String>) {
         if !self.seen {
-            *self = Pot { seen: true, level, from: level, login, ..Pot::default() };
+            *self = Pot {
+                seen: true,
+                level,
+                from: level,
+                login,
+                ..Pot::default()
+            };
             return;
         }
         if (level - self.level).abs() < 1e-9 && login == self.login {
@@ -1182,27 +2123,60 @@ impl Pot {
     fn element(&self) -> AnyElement {
         let (from, to) = (self.from, self.level);
         let colour = honey();
-        let fill = div().absolute().inset_0().with_animation(("usage-honey", self.changes), Animation::new(self.duration()).with_easing(self.easing()), move |el, t| {
-            let level = from + (to - from) * f64::from(t);
-            el.child(canvas(|_, _, _| (), move |bounds, _, window, _| paint_honey(bounds, level, colour, window)).size_full())
-        });
-        let mut pot = div().relative().flex_none().size(px(21.)).child(fill).child(Icon::default().data(POT).with_size(px(21.)));
+        let fill = div().absolute().inset_0().with_animation(
+            ("usage-honey", self.changes),
+            Animation::new(self.duration()).with_easing(self.easing()),
+            move |el, t| {
+                let level = from + (to - from) * f64::from(t);
+                el.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| paint_honey(bounds, level, colour, window),
+                    )
+                    .size_full(),
+                )
+            },
+        );
+        let mut pot = div()
+            .relative()
+            .flex_none()
+            .size(px(21.))
+            .child(fill)
+            .child(Icon::default().data(POT).with_size(px(21.)));
         if self.refill {
             // Near the top of the rise, as the honey gets to the rim: in for
             // 140 ms, then down the outside and gone over 340.
             let z = style::zoomed;
-            let drip = div().absolute().top_0().left_0().size(px(21.)).child(Icon::default().data(DRIP).with_size(px(21.)).text_color(colour.opacity(0.9))).with_animations(
-                ("usage-drip", self.changes),
-                vec![Animation::new(Duration::from_millis(520)), Animation::new(Duration::from_millis(140)).with_easing(quadratic), Animation::new(Duration::from_millis(340)).with_easing(|t| 1. - (1. - t) * (1. - t))],
-                move |el, part, t| {
-                    let (opacity, x, y) = match part {
-                        0 => (0., 0., 0.),
-                        1 => (t, 0.7 * t, t),
-                        _ => (1. - t, 0.7 + 1.2 * t, 1. + 4. * t),
-                    };
-                    el.opacity(opacity).left(gpui_kit::px(z(x))).top(gpui_kit::px(z(y)))
-                },
-            );
+            let drip = div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(21.))
+                .child(
+                    Icon::default()
+                        .data(DRIP)
+                        .with_size(px(21.))
+                        .text_color(colour.opacity(0.9)),
+                )
+                .with_animations(
+                    ("usage-drip", self.changes),
+                    vec![
+                        Animation::new(Duration::from_millis(520)),
+                        Animation::new(Duration::from_millis(140)).with_easing(quadratic),
+                        Animation::new(Duration::from_millis(340))
+                            .with_easing(|t| 1. - (1. - t) * (1. - t)),
+                    ],
+                    move |el, part, t| {
+                        let (opacity, x, y) = match part {
+                            0 => (0., 0., 0.),
+                            1 => (t, 0.7 * t, t),
+                            _ => (1. - t, 0.7 + 1.2 * t, 1. + 4. * t),
+                        };
+                        el.opacity(opacity)
+                            .left(gpui_kit::px(z(x)))
+                            .top(gpui_kit::px(z(y)))
+                    },
+                );
             pot = pot.child(drip);
         }
         pot.into_any_element()
@@ -1240,19 +2214,40 @@ fn timing_curve(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 + 'st
 /// The inside of the pot, from rim to floor (9.6 to 20.8 on the grid), as
 /// short straight pieces.
 fn pot_body(scale: f32) -> Vec<(f32, f32)> {
-    let cubic = |p0: (f32, f32), c1: (f32, f32), c2: (f32, f32), p1: (f32, f32), out: &mut Vec<(f32, f32)>| {
+    let cubic = |p0: (f32, f32),
+                 c1: (f32, f32),
+                 c2: (f32, f32),
+                 p1: (f32, f32),
+                 out: &mut Vec<(f32, f32)>| {
         for i in 1..=16 {
             let t = i as f32 / 16.;
             let u = 1. - t;
-            let at = |a: f32, b: f32, c: f32, d: f32| u * u * u * a + 3. * u * u * t * b + 3. * u * t * t * c + t * t * t * d;
+            let at = |a: f32, b: f32, c: f32, d: f32| {
+                u * u * u * a + 3. * u * u * t * b + 3. * u * t * t * c + t * t * t * d
+            };
             out.push((at(p0.0, c1.0, c2.0, p1.0), at(p0.1, c1.1, c2.1, p1.1)));
         }
     };
     let mut points = vec![(8.2, 9.6)];
-    cubic((8.2, 9.6), (4.2, 10.6), (3.6, 19.4), (7.6, 20.8), &mut points);
+    cubic(
+        (8.2, 9.6),
+        (4.2, 10.6),
+        (3.6, 19.4),
+        (7.6, 20.8),
+        &mut points,
+    );
     points.push((16.4, 20.8));
-    cubic((16.4, 20.8), (20.4, 19.4), (19.8, 10.6), (15.8, 9.6), &mut points);
-    points.into_iter().map(|(x, y)| (x * scale, y * scale)).collect()
+    cubic(
+        (16.4, 20.8),
+        (20.4, 19.4),
+        (19.8, 10.6),
+        (15.8, 9.6),
+        &mut points,
+    );
+    points
+        .into_iter()
+        .map(|(x, y)| (x * scale, y * scale))
+        .collect()
 }
 
 /// The honey: the pot's inside below the level.
@@ -1281,7 +2276,10 @@ fn paint_honey(bounds: Bounds<Pixels>, level: f64, colour: Hsla, window: &mut Wi
         return;
     }
     let origin = bounds.origin;
-    let points: Vec<Point<Pixels>> = kept.into_iter().map(|(x, y)| point(origin.x + gpui_kit::px(x), origin.y + gpui_kit::px(y))).collect();
+    let points: Vec<Point<Pixels>> = kept
+        .into_iter()
+        .map(|(x, y)| point(origin.x + gpui_kit::px(x), origin.y + gpui_kit::px(y)))
+        .collect();
     let mut builder = PathBuilder::fill();
     builder.add_polygon(&points, true);
     if let Ok(path) = builder.build() {
@@ -1297,7 +2295,11 @@ fn paint_honey(bounds: Bounds<Pixels>, level: f64, colour: Hsla, window: &mut Wi
 /// as text. The CLIs' buttons it also takes in the Swift app are the Updates
 /// panel's.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    cx: &mut App,
+) -> Result<Value, String> {
     if cmd["scrollToSettings"].as_bool() == Some(true) {
         app.update(cx, |t, cx| {
             t.usage.scroll.scroll_to_bottom();
@@ -1311,7 +2313,12 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
                 t.toggle_under_threads(shell::USAGE, cx);
             }
         });
-        let shown = app.read(cx).dock.read(cx).controller.is_showing(shell::USAGE);
+        let shown = app
+            .read(cx)
+            .dock
+            .read(cx)
+            .controller
+            .is_showing(shell::USAGE);
         return match (show, shown) {
             (true, true) => Ok(json!("ok shown")),
             (true, false) => Err("the panel didn't open".into()),
@@ -1329,6 +2336,24 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
         app.update(cx, |t, cx| t.find_work(account, cx));
         return Ok(json!("ok"));
     }
+    // Opens or shuts a login's row in every pool it's in, as a click does.
+    if let Some(account) = cmd["open"].as_str() {
+        let keys: Vec<String> = {
+            let t = app.read(cx);
+            rules::groups(&t.logins.pools, &t.logins.accounts)
+                .iter()
+                .filter(|g| g.accounts().iter().any(|a| a.id == account))
+                .map(|g| row_key(&g.id, account))
+                .collect()
+        };
+        if keys.is_empty() {
+            return Err(format!("no row for {account}").into());
+        }
+        app.update(cx, |t, cx| {
+            keys.iter().for_each(|k| t.toggle_usage_row(k, cx))
+        });
+        return Ok(json!("ok"));
+    }
     if let Some(on) = cmd["showModelWeeks"].as_bool() {
         app.update(cx, |t, cx| t.set_show_model_weeks(on, cx));
         return Ok(json!(if on { "ok on" } else { "ok off" }));
@@ -1337,5 +2362,8 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) ->
         return Err("the CLIs' buttons are in the Updates panel".into());
     }
     let lines = app.read(cx).usage_dump(cx)["lines"].clone();
-    Ok(json!(format!("ok {}", serde_json::to_string(&lines).unwrap_or_default())))
+    Ok(json!(format!(
+        "ok {}",
+        serde_json::to_string(&lines).unwrap_or_default()
+    )))
 }

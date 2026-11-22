@@ -32,13 +32,13 @@ type Conn = {
   since: number;
   browserPanel?: boolean;
   authTimer?: AwakeTimer;
-  // This connection's auth.challenge nonce (docs/protocol.md, "Auth").
+  // This connection's auth.challenge nonce (docs/protocol/connection.md, "Auth").
   challenge?: string;
   // Both ends of the client's TCP connection, to find its process (callerOf).
   peer?: PeerSocket;
   // Refused after auth (its process didn't match its key): frames are dropped.
   dropped?: boolean;
-  // The thread this connection acts for (docs/protocol.md, "A thread's own
+  // The thread this connection acts for (docs/protocol/connection.md, "A thread's own
   // key"): undefined for the owner. Set once the process lookup is done.
   caller?: string;
   // While the process lookup runs, frames wait here so a request can't get
@@ -47,7 +47,7 @@ type Conn = {
   queue: string[];
 };
 
-// Until a connection has authenticated (docs/protocol.md, "Auth"), it gets
+// Until a connection has authenticated (docs/protocol/connection.md, "Auth"), it gets
 // a small frame limit, a short deadline, and only so many of them may wait
 // at once: without these, anyone on the Mac could open sockets and send
 // 64 MiB frames for the runner to buffer and JSON-parse before it even
@@ -170,9 +170,9 @@ export type RpcServerOptions = {
   // thread (main.ts remoteMoving). A relayed send or edit that doesn't say
   // which runner it's shown on is refused meanwhile (mustReachShown).
   relayMoving?: (threadId: string) => boolean;
-  // hello's `updates` (docs/protocol.md, "Runner updates").
+  // hello's `updates` (docs/protocol/updates.md, "Runner updates").
   updates?: () => unknown;
-  // The Mac app's hello with its build (docs/protocol.md, "App restarts").
+  // The Mac app's hello with its build (docs/protocol/updates.md, "App restarts").
   appHello?: (build: { commit: string; short: string; tree: string }, app: 'mac' | 'desktop') => void;
   // Any hello from the GPUI app, built or not (swift-changes.ts's first look).
   desktopHello?: () => void;
@@ -181,7 +181,7 @@ export type RpcServerOptions = {
   // What a connection that belongs to a thread may do (rpc-gate.ts).
   gate?: CallerGate;
   // The thread whose CLI the process at the client's end of this exact
-  // connection runs under, if any (peer.ts, docs/protocol.md "Who's really
+  // connection runs under, if any (peer.ts, docs/protocol/connection.md "Who's really
   // calling"). Rejects when it can't say which one (AmbiguousPeer).
   callerOf?: (sock: PeerSocket) => Promise<string | undefined>;
   // Tests shorten these.
@@ -312,7 +312,7 @@ export class RpcServer {
     // before it can take one of the slots below and keep the apps and tb
     // out (Daybreak finding 146).
     if (req.headers.origin !== undefined) return refuse(403, 'Forbidden');
-    // An old client's bearer header (docs/protocol.md, "Before the
+    // An old client's bearer header (docs/protocol/connection.md, "Before the
     // challenge"): right, it's in; wrong, it's refused here. No header means
     // the challenge.
     const header = req.headers.authorization;
@@ -389,7 +389,7 @@ export class RpcServer {
     setTimeout(() => conn.ws.terminate(), 1000).unref();
   }
 
-  // What this server's proofs are bound to (docs/protocol.md, "Auth"): the
+  // What this server's proofs are bound to (docs/protocol/connection.md, "Auth"): the
   // kind of server and the port it listens on.
   private channel(): AuthChannel {
     const addr = this.http.address();
@@ -481,7 +481,7 @@ export class RpcServer {
     const id = msg && typeof msg === 'object' ? (msg.id ?? null) : null;
     const p = (msg && typeof msg === 'object' && msg.params && typeof msg.params === 'object' ? msg.params : {}) as Record<string, unknown>;
     if (msg?.method === 'auth.prove' && conn.challenge && isNonce(p.nonce) && p.nonce !== conn.challenge) {
-      // A thread proves its own key instead of the token (docs/protocol.md,
+      // A thread proves its own key instead of the token (docs/protocol/connection.md,
       // "A thread's own key"); an id that can't be one is simply no proof.
       const threadId = p.threadId === undefined ? undefined : isThreadId(p.threadId) ? p.threadId : null;
       const secret = threadId === null ? undefined : threadId ? threadKey(this.opts.token, threadId) : this.opts.token;
@@ -704,13 +704,13 @@ export class RpcServer {
       case 'threads.createDraft':
       case 'threads.create': {
         if (method === 'threads.createDraft' && (typeof p.runnerId === 'string' || p.serviceId !== undefined)) throw bad('Create Backlog drafts on their owning runner.');
-        // On a virtual runner (docs/protocol.md, Virtual runners, "Starting from the Mac").
+        // On a virtual runner (docs/protocol/keys.md, Virtual runners, "Starting from the Mac").
         if (p.serviceId !== undefined) {
           if (typeof p.serviceId !== 'string' || !p.serviceId) throw bad('serviceId must be a virtual runner\'s id');
           if (!this.opts.virtualStart) throw bad("This runner can't start threads on a virtual runner.");
           return this.opts.virtualStart(p);
         }
-        // On another runner (docs/protocol.md, "Other runners' threads through the backend").
+        // On another runner (docs/protocol/runners.md, "Other runners' threads through the backend").
         if (typeof p.runnerId === 'string' && this.opts.relay) {
           return this.opts.relay.create(p.runnerId, p).then((res) => {
             // Never one of this runner's own: its requests would come here.
@@ -730,6 +730,7 @@ export class RpcServer {
           cwd: optString(p, 'cwd'),
           accountId: optString(p, 'accountId'),
           poolId: optString(p, 'poolId'),
+          ...optPoolProvider(p),
           model: optString(p, 'model'),
           effort: optEffort(p),
           permissionMode: optMode(p),
@@ -745,7 +746,7 @@ export class RpcServer {
         return { thread: res.thread, ...('turnId' in res ? { turnId: res.turnId } : {}) };
       }
       // A CLI started ahead of the new thread the app is writing
-      // (docs/protocol.md, "Warm start"; runner/warm-start.ts).
+      // (docs/protocol/connection.md, "Warm start"; runner/warm-start.ts).
       case 'threads.warm': {
         if (p.cancel === true) {
           r.dropSpare('page left', conn.id);
@@ -755,6 +756,7 @@ export class RpcServer {
           cwd: optString(p, 'cwd'),
           accountId: optString(p, 'accountId'),
           poolId: optString(p, 'poolId'),
+          ...optPoolProvider(p),
           model: optString(p, 'model'),
           effort: optEffort(p),
           permissionMode: optMode(p),
@@ -927,7 +929,7 @@ export class RpcServer {
             answers[k] = Array.isArray(v) ? v.map(String).join(', ') : String(v);
           }
         }
-        // Answers to the calls queued on the card (docs/protocol.md, "Queued calls").
+        // Answers to the calls queued on the card (docs/protocol/threads.md, "Queued calls").
         let queued: Record<string, 'allow' | 'deny'> | undefined;
         if (p.queued !== undefined) {
           if (!p.queued || typeof p.queued !== 'object' || Array.isArray(p.queued)) throw bad('queued must be an object');
@@ -952,7 +954,7 @@ export class RpcServer {
       case 'plans.approve':
         return r.approvePlan({ threadId: reqString(p, 'threadId'), itemId: reqString(p, 'itemId') });
       case 'secrets.answer': {
-        // docs/protocol.md, "Secrets". Nothing here logs params, and the
+        // docs/protocol/threads.md, "Secrets". Nothing here logs params, and the
         // errors below never quote them.
         const decline = p.decline === true;
         if (!decline && typeof p.secret !== 'string') throw bad('secret or decline is required');
@@ -1161,7 +1163,7 @@ function stringArray(p: Record<string, unknown>, k: string): string[] {
   return v as string[];
 }
 
-// Who started a new thread (docs/protocol.md, "Who started a thread"). It's
+// Who started a new thread (docs/protocol/threads.md, "Who started a thread"). It's
 // shown on Mike's row, so it's cut to what a row can hold, on one line.
 const STARTED_BY_KINDS = new Set(['tool', 'thread', 'schedule', 'librarian', 'runner']);
 function optStartedBy(p: Record<string, unknown>): { startedBy?: ThreadStartedBy } {
@@ -1189,6 +1191,15 @@ function optMode(p: Record<string, unknown>): PermissionMode | undefined {
   return v;
 }
 
+
+// threads.create's provider: with a poolId, which of a mixed pool's
+// providers the model picker's pick was under, as a model id alone can be
+// claimed by several (an OpenCode model called gpt-…).
+function optPoolProvider(p: Record<string, unknown>): { provider?: Provider } {
+  if (p.provider === undefined || p.poolId === undefined) return {};
+  if (!isProvider(p.provider)) throw bad(`provider must be one of ${PROVIDERS.join(', ')}`);
+  return { provider: p.provider as Provider };
+}
 function optEffort(p: Record<string, unknown>): EffortLevel | undefined {
   const v = p.effort;
   if (v === undefined || v === null) return undefined;

@@ -10,7 +10,11 @@ use gpui_kit::{Role, StatefulInteractiveElement};
 
 pub(crate) trait A11yRole: StatefulInteractiveElement {
     fn a11y_role(self, role: Role) -> Self {
-        if role == Role::GenericContainer { self } else { self.role(role) }
+        if role == Role::GenericContainer {
+            self
+        } else {
+            self.role(role)
+        }
     }
 }
 

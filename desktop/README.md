@@ -69,12 +69,12 @@ On a flaky connection, crates.io downloads need
 `CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=10`.
 
 ```bash
-npm ci --prefix ../app/Tools/mock-runner   # for the tests and the mock
+npm ci --prefix ../mock-runner   # for the tests and the mock
 cargo run -p threadbear-gpui
 ```
 
 To run it against the mock runner instead of your real one, start
-`node ../app/Tools/mock-runner/server.mjs --data-dir /tmp/tb-mock` and run
+`node ../mock-runner/server.mjs --data-dir /tmp/tb-mock` and run
 the app with `THREADBEAR_HOME=/tmp/tb-mock`.
 
 ## Installing it on a Mac
@@ -89,6 +89,22 @@ scripts/install-app.sh --build-on <host>    # builds on another Mac and copies i
 
 That puts `Threadbear GPUI.app` in `~/Applications`, beside the Swift app, using
 the same runner.
+
+The installed app then follows main as the Swift app does
+(`gpui/src/app_update.rs`, built on a check host), so after landing a change an
+agent calls `wait_for_app_restart` and hears when it's back on the new build
+(docs/protocol/updates.md, "App restarts"), then checks it with `tb export` of the
+thread and the scripted app (below) rather than asking Mike.
+
+## Hangs and crashes
+
+The app freezing: read `~/Library/Logs/Threadbear/hangs/desktop` first
+(`gpui/src/hang_watch.rs`); its panics are in
+`~/Library/Logs/Threadbear/crashes/desktop`. Fix the frame a stall's sample
+names rather than guessing from logs. The installed app of Mike's repo, on the
+real data folder, sends panics, crashes and freezes of 15 seconds or more to
+Sentry (`gpui/src/crash_reporting.rs`, tag `component` desktop); debug builds
+never do.
 
 ## Tests
 
@@ -107,7 +123,9 @@ cargo test    # the connection (with the mock) and the app's rules
 ```
 
 `../features/README.md` has the behaviour specs, which run the real app on the
-mock runner. Run Rust builds and suites elsewhere (`scripts/remote.sh`):
+mock runner. Run Rust builds and suites elsewhere, never on the Mac someone is
+working on: `scripts/remote.sh cloud -- <command>`, or `scripts/remote.sh
+tinker-desk --desk -- <command>` for a window on a real Mac:
 
 ```bash
 scripts/remote.sh cloud -- bash -c 'cd desktop && cargo test -p threadbear-core'
@@ -124,6 +142,55 @@ scripts/remote.sh cloud -- bash -c 'cd desktop && cargo test -p threadbear-gpui 
 `../check.sh` (and so `tb land`) runs `cargo test -p threadbear-core -p
 threadbear-client` on its check host whenever something under `desktop/`
 changed, and the full check adds `cargo check --workspace --all-targets`.
+
+### Formatting
+
+The Rust is formatted by `cargo fmt` (`rustfmt.toml`: the defaults with the
+crates' edition), with the toolchain `../rust-toolchain.toml` pins, which
+rustup fetches by itself. `../check.sh` (so `tb land`, `--quick` included)
+and the Desktop workflow fail a change it would reformat. Before committing
+Rust:
+
+```bash
+cd desktop && cargo fmt --all
+```
+
+It's light, so it runs on the M5 too (`taskpolicy -b` in front). The
+generated CEF loader (`web/src/mac/loader.rs`) and `vendor/` are left as
+they are. Everything was formatted at once in one commit, listed in
+`../.git-blame-ignore-revs` (`git config blame.ignoreRevsFile
+.git-blame-ignore-revs` makes blame look past it). A branch from before it
+lands across it by itself; `../scripts/replay-over-format.sh` does the same
+by hand.
+
+### Lints
+
+Clippy runs with the lints in `Cargo.toml`'s `[workspace.lints.clippy]`
+(each says why it's there) and the settings in `clippy.toml`, and
+`../check.sh` (`--quick` included, when `desktop/` changed) and the Desktop
+workflow (Mac and Linux) fail on any warning. To see what it says, on a
+check host:
+
+```bash
+scripts/remote.sh tinker-desk --build -- bash -c 'cd desktop && cargo clippy --workspace --all-targets -- -D warnings'
+```
+
+- An exception is `#[expect(clippy::<lint>, reason = "...")]` on the
+  smallest item that needs it, not `allow`: an expect that's no longer
+  needed fails, so a fixed site comes off the list. A bare `allow` without
+  a reason fails too. `allow` (with a reason) is for code where the lint
+  only fires on some platforms or features.
+- `unwrap()` and `expect()` warn outside tests: handle the error, or mark
+  the line with why it can't fail. A lock's poisoning is taken with
+  `.unwrap_or_else(|e| e.into_inner())`.
+- Every `unsafe` block has a `// SAFETY:` comment right above it saying why
+  it holds; a public function that dereferences a raw pointer it's handed is
+  an `unsafe fn` with a `# Safety` section.
+- The baselines (functions over 200 lines, more than 7 arguments, and a few
+  `expect`s) are marked "baselined ... 20 Nov 2026": take the mark off when
+  the code is split up.
+- The automation feature's code isn't in the gate (its builds differ by
+  feature), and nor is Windows'.
 
 `scripts/spec.sh` is the one-command version for use through `remote.sh`: it
 builds the app (Swift or GPUI), keeps its own copy of the GPUI binary so another
@@ -144,8 +211,47 @@ uploads each platform's binary as the run's artifacts.
 control (`automation.rs`) with Mac windows hidden by default, against the mock runner or a
 dev runner's `--home`, then `do`, `dump`, `shot`, `rebuild`, `log` and
 `stop` drive it (`--help` says the rest). A scripted app refuses the real
-data folder and its live runner, and copies to a pasteboard of its own
-(`gpui/src/scripted.rs`).
+data folder and its live runner (`--live` only if Mike says), and copies to a
+pasteboard of its own (`gpui/src/scripted.rs`). It runs headless: out of the
+Dock, its windows transparent and letting clicks through, still drawing for
+`dump` and `shot`, and named "Threadbear Headless Tester" in ps (`--visible`
+puts it on screen, labelled, for a test that needs that). Instances belong to
+the thread and checkout that started them: without `--id` a command means your
+newest one, never another thread's, `stop --all` stops only yours, and `status`
+says whose is whose. An instance quits after an hour with no command.
+
+- A UI change: `scripts/dev-app.sh start --mock` (the demo threads;
+  `--appearance dark` for pictures), then drive it with
+  `do '{"cmd":"open","id":"demo_upload"}' '{"cmd":"waitFor","loaded":true}'`
+  (`click-at` with `x`, `y` for what has no label), read it with `dump` and
+  look at it with `shot <file.png>`. After an edit, `rebuild` restarts it on
+  the new build with the same thread open. Look at the images before saying
+  it works, then `stop`. The commands are in `gpui/src/automation.rs` and the
+  Swift app's README ("Seeing and driving it from a script").
+- A scripted app is never in front, so opening a thread doesn't mark it read
+  until you send `{"cmd":"focus"}`.
+- A bug in one of Mike's real threads: `tb export <id>`, then
+  `dev-app.sh start --mock --fixtures .fixtures/threads/<id>` and `open`
+  it. Exports are his private conversations: keep shots of them out of git
+  and delete them when done.
+- A runner change seen in the app: start `runner/scripts/dev-runner.sh`, then
+  `dev-app.sh start --home <dev home>` (it prints that line). A message sent
+  from that app's composer is a real turn; `dump` shows the model it would use.
+- `dev-app.sh log` shows the app's own log (connection, RPC errors, the
+  commands it ran). Mike can right-click a row for "Copy debug info" or use
+  "Copy thread id" in the ... menu to point you at what he's seeing.
+- A cursor bug only shows with the real pointer: unit tests, `dump` and `shot`
+  can't see it, and two fixes for the done card's "?" passed them and changed
+  nothing Mike could see. On Tinker Desk's desktop (AGENTS.md, "Tests that
+  need the real screen"), read `NSCursor.currentSystem` from a small separate
+  process that moves the pointer with CGEvent, and only once `HIDIdleTime`
+  says nobody is at it, putting the pointer and front app back afterwards.
+  The dev window sits behind others, so float it first (a temporary
+  `window.level`), or you're reading whichever app is on top, and check its
+  log shows the moves arriving. Rest about a second as well as moving: a tip
+  coming up makes AppKit work the cursor out again, and SwiftUI's view behind
+  AppKit content answers with the arrow. Run it with the fix taken out too,
+  to see it fail.
 
 To film it for a clip, run `scripts/film.sh` from the M5 (`--help` has a
 whole take). It starts the same app on Tinker Desk's desktop with `--film`:
@@ -157,7 +263,8 @@ it and `film.sh record` records the window with
 refuses to start anywhere film.sh hasn't set it up, as its window comes to
 the front.
 
-The build runs on an `updateBuildHosts` Mac and comes back here. Its Lucide
+The build runs on an `updateBuildHosts` Mac and comes back here, or runs here
+through `scripts/one-build.sh` if none answers. Its Lucide
 SVGs are embedded in debug builds too (`rust-embed/debug-embed` in
 `gpui/Cargo.toml`), so it needs no files from that Mac's Cargo registry.
 `cargo test -p threadbear-gpui --test assets` checks the whole icon catalog

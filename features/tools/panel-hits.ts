@@ -39,7 +39,7 @@ post(.leftMouseDown); usleep(60_000)
 post(.leftMouseUp); usleep(100_000)
 `);
 execFileSync('swiftc', ['-O', `${tool}.swift`, '-o', tool]);
-// The screen awake for the whole run, or the events go nowhere (AGENTS.md).
+// The screen awake for the whole run, or the events go nowhere (features/README.md, "Real screen").
 const awake = spawn('/usr/bin/caffeinate', ['-u', '-d', '-w', String(process.pid)], { stdio: 'ignore' });
 awake.unref();
 

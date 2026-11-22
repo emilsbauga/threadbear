@@ -24,7 +24,7 @@ struct PendingCard: View {
     /// The button that's been tapped, spinning until the card goes
     /// (AppModel.answerCard), there still if he leaves and comes back.
     private var tapped: Tapped? {
-        guard let choice = model.cardAnswers[pending.id]?.choice else { return nil }
+        guard let choice = model.cardAnswer(pending.id) else { return nil }
         return ApprovalOption(rawValue: choice).map(Tapped.option) ?? .sendAnswer
     }
 

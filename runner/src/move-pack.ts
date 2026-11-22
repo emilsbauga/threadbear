@@ -1,4 +1,4 @@
-// The bundle a moving thread travels in (docs/protocol.md, "Moving a thread
+// The bundle a moving thread travels in (docs/protocol/moves.md, "Moving a thread
 // to another runner"): a flat archive of its files, gzipped, sealed to the
 // new runner's key (secrets.ts sealBytes) and cut into chunks small enough
 // for a runner key's uploads. Its own format rather than tar, so packing

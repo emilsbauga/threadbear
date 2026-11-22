@@ -39,10 +39,10 @@ export const row = query({
 });
 
 // What a row may hold that no page shows: a box's boot token and key
-// hashes and its sealed thread key, and a cloud token's sealed value
-// (boxes.ts). Taken out wherever they are in what the viewer returns (a
+// hashes and its sealed thread key, a cloud token's sealed value
+// (boxes.ts), and the push relay install's key (relayInstallStates.ts). Taken out wherever they are in what the viewer returns (a
 // row's doc, its fields, its parent's and children's), whatever the table.
-export const SECRET_FIELDS: readonly string[] = ['bootTokenHash', 'boxKeyHash', 'sealedThreadKey', 'sealed', 'exchanged'];
+export const SECRET_FIELDS: readonly string[] = ['bootTokenHash', 'boxKeyHash', 'sealedThreadKey', 'sealed', 'exchanged', 'installKey'];
 export function withoutSecrets<T>(value: T): T {
   if (Array.isArray(value)) return value.map(withoutSecrets) as T;
   // Only plain objects: bytes (an ArrayBuffer) stay as they are.

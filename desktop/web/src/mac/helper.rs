@@ -18,16 +18,25 @@ pub fn run() -> i32 {
         sandbox.initialize(args.as_main_args());
         sandbox
     });
-    let Ok(exe) = std::env::current_exe() else { return 1 };
+    let Ok(exe) = std::env::current_exe() else {
+        return 1;
+    };
     let loader = LibraryLoader::new(&exe, true);
     if !loader.load() {
-        eprintln!("threadbear-web-helper: couldn't load the web runtime beside {}", exe.display());
+        eprintln!(
+            "threadbear-web-helper: couldn't load the web runtime beside {}",
+            exe.display()
+        );
         return 1;
     }
     // Kept loaded until the process ends (loader_support.rs).
     std::mem::forget(loader);
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    let code = execute_process(Some(args.as_main_args()), None::<&mut App>, std::ptr::null_mut());
+    let code = execute_process(
+        Some(args.as_main_args()),
+        None::<&mut App>,
+        std::ptr::null_mut(),
+    );
     drop(sandbox);
     code
 }

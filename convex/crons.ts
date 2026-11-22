@@ -29,4 +29,6 @@ crons.interval('prune machine history', { hours: 24 }, internal.machines.pruneHi
 crons.interval('sleep idle boxes', { minutes: 2 }, internal.boxService.sleepIdleBoxes, {});
 crons.interval('reap boxes', { minutes: 5 }, internal.boxService.reapBoxes, {});
 crons.interval('prune box saves', { hours: 6 }, internal.boxService.pruneSaves, {});
+// Expired boxes past their days again, with their thread and runner rows (boxService.ts).
+crons.interval('purge expired boxes', { hours: 6 }, internal.boxService.purgeExpiredBoxes, {});
 export default crons;

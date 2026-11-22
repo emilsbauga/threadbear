@@ -1,4 +1,4 @@
-// What a finished turn needs from Mike (docs/protocol.md, "Needs you"):
+// What a finished turn needs from Mike (docs/protocol/needs-you.md, "Needs you"):
 // the agent's end_turn call, or failing that the "What I need from you"
 // section his own instructions ask every agent to end with. No model call:
 // the agent that did the work is the one that knows.
@@ -65,7 +65,7 @@ export function needsFromTool(input: unknown): Needs | undefined {
   for (const a of Array.isArray(o.asks) ? o.asks : []) {
     if (!a || typeof a !== 'object') continue;
     const r = a as Record<string, unknown>;
-    // One reply (docs/protocol.md, "One reply") asks a question and has no
+    // One reply (docs/protocol/needs-you.md, "One reply") asks a question and has no
     // why; the card shows it as the ask's paragraph, so it's the action.
     const action = clipText(r.action, MAX_ACTION) ?? clipText(r.question, MAX_ACTION);
     if (!action) continue;
@@ -158,7 +158,7 @@ export function optionNotesFromList(text: string, options: string[]): { text: st
 }
 
 // A turn that needs nothing, with any follow-ups it suggested: the done
-// card's buttons (docs/protocol.md, "Next steps"). Only here, as a card
+// card's buttons (docs/protocol/needs-you.md, "Next steps"). Only here, as a card
 // of asks already has its own buttons.
 function done(v: unknown): Needs {
   const next = [...new Set((Array.isArray(v) ? v : []).map((n) => clipText(n, MAX_NEXT_CHARS)).filter((n): n is string => !!n))].slice(0, MAX_NEXT);
@@ -185,7 +185,7 @@ export const OPEN_GONE = ' Your "open" lines aren\'t shown any more: say them in
 const MAX_SUMMARY = 8;
 const MAX_BULLET = 400;
 
-// end_turn's summary bullets, tidied (docs/protocol.md, "The summary"),
+// end_turn's summary bullets, tidied (docs/protocol/needs-you.md, "The summary"),
 // or undefined when there are none, so the turn's own text is its reply.
 export function summaryFromTool(input: unknown): string[] | undefined {
   if (!input || typeof input !== 'object') return undefined;
@@ -495,7 +495,7 @@ const END_TURN_SUMMARY_LINKS =
   // Mike, 29 Oct: a turn that waited for the app to restart, then the
   // check after it, left two summaries. The app now shows a runner's turn
   // and the turns before it back to Mike's message as one, with the last
-  // summary as the reply (docs/protocol.md, "The summary").
+  // summary as the reply (docs/protocol/needs-you.md, "The summary").
   "When this turn started from a message the runner sent rather than one from the user (the app restarted, a hook ran, the resume after a restart), this summary takes the place of your last one, so cover everything since the user's last message, not just this turn; work: links can quote steps from those turns too. " +
   'Leave summary out only when the turn was a line or two of conversation, and write that as an ordinary message. ';
 
@@ -808,7 +808,7 @@ const CODEX_MESSAGE_END_TURN_DESCRIPTION =
   END_TURN_SUMMARY_LINKS +
   END_TURN_ASKS;
 
-// One reply (docs/protocol.md, "One reply"; docs/reply-card-design): the
+// One reply (docs/protocol/needs-you.md, "One reply"; docs/reply-card-design): the
 // agent calls end_turn first, with the card and a headline, then writes
 // its reply as its final message. Its context was written up to three
 // times (message, bullets, why), each told to stand alone, and Opus sent

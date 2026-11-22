@@ -1,4 +1,4 @@
-// Pools shared between runners through the backend (docs/protocol.md,
+// Pools shared between runners through the backend (docs/protocol/settings.md,
 // "Pools", "Shared between runners"). This follows the backend's list,
 // keeps the last one in shared-pools.json so a start with no network still
 // has it, puts this runner's runner.json pools up the first time when the

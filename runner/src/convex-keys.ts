@@ -1,4 +1,4 @@
-// Deploy keys for the Convex panel (docs/protocol.md, "The Convex panel").
+// Deploy keys for the Convex panel (docs/protocol/patches.md, "The Convex panel").
 // Convex's embedded dashboard takes a deploy key instead of Mike's Convex
 // login, so the runner makes one per deployment with the Convex CLI, on the
 // CLI's own login, and keeps it under secrets/. A key never goes into a

@@ -8,7 +8,7 @@ import { noHooksPath } from './platform.ts';
 // `git worktree add`. Settings given with -c beat the repo's own, so these
 // turn it off (and the untracked cache, which feeds from it) whatever the
 // folder says. Every git the runner runs in a thread's folder goes through
-// these (docs/protocol.md, "Trusting a folder's patches").
+// these (docs/protocol/trust.md, "Trusting a folder's patches").
 export const UNTRUSTED_GIT_CONFIG: readonly string[] = ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
 
 // The arguments for `git -C <dir> ...args` with those settings first.
@@ -90,7 +90,9 @@ export function untrustedGitSync(dir: string, args: readonly string[]): string {
 // sets anything unusual instead; a move can't, as it has to work in any
 // repo a thread is in (husky's core.hooksPath, a local git-lfs install),
 // so it switches every such thing off.
-export type UntrustedGitResult = { ok: boolean; code: number; stdout: string; stderr: string };
+// `bytes`: stdout as git wrote it, with UntrustedGitOptions.bytes (a blob that
+// isn't UTF-8 would not survive the string).
+export type UntrustedGitResult = { ok: boolean; code: number; stdout: string; stderr: string; bytes?: Buffer };
 export type UntrustedGitOptions = {
   // Extra variables (GIT_INDEX_FILE, the author), set after the runner's
   // own GIT_ ones are dropped.
@@ -98,7 +100,9 @@ export type UntrustedGitOptions = {
   // 'bundle': a fetch from a bundle file (the file protocol only).
   // 'remote': a fetch or clone from a remote, see above.
   network?: 'bundle' | 'remote';
+  // For the whole call, reading the repo's config included.
   timeoutMs?: number;
+  bytes?: boolean;
 };
 
 const TRUSTED_SCOPES = new Set(['system', 'global', 'unknown']); // 'unknown': Apple's own git config
@@ -177,12 +181,13 @@ export function repoProofConfig(entries: readonly ConfigEntry[], network?: 'bund
   return out;
 }
 
-function execGit(dir: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<UntrustedGitResult> {
+function execGit(dir: string, args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number, bytes = false): Promise<UntrustedGitResult> {
   return new Promise((resolve) => {
-    execFile('git', args as string[], { cwd: dir, env, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
+    execFile('git', args as string[], { cwd: dir, env, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGKILL', encoding: 'buffer' }, (err, stdout, stderr) => {
       const e = err as { code?: unknown; signal?: unknown } | null;
       const code = !e ? 0 : typeof e.code === 'number' ? e.code : e.signal ? -1 : 1;
-      resolve({ ok: !err, code, stdout: String(stdout), stderr: String(stderr) });
+      const out = Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout));
+      resolve({ ok: !err, code, stdout: out.toString('utf8'), stderr: String(stderr), ...(bytes ? { bytes: out } : {}) });
     });
   });
 }
@@ -204,7 +209,8 @@ export async function untrustedGit(dir: string, args: readonly string[], opts: U
   // programs these settings don't cover).
   if (!sub || !SUBCOMMANDS.has(sub) || (sub === 'worktree' && rest[0] !== 'list')) return { ok: false, code: 1, stdout: '', stderr: `untrustedGit doesn't run git ${[sub, sub === 'worktree' ? rest[0] : undefined].filter(Boolean).join(' ')}: nobody has looked at what a repo's config could make it run.` };
   // The same variables as the command, so it reads the config the command will.
-  const listed = await execGit(dir, [...LISTING_GIT_CONFIG, '-C', dir, 'config', '--list', '--show-scope', '-z'], { ...untrustedGitEnv(), GIT_NO_LAZY_FETCH: '1', ...opts.env }, 10_000);
+  const started = Date.now();
+  const listed = await execGit(dir, [...LISTING_GIT_CONFIG, '-C', dir, 'config', '--list', '--show-scope', '-z'], { ...untrustedGitEnv(), GIT_NO_LAZY_FETCH: '1', ...opts.env }, Math.min(10_000, timeout));
   // Outside a repo it still lists the owner's own config (empty is 0 too);
   // a config git can't parse fails the listing, and so this.
   if (!listed.ok) return { ok: false, code: listed.code || 1, stdout: '', stderr: `couldn't read the repo's git config: ${listed.stderr.trim() || `git config exited ${listed.code}`}` };
@@ -216,7 +222,9 @@ export async function untrustedGit(dir: string, args: readonly string[], opts: U
   }
   const pack = opts.network === 'remote' && (sub === 'fetch' || sub === 'clone' || sub === 'ls-remote') ? ['--upload-pack=git-upload-pack'] : [];
   const inside = NO_SUBMODULES[sub] ?? [];
-  return execGit(dir, [...config, '-C', dir, sub, ...inside, ...pack, ...rest], env, timeout);
+  // What's left of the caller's time, when it gave one.
+  const left = opts.timeoutMs === undefined ? timeout : Math.max(1, timeout - (Date.now() - started));
+  return execGit(dir, [...config, '-C', dir, sub, ...inside, ...pack, ...rest], env, left, opts.bytes);
 }
 
 // What untrustedGit runs. `git submodule` isn't one: it runs git in each

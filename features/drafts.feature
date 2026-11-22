@@ -68,6 +68,19 @@ Feature: Drafts in a reply
     When I send "Post it"
     Then my message says "Post it" then my Slack draft "Hey *Wayne*, thanks mate"
 
+  # Mike, 20 Nov: nothing in the box said the changed draft goes with the
+  # message, and his bubble showed the line to the agent and the raw fence.
+  # He picked a chip, like an attachment, in both places.
+  @rich.draft.edit @swift-pending
+  Scenario: A changed draft shows as a chip over the box, and under my words once sent
+    When I open the thread "Morning brief"
+    And a reply with a Slack draft streams in
+    And I change the draft to "Hey *Wayne*, thanks mate"
+    Then the box shows the draft chip "Your edited Slack message · 3 lines changed"
+    When I send "Post it"
+    Then my message shows "Post it" with the draft chip "Your edited Slack message"
+    And the box shows no draft chips
+
   @rich.draft.edit @swift-pending
   Scenario: Undo puts the agent's draft back, and nothing extra is sent
     When I open the thread "Morning brief"

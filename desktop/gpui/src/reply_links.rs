@@ -37,7 +37,10 @@ use threadbear_core::file_refs::{self, FileLink};
 use threadbear_core::highlights as hl;
 use threadbear_core::open_policy::{self as policy, LinkKind};
 use threadbear_core::reducer::{Row, RowContent};
-use threadbear_core::reply_links::{self as rules, ChromeProfile, FileLinkAction, LinkChoice, LinkMenuEntry, PeekPicture, WebLinkAction};
+use threadbear_core::reply_links::{
+    self as rules, ChromeProfile, FileLinkAction, LinkChoice, LinkMenuEntry, PeekPicture,
+    WebLinkAction,
+};
 
 /// How long the pointer has to stop before anything asks what's under it.
 const REST: Duration = Duration::from_millis(60);
@@ -69,10 +72,15 @@ struct LinkPrefs {
     trusted_openers: Vec<threadbear_core::open_policy::TrustedOpener>,
 }
 
-fn each_opener<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<threadbear_core::open_policy::TrustedOpener>, D::Error> {
+fn each_opener<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<threadbear_core::open_policy::TrustedOpener>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     let items = value.as_array().cloned().unwrap_or_default();
-    Ok(items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+    Ok(items
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
 }
 
 static PREFS: Mutex<Option<LinkPrefs>> = Mutex::new(None);
@@ -83,7 +91,12 @@ fn prefs_path() -> PathBuf {
 
 fn with_prefs<R>(f: impl FnOnce(&mut LinkPrefs) -> R) -> R {
     let mut cached = PREFS.lock().unwrap_or_else(|e| e.into_inner());
-    let prefs = cached.get_or_insert_with(|| std::fs::read(prefs_path()).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default());
+    let prefs = cached.get_or_insert_with(|| {
+        std::fs::read(prefs_path())
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok())
+            .unwrap_or_default()
+    });
     f(prefs)
 }
 
@@ -101,12 +114,22 @@ fn save_prefs(update: impl FnOnce(&mut LinkPrefs)) {
 
 /// What a plain click on a file link does (Default in its menu).
 pub(crate) fn file_click() -> FileLinkAction {
-    with_prefs(|p| p.file_link_click.as_deref().and_then(FileLinkAction::from_key)).unwrap_or_default()
+    with_prefs(|p| {
+        p.file_link_click
+            .as_deref()
+            .and_then(FileLinkAction::from_key)
+    })
+    .unwrap_or_default()
 }
 
 /// What a plain click on a web link does, in a reply or Highlights' Links.
 pub(crate) fn web_click() -> WebLinkAction {
-    with_prefs(|p| p.web_link_click.as_deref().and_then(WebLinkAction::from_key)).unwrap_or_default()
+    with_prefs(|p| {
+        p.web_link_click
+            .as_deref()
+            .and_then(WebLinkAction::from_key)
+    })
+    .unwrap_or_default()
 }
 
 pub(crate) fn set_file_click(action: FileLinkAction) {
@@ -119,7 +142,11 @@ pub(crate) fn set_web_click(action: WebLinkAction) {
 
 /// The merge method Mike starred in a PR tab's Merge menu, if he has.
 pub(crate) fn pr_merge_method() -> Option<threadbear_core::pull_requests::MergeMethod> {
-    with_prefs(|p| p.pr_merge_method.as_deref().and_then(threadbear_core::pull_requests::MergeMethod::parse))
+    with_prefs(|p| {
+        p.pr_merge_method
+            .as_deref()
+            .and_then(threadbear_core::pull_requests::MergeMethod::parse)
+    })
 }
 
 /// The kinds of file that open in their app without asking (open_gate.rs).
@@ -146,13 +173,22 @@ pub(crate) fn set_pr_merge_method(method: threadbear_core::pull_requests::MergeM
 /// Read from Chrome's "Local State" each time a menu opens, as the Swift app
 /// does, since Chrome rewrites it as windows open and close.
 pub(crate) fn offered_profiles() -> Vec<ChromeProfile> {
-    let chrome = open_gate::default_browser_app().is_some_and(|b| b.bundle_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(rules::CHROME_BUNDLE_ID))) && open_gate::is_running(rules::CHROME_BUNDLE_ID);
+    let chrome = open_gate::default_browser_app().is_some_and(|b| {
+        b.bundle_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(rules::CHROME_BUNDLE_ID))
+    }) && open_gate::is_running(rules::CHROME_BUNDLE_ID);
     if !chrome {
         return Vec::new();
     }
     let folder = rules::chrome_data_folder(&crate::files::home_dir());
-    let Ok(state) = std::fs::read_to_string(folder.join("Local State")) else { return Vec::new() };
-    rules::offered_profiles(rules::chrome_profiles(&state, &folder, &|p| p.exists()), true)
+    let Ok(state) = std::fs::read_to_string(folder.join("Local State")) else {
+        return Vec::new();
+    };
+    rules::offered_profiles(
+        rules::chrome_profiles(&state, &folder, &|p| p.exists()),
+        true,
+    )
 }
 
 /// The default browser's name, for "Open in Google Chrome".
@@ -201,7 +237,8 @@ pub(crate) fn watch() -> impl IntoElement {
             // A release outside the window is still told by the next move.
             window.on_mouse_event(|event: &MouseMoveEvent, phase, window, cx| {
                 if phase.capture() {
-                    LEFT_HELD.with(|held| held.set(event.pressed_button == Some(MouseButton::Left)));
+                    LEFT_HELD
+                        .with(|held| held.set(event.pressed_button == Some(MouseButton::Left)));
                 } else {
                     drag_moved(event, window, cx);
                 }
@@ -237,12 +274,21 @@ pub(crate) fn noted_by_probe(url: &str) -> bool {
 /// of the pointer to the event's. Nothing while the left button is down or
 /// something's being dragged: GPUI would take the probe's release for theirs
 /// (it ends a drag on any release).
-pub(crate) fn link_at(position: Point<Pixels>, window: &mut Window, cx: &mut App) -> Option<String> {
+pub(crate) fn link_at(
+    position: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<String> {
     if PROBE.with(|p| p.borrow().is_some()) || LEFT_HELD.with(Cell::get) || cx.has_active_drag() {
         return None;
     }
     PROBE.with(|p| *p.borrow_mut() = Some(None));
-    let event = MouseUpEvent { button: PROBE_BUTTON, position, modifiers: window.modifiers(), click_count: 1 };
+    let event = MouseUpEvent {
+        button: PROBE_BUTTON,
+        position,
+        modifiers: window.modifiers(),
+        click_count: 1,
+    };
     window.dispatch_event(event.to_platform_input(), cx);
     let found = PROBE.with(|p| p.borrow_mut().take().flatten());
     remember_probe(position, found.clone());
@@ -253,7 +299,9 @@ pub(crate) fn link_at(position: Point<Pixels>, window: &mut Window, cx: &mut App
 /// middle one as a browser has it. A right click is the link's menu.
 pub(crate) fn follows(event: &ClickEvent) -> bool {
     match event {
-        ClickEvent::Mouse(click) => matches!(click.up.button, MouseButton::Left | MouseButton::Middle),
+        ClickEvent::Mouse(click) => {
+            matches!(click.up.button, MouseButton::Left | MouseButton::Middle)
+        }
         _ => true,
     }
 }
@@ -272,21 +320,36 @@ impl ThreadPane {
     /// What `url` names, for a click, a menu or a card. `work:`, `thread:`
     /// and Threadbear's other links name neither.
     fn link_target(&self, url: &str) -> Option<LinkTarget> {
-        let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')));
+        let scheme = url
+            .split_once(':')
+            .map(|(s, _)| s.to_ascii_lowercase())
+            .filter(|s| {
+                !s.is_empty()
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+            });
         match scheme.as_deref() {
             Some("tbpath") => {
                 let rest = &url["tbpath:".len()..];
-                let text = crate::rows::markdown::percent_decode(rest.strip_prefix("?p=").unwrap_or(rest));
+                let text =
+                    crate::rows::markdown::percent_decode(rest.strip_prefix("?p=").unwrap_or(rest));
                 Some(LinkTarget::File(self.find_file(&text)))
             }
             Some("work" | "thread" | "review" | "tbchip" | "button") => None,
             // `Foo.swift:12` reads as a scheme, but it's a file and a line.
-            Some(s) if s.contains('.') && file_refs::strip_line(url) != url => Some(LinkTarget::File(self.find_file(url))),
+            Some(s) if s.contains('.') && file_refs::strip_line(url) != url => {
+                Some(LinkTarget::File(self.find_file(url)))
+            }
             _ => match policy::link_kind(url) {
                 LinkKind::Web(web) => Some(LinkTarget::Web(web)),
                 // A link with no scheme is looked for from the thread's folder
                 // like a path in inline code; a `file:` URL is the file.
-                LinkKind::File(path) if path.starts_with('/') || threadbear_core::reducer::text::is_windows_path(&path) => Some(LinkTarget::File(Some(self.whole_path_link(path)))),
+                LinkKind::File(path)
+                    if path.starts_with('/')
+                        || threadbear_core::reducer::text::is_windows_path(&path) =>
+                {
+                    Some(LinkTarget::File(Some(self.whole_path_link(path))))
+                }
                 LinkKind::File(path) => Some(LinkTarget::File(self.find_file(&path))),
                 _ => None,
             },
@@ -296,9 +359,20 @@ impl ThreadPane {
     /// A link's whole path, and the lines after it (`/w/a.ts:12-18`), unless
     /// a file here has that very name.
     fn whole_path_link(&self, path: String) -> FileLink {
-        let lines = file_refs::line_range(&path).filter(|_| self.summary.is_remote() || policy::local_metadata(Path::new(&path)).is_err());
-        let path = if lines.is_some() { file_refs::strip_line(&path).to_owned() } else { path };
-        FileLink { path, query: None, fragment: None, lines }
+        let lines = file_refs::line_range(&path).filter(|_| {
+            self.summary.is_remote() || policy::local_metadata(Path::new(&path)).is_err()
+        });
+        let path = if lines.is_some() {
+            file_refs::strip_line(&path).to_owned()
+        } else {
+            path
+        };
+        FileLink {
+            path,
+            query: None,
+            fragment: None,
+            lines,
+        }
     }
 
     /// The file a path in a reply names: from the thread's folder and what
@@ -313,19 +387,37 @@ impl ThreadPane {
         if self.summary.is_remote() {
             let home = file_refs::remote_home(&cwd, &local_home);
             let known = file_refs::tool_paths(self.feed.model().items(), &home);
-            return file_refs::file_link(text, root, &known, &home, &|p| p.starts_with('/'), &|_, _| None);
+            return file_refs::file_link(
+                text,
+                root,
+                &known,
+                &home,
+                &|p| p.starts_with('/'),
+                &|_, _| None,
+            );
         }
         let known = file_refs::tool_paths(self.feed.model().items(), &local_home);
-        file_refs::file_link(text, root, &known, &local_home, &|p| policy::local_metadata(Path::new(p)).is_ok(), &file_refs::search)
+        file_refs::file_link(
+            text,
+            root,
+            &known,
+            &local_home,
+            &|p| policy::local_metadata(Path::new(p)).is_ok(),
+            &file_refs::search,
+        )
     }
 
     /// Whether the pane beside the transcript is this thread's: it is for
     /// the selected thread, but a sub-agent's transcript, a project's page
     /// or a thread in a panel of its own has none showing.
     fn owns_pane(&self, cx: &App) -> bool {
-        let Some(app) = self.composer.read(cx).app.upgrade() else { return false };
+        let Some(app) = self.composer.read(cx).app.upgrade() else {
+            return false;
+        };
         let app = app.read(cx);
-        self.subagent_id.is_none() && app.selected.as_deref() == Some(self.summary.id.as_str()) && app.projects.open.is_none()
+        self.subagent_id.is_none()
+            && app.selected.as_deref() == Some(self.summary.id.as_str())
+            && app.projects.open.is_none()
     }
 
     // ---------------------------------------------------------------- clicks
@@ -335,36 +427,68 @@ impl ThreadPane {
     /// a file opens where Default says (⌘: its app); a web page in the
     /// browser or the pane; anything else through the open gate, which asks
     /// before another app starts.
-    pub(crate) fn follow_link(&mut self, url: &str, row_id: &str, command: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
-        let rest = url.split_once(':').map_or("", |(_, r)| r);
-        match scheme.as_deref() {
-            Some("work") => return self.open_work_link(&crate::rows::markdown::percent_decode(rest), row_id, window, cx),
-            Some("thread") => return self.open_thread_link(&crate::rows::markdown::percent_decode(rest), window, cx),
-            Some("review") => return self.open_review_link(&crate::rows::markdown::percent_decode(rest), window, cx),
-            _ => {}
+    pub(crate) fn follow_link(
+        &mut self,
+        url: &str,
+        row_id: &str,
+        command: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A button: link is its pill's to press, so it goes on as any other.
+        match rules::thread_link(url) {
+            Some(rules::ThreadLink::Step(words)) => {
+                return self.open_work_link(&words, row_id, window, cx)
+            }
+            Some(rules::ThreadLink::Thread(id)) => return self.open_thread_link(&id, window, cx),
+            Some(rules::ThreadLink::Review(id)) => return self.open_review_link(&id, window, cx),
+            Some(rules::ThreadLink::Button(_)) | None => {}
         }
         match self.link_target(url) {
             Some(LinkTarget::File(Some(file))) => self.open_file_link(file, None, command, cx),
             Some(LinkTarget::File(None)) => {
-                let name = hl::last_component(&file_refs::strip_line(url).replace("tbpath:?p=", "")).to_owned();
-                self.show_error(format!("Couldn't find {}.", crate::rows::markdown::percent_decode(&name)), cx);
+                let name =
+                    hl::last_component(&file_refs::strip_line(url).replace("tbpath:?p=", ""))
+                        .to_owned();
+                self.show_error(
+                    format!(
+                        "Couldn't find {}.",
+                        crate::rows::markdown::percent_decode(&name)
+                    ),
+                    cx,
+                );
             }
             // A PR opens as a tab in the pane with the inlinePrs experiment;
             // ⌘-click still takes it to the browser.
-            Some(LinkTarget::Web(web)) if !command && crate::pr_view::pr_url(&web).is_some() && self.opens_prs_here(cx) => self.open_pr_link(&web, cx),
-            Some(LinkTarget::Web(web)) => self.open_web_link(&web, WebLinkAction::for_click(command, web_click()), cx),
+            Some(LinkTarget::Web(web))
+                if !command
+                    && crate::pr_view::pr_url(&web).is_some()
+                    && self.opens_prs_here(cx) =>
+            {
+                self.open_pr_link(&web, cx)
+            }
+            Some(LinkTarget::Web(web)) => {
+                self.open_web_link(&web, WebLinkAction::for_click(command, web_click()), cx)
+            }
             None => open_gate::open_link(url, self.origin(), &self.summary.cwd, cx),
         }
     }
 
     /// A file opened as `action` says, or as a click does (`None`): ⌘ means
     /// its app, a project file goes to its app, else what Default says.
-    fn open_file_link(&mut self, file: FileLink, action: Option<FileLinkAction>, command: bool, cx: &mut Context<Self>) {
+    fn open_file_link(
+        &mut self,
+        file: FileLink,
+        action: Option<FileLinkAction>,
+        command: bool,
+        cx: &mut Context<Self>,
+    ) {
         let path = file.path.clone();
         let remote = self.summary.is_remote();
         let clicked = action.is_none();
-        let action = action.unwrap_or_else(|| FileLinkAction::for_click(command, remote, opens_in_its_app(&path), file_click()));
+        let action = action.unwrap_or_else(|| {
+            FileLinkAction::for_click(command, remote, opens_in_its_app(&path), file_click())
+        });
         // Another Mac's file isn't on this one: it's read into the pane
         // through its runner, whichever way it's opened, and isn't revealed.
         if remote {
@@ -377,16 +501,25 @@ impl ThreadPane {
         }
         let meta = match policy::local_metadata(Path::new(&path)) {
             Ok(meta) => meta,
-            Err(error) => { self.show_error(format!("Couldn't open that file: {error}"), cx); return; }
+            Err(error) => {
+                self.show_error(format!("Couldn't open that file: {error}"), cx);
+                return;
+            }
         };
         let mut action = action.resolved(&path, meta.is_dir());
         // A plain click on a kind the pane can't draw yet (a PDF, a film)
         // goes to its app, rather than to a note saying it opens there.
-        if clicked && action == FileLinkAction::Panel && !pane_draws(&path) && file_click() == FileLinkAction::Automatic {
+        if clicked
+            && action == FileLinkAction::Panel
+            && !pane_draws(&path)
+            && file_click() == FileLinkAction::Automatic
+        {
             action = FileLinkAction::App;
         }
         match action {
-            FileLinkAction::Panel if self.owns_pane(cx) => self.preview_in_pane(&path, file.lines, cx),
+            FileLinkAction::Panel if self.owns_pane(cx) => {
+                self.preview_in_pane(&path, file.lines, cx)
+            }
             FileLinkAction::Finder => open_gate::reveal(&path, Origin::ThisMac, cx),
             // The pane belongs to the selected thread: a sub-agent's or a
             // project page's link goes to its app.
@@ -395,13 +528,21 @@ impl ThreadPane {
     }
 
     fn opens_prs_here(&self, cx: &App) -> bool {
-        self.owns_pane(cx) && self.composer.read(cx).app.upgrade().is_some_and(|app| crate::pr_view::on(app.read(cx)))
+        self.owns_pane(cx)
+            && self
+                .composer
+                .read(cx)
+                .app
+                .upgrade()
+                .is_some_and(|app| crate::pr_view::on(app.read(cx)))
     }
 
     /// A PR's tab in the pane beside this thread, opening the pane if it's shut.
     fn open_pr_link(&mut self, url: &str, cx: &mut Context<Self>) {
         let thread = self.summary.clone();
-        let Some(app) = self.composer.read(cx).app.upgrade() else { return };
+        let Some(app) = self.composer.read(cx).app.upgrade() else {
+            return;
+        };
         let side = app.read(cx).side.clone();
         let section = side.update(cx, |side, cx| {
             side.open_pr(url, &thread, cx);
@@ -419,7 +560,15 @@ impl ThreadPane {
                 let side = app.read(cx).side.clone();
                 let section = side.update(cx, |side, cx| {
                     let section = side.section_for(&thread);
-                    side.show_preview(PanePreview::new(Target::Page(url.to_owned()), hl::text::address(url), section.clone()), &thread.id, cx);
+                    side.show_preview(
+                        PanePreview::new(
+                            Target::Page(url.to_owned()),
+                            hl::text::address(url),
+                            section.clone(),
+                        ),
+                        &thread.id,
+                        cx,
+                    );
                     section
                 });
                 show_pane(&app, &section, cx);
@@ -432,9 +581,16 @@ impl ThreadPane {
     /// A file in the pane beside the transcript, opening the pane if it's
     /// closed (`PaneModel.show`), with the `lines` a link named (`a.ts:12-18`)
     /// tinted and scrolled to.
-    fn preview_in_pane(&mut self, path: &str, lines: Option<(usize, usize)>, cx: &mut Context<Self>) {
+    fn preview_in_pane(
+        &mut self,
+        path: &str,
+        lines: Option<(usize, usize)>,
+        cx: &mut Context<Self>,
+    ) {
         let thread = self.summary.clone();
-        let Some(app) = self.composer.read(cx).app.upgrade() else { return };
+        let Some(app) = self.composer.read(cx).app.upgrade() else {
+            return;
+        };
         let side = app.read(cx).side.clone();
         let section = side.update(cx, |side, cx| {
             side.preview_path_at(path, None, lines, &thread, cx);
@@ -461,7 +617,9 @@ fn opens_in_its_app(path: &str) -> bool {
     if !hl::is_app_project(path) {
         return false;
     }
-    let Ok(real) = threadbear_core::open_policy::real_path(Path::new(path)) else { return false };
+    let Ok(real) = threadbear_core::open_policy::real_path(Path::new(path)) else {
+        return false;
+    };
     let real = real.to_string_lossy().into_owned();
     hl::is_app_project(&real) && open_gate::opening_app(&real).is_some()
 }
@@ -472,7 +630,9 @@ fn opens_in_its_app(path: &str) -> bool {
 fn pane_draws(path: &str) -> bool {
     match hl::viewer_for_path(path) {
         hl::Viewer::Text | hl::Viewer::Web => true,
-        hl::Viewer::Picture => hl::looks_like_picture(path) || path.to_lowercase().ends_with(".svg"),
+        hl::Viewer::Picture => {
+            hl::looks_like_picture(path) || path.to_lowercase().ends_with(".svg")
+        }
     }
 }
 
@@ -483,17 +643,25 @@ fn pane_draws(path: &str) -> bool {
 /// a link, and the link's card after the pointer rests on it.
 /// `thread` is the pane's thread, handed in as the pane is drawing and can't
 /// be read through its handle meanwhile.
-pub(crate) fn link_aware(text: impl IntoElement, ix: usize, row: &Row, thread: &str, cx: &mut Context<ThreadPane>) -> AnyElement {
+pub(crate) fn link_aware(
+    text: impl IntoElement,
+    ix: usize,
+    row: &Row,
+    thread: &str,
+    cx: &mut Context<ThreadPane>,
+) -> AnyElement {
     let weak = cx.weak_entity();
     let thread = thread.to_owned();
     let row_id = row.id.clone();
     let (moved_pane, moved_thread, moved_row) = (weak.clone(), thread.clone(), row_id.clone());
-    let (left_thread, left_row) = (thread.clone(), row_id.clone());
+    let (left_thread, left_row) = (thread, row_id);
     let pressed_pane = weak.clone();
     let menu_row = row.clone();
     div()
         .id(("reply-links", ix))
-        .on_mouse_move(move |event: &MouseMoveEvent, window, cx| pointer_moved(&moved_pane, &moved_thread, &moved_row, event, window, cx))
+        .on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
+            pointer_moved(&moved_pane, &moved_thread, &moved_row, event, window, cx)
+        })
         .on_hover(move |hovered: &bool, _, cx| {
             if !*hovered {
                 pointer_left(&left_thread, &left_row, cx);
@@ -538,20 +706,29 @@ const DRAG_AFTER: f64 = 4.;
 /// (`take_pressed_link`). A web page's link, one to a file that isn't
 /// there, or one in another Mac's thread selects as ever.
 fn link_pressed(pane: &WeakEntity<ThreadPane>, event: &MouseDownEvent, cx: &mut App) {
-    let Some(url) = gpui_kit::base::GlobalState::take_pressed_link(cx) else { return };
+    let Some(url) = gpui_kit::base::GlobalState::take_pressed_link(cx) else {
+        return;
+    };
     let Some(pane) = pane.upgrade() else { return };
     // Another Mac's paths are that Mac's: never a file here to hand out
     // (file_drag.rs).
     if event.click_count != 1 || event.modifiers.modified() || pane.read(cx).summary.is_remote() {
         return;
     }
-    let Some(LinkTarget::File(Some(file))) = pane.read(cx).link_target(&url) else { return };
+    let Some(LinkTarget::File(Some(file))) = pane.read(cx).link_target(&url) else {
+        return;
+    };
     if policy::local_metadata(Path::new(&file.path)).is_err() {
         return;
     }
     gpui_kit::base::GlobalState::suppress_text_selection(cx);
     let file = crate::file_drag::grab(PathBuf::from(file.path));
-    LINK_PRESS.with(|p| *p.borrow_mut() = Some(LinkPress { file, at: event.position }));
+    LINK_PRESS.with(|p| {
+        *p.borrow_mut() = Some(LinkPress {
+            file,
+            at: event.position,
+        })
+    });
 }
 
 /// The pointer moving with a file link pressed, anywhere in the window
@@ -564,8 +741,14 @@ fn drag_moved(event: &MouseMoveEvent, window: &mut Window, cx: &mut App) {
         if event.pressed_button != Some(MouseButton::Left) {
             p.take();
         }
-        let far = p.as_ref().is_some_and(|press| (event.position - press.at).magnitude() >= DRAG_AFTER);
-        if far { p.take() } else { None }
+        let far = p
+            .as_ref()
+            .is_some_and(|press| (event.position - press.at).magnitude() >= DRAG_AFTER);
+        if far {
+            p.take()
+        } else {
+            None
+        }
     });
     if let Some(press) = press {
         crate::file_drag::start(press.file, window, cx);
@@ -574,11 +757,19 @@ fn drag_moved(event: &MouseMoveEvent, window: &mut Window, cx: &mut App) {
 
 /// The menu for a right-click on a reply: the link's, if the press is on a
 /// file or a web link (`fileLinkMenu(at:)`), else the row's own.
-fn link_menu(menu: PopupMenu, pane: &WeakEntity<ThreadPane>, row: &Row, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+fn link_menu(
+    menu: PopupMenu,
+    pane: &WeakEntity<ThreadPane>,
+    row: &Row,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
     hide_peek(cx);
     let at = window.mouse_position();
     let url = recent_probe(at).unwrap_or_else(|| link_at(at, window, cx));
-    let Some(entity) = pane.upgrade() else { return menu };
+    let Some(entity) = pane.upgrade() else {
+        return menu;
+    };
     let target = url.as_deref().and_then(|u| entity.read(cx).link_target(u));
     match target {
         None => {
@@ -588,12 +779,36 @@ fn link_menu(menu: PopupMenu, pane: &WeakEntity<ThreadPane>, row: &Row, window: 
         Some(LinkTarget::Web(url)) => {
             let profiles = offered_profiles();
             let entries = rules::web_link_menu(browser_name().as_deref(), &profiles, web_click());
-            fill_menu(menu, &entries, &MenuTarget { pane: pane.clone(), link: LinkTarget::Web(url), profiles }, window, cx)
+            fill_menu(
+                menu,
+                &entries,
+                &MenuTarget {
+                    pane: pane.clone(),
+                    link: LinkTarget::Web(url),
+                    profiles,
+                },
+                window,
+                cx,
+            )
         }
         Some(LinkTarget::File(file)) => {
-            let app = file.as_ref().filter(|_| !entity.read(cx).summary.is_remote()).and_then(|f| open_gate::opening_app(&f.path)).map(|a| a.name);
+            let app = file
+                .as_ref()
+                .filter(|_| !entity.read(cx).summary.is_remote())
+                .and_then(|f| open_gate::opening_app(&f.path))
+                .map(|a| a.name);
             let entries = rules::file_link_menu(file.is_some(), app.as_deref(), file_click());
-            fill_menu(menu, &entries, &MenuTarget { pane: pane.clone(), link: LinkTarget::File(file), profiles: Vec::new() }, window, cx)
+            fill_menu(
+                menu,
+                &entries,
+                &MenuTarget {
+                    pane: pane.clone(),
+                    link: LinkTarget::File(file),
+                    profiles: Vec::new(),
+                },
+                window,
+                cx,
+            )
         }
     }
 }
@@ -606,24 +821,55 @@ struct MenuTarget {
     profiles: Vec<ChromeProfile>,
 }
 
-fn fill_menu(mut menu: PopupMenu, entries: &[LinkMenuEntry], target: &MenuTarget, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+fn fill_menu(
+    mut menu: PopupMenu,
+    entries: &[LinkMenuEntry],
+    target: &MenuTarget,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
     for entry in entries {
         match entry {
             LinkMenuEntry::Separator => menu = menu.separator(),
-            LinkMenuEntry::Note { title, symbol } => menu = menu.item(PopupMenuItem::new(title.clone()).icon(crate::icons::symbol(symbol)).disabled(true)),
-            LinkMenuEntry::Item { title, symbol, choice } => {
+            LinkMenuEntry::Note { title, symbol } => {
+                menu = menu.item(
+                    PopupMenuItem::new(title.clone())
+                        .icon(crate::icons::symbol(symbol))
+                        .disabled(true),
+                )
+            }
+            LinkMenuEntry::Item {
+                title,
+                symbol,
+                choice,
+            } => {
                 let (target, choice) = (target.clone(), choice.clone());
-                menu = menu.item(PopupMenuItem::new(title.clone()).icon(crate::icons::symbol(symbol)).on_click(move |_, _, cx| choose(&target, &choice, cx)));
+                menu = menu.item(
+                    PopupMenuItem::new(title.clone())
+                        .icon(crate::icons::symbol(symbol))
+                        .on_click(move |_, _, cx| choose(&target, &choice, cx)),
+                );
             }
             LinkMenuEntry::Defaults { choices } => {
                 let (choices, target) = (choices.clone(), target.clone());
-                menu = menu.submenu_with_icon(Some(crate::icons::symbol(rules::DEFAULT_SYMBOL)), rules::DEFAULT_TITLE, window, cx, move |mut sub, _, _| {
-                    for (title, symbol, choice, on) in &choices {
-                        let (target, choice) = (target.clone(), choice.clone());
-                        sub = sub.item(PopupMenuItem::new(title.clone()).icon(crate::icons::symbol(symbol)).checked(*on).on_click(move |_, _, cx| choose(&target, &choice, cx)));
-                    }
-                    sub
-                });
+                menu = menu.submenu_with_icon(
+                    Some(crate::icons::symbol(rules::DEFAULT_SYMBOL)),
+                    rules::DEFAULT_TITLE,
+                    window,
+                    cx,
+                    move |mut sub, _, _| {
+                        for (title, symbol, choice, on) in &choices {
+                            let (target, choice) = (target.clone(), choice.clone());
+                            sub = sub.item(
+                                PopupMenuItem::new(title.clone())
+                                    .icon(crate::icons::symbol(symbol))
+                                    .checked(*on)
+                                    .on_click(move |_, _, cx| choose(&target, &choice, cx)),
+                            );
+                        }
+                        sub
+                    },
+                );
             }
         }
     }
@@ -635,8 +881,12 @@ fn choose(target: &MenuTarget, choice: &LinkChoice, cx: &mut App) {
     match (choice, &target.link) {
         (LinkChoice::SetFileClick(action), _) => set_file_click(*action),
         (LinkChoice::SetWebClick(action), _) => set_web_click(*action),
-        (LinkChoice::CopyPath, LinkTarget::File(Some(file))) => cx.write_to_clipboard(ClipboardItem::new_string(file.path.clone())),
-        (LinkChoice::CopyLink, LinkTarget::Web(url)) => cx.write_to_clipboard(ClipboardItem::new_string(url.clone())),
+        (LinkChoice::CopyPath, LinkTarget::File(Some(file))) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(file.path.clone()))
+        }
+        (LinkChoice::CopyLink, LinkTarget::Web(url)) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
+        }
         (LinkChoice::OpenInProfile(index), LinkTarget::Web(url)) => {
             if let Some(profile) = target.profiles.get(*index) {
                 open_gate::open_in_chrome_profile(url, &profile.directory, cx);
@@ -644,11 +894,15 @@ fn choose(target: &MenuTarget, choice: &LinkChoice, cx: &mut App) {
         }
         (LinkChoice::OpenWeb(action), LinkTarget::Web(url)) => {
             let (url, action) = (url.clone(), *action);
-            let _ = target.pane.update(cx, |pane, cx| pane.open_web_link(&url, action, cx));
+            let _ = target
+                .pane
+                .update(cx, |pane, cx| pane.open_web_link(&url, action, cx));
         }
         (LinkChoice::OpenFile(action), LinkTarget::File(Some(file))) => {
             let (file, action) = (file.clone(), *action);
-            let _ = target.pane.update(cx, |pane, cx| pane.open_file_link(file, Some(action), false, cx));
+            let _ = target.pane.update(cx, |pane, cx| {
+                pane.open_file_link(file, Some(action), false, cx)
+            });
         }
         _ => {}
     }
@@ -700,19 +954,38 @@ fn link_spot(at: Point<Pixels>, url: &str, window: &mut Window, cx: &mut App) ->
     let top = last_on(url, at, point(at.x, at.y - line), window, cx).y;
     let bottom = last_on(url, at, point(at.x, at.y + line), window, cx).y;
     let reach = gpui_kit::px(style::zoomed(480.));
-    let left = last_on(url, at, point((at.x - reach).max(Pixels::ZERO), at.y), window, cx).x;
+    let left = last_on(
+        url,
+        at,
+        point((at.x - reach).max(Pixels::ZERO), at.y),
+        window,
+        cx,
+    )
+    .x;
     link_at(at, window, cx);
     // In the window, as the card's 300 wide (4 from the screen's edges on the Mac).
     let margin = gpui_kit::px(style::zoomed(4.));
     let furthest = window.viewport_size().width - gpui_kit::px(style::zoomed(300.)) - margin;
-    Spot { left: left.min(furthest).max(margin), top, bottom }
+    Spot {
+        left: left.min(furthest).max(margin),
+        top,
+        bottom,
+    }
 }
 
 /// The last point from `from`, which is on the link, towards `to` that's
 /// still on it: a link is one run on its line, so halving the gap finds
 /// its edge to a pixel.
-fn last_on(url: &str, from: Point<Pixels>, to: Point<Pixels>, window: &mut Window, cx: &mut App) -> Point<Pixels> {
-    let on = |p: Point<Pixels>, window: &mut Window, cx: &mut App| link_at(p, window, cx).as_deref() == Some(url);
+fn last_on(
+    url: &str,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Point<Pixels> {
+    let on = |p: Point<Pixels>, window: &mut Window, cx: &mut App| {
+        link_at(p, window, cx).as_deref() == Some(url)
+    };
     if on(to, window, cx) {
         return to;
     }
@@ -741,11 +1014,19 @@ fn recent_probe(at: Point<Pixels>) -> Option<Option<String>> {
     PEEK.with(|p| {
         let p = p.borrow();
         let (where_, found, when) = p.last.as_ref()?;
-        ((*where_ - at).magnitude() < 0.5 && when.elapsed() < Duration::from_secs(5)).then(|| found.clone())
+        ((*where_ - at).magnitude() < 0.5 && when.elapsed() < Duration::from_secs(5))
+            .then(|| found.clone())
     })
 }
 
-fn pointer_moved(pane: &WeakEntity<ThreadPane>, thread: &str, row: &str, event: &MouseMoveEvent, window: &mut Window, cx: &mut App) {
+fn pointer_moved(
+    pane: &WeakEntity<ThreadPane>,
+    thread: &str,
+    row: &str,
+    event: &MouseMoveEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let serial = PEEK.with(|p| {
         let mut p = p.borrow_mut();
         p.serial += 1;
@@ -767,39 +1048,83 @@ fn pointer_moved(pane: &WeakEntity<ThreadPane>, thread: &str, row: &str, event: 
 
 /// The pointer has stopped: which link it's on, and the card's timer if
 /// it's a new one.
-fn rested(serial: u64, pane: &WeakEntity<ThreadPane>, thread: &str, row: &str, window: &mut Window, cx: &mut App) {
+fn rested(
+    serial: u64,
+    pane: &WeakEntity<ThreadPane>,
+    thread: &str,
+    row: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let due = PEEK.with(|p| {
         let p = p.borrow();
-        p.serial == serial && p.inside.as_ref().is_some_and(|(t, r)| t == thread && r == row)
+        p.serial == serial
+            && p.inside
+                .as_ref()
+                .is_some_and(|(t, r)| t == thread && r == row)
     });
     if !due {
         return;
     }
     let at = window.mouse_position();
-    let Some(url) = link_at(at, window, cx).filter(|u| has_card(u)) else { return hide_peek(cx) };
+    let Some(url) = link_at(at, window, cx).filter(|u| has_card(u)) else {
+        return hide_peek(cx);
+    };
     // Still on the same link: its timer or its card stands. Which file a
     // path names is only worked out once its card is due, as that can mean
     // a look through folders.
-    let same = PEEK.with(|p| p.borrow().hovered.as_ref().is_some_and(|h| h.url == url && h.row == row && h.thread == thread));
+    let same = PEEK.with(|p| {
+        p.borrow()
+            .hovered
+            .as_ref()
+            .is_some_and(|h| h.url == url && h.row == row && h.thread == thread)
+    });
     if same {
         return;
     }
     hide_peek(cx);
     preload_pr(pane, &url, cx);
     let spot = link_spot(at, &url, window, cx);
-    PEEK.with(|p| p.borrow_mut().hovered = Some(Hovered { pane: pane.clone(), thread: thread.to_owned(), row: row.to_owned(), url: url.clone(), spot, card: None }));
+    PEEK.with(|p| {
+        p.borrow_mut().hovered = Some(Hovered {
+            pane: pane.clone(),
+            thread: thread.to_owned(),
+            row: row.to_owned(),
+            url: url.clone(),
+            spot,
+            card: None,
+        })
+    });
     let (pane, row, thread) = (pane.clone(), row.to_owned(), thread.to_owned());
     window
         .spawn(cx, async move |cx| {
-            cx.background_executor().timer(PEEK_AFTER.saturating_sub(REST)).await;
-            let still = PEEK.with(|p| p.borrow().hovered.as_ref().is_some_and(|h| h.url == url && h.row == row && h.thread == thread));
+            cx.background_executor()
+                .timer(PEEK_AFTER.saturating_sub(REST))
+                .await;
+            let still = PEEK.with(|p| {
+                p.borrow()
+                    .hovered
+                    .as_ref()
+                    .is_some_and(|h| h.url == url && h.row == row && h.thread == thread)
+            });
             if !still {
                 return;
             }
-            let Some(card) = pane.read_with(cx, |pane, _| pane.peek_card(&url, &row)).ok().flatten() else { return };
+            let Some(card) = pane
+                .read_with(cx, |pane, _| pane.peek_card(&url, &row))
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
             let card = card.load(cx.background_executor().clone()).await;
             PEEK.with(|p| {
-                if let Some(h) = p.borrow_mut().hovered.as_mut().filter(|h| h.url == url && h.row == row) {
+                if let Some(h) = p
+                    .borrow_mut()
+                    .hovered
+                    .as_mut()
+                    .filter(|h| h.url == url && h.row == row)
+                {
                     h.card = Some(card);
                 }
             });
@@ -814,7 +1139,9 @@ fn preload_pr(pane: &WeakEntity<ThreadPane>, url: &str, cx: &mut App) {
     if crate::pr_view::pr_url(url).is_none() {
         return;
     }
-    let Some(app) = pane.upgrade().and_then(|p| p.read(cx).app.upgrade()) else { return };
+    let Some(app) = pane.upgrade().and_then(|p| p.read(cx).app.upgrade()) else {
+        return;
+    };
     if !crate::pr_view::on(app.read(cx)) {
         return;
     }
@@ -858,7 +1185,9 @@ fn pointer_left(thread: &str, row: &str, cx: &mut App) {
 /// pointer isn't resting on a link any more.
 pub(crate) fn hide_peek(cx: &mut App) {
     PEEK.with(|p| p.borrow_mut().serial += 1);
-    let Some(gone) = PEEK.with(|p| p.borrow_mut().hovered.take()) else { return };
+    let Some(gone) = PEEK.with(|p| p.borrow_mut().hovered.take()) else {
+        return;
+    };
     if gone.card.is_some() {
         let _ = gone.pane.update(cx, |_, cx| cx.notify());
     }
@@ -867,8 +1196,14 @@ pub(crate) fn hide_peek(cx: &mut App) {
 /// What a link's card shows (LinkPeekCard).
 #[derive(Clone)]
 enum Card {
-    Page { title: String, detail: String },
-    File { words: rules::PeekWords, picture: FilePicture },
+    Page {
+        title: String,
+        detail: String,
+    },
+    File {
+        words: rules::PeekWords,
+        picture: FilePicture,
+    },
 }
 
 #[derive(Clone)]
@@ -885,10 +1220,16 @@ impl Card {
     /// slow disk mustn't hold up the window.
     async fn load(self, executor: BackgroundExecutor) -> Card {
         match self {
-            Card::File { words, picture: FilePicture::Lines(path, None) } => {
+            Card::File {
+                words,
+                picture: FilePicture::Lines(path, None),
+            } => {
                 let read = path.clone();
                 let lines = executor.spawn(async move { first_lines_of(&read) }).await;
-                Card::File { words, picture: FilePicture::Lines(path, lines) }
+                Card::File {
+                    words,
+                    picture: FilePicture::Lines(path, lines),
+                }
             }
             other => other,
         }
@@ -903,15 +1244,22 @@ impl Asset for MediaThumbnail {
     type Source = (String, Option<threadbear_core::open_policy::MediaVersion>);
     type Output = Result<std::sync::Arc<RenderImage>, ImageCacheError>;
 
-    fn load((path, expected): Self::Source, cx: &mut App) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+    fn load(
+        (path, expected): Self::Source,
+        cx: &mut App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let renderer = cx.svg_renderer();
         let background = cx.background_executor().clone();
         static DECODER: futures::lock::Mutex<()> = futures::lock::Mutex::new(());
         async move {
             let _decoding = DECODER.lock().await;
-            let bytes = background.spawn(async move { open_gate::media_thumbnail(&path, Origin::ThisMac, expected) }).await
+            let bytes = background
+                .spawn(async move { open_gate::media_thumbnail(&path, Origin::ThisMac, expected) })
+                .await
                 .ok_or_else(|| std::io::Error::other("No media thumbnail"))?;
-            Image::from_bytes(ImageFormat::Png, bytes).to_image_data(renderer).map_err(Into::into)
+            Image::from_bytes(ImageFormat::Png, bytes)
+                .to_image_data(renderer)
+                .map_err(Into::into)
         }
     }
 }
@@ -919,7 +1267,9 @@ impl Asset for MediaThumbnail {
 fn media_picture(path: &str, meta: Option<&std::fs::Metadata>) -> ImageSource {
     let version = meta.and_then(policy::media_version);
     let key = (path.to_owned(), version);
-    ImageSource::Custom(std::sync::Arc::new(move |window, cx| window.use_asset::<MediaThumbnail>(&key, cx)))
+    ImageSource::Custom(std::sync::Arc::new(move |window, cx| {
+        window.use_asset::<MediaThumbnail>(&key, cx)
+    }))
 }
 
 /// The start of a file, as its card's lines.
@@ -936,7 +1286,10 @@ impl ThreadPane {
             LinkTarget::Web(web) => {
                 let words = self.link_words(row, url).unwrap_or_default();
                 let words = rules::page_peek(&web, &words);
-                Some(Card::Page { title: words.title, detail: words.detail })
+                Some(Card::Page {
+                    title: words.title,
+                    detail: words.detail,
+                })
             }
             LinkTarget::File(_) if self.summary.is_remote() => None,
             LinkTarget::File(None) => None,
@@ -945,10 +1298,26 @@ impl ThreadPane {
                 let exists = meta.is_some();
                 let words = rules::file_peek(&file.path, exists, None, &crate::files::home_dir());
                 let picture = match (exists, rules::peek_picture(&file.path)) {
-                    (true, PeekPicture::Image) => FilePicture::Image(crate::rows::markdown::file_picture(&file.path)),
-                    (true, PeekPicture::Thumbnail) if cfg!(target_os = "macos") && meta.as_ref().is_some_and(|m| m.is_file()) => FilePicture::Thumbnail(media_picture(&file.path, meta.as_ref()), hl::file_symbol(&file.path)),
-                    (true, PeekPicture::Lines) => FilePicture::Lines(PathBuf::from(&file.path), None),
-                    _ => FilePicture::Symbol(if meta.is_some_and(|m| m.is_dir()) { "folder" } else { hl::file_symbol(&file.path) }),
+                    (true, PeekPicture::Image) => {
+                        FilePicture::Image(crate::rows::markdown::file_picture(&file.path))
+                    }
+                    (true, PeekPicture::Thumbnail)
+                        if cfg!(target_os = "macos")
+                            && meta.as_ref().is_some_and(|m| m.is_file()) =>
+                    {
+                        FilePicture::Thumbnail(
+                            media_picture(&file.path, meta.as_ref()),
+                            hl::file_symbol(&file.path),
+                        )
+                    }
+                    (true, PeekPicture::Lines) => {
+                        FilePicture::Lines(PathBuf::from(&file.path), None)
+                    }
+                    _ => FilePicture::Symbol(if meta.is_some_and(|m| m.is_dir()) {
+                        "folder"
+                    } else {
+                        hl::file_symbol(&file.path)
+                    }),
                 };
                 Some(Card::File { words, picture })
             }
@@ -985,7 +1354,10 @@ impl ThreadPane {
         match self.link_target(url)? {
             LinkTarget::Web(web) => {
                 let words = rules::page_peek(&web, words);
-                Some(Card::Page { title: words.title, detail: words.detail })
+                Some(Card::Page {
+                    title: words.title,
+                    detail: words.detail,
+                })
             }
             LinkTarget::File(_) if self.summary.is_remote() => None,
             LinkTarget::File(None) => None,
@@ -994,9 +1366,23 @@ impl ThreadPane {
                 let exists = meta.is_some();
                 let words = rules::file_peek(&file.path, exists, None, &crate::files::home_dir());
                 let picture = match (exists, rules::peek_picture(&file.path)) {
-                    (true, PeekPicture::Image) => FilePicture::Image(crate::rows::markdown::file_picture(&file.path)),
-                    (true, PeekPicture::Thumbnail) if cfg!(target_os = "macos") && meta.as_ref().is_some_and(|m| m.is_file()) => FilePicture::Thumbnail(media_picture(&file.path, meta.as_ref()), hl::file_symbol(&file.path)),
-                    _ => FilePicture::Symbol(if meta.is_some_and(|m| m.is_dir()) { "folder" } else { hl::file_symbol(&file.path) }),
+                    (true, PeekPicture::Image) => {
+                        FilePicture::Image(crate::rows::markdown::file_picture(&file.path))
+                    }
+                    (true, PeekPicture::Thumbnail)
+                        if cfg!(target_os = "macos")
+                            && meta.as_ref().is_some_and(|m| m.is_file()) =>
+                    {
+                        FilePicture::Thumbnail(
+                            media_picture(&file.path, meta.as_ref()),
+                            hl::file_symbol(&file.path),
+                        )
+                    }
+                    _ => FilePicture::Symbol(if meta.is_some_and(|m| m.is_dir()) {
+                        "folder"
+                    } else {
+                        hl::file_symbol(&file.path)
+                    }),
                 };
                 Some(Card::File { words, picture })
             }
@@ -1007,11 +1393,16 @@ impl ThreadPane {
     fn link_words(&self, row: &str, url: &str) -> Option<String> {
         let row = self.feed.model().rows().iter().find(|r| r.id == row)?;
         let source = match &row.content {
-            RowContent::Assistant(item) => crate::rows::markdown::prepare(&item.text, &self.summary.id),
+            RowContent::Assistant(item) => {
+                crate::rows::markdown::prepare(&item.text, &self.summary.id)
+            }
             RowContent::User(message) => message.agent_header()?.body,
             _ => return None,
         };
-        reply_links_in(&source).into_iter().find(|(_, u)| u == url).map(|(words, _)| words)
+        reply_links_in(&source)
+            .into_iter()
+            .find(|(_, u)| u == url)
+            .map(|(words, _)| words)
     }
 }
 
@@ -1036,7 +1427,13 @@ fn reply_links_in(source: &str) -> Vec<(String, String)> {
 
 /// The card under the link the pointer's resting on, if this pane's.
 pub(crate) fn peek_overlay(pane: &ThreadPane, cx: &App) -> Option<AnyElement> {
-    let (card, spot) = PEEK.with(|p| p.borrow().hovered.as_ref().filter(|h| h.thread == pane.summary.id).and_then(|h| h.card.clone().map(|c| (c, h.spot))))?;
+    let (card, spot) = PEEK.with(|p| {
+        p.borrow()
+            .hovered
+            .as_ref()
+            .filter(|h| h.thread == pane.summary.id)
+            .and_then(|h| h.card.clone().map(|c| (c, h.spot)))
+    })?;
     let card = match card {
         Card::Page { title, detail } => crate::chips::words_card(&title, &detail, cx),
         Card::File { words, picture } => file_card(&words, &picture, cx),
@@ -1048,36 +1445,109 @@ pub(crate) fn peek_overlay(pane: &ThreadPane, cx: &App) -> Option<AnyElement> {
     // so the link under it is still what's there.
     let gap = gpui_kit::px(style::zoomed(4.));
     let under = point(Pixels::ZERO, spot.bottom - spot.top + gap * 2.);
-    Some(deferred(anchored().position(point(spot.left, spot.top - gap)).offset(under).child(card)).with_priority(2).into_any_element())
+    Some(
+        deferred(
+            anchored()
+                .position(point(spot.left, spot.top - gap))
+                .offset(under)
+                .child(card),
+        )
+        .with_priority(2)
+        .into_any_element(),
+    )
 }
 
 /// A file's card (LinkPeekCard): its picture or first lines over its name,
 /// or its symbol beside it, its folder, and what a click does.
 fn file_card(words: &rules::PeekWords, picture: &FilePicture, cx: &App) -> AnyElement {
     const BOX: (f32, f32) = (276., 170.);
-    let (secondary, tertiary, label) = (style::secondary_label(cx), style::tertiary_label(cx), style::label_text(cx));
-    let picture_box = || div().w(px(BOX.0)).h(px(BOX.1)).rounded(px(4.)).bg(style::primary_opacity(cx, 0.05)).overflow_hidden();
+    let (secondary, tertiary, label) = (
+        style::secondary_label(cx),
+        style::tertiary_label(cx),
+        style::label_text(cx),
+    );
+    let picture_box = || {
+        div()
+            .w(px(BOX.0))
+            .h(px(BOX.1))
+            .rounded(px(4.))
+            .bg(style::primary_opacity(cx, 0.05))
+            .overflow_hidden()
+    };
     let shown = match picture {
-        FilePicture::Image(path) => Some(picture_box().flex().items_center().justify_center().child(img(path.clone()).max_w(px(BOX.0)).max_h(px(BOX.1)).rounded(px(3.)).object_fit(ObjectFit::Contain)).into_any_element()),
+        FilePicture::Image(path) => Some(
+            picture_box()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    img(path.clone())
+                        .max_w(px(BOX.0))
+                        .max_h(px(BOX.1))
+                        .rounded(px(3.))
+                        .object_fit(ObjectFit::Contain),
+                )
+                .into_any_element(),
+        ),
         FilePicture::Thumbnail(source, symbol) => {
             let symbol = *symbol;
-            Some(picture_box().flex().items_center().justify_center().child(
-                img(source.clone()).max_w(px(BOX.0)).max_h(px(BOX.1)).object_fit(ObjectFit::Contain)
-                    .with_loading(move || crate::spinner::TurningArc::new(14., secondary).into_any_element())
-                    .with_fallback(move || crate::icons::symbol(symbol).size(px(28.)).into_any_element())
-            ).into_any_element())
+            Some(
+                picture_box()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        img(source.clone())
+                            .max_w(px(BOX.0))
+                            .max_h(px(BOX.1))
+                            .object_fit(ObjectFit::Contain)
+                            .with_loading(move || {
+                                crate::spinner::TurningArc::new(14., secondary).into_any_element()
+                            })
+                            .with_fallback(move || {
+                                crate::icons::symbol(symbol)
+                                    .size(px(28.))
+                                    .into_any_element()
+                            }),
+                    )
+                    .into_any_element(),
+            )
         }
         FilePicture::Lines(_, Some(lines)) => Some(
             picture_box()
                 .p(px(8.))
-                .child(v_flex().children(lines.iter().map(|line| div().text_size(px(10.)).line_height(px(14.)).font_family(cx.theme().mono_font_family.clone()).text_color(secondary).whitespace_nowrap().child(if line.is_empty() { " ".to_owned() } else { line.clone() }))))
+                .child(v_flex().children(lines.iter().map(|line| {
+                    div()
+                        .text_size(px(10.))
+                        .line_height(px(14.))
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_color(secondary)
+                        .whitespace_nowrap()
+                        .child(if line.is_empty() {
+                            " ".to_owned()
+                        } else {
+                            line.clone()
+                        })
+                })))
                 .into_any_element(),
         ),
         FilePicture::Lines(_, None) => Some(picture_box().into_any_element()),
         FilePicture::Symbol(_) => None,
     };
     let symbol = match picture {
-        FilePicture::Symbol(name) => Some(div().flex_none().size(px(28.)).flex().items_center().justify_center().child(crate::icons::symbol(name).size(px(22.)).text_color(secondary))),
+        FilePicture::Symbol(name) => Some(
+            div()
+                .flex_none()
+                .size(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    crate::icons::symbol(name)
+                        .size(px(22.))
+                        .text_color(secondary),
+                ),
+        ),
         _ => None,
     };
     crate::chips::card_frame(cx)
@@ -1089,19 +1559,37 @@ fn file_card(words: &rules::PeekWords, picture: &FilePicture, cx: &App) -> AnyEl
                 .gap(px(3.))
                 .when_some(shown, |d, picture| d.child(div().pb(px(5.)).child(picture)))
                 .child(
-                    h_flex()
-                        .items_start()
-                        .gap(px(8.))
-                        .children(symbol)
-                        .child(
-                            v_flex()
-                                .min_w_0()
-                                .gap(px(3.))
-                                .child(div().text_size(px(size::LABEL)).line_height(px(style::natural_line(size::LABEL))).font_weight(FontWeight::SEMIBOLD).text_color(label).line_clamp(2).child(words.title.clone()))
-                                .child(div().text_size(px(size::DETAIL)).line_height(px(style::natural_line(size::DETAIL))).text_color(secondary).truncate().child(words.detail.clone())),
-                        ),
+                    h_flex().items_start().gap(px(8.)).children(symbol).child(
+                        v_flex()
+                            .min_w_0()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(size::LABEL))
+                                    .line_height(px(style::natural_line(size::LABEL)))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(label)
+                                    .line_clamp(2)
+                                    .child(words.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(size::DETAIL))
+                                    .line_height(px(style::natural_line(size::DETAIL)))
+                                    .text_color(secondary)
+                                    .truncate()
+                                    .child(words.detail.clone()),
+                            ),
+                    ),
                 )
-                .child(div().pt(px(3.)).text_size(px(size::SMALL)).line_height(px(style::natural_line(size::SMALL))).text_color(tertiary).child(words.footer.clone())),
+                .child(
+                    div()
+                        .pt(px(3.))
+                        .text_size(px(size::SMALL))
+                        .line_height(px(style::natural_line(size::SMALL)))
+                        .text_color(tertiary)
+                        .child(words.footer.clone()),
+                ),
         )
         .into_any_element()
 }
@@ -1116,7 +1604,12 @@ fn file_card(words: &rules::PeekWords, picture: &FilePicture, cx: &App) -> AnyEl
 /// under its Default; `follow: true` clicks it through real pointer events,
 /// with ⌘ held for `"command": true`.
 #[cfg(feature = "automation")]
-pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Option<Result<serde_json::Value, String>> {
+pub(crate) fn peek_command(
+    app: &Entity<crate::app::Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Result<serde_json::Value, String>> {
     use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
     use serde_json::json;
     let pane = app.read(cx).pane.clone()?;
@@ -1126,24 +1619,43 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
         let ix = rows.iter().position(|r| r.id.starts_with(prefix))?;
         (ix, rows[ix].clone())
     };
-    let RowContent::Assistant(item) = &row.content else { return None };
+    let RowContent::Assistant(item) = &row.content else {
+        return None;
+    };
     if cmd["show"].as_bool() == Some(false) {
         hide_peek(cx);
         return Some(Ok(json!("ok")));
     }
-    let links = reply_links_in(&crate::rows::markdown::prepare(&item.text, &pane.read(cx).summary.id));
+    let links = reply_links_in(&crate::rows::markdown::prepare(
+        &item.text,
+        &pane.read(cx).summary.id,
+    ));
     let named = |url: &str| -> Option<String> {
         match pane.read(cx).link_target(url)? {
             LinkTarget::Web(web) => Some(web),
-            LinkTarget::File(Some(file)) if !pane.read(cx).summary.is_remote() && policy::local_metadata(Path::new(&file.path)).is_ok() => Some(file.path),
+            LinkTarget::File(Some(file))
+                if !pane.read(cx).summary.is_remote()
+                    && policy::local_metadata(Path::new(&file.path)).is_ok() =>
+            {
+                Some(file.path)
+            }
             LinkTarget::File(_) => None,
         }
     };
     let Some(words) = cmd["words"].as_str() else {
-        let listed: Vec<String> = links.iter().filter_map(|(w, u)| named(u).map(|to| format!("{}={to}", w.trim()))).collect();
-        return Some(Ok(json!(if listed.is_empty() { "ok none".to_owned() } else { format!("ok {}", listed.join(" | ")) })));
+        let listed: Vec<String> = links
+            .iter()
+            .filter_map(|(w, u)| named(u).map(|to| format!("{}={to}", w.trim())))
+            .collect();
+        return Some(Ok(json!(if listed.is_empty() {
+            "ok none".to_owned()
+        } else {
+            format!("ok {}", listed.join(" | "))
+        })));
     };
-    let Some((_, url)) = links.iter().find(|(w, _)| w.contains(words)).cloned() else { return Some(Err(format!("no link with {words} in {}", row.id))) };
+    let Some((_, url)) = links.iter().find(|(w, _)| w.contains(words)).cloned() else {
+        return Some(Err(format!("no link with {words} in {}", row.id)));
+    };
     // On screen first, as a person would see it, then where the kit says
     // the link is.
     if let Err(e) = pane.update(cx, |p, cx| p.scroll_command(None, Some(&row.id), 120., cx)) {
@@ -1153,10 +1665,19 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
     let Some(at) = find_link(&url, ix, words, window, cx) else {
         // What was there instead, for a script to say why.
         let mine = ElementId::NamedInteger("reply-links".into(), ix as u64);
-        let texts = gpui_kit::base::test_support::texts(window).into_iter().filter(|t| t.visible() && t.path().contains(&mine)).map(|t| t.text().to_owned()).collect::<Vec<_>>();
-        return Some(Err(format!("the link {words} isn't on screen (its row shows {texts:?})")));
+        let texts = gpui_kit::base::test_support::texts(window)
+            .into_iter()
+            .filter(|t| t.visible() && t.path().contains(&mine))
+            .map(|t| t.text().to_owned())
+            .collect::<Vec<_>>();
+        return Some(Err(format!(
+            "the link {words} isn't on screen (its row shows {texts:?})"
+        )));
     };
-    if cmd["menu"].as_bool() == Some(true) || cmd.get("click").is_some() || cmd.get("default").is_some() {
+    if cmd["menu"].as_bool() == Some(true)
+        || cmd.get("click").is_some()
+        || cmd.get("default").is_some()
+    {
         // A right-click through real events and hit testing, as a person's
         // goes. The kit builds the menu once the press has been handled,
         // which is after this command's turn: `menu_command` reads it then.
@@ -1167,64 +1688,134 @@ pub(crate) fn peek_command(app: &Entity<crate::app::Threadbear>, cmd: &serde_jso
         return Some(Ok(json!("ok right-clicked")));
     }
     if cmd["follow"].as_bool() == Some(true) {
-        let modifiers = if cmd["command"].as_bool() == Some(true) { Modifiers::secondary_key(cx) } else { Modifiers::default() };
+        let modifiers = if cmd["command"].as_bool() == Some(true) {
+            Modifiers::secondary_key(cx)
+        } else {
+            Modifiers::default()
+        };
         window.pointer_move(at, None, cx);
-        window.dispatch_event(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }.to_platform_input(), cx);
-        window.dispatch_event(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }.to_platform_input(), cx);
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
         window.render_frame(cx);
         return Some(Ok(json!("ok")));
     }
-    let picture_key = if cmd["picture"].as_bool() == Some(true) && !pane.read(cx).summary.is_remote() {
-        match pane.read(cx).link_target(&url) {
-            Some(LinkTarget::File(Some(file))) => policy::local_metadata(Path::new(&file.path)).ok()
-                .and_then(|meta| policy::media_version(&meta)).map(|version| (file.path, Some(version))),
-            _ => None,
-        }
-    } else { None };
+    let picture_key =
+        if cmd["picture"].as_bool() == Some(true) && !pane.read(cx).summary.is_remote() {
+            match pane.read(cx).link_target(&url) {
+                Some(LinkTarget::File(Some(file))) => policy::local_metadata(Path::new(&file.path))
+                    .ok()
+                    .and_then(|meta| policy::media_version(&meta))
+                    .map(|version| (file.path, Some(version))),
+                _ => None,
+            }
+        } else {
+            None
+        };
     // Its card, as resting the pointer there shows it, and a PR's read
     // started, as the rest starts it.
     hide_peek(cx);
     preload_pr(&pane.downgrade(), &url, cx);
-    let Some(card) = pane.read(cx).peek_card(&url, &row.id) else { return Some(Err(format!("{words} has no card"))) };
+    let Some(card) = pane.read(cx).peek_card(&url, &row.id) else {
+        return Some(Err(format!("{words} has no card")));
+    };
     let card = match card {
-        Card::File { words, picture: FilePicture::Lines(path, None) } => {
+        Card::File {
+            words,
+            picture: FilePicture::Lines(path, None),
+        } => {
             let lines = first_lines_of(&path);
-            Card::File { words, picture: FilePicture::Lines(path, lines) }
+            Card::File {
+                words,
+                picture: FilePicture::Lines(path, lines),
+            }
         }
         other => other,
     };
     let spot = link_spot(at, &url, window, cx);
-    PEEK.with(|p| p.borrow_mut().hovered = Some(Hovered { pane: pane.downgrade(), thread: pane.read(cx).summary.id.clone(), row: row.id.clone(), url, spot, card: Some(card) }));
+    PEEK.with(|p| {
+        p.borrow_mut().hovered = Some(Hovered {
+            pane: pane.downgrade(),
+            thread: pane.read(cx).summary.id.clone(),
+            row: row.id.clone(),
+            url,
+            spot,
+            card: Some(card),
+        })
+    });
     pane.update(cx, |_, cx| cx.notify());
     window.render_frame(cx);
     let picture = picture_key.map(|key| match window.get_asset::<MediaThumbnail>(&key, cx) {
-        Some(Ok(image)) => { let size = image.size(0); format!("ok thumbnail {}x{}", size.width.0, size.height.0) },
+        Some(Ok(image)) => {
+            let size = image.size(0);
+            format!("ok thumbnail {}x{}", size.width.0, size.height.0)
+        }
         Some(Err(_)) => "ok thumbnail failed".to_owned(),
         None => "ok thumbnail loading".to_owned(),
     });
-    Some(Ok(json!(picture.unwrap_or_else(|| "ok window 0".to_owned()))))
+    Some(Ok(json!(
+        picture.unwrap_or_else(|| "ok window 0".to_owned())
+    )))
 }
 
 /// Where the link with `words` is drawn in a reply: the row whose id starts
 /// with `prefix`, or the last reply with such a link. Scrolled on screen
 /// first, as a person would see it (`file-drag` with `link`).
 #[cfg(feature = "automation")]
-pub(crate) fn link_point(app: &Entity<crate::app::Threadbear>, prefix: &str, words: &str, window: &mut Window, cx: &mut App) -> Result<Point<Pixels>, String> {
+pub(crate) fn link_point(
+    app: &Entity<crate::app::Threadbear>,
+    prefix: &str,
+    words: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Point<Pixels>, String> {
     use gpui_kit::test::TestWindowExt as _;
     let pane = app.read(cx).pane.clone().ok_or("no thread open")?;
     let thread = pane.read(cx).summary.id.clone();
-    let found = pane.read(cx).feed.model().rows().iter().enumerate().rev().find_map(|(ix, row)| {
-        let RowContent::Assistant(item) = &row.content else { return None };
-        if !row.id.starts_with(prefix) {
-            return None;
-        }
-        let links = reply_links_in(&crate::rows::markdown::prepare(&item.text, &thread));
-        links.into_iter().find(|(w, _)| w.contains(words)).map(|(_, url)| (ix, row.id.clone(), url))
-    });
+    let found = pane
+        .read(cx)
+        .feed
+        .model()
+        .rows()
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(ix, row)| {
+            let RowContent::Assistant(item) = &row.content else {
+                return None;
+            };
+            if !row.id.starts_with(prefix) {
+                return None;
+            }
+            let links = reply_links_in(&crate::rows::markdown::prepare(&item.text, &thread));
+            links
+                .into_iter()
+                .find(|(w, _)| w.contains(words))
+                .map(|(_, url)| (ix, row.id.clone(), url))
+        });
     let (ix, row, url) = found.ok_or_else(|| format!("no reply with a link saying {words}"))?;
     pane.update(cx, |p, cx| p.scroll_command(None, Some(&row), 120., cx))?;
     window.render_frame(cx);
-    find_link(&url, ix, words, window, cx).ok_or_else(|| format!("the link {words} isn't on screen"))
+    find_link(&url, ix, words, window, cx)
+        .ok_or_else(|| format!("the link {words} isn't on screen"))
 }
 
 /// `peek` with `menu`, `click` or `default`: the right-click (`peek_command`),
@@ -1232,12 +1823,21 @@ pub(crate) fn link_point(app: &Entity<crate::app::Threadbear>, prefix: &str, wor
 /// of its items and `default` one of Default's, through real events, a
 /// command's turn each, as each waits on the one before to be drawn.
 #[cfg(feature = "automation")]
-pub(crate) async fn menu_command(app: &WeakEntity<crate::app::Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
+pub(crate) async fn menu_command(
+    app: &WeakEntity<crate::app::Threadbear>,
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
     use serde_json::json;
     let app = app.upgrade().ok_or("the app has gone")?;
     let words = cmd["words"].as_str().unwrap_or("").to_owned();
-    let clicked = cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| peek_command(&app, cmd, window, cx))).map_err(|e| e.to_string())?;
+    let clicked = cx
+        .update_window(window, |_, window, cx| {
+            crate::thread::scripted_input(|| peek_command(&app, cmd, window, cx))
+        })
+        .map_err(|e| e.to_string())?;
     match clicked {
         Some(Ok(_)) => {}
         Some(Err(e)) => return Err(e),
@@ -1267,26 +1867,41 @@ pub(crate) async fn menu_command(app: &WeakEntity<crate::app::Threadbear>, windo
         return Err(format!("no menu came up on {words}"));
     }
     if let Some(title) = cmd["default"].as_str() {
-        let Some((_, default)) = items.iter().find(|(t, _)| t == rules::DEFAULT_TITLE) else { return Err("no Default in that menu".into()) };
+        let Some((_, default)) = items.iter().find(|(t, _)| t == rules::DEFAULT_TITLE) else {
+            return Err("no Default in that menu".into());
+        };
         // Its choices open beside it once the pointer's on it.
         let at = default.center();
-        cx.update_window(window, |_, window, cx| crate::thread::scripted_input(|| window.pointer_move(at, None, cx))).map_err(|e| e.to_string())?;
-        cx.background_executor().timer(Duration::from_millis(400)).await;
+        cx.update_window(window, |_, window, cx| {
+            crate::thread::scripted_input(|| window.pointer_move(at, None, cx))
+        })
+        .map_err(|e| e.to_string())?;
+        cx.background_executor()
+            .timer(Duration::from_millis(400))
+            .await;
         let choices = read(1, cx)?;
-        let Some((_, choice)) = choices.iter().find(|(t, _)| t == title) else { return Err(format!("no Default item {title} in {choices:?}")) };
+        let Some((_, choice)) = choices.iter().find(|(t, _)| t == title) else {
+            return Err(format!("no Default item {title} in {choices:?}"));
+        };
         press(choice.center(), cx)?;
         return Ok(json!("ok"));
     }
     if let Some(title) = cmd["click"].as_str() {
-        let Some((_, item)) = items.iter().find(|(t, _)| t == title) else { return Err(format!("no item {title} in {items:?}")) };
+        let Some((_, item)) = items.iter().find(|(t, _)| t == title) else {
+            return Err(format!("no item {title} in {items:?}"));
+        };
         press(item.center(), cx)?;
         return Ok(json!("ok"));
     }
     let titles: Vec<&str> = items.iter().map(|(t, _)| t.as_str()).collect();
-    let listed = json!(format!("ok {}", serde_json::to_string(&titles).unwrap_or_default()));
+    let listed = json!(format!(
+        "ok {}",
+        serde_json::to_string(&titles).unwrap_or_default()
+    ));
     // Left up for a picture with `keep: true`; put away otherwise.
     if cmd["keep"].as_bool() != Some(true) {
-        cx.update_window(window, |_, window, cx| window.press("escape", cx)).map_err(|e| e.to_string())?;
+        cx.update_window(window, |_, window, cx| window.press("escape", cx))
+            .map_err(|e| e.to_string())?;
     }
     Ok(listed)
 }
@@ -1297,13 +1912,29 @@ pub(crate) async fn menu_command(app: &WeakEntity<crate::app::Threadbear>, windo
 pub(crate) fn open_menu_items(window: &mut Window, nth: usize) -> Vec<(String, Bounds<Pixels>)> {
     use gpui_kit::test::TestQueryExt as _;
     let elements = window.elements();
-    let mut menus: Vec<_> = elements.iter().filter(|e| e.visible() && e.role() == Some(Role::Menu)).collect();
-    menus.sort_by(|a, b| a.bounds().origin.x.partial_cmp(&b.bounds().origin.x).unwrap_or(std::cmp::Ordering::Equal));
-    let Some(menu) = menus.get(nth) else { return Vec::new() };
+    let mut menus: Vec<_> = elements
+        .iter()
+        .filter(|e| e.visible() && e.role() == Some(Role::Menu))
+        .collect();
+    menus.sort_by(|a, b| {
+        a.bounds()
+            .origin
+            .x
+            .partial_cmp(&b.bounds().origin.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let Some(menu) = menus.get(nth) else {
+        return Vec::new();
+    };
     let path = menu.path().to_vec();
     elements
         .iter()
-        .filter(|e| e.visible() && e.path().len() > path.len() && e.path().starts_with(&path) && e.role() != Some(Role::Menu))
+        .filter(|e| {
+            e.visible()
+                && e.path().len() > path.len()
+                && e.path().starts_with(&path)
+                && e.role() != Some(Role::Menu)
+        })
         .filter_map(|e| e.label().map(|label| (label.to_owned(), e.bounds())))
         .collect()
 }
@@ -1314,21 +1945,41 @@ pub(crate) fn open_menu_items(window: &mut Window, nth: usize) -> Vec<(String, B
 /// link itself, as only the kit knows where it put each word. Each ask goes
 /// through the whole window, so it asks a few times, not along every line.
 #[cfg(feature = "automation")]
-fn find_link(url: &str, ix: usize, words: &str, window: &mut Window, cx: &mut App) -> Option<Point<Pixels>> {
+fn find_link(
+    url: &str,
+    ix: usize,
+    words: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Point<Pixels>> {
     use gpui_kit::test::TestEventExt as _;
     let mine = ElementId::NamedInteger("reply-links".into(), ix as u64);
     let words = words.trim();
-    let texts: Vec<(String, Bounds<Pixels>)> = gpui_kit::base::test_support::texts(window).into_iter().filter(|t| t.visible() && t.path().contains(&mine) && t.text().contains(words)).map(|t| (t.text().to_owned(), t.bounds())).collect();
+    let texts: Vec<(String, Bounds<Pixels>)> = gpui_kit::base::test_support::texts(window)
+        .into_iter()
+        .filter(|t| t.visible() && t.path().contains(&mine) && t.text().contains(words))
+        .map(|t| (t.text().to_owned(), t.bounds()))
+        .collect();
     let line = gpui_kit::px(style::zoomed(size::BODY_LINE));
     // After a key (a script's Escape closing a menu), GPUI counts nothing
     // as under the pointer until it moves, and the probe is a release, which
     // doesn't count as moving. A person's hand goes back to the mouse first.
     window.pointer_move(window.mouse_position(), None, cx);
-    let ask = |at: Point<Pixels>, window: &mut Window, cx: &mut App| link_at(at, window, cx).as_deref() == Some(url);
+    let ask = |at: Point<Pixels>, window: &mut Window, cx: &mut App| {
+        link_at(at, window, cx).as_deref() == Some(url)
+    };
     for (text, bounds) in &texts {
         if let Some(guess) = shaped_middle(text, words, bounds, window) {
             let nudge = gpui_kit::px(style::zoomed(6.));
-            for (dx, dy) in [(0., 0.), (-1., 0.), (1., 0.), (-2., 0.), (2., 0.), (0., -1.), (0., 1.)] {
+            for (dx, dy) in [
+                (0., 0.),
+                (-1., 0.),
+                (1., 0.),
+                (-2., 0.),
+                (2., 0.),
+                (0., -1.),
+                (0., 1.),
+            ] {
                 let at = point(guess.x + nudge * dx, guess.y + line * dy);
                 if bounds.contains(&at) && ask(at, window, cx) {
                     return Some(at);
@@ -1358,7 +2009,12 @@ fn find_link(url: &str, ix: usize, words: &str, window: &mut Window, cx: &mut Ap
 /// Where the middle of `words` would be in a paragraph of `text` laid out in
 /// `bounds`, shaped in the reply's font and size and wrapped at its width.
 #[cfg(feature = "automation")]
-fn shaped_middle(text: &str, words: &str, bounds: &Bounds<Pixels>, window: &Window) -> Option<Point<Pixels>> {
+fn shaped_middle(
+    text: &str,
+    words: &str,
+    bounds: &Bounds<Pixels>,
+    window: &Window,
+) -> Option<Point<Pixels>> {
     let start = text.find(words)?;
     let mut middle = start + words.len() / 2;
     while !text.is_char_boundary(middle) {
@@ -1371,14 +2027,57 @@ fn shaped_middle(text: &str, words: &str, bounds: &Bounds<Pixels>, window: &Wind
     for hard in text.split('\n') {
         let end = from + hard.len();
         if middle <= end {
-            let run = TextRun { len: hard.len().max(1), font: style.font(), color: style.color, background_color: None, underline: None, strikethrough: None };
-            let shaped = window.text_system().shape_text(SharedString::from(if hard.is_empty() { " ".to_owned() } else { hard.to_owned() }), gpui_kit::px(style::zoomed(size::BODY)), &[run], Some(bounds.size.width), None).ok()?;
+            let run = TextRun {
+                len: hard.len().max(1),
+                font: style.font(),
+                color: style.color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_text(
+                    SharedString::from(if hard.is_empty() {
+                        " ".to_owned()
+                    } else {
+                        hard.to_owned()
+                    }),
+                    gpui_kit::px(style::zoomed(size::BODY)),
+                    &[run],
+                    Some(bounds.size.width),
+                    None,
+                )
+                .ok()?;
             let at = shaped.first()?.position_for_index(middle - from, line)?;
-            return Some(point(bounds.left() + at.x, bounds.top() + top + at.y + line / 2.));
+            return Some(point(
+                bounds.left() + at.x,
+                bounds.top() + top + at.y + line / 2.,
+            ));
         }
         // A hard line's height, shaped the same way.
-        let run = TextRun { len: hard.len().max(1), font: style.font(), color: style.color, background_color: None, underline: None, strikethrough: None };
-        let shaped = window.text_system().shape_text(SharedString::from(if hard.is_empty() { " ".to_owned() } else { hard.to_owned() }), gpui_kit::px(style::zoomed(size::BODY)), &[run], Some(bounds.size.width), None).ok()?;
+        let run = TextRun {
+            len: hard.len().max(1),
+            font: style.font(),
+            color: style.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window
+            .text_system()
+            .shape_text(
+                SharedString::from(if hard.is_empty() {
+                    " ".to_owned()
+                } else {
+                    hard.to_owned()
+                }),
+                gpui_kit::px(style::zoomed(size::BODY)),
+                &[run],
+                Some(bounds.size.width),
+                None,
+            )
+            .ok()?;
         top += line * (shaped.first().map_or(0, |l| l.wrap_boundaries.len()) + 1) as f32;
         from = end + 1;
     }
@@ -1391,19 +2090,48 @@ mod tests {
 
     #[test]
     fn pages_and_files_have_cards_and_threadbears_own_links_dont() {
-        for url in ["https://x.dev/a", "http://x.dev", "file:///tmp/a.md", "tbpath:?p=src/a.rs", "/tmp/a.md", "docs/plan.md", "Foo.swift:12", "~/notes.md"] {
+        for url in [
+            "https://x.dev/a",
+            "http://x.dev",
+            "file:///tmp/a.md",
+            "tbpath:?p=src/a.rs",
+            "/tmp/a.md",
+            "docs/plan.md",
+            "Foo.swift:12",
+            "~/notes.md",
+        ] {
             assert!(has_card(url), "{url}");
         }
-        for url in ["work:npm%20test", "thread:4f9c2e7a", "review:r1", "tbchip:abc", "button:b7k2", "mailto:a@b.c", "slack://open", "#usage"] {
+        for url in [
+            "work:npm%20test",
+            "thread:4f9c2e7a",
+            "review:r1",
+            "tbchip:abc",
+            "button:b7k2",
+            "mailto:a@b.c",
+            "slack://open",
+            "#usage",
+        ] {
             assert!(!has_card(url), "{url}");
         }
     }
 
     #[test]
     fn a_replys_links_are_found_with_their_words_in_order() {
-        let links = reply_links_in("See [the **notes**](https://x.dev/n) and [`a.rs`](tbpath:?p=a.rs), not `code`.");
-        assert_eq!(links, [("the notes".to_owned(), "https://x.dev/n".to_owned()), ("a.rs".to_owned(), "tbpath:?p=a.rs".to_owned())]);
-        assert!(reply_links_in("```\n[x](https://x.dev)\n```").is_empty(), "a link in a code block is code");
+        let links = reply_links_in(
+            "See [the **notes**](https://x.dev/n) and [`a.rs`](tbpath:?p=a.rs), not `code`.",
+        );
+        assert_eq!(
+            links,
+            [
+                ("the notes".to_owned(), "https://x.dev/n".to_owned()),
+                ("a.rs".to_owned(), "tbpath:?p=a.rs".to_owned())
+            ]
+        );
+        assert!(
+            reply_links_in("```\n[x](https://x.dev)\n```").is_empty(),
+            "a link in a code block is code"
+        );
     }
 }
 
@@ -1420,7 +2148,10 @@ mod probe_tests {
     use gpui_kit::test::TestEventExt as _;
     // By name: a glob of the kit would bring its `test` over the one the
     // test macro's own expansion uses.
-    use gpui_kit::{div, point, px, size, Bounds, Entity, MouseButton, Point, TestAppContext, Window, WindowBounds, WindowOptions};
+    use gpui_kit::{
+        div, point, px, size, Bounds, Entity, MouseButton, Point, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -1435,8 +2166,21 @@ mod probe_tests {
             div()
                 .size_full()
                 .child(watch())
-                .child(div().w(px(240.)).child(open_gate::text_view(&self.text, Origin::ThisMac, "")))
-                .child(div().id("button").absolute().left(px(0.)).top(px(200.)).w(px(100.)).h(px(30.)).on_click(move |_, _, _| pressed.set(pressed.get() + 1)))
+                .child(div().w(px(240.)).child(open_gate::text_view(
+                    &self.text,
+                    Origin::ThisMac,
+                    "",
+                )))
+                .child(
+                    div()
+                        .id("button")
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(200.))
+                        .w(px(100.))
+                        .h(px(30.))
+                        .on_click(move |_, _, _| pressed.set(pressed.get() + 1)),
+                )
         }
     }
 
@@ -1446,22 +2190,56 @@ mod probe_tests {
         let pressed = Rc::new(Cell::new(0));
         let in_view = pressed.clone();
         let window = cx.update(|cx| {
-            let bounds = Bounds { origin: Point::default(), size: size(px(400.), px(300.)) };
-            let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
-            gpui_kit::open_window(options, cx, move |_, cx| cx.new(|cx| Reply { text: cx.new(|cx| TextViewState::markdown("See [example](https://example.com) now.", cx)), pressed: in_view })).expect("a test window").0
+            let bounds = Bounds {
+                origin: Point::default(),
+                size: size(px(400.), px(300.)),
+            };
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            };
+            gpui_kit::open_window(options, cx, move |_, cx| {
+                cx.new(|cx| Reply {
+                    text: cx.new(|cx| {
+                        TextViewState::markdown("See [example](https://example.com) now.", cx)
+                    }),
+                    pressed: in_view,
+                })
+            })
+            .expect("a test window")
+            .0
         });
         let url = "https://example.com";
         cx.update_window(window, |_, window, cx| {
             use gpui_kit::test::TestWindowExt as _;
             window.render_frame(cx);
-            assert_eq!(link_at(point(px(1.), px(10.)), window, cx), None, "\"See\" isn't the link");
-            let on_link = (1..120).map(|x| point(px(x as f32 * 2.), px(10.))).find(|&p| link_at(p, window, cx).as_deref() == Some(url)).expect("the link along its line");
+            assert_eq!(
+                link_at(point(px(1.), px(10.)), window, cx),
+                None,
+                "\"See\" isn't the link"
+            );
+            let on_link = (1..120)
+                .map(|x| point(px(x as f32 * 2.), px(10.)))
+                .find(|&p| link_at(p, window, cx).as_deref() == Some(url))
+                .expect("the link along its line");
             // Where it sits, for its card: its start, and its line's top and bottom.
             let spot = link_spot(on_link, url, window, cx);
-            assert!(spot.left > px(4.) && spot.left <= on_link.x, "{spot:?} from {on_link:?}");
-            assert_eq!(link_at(point(spot.left + px(1.), on_link.y), window, cx).as_deref(), Some(url));
-            assert_ne!(link_at(point(spot.left - px(2.), on_link.y), window, cx).as_deref(), Some(url));
-            assert!(spot.top < on_link.y && on_link.y < spot.bottom && spot.bottom - spot.top < px(40.), "{spot:?}");
+            assert!(
+                spot.left > px(4.) && spot.left <= on_link.x,
+                "{spot:?} from {on_link:?}"
+            );
+            assert_eq!(
+                link_at(point(spot.left + px(1.), on_link.y), window, cx).as_deref(),
+                Some(url)
+            );
+            assert_ne!(
+                link_at(point(spot.left - px(2.), on_link.y), window, cx).as_deref(),
+                Some(url)
+            );
+            assert!(
+                spot.top < on_link.y && on_link.y < spot.bottom && spot.bottom - spot.top < px(40.),
+                "{spot:?}"
+            );
             let button = point(px(50.), px(215.));
             assert_eq!(link_at(button, window, cx), None, "no link there");
             assert_eq!(pressed.get(), 0, "a probe's release isn't a click");

@@ -100,7 +100,7 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
     // The reply's words and photos (Composer.kt).
     val box = rememberPhotoBox()
     val thread = (loaded as? Loaded.Here)?.detail?.thread
-    val stopping by model.stopping.collectAsStateWithLifecycle()
+    val pending by model.commands.entries.collectAsStateWithLifecycle()
     val gate = rememberLinkGate()
 
     LaunchedEffect(thread?.isBusy) { if (thread?.isBusy == false) model.stopped(threadId) }
@@ -127,7 +127,7 @@ fun ThreadScreen(threadId: String, back: () -> Unit, open: (String) -> Unit) {
                     },
                     running = thread.isBusy,
                     canStop = model.apiVersion >= BackendApi.STOP,
-                    stopping = threadId in stopping,
+                    stopping = model.stopping(threadId, pending),
                     onSend = { message, photos ->
                         // Cleared at once, as the message shows below as it goes;
                         // a send that fails puts it all back if nothing's been typed since.
@@ -185,7 +185,10 @@ private fun ThreadBar(thread: PhoneThread?, back: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     var hibernate by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
-    val renamed by model.renamed.collectAsStateWithLifecycle()
+    // The thread with the changes tapped here on top, so the menu says Remove
+    // Star (or Wake) at once rather than after the runner's done it.
+    val pending by model.commands.entries.collectAsStateWithLifecycle()
+    val thread = thread?.let { model.shown(it, pending) }
     val projects by model.projects.collectAsStateWithLifecycle()
     if (renaming && thread != null) RenameDialog(thread) { renaming = false }
     TopAppBar(
@@ -195,7 +198,7 @@ private fun ThreadBar(thread: PhoneThread?, back: () -> Unit) {
                 val ref = thread.projects?.firstOrNull()
                 ProjectTile(ref?.let { r -> projects.firstOrNull { it.runnerId == thread.runnerId && it.id == r.id } }, ref?.title ?: thread.folderName, 26.dp)
                 Spacer(Modifier.width(10.dp))
-                Text(model.title(thread, renamed), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(model.title(thread, pending), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         },
         actions = {
@@ -417,7 +420,7 @@ private fun Transcript(
         CompositionLocalProvider(LocalThreadPictures provides pictures, LocalThreadLink provides ::follow) {
             PlanSheet(
                 plan, approvalId,
-                approving = approvalId != null && answering?.first == approvalId,
+                approving = approvalId != null && approvalId in answering,
                 canSendBack = Plans.canSendBack(plan, pending, messages),
                 goAhead = { vm.respond(it, ApprovalOption.ALLOW) },
                 sendBack = { text, done -> vm.send(text, onSent = { done(true) }, onFailed = { done(false) }) },
@@ -437,7 +440,7 @@ private fun StatusCard(vm: ThreadViewModel, thread: PhoneThread, messages: List<
     val answeredDone by vm.answeredDone.collectAsStateWithLifecycle()
     val pending = thread.pendingApproval
     // The choice tapped on this card, spinning until it goes.
-    fun tapped(id: String) = answering?.takeIf { it.first == id }?.second
+    fun tapped(id: String) = answering[id]
     val lastSeq = messages.lastOrNull()?.seq
     val asks = thread.asks.orEmpty()
     val showsAsks = asks.isNotEmpty() && nothingOnItsWay && answeredAsks != thread.asksSeq && thread.waitingOnMike

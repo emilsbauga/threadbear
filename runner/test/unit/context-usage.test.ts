@@ -1,4 +1,4 @@
-// What fills a thread's context (docs/protocol.md, "Context breakdown"):
+// What fills a thread's context (docs/protocol/threads.md, "Context breakdown"):
 // asked of the thread's live Claude CLI when the composer's ring opens,
 // kept with the thread for when the CLI has gone, never a CLI started for
 // it. Fake adapters (fakes.ts); the SDK answer's mapping is at the end.

@@ -1,4 +1,4 @@
-// Background wait loops, caught as the agent starts one (docs/protocol.md,
+// Background wait loops, caught as the agent starts one (docs/protocol/updates.md,
 // "Background wait loops"). An agent waiting on something outside its turn
 // (a merge to land, CI, another thread, a time) tends to start a background
 // shell that sleeps until it's there, then end its turn. The CLI wakes it

@@ -134,8 +134,20 @@ impl Path {
             // dims all the way down to about 40%, then goes out on arrival.
             let scale = (1. - (1. - SMALLEST) * p.powf(0.8)).max(SMALLEST);
             let fade_to = if self.on_heading { 0.1 } else { 0. };
-            let opacity = if p < 0.9 { 1. - 0.6 * (p / 0.9) } else { 0.4 - (0.4 - fade_to) * ((p - 0.9) / 0.1) };
-            return Frame { x, y, scale, tilt: 0., corner_radius, opacity, dimming: 0.45 * p };
+            let opacity = if p < 0.9 {
+                1. - 0.6 * (p / 0.9)
+            } else {
+                0.4 - (0.4 - fade_to) * ((p - 0.9) / 0.1)
+            };
+            return Frame {
+                x,
+                y,
+                scale,
+                tilt: 0.,
+                corner_radius,
+                opacity,
+                dimming: 0.45 * p,
+            };
         }
         // Shrinks fastest early on, so it's small well before it arrives.
         let scale = (1. - (1. - SMALLEST) * p.powf(0.7)).max(SMALLEST);
@@ -143,8 +155,20 @@ impl Path {
         let tilt = 4. * (p * std::f32::consts::PI).sin() * std::f32::consts::PI / 180.;
         let fade_from = if self.on_heading { 0.85 } else { 0.6 };
         let fade_to = if self.on_heading { 0.2 } else { 0. };
-        let opacity = if p < fade_from { 1. } else { 1. - (p - fade_from) / (1. - fade_from) * (1. - fade_to) };
-        Frame { x, y, scale, tilt, corner_radius, opacity, dimming: 0. }
+        let opacity = if p < fade_from {
+            1.
+        } else {
+            1. - (p - fade_from) / (1. - fade_from) * (1. - fade_to)
+        };
+        Frame {
+            x,
+            y,
+            scale,
+            tilt,
+            corner_radius,
+            opacity,
+            dimming: 0.,
+        }
     }
 }
 
@@ -155,9 +179,16 @@ impl Path {
 /// below it by its height, so the page aims where the heading will be.
 /// With no box in sight, it aims at the bottom of the list (`list` is its
 /// visible left and bottom), just in from its leading edge. None with no list.
-pub fn target(box_mid: Option<(f32, f32)>, open_row: Option<(f32, f32)>, list: Option<(f32, f32)>, leading: f32) -> Option<((f32, f32), bool)> {
+pub fn target(
+    box_mid: Option<(f32, f32)>,
+    open_row: Option<(f32, f32)>,
+    list: Option<(f32, f32)>,
+    leading: f32,
+) -> Option<((f32, f32), bool)> {
     if let Some((x, y)) = box_mid {
-        let lift = open_row.filter(|(top, _)| *top < y).map_or(0., |(_, height)| height);
+        let lift = open_row
+            .filter(|(top, _)| *top < y)
+            .map_or(0., |(_, height)| height);
         return Some(((x, y - lift), true));
     }
     list.map(|(left, bottom)| ((left + leading, bottom), false))
@@ -166,8 +197,14 @@ pub fn target(box_mid: Option<(f32, f32)>, open_row: Option<(f32, f32)>, list: O
 /// How far into a flight the next thread is, for its fade in: 0 hidden,
 /// 1 all there. `reduced` is Reduce Motion or a flight with nowhere to go.
 pub fn next_thread_shown(elapsed: Duration, to: Destination, reduced: bool) -> f32 {
-    let (delay, fade) = if reduced { (REDUCED_NEXT_DELAY, REDUCED_NEXT_FADE) } else { (to.next_thread_delay(), to.next_thread_fade()) };
-    let Some(into) = elapsed.checked_sub(delay) else { return 0. };
+    let (delay, fade) = if reduced {
+        (REDUCED_NEXT_DELAY, REDUCED_NEXT_FADE)
+    } else {
+        (to.next_thread_delay(), to.next_thread_fade())
+    };
+    let Some(into) = elapsed.checked_sub(delay) else {
+        return 0.;
+    };
     let t = (into.as_secs_f32() / fade.as_secs_f32()).min(1.);
     // CAMediaTimingFunction's easeOut, near enough.
     1. - (1. - t) * (1. - t)
@@ -178,7 +215,13 @@ mod tests {
     use super::*;
 
     fn path(to: Destination) -> Path {
-        Path { start: (600., 400.), end: (40., 700.), swing: to.swing(), on_heading: true, to }
+        Path {
+            start: (600., 400.),
+            end: (40., 700.),
+            swing: to.swing(),
+            on_heading: true,
+            to,
+        }
     }
 
     #[test]
@@ -186,9 +229,15 @@ mod tests {
         for to in [Destination::Archive, Destination::Hibernate] {
             let p = path(to);
             let first = p.at_time(0.);
-            assert_eq!((first.x, first.y, first.scale, first.opacity), (600., 400., 1., 1.));
+            assert_eq!(
+                (first.x, first.y, first.scale, first.opacity),
+                (600., 400., 1., 1.)
+            );
             let last = p.at_time(1.);
-            assert!((last.x - 40.).abs() < 0.01 && (last.y - 700.).abs() < 0.01, "{to:?} ends at {last:?}");
+            assert!(
+                (last.x - 40.).abs() < 0.01 && (last.y - 700.).abs() < 0.01,
+                "{to:?} ends at {last:?}"
+            );
             assert!((last.scale - SMALLEST).abs() < 0.001);
         }
     }
@@ -197,10 +246,16 @@ mod tests {
     fn the_drop_swings_left_and_below_the_heading_before_coming_into_it() {
         let p = path(Destination::Archive);
         // Past the heading's height (downwards) part way, as the Swift path dips under it.
-        let lowest = (0..=100).map(|i| p.frame(i as f32 / 100.).y).fold(f32::MIN, f32::max);
+        let lowest = (0..=100)
+            .map(|i| p.frame(i as f32 / 100.).y)
+            .fold(f32::MIN, f32::max);
         assert!(lowest > 700., "never dipped below the heading: {lowest}");
         let mid = p.frame(0.5);
-        assert!(mid.tilt > 0.06 && mid.tilt < 0.071, "tips about 4 degrees mid-fall: {}", mid.tilt);
+        assert!(
+            mid.tilt > 0.06 && mid.tilt < 0.071,
+            "tips about 4 degrees mid-fall: {}",
+            mid.tilt
+        );
     }
 
     #[test]
@@ -231,11 +286,20 @@ mod tests {
     #[test]
     fn it_aims_where_the_heading_will_be_once_the_row_has_closed_up() {
         // The row above the heading: the heading moves up by its height.
-        assert_eq!(target(Some((20., 500.)), Some((100., 44.)), Some((0., 800.)), 23.), Some(((20., 456.), true)));
+        assert_eq!(
+            target(Some((20., 500.)), Some((100., 44.)), Some((0., 800.)), 23.),
+            Some(((20., 456.), true))
+        );
         // A row below the box (an archived row already under it) moves nothing.
-        assert_eq!(target(Some((20., 500.)), Some((520., 44.)), None, 23.), Some(((20., 500.), true)));
+        assert_eq!(
+            target(Some((20., 500.)), Some((520., 44.)), None, 23.),
+            Some(((20., 500.), true))
+        );
         // No box in sight: the bottom of the list.
-        assert_eq!(target(None, Some((100., 44.)), Some((0., 800.)), 23.), Some(((23., 800.), false)));
+        assert_eq!(
+            target(None, Some((100., 44.)), Some((0., 800.)), 23.),
+            Some(((23., 800.), false))
+        );
         assert_eq!(target(None, None, None, 23.), None);
     }
 

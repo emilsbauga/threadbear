@@ -6,7 +6,7 @@
 // Other threads fill the thread list as a real one is, short ones with titles
 // and previews, as the sidebar's rows cost something to draw too.
 //
-// It's a mock-runner fixture (app/Tools/mock-runner, --fixtures <folder>), with a
+// It's a mock-runner fixture (mock-runner, --fixtures <folder>), with a
 // mix of what real threads have: messages, folded work, tool calls, a reply
 // with markdown, a turn footer. Two rows' worth of words per turn, more or less.
 import fs from 'node:fs';

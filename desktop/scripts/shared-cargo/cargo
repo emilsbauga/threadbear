@@ -153,6 +153,13 @@ touch "$dir/.in-use" "$target" 2>/dev/null || true
 
 # The checkout's copy, by content. The same leave-outs as remote.sh's copy,
 # and node_modules, which cargo never reads and is most of a copy's size.
+# A path that became a link, or stopped being one, since this slot last had a
+# copy (scripts/fix-link-kinds.sh): rsync can't swap those over itself.
+if [ -f "$copy/scripts/fix-link-kinds.sh" ]; then
+  links=()
+  while IFS= read -r l; do links+=("$l"); done < <(bash "$copy/scripts/fix-link-kinds.sh" --links "$copy")
+  bash "$copy/scripts/fix-link-kinds.sh" "$dir/src" ${links[@]+"${links[@]}"}
+fi
 if ! rsync -rlpDc --delete --exclude node_modules --exclude .build --exclude target --exclude reports \
   --exclude .fixtures --exclude .swiftpm --exclude dist --exclude DerivedData --exclude .DS_Store \
   "$copy/" "$dir/src/"; then
@@ -160,7 +167,7 @@ if ! rsync -rlpDc --delete --exclude node_modules --exclude .build --exclude tar
   exit 1
 fi
 # The copy's node_modules, linked where they are there: the client's tests
-# start the mock runner (app/Tools/mock-runner) from the slot's copy, and it
+# start the mock runner (mock-runner/) from the slot's copy, and it
 # needs its packages (Codex's review). rsync leaves what it excludes alone, so
 # the links stay through the next copy and are only made again.
 find "$dir/src" -name node_modules -prune -type l -exec rm -f {} + 2>/dev/null || true
@@ -201,6 +208,12 @@ for a in "$@"; do
   args+=("$a")
 done
 
+# And the slot is left without links when done: an older checkout's copy of
+# this script (one not rebased onto that change) has no such step, and its
+# rsync fails on links this one left; with none there it makes them anew.
+if [ -f "$copy/scripts/fix-link-kinds.sh" ]; then
+  trap 'bash "$copy/scripts/fix-link-kinds.sh" "$dir/src"' EXIT
+fi
 rc=0
 (
   cd "$dir/src$rel" || exit 1

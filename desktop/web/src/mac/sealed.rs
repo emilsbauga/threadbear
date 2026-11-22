@@ -39,7 +39,9 @@ pub(crate) fn create_context() {
     let mut handler = SealedContextHandler::new();
     match request_context_create_context(Some(&settings), Some(&mut handler)) {
         Some(context) => CONTEXT.with(|c| *c.borrow_mut() = Some(context)),
-        None => set_status(Status::Failed("the sealed pages' request context couldn't be made".into())),
+        None => set_status(Status::Failed(
+            "the sealed pages' request context couldn't be made".into(),
+        )),
     }
 }
 
@@ -75,7 +77,12 @@ pub(crate) fn all_rules() -> bool {
 fn set_pref(context: &mut RequestContext, name: &str, value: Option<Value>) -> bool {
     let Some(mut value) = value else { return false };
     let mut error = CefString::from("");
-    if context.set_preference(Some(&CefString::from(name)), Some(&mut value), Some(&mut error)) != 1 {
+    if context.set_preference(
+        Some(&CefString::from(name)),
+        Some(&mut value),
+        Some(&mut error),
+    ) != 1
+    {
         // The page's policy and the request handler still stand; this is the
         // third layer, so it's said and not fatal for a page with no scripts.
         eprintln!("threadbear-web: couldn't set {name} on the sealed context: {error}");
@@ -87,11 +94,20 @@ fn set_pref(context: &mut RequestContext, name: &str, value: Option<Value>) -> b
 fn apply_rules(context: &mut RequestContext) {
     let mut all = false;
     if let (Some(mut proxy), Some(value)) = (dictionary_value_create(), value_create()) {
-        proxy.set_string(Some(&CefString::from("mode")), Some(&CefString::from("fixed_servers")));
-        proxy.set_string(Some(&CefString::from("server")), Some(&CefString::from(DEAD_PROXY)));
+        proxy.set_string(
+            Some(&CefString::from("mode")),
+            Some(&CefString::from("fixed_servers")),
+        );
+        proxy.set_string(
+            Some(&CefString::from("server")),
+            Some(&CefString::from(DEAD_PROXY)),
+        );
         // Loopback too: Chromium sends this Mac's own addresses round a
         // fixed proxy unless told not to (Gemini's review, 19 Nov).
-        proxy.set_string(Some(&CefString::from("bypass_list")), Some(&CefString::from("<-loopback>")));
+        proxy.set_string(
+            Some(&CefString::from("bypass_list")),
+            Some(&CefString::from("<-loopback>")),
+        );
         value.set_dictionary(Some(&mut proxy));
         all = set_pref(context, "proxy", Some(value));
     }
@@ -105,7 +121,11 @@ fn apply_rules(context: &mut RequestContext) {
     // WebRTC finds its own way round proxies: only through the dead proxy
     // here. A local page running its scripts also has the API taken away
     // (preview_rules::CLIPBOARD_GUARD).
-    all &= set_pref(context, "webrtc.ip_handling_policy", value_string("disable_non_proxied_udp"));
+    all &= set_pref(
+        context,
+        "webrtc.ip_handling_policy",
+        value_string("disable_non_proxied_udp"),
+    );
     // No print dialog over the app from a page's window.print() (Codex and
     // Gemini's second review of live pages, 19 Nov).
     // Tried on its own: the page guard locks window.print as well

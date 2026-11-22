@@ -633,7 +633,7 @@ function saveState(c, state, activated) {
 }
 
 // The releases that runners still finishing turns after a handover run on
-// (docs/protocol.md, "Handovers"), from their run/drain-<pid>.json files. On
+// (docs/protocol/updates.md, "Handovers"), from their run/drain-<pid>.json files. On
 // a busy day one can outlast five newer releases; deleting its release from
 // under it took tb away from its threads (29 Oct), and anything it hadn't
 // loaded yet would have gone the same way.

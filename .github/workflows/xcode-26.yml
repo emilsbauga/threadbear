@@ -12,9 +12,10 @@
 #
 # Free, as runner.yml is: a public repo on GitHub's standard runners. It only
 # runs when something it builds changed, so a runner-only change spends no
-# macOS minutes. Everything both builds read is under app/, dock/ and ios/
-# (the iPhone project takes ../app/SentryBinary, and ThreadbearKit links
-# files from app/Sources), so a new path outside those belongs here too.
+# macOS minutes. Everything both builds read is under app/, dock/, ios/ and
+# shared/ (the Mac app links to Sentry's package in ios/SentryBinary, three
+# of ThreadbearKit's Swift files, and its art, Pele and icon in shared/), so a
+# new path outside those belongs here too.
 #
 # tb land holds a landing that changes what this checks while its last run
 # on main failed (runner/src/land-gate.ts, docs/thread-worktrees.md "Red on
@@ -33,6 +34,7 @@ on:
       - 'app/**'
       - 'dock/**'
       - 'ios/**'
+      - 'shared/**'
       - '.github/workflows/xcode-26.yml'
   pull_request:
     # The same list as push's, kept in step by hand.
@@ -40,6 +42,7 @@ on:
       - 'app/**'
       - 'dock/**'
       - 'ios/**'
+      - 'shared/**'
       - '.github/workflows/xcode-26.yml'
   workflow_dispatch:
 

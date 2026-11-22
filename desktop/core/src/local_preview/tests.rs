@@ -19,7 +19,11 @@ impl Drop for Folder {
 
 impl Folder {
     fn new() -> Folder {
-        let base = std::env::temp_dir().join(format!("local-preview-{}-{}", std::process::id(), rand_suffix()));
+        let base = std::env::temp_dir().join(format!(
+            "local-preview-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
         let dir = base.join("site");
         let outside = base.join("elsewhere");
         fs::create_dir_all(dir.join("assets")).unwrap();
@@ -37,9 +41,25 @@ impl Folder {
 <div style="background: url('assets/styled.png')"></div>"#,
         );
         f.write("style.css", "@import 'theme.css'; body { background: url('assets/bg.png'); } @font-face { src: url(assets/font.woff2) }");
-        f.write("app.js", "const img = new Image(); img.src = `assets/late.png`;");
+        f.write(
+            "app.js",
+            "const img = new Image(); img.src = `assets/late.png`;",
+        );
         f.write("theme.css", "a { color: red }");
-        for name in ["pic.png", "assets/pic@2x.png", "assets/bg.png", "assets/font.woff2", "assets/late.png", "about.html", "other.png", "notes.json", "private.html", "assets/inline.png", "assets/js.png", "assets/styled.png"] {
+        for name in [
+            "pic.png",
+            "assets/pic@2x.png",
+            "assets/bg.png",
+            "assets/font.woff2",
+            "assets/late.png",
+            "about.html",
+            "other.png",
+            "notes.json",
+            "private.html",
+            "assets/inline.png",
+            "assets/js.png",
+            "assets/styled.png",
+        ] {
             f.write(name, "x");
         }
         f.write(".env", "SECRET=1");
@@ -59,7 +79,10 @@ impl Folder {
 
     fn site(&self) -> Site {
         let site = Site::new(&self.dir.join("index.html"), None).expect("a site");
-        assert_eq!(site.serve("/index.html").map(|s| s.mime), Some("text/html; charset=utf-8".to_owned()));
+        assert_eq!(
+            site.serve("/index.html").map(|s| s.mime),
+            Some("text/html; charset=utf-8".to_owned())
+        );
         site
     }
 }
@@ -67,7 +90,14 @@ impl Folder {
 fn rand_suffix() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    format!("{}-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    format!(
+        "{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 #[cfg(unix)]
@@ -75,7 +105,17 @@ fn rand_suffix() -> String {
 fn unrelated_sibling_files_are_refused() {
     let f = Folder::new();
     let site = f.site();
-    for refused in ["/other.png", "/.env", "/secret.env", "/notes.json", "/logo.png", "/away.png", "/../elsewhere/out.png", "/assets/../.env", "//index.html"] {
+    for refused in [
+        "/other.png",
+        "/.env",
+        "/secret.env",
+        "/notes.json",
+        "/logo.png",
+        "/away.png",
+        "/../elsewhere/out.png",
+        "/assets/../.env",
+        "//index.html",
+    ] {
         assert!(site.serve(refused).is_none(), "{refused}");
     }
 }
@@ -85,9 +125,18 @@ fn unrelated_sibling_files_are_refused() {
 fn named_styles_and_pictures_load() {
     let f = Folder::new();
     let site = f.site();
-    assert_eq!(site.serve("/style.css").unwrap().mime, "text/css; charset=utf-8");
+    assert_eq!(
+        site.serve("/style.css").unwrap().mime,
+        "text/css; charset=utf-8"
+    );
     assert_eq!(site.serve("/pic.png").unwrap().mime, "image/png");
-    for named in ["/assets/pic@2x.png", "/assets/bg.png", "/assets/font.woff2", "/theme.css", "/assets/styled.png"] {
+    for named in [
+        "/assets/pic@2x.png",
+        "/assets/bg.png",
+        "/assets/font.woff2",
+        "/theme.css",
+        "/assets/styled.png",
+    ] {
         assert!(site.serve(named).is_some(), "{named}");
     }
 }
@@ -96,14 +145,20 @@ fn named_styles_and_pictures_load() {
 #[test]
 fn only_the_page_itself_and_passive_assets() {
     let f = Folder::new();
-    f.write("drawing.svg", "<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>");
+    f.write(
+        "drawing.svg",
+        "<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>",
+    );
     f.write("index.html", "<iframe src=about.html></iframe><iframe src=private.html></iframe><script src=app.js></script><img src=drawing.svg><img src=pic.png>");
     let site = f.site();
     for refused in ["/about.html", "/private.html", "/app.js", "/drawing.svg"] {
         assert!(site.serve(refused).is_none(), "{refused}");
     }
     assert!(site.serve("/pic.png").is_some());
-    assert!(site.serve("/index.html").is_some(), "the page itself, again");
+    assert!(
+        site.serve("/index.html").is_some(),
+        "the page itself, again"
+    );
 }
 
 #[cfg(unix)]
@@ -111,7 +166,12 @@ fn only_the_page_itself_and_passive_assets() {
 fn scripts_name_nothing() {
     let f = Folder::new();
     let site = f.site();
-    for refused in ["/private.html", "/assets/inline.png", "/assets/js.png", "/assets/late.png"] {
+    for refused in [
+        "/private.html",
+        "/assets/inline.png",
+        "/assets/js.png",
+        "/assets/late.png",
+    ] {
         assert!(site.serve(refused).is_none(), "{refused}");
     }
 }
@@ -122,18 +182,33 @@ fn no_symlink_is_followed() {
     let f = Folder::new();
     fs::create_dir_all(f.outside.join("assets")).unwrap();
     fs::write(f.outside.join("assets/bg.png"), "far").unwrap();
-    f.write("index.html", "<img src=pic.png><img src=alias.png><img src=linked/bg.png><img src=hard.png>");
+    f.write(
+        "index.html",
+        "<img src=pic.png><img src=alias.png><img src=linked/bg.png><img src=hard.png>",
+    );
     std::os::unix::fs::symlink(f.dir.join("pic.png"), f.dir.join("alias.png")).unwrap();
     std::os::unix::fs::symlink(f.outside.join("assets"), f.dir.join("linked")).unwrap();
     fs::hard_link(f.outside.join("out.png"), f.dir.join("hard.png")).unwrap();
     let site = f.site();
-    assert!(site.serve("/alias.png").is_none(), "a link, even to an allowed picture");
-    assert!(site.serve("/linked/bg.png").is_none(), "a folder on the way that's a link");
-    assert!(site.serve("/hard.png").is_none(), "a hard link to a file elsewhere");
+    assert!(
+        site.serve("/alias.png").is_none(),
+        "a link, even to an allowed picture"
+    );
+    assert!(
+        site.serve("/linked/bg.png").is_none(),
+        "a folder on the way that's a link"
+    );
+    assert!(
+        site.serve("/hard.png").is_none(),
+        "a hard link to a file elsewhere"
+    );
     assert_eq!(site.serve("/pic.png").unwrap().data, b"x");
     fs::remove_file(f.dir.join("pic.png")).unwrap();
     std::os::unix::fs::symlink(f.dir.join(".env"), f.dir.join("pic.png")).unwrap();
-    assert!(site.serve("/pic.png").is_none(), "swapped for a link after being served once");
+    assert!(
+        site.serve("/pic.png").is_none(),
+        "swapped for a link after being served once"
+    );
 }
 
 #[cfg(unix)]
@@ -143,7 +218,12 @@ fn nul_and_control_characters_are_refused() {
     f.write("credentials.json", "{\"key\": \"secret\"}");
     f.write("index.html", r#"<iframe src="credentials.json%00.html"></iframe><img src="a%0Ab.png"><img src="x%2500.png">"#);
     let site = f.site();
-    for refused in ["/credentials.json\0.html", "/a\nb.png", "/x%00.png", "/credentials.json"] {
+    for refused in [
+        "/credentials.json\0.html",
+        "/a\nb.png",
+        "/x%00.png",
+        "/credentials.json",
+    ] {
         assert!(site.serve(refused).is_none(), "{refused:?}");
     }
     assert!(resolve("credentials.json%00.html", "").is_none());
@@ -161,6 +241,7 @@ fn a_fifo_is_refused() {
     let f = Folder::new();
     f.write("index.html", "<img src=pipe.png>");
     let c = std::ffi::CString::new(f.dir.join("pipe.png").to_str().unwrap()).unwrap();
+    // SAFETY: `c` is a NUL-terminated CString that outlives the call.
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
     let site = f.site();
     assert!(site.serve("/pipe.png").is_none());
@@ -220,19 +301,50 @@ fn finding_scripts() {
 
 #[test]
 fn stripping_scripts_and_reading_urls() {
-    assert_eq!(without_script_contents("<script a>x<script>y</script ><p>"), "<script a></script ><p>");
-    assert_eq!(without_script_contents("<script>never closed"), "<script>never closed");
-    assert_eq!(without_script_contents("<scripts>x</script>"), "<scripts>x</script>", "not a script tag");
-    assert_eq!(without_script_contents("<script>var src = \"p.png\";</script/><p>"), "<script></script/><p>", "a closer the browser reads");
-    assert_eq!(without_script_contents("<script>var src = \"p.png\";</script foo><p>"), "<script></script foo><p>");
-    assert_eq!(without_script_contents("<script>a</scripty>b"), "<script>a</scripty>b", "not a closer");
-    assert_eq!(without_script_contents("<script>a</script><p><SCRIPT>b</SCRIPT>"), "<script></script><p><SCRIPT></SCRIPT>");
-    assert_eq!(css_urls(r#"a{b:url( "x y.png" )} c{d:url(z.png) url('w.png')} e{f:url(bad"quote)}"#, usize::MAX), ["x y.png", "z.png", "w.png"]);
+    assert_eq!(
+        without_script_contents("<script a>x<script>y</script ><p>"),
+        "<script a></script ><p>"
+    );
+    assert_eq!(
+        without_script_contents("<script>never closed"),
+        "<script>never closed"
+    );
+    assert_eq!(
+        without_script_contents("<scripts>x</script>"),
+        "<scripts>x</script>",
+        "not a script tag"
+    );
+    assert_eq!(
+        without_script_contents("<script>var src = \"p.png\";</script/><p>"),
+        "<script></script/><p>",
+        "a closer the browser reads"
+    );
+    assert_eq!(
+        without_script_contents("<script>var src = \"p.png\";</script foo><p>"),
+        "<script></script foo><p>"
+    );
+    assert_eq!(
+        without_script_contents("<script>a</scripty>b"),
+        "<script>a</scripty>b",
+        "not a closer"
+    );
+    assert_eq!(
+        without_script_contents("<script>a</script><p><SCRIPT>b</SCRIPT>"),
+        "<script></script><p><SCRIPT></SCRIPT>"
+    );
+    assert_eq!(
+        css_urls(
+            r#"a{b:url( "x y.png" )} c{d:url(z.png) url('w.png')} e{f:url(bad"quote)}"#,
+            usize::MAX
+        ),
+        ["x y.png", "z.png", "w.png"]
+    );
 }
 
 #[test]
 fn reference_limits_stop_each_read() {
-    let text = "<img src=a.png srcset=\"b.png 1x, c.png 2x\" style=\"background:url(d.png)\">".repeat(100);
+    let text =
+        "<img src=a.png srcset=\"b.png 1x, c.png 2x\" style=\"background:url(d.png)\">".repeat(100);
     assert_eq!(html_references(&text, 7).len(), 7);
     assert_eq!(html_references(&text, 150).len(), 150);
     assert_eq!(html_references(&text, usize::MAX).len(), 400);
@@ -277,6 +389,7 @@ fn a_scan_never_blocks_on_a_fifo() {
     assert_eq!(found, digest(b"<script>draw()</script>"));
     let fifo = f.dir.join("pipe.html");
     let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: `c` is a NUL-terminated CString that outlives the call.
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
     assert!(scan(&fifo).is_none());
     assert!(scan(&f.dir.join("gone.html")).is_none());
@@ -289,11 +402,20 @@ fn a_page_with_a_digest_is_served_only_while_it_matches() {
     let page = f.dir.join("drawn.html");
     fs::write(&page, "<script>draw()</script>").unwrap();
     let allowed = digest(b"<script>draw()</script>");
-    let site = Site::new(&page, Some(allowed.clone())).unwrap();
+    let site = Site::new(&page, Some(allowed)).unwrap();
     assert!(site.serve("drawn.html").is_some());
     fs::write(&page, "<script>steal()</script>").unwrap();
-    assert!(site.serve("drawn.html").is_none(), "rewritten: not what was allowed");
-    assert!(Site::new(&page, None).unwrap().serve("drawn.html").is_some(), "the static view still shows it");
+    assert!(
+        site.serve("drawn.html").is_none(),
+        "rewritten: not what was allowed"
+    );
+    assert!(
+        Site::new(&page, None)
+            .unwrap()
+            .serve("drawn.html")
+            .is_some(),
+        "the static view still shows it"
+    );
 }
 
 #[test]
@@ -303,14 +425,20 @@ fn consent_is_for_those_bytes_of_that_file() {
     consent.allow("/a/page.html", "1");
     assert!(consent.allows("/a/page.html", "1"));
     assert!(!consent.allows("/a/page.html", "2"), "changed");
-    assert!(!consent.allows("/b/page.html", "1"), "another file with the same bytes");
+    assert!(
+        !consent.allows("/b/page.html", "1"),
+        "another file with the same bytes"
+    );
     consent.allow("/a/page.html", "2");
     assert!(!consent.allows("/a/page.html", "1"), "one version per file");
     for n in 0..300 {
         consent.allow(&format!("/p{n}.html"), "x");
     }
     assert_eq!(consent.0.len(), ScriptConsent::LIMIT);
-    assert!(consent.allows("/p299.html", "x") && !consent.allows("/p0.html", "x"), "the oldest go first");
+    assert!(
+        consent.allows("/p299.html", "x") && !consent.allows("/p0.html", "x"),
+        "the oldest go first"
+    );
 }
 
 #[cfg(unix)]
@@ -319,7 +447,10 @@ fn only_the_start_of_a_page_is_read_for_names() {
     let f = Folder::new();
     let line = "<p>words words words</p>\n";
     let filler = line.repeat(SCAN_BYTES / line.len() + 1);
-    f.write("index.html", &format!("<img src=\"early.png\">{filler}<img src=\"late.png\">"));
+    f.write(
+        "index.html",
+        &format!("<img src=\"early.png\">{filler}<img src=\"late.png\">"),
+    );
     let site = f.site();
     assert!(site.allows("early.png"));
     assert!(!site.allows("late.png"), "named past SCAN_BYTES");
@@ -329,11 +460,20 @@ fn only_the_start_of_a_page_is_read_for_names() {
 #[test]
 fn names_kept_are_per_file_and_in_all_capped() {
     let f = Folder::new();
-    let many: String = (0..5_000).map(|n| format!("<img src=\"p{n}.png\">")).collect();
-    let links: String = (0..8).map(|n| format!("<link rel=stylesheet href=\"s{n}.css\">")).collect();
+    let many: String = (0..5_000)
+        .map(|n| format!("<img src=\"p{n}.png\">"))
+        .collect();
+    let links: String = (0..8)
+        .map(|n| format!("<link rel=stylesheet href=\"s{n}.css\">"))
+        .collect();
     f.write("index.html", &format!("{many}{links}"));
     for n in 0..8 {
-        f.write(&format!("s{n}.css"), &(0..3_000).map(|m| format!("a{{b:url(s{n}-{m}.png)}}")).collect::<String>());
+        f.write(
+            &format!("s{n}.css"),
+            &(0..3_000)
+                .map(|m| format!("a{{b:url(s{n}-{m}.png)}}"))
+                .collect::<String>(),
+        );
     }
     let first = f.site();
     assert_eq!(first.allowed_count(), 1 + MAX_REFERENCES_PER_FILE);
@@ -352,33 +492,72 @@ fn the_gate_shows_only_this_macs_real_pages() {
     use crate::open_policy::Origin;
     let f = Folder::new();
     let page = f.dir.join("index.html");
-    assert_eq!(decide_page(page.to_str().unwrap(), Origin::ThisMac).unwrap(), fs::canonicalize(&page).unwrap());
-    assert!(decide_page(page.to_str().unwrap(), Origin::OtherMac).is_err(), "another Mac's");
-    assert!(decide_page("index.html", Origin::ThisMac).is_err(), "not absolute");
+    assert_eq!(
+        decide_page(page.to_str().unwrap(), Origin::ThisMac).unwrap(),
+        fs::canonicalize(&page).unwrap()
+    );
+    assert!(
+        decide_page(page.to_str().unwrap(), Origin::OtherMac).is_err(),
+        "another Mac's"
+    );
+    assert!(
+        decide_page("index.html", Origin::ThisMac).is_err(),
+        "not absolute"
+    );
     std::os::unix::fs::symlink(f.dir.join(".env"), f.dir.join("notes.html")).unwrap();
-    assert!(decide_page(f.dir.join("notes.html").to_str().unwrap(), Origin::ThisMac).is_err(), "a page's name on a link to a secret");
+    assert!(
+        decide_page(f.dir.join("notes.html").to_str().unwrap(), Origin::ThisMac).is_err(),
+        "a page's name on a link to a secret"
+    );
     std::os::unix::fs::symlink(&page, f.dir.join("alias.html")).unwrap();
-    assert_eq!(decide_page(f.dir.join("alias.html").to_str().unwrap(), Origin::ThisMac).unwrap(), fs::canonicalize(&page).unwrap(), "a link to a page is that page");
+    assert_eq!(
+        decide_page(f.dir.join("alias.html").to_str().unwrap(), Origin::ThisMac).unwrap(),
+        fs::canonicalize(&page).unwrap(),
+        "a link to a page is that page"
+    );
     fs::create_dir(f.dir.join("folder.html")).unwrap();
-    assert!(decide_page(f.dir.join("folder.html").to_str().unwrap(), Origin::ThisMac).is_err(), "a folder");
+    assert!(
+        decide_page(f.dir.join("folder.html").to_str().unwrap(), Origin::ThisMac).is_err(),
+        "a folder"
+    );
 }
 
 /// Daybreak 118: `srcset=` inside a bare `src` value was read as another
 /// attribute, and its value read again to the end of the page.
 #[test]
 fn a_value_is_read_once() {
-    assert_eq!(html_references("<img src=srcset=one.png>", usize::MAX), ["srcset=one.png"]);
-    assert_eq!(html_references("<img alt=\"src=a.png\" title='srcset=b.png 2x'>", usize::MAX), Vec::<String>::new());
-    assert_eq!(html_references("<img srcset=\"a.png 1x,\n b.png 2x\" src=c.png>", usize::MAX), ["a.png", "b.png", "c.png"]);
+    assert_eq!(
+        html_references("<img src=srcset=one.png>", usize::MAX),
+        ["srcset=one.png"]
+    );
+    assert_eq!(
+        html_references(
+            "<img alt=\"src=a.png\" title='srcset=b.png 2x'>",
+            usize::MAX
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        html_references(
+            "<img srcset=\"a.png 1x,\n b.png 2x\" src=c.png>",
+            usize::MAX
+        ),
+        ["a.png", "b.png", "c.png"]
+    );
 }
 
 /// One budget for a page's names: `srcset` isn't read once it's spent, and
 /// a name longer than `MAX_REFERENCE_BYTES` is skipped, not kept.
 #[test]
 fn every_name_shares_one_budget_and_long_ones_are_skipped() {
-    let full: String = (0..10).map(|n| format!("<img src=p{n}.png>")).collect::<String>() + "<img srcset=\"late.png 1x\" style=\"background:url(css.png)\">";
+    let full: String = (0..10)
+        .map(|n| format!("<img src=p{n}.png>"))
+        .collect::<String>()
+        + "<img srcset=\"late.png 1x\" style=\"background:url(css.png)\">";
     assert_eq!(html_references(&full, 10).len(), 10);
-    assert!(!html_references(&full, 10).iter().any(|r| r == "late.png" || r == "css.png"));
+    assert!(!html_references(&full, 10)
+        .iter()
+        .any(|r| r == "late.png" || r == "css.png"));
     let long = "a".repeat(MAX_REFERENCE_SOURCE_BYTES);
     let text = format!("<img src=\"{long}.png\" srcset=\"{long}.png 1x, ok1.png 2x\" style=\"background:url({long}.png)\"><link href='{long}.css'><img src=ok2.png>");
     assert_eq!(html_references(&text, usize::MAX), ["ok1.png", "ok2.png"]);
@@ -405,7 +584,11 @@ fn the_amplifying_page_is_served_with_bounded_names() {
     let started = cpu_seconds();
     let refs = html_references(&page, MAX_REFERENCES_PER_FILE);
     let spent = cpu_seconds() - started;
-    assert!(refs.is_empty(), "one value, longer than any name: {}", refs.len());
+    assert!(
+        refs.is_empty(),
+        "one value, longer than any name: {}",
+        refs.len()
+    );
     // Linear work over 4 MiB in a debug build: well under the seconds the
     // old scan took before it ran out of memory. 0.5 s was too tight for
     // the cloud check host, which took 0.52 s on 18 Nov and failed a
@@ -423,10 +606,17 @@ fn the_amplifying_page_is_served_with_bounded_names() {
 fn what_a_site_keeps_is_bounded_in_bytes() {
     let f = Folder::new();
     let name = |n: usize| format!("{n:0>1000}.png");
-    let links: String = (0..8).map(|n| format!("<link rel=stylesheet href=\"s{n}.css\">")).collect();
+    let links: String = (0..8)
+        .map(|n| format!("<link rel=stylesheet href=\"s{n}.css\">"))
+        .collect();
     f.write("index.html", &links);
     for n in 0..8 {
-        f.write(&format!("s{n}.css"), &(0..2_000).map(|m| format!("a{{b:url({})}}", name(n * 2_000 + m))).collect::<String>());
+        f.write(
+            &format!("s{n}.css"),
+            &(0..2_000)
+                .map(|m| format!("a{{b:url({})}}", name(n * 2_000 + m)))
+                .collect::<String>(),
+        );
     }
     let site = f.site();
     for n in 0..8 {
@@ -434,7 +624,10 @@ fn what_a_site_keeps_is_bounded_in_bytes() {
     }
     let kept = site.allowed_count();
     // The page and eight stylesheets, then 1,004-byte names up to the budget.
-    assert!(kept >= 2_000 && kept <= 9 + MAX_ALLOWED_BYTES / 1_004, "kept {kept}");
+    assert!(
+        (2_000..=9 + MAX_ALLOWED_BYTES / 1_004).contains(&kept),
+        "kept {kept}"
+    );
     assert!(site.allows(&name(0)) && !site.allows(&name(15_999)));
 }
 
@@ -452,11 +645,21 @@ fn an_encoded_name_is_limited_by_the_path_it_names() {
     assert!(src.len() > MAX_REFERENCE_BYTES);
     f.write("index.html", &format!("<img src=\"{src}\">"));
     let site = f.site();
-    assert!(site.serve(&format!("/{folder}/{folder}/photo.png")).is_some());
+    assert!(site
+        .serve(&format!("/{folder}/{folder}/photo.png"))
+        .is_some());
     let too_long = format!("<img src=\"{}.png\">", "%61".repeat(MAX_REFERENCE_BYTES));
-    assert!(html_references(&too_long, 10).len() == 1 && resolve(&html_references(&too_long, 10)[0], "").is_some_and(|p| p.len() > MAX_REFERENCE_BYTES));
+    assert!(
+        html_references(&too_long, 10).len() == 1
+            && resolve(&html_references(&too_long, 10)[0], "")
+                .is_some_and(|p| p.len() > MAX_REFERENCE_BYTES)
+    );
     f.write("index.html", &too_long);
-    assert_eq!(f.site().allowed_count(), 1, "a decoded path past MAX_REFERENCE_BYTES isn't kept");
+    assert_eq!(
+        f.site().allowed_count(),
+        1,
+        "a decoded path past MAX_REFERENCE_BYTES isn't kept"
+    );
 }
 
 #[cfg(unix)]
@@ -467,11 +670,120 @@ fn a_live_page_reads_only_itself() {
     let site = Site::page_only(&f.dir.join("index.html"), digest(&page)).unwrap();
     assert!(site.serve("index.html").is_some());
     // Named in its markup, and served to the side pane's preview, but not here.
-    for named in ["style.css", "pic.png", "assets/pic@2x.png", "assets/styled.png", "logo.png"] {
+    for named in [
+        "style.css",
+        "pic.png",
+        "assets/pic@2x.png",
+        "assets/styled.png",
+        "logo.png",
+    ] {
         assert!(site.serve(named).is_none(), "{named}");
     }
     assert_eq!(site.allowed_count(), 1);
     // Rewritten after Run: nothing.
     f.write("index.html", "<p>changed</p>");
     assert!(site.serve("index.html").is_none());
+}
+
+// A page the app made itself (a design review's, review_page.rs): the page
+// and the app's own files come from memory, and from the folder only what the
+// app named, whatever the page's words say.
+#[cfg(unix)]
+#[test]
+fn a_made_page_is_answered_from_memory_and_reads_only_what_the_app_named() {
+    let f = Folder::new();
+    // A file of the page's name in the folder is never read.
+    f.write("made.html", "<img src=\"other.png\">");
+    // An agent's words on the page name files the app didn't.
+    let html = br#"<style>@font-face{src:url(own-400.otf)}</style><img src="pic.png"><p>url(other.png) src="assets/bg.png"</p><img src="secret.env"><a href="about.html">x</a>"#.to_vec();
+    let assets = [
+        "pic.png".to_owned(),
+        "logo.png".to_owned(),
+        "secret.env".to_owned(),
+        "../elsewhere/out.png".to_owned(),
+        "about.html".to_owned(),
+    ];
+    let site = Site::made(
+        &f.dir,
+        "made.html",
+        html.clone(),
+        &assets,
+        vec![("own-400.otf".to_owned(), b"font".to_vec())],
+    )
+    .expect("a site");
+    assert_eq!(
+        site.serve("/own-400.otf").map(|s| (s.data, s.mime)),
+        Some((b"font".to_vec(), "font/otf".to_owned()))
+    );
+    let page = site.serve("/made.html").expect("the page");
+    assert_eq!(page.data, html);
+    assert_eq!(page.mime, "text/html; charset=utf-8");
+    // What the app named and a page may have, from the folder.
+    assert_eq!(site.serve("/pic.png").map(|s| s.data), Some(b"x".to_vec()));
+    // What only the page's words named, what isn't a passive asset, a
+    // symlink, a path out of the folder, another page.
+    for refused in [
+        "/other.png",
+        "/assets/bg.png",
+        "/secret.env",
+        "/logo.png",
+        "/about.html",
+        "/index.html",
+        "/.env",
+        "/own-700.otf",
+        "/../elsewhere/out.png",
+    ] {
+        assert!(site.serve(refused).is_none(), "{refused}");
+    }
+    assert_eq!(
+        site.allowed_count(),
+        5,
+        "the page and the four named with safe paths"
+    );
+    // Made again, it's the new page that's answered, and what's named with it.
+    assert!(site.remake(
+        b"<img src=\"other.png\">".to_vec(),
+        &["other.png".to_owned()]
+    ));
+    assert_eq!(
+        site.serve("/made.html").map(|s| s.data),
+        Some(b"<img src=\"other.png\">".to_vec())
+    );
+    assert!(site.serve("/other.png").is_some());
+    assert!(
+        site.serve("/pic.png").is_none(),
+        "what the page before had isn't kept"
+    );
+    // A page of its own on disk isn't one to remake.
+    assert!(!f.site().remake(b"<p>x</p>".to_vec(), &[]));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_made_sites_names_are_plain_ones() {
+    let f = Folder::new();
+    let made = |page: &str, extra: &str| {
+        Site::made(
+            &f.dir,
+            page,
+            b"<p>x</p>".to_vec(),
+            &[],
+            vec![(extra.to_owned(), vec![1])],
+        )
+        .is_some()
+    };
+    assert!(made("made.html", "own.otf"));
+    for (page, extra) in [
+        ("made.txt", "own.otf"),
+        ("../made.html", "own.otf"),
+        ("a/made.html", "own.otf"),
+        (".made.html", "own.otf"),
+        ("made.html", "own.js"),
+        ("made.html", "own.html"),
+        ("made.html", "../own.otf"),
+        ("made.html", "a/own.otf"),
+        ("made.html", ".own.otf"),
+    ] {
+        assert!(!made(page, extra), "{page} {extra}");
+    }
 }

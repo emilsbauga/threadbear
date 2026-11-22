@@ -49,7 +49,11 @@ pub(crate) fn question_picks_key(thread: &str, approval_id: &str) -> String {
 
 /// Picks for the file, or none when there are none.
 pub(crate) fn picks_draft<T: serde::Serialize>(picks: &T, empty: bool) -> Option<Draft> {
-    (!empty).then(|| Draft { text: serde_json::to_string(picks).unwrap_or_default(), images: Vec::new(), ..Default::default() })
+    (!empty).then(|| Draft {
+        text: serde_json::to_string(picks).unwrap_or_default(),
+        images: Vec::new(),
+        ..Default::default()
+    })
 }
 
 /// Saved picks, read back.
@@ -79,7 +83,12 @@ pub(crate) fn saved_card(thread: &str, seq: i64) -> Vec<(i64, Draft)> {
         return Vec::new();
     }
     let prefix = format!("card:{thread}:{seq}:");
-    SAVED.with(|s| s.borrow().iter().filter_map(|(k, d)| Some((k.strip_prefix(&prefix)?.parse().ok()?, d.clone()))).collect())
+    SAVED.with(|s| {
+        s.borrow()
+            .iter()
+            .filter_map(|(k, d)| Some((k.strip_prefix(&prefix)?.parse().ok()?, d.clone())))
+            .collect()
+    })
 }
 
 fn set_saved(all: &HashMap<String, Draft>) {
@@ -111,8 +120,15 @@ pub(crate) fn merge_thread(all: &mut HashMap<String, Draft>, thread: &str, boxes
         all.extend(card.into_iter().filter(|(_, d)| !d.is_empty()));
     }
     if let Some(open) = boxes.open_questions {
-        let (words, picks) = (format!("question:{thread}:"), format!("question-picks:{thread}:"));
-        all.retain(|k, _| k.strip_prefix(&words).or_else(|| k.strip_prefix(&picks)).is_none_or(|id| open.contains(id)));
+        let (words, picks) = (
+            format!("question:{thread}:"),
+            format!("question-picks:{thread}:"),
+        );
+        all.retain(|k, _| {
+            k.strip_prefix(&words)
+                .or_else(|| k.strip_prefix(&picks))
+                .is_none_or(|id| open.contains(id))
+        });
     }
     for (key, draft) in boxes.questions {
         match draft.filter(|d| !d.is_empty()) {
@@ -155,18 +171,43 @@ impl Drafts {
         let path = home.join("desktop-drafts.json");
         let saved = read(&path);
         set_saved(&saved);
-        Drafts { saved, path: Some(path), pending: None, failed: false }
+        Drafts {
+            saved,
+            path: Some(path),
+            pending: None,
+            failed: false,
+        }
     }
 }
 
 fn read(path: &std::path::Path) -> HashMap<String, Draft> {
-    let Some(value) = std::fs::read(path).ok().and_then(|data| serde_json::from_slice::<Value>(&data).ok()) else { return HashMap::new() };
+    let Some(value) = std::fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+    else {
+        return HashMap::new();
+    };
     value
         .as_object()
         .into_iter()
         .flatten()
         .filter_map(|(key, v)| {
-            let draft = Draft { text: v["text"].as_str().unwrap_or("").to_owned(), images: v["images"].as_array().into_iter().flatten().filter_map(ImageRef::decode).collect(), backlog_revision: v["backlogRevision"].as_i64(), attachments: v["attachments"].as_array().into_iter().flatten().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect() };
+            let draft = Draft {
+                text: v["text"].as_str().unwrap_or("").to_owned(),
+                images: v["images"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(ImageRef::decode)
+                    .collect(),
+                backlog_revision: v["backlogRevision"].as_i64(),
+                attachments: v["attachments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect(),
+            };
             (!draft.is_empty()).then(|| (key.clone(), draft))
         })
         .collect()
@@ -188,16 +229,34 @@ fn write(path: &std::path::Path, all: &HashMap<String, Draft>) -> std::io::Resul
 }
 
 impl Threadbear {
-    pub(crate) fn composer_has_unsaved(&self, composer: &Entity<crate::composer::Composer>, cx: &App) -> bool {
+    pub(crate) fn composer_has_unsaved(
+        &self,
+        composer: &Entity<crate::composer::Composer>,
+        cx: &App,
+    ) -> bool {
         let c = composer.read(cx);
-        match c.thread_id.as_ref().and_then(|id| self.threads.get(id)).and_then(|t| t.backlog.as_ref()) {
+        match c
+            .thread_id
+            .as_ref()
+            .and_then(|id| self.threads.get(id))
+            .and_then(|t| t.backlog.as_ref())
+        {
             Some(saved) => c.backlog_has_changes(saved, cx),
             None => c.holds_anything(cx),
         }
     }
-    pub(crate) fn restore_backlog_draft(&mut self, id: &str, mut saved: threadbear_core::backlog::Draft, composer: &Entity<crate::composer::Composer>, cx: &mut Context<Self>) {
+    pub(crate) fn restore_backlog_draft(
+        &mut self,
+        id: &str,
+        mut saved: threadbear_core::backlog::Draft,
+        composer: &Entity<crate::composer::Composer>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(local) = self.drafts.saved.get(id).cloned() {
-            let already_saved = threadbear_core::composer::message_text(&local.text, 1) == saved.text && local.images == saved.images && local.attachments == saved.attachments;
+            let already_saved = threadbear_core::composer::message_text(&local.text, 1)
+                == saved.text
+                && local.images == saved.images
+                && local.attachments == saved.attachments;
             if already_saved {
                 self.drafts.saved.remove(id);
             } else if local.backlog_revision == Some(saved.revision) {
@@ -213,20 +272,31 @@ impl Threadbear {
         }
         composer.update(cx, |c, cx| {
             c.backlog_attachments = saved.attachments;
-            let (text, order) = threadbear_core::composer::edit_draft(&saved.text, saved.images.len());
-            let images = order.into_iter().filter_map(|i| saved.images.get(i).cloned()).collect();
+            let (text, order) =
+                threadbear_core::composer::edit_draft(&saved.text, saved.images.len());
+            let images = order
+                .into_iter()
+                .filter_map(|i| saved.images.get(i).cloned())
+                .collect();
             c.restore_draft(RestoreDraft::plain(text, images), cx);
         });
     }
     /// A box's draft from before, put back as the box is made (`restore`).
-    pub(crate) fn restore_saved_draft(&self, key: &str, composer: &Entity<crate::composer::Composer>, cx: &mut App) {
+    pub(crate) fn restore_saved_draft(
+        &self,
+        key: &str,
+        composer: &Entity<crate::composer::Composer>,
+        cx: &mut App,
+    ) {
         // A handover's incoming app: the drafts are the outgoing app's until
         // it takes over (`reload_drafts`), as he may still be typing there.
         if crate::handover::waiting() {
             return;
         }
         if let Some(draft) = self.drafts.saved.get(key).cloned() {
-            composer.update(cx, |c, cx| c.restore_draft(RestoreDraft::plain(draft.text, draft.images), cx));
+            composer.update(cx, |c, cx| {
+                c.restore_draft(RestoreDraft::plain(draft.text, draft.images), cx)
+            });
         }
     }
 
@@ -234,10 +304,16 @@ impl Threadbear {
     /// wrote as it handed over, into every box (none had its draft put back
     /// while it waited: `restore_saved_draft`).
     pub(crate) fn reload_drafts(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.drafts.path.clone() else { return };
+        let Some(path) = self.drafts.path.clone() else {
+            return;
+        };
         self.drafts.saved = read(&path);
         set_saved(&self.drafts.saved);
-        let mut boxes: Vec<(String, Entity<crate::composer::Composer>)> = self.composers.iter().map(|(k, c)| (k.clone(), c.clone())).collect();
+        let mut boxes: Vec<(String, Entity<crate::composer::Composer>)> = self
+            .composers
+            .iter()
+            .map(|(k, c)| (k.clone(), c.clone()))
+            .collect();
         if let Some(new) = &self.new_thread.composer {
             boxes.push((NEW_THREAD.to_owned(), new.clone()));
         }
@@ -266,28 +342,49 @@ impl Threadbear {
         if crate::handover::waiting() {
             return;
         }
-        let Some(path) = self.drafts.path.clone() else { return };
+        let Some(path) = self.drafts.path.clone() else {
+            return;
+        };
         let mut all = self.drafts.saved.clone();
-        let mut boxes: Vec<(String, Entity<crate::composer::Composer>)> = self.composers.iter().map(|(k, c)| (k.clone(), c.clone())).collect();
+        let mut boxes: Vec<(String, Entity<crate::composer::Composer>)> = self
+            .composers
+            .iter()
+            .map(|(k, c)| (k.clone(), c.clone()))
+            .collect();
         if let Some(new) = &self.new_thread.composer {
             boxes.push((NEW_THREAD.to_owned(), new.clone()));
         }
         for (key, composer) in boxes {
             let c = composer.read(cx);
-            if self.threads.get(&key).is_some_and(|t| t.backlog.is_some()) && !self.composer_has_unsaved(&composer, cx) {
+            if self.threads.get(&key).is_some_and(|t| t.backlog.is_some())
+                && !self.composer_has_unsaved(&composer, cx)
+            {
                 all.remove(&key);
                 continue;
             }
             let (text, images) = c.draft_for_saving(cx);
-            if key != NEW_THREAD { merge_thread(&mut all, &key, c.box_drafts(cx)); }
-            let draft = Draft { text, images, backlog_revision: self.threads.get(&key).and_then(|t| t.backlog.as_ref()).map(|d| d.revision), attachments: c.backlog_attachments.clone() };
+            if key != NEW_THREAD {
+                merge_thread(&mut all, &key, c.box_drafts(cx));
+            }
+            let draft = Draft {
+                text,
+                images,
+                backlog_revision: self
+                    .threads
+                    .get(&key)
+                    .and_then(|t| t.backlog.as_ref())
+                    .map(|d| d.revision),
+                attachments: c.backlog_attachments.clone(),
+            };
             if draft.is_empty() {
                 all.remove(&key);
             } else {
                 all.insert(key, draft);
             }
         }
-        self.drafts.failed = write(&path, &all).inspect_err(|e| eprintln!("threadbear: couldn't save the drafts: {e}")).is_err();
+        self.drafts.failed = write(&path, &all)
+            .inspect_err(|e| eprintln!("threadbear: couldn't save the drafts: {e}"))
+            .is_err();
         set_saved(&all);
         self.drafts.saved = all;
     }
@@ -304,20 +401,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("desktop-drafts.json");
         let mut all = HashMap::new();
-        all.insert("t1".to_owned(), Draft { text: "half a thought \u{FFFC}".into(), images: vec![ImageRef::new("/tmp/a.png", "image/png")], ..Default::default() });
+        all.insert(
+            "t1".to_owned(),
+            Draft {
+                text: "half a thought \u{FFFC}".into(),
+                images: vec![ImageRef::new("/tmp/a.png", "image/png")],
+                ..Default::default()
+            },
+        );
         write(&path, &all).unwrap();
         assert_eq!(read(&path), all);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         write(&path, &HashMap::new()).unwrap();
         assert!(!path.exists());
     }
 
     fn words(text: &str) -> Draft {
-        Draft { text: text.into(), images: Vec::new(), ..Default::default() }
+        Draft {
+            text: text.into(),
+            images: Vec::new(),
+            ..Default::default()
+        }
     }
 
     // A card's and a question's boxes go in under their own keys, each
@@ -335,22 +446,49 @@ mod tests {
         all.insert(super::question_picks_key("t1", "q-gone"), words("{}"));
         all.insert(super::card_picks_key("t1", 4), words("{}"));
         let boxes = ThreadBoxes {
-            card: Some(vec![(card_key("t1", 7, 0), words("not before Friday")), (card_key("t1", 7, 1), words("  "))]),
-            questions: vec![(question_key("t1", "q-done"), None), (question_key("t1", "q-open"), Some(words("the blue one")))],
+            card: Some(vec![
+                (card_key("t1", 7, 0), words("not before Friday")),
+                (card_key("t1", 7, 1), words("  ")),
+            ]),
+            questions: vec![
+                (question_key("t1", "q-done"), None),
+                (question_key("t1", "q-open"), Some(words("the blue one"))),
+            ],
             // q-gone was answered elsewhere: it isn't waiting any more.
-            open_questions: Some(["q-open", "q-later"].into_iter().map(str::to_owned).collect()),
+            open_questions: Some(
+                ["q-open", "q-later"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
         };
         merge_thread(&mut all, "t1", boxes);
         let mut keys: Vec<&str> = all.keys().map(String::as_str).collect();
         keys.sort();
-        assert_eq!(keys, ["card:t1:7:0", "card:t2:9:1", "question:t1:q-later", "question:t1:q-open", "t1"]);
+        assert_eq!(
+            keys,
+            [
+                "card:t1:7:0",
+                "card:t2:9:1",
+                "question:t1:q-later",
+                "question:t1:q-open",
+                "t1"
+            ]
+        );
         assert_eq!(all["card:t1:7:0"].text, "not before Friday");
         // Can't tell yet: nothing of the thread's changes.
         let before = all.clone();
         merge_thread(&mut all, "t1", ThreadBoxes::default());
         assert_eq!(all, before);
         // The card answered: its boxes go.
-        merge_thread(&mut all, "t1", ThreadBoxes { card: Some(Vec::new()), ..Default::default() });
+        merge_thread(
+            &mut all,
+            "t1",
+            ThreadBoxes {
+                card: Some(Vec::new()),
+                ..Default::default()
+            },
+        );
         assert!(!all.contains_key("card:t1:7:0"));
     }
 }

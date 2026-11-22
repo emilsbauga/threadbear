@@ -1,5 +1,5 @@
 // How tb reaches the runner. Inside a thread that's with the thread's own key
-// (docs/protocol.md, "A thread's own key"), never the token. Outside one, or
+// (docs/protocol/connection.md, "A thread's own key"), never the token. Outside one, or
 // pointed at another runner's data dir (a dev runner, whose token it reads and
 // whose threads it doesn't belong to), it's that data dir's token.
 import fs from 'node:fs';

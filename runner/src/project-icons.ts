@@ -1,4 +1,4 @@
-// Project icons (docs/protocol.md, "Projects", "Icons"). A project shows
+// Project icons (docs/protocol/projects.md, "Projects", "Icons"). A project shows
 // the picture its own folders already have: an Xcode app icon, a web
 // app's apple-touch-icon or favicon, a Chrome extension's icons, a Mac
 // .icns. Finding one is a scan of file names, no model needed, so it's

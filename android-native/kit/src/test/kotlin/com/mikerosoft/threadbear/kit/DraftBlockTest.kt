@@ -1,11 +1,18 @@
 package com.mikerosoft.threadbear.kit
 
 import com.mikerosoft.threadbear.kit.DraftBlock.Span
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * ```slack, ```email and ```draft blocks (DraftBlockTests.swift): text for
@@ -112,5 +119,50 @@ class DraftBlockTest {
     @Test fun copiedHtmlKeepsIndentsAndLinedUpSpaces() {
         val draft = DraftBlock(DraftBlock.Kind.EMAIL, "    • nested\nA    B")
         assertEquals("<meta charset=\"utf-8\"><div>&nbsp;&nbsp;&nbsp;&nbsp;• nested<br>A &nbsp;&nbsp;&nbsp;B</div>", draft.html)
+    }
+
+    /**
+     * The cases every app runs (shared/cases/draft-blocks.json): the desktop
+     * app, the iPhone, the website and here. A case whose `differs` names
+     * android is a known difference, skipped. `closed` is answered by parsing
+     * the text as the phone draws it, a draft anywhere in it, quotes included.
+     */
+    @Test fun draftBlocksFollowTheSharedCases() {
+        fun neutral(spans: List<Span>): JsonElement = JsonArray(
+            spans.map { s ->
+                val o = linkedMapOf<String, JsonElement>("text" to JsonPrimitive(s.text))
+                if (s.bold) o["bold"] = JsonPrimitive(true)
+                if (s.italic) o["italic"] = JsonPrimitive(true)
+                if (s.strike) o["strike"] = JsonPrimitive(true)
+                if (s.code) o["code"] = JsonPrimitive(true)
+                s.link?.let { o["link"] = JsonPrimitive(it) }
+                JsonObject(o)
+            },
+        )
+        fun hasDraft(blocks: List<MarkdownBlock>): Boolean = blocks.any {
+            it is MarkdownBlock.Draft || (it is MarkdownBlock.Quote && hasDraft(it.blocks))
+        }
+        val file = File("../../shared/cases/draft-blocks.json")
+        val cases = (parseJson(file.readText()) as JsonObject).arr("cases")!!
+        assertTrue(cases.size >= 50)
+        for (c in cases) {
+            val o = c as JsonObject
+            if (o.obj("differs")?.str("android") != null) continue
+            val name = o.str("name")!!
+            val input = o.obj("input")!!
+            fun draft() = DraftBlock(DraftBlock.Kind.entries.first { it.wire == input.str("kind") }, input.str("source")!!)
+            val got: JsonElement = when (val op = input.str("op")) {
+                "from" -> DraftBlock.from(input.str("language"), input.str("code")!!)?.let {
+                    JsonObject(mapOf("kind" to JsonPrimitive(it.kind.wire), "source" to JsonPrimitive(it.source), "label" to JsonPrimitive(it.label)))
+                } ?: JsonNull
+                "lines" -> JsonArray(draft().lines.map { JsonObject(mapOf("quote" to JsonPrimitive(it.quote), "spans" to neutral(it.spans))) })
+                "plainText" -> JsonPrimitive(draft().plainText)
+                "html" -> JsonPrimitive(draft().html)
+                "spans" -> neutral(DraftBlock.slackSpans(input.str("line")!!))
+                "closed" -> JsonPrimitive(hasDraft(MarkdownBlock.parse(input.str("text")!!)))
+                else -> fail("$name: no $op on Android")
+            }
+            assertEquals(o["expect"], got, name)
+        }
     }
 }

@@ -3802,6 +3802,92 @@ mod tests {
         assert_eq!(clicks.lock().unwrap().len(), 3, "and the link still clicks first time");
     }
 
+    /// Threadbear's: a press on a link that slips a point before it's let go
+    /// is still the link's click. The slip starts selecting words, and the
+    /// release used to see words selected and not follow the link, so it
+    /// took two or three clicks (Mike, 20 Nov 2026; the real pointer showed
+    /// it every time with a 1 pt slip, features/tools/real-link-click.ts).
+    /// A real drag off the link still selects and follows nothing.
+    #[gpui::test]
+    fn a_link_clicks_first_time_when_the_press_slips(cx: &mut TestAppContext) {
+        use std::sync::{Arc, Mutex};
+
+        struct Root {
+            text_view: Entity<TextViewState>,
+            clicks: Arc<Mutex<Vec<SharedString>>>,
+        }
+
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                div()
+                    .w(px(300.))
+                    .child(crate::TextSelectionLayer)
+                    .child(TextView::new(&self.text_view).selectable(true).on_link_click(move |url, _, _, _| clicks.lock().unwrap().push(url.clone())))
+            }
+        }
+
+        cx.update(crate::init);
+        let clicks = Arc::new(Mutex::new(Vec::new()));
+        let (view, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, cx| Root { text_view: cx.new(|cx| TextViewState::markdown("[The Evening](https://example.com/evening) and words after", cx)), clicks }
+        });
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| { let _ = window.draw(cx); });
+        draw(cx);
+        let press = |cx: &mut VisualTestContext, from: gpui::Point<Pixels>, to: gpui::Point<Pixels>| {
+            cx.simulate_event(MouseDownEvent { position: from, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+            draw(cx);
+            cx.simulate_event(gpui::MouseMoveEvent { position: to, modifiers: Modifiers::default(), pressed_button: Some(MouseButton::Left) });
+            draw(cx);
+            let selecting = cx.update(|window, cx| crate::TextSelection::has_selection(window, cx));
+            cx.simulate_event(MouseUpEvent { position: to, modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1 });
+            draw(cx);
+            selecting
+        };
+        let selected = |cx: &mut VisualTestContext| view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text());
+
+        for n in 1..=3 {
+            // Slipping 1, 2 and 3 points along the link's words.
+            let selecting = press(cx, point(px(10.), px(10.)), point(px(10. + n as f32), px(10.)));
+            assert!(selecting, "slip {n}: the slip didn't start selecting, so this doesn't test the fix");
+            assert_eq!(clicks.lock().unwrap().len(), n, "a press that slipped {n} pt didn't follow the link");
+            assert!(selected(cx).trim().is_empty(), "a click on the link left {:?} selected", selected(cx));
+        }
+
+        // Dragged well along the words: a selection, not a click.
+        press(cx, point(px(10.), px(10.)), point(px(60.), px(10.)));
+        assert_eq!(clicks.lock().unwrap().len(), 3, "a drag along the link followed it");
+        assert!(!selected(cx).trim().is_empty(), "a drag along the link selected nothing");
+
+        // Dragged away and back to just where it went down, which leaves
+        // nothing selected, before it's let go: still a drag (Codex's and
+        // Gemini's reviews).
+        cx.simulate_event(MouseDownEvent { position: point(px(10.), px(10.)), modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1, first_mouse: false });
+        draw(cx);
+        for x in [30., 60., 10.] {
+            cx.simulate_event(gpui::MouseMoveEvent { position: point(px(x), px(10.)), modifiers: Modifiers::default(), pressed_button: Some(MouseButton::Left) });
+            draw(cx);
+        }
+        cx.simulate_event(MouseUpEvent { position: point(px(10.), px(10.)), modifiers: Modifiers::default(), button: MouseButton::Left, click_count: 1 });
+        draw(cx);
+        assert_eq!(clicks.lock().unwrap().len(), 3, "a drag that came back to the press followed the link");
+
+        // Words selected, then a Shift-click on the link extends them: no
+        // click, and the selection stays (the reviews again).
+        press(cx, point(px(110.), px(10.)), point(px(170.), px(10.)));
+        assert!(!selected(cx).trim().is_empty(), "the drag over plain words selected nothing");
+        let shift = Modifiers { shift: true, ..Modifiers::default() };
+        cx.simulate_event(MouseDownEvent { position: point(px(10.), px(10.)), modifiers: shift, button: MouseButton::Left, click_count: 1, first_mouse: false });
+        draw(cx);
+        cx.simulate_event(MouseUpEvent { position: point(px(10.), px(10.)), modifiers: shift, button: MouseButton::Left, click_count: 1 });
+        draw(cx);
+        assert_eq!(clicks.lock().unwrap().len(), 3, "a Shift-click on the link followed it");
+        assert!(!selected(cx).trim().is_empty(), "a Shift-click on the link lost the selection");
+    }
+
     /// Threadbear's: a press on a link is noted for a handler further out,
     /// which can keep the words from being selected and drag the link out
     /// (`GlobalState::take_pressed_link`, `App::start_drag`). A press that

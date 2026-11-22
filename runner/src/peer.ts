@@ -1,5 +1,5 @@
 // Which thread a process on this Mac belongs to, for the RPC server (docs/
-// protocol.md, "Who's really calling"). Credentials alone can't say: anything
+// protocol/connection.md, "Who's really calling"). Credentials alone can't say: anything
 // a thread's shell runs can read the token file or wipe its own key from the
 // environment. The kernel can say what it's a child of, so the server looks at
 // the far end of the connection and walks up its parents to a thread's CLI.

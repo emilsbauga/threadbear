@@ -96,7 +96,8 @@ export function load(name: string, root = CONVEX): Record<string, any> {
     if (m[1]) continue;
     const from = m[3]!;
     // Relative to the importing file, as a bundler has it (boxProviders/fly.ts's './types').
-    const mod = fakes[from] ?? (from.startsWith('./') ? load(path.posix.join(path.posix.dirname(name), from.slice(2)), root) : undefined);
+    // Node's own modules as they are, for a "use node" file (push.ts).
+    const mod = fakes[from] ?? (from.startsWith('node:') ? (rootRequire(from) as Record<string, unknown>) : from.startsWith('./') ? load(path.posix.join(path.posix.dirname(name), from.slice(2)), root) : undefined);
     if (!mod) throw new Error(`convex-memory: no fake for ${from} (in ${name}.ts)`);
     for (const spec of m[2]!.split(',').map((s) => s.trim()).filter(Boolean)) {
       if (spec.startsWith('type ')) continue;
@@ -335,7 +336,7 @@ export function memoryBackend(root = CONVEX) {
       files.delete(id);
     },
     // An HTTP action's store (convex/uploads.ts takeUpload).
-    async store(blob: Blob) {
+    async store(_blob: Blob) {
       const id = `stored${++next}`;
       files.add(id);
       return id;

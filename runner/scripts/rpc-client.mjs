@@ -19,7 +19,7 @@ export class RpcError extends Error {
 }
 
 // Connects to ws://127.0.0.1:<port>/rpc and answers the runner's auth
-// challenge (docs/protocol.md, "Auth"): the token never goes out, and the
+// challenge (docs/protocol/connection.md, "Auth"): the token never goes out, and the
 // runner has to prove it has it too. A refused connection rejects with
 // `down: true`: nothing is listening, as while the runner restarts. One
 // that sends no challenge (a runner from before 5 Nov 2026, or not the

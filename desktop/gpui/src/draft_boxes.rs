@@ -45,7 +45,8 @@ use threadbear_core::draft_block::{self, DraftBlock, DraftKind, Line};
 pub(crate) const COPY_TIP: &str = "Copy the draft, with its links and formatting";
 
 /// Edit's tip, and Done's and Undo's, which scripts find them by too.
-pub(crate) const EDIT_TIP: &str = "Change the draft. Your version goes with your next message, for the agent to use";
+pub(crate) const EDIT_TIP: &str =
+    "Change the draft. Your version goes with your next message, for the agent to use";
 pub(crate) const DONE_TIP: &str = "Finish changing the draft (⌘Return)";
 pub(crate) const UNDO_TIP: &str = "Put the agent's draft back";
 
@@ -87,17 +88,32 @@ impl MarkdownPlugin for DraftBoxes {
         NODE
     }
 
-    fn parse(&self, node: &markdown::mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+    fn parse(
+        &self,
+        node: &markdown::mdast::Node,
+        cx: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
         let draft = closed_draft(node, cx.source())?;
         let source = cx.node_source(node).unwrap_or_default().to_owned();
         // A selection across the reply copies the draft's words, as the
         // Swift header copies as nothing and its lines as text.
-        Some(MarkdownNode::new(NODE, DraftRef(draft.clone())).text(draft.plain_text()).markdown(source).accessibility_label(draft.label()))
+        Some(
+            MarkdownNode::new(NODE, DraftRef(draft.clone()))
+                .text(draft.plain_text())
+                .markdown(source)
+                .accessibility_label(draft.label()),
+        )
     }
 
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match node.data::<DraftRef>() {
-            Some(DraftRef(draft)) => draft_box(draft, node.source_range().map_or(0, |r| r.start), self, window, cx),
+            Some(DraftRef(draft)) => draft_box(
+                draft,
+                node.source_range().map_or(0, |r| r.start),
+                self,
+                window,
+                cx,
+            ),
             None => div().child(node.as_text().to_owned()).into_any_element(),
         }
     }
@@ -106,7 +122,9 @@ impl MarkdownPlugin for DraftBoxes {
 /// The draft a code block is, once its closing fence has come: one still
 /// streaming in stays code, as half a draft mustn't be something to copy.
 pub(crate) fn closed_draft(node: &markdown::mdast::Node, source: &str) -> Option<DraftBlock> {
-    let markdown::mdast::Node::Code(code) = node else { return None };
+    let markdown::mdast::Node::Code(code) = node else {
+        return None;
+    };
     let draft = DraftBlock::from(code.lang.as_deref(), &code.value)?;
     let at = code.position.as_ref()?;
     draft_block::fence_closed(source, at.start.offset, at.end.offset).then_some(draft)
@@ -117,7 +135,8 @@ pub(crate) fn closed_draft(node: &markdown::mdast::Node, source: &str) -> Option
 /// When each draft was last copied, by its words, and that click's number
 /// (for its bubble's animation), so the button says Copied for a moment.
 /// Read as the box draws, as DraftBlockCell's is.
-static COPIED: LazyLock<Mutex<HashMap<u64, (Instant, usize)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static COPIED: LazyLock<Mutex<HashMap<u64, (Instant, usize)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn key(source: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -127,7 +146,8 @@ fn key(source: &str) -> u64 {
 
 fn copied(source: &str) -> Option<(Duration, usize)> {
     let map = COPIED.lock().ok()?;
-    map.get(&key(source)).map(|(at, serial)| (at.elapsed(), *serial))
+    map.get(&key(source))
+        .map(|(at, serial)| (at.elapsed(), *serial))
 }
 
 fn note_copied(source: &str) {
@@ -165,7 +185,9 @@ pub(crate) fn clipboard_html() -> Option<String> {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML};
     // SAFETY: as above.
     let html = unsafe { NSPasteboardTypeHTML };
-    NSPasteboard::generalPasteboard().stringForType(html).map(|s| s.to_string())
+    NSPasteboard::generalPasteboard()
+        .stringForType(html)
+        .map(|s| s.to_string())
 }
 
 #[cfg(all(feature = "automation", not(target_os = "macos")))]
@@ -179,7 +201,9 @@ fn copy(draft: &DraftBlock, window: &mut Window, cx: &mut App) {
     // Copied straight away, and back to Copy once it's had its moment.
     window.refresh();
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(COPIED_FOR + Duration::from_millis(50)).await;
+        cx.background_executor()
+            .timer(COPIED_FOR + Duration::from_millis(50))
+            .await;
         cx.update(|cx| cx.refresh_windows());
     })
     .detach();
@@ -192,6 +216,8 @@ fn copy(draft: &DraftBlock, window: &mut Window, cx: &mut App) {
 /// change not yet sent (unsent.rs).
 struct Edit {
     thread: String,
+    /// The reply's row, so the composer's chip for it can show where it is.
+    row: String,
     kind: DraftKind,
     /// The agent's words, to tell a change from none and to put back.
     original: String,
@@ -227,7 +253,14 @@ fn edit_key(thread: &str, base: &str) -> String {
 
 /// Edit: the box's words become a text box with the agent's draft (or his
 /// version from before) in it, the cursor at the end.
-fn start_edit(key: String, thread: String, draft: &DraftBlock, window: &mut Window, cx: &mut App) {
+fn start_edit(
+    key: String,
+    thread: String,
+    row: String,
+    draft: &DraftBlock,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let open = EDITS.with(|e| {
         let mut edits = e.borrow_mut();
         edits.get_mut(&key).map(|edit| {
@@ -239,16 +272,33 @@ fn start_edit(key: String, thread: String, draft: &DraftBlock, window: &mut Wind
         Some(editor) => editor,
         None => {
             let source = draft.source.clone();
-            let editor = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 30).default_value(source));
+            let editor = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 30)
+                    .default_value(source)
+            });
             crate::unsent::watch_in(&editor, "a reply's draft box", Some(thread.clone()), cx);
             // ⌘Return is Done, as it saves a project's notes. Return is a new line.
             let done_key = key.clone();
-            let keys = cx.subscribe(&editor, move |_, event: &InputEvent, cx| {
-                if let InputEvent::PressEnter { secondary: true, .. } = event {
-                    finish_edit(&done_key, cx);
-                }
+            let keys = cx.subscribe(&editor, move |_, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter {
+                    secondary: true, ..
+                } => finish_edit(&done_key, cx),
+                // The composer's chip for it (and Send) follows what's typed,
+                // in whichever window the box is (composer_drafts.rs).
+                InputEvent::Change => cx.refresh_windows(),
+                _ => {}
             });
-            let edit = Edit { thread, kind: draft.kind, original: draft.source.clone(), editor: editor.clone(), editing: true, sent: None, _keys: keys };
+            let edit = Edit {
+                thread,
+                row,
+                kind: draft.kind,
+                original: draft.source.clone(),
+                editor: editor.clone(),
+                editing: true,
+                sent: None,
+                _keys: keys,
+            };
             EDITS.with(|e| e.borrow_mut().insert(key, edit));
             editor
         }
@@ -264,7 +314,7 @@ fn start_edit(key: String, thread: String, draft: &DraftBlock, window: &mut Wind
 fn finish_edit(key: &str, cx: &mut App) {
     let dropped = EDITS.with(|e| {
         let mut edits = e.borrow_mut();
-        let Some(edit) = edits.get_mut(key) else { return None };
+        let edit = edits.get_mut(key)?;
         edit.editing = false;
         if edit.changed(cx).is_none() {
             return edits.remove(key);
@@ -275,8 +325,9 @@ fn finish_edit(key: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// Undo: the agent's draft back, his version gone.
-fn undo_edit(key: &str, cx: &mut App) {
+/// Undo: the agent's draft back, his version gone. The composer's chip for
+/// it does the same.
+pub(crate) fn undo_edit(key: &str, cx: &mut App) {
     let dropped = EDITS.with(|e| e.borrow_mut().remove(key));
     drop(dropped);
     cx.refresh_windows();
@@ -290,13 +341,58 @@ fn undo_edit(key: &str, cx: &mut App) {
 pub(crate) fn unsent_edits(thread: &str, cx: &App) -> String {
     let edits = EDITS.with(|e| {
         let edits = e.borrow();
-        let mut mine: Vec<(&String, &Edit)> = edits.iter().filter(|(_, edit)| edit.thread == thread).collect();
+        let mut mine: Vec<(&String, &Edit)> = edits
+            .iter()
+            .filter(|(_, edit)| edit.thread == thread)
+            .collect();
         mine.sort_by(|a, b| a.0.cmp(b.0));
         mine.into_iter()
-            .filter_map(|(_, edit)| edit.changed(cx).filter(|text| edit.sent.as_ref() != Some(text)).map(|text| (edit.kind, text)))
+            .filter_map(|(_, edit)| {
+                edit.changed(cx)
+                    .filter(|text| edit.sent.as_ref() != Some(text))
+                    .map(|text| (edit.kind, text))
+            })
             .collect::<Vec<_>>()
     });
     draft_block::edited_message(&edits)
+}
+
+/// A changed draft that goes with Mike's next message to its thread, for the
+/// composer's chip that says so (composer_drafts.rs).
+pub(crate) struct PendingEdit {
+    /// Its key, for the chip's ✕, which is the box's Undo.
+    pub key: String,
+    /// The reply's row it's in, for the chip's View.
+    pub row: String,
+    pub kind: DraftKind,
+    /// How many lines his version changes.
+    pub lines: usize,
+}
+
+/// `thread`'s changed drafts not sent yet, in the order they go: the same
+/// ones `unsent_edits` puts on the end of the message.
+pub(crate) fn pending_edits(thread: &str, cx: &App) -> Vec<PendingEdit> {
+    EDITS.with(|e| {
+        let edits = e.borrow();
+        let mut mine: Vec<(&String, &Edit)> = edits
+            .iter()
+            .filter(|(_, edit)| edit.thread == thread)
+            .collect();
+        mine.sort_by(|a, b| a.0.cmp(b.0));
+        mine.into_iter()
+            .filter_map(|(key, edit)| {
+                let text = edit
+                    .changed(cx)
+                    .filter(|text| edit.sent.as_ref() != Some(text))?;
+                Some(PendingEdit {
+                    key: key.clone(),
+                    row: edit.row.clone(),
+                    kind: edit.kind,
+                    lines: draft_block::changed_lines(&edit.original, &text).max(1),
+                })
+            })
+            .collect()
+    })
 }
 
 /// The message with `thread`'s changed drafts has gone: each is marked as
@@ -329,7 +425,9 @@ pub(crate) fn note_edits_sent(thread: &str, cx: &mut App) {
 fn edit_state(key: &str, cx: &App) -> (Option<Entity<TextareaState>>, Option<String>) {
     EDITS.with(|e| {
         let edits = e.borrow();
-        let Some(edit) = edits.get(key) else { return (None, None) };
+        let Some(edit) = edits.get(key) else {
+            return (None, None);
+        };
         (edit.editing.then(|| edit.editor.clone()), edit.changed(cx))
     })
 }
@@ -347,27 +445,63 @@ fn system_green(cx: &App) -> Hsla {
 
 /// The box (MarkdownRenderer.draftBlock): its label and Copy, a line across
 /// it, then the draft's lines, in a rounded box like a code block's.
-fn draft_box(original: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut Window, cx: &mut App) -> AnyElement {
-    let (fill, edge, secondary) = (style::code_background(cx), style::card_border(cx), style::secondary_label(cx));
+fn draft_box(
+    original: &DraftBlock,
+    at: usize,
+    plugin: &DraftBoxes,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let (fill, edge, secondary) = (
+        style::code_background(cx),
+        style::card_border(cx),
+        style::secondary_label(cx),
+    );
     let base = format!("{}-{at}", plugin.row);
     let key = edit_key(&plugin.thread, &base);
     let (editor, changed) = edit_state(&key, cx);
     // His version when he's changed it: drawn, copied and selected as the
     // agent's would be.
-    let shown = changed.as_ref().map_or_else(|| original.clone(), |text| DraftBlock { kind: original.kind, source: text.clone() });
+    let shown = changed.as_ref().map_or_else(
+        || original.clone(),
+        |text| DraftBlock {
+            kind: original.kind,
+            source: text.clone(),
+        },
+    );
     let draft = &shown;
-    let label = if changed.is_some() { format!("{} · edited", draft.label()) } else { draft.label().to_owned() };
+    let label = if changed.is_some() {
+        format!("{} · edited", draft.label())
+    } else {
+        draft.label().to_owned()
+    };
     let buttons = h_flex()
         .items_center()
         .gap(px(10.))
-        .when(changed.is_some() && editor.is_none(), |row| row.child(undo_button(&key, &base, cx)))
-        .child(edit_button(&key, &plugin.thread, original, editor.is_some(), &base, cx))
+        .when(changed.is_some() && editor.is_none(), |row| {
+            row.child(undo_button(&key, &base, cx))
+        })
+        .child(edit_button(
+            &key,
+            (&plugin.thread, &plugin.row),
+            original,
+            editor.is_some(),
+            &base,
+            cx,
+        ))
         .child(copy_button(draft, &base, window, cx));
     let header = h_flex()
         .h(px(HEADER))
         .items_center()
         .justify_between()
-        .child(div().text_size(px(size::DETAIL)).line_height(px(HEADER)).font_weight(FontWeight::MEDIUM).text_color(secondary).child(label))
+        .child(
+            div()
+                .text_size(px(size::DETAIL))
+                .line_height(px(HEADER))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(secondary)
+                .child(label),
+        )
         .child(buttons);
     let lines = draft.drawn_lines();
     // The line under the header, across the box: half a point, one pixel on
@@ -379,22 +513,12 @@ fn draft_box(original: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut
     // Its own selection, and somewhere for the keys to go once a drag starts
     // in its words, so ⌘C copies them (the thread pane's copy, selection_bar.rs).
     // Keyed by the words too, so his version gets a selection of its own.
-    let selection = window
-        .use_keyed_state(ElementId::Name(format!("draft-selection-{base}-{}", self::key(&draft.source)).into()), cx, |_, cx| {
-            let handle = TextSelectionHandle::new(draft.plain_text(), cx);
-            let focus = cx.focus_handle();
-            let keys = focus.clone();
-            handle.focus_with(
-                move |window, cx| {
-                    keys.focus(window, cx);
-                    crate::web_panels::keyboard_to_app(window);
-                },
-                cx,
-            );
-            DraftSelection { handle, focus }
-        })
-        .read(cx)
-        .clone();
+    let selection = draft_selection(
+        format!("draft-selection-{base}-{}", self::key(&draft.source)),
+        draft,
+        window,
+        cx,
+    );
     let body = div()
         .w_full()
         .px(px(CODE_PAD))
@@ -409,9 +533,19 @@ fn draft_box(original: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut
                 .id(ElementId::Name(format!("draft-editor-{base}").into()))
                 // A press here is the text box's, not a selection in the reply.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(crate::composer::bare_textarea(Textarea::new(&editor)).text_size(px(size::BODY)).line_height(px(size::BODY_LINE))),
+                .child(
+                    crate::composer::bare_textarea(Textarea::new(&editor))
+                        .text_size(px(size::BODY))
+                        .line_height(px(size::BODY_LINE)),
+                ),
         ),
-        None => body.child(DraftText::new(format!("draft-text-{base}"), &lines, plugin, selection.handle.clone(), cx)),
+        None => body.child(DraftText::new(
+            format!("draft-text-{base}"),
+            &lines,
+            (plugin.origin, plugin.cwd.clone()),
+            selection.handle.clone(),
+            cx,
+        )),
     };
     div()
         .track_focus(&selection.focus)
@@ -420,7 +554,13 @@ fn draft_box(original: &DraftBlock, at: usize, plugin: &DraftBoxes, window: &mut
         .bg(fill)
         .border(gpui_kit::px(0.5))
         .border_color(edge)
-        .child(div().px(px(CODE_PAD)).pt(px(CODE_PAD)).pb(px(UNDER_HEADER)).child(header))
+        .child(
+            div()
+                .px(px(CODE_PAD))
+                .pt(px(CODE_PAD))
+                .pb(px(UNDER_HEADER))
+                .child(header),
+        )
         .child(div().w_full().h(rule).bg(rule_color))
         .child(body)
         .into_any_element()
@@ -435,6 +575,140 @@ const QUOTE_BAR: &str = "\u{2502} ";
 struct DraftSelection {
     handle: TextSelectionHandle,
     focus: FocusHandle,
+}
+
+/// A draft's own selection, kept under `key` between frames.
+fn draft_selection(
+    key: String,
+    draft: &DraftBlock,
+    window: &mut Window,
+    cx: &mut App,
+) -> DraftSelection {
+    window
+        .use_keyed_state(ElementId::Name(key.into()), cx, |_, cx| {
+            let handle = TextSelectionHandle::new(draft.plain_text(), cx);
+            let focus = cx.focus_handle();
+            let keys = focus.clone();
+            handle.focus_with(
+                move |window, cx| {
+                    keys.focus(window, cx);
+                    crate::web_panels::keyboard_to_app(window);
+                },
+                cx,
+            );
+            DraftSelection { handle, focus }
+        })
+        .read(cx)
+        .clone()
+}
+
+/// A draft's lines as one text with its looks: bold, italic, strike, code
+/// in the mono font, links in the link colour, a quote's bar.
+struct Formatted {
+    text: String,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+    code: Vec<(Range<usize>, SharedString)>,
+    links: Vec<(Range<usize>, String)>,
+}
+
+fn formatted(lines: &[Line], cx: &App) -> Formatted {
+    // Opaque colours: GPUI blends a highlight's colour into the run's
+    // (style::over_background).
+    let (link, quoted, bar) = (
+        style::link_text(cx),
+        style::over_background(style::secondary_label(cx), cx),
+        style::over_background(style::tertiary_label(cx), cx),
+    );
+    let (code_bg, mono) = (
+        style::inline_code_background(cx),
+        cx.theme().mono_font_family.clone(),
+    );
+    let mut text = String::new();
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    let mut code: Vec<(Range<usize>, SharedString)> = Vec::new();
+    let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            text.push('\n');
+        }
+        if line.quote {
+            // The bar of a Slack quote, fainter than its words.
+            highlights.push((
+                text.len()..text.len() + QUOTE_BAR.len(),
+                HighlightStyle {
+                    color: Some(bar),
+                    ..Default::default()
+                },
+            ));
+            text.push_str(QUOTE_BAR);
+        }
+        for span in &line.spans {
+            let range = text.len()..text.len() + span.text.len();
+            text.push_str(&span.text);
+            let mut look = HighlightStyle::default();
+            if line.quote {
+                look.color = Some(quoted);
+            }
+            if span.bold {
+                look.font_weight = Some(FontWeight::SEMIBOLD);
+            }
+            if span.italic {
+                look.font_style = Some(FontStyle::Italic);
+            }
+            if span.strike {
+                look.strikethrough = Some(StrikethroughStyle {
+                    thickness: gpui_kit::px(1.),
+                    color: None,
+                });
+            }
+            if span.code {
+                look.background_color = Some(code_bg);
+                code.push((range.clone(), mono.clone()));
+            }
+            if let Some(url) = &span.link {
+                look.color = Some(link);
+                links.push((range.clone(), url.clone()));
+            }
+            if look != HighlightStyle::default() && !range.is_empty() {
+                highlights.push((range, look));
+            }
+        }
+    }
+    Formatted {
+        text,
+        highlights,
+        code,
+        links,
+    }
+}
+
+/// A draft drawn as its box draws it, formatting and links and all, and
+/// selectable with ⌘C as the box's words are, for the draft Mike sent under
+/// his bubble's chip (rows.rs, `edited_drafts`).
+pub(crate) fn sent_draft(
+    key: &str,
+    draft: &DraftBlock,
+    origin: Origin,
+    cwd: String,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let selection = draft_selection(
+        format!("sent-draft-selection-{key}-{}", self::key(&draft.source)),
+        draft,
+        window,
+        cx,
+    );
+    div()
+        .track_focus(&selection.focus)
+        .child(DraftText::new(
+            format!("sent-draft-text-{key}"),
+            &draft.drawn_lines(),
+            (origin, cwd),
+            selection.handle.clone(),
+            cx,
+        ))
+        .into_any_element()
 }
 
 /// The draft's lines as one piece of text, kept as the agent wrote them,
@@ -460,58 +734,25 @@ struct DraftText {
 }
 
 impl DraftText {
-    fn new(id: String, lines: &[Line], plugin: &DraftBoxes, handle: TextSelectionHandle, cx: &App) -> Self {
-        // Opaque colours: GPUI blends a highlight's colour into the run's
-        // (style::over_background).
-        let (link, quoted, bar) = (style::link_text(cx), style::over_background(style::secondary_label(cx), cx), style::over_background(style::tertiary_label(cx), cx));
-        let (code_bg, mono) = (style::inline_code_background(cx), cx.theme().mono_font_family.clone());
-        let mut text = String::new();
-        let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-        let mut code: Vec<(Range<usize>, SharedString)> = Vec::new();
-        let mut links: Vec<(Range<usize>, String)> = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            if i > 0 {
-                text.push('\n');
-            }
-            if line.quote {
-                // The bar of a Slack quote, fainter than its words.
-                highlights.push((text.len()..text.len() + QUOTE_BAR.len(), HighlightStyle { color: Some(bar), ..Default::default() }));
-                text.push_str(QUOTE_BAR);
-            }
-            for span in &line.spans {
-                let range = text.len()..text.len() + span.text.len();
-                text.push_str(&span.text);
-                let mut look = HighlightStyle::default();
-                if line.quote {
-                    look.color = Some(quoted);
-                }
-                if span.bold {
-                    look.font_weight = Some(FontWeight::SEMIBOLD);
-                }
-                if span.italic {
-                    look.font_style = Some(FontStyle::Italic);
-                }
-                if span.strike {
-                    look.strikethrough = Some(StrikethroughStyle { thickness: gpui_kit::px(1.), color: None });
-                }
-                if span.code {
-                    look.background_color = Some(code_bg);
-                    code.push((range.clone(), mono.clone().into()));
-                }
-                if let Some(url) = &span.link {
-                    look.color = Some(link);
-                    links.push((range.clone(), url.clone()));
-                }
-                if look != HighlightStyle::default() && !range.is_empty() {
-                    highlights.push((range, look));
-                }
-            }
-        }
-        let styled = StyledText::new(text.clone()).with_highlights(highlights).with_font_family_overrides(code);
+    fn new(
+        id: String,
+        lines: &[Line],
+        (origin, cwd): (Origin, String),
+        handle: TextSelectionHandle,
+        cx: &App,
+    ) -> Self {
+        let Formatted {
+            text,
+            highlights,
+            code,
+            links,
+        } = formatted(lines, cx);
+        let styled = StyledText::new(text.clone())
+            .with_highlights(highlights)
+            .with_font_family_overrides(code);
         let layout = styled.layout().clone();
         // Its links go where the reply's do: through the open gate, as this
         // thread's (a web page in the browser, a mail address asks first).
-        let (origin, cwd) = (plugin.origin, plugin.cwd.clone());
         let ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
         let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
         let id = ElementId::Name(id.into());
@@ -520,7 +761,13 @@ impl DraftText {
                 open_gate::open_link(url, origin, &cwd, cx);
             }
         });
-        DraftText { id, text: text.into(), inner, layout, handle }
+        DraftText {
+            id,
+            text: text.into(),
+            inner,
+            layout,
+            handle,
+        }
     }
 }
 
@@ -544,14 +791,33 @@ impl Element for DraftText {
         None
     }
 
-    fn request_layout(&mut self, id: Option<&GlobalElementId>, inspector_id: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         self.inner.request_layout(id, inspector_id, window, cx)
     }
 
-    fn prepaint(&mut self, id: Option<&GlobalElementId>, inspector_id: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> Hitbox {
-        let hitbox = self.inner.prepaint(id, inspector_id, bounds, &mut (), window, cx);
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Hitbox {
+        let hitbox = self
+            .inner
+            .prepaint(id, inspector_id, bounds, &mut (), window, cx);
         let mine = self.handle.entity_id();
-        let dragging_here = self.handle.snapshot(cx).is_some_and(|s| s.is_selecting() && s.anchor().entity_id() == Some(mine));
+        let dragging_here = self
+            .handle
+            .snapshot(cx)
+            .is_some_and(|s| s.is_selecting() && s.anchor().entity_id() == Some(mine));
         let registration = if !dragging_here && crate::reply_links::left_held() {
             // A selection being made from outside the box: out of its way,
             // where nothing is, so the reply's text takes the box whole.
@@ -568,15 +834,38 @@ impl Element for DraftText {
             // pointer: as good as no size, so it's these words, never the
             // reply they're in or another under a drag that's left them.
             // Where they are is what counts for the points it hands back.
-            TextSelectionRegistration::new(own, Bounds::new(bounds.origin, gpui_kit::size(gpui_kit::px(1.), gpui_kit::px(1.)))).with_text_bounds(vec![bounds])
+            TextSelectionRegistration::new(
+                own,
+                Bounds::new(
+                    bounds.origin,
+                    gpui_kit::size(gpui_kit::px(1.), gpui_kit::px(1.)),
+                ),
+            )
+            .with_text_bounds(vec![bounds])
         };
         let registration = registration.with_rendered_element(&self.handle, window, cx);
         self.handle.register(registration, window, cx);
         hitbox
     }
 
-    fn paint(&mut self, id: Option<&GlobalElementId>, inspector_id: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), hitbox: &mut Hitbox, window: &mut Window, cx: &mut App) {
-        let projection = self.handle.update_runs(&[TextSelectionRun::new(self.text.clone(), self.layout.clone(), bounds)], cx);
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        hitbox: &mut Hitbox,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let projection = self.handle.update_runs(
+            &[TextSelectionRun::new(
+                self.text.clone(),
+                self.layout.clone(),
+                bounds,
+            )],
+            cx,
+        );
         let color = cx.theme().selection;
         for range in projection.ranges().iter().flatten() {
             paint_selection(&self.layout, range.clone(), color, window);
@@ -584,9 +873,15 @@ impl Element for DraftText {
         // Words to select: the I-beam, as over the reply's (its links say
         // otherwise as they paint).
         window.set_cursor_style(CursorStyle::IBeam, hitbox);
-        self.inner.paint(id, inspector_id, bounds, &mut (), hitbox, window, cx);
+        self.inner
+            .paint(id, inspector_id, bounds, &mut (), hitbox, window, cx);
         #[cfg(feature = "automation")]
-        PAINTED.with(|p| p.borrow_mut().insert(self.id.to_string(), (self.text.clone(), self.layout.clone())));
+        PAINTED.with(|p| {
+            p.borrow_mut().insert(
+                self.id.to_string(),
+                (self.text.clone(), self.layout.clone()),
+            )
+        });
     }
 }
 
@@ -602,21 +897,37 @@ thread_local! {
 /// last, through real pointer events and hit testing. Says where the press
 /// and the release were, for the bar.
 #[cfg(feature = "automation")]
-pub(crate) fn drag_select(row: &str, words: &str, window: &mut Window, cx: &mut App) -> Result<(Point<Pixels>, Point<Pixels>), String> {
+pub(crate) fn drag_select(
+    row: &str,
+    words: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<(Point<Pixels>, Point<Pixels>), String> {
     use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
     PAINTED.with(|p| p.borrow_mut().clear());
     window.render_frame(cx);
     let prefix = format!("draft-text-{row}-");
-    let found = PAINTED.with(|p| p.borrow().iter().find(|(name, (text, _))| name.contains(&prefix) && text.contains(words)).map(|(_, found)| found.clone()));
+    let found = PAINTED.with(|p| {
+        p.borrow()
+            .iter()
+            .find(|(name, (text, _))| name.contains(&prefix) && text.contains(words))
+            .map(|(_, found)| found.clone())
+    });
     let (text, layout) = found.ok_or_else(|| format!("no draft box in {row} shows {words:?}"))?;
     let start = text.find(words).unwrap_or(0);
     // Words starting a wrapped row start that row, not the end of the one above.
-    let (Some(first), Some(last)) = (gpui_kit::base::selection_start_position(&layout, start), layout.position_for_index(start + words.len())) else {
+    let (Some(first), Some(last)) = (
+        gpui_kit::base::selection_start_position(&layout, start),
+        layout.position_for_index(start + words.len()),
+    ) else {
         return Err(format!("{words:?} isn't laid out in {row}'s draft"));
     };
     // Into the first letter and short of the end of the last, on their line.
     let half = layout.line_height() / 2.;
-    let (from, to) = (point(first.x + gpui_kit::px(1.), first.y + half), point(last.x - gpui_kit::px(1.), last.y + half));
+    let (from, to) = (
+        point(first.x + gpui_kit::px(1.), first.y + half),
+        point(last.x - gpui_kit::px(1.), last.y + half),
+    );
     window.pointer_move(from, None, cx);
     window.pointer_down(from, MouseButton::Left, cx);
     window.render_frame(cx);
@@ -632,17 +943,31 @@ pub(crate) fn drag_select(row: &str, words: &str, window: &mut Window, cx: &mut 
 fn paint_selection(layout: &TextLayout, range: Range<usize>, color: Hsla, window: &mut Window) {
     // From where the first character is drawn: a selection starting a
     // wrapped row starts that row, not the end of the row above.
-    let (Some(start), Some(end)) = (gpui_kit::base::selection_start_position(layout, range.start), layout.position_for_index(range.end)) else { return };
+    let (Some(start), Some(end)) = (
+        gpui_kit::base::selection_start_position(layout, range.start),
+        layout.position_for_index(range.end),
+    ) else {
+        return;
+    };
     let (area, line) = (layout.bounds(), layout.line_height());
     let mut quads = Vec::new();
     if start.y == end.y {
         quads.push(Bounds::from_corners(start, point(end.x, end.y + line)));
     } else {
-        quads.push(Bounds::from_corners(start, point(area.right(), start.y + line)));
+        quads.push(Bounds::from_corners(
+            start,
+            point(area.right(), start.y + line),
+        ));
         if end.y > start.y + line {
-            quads.push(Bounds::from_corners(point(area.left(), start.y + line), point(area.right(), end.y)));
+            quads.push(Bounds::from_corners(
+                point(area.left(), start.y + line),
+                point(area.right(), end.y),
+            ));
         }
-        quads.push(Bounds::from_corners(point(area.left(), end.y), point(end.x, end.y + line)));
+        quads.push(Bounds::from_corners(
+            point(area.left(), end.y),
+            point(end.x, end.y + line),
+        ));
     }
     for quad in quads {
         window.paint_quad(fill(quad, color));
@@ -653,8 +978,18 @@ fn paint_selection(layout: &TextLayout, range: Range<usize>, color: Hsla, window
 /// that's as wide as its widest word.
 fn text_width(text: &str, font_size: f32, window: &Window) -> Pixels {
     let style = window.text_style();
-    let run = TextRun { len: text.len(), font: style.font(), color: style.color, background_color: None, underline: None, strikethrough: None };
-    window.text_system().shape_line(text.to_owned().into(), px(font_size), &[run], None).width
+    let run = TextRun {
+        len: text.len(),
+        font: style.font(),
+        color: style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(text.to_owned().into(), px(font_size), &[run], None)
+        .width
 }
 
 /// Copy at the header's right (DraftBlockCell.button): the icon and its
@@ -664,12 +999,24 @@ fn text_width(text: &str, font_size: f32, window: &Window) -> Pixels {
 fn copy_button(draft: &DraftBlock, base: &str, window: &mut Window, cx: &App) -> AnyElement {
     let shown = copied(&draft.source);
     let just = shown.is_some_and(|(since, _)| since < COPIED_FOR);
-    let color = if just { system_green(cx) } else { style::secondary_label(cx) };
-    let width = gpui_kit::px(style::zoomed(14. + 5. + 12.)) + text_width("Copied", style::size::DETAIL, window).ceil();
-    let icon = if just { crate::icons::tall_checkmark() } else { crate::icons::symbol("doc.on.doc") }.size(px(11.)).text_color(color);
+    let color = if just {
+        system_green(cx)
+    } else {
+        style::secondary_label(cx)
+    };
+    let width = gpui_kit::px(style::zoomed(14. + 5. + 12.))
+        + text_width("Copied", style::size::DETAIL, window).ceil();
+    let icon = if just {
+        crate::icons::tall_checkmark()
+    } else {
+        crate::icons::symbol("doc.on.doc")
+    }
+    .size(px(11.))
+    .text_color(color);
     let draft = draft.clone();
     let button = div()
-        .id(ElementId::Name(format!("draft-copy-{base}").into())).role(Role::Button)
+        .id(ElementId::Name(format!("draft-copy-{base}").into()))
+        .role(Role::Button)
         .relative()
         .flex_none()
         .w(width)
@@ -683,11 +1030,22 @@ fn copy_button(draft: &DraftBlock, base: &str, window: &mut Window, cx: &App) ->
         .items_center()
         .cursor_pointer()
         .child(div().w(px(14.)).flex().justify_center().child(icon))
-        .child(div().ml(px(5.)).text_size(px(size::DETAIL)).line_height(px(20.)).text_color(color).child(if just { "Copied" } else { "Copy" }))
+        .child(
+            div()
+                .ml(px(5.))
+                .text_size(px(size::DETAIL))
+                .line_height(px(20.))
+                .text_color(color)
+                .child(if just { "Copied" } else { "Copy" }),
+        )
         // Not the start of a selection in the reply around it.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| copy(&draft, window, cx))
-        .children(shown.filter(|(since, _)| *since < BUBBLE_FOR).map(|(_, serial)| copied_bubble(serial, cx)));
+        .children(
+            shown
+                .filter(|(since, _)| *since < BUBBLE_FOR)
+                .map(|(_, serial)| copied_bubble(serial, cx)),
+        );
     crate::highlights::tipped(button, COPY_TIP).into_any_element()
 }
 
@@ -702,29 +1060,76 @@ fn header_button(id: String, icon: &str, word: &'static str, color: Hsla) -> Sta
         .flex()
         .items_center()
         .cursor_pointer()
-        .child(div().w(px(14.)).flex().justify_center().child(crate::icons::symbol(icon).size(px(11.)).text_color(color)))
-        .child(div().ml(px(4.)).text_size(px(size::DETAIL)).line_height(px(20.)).text_color(color).child(word))
+        .child(
+            div()
+                .w(px(14.))
+                .flex()
+                .justify_center()
+                .child(crate::icons::symbol(icon).size(px(11.)).text_color(color)),
+        )
+        .child(
+            div()
+                .ml(px(4.))
+                .text_size(px(size::DETAIL))
+                .line_height(px(20.))
+                .text_color(color)
+                .child(word),
+        )
         // Not the start of a selection in the reply around it.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 /// Edit, or Done while the text box is open (in the accent colour, as the
 /// thing to press next).
-fn edit_button(key: &str, thread: &str, original: &DraftBlock, editing: bool, base: &str, cx: &App) -> AnyElement {
+fn edit_button(
+    key: &str,
+    (thread, row): (&str, &str),
+    original: &DraftBlock,
+    editing: bool,
+    base: &str,
+    cx: &App,
+) -> AnyElement {
     let key = key.to_owned();
     if editing {
-        let button = header_button(format!("draft-done-{base}"), "checkmark", "Done", style::accent(cx)).on_click(move |_, _, cx| finish_edit(&key, cx));
+        let button = header_button(
+            format!("draft-done-{base}"),
+            "checkmark",
+            "Done",
+            style::accent(cx),
+        )
+        .on_click(move |_, _, cx| finish_edit(&key, cx));
         return crate::highlights::tipped(button, DONE_TIP).into_any_element();
     }
-    let (thread, original) = (thread.to_owned(), original.clone());
-    let button = header_button(format!("draft-edit-{base}"), "pencil", "Edit", style::secondary_label(cx)).on_click(move |_, window, cx| start_edit(key.clone(), thread.clone(), &original, window, cx));
+    let (thread, row, original) = (thread.to_owned(), row.to_owned(), original.clone());
+    let button = header_button(
+        format!("draft-edit-{base}"),
+        "pencil",
+        "Edit",
+        style::secondary_label(cx),
+    )
+    .on_click(move |_, window, cx| {
+        start_edit(
+            key.clone(),
+            thread.clone(),
+            row.clone(),
+            &original,
+            window,
+            cx,
+        )
+    });
     crate::highlights::tipped(button, EDIT_TIP).into_any_element()
 }
 
 /// Undo, on a changed draft: the agent's words back.
 fn undo_button(key: &str, base: &str, cx: &App) -> AnyElement {
     let key = key.to_owned();
-    let button = header_button(format!("draft-undo-{base}"), "arrow.uturn.backward", "Undo", style::secondary_label(cx)).on_click(move |_, _, cx| undo_edit(&key, cx));
+    let button = header_button(
+        format!("draft-undo-{base}"),
+        "arrow.uturn.backward",
+        "Undo",
+        style::secondary_label(cx),
+    )
+    .on_click(move |_, _, cx| undo_edit(&key, cx));
     crate::highlights::tipped(button, UNDO_TIP).into_any_element()
 }
 
@@ -733,8 +1138,24 @@ fn undo_button(key: &str, base: &str, cx: &App) -> AnyElement {
 /// miss (Mike, 7 Nov). It rises a little as it appears, waits and fades.
 /// Its right edge is the box's, as the Swift one is kept inside the reply.
 fn copied_bubble(serial: usize, cx: &App) -> AnyElement {
-    let (background, edge, label, green) = (cx.theme().background, style::card_border(cx), style::label_text(cx), system_green(cx));
-    let tick = div().size(px(12.)).rounded_full().bg(green).flex().items_center().justify_center().child(crate::icons::symbol("checkmark").size(px(8.)).text_color(gpui_kit::white()));
+    let (background, edge, label, green) = (
+        cx.theme().background,
+        style::card_border(cx),
+        style::label_text(cx),
+        system_green(cx),
+    );
+    let tick = div()
+        .size(px(12.))
+        .rounded_full()
+        .bg(green)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            crate::icons::symbol("checkmark")
+                .size(px(8.))
+                .text_color(gpui_kit::white()),
+        );
     // As tall as its words, as the Swift bubble's stack view comes out: its
     // insets only show left and right.
     let bubble = h_flex()
@@ -745,10 +1166,22 @@ fn copied_bubble(serial: usize, cx: &App) -> AnyElement {
         .bg(background)
         .border(gpui_kit::px(0.5))
         .border_color(edge)
-        .shadow(vec![BoxShadow::new(gpui_kit::px(0.), px(1.), hsla(0., 0., 0., 0.18)).blur_radius(px(6.))])
+        .shadow(vec![BoxShadow::new(
+            gpui_kit::px(0.),
+            px(1.),
+            hsla(0., 0., 0., 0.18),
+        )
+        .blur_radius(px(6.))])
         .whitespace_nowrap()
         .child(tick)
-        .child(div().text_size(px(size::DETAIL)).line_height(px(style::natural_line(size::DETAIL))).font_weight(FontWeight::MEDIUM).text_color(label).child("Copied to clipboard"));
+        .child(
+            div()
+                .text_size(px(size::DETAIL))
+                .line_height(px(style::natural_line(size::DETAIL)))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(label)
+                .child("Copied to clipboard"),
+        );
     // Over the button, 4 above it (the button is 20 tall), its right edge
     // the box's, 6 in from the button's.
     let above = 20. + 4.;
@@ -758,13 +1191,22 @@ fn copied_bubble(serial: usize, cx: &App) -> AnyElement {
         .right(px(6.))
         .bottom(px(above))
         .child(bubble)
-        .with_animation(("draft-copied", serial), Animation::new(BUBBLE_FOR), move |el, delta| {
-            let t = delta * total;
-            // A 4-point rise over 0.18 s, eased out; in over 0.12 s, out over the last 0.25 s.
-            let rise = 1. - ease_out_cubic((t / 0.18).min(1.));
-            let shown = (t / 0.12).min(1.) * if t > total - 0.25 { (1. - (t - (total - 0.25)) / 0.25).max(0.) } else { 1. };
-            el.bottom(px(above - 4. * rise)).opacity(shown)
-        })
+        .with_animation(
+            ("draft-copied", serial),
+            Animation::new(BUBBLE_FOR),
+            move |el, delta| {
+                let t = delta * total;
+                // A 4-point rise over 0.18 s, eased out; in over 0.12 s, out over the last 0.25 s.
+                let rise = 1. - ease_out_cubic((t / 0.18).min(1.));
+                let shown = (t / 0.12).min(1.)
+                    * if t > total - 0.25 {
+                        (1. - (t - (total - 0.25)) / 0.25).max(0.)
+                    } else {
+                        1.
+                    };
+                el.bottom(px(above - 4. * rise)).opacity(shown)
+            },
+        )
         .into_any_element()
 }
 
@@ -830,12 +1272,22 @@ fn collect(node: &markdown::mdast::Node, source: &str, out: &mut Vec<DraftBlock>
 /// its Edit, puts the words in the text box as typing would leave them, and
 /// presses Done (not with `"done":false`); `"undo":true` presses its Undo.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn automation(
+    app: &Entity<crate::app::Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     use serde_json::json;
     use threadbear_core::reducer::RowContent;
     let prefix = cmd["row"].as_str().map(str::to_owned);
-    let thread_id = app.read(cx).pane.as_ref().map(|p| p.read(cx).summary.id.clone()).unwrap_or_default();
+    let thread_id = app
+        .read(cx)
+        .pane
+        .as_ref()
+        .map(|p| p.read(cx).summary.id.clone())
+        .unwrap_or_default();
     let row = app
         .read(cx)
         .pane
@@ -850,7 +1302,9 @@ pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json:
         })
         .ok_or_else(|| prefix.map_or("no reply with a draft".to_owned(), |p| format!("no row starting {p:?}")))?;
     // On screen first, as a person would see it before pressing.
-    app.update(cx, |t, cx| t.update_pane(cx, |p, cx| p.scroll_command(None, Some(&row), 40., cx)))??;
+    app.update(cx, |t, cx| {
+        t.update_pane(cx, |p, cx| p.scroll_command(None, Some(&row), 40., cx))
+    })??;
     window.render_frame(cx);
     let index = cmd["index"].as_u64().unwrap_or(0) as usize;
     // The row's `index`-th button with this tip, pressed as a click would.
@@ -860,10 +1314,24 @@ pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json:
         let buttons: Vec<_> = window
             .find_all_by_label(tip)
             .into_iter()
-            .filter(|e| e.visible() && e.path().iter().any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine))))
+            .filter(|e| {
+                e.visible()
+                    && e.path()
+                        .iter()
+                        .any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine)))
+            })
             .collect();
         // Done and Undo show on one box at a time, so the first is the one.
-        let Some(button) = buttons.get(if name == "copy" || name == "edit" { index } else { 0 }) else { return Err(format!("no {name} on draft {index} in {row}: {} found", buttons.len())) };
+        let Some(button) = buttons.get(if name == "copy" || name == "edit" {
+            index
+        } else {
+            0
+        }) else {
+            return Err(format!(
+                "no {name} on draft {index} in {row}: {} found",
+                buttons.len()
+            ));
+        };
         let at = button.visible_bounds().center();
         window.pointer_move(at, None, cx);
         window.pointer_down(at, MouseButton::Left, cx);
@@ -874,7 +1342,12 @@ pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json:
     if let Some(words) = cmd["edit"].as_str() {
         press(EDIT_TIP, "edit", window, cx)?;
         let key_prefix = edit_key(&thread_id, &format!("{row}-"));
-        let editor = EDITS.with(|e| e.borrow().iter().find(|(k, edit)| k.starts_with(&key_prefix) && edit.editing).map(|(_, edit)| edit.editor.clone()));
+        let editor = EDITS.with(|e| {
+            e.borrow()
+                .iter()
+                .find(|(k, edit)| k.starts_with(&key_prefix) && edit.editing)
+                .map(|(_, edit)| edit.editor.clone())
+        });
         let editor = editor.ok_or("Edit didn't open a text box")?;
         // Focused by the press, as a person would find it.
         if !editor.read(cx).focus_handle(cx).is_focused(window) {
@@ -893,7 +1366,16 @@ pub(crate) fn automation(app: &Entity<crate::app::Threadbear>, cmd: &serde_json:
     }
     if cmd["copy"].as_bool() != Some(true) {
         let mine = format!("draft-copy-{row}-");
-        let count = window.find_all_by_label(COPY_TIP).into_iter().filter(|e| e.visible() && e.path().iter().any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine)))).count();
+        let count = window
+            .find_all_by_label(COPY_TIP)
+            .into_iter()
+            .filter(|e| {
+                e.visible()
+                    && e.path()
+                        .iter()
+                        .any(|id| matches!(id, ElementId::Name(n) if n.starts_with(&mine)))
+            })
+            .count();
         return Ok(json!(format!("ok {count}")));
     }
     press(COPY_TIP, "copy", window, cx)?;
@@ -918,13 +1400,22 @@ mod tests {
             }
         }
         let mut out = Vec::new();
-        walk(&markdown::to_mdast(text, &markdown::ParseOptions::gfm()).unwrap(), text, &mut out);
+        walk(
+            &markdown::to_mdast(text, &markdown::ParseOptions::gfm()).unwrap(),
+            text,
+            &mut out,
+        );
         out
     }
 
     #[test]
     fn a_closed_draft_fence_is_a_box_wherever_it_is() {
-        assert_eq!(drafts("Here's the post:\n\n```slack\n*Threadbear, 6 Nov*\n• one\n• two\n```\n\nPost it?"), ["*Threadbear, 6 Nov*\n• one\n• two"]);
+        assert_eq!(
+            drafts(
+                "Here's the post:\n\n```slack\n*Threadbear, 6 Nov*\n• one\n• two\n```\n\nPost it?"
+            ),
+            ["*Threadbear, 6 Nov*\n• one\n• two"]
+        );
         for text in [
             "> ```slack\n> hello\n> ```",
             "Here:\r\n\r\n```slack\r\nhello\r\n```\r\n",
@@ -943,7 +1434,13 @@ mod tests {
     #[test]
     fn one_still_streaming_in_or_not_a_draft_stays_code() {
         // Cross-lab review, 6 Nov: a closing line has to match the opening one.
-        for text in ["```slack\n• one\n• tw", "```text\n• one\n```", "```slack\nhello\n~~~", "````slack\nhello\n```", "```slack\nhello\n> ```"] {
+        for text in [
+            "```slack\n• one\n• tw",
+            "```text\n• one\n```",
+            "```slack\nhello\n~~~",
+            "````slack\nhello\n```",
+            "```slack\nhello\n> ```",
+        ] {
             assert!(drafts(text).is_empty(), "{text:?}");
         }
         assert_eq!(drafts("````slack\nhello\n`````").len(), 1);

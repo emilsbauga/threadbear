@@ -1,4 +1,4 @@
-// A box's save (docs/virtual-runners.md, decision 7; docs/protocol.md, "Box
+// A box's save (docs/virtual-runners.md, decision 7; docs/protocol/boxes.md, "Box
 // mode"): before its box sleeps or is archived, the backend sends the box's
 // runner a `save` command, and the thread goes out of the box into Convex
 // file storage. A new box for the thread restores it, so a box the provider
@@ -290,7 +290,7 @@ export class SaveHold {
 const kindOf = (e: unknown): unknown => (e as { data?: { kind?: unknown } } | null)?.data?.kind;
 
 /**
- * The `save` command (docs/protocol.md, "Box mode"): the thread stopped
+ * The `save` command (docs/protocol/boxes.md, "Box mode"): the thread stopped
  * (Runner.quiesceForSave), packed, sealed, uploaded through the box key's
  * upload URL (sync:iconUploadUrl) and named in boxes:boxSaved, which
  * replaces the last save. A save past one upload fails the command, saying

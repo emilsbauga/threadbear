@@ -23,13 +23,26 @@ pub(crate) fn keep_behind() -> bool {
 /// Only scripted Mac copies consult the installed app's launch preference.
 /// An isolated test may supply a fixture settings file or force hiding.
 pub(crate) fn hide_windows() -> bool {
-    if !scripted() || !cfg!(target_os = "macos") { return false; }
+    if !scripted() || !cfg!(target_os = "macos") {
+        return false;
+    }
     static HIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HIDE.get_or_init(|| {
-        let path = std::env::var_os("THREADBEAR_TEST_WINDOW_SETTINGS").map(std::path::PathBuf::from)
-            .unwrap_or_else(|| crate::settings::Settings::path_in(&threadbear_client::config::default_home()));
-        let settings = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
-        threadbear_core::test_windows::hidden(&settings, std::env::var("THREADBEAR_HIDE_TEST_WINDOWS").ok().as_deref())
+        let path = std::env::var_os("THREADBEAR_TEST_WINDOW_SETTINGS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                crate::settings::Settings::path_in(&threadbear_client::config::default_home())
+            });
+        let settings = std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(serde_json::Value::Null);
+        threadbear_core::test_windows::hidden(
+            &settings,
+            std::env::var("THREADBEAR_HIDE_TEST_WINDOWS")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 
@@ -37,11 +50,15 @@ pub(crate) fn hide_windows() -> bool {
 pub(crate) fn windows_hidden() -> bool {
     #[cfg(target_os = "macos")]
     {
-        unsafe extern "C" { fn TBTestingWindowsAreHidden() -> bool; }
+        unsafe extern "C" {
+            fn TBTestingWindowsAreHidden() -> bool;
+        }
         unsafe { TBTestingWindowsAreHidden() }
     }
     #[cfg(not(target_os = "macos"))]
-    { false }
+    {
+        false
+    }
 }
 
 /// dev-app.sh's instances draw no window anyone can see: it's on screen to
@@ -53,7 +70,8 @@ pub(crate) fn windows_hidden() -> bool {
 /// someone's real setup (15 Nov). THREADBEAR_SHOW_WINDOW=1 (dev-app.sh's
 /// --visible) is for a test that needs it on screen, and labels it.
 pub(crate) fn unseen() -> bool {
-    hide_windows() || (keep_behind() && std::env::var("THREADBEAR_SHOW_WINDOW").as_deref() != Ok("1"))
+    hide_windows()
+        || (keep_behind() && std::env::var("THREADBEAR_SHOW_WINDOW").as_deref() != Ok("1"))
 }
 
 /// Filming the app for a clip (dev-app.sh's --film, which desktop/scripts/film.sh
@@ -80,11 +98,17 @@ pub(crate) fn place(window: &Window) {
     #[cfg(target_os = "macos")]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
-        let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+            return;
+        };
         // SAFETY: the window's own NSView, alive while the window is.
         let view: &objc2_app_kit::NSView = unsafe { &*h.ns_view.as_ptr().cast() };
-        let Some(ns_window) = view.window() else { return };
+        let Some(ns_window) = view.window() else {
+            return;
+        };
         if unseen() {
             hide(&ns_window);
         } else {
@@ -101,6 +125,8 @@ fn hide(window: &objc2_app_kit::NSWindow) {
     window.setAlphaValue(0.);
     window.setIgnoresMouseEvents(true);
     // NSWindowAnimationBehaviorNone: no zoom as it's ordered in.
+    // SAFETY: `window` is a live NSWindow we borrow, and
+    // setAnimationBehavior: takes one NSInteger and returns void.
     let _: () = unsafe { objc2::msg_send![window, setAnimationBehavior: 2isize] };
 }
 
@@ -121,18 +147,31 @@ mod unseen_windows {
         super::hide(this);
         // NSWindowAbove (1) becomes NSWindowBelow (-1) relative to nothing:
         // at the back, never over anyone's work.
-        let (place, relative) = if place == 1 { (-1, 0) } else { (place, relative) };
+        let (place, relative) = if place == 1 {
+            (-1, 0)
+        } else {
+            (place, relative)
+        };
+        #[expect(clippy::expect_used, reason = "installed before AppKit can call this")]
         let original = *ORIGINAL.get().expect("installed before it's called");
         // SAFETY: the method's own implementation, of this same signature.
-        let original: extern "C-unwind" fn(&NSWindow, Sel, isize, isize) = unsafe { std::mem::transmute(original) };
+        let original: extern "C-unwind" fn(&NSWindow, Sel, isize, isize) =
+            unsafe { std::mem::transmute(original) };
         original(this, sel, place, relative);
     }
 
     pub(super) fn install() {
-        let Some(method) = NSWindow::class().instance_method(sel!(orderWindow:relativeTo:)) else { return };
+        let Some(method) = NSWindow::class().instance_method(sel!(orderWindow:relativeTo:)) else {
+            return;
+        };
         // SAFETY: the same signature as the method it replaces, set once at
         // launch on the main thread before any window exists.
-        let old = unsafe { method.set_implementation(std::mem::transmute::<extern "C-unwind" fn(&NSWindow, Sel, isize, isize), Imp>(order)) };
+        let old = unsafe {
+            method.set_implementation(std::mem::transmute::<
+                extern "C-unwind" fn(&NSWindow, Sel, isize, isize),
+                Imp,
+            >(order))
+        };
         let _ = ORIGINAL.set(old as usize);
     }
 }
@@ -144,26 +183,45 @@ mod unseen_windows {
 mod banner {
     use objc2::rc::Retained;
     use objc2::{MainThreadMarker, MainThreadOnly as _};
-    use objc2_app_kit::{NSBackingStoreType, NSColor, NSTextField, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
+    use objc2_app_kit::{
+        NSBackingStoreType, NSColor, NSTextField, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-    pub(super) const TEXT: &str = "Test copy of Threadbear, started by an agent with demo data. Safe to ignore or close.";
+    pub(super) const TEXT: &str =
+        "Test copy of Threadbear, started by an agent with demo data. Safe to ignore or close.";
 
     pub(super) fn attach(parent: &NSWindow) {
-        let Some(mtm) = MainThreadMarker::new() else { return };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
         let frame = parent.frame();
         let height = 24.;
-        let rect = NSRect::new(NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height - height), NSSize::new(frame.size.width, height));
+        let rect = NSRect::new(
+            NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height - height),
+            NSSize::new(frame.size.width, height),
+        );
         // SAFETY: a plain borderless window, kept alive by its parent.
         let strip: Retained<NSWindow> = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), rect, NSWindowStyleMask::Borderless, NSBackingStoreType::Buffered, false)
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                rect,
+                NSWindowStyleMask::Borderless,
+                NSBackingStoreType::Buffered,
+                false,
+            )
         };
+        // SAFETY: `strip` is a live window we own a Retained to, so turning
+        // off release-on-close keeps that reference the only owner.
         unsafe { strip.setReleasedWhenClosed(false) };
         strip.setIgnoresMouseEvents(true);
         strip.setBackgroundColor(Some(&NSColor::systemOrangeColor()));
         let label = NSTextField::labelWithString(&NSString::from_str(TEXT), mtm);
         label.setTextColor(Some(&NSColor::blackColor()));
-        label.setFrame(NSRect::new(NSPoint::new(10., 4.), NSSize::new(frame.size.width - 20., height - 8.)));
+        label.setFrame(NSRect::new(
+            NSPoint::new(10., 4.),
+            NSSize::new(frame.size.width - 20., height - 8.),
+        ));
         if let Some(content) = strip.contentView() {
             content.addSubview(&label);
         }
@@ -190,7 +248,11 @@ pub(crate) fn guard() {
     // installed app runs (threadbear_core::web_runtime). A scripted app
     // given none keeps one beside its automation file instead.
     if std::env::var_os("THREADBEAR_WEB_RUNTIME_DIR").is_none_or(|d| d.is_empty()) {
-        if let Some(dir) = std::env::var_os("THREADBEAR_AUTOMATION").and_then(|f| std::path::Path::new(&f).parent().map(|p| p.join("web-runtime"))) {
+        if let Some(dir) = std::env::var_os("THREADBEAR_AUTOMATION").and_then(|f| {
+            std::path::Path::new(&f)
+                .parent()
+                .map(|p| p.join("web-runtime"))
+        }) {
             // Before any other thread starts: guard() is main's first line.
             std::env::set_var("THREADBEAR_WEB_RUNTIME_DIR", dir);
         }
@@ -199,7 +261,18 @@ pub(crate) fn guard() {
     // and crash reports) may be in the real data folder, however it's
     // named (Codex's second look).
     if !allowed {
-        let resolved = |p: &std::path::Path| std::fs::canonicalize(p).ok().or_else(|| Some(std::fs::canonicalize(p.parent()?).ok()?.join(p.file_name()?))).unwrap_or_else(|| p.to_path_buf());
+        let resolved = |p: &std::path::Path| {
+            std::fs::canonicalize(p)
+                .ok()
+                .or_else(|| {
+                    Some(
+                        std::fs::canonicalize(p.parent()?)
+                            .ok()?
+                            .join(p.file_name()?),
+                    )
+                })
+                .unwrap_or_else(|| p.to_path_buf())
+        };
         let real = resolved(&default_home());
         for var in ["THREADBEAR_WEB_RUNTIME_DIR", "THREADBEAR_AUTOMATION"] {
             if let Some(path) = std::env::var_os(var) {
@@ -214,9 +287,13 @@ pub(crate) fn guard() {
     pasteboard::install();
     #[cfg(target_os = "macos")]
     if hide_windows() {
-        unsafe extern "C" { fn TBHideTestingWindows(); }
+        unsafe extern "C" {
+            fn TBHideTestingWindows();
+        }
         // Process-local AppKit guard, installed before any windows exist.
-        unsafe { TBHideTestingWindows(); }
+        unsafe {
+            TBHideTestingWindows();
+        }
     } else if unseen() {
         unseen_windows::install();
     }
@@ -254,7 +331,15 @@ pub(crate) mod pasteboard {
 
     /// THREADBEAR_PASTEBOARD, else one named for this process.
     pub(crate) fn name() -> String {
-        std::env::var("THREADBEAR_PASTEBOARD").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("com.mikerosoft.threadbear.automation.{}", std::process::id()))
+        std::env::var("THREADBEAR_PASTEBOARD")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "com.mikerosoft.threadbear.automation.{}",
+                    std::process::id()
+                )
+            })
     }
 
     // Returned unretained, as generalPasteboard's own is: BOARD keeps its
@@ -267,11 +352,22 @@ pub(crate) mod pasteboard {
         let board = NSPasteboard::pasteboardWithName(&NSString::from_str(&name()));
         board.clearContents();
         BOARD.store(Retained::into_raw(board), Ordering::Release);
-        let method = NSPasteboard::class().class_method(sel!(generalPasteboard)).expect("NSPasteboard has generalPasteboard");
+        #[expect(
+            clippy::expect_used,
+            reason = "every NSPasteboard has generalPasteboard"
+        )]
+        let method = NSPasteboard::class()
+            .class_method(sel!(generalPasteboard))
+            .expect("NSPasteboard has generalPasteboard");
         // SAFETY: the same signature as the method it replaces (a class
         // method taking nothing and returning an NSPasteboard), set once,
         // before anything else in the process has asked for it.
-        unsafe { method.set_implementation(std::mem::transmute::<extern "C-unwind" fn(&AnyClass, Sel) -> *mut NSPasteboard, Imp>(general)) };
+        unsafe {
+            method.set_implementation(std::mem::transmute::<
+                extern "C-unwind" fn(&AnyClass, Sel) -> *mut NSPasteboard,
+                Imp,
+            >(general))
+        };
         // Given back to the system when the app quits, so a day of runs
         // doesn't leave hundreds of them in the pasteboard server.
         extern "C" fn release() {
@@ -291,14 +387,27 @@ pub(crate) mod pasteboard {
         // One test, as the swap is for the whole process.
         #[test]
         fn the_general_pasteboard_is_a_private_one() {
-            std::env::set_var("THREADBEAR_PASTEBOARD", format!("com.mikerosoft.threadbear.test.{}", std::process::id()));
+            std::env::set_var(
+                "THREADBEAR_PASTEBOARD",
+                format!("com.mikerosoft.threadbear.test.{}", std::process::id()),
+            );
             super::install();
             let general = objc2_app_kit::NSPasteboard::generalPasteboard();
             assert_eq!(general.name().to_string(), super::name());
             general.clearContents();
-            general.setString_forType(&objc2_foundation::NSString::from_str("private"), unsafe { objc2_app_kit::NSPasteboardTypeString });
+            // SAFETY: NSPasteboardTypeString is an immutable extern constant.
+            general.setString_forType(&objc2_foundation::NSString::from_str("private"), unsafe {
+                objc2_app_kit::NSPasteboardTypeString
+            });
             let again = objc2_app_kit::NSPasteboard::generalPasteboard();
-            assert_eq!(again.stringForType(unsafe { objc2_app_kit::NSPasteboardTypeString }).map(|s| s.to_string()).as_deref(), Some("private"));
+            assert_eq!(
+                again
+                    // SAFETY: NSPasteboardTypeString is an immutable extern constant.
+                    .stringForType(unsafe { objc2_app_kit::NSPasteboardTypeString })
+                    .map(|s| s.to_string())
+                    .as_deref(),
+                Some("private")
+            );
         }
     }
 }

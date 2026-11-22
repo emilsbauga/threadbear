@@ -262,7 +262,7 @@ function main(argv: string[]): void {
   const outDir = path.resolve(arg('--out') ?? path.join(here, '..', 'test', 'fixtures', 'codex'));
   const only = arg('--only');
   if (!fs.existsSync(rawDir)) {
-    console.error(`No captures at ${rawDir}. Copy them there first (see docs/step4-plan.md, "Captures").`);
+    console.error(`No captures at ${rawDir}. Copy them there first (see docs/archive/step4-plan.md, "Captures").`);
     process.exit(1);
   }
   fs.mkdirSync(outDir, { recursive: true });

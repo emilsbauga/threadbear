@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness } from '../helpers/fakes.ts';
 import { findWorktreePatch } from '../../src/patches.ts';
-import { cleanUpWorktree, clearBuildCaches, git, land, makeWorktree, MAX_SPARES } from '../../src/worktrees.ts';
+import { cleanUpWorktree, clearBuildCaches, land, makeWorktree, MAX_SPARES } from '../../src/worktrees.ts';
 import { HOOK_PATCH, KEEP, archiveAfterEdit, capture, commit, harness, hookRuns, isLocked, makeBranch, makeRepo, notes, sh, slowWorktreeRemoval, threadWithWorktree, toldAgent, until, write } from '../helpers/worktrees-harness.ts';
 
 test('with keep, an archived landed worktree is kept as a spare, and the next thread takes it, build cache and all', async () => {

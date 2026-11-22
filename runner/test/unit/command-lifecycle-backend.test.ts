@@ -375,7 +375,7 @@ test("the Machines page's queries answer only one of this deployment's tokens", 
     assert.equal(await call(s.ctx, viewer.row, { token, table: 'commands', id }), null);
   }
   const overview = await call(s.ctx, viewer.overview, { token: TOKEN });
-  assert.deepEqual(overview.machines.map((m: { name: string }) => m.name), ['command', 'move', 'request', 'clear', 'box', 'cloudToken']);
+  assert.deepEqual(overview.machines.map((m: { name: string }) => m.name), ['command', 'move', 'request', 'clear', 'box', 'cloudToken', 'relayInstall']);
   assert.equal((await call(s.ctx, viewer.counts, { token: TOKEN, machine: 'command' })).counts.taken, 1);
   const row = await call(s.ctx, viewer.row, { token: TOKEN, table: 'commands', id });
   assert.equal(row.summary.states.command.kind, 'taken');

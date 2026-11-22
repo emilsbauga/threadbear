@@ -65,9 +65,9 @@ pub fn edited_message(edits: &[(DraftKind, String)]) -> String {
         return String::new();
     }
     let intro = if edits.len() == 1 {
-        "I edited your draft. Use my version below exactly as it is, not yours:"
+        EDITED_ONE
     } else {
-        "I edited your drafts. Use my versions below exactly as they are, not yours:"
+        EDITED_MANY
     };
     let mut out = intro.to_owned();
     for (kind, text) in edits {
@@ -78,9 +78,125 @@ pub fn edited_message(edits: &[(DraftKind, String)]) -> String {
             longest = longest.max(run);
         }
         let fence = "`".repeat((longest + 1).max(3));
-        out.push_str(&format!("\n\n{fence}{}\n{}\n{fence}", kind.fence_word(), text.trim_end_matches('\n')));
+        let text = text.replace("\r\n", "\n");
+        out.push_str(&format!(
+            "\n\n{fence}{}\n{}\n{fence}",
+            kind.fence_word(),
+            text.trim_end_matches('\n')
+        ));
     }
     out
+}
+
+const EDITED_ONE: &str = "I edited your draft. Use my version below exactly as it is, not yours:";
+const EDITED_MANY: &str =
+    "I edited your drafts. Use my versions below exactly as they are, not yours:";
+
+/// A sent message with `edited_message` on its end, taken apart: his own
+/// words before it, and each changed draft, so his bubble shows them as
+/// chips rather than the line to the agent and the raw fences (Mike, 20 Nov:
+/// "it kind of comes like this, which looks a bit weird"). None when the
+/// message doesn't end that way; then it's shown as it is. The website
+/// (web/src/draft.ts, `splitEdited`) reads it the same way.
+pub fn split_edited(text: &str) -> Option<(String, Vec<DraftBlock>)> {
+    // From the first one: a draft can hold the line itself, and Mike's own
+    // words can too, so each place it starts a paragraph is tried until one
+    // is followed by nothing but drafts.
+    let mut starts: Vec<(usize, &str)> = [EDITED_ONE, EDITED_MANY]
+        .iter()
+        .flat_map(|intro| text.match_indices(intro).map(|(at, _)| (at, *intro)))
+        .collect();
+    starts.sort_by_key(|(at, _)| *at);
+    starts
+        .into_iter()
+        .find_map(|(at, intro)| split_at(text, at, intro))
+}
+
+fn split_at(text: &str, at: usize, intro: &str) -> Option<(String, Vec<DraftBlock>)> {
+    // Its own paragraph: at the start, or after a blank line.
+    if at != 0 && !text[..at].ends_with("\n\n") {
+        return None;
+    }
+    let mut rest = &text[at + intro.len()..];
+    let mut drafts = Vec::new();
+    while let Some(after) = rest.strip_prefix("\n\n") {
+        let ticks = after.chars().take_while(|c| *c == '`').count();
+        if ticks < 3 {
+            return None;
+        }
+        let fence = &after[..ticks];
+        let line_end = after.find('\n')?;
+        let kind = DraftKind::from_word(&after[ticks..line_end])?;
+        let body_and_rest = &after[line_end + 1..];
+        let close = format!("\n{fence}");
+        let end = find_closing(body_and_rest, &close)?;
+        // Whatever length it is: what was sent is shown, not refused as a
+        // reply's draft over MAX_SOURCE would be.
+        let source = body_and_rest[..end].replace("\r\n", "\n");
+        if source.trim().is_empty() {
+            return None;
+        }
+        drafts.push(DraftBlock { kind, source });
+        rest = &body_and_rest[end + close.len()..];
+    }
+    if drafts.is_empty() || !rest.trim().is_empty() || (intro == EDITED_ONE) != (drafts.len() == 1)
+    {
+        return None;
+    }
+    Some((text[..at].trim_end().to_owned(), drafts))
+}
+
+/// Where a draft's closing fence is: the fence on a line of its own, with
+/// nothing but the end or a new paragraph after it.
+fn find_closing(text: &str, close: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(found) = text[from..].find(close) {
+        let at = from + found;
+        let after = &text[at + close.len()..];
+        if after.trim().is_empty() || after.starts_with("\n\n") {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// How many lines his version changes from the agent's, for the chip that
+/// says it goes with his next message: the larger of the lines taken out and
+/// put in, by the longest run of lines the two share in order.
+pub fn changed_lines(original: &str, edited: &str) -> usize {
+    let a: Vec<&str> = original.lines().map(str::trim_end).collect();
+    let b: Vec<&str> = edited.lines().map(str::trim_end).collect();
+    // Drafts are short; a huge one is just "changed".
+    if a.len() * b.len() > 250_000 {
+        return a.len().max(b.len());
+    }
+    let mut row = vec![0usize; b.len() + 1];
+    for x in &a {
+        let mut diagonal = 0;
+        for (j, y) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = if x == y {
+                diagonal + 1
+            } else {
+                above.max(row[j])
+            };
+            diagonal = above;
+        }
+    }
+    let shared = row[b.len()];
+    (a.len() - shared).max(b.len() - shared)
+}
+
+impl DraftKind {
+    /// What the chip for his changed draft calls it: "Your edited email".
+    pub fn edited_label(&self) -> &'static str {
+        match self {
+            DraftKind::Slack => "Your edited Slack message",
+            DraftKind::Email => "Your edited email",
+            DraftKind::Draft => "Your edited draft",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -103,11 +219,18 @@ pub struct Span {
 
 impl Span {
     pub fn plain(text: impl Into<String>) -> Span {
-        Span { text: text.into(), ..Default::default() }
+        Span {
+            text: text.into(),
+            ..Default::default()
+        }
     }
 
     fn same_look(&self, other: &Span) -> bool {
-        self.bold == other.bold && self.italic == other.italic && self.strike == other.strike && self.code == other.code && self.link == other.link
+        self.bold == other.bold
+            && self.italic == other.italic
+            && self.strike == other.strike
+            && self.code == other.code
+            && self.link == other.link
     }
 
     /// The span for a dump (both apps' `drafts`): its looks, then its words,
@@ -163,7 +286,10 @@ impl DraftBlock {
     /// The draft for a fence's info string (only the first word counts), or
     /// None for any other fence.
     pub fn from(language: Option<&str>, code: &str) -> Option<DraftBlock> {
-        let word = language?.split([' ', '\t', '{']).find(|w| !w.is_empty())?.to_lowercase();
+        let word = language?
+            .split([' ', '\t', '{'])
+            .find(|w| !w.is_empty())?
+            .to_lowercase();
         let kind = DraftKind::from_word(&word)?;
         let mut source = code.replace("\r\n", "\n");
         while source.ends_with('\n') {
@@ -203,13 +329,26 @@ impl DraftBlock {
             .split('\n')
             .map(|line| {
                 if self.kind != DraftKind::Slack {
-                    return Line { spans: vec![Span::plain(line)], quote: false };
+                    return Line {
+                        spans: vec![Span::plain(line)],
+                        quote: false,
+                    };
                 }
                 if line.starts_with("> ") || line == ">" || line.starts_with("&gt; ") {
-                    let rest = if line.starts_with("&gt; ") { &line[5..] } else { &line[line.len().min(2)..] };
-                    return Line { spans: slack_spans(rest), quote: true };
+                    let rest = if let Some(rest) = line.strip_prefix("&gt; ") {
+                        rest
+                    } else {
+                        &line[line.len().min(2)..]
+                    };
+                    return Line {
+                        spans: slack_spans(rest),
+                        quote: true,
+                    };
                 }
-                Line { spans: slack_spans(line), quote: false }
+                Line {
+                    spans: slack_spans(line),
+                    quote: false,
+                }
             })
             .collect()
     }
@@ -226,7 +365,9 @@ impl DraftBlock {
             .split('\n')
             .map(|line| {
                 let (marked, tokens) = marked(line);
-                let Some(tokens) = tokens else { return decode(line) };
+                let Some(tokens) = tokens else {
+                    return decode(line);
+                };
                 let chars: Vec<char> = marked.chars().collect();
                 // A token in `code` is copied as typed, as it's shown.
                 let code = code_spans(&chars);
@@ -241,7 +382,9 @@ impl DraftBlock {
                         continue;
                     }
                     match &tokens[index].0 {
-                        Token::Link { url, label } if label == url || label.is_empty() => out.push_str(url),
+                        Token::Link { url, label } if label == url || label.is_empty() => {
+                            out.push_str(url)
+                        }
                         Token::Link { url, label } => out.push_str(&format!("{label} ({url})")),
                         Token::Mention(text) => out.push_str(text),
                     }
@@ -280,7 +423,10 @@ impl DraftBlock {
         let mut out = String::new();
         for (index, part) in body.iter().enumerate() {
             out.push_str(part);
-            if index + 1 < body.len() && !part.starts_with("<blockquote>") && !body[index + 1].starts_with("<blockquote>") {
+            if index + 1 < body.len()
+                && !part.starts_with("<blockquote>")
+                && !body[index + 1].starts_with("<blockquote>")
+            {
                 out.push_str("<br>");
             }
         }
@@ -298,7 +444,10 @@ impl DraftBlock {
             .into_iter()
             .map(|line| {
                 let text: String = line.spans.iter().map(|s| s.text.as_str()).collect();
-                Line { spans: bare_links(&text), quote: line.quote }
+                Line {
+                    spans: bare_links(&text),
+                    quote: line.quote,
+                }
             })
             .collect()
     }
@@ -350,7 +499,10 @@ fn keep_spaces(text: &str, after_space: bool) -> String {
 }
 
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// An email or plain draft's text with its bare http(s) addresses as links,
@@ -364,8 +516,11 @@ pub fn bare_links(text: &str) -> Vec<Span> {
     let lower = text.to_ascii_lowercase();
     while let Some(found) = next_address(&lower, from) {
         // Up to a space, a quote or an angle bracket.
-        let end = text[found..].find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"')).map_or(text.len(), |n| found + n);
-        let url = text[found..end].trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', ')', ']']);
+        let end = text[found..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+            .map_or(text.len(), |n| found + n);
+        let url =
+            text[found..end].trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', ')', ']']);
         let scheme_end = found + url.find("//").map_or(0, |n| n + 2);
         from = end.max(found + 1);
         if found + url.len() <= scheme_end {
@@ -374,7 +529,11 @@ pub fn bare_links(text: &str) -> Vec<Span> {
         if found > at {
             spans.push(Span::plain(&text[at..found]));
         }
-        spans.push(Span { text: url.to_owned(), link: Some(url.to_owned()), ..Default::default() });
+        spans.push(Span {
+            text: url.to_owned(),
+            link: Some(url.to_owned()),
+            ..Default::default()
+        });
         at = found + url.len();
     }
     if at < text.len() {
@@ -422,7 +581,9 @@ pub fn fence_closed(source: &str, start: usize, end: usize) -> bool {
     if closing_start <= start {
         return false;
     }
-    let line_end = source[start..].find('\n').map_or(source.len(), |n| start + n);
+    let line_end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |n| start + n);
     let opening = &source[start..line_end];
     let mark = match opening.chars().next() {
         Some(c @ ('`' | '~')) => c,
@@ -436,7 +597,9 @@ pub fn fence_closed(source: &str, start: usize, end: usize) -> bool {
     let mut closing = &source[closing_start..end];
     for _ in 0..quotes {
         closing = closing.trim_start_matches([' ', '\t']);
-        let Some(rest) = closing.strip_prefix('>') else { return false };
+        let Some(rest) = closing.strip_prefix('>') else {
+            return false;
+        };
         closing = rest;
     }
     let fence = closing.trim();
@@ -447,7 +610,10 @@ pub fn fence_closed(source: &str, start: usize, end: usize) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Token {
-    Link { url: String, label: String },
+    Link {
+        url: String,
+        label: String,
+    },
     /// <@U123>, <#C123|general>, <!here>: shown as their words.
     Mention(String),
 }
@@ -459,13 +625,21 @@ fn token(inside: &str) -> Option<Token> {
         Some((target, label)) => (target, Some(label)),
         None => (inside, None),
     };
-    if let Some(first) = target.chars().next().filter(|c| matches!(c, '@' | '#' | '!')) {
+    if let Some(first) = target
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '@' | '#' | '!'))
+    {
         let name = &target[1..];
         if name.is_empty() || name.contains(' ') {
             return None;
         }
         if let Some(label) = label.filter(|l| !l.is_empty()) {
-            return Some(Token::Mention(if first == '#' && !label.starts_with('#') { format!("#{label}") } else { label.to_owned() }));
+            return Some(Token::Mention(if first == '#' && !label.starts_with('#') {
+                format!("#{label}")
+            } else {
+                label.to_owned()
+            }));
         }
         if first == '!' {
             // <!subteam^S123> and <!date^...> carry a label or nothing useful.
@@ -487,7 +661,10 @@ fn token(inside: &str) -> Option<Token> {
         None => target.to_owned(),
     };
     // The address is kept as written (Swift's absoluteString is the same for these).
-    Some(Token::Link { url: target.to_owned(), label: shown })
+    Some(Token::Link {
+        url: target.to_owned(),
+        label: shown,
+    })
 }
 
 /// `scheme:` at the start, as a URL's is written.
@@ -496,7 +673,9 @@ fn scheme_of(target: &str) -> Option<&str> {
     let scheme = &target[..colon];
     let mut chars = scheme.chars();
     let first = chars.next()?;
-    (first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))).then_some(scheme)
+    (first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+    .then_some(scheme)
 }
 
 /// Enough of an address to be one: a web one names a host, a mail one
@@ -510,7 +689,10 @@ fn is_address(target: &str, scheme: &str) -> bool {
     if scheme == "mailto" {
         return true;
     }
-    rest.trim_start_matches('/').chars().next().is_some_and(|c| !matches!(c, '?' | '#' | '/'))
+    rest.trim_start_matches('/')
+        .chars()
+        .next()
+        .is_some_and(|c| !matches!(c, '?' | '#' | '/'))
 }
 
 enum Piece {
@@ -538,7 +720,10 @@ fn scan_tokens(line: &str, mut visit: impl FnMut(Piece)) {
             };
             if stale {
                 looked = true;
-                close = chars[i + 1..].iter().position(|&c| c == '>').map(|n| i + 1 + n);
+                close = chars[i + 1..]
+                    .iter()
+                    .position(|&c| c == '>')
+                    .map(|n| i + 1 + n);
             }
             if let Some(end) = close {
                 // A token never holds a "<", so with another before the ">"
@@ -565,7 +750,9 @@ fn scan_tokens(line: &str, mut visit: impl FnMut(Piece)) {
 }
 
 fn decode(text: &str) -> String {
-    text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 type Tokens = Vec<(Token, String)>;
@@ -574,7 +761,11 @@ type Tokens = Vec<(Token, String)>;
 /// tokens; no tokens for a line that's too long, or that has placeholder
 /// characters of its own, which is shown as written.
 fn marked(line: &str) -> (String, Option<Tokens>) {
-    if line.chars().count() > MAX_FORMATTED_LINE || line.chars().any(|c| (PLACEHOLDER_BASE..=PLACEHOLDER_LAST).contains(&(c as u32))) {
+    if line.chars().count() > MAX_FORMATTED_LINE
+        || line
+            .chars()
+            .any(|c| (PLACEHOLDER_BASE..=PLACEHOLDER_LAST).contains(&(c as u32)))
+    {
         return (line.to_owned(), None);
     }
     let mut out = String::with_capacity(line.len());
@@ -592,7 +783,9 @@ fn marked(line: &str) -> (String, Option<Tokens>) {
 
 fn placeholder_index(c: char) -> Option<usize> {
     let value = c as u32;
-    (PLACEHOLDER_BASE..=PLACEHOLDER_LAST).contains(&value).then(|| (value - PLACEHOLDER_BASE) as usize)
+    (PLACEHOLDER_BASE..=PLACEHOLDER_LAST)
+        .contains(&value)
+        .then(|| (value - PLACEHOLDER_BASE) as usize)
 }
 
 /// Where a line's `code` is, by char offset, found the way `emphasis` finds it.
@@ -618,13 +811,18 @@ fn code_spans(chars: &[char]) -> Vec<Range<usize>> {
 /// (*see <url|docs>*) and a token inside `code` stays as written.
 pub fn slack_spans(line: &str) -> Vec<Span> {
     let (marked, found) = marked(line);
-    let Some(tokens) = found else { return vec![Span::plain(decode(line))] };
+    let Some(tokens) = found else {
+        return vec![Span::plain(decode(line))];
+    };
     let mut spans = Vec::new();
     for span in emphasis(&marked, &Span::default()) {
         let mut words = String::new();
         let flush = |words: &mut String, spans: &mut Vec<Span>| {
             if !words.is_empty() {
-                spans.push(Span { text: std::mem::take(words), ..span.clone() });
+                spans.push(Span {
+                    text: std::mem::take(words),
+                    ..span.clone()
+                });
             }
         };
         for c in span.text.chars() {
@@ -641,7 +839,11 @@ pub fn slack_spans(line: &str) -> Vec<Span> {
             let mut piece = span.clone();
             match &tokens[index].0 {
                 Token::Link { url, label } => {
-                    piece.text = if label.is_empty() { url.clone() } else { label.clone() };
+                    piece.text = if label.is_empty() {
+                        url.clone()
+                    } else {
+                        label.clone()
+                    };
                     piece.link = Some(url.clone());
                 }
                 Token::Mention(text) => {
@@ -679,7 +881,10 @@ fn emphasis(text: &str, base: &Span) -> Vec<Span> {
     let mut plain = String::new();
     let flush = |plain: &mut String, spans: &mut Vec<Span>| {
         if !plain.is_empty() {
-            spans.push(Span { text: decode(&std::mem::take(plain)), ..base.clone() });
+            spans.push(Span {
+                text: decode(&std::mem::take(plain)),
+                ..base.clone()
+            });
         }
     };
     let mut i = 0;
@@ -728,7 +933,11 @@ fn opens(chars: &[char], i: usize) -> bool {
 }
 
 fn closing(chars: &[char], start: usize, marker: char) -> Option<usize> {
-    (start + 2..chars.len()).find(|&j| chars[j] == marker && !chars[j - 1].is_whitespace() && (j + 1 == chars.len() || !is_wordy(chars[j + 1])))
+    (start + 2..chars.len()).find(|&j| {
+        chars[j] == marker
+            && !chars[j - 1].is_whitespace()
+            && (j + 1 == chars.len() || !is_wordy(chars[j + 1]))
+    })
 }
 
 #[cfg(test)]
@@ -742,13 +951,89 @@ mod tests {
             "I edited your draft. Use my version below exactly as it is, not yours:\n\n```slack\nHey *Wayne*\n```"
         );
         // Code in the draft gets a longer fence round it.
-        let two = edited_message(&[(DraftKind::Draft, "run `x`".to_owned()), (DraftKind::Email, "a\n```\nb\n```".to_owned())]);
+        let two = edited_message(&[
+            (DraftKind::Draft, "run `x`".to_owned()),
+            (DraftKind::Email, "a\n```\nb\n```".to_owned()),
+        ]);
         assert!(two.starts_with("I edited your drafts."), "{two}");
         assert!(two.contains("```draft\nrun `x`\n```"), "{two}");
         assert!(two.ends_with("````email\na\n```\nb\n```\n````"), "{two}");
         // And it reads back as the same draft.
         let back = super::DraftBlock::from(Some("email"), "a\n```\nb\n```").unwrap();
         assert_eq!(back.source, "a\n```\nb\n```");
+    }
+
+    #[test]
+    fn a_sent_message_gives_back_its_edited_drafts() {
+        use super::{edited_message, split_edited, DraftKind};
+        let one = format!(
+            "Send it\n\n{}",
+            edited_message(&[(DraftKind::Email, "Hi Geoff,\n\nCheers".to_owned())])
+        );
+        let (words, drafts) = split_edited(&one).unwrap();
+        assert_eq!(words, "Send it");
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].kind, DraftKind::Email);
+        assert_eq!(drafts[0].source, "Hi Geoff,\n\nCheers");
+        // Just the drafts, nothing of his own.
+        let (words, _) =
+            split_edited(&edited_message(&[(DraftKind::Slack, "hey".to_owned())])).unwrap();
+        assert_eq!(words, "");
+        // Two, one with code and a longer fence round it.
+        let two = edited_message(&[
+            (DraftKind::Draft, "run `x`".to_owned()),
+            (DraftKind::Email, "a\n```\nb\n```\n\nc".to_owned()),
+        ]);
+        let (_, drafts) = split_edited(&format!("ok\n\n{two}")).unwrap();
+        assert_eq!(
+            drafts.iter().map(|d| d.source.as_str()).collect::<Vec<_>>(),
+            vec!["run `x`", "a\n```\nb\n```\n\nc"]
+        );
+        // Anything else is shown as it is.
+        assert!(split_edited("Send it").is_none());
+        assert!(split_edited(&format!("{one}\n\nand another thing")).is_none());
+        assert!(split_edited("He said I edited your draft. Use my version below exactly as it is, not yours:\n\n```email\nx\n```").is_none());
+        assert!(split_edited("I edited your draft. Use my version below exactly as it is, not yours:\n\n```python\nx\n```").is_none());
+        // A draft that quotes the line itself still comes apart at the real one.
+        let quoting = format!(
+            "ok\n\n{}",
+            edited_message(&[(
+                DraftKind::Email,
+                format!("The app said:\n\n{}", super::EDITED_ONE)
+            )])
+        );
+        let (words, drafts) = split_edited(&quoting).unwrap();
+        assert_eq!(words, "ok");
+        assert!(drafts[0].source.ends_with(super::EDITED_ONE));
+        // A long one is shown too, past the size a reply's box takes.
+        let long = "x".repeat(super::MAX_SOURCE + 1);
+        assert_eq!(
+            split_edited(&edited_message(&[(DraftKind::Draft, long.clone())]))
+                .unwrap()
+                .1[0]
+                .source,
+            long
+        );
+        // Pasted Windows line ends go as plain ones.
+        assert_eq!(
+            split_edited(&edited_message(&[(
+                DraftKind::Email,
+                "a\r\nb\r\n".to_owned()
+            )]))
+            .unwrap()
+            .1[0]
+                .source,
+            "a\nb"
+        );
+    }
+
+    #[test]
+    fn changed_lines_counts_what_he_changed() {
+        use super::changed_lines;
+        assert_eq!(changed_lines("a\nb\nc", "a\nb\nc"), 0);
+        assert_eq!(changed_lines("a\nb\nc", "a\nB\nc"), 1);
+        assert_eq!(changed_lines("a\nb\nc", "a\nb\nc\nd\ne"), 2);
+        assert_eq!(changed_lines("a\nb\nc", "c"), 2);
     }
 
     // The Mac's DraftBlockTests and the website's draft.test.ts check the
@@ -760,27 +1045,52 @@ mod tests {
     }
 
     fn bold(text: &str) -> Span {
-        Span { bold: true, ..span(text) }
+        Span {
+            bold: true,
+            ..span(text)
+        }
     }
 
     fn joined(draft: &DraftBlock) -> Vec<String> {
-        draft.lines().iter().map(|l| l.spans.iter().map(|s| s.text.as_str()).collect()).collect()
+        draft
+            .lines()
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect())
+            .collect()
     }
 
     fn draft(kind: DraftKind, source: &str) -> DraftBlock {
-        DraftBlock { kind, source: source.to_owned() }
+        DraftBlock {
+            kind,
+            source: source.to_owned(),
+        }
     }
 
     #[test]
     fn only_the_draft_fences_count() {
-        assert_eq!(DraftBlock::from(Some("slack"), "hi\n").map(|d| d.kind), Some(DraftKind::Slack));
-        assert_eq!(DraftBlock::from(Some("Email subject=x"), "hi").map(|d| d.kind), Some(DraftKind::Email));
-        assert_eq!(DraftBlock::from(Some("draft"), "hi").map(|d| d.kind), Some(DraftKind::Draft));
-        assert_eq!(DraftBlock::from(Some("slack{.x}"), "hi").map(|d| d.kind), Some(DraftKind::Slack));
+        assert_eq!(
+            DraftBlock::from(Some("slack"), "hi\n").map(|d| d.kind),
+            Some(DraftKind::Slack)
+        );
+        assert_eq!(
+            DraftBlock::from(Some("Email subject=x"), "hi").map(|d| d.kind),
+            Some(DraftKind::Email)
+        );
+        assert_eq!(
+            DraftBlock::from(Some("draft"), "hi").map(|d| d.kind),
+            Some(DraftKind::Draft)
+        );
+        assert_eq!(
+            DraftBlock::from(Some("slack{.x}"), "hi").map(|d| d.kind),
+            Some(DraftKind::Slack)
+        );
         assert!(DraftBlock::from(Some("slackbot"), "hi").is_none());
         assert!(DraftBlock::from(None, "hi").is_none());
         assert!(DraftBlock::from(Some("slack"), " \n\n").is_none());
-        assert_eq!(DraftBlock::from(Some("slack"), "a\r\nb\n\n").map(|d| d.source), Some("a\nb".to_owned()));
+        assert_eq!(
+            DraftBlock::from(Some("slack"), "a\r\nb\n\n").map(|d| d.source),
+            Some("a\nb".to_owned())
+        );
         assert_eq!(draft(DraftKind::Slack, "x").label(), "Slack draft");
         assert_eq!(draft(DraftKind::Email, "x").label(), "Email draft");
         assert_eq!(draft(DraftKind::Draft, "x").label(), "Draft");
@@ -791,8 +1101,14 @@ mod tests {
 
     #[test]
     fn every_line_stays_a_line() {
-        let d = draft(DraftKind::Draft, "*Threadbear, 6 Nov*\n• one\n• two\n\nThanks");
-        assert_eq!(joined(&d), ["*Threadbear, 6 Nov*", "• one", "• two", "", "Thanks"]);
+        let d = draft(
+            DraftKind::Draft,
+            "*Threadbear, 6 Nov*\n• one\n• two\n\nThanks",
+        );
+        assert_eq!(
+            joined(&d),
+            ["*Threadbear, 6 Nov*", "• one", "• two", "", "Thanks"]
+        );
         // Only a Slack draft reads Slack's formatting.
         assert!(!d.lines()[0].spans[0].bold);
         assert_eq!(d.plain_text(), d.source);
@@ -805,20 +1121,39 @@ mod tests {
             vec![
                 bold("Shipped"),
                 span(" "),
-                Span { italic: true, ..span("today") },
+                Span {
+                    italic: true,
+                    ..span("today")
+                },
                 span(": "),
-                Span { strike: true, ..span("old") },
+                Span {
+                    strike: true,
+                    ..span("old")
+                },
                 span(" "),
-                Span { code: true, ..span("tb land") },
+                Span {
+                    code: true,
+                    ..span("tb land")
+                },
                 span(" and "),
-                Span { bold: true, italic: true, ..span("both") },
+                Span {
+                    bold: true,
+                    italic: true,
+                    ..span("both")
+                },
             ]
         );
     }
 
     #[test]
     fn markers_inside_words_and_lone_ones_stay_as_written() {
-        for text in ["2*3*4", "snake_case_name", "a * b * c", "*open only", "price: $5_000_"] {
+        for text in [
+            "2*3*4",
+            "snake_case_name",
+            "a * b * c",
+            "*open only",
+            "price: $5_000_",
+        ] {
             assert_eq!(slack_spans(text), vec![span(text)], "{text}");
         }
         // Markdown's **bold** is Slack's *bold* with a star either side,
@@ -830,12 +1165,25 @@ mod tests {
     fn links_and_mentions() {
         let spans = slack_spans("See <https://example.com/a?b=1|the docs>, <https://x.dev> or <mailto:m@x.dev>; cc <@U123> in <#C9|general> <!here> & 1 < 2 &amp; <b>");
         let links: Vec<&str> = spans.iter().filter_map(|s| s.link.as_deref()).collect();
-        assert_eq!(links, ["https://example.com/a?b=1", "https://x.dev", "mailto:m@x.dev"]);
+        assert_eq!(
+            links,
+            [
+                "https://example.com/a?b=1",
+                "https://x.dev",
+                "mailto:m@x.dev"
+            ]
+        );
         let text: String = spans.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(text, "See the docs, https://x.dev or m@x.dev; cc @U123 in #general @here & 1 < 2 & <b>");
+        assert_eq!(
+            text,
+            "See the docs, https://x.dev or m@x.dev; cc @U123 in #general @here & 1 < 2 & <b>"
+        );
         // Other schemes aren't links.
         assert!(slack_spans("<javascript:alert(1)|x>")[0].link.is_none());
-        let text: String = slack_spans("<javascript:alert(1)|x>").iter().map(|s| s.text.as_str()).collect();
+        let text: String = slack_spans("<javascript:alert(1)|x>")
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
         assert_eq!(text, "<javascript:alert(1)|x>");
         // A mention is bold; <!subteam^S1> names the group.
         assert_eq!(slack_spans("<!subteam^S1>"), vec![bold("@subteam")]);
@@ -844,8 +1192,14 @@ mod tests {
 
     #[test]
     fn copy_keeps_slacks_markers_but_spells_out_links() {
-        let d = draft(DraftKind::Slack, "*Done* <https://x.dev/pr/1|the PR>\n<https://x.dev>\n> quoted &lt;tag&gt;");
-        assert_eq!(d.plain_text(), "*Done* the PR (https://x.dev/pr/1)\nhttps://x.dev\n> quoted <tag>");
+        let d = draft(
+            DraftKind::Slack,
+            "*Done* <https://x.dev/pr/1|the PR>\n<https://x.dev>\n> quoted &lt;tag&gt;",
+        );
+        assert_eq!(
+            d.plain_text(),
+            "*Done* the PR (https://x.dev/pr/1)\nhttps://x.dev\n> quoted <tag>"
+        );
         assert_eq!(d.html(), "<meta charset=\"utf-8\"><div><b>Done</b> <a href=\"https://x.dev/pr/1\">the PR</a><br><a href=\"https://x.dev\">https://x.dev</a><blockquote>quoted &lt;tag&gt;</blockquote></div>");
         assert!(d.lines()[2].quote);
         assert_eq!(d.lines()[2].shown(), "\u{2502} quoted <tag>");
@@ -859,33 +1213,88 @@ mod tests {
 
     #[test]
     fn bare_addresses_in_an_email_or_plain_draft_are_links_when_drawn() {
-        let link = |t: &str| Span { link: Some(t.to_owned()), ..span(t) };
+        let link = |t: &str| Span {
+            link: Some(t.to_owned()),
+            ..span(t)
+        };
         assert_eq!(
             bare_links("See https://x.dev/pr/1. Or http://a.b/c?d=1), ftp://no"),
-            vec![span("See "), link("https://x.dev/pr/1"), span(". Or "), link("http://a.b/c?d=1"), span("), ftp://no")]
+            vec![
+                span("See "),
+                link("https://x.dev/pr/1"),
+                span(". Or "),
+                link("http://a.b/c?d=1"),
+                span("), ftp://no")
+            ]
         );
         assert_eq!(bare_links("no links here"), vec![span("no links here")]);
         assert_eq!(bare_links(""), Vec::<Span>::new());
-        assert_eq!(bare_links("just https:// alone"), vec![span("just https:// alone")]);
+        assert_eq!(
+            bare_links("just https:// alone"),
+            vec![span("just https:// alone")]
+        );
         // Copy keeps the text as written.
         let d = draft(DraftKind::Email, "See https://x.dev");
         assert_eq!(d.plain_text(), "See https://x.dev");
-        assert_eq!(d.html(), "<meta charset=\"utf-8\"><div>See https://x.dev</div>");
-        assert_eq!(d.drawn_lines()[0].spans, vec![span("See "), link("https://x.dev")]);
+        assert_eq!(
+            d.html(),
+            "<meta charset=\"utf-8\"><div>See https://x.dev</div>"
+        );
+        assert_eq!(
+            d.drawn_lines()[0].spans,
+            vec![span("See "), link("https://x.dev")]
+        );
         // A Slack draft's own links are its tokens, not bare words.
-        assert_eq!(draft(DraftKind::Slack, "see https://x.dev").drawn_lines()[0].spans, vec![span("see https://x.dev")]);
+        assert_eq!(
+            draft(DraftKind::Slack, "see https://x.dev").drawn_lines()[0].spans,
+            vec![span("see https://x.dev")]
+        );
     }
 
     // Cross-lab review, 6 Nov.
     #[test]
     fn tokens_inside_code_stay_as_written_and_a_link_can_be_bold() {
-        let code = |t: &str| Span { code: true, ..span(t) };
-        assert_eq!(slack_spans("`<@U123>` and `a < b`"), vec![code("<@U123>"), span(" and "), code("a < b")]);
+        let code = |t: &str| Span {
+            code: true,
+            ..span(t)
+        };
+        assert_eq!(
+            slack_spans("`<@U123>` and `a < b`"),
+            vec![code("<@U123>"), span(" and "), code("a < b")]
+        );
         let url = Some("https://x.dev".to_owned());
-        assert_eq!(slack_spans("*See <https://x.dev|docs>*"), vec![bold("See "), Span { link: url.clone(), ..bold("docs") }]);
-        assert_eq!(slack_spans("<https://x.dev|a>_b_"), vec![Span { link: url, ..span("a") }, Span { italic: true, ..span("b") }]);
+        assert_eq!(
+            slack_spans("*See <https://x.dev|docs>*"),
+            vec![
+                bold("See "),
+                Span {
+                    link: url.clone(),
+                    ..bold("docs")
+                }
+            ]
+        );
+        assert_eq!(
+            slack_spans("<https://x.dev|a>_b_"),
+            vec![
+                Span {
+                    link: url,
+                    ..span("a")
+                },
+                Span {
+                    italic: true,
+                    ..span("b")
+                }
+            ]
+        );
         // Copied as plain text, code keeps its tokens as typed too.
-        assert_eq!(draft(DraftKind::Slack, "`<@U1>` <@U1> `<https://x.dev|docs>` <https://x.dev|docs>").plain_text(), "`<@U1>` @U1 `<https://x.dev|docs>` docs (https://x.dev)");
+        assert_eq!(
+            draft(
+                DraftKind::Slack,
+                "`<@U1>` <@U1> `<https://x.dev|docs>` <https://x.dev|docs>"
+            )
+            .plain_text(),
+            "`<@U1>` @U1 `<https://x.dev|docs>` docs (https://x.dev)"
+        );
     }
 
     #[test]
@@ -894,9 +1303,17 @@ mod tests {
         slack_spans(&"<".repeat(MAX_FORMATTED_LINE));
         slack_spans(&" *a".repeat(MAX_FORMATTED_LINE / 3));
         draft(DraftKind::Slack, &"<".repeat(MAX_SOURCE)).plain_text();
-        draft(DraftKind::Slack, &format!("{}>", "<".repeat(MAX_SOURCE - 1))).plain_text();
+        draft(
+            DraftKind::Slack,
+            &format!("{}>", "<".repeat(MAX_SOURCE - 1)),
+        )
+        .plain_text();
         bare_links(&"https://".repeat(MAX_SOURCE / 8));
-        assert!(started.elapsed().as_secs_f64() < 2., "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed().as_secs_f64() < 2.,
+            "took {:?}",
+            started.elapsed()
+        );
         // A line past the limit is shown as written; a draft past its limit stays code.
         let long = format!("*{}*", "a".repeat(MAX_FORMATTED_LINE));
         assert_eq!(slack_spans(&long), vec![span(&long)]);
@@ -916,7 +1333,12 @@ mod tests {
         // The block starts at the fence, after any container, as the parser
         // places a fence in a list or a quote.
         let closed = |text: &str| {
-            let start = text.find("```").into_iter().chain(text.find("~~~")).min().unwrap_or(0);
+            let start = text
+                .find("```")
+                .into_iter()
+                .chain(text.find("~~~"))
+                .min()
+                .unwrap_or(0);
             fence_closed(text, start, text.len())
         };
         for text in [
@@ -940,13 +1362,26 @@ mod tests {
         ] {
             assert!(closed(text), "{text:?} should be closed");
         }
-        for text in ["```slack\nhello\n> ```", "> ```slack\n> hello\n```", "```slack\n*unfinished", "```slack\n• one\n• tw", "```slack\nhello\n~~~", "````slack\nhello\n```", "```slack", "```slack\nhello\n``"] {
+        for text in [
+            "```slack\nhello\n> ```",
+            "> ```slack\n> hello\n```",
+            "```slack\n*unfinished",
+            "```slack\n• one\n• tw",
+            "```slack\nhello\n~~~",
+            "````slack\nhello\n```",
+            "```slack",
+            "```slack\nhello\n``",
+        ] {
             assert!(!closed(text), "{text:?} shouldn't be closed");
         }
         // Offsets pick the block out of the whole reply.
         let reply = "Here:\n\n```slack\nhi\n```\n\nThanks";
         let start = reply.find("```").unwrap();
-        assert!(fence_closed(reply, start, reply[start + 3..].find("```").unwrap() + start + 6));
+        assert!(fence_closed(
+            reply,
+            start,
+            reply[start + 3..].find("```").unwrap() + start + 6
+        ));
         assert!(!fence_closed(reply, start, start + 5));
         assert!(!fence_closed(reply, 99, 120));
     }
@@ -955,6 +1390,99 @@ mod tests {
     fn a_dump_describes_what_each_span_looks_like() {
         let spans = slack_spans("*Hi* <https://x.dev|there> `x`");
         let described: Vec<String> = spans.iter().filter_map(Span::described).collect();
-        assert_eq!(described, ["bold: Hi", "link: there <https://x.dev>", "code: x"]);
+        assert_eq!(
+            described,
+            ["bold: Hi", "link: there <https://x.dev>", "code: x"]
+        );
+    }
+
+    /// The cases every app runs (`shared/cases/draft-blocks.json`): here,
+    /// the iPhone, Android and the website. A case whose `differs` names
+    /// desktop is a known difference, skipped.
+    #[test]
+    fn draft_blocks_follow_the_shared_cases() {
+        use serde_json::{json, Value};
+        fn neutral(spans: &[Span]) -> Value {
+            Value::Array(
+                spans
+                    .iter()
+                    .map(|s| {
+                        let mut o = serde_json::Map::new();
+                        o.insert("text".into(), json!(s.text));
+                        for (key, on) in [
+                            ("bold", s.bold),
+                            ("italic", s.italic),
+                            ("strike", s.strike),
+                            ("code", s.code),
+                        ] {
+                            if on {
+                                o.insert(key.into(), json!(true));
+                            }
+                        }
+                        if let Some(link) = &s.link {
+                            o.insert("link".into(), json!(link));
+                        }
+                        Value::Object(o)
+                    })
+                    .collect(),
+            )
+        }
+        fn kind(word: &str) -> DraftKind {
+            DraftKind::from_word(word).unwrap_or_else(|| panic!("kind {word}"))
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../shared/cases/draft-blocks.json"
+        );
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 50);
+        for case in cases {
+            if case["differs"].get("desktop").is_some() {
+                continue;
+            }
+            let name = case["name"].as_str().unwrap();
+            let input = &case["input"];
+            let text = |key: &str| {
+                input[key]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{name}: {key}"))
+                    .to_owned()
+            };
+            let draft = || DraftBlock {
+                kind: kind(&text("kind")),
+                source: text("source"),
+            };
+            let got = match input["op"].as_str().unwrap() {
+                "from" => match DraftBlock::from(input["language"].as_str(), &text("code")) {
+                    Some(d) => {
+                        json!({ "kind": d.kind.fence_word(), "source": d.source, "label": d.label() })
+                    }
+                    None => Value::Null,
+                },
+                "lines" => Value::Array(
+                    draft()
+                        .lines()
+                        .iter()
+                        .map(|l| json!({ "quote": l.quote, "spans": neutral(&l.spans) }))
+                        .collect(),
+                ),
+                "plainText" => json!(draft().plain_text()),
+                "html" => json!(draft().html()),
+                "spans" => neutral(&slack_spans(&text("line"))),
+                "bareLinks" => neutral(&bare_links(&text("text"))),
+                "closed" => {
+                    let t = text("text");
+                    let start = [t.find("```"), t.find("~~~")]
+                        .into_iter()
+                        .flatten()
+                        .min()
+                        .unwrap_or(0);
+                    json!(fence_closed(&t, start, t.len()))
+                }
+                op => panic!("{name}: unknown op {op}"),
+            };
+            assert_eq!(got, case["expect"], "{name}");
+        }
     }
 }

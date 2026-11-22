@@ -1,8 +1,8 @@
 // The Desktop app workflow (.github/workflows/desktop.yml) only runs when a
 // file in its `paths:` changes, and tb land's hold reads the same list
 // (land-gate.ts). The desktop app builds and tests from files outside
-// desktop/ too: the Swift app's pictures and pele.js, the shared inbox
-// fixture, the site's doc names, the runner files the mock runner imports.
+// desktop/ too: the pictures and pele.js in shared/, the shared cases
+// (shared/cases), the site's doc names, the runner files the mock runner imports.
 // A change to only those ran no desktop CI and wasn't held, so a break
 // showed up on the next unrelated desktop landing (16 Nov). This finds every
 // such file in the code and checks the workflow runs for it.
@@ -41,7 +41,7 @@ function readFromOutside(): string[] {
       for (const m of text.matchAll(/CARGO_MANIFEST_DIR"\)\s*,\s*"([^"]+)"/g)) keep(path.join(crate, m[1]));
     }
   }
-  const mock = path.join(ROOT, 'app/Tools/mock-runner');
+  const mock = path.join(ROOT, 'mock-runner');
   for (const file of fs.readdirSync(mock).filter((f) => f.endsWith('.mjs'))) {
     const text = fs.readFileSync(path.join(mock, file), 'utf8');
     for (const m of text.matchAll(/from\s+'(\.\.?\/[^']+)'/g)) keep(path.resolve(mock, m[1]));
@@ -54,7 +54,7 @@ const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/desktop.yml'
 test('the desktop app reads some files from outside desktop/, and the scan finds them', () => {
   const outside = readFromOutside();
   // Known ones, so a scan that quietly finds nothing fails here.
-  for (const f of ['app/Sources/Threadbear/Resources/Rich/pele.js', 'app/Tests/Fixtures/inbox-urgency-cases.json', 'site/app-doc-slugs.json', 'runner/src/samples.ts']) {
+  for (const f of ['shared/rich/pele.js', 'shared/art/librarian.png', 'shared/cases/inbox-urgency.json', 'site/app-doc-slugs.json', 'runner/src/samples.ts']) {
     assert.ok(outside.includes(f), `${f} among ${outside.join(', ')}`);
   }
 });

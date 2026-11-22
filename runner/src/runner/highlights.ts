@@ -10,12 +10,11 @@ import { cutOut } from '../store.ts';
 import { emptyHighlights, MAX_URL, observe as observeHighlights, pinItem, remove as removeHighlight, unpin as unpinHighlight, upsert as upsertHighlight, view as highlightsView, absolute, type ThreadHighlights } from '../highlights.ts';
 import { PANEL_ACK_WAIT_MS, PANEL_PLACES, resolvePanel } from '../panel-requests.ts';
 import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
 import type { ThreadState } from '../runner.ts';
 
 export const highlightsPart = {
-  // What the thread has made, shared and pinned (docs/protocol.md,
+  // What the thread has made, shared and pinned (docs/protocol/panels.md,
   // "Highlights"): brought up to date from the events since the last ask.
   highlights(this: Runner, threadId: string): ThreadHighlights {
     const st = this.mustGet(threadId);
@@ -34,7 +33,7 @@ export const highlightsPart = {
   // The `pin` tool: a file (relative to the thread's folder is fine) or a
   // URL, for Mike to look at. Returns the highlight's id.
   // With `show`, it also asks the app to open it in the pane, as a
-  // show_panel request naming the highlight (docs/protocol.md, "Showing
+  // show_panel request naming the highlight (docs/protocol/panels.md, "Showing
   // panels"), and resolves once the app has (shown) or the wait is up.
   // A one-shot request, not a flag on the item: a flag only changed the
   // first time, so pinning the same page again after an edit showed
@@ -75,7 +74,7 @@ export const highlightsPart = {
     return { removed };
   },
 
-  // The show_panel tool (docs/protocol.md, "Showing panels"): the request
+  // The show_panel tool (docs/protocol/panels.md, "Showing panels"): the request
   // waits on the thread, replacing an older one, for the app to show once
   // Mike is looking at it. Resolves when the app says it has, or after
   // waitMs with shown false. Everything up to the wait runs before the

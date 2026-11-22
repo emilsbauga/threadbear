@@ -11,7 +11,7 @@ import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
 import { RpcError } from '../../src/protocol.ts';
 
-// docs/protocol.md, "Project tasks". The shapes below are what Notion's
+// docs/protocol/projects.md, "Project tasks". The shapes below are what Notion's
 // MCP tools give back through the gateway (30 Oct 2026), cut down.
 
 const PAGE = 'https://app.notion.com/p/3fefd70ecfa0815bbd83cf6b315c6511';

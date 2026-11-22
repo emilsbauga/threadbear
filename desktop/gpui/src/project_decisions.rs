@@ -8,20 +8,19 @@
 // so the agent can't tell where it was answered. A card of one ask goes on one
 // click; until the thread takes the answer its card says "Sending to" and
 // takes no clicks, and if the runner refuses, the picks come back.
-use std::sync::Arc;
 use crate::app::Threadbear;
 use crate::composer_card::AskHost;
 use crate::open_gate::Origin;
+use crate::spinner::Spinner;
 use crate::style::{self, px};
 use crate::{call, now_ms};
 use gpui_kit::component::input::{InputEvent, TextareaState};
-use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use threadbear_client::runner::Status;
+use std::sync::Arc;
 use threadbear_core::composer::{self, OWN_ANSWER};
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::projects::{self as rules, Project, Sections};
@@ -56,11 +55,45 @@ pub(crate) struct DecisionCard {
     inputs: HashMap<usize, Entity<TextareaState>>,
     subs: Vec<Subscription>,
     style: Option<(crate::style::ReadingStyleKey, gpui_kit::base::TextViewStyle)>,
+    /// A card in the Feed (inbox_feed.rs): the picks stay on it while the
+    /// answer's on its way, the pressed button spinning and the others
+    /// taking no clicks, rather than the card turning into a "Sending to"
+    /// line; a refusal takes them off again.
+    keeps_picks: bool,
+    /// Its answer is on its way, as the Feed said before drawing it (the card
+    /// can't read the app while the app is drawing it).
+    sending_now: bool,
 }
 
 impl DecisionCard {
     fn new(app: WeakEntity<Threadbear>, thread: String) -> Self {
-        DecisionCard { app, thread, seq: None, asks: Vec::new(), place: (Origin::ThisMac, String::new()), picks: BTreeMap::new(), notes: BTreeMap::new(), inputs: HashMap::new(), subs: Vec::new(), style: None }
+        DecisionCard {
+            app,
+            thread,
+            seq: None,
+            asks: Vec::new(),
+            place: (Origin::ThisMac, String::new()),
+            picks: BTreeMap::new(),
+            notes: BTreeMap::new(),
+            inputs: HashMap::new(),
+            subs: Vec::new(),
+            style: None,
+            keeps_picks: false,
+            sending_now: false,
+        }
+    }
+
+    /// Whether its answer is on its way, set by the Feed before each draw.
+    pub(crate) fn mark_sending(&mut self, on: bool) {
+        self.sending_now = on;
+    }
+
+    /// A thread's card of asks in the Feed (`keeps_picks`).
+    pub(crate) fn for_feed(app: WeakEntity<Threadbear>, thread: String) -> Self {
+        DecisionCard {
+            keeps_picks: true,
+            ..DecisionCard::new(app, thread)
+        }
     }
 
     /// The thread's card as it is now. Picks made on an older card are
@@ -74,23 +107,43 @@ impl DecisionCard {
             self.subs.clear();
         }
         self.asks = rules::decision_asks(t);
-        self.place = (if t.is_remote() { Origin::OtherMac } else { Origin::ThisMac }, t.cwd.clone());
+        self.place = (
+            if t.is_remote() {
+                Origin::OtherMac
+            } else {
+                Origin::ThisMac
+            },
+            t.cwd.clone(),
+        );
     }
 
     /// Every ask still open has an answer that would send something
     /// (`decisionAnswered`).
     fn answered(&self) -> bool {
         let filled = composer::filled_picks(&self.picks, &self.notes);
-        self.asks.iter().enumerate().all(|(i, ask)| ask.ticked || filled.contains_key(&(i as i64)))
+        self.asks
+            .iter()
+            .enumerate()
+            .all(|(i, ask)| ask.ticked || filled.contains_key(&(i as i64)))
     }
 
     /// An answer's already on its way (`decisionInFlight`): the thread's
     /// summary can still say it's waiting for a moment, and a pick then would
     /// send a second answer. Only from a click, never while the app draws.
     fn in_flight(&self, cx: &App) -> bool {
-        let Some(app) = self.app.upgrade() else { return true };
+        let Some(app) = self.app.upgrade() else {
+            return true;
+        };
         let app = app.read(cx);
-        app.threads.get(&self.thread).is_some_and(|t| rules::is_sending(t, app.projects.decision_sends.get(&self.thread).map(|s| s.asks_seq)))
+        app.threads.get(&self.thread).is_some_and(|t| {
+            rules::is_sending(
+                t,
+                app.projects
+                    .decision_sends
+                    .get(&self.thread)
+                    .map(|s| s.asks_seq),
+            )
+        })
     }
 
     fn set_note(&mut self, ask: usize, text: String, cx: &mut Context<Self>) {
@@ -117,21 +170,56 @@ impl DecisionCard {
             crate::draft_boxes::note_edits_sent(&self.thread, cx);
         }
         let images = composer::note_images(&self.asks, &self.picks, &self.notes);
-        let answers_json = Value::Array(answers.iter().map(|(_, a)| json!({ "action": a.action, "answer": a.answer })).collect());
+        let answers_json = Value::Array(
+            answers
+                .iter()
+                .map(|(_, a)| json!({ "action": a.action, "answer": a.answer }))
+                .collect(),
+        );
         let words: Vec<String> = answers.iter().map(|(_, a)| a.answer.clone()).collect();
-        let picks = (std::mem::take(&mut self.picks), std::mem::take(&mut self.notes));
-        self.inputs.clear();
-        self.subs.clear();
+        let picks = if self.keeps_picks {
+            (self.picks.clone(), self.notes.clone())
+        } else {
+            let picks = (
+                std::mem::take(&mut self.picks),
+                std::mem::take(&mut self.notes),
+            );
+            self.inputs.clear();
+            self.subs.clear();
+            picks
+        };
         cx.notify();
         let (thread, card) = (self.thread.clone(), cx.entity().downgrade());
         if let Some(app) = self.app.upgrade() {
-            app.update(cx, |app, cx| app.send_decision(thread, seq, text, images, answers_json, words, card, picks, cx));
+            app.update(cx, |app, cx| {
+                app.send_decision(
+                    thread,
+                    seq,
+                    text,
+                    images,
+                    answers_json,
+                    words,
+                    card,
+                    picks,
+                    cx,
+                )
+            });
         }
     }
 
     /// The runner didn't take it: the picks come back, unless he's picked
     /// again since.
     pub(crate) fn restore(&mut self, seq: u64, picks: Picks, cx: &mut Context<Self>) {
+        // The Feed's card kept them: the buttons come back unpicked, so the
+        // same click sends again rather than taking the pick off. What was
+        // written under Something else stays for when it's picked again.
+        if self.keeps_picks {
+            if self.seq == Some(seq) {
+                self.picks.clear();
+                cx.notify();
+            }
+            return;
+        }
         if self.seq == Some(seq) && self.picks.is_empty() && self.notes.is_empty() {
             (self.picks, self.notes) = picks;
             cx.notify();
@@ -140,15 +228,37 @@ impl DecisionCard {
 
     /// Its asks, drawn as the composer draws them, without the card's
     /// heading: the decision's own card is titled by its thread.
-    pub(crate) fn render_asks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_asks(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let asks = self.asks.clone();
         let numbered = asks.len() > 1;
         // The composer's card spaces its first ask under its heading; with no
         // heading the Swift card's asks start right under the status line, so
         // that space (less the point TextKit leaves) comes back off the top.
-        let mut column = v_flex().w_full().mt(px(-(crate::composer_card::metrics::ASK_BEFORE - 1.)));
+        let mut column = v_flex()
+            .w_full()
+            .mt(px(-(crate::composer_card::metrics::ASK_BEFORE - 1.)));
         for (index, ask) in asks.iter().enumerate() {
             column = column.child(self.render_ask(index, ask, numbered, window, cx));
+        }
+        // Drafts he's changed in the thread's replies go with the answer
+        // too: a chip each says so (composer_drafts.rs). No View: the
+        // reply isn't on this page.
+        let drafts = crate::draft_boxes::pending_edits(&self.thread, cx);
+        if !drafts.is_empty() {
+            column = column.child(
+                div()
+                    .mt(px(8.))
+                    .child(crate::composer_drafts::pending_chips(
+                        "decision-draft-chips",
+                        drafts,
+                        None,
+                        cx,
+                    )),
+            );
         }
         column.into_any_element()
     }
@@ -157,6 +267,10 @@ impl DecisionCard {
 impl AskHost for DecisionCard {
     fn ask_pick(&self, ask: usize) -> Option<i64> {
         self.picks.get(&(ask as i64)).copied()
+    }
+
+    fn ask_sending(&self, ask: usize, _cx: &App) -> Option<Option<i64>> {
+        (self.keeps_picks && self.sending_now).then(|| self.ask_pick(ask))
     }
 
     fn ask_place(&self, _cx: &App) -> (Origin, String) {
@@ -179,7 +293,13 @@ impl AskHost for DecisionCard {
     /// answer it goes straight away, as there's no composer to send from: one
     /// click answers a card of one. Something else opens its box instead, and
     /// Return there sends.
-    fn ask_pick_answer(&mut self, ask: usize, option: i64, window: &mut Window, cx: &mut Context<Self>) {
+    fn ask_pick_answer(
+        &mut self,
+        ask: usize,
+        option: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if ask >= self.asks.len() || self.in_flight(cx) {
             return;
         }
@@ -208,7 +328,10 @@ impl AskHost for DecisionCard {
     fn ask_open_link(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
         // Another thread (an ask whose step is there) opens in the app, not
         // through the open gate as an address.
-        if let Some((_, id)) = target.split_once(':').filter(|(scheme, _)| scheme.eq_ignore_ascii_case("thread")) {
+        if let Some((_, id)) = target
+            .split_once(':')
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("thread"))
+        {
             let id = id.to_owned();
             if let Some(app) = self.app.upgrade() {
                 app.update(cx, |app, cx| app.open_thread_link(&id, window, cx));
@@ -222,33 +345,63 @@ impl AskHost for DecisionCard {
             }
             return;
         }
-        let url = if target.starts_with('/') { threadbear_core::open_policy::file_url(target) } else { target.to_owned() };
+        let url = if target.starts_with('/') {
+            threadbear_core::open_policy::file_url(target)
+        } else {
+            target.to_owned()
+        };
         let (origin, cwd) = self.place.clone();
         crate::open_gate::open_link(&url, origin, &cwd, cx);
     }
 
     /// The box under an ask's Something else (`AskAnswerBox`), kept while the
     /// card is open.
-    fn ask_answer_box(&mut self, ask: usize, window: &mut Window, cx: &mut Context<Self>) -> Entity<TextareaState> {
+    fn ask_answer_box(
+        &mut self,
+        ask: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextareaState> {
         if let Some(input) = self.inputs.get(&ask) {
             return input.clone();
         }
-        let existing = self.notes.get(&(ask as i64)).map(|n| n.text.clone()).unwrap_or_default();
-        let input = cx.new(|cx| TextareaState::new(window, cx).placeholder("Say something else…").auto_grow(1, 8).submit_on_enter(true));
+        let existing = self
+            .notes
+            .get(&(ask as i64))
+            .map(|n| n.text.clone())
+            .unwrap_or_default();
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Say something else…")
+                .auto_grow(1, 8)
+                .submit_on_enter(true)
+        });
         // Its words are only here until they're sent, what was typed before
         // too: an update's restart waits for them (unsent.rs).
-        crate::unsent::watch_in(&input, "a Something else box on a project's page", Some(self.thread.clone()), cx);
+        crate::unsent::watch_in(
+            &input,
+            "a Something else box on a project's page",
+            Some(self.thread.clone()),
+            cx,
+        );
         if !existing.is_empty() {
             input.update(cx, |s, cx| s.set_value(existing, window, cx));
         }
-        let sub = cx.subscribe_in(&input, window, move |this, input, ev: &InputEvent, window, cx| match ev {
-            InputEvent::Change => {
-                let text = input.read(cx).value().to_string();
-                this.set_note(ask, text, cx);
-            }
-            InputEvent::PressEnter { secondary, shift: false } => this.ask_box_return(ask, *secondary, window, cx),
-            _ => {}
-        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    this.set_note(ask, text, cx);
+                }
+                InputEvent::PressEnter {
+                    secondary,
+                    shift: false,
+                } => this.ask_box_return(ask, *secondary, window, cx),
+                _ => {}
+            },
+        );
         self.subs.push(sub);
         self.inputs.insert(ask, input.clone());
         input
@@ -257,7 +410,13 @@ impl AskHost for DecisionCard {
     /// Return in a box (`decisionBoxReturn`): sends once every ask has an
     /// answer, or with ⌘Return whatever's answered, as in the thread, where
     /// an early Return can't send a card half answered.
-    fn ask_box_return(&mut self, _ask: usize, command: bool, _window: &mut Window, cx: &mut Context<Self>) {
+    fn ask_box_return(
+        &mut self,
+        _ask: usize,
+        command: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if command || self.answered() {
             self.send(cx);
         }
@@ -268,56 +427,103 @@ impl Threadbear {
     /// A project's threads (its parts' too) waiting on a card of asks, newest
     /// first, as its page lists them.
     pub(crate) fn decision_threads_for(&self, project_id: &str) -> Vec<ThreadSummary> {
-        let sections = Sections::build(&self.projects.list, self.threads.values().map(|t| &**t), now_ms());
-        let Some(section) = sections.section(project_id) else { return Vec::new() };
-        rules::decision_threads(&sections.threads_with_parts(section)).into_iter().cloned().collect()
+        let sections = Sections::build(
+            &self.projects.list,
+            self.threads.values().map(|t| &**t),
+            now_ms(),
+        );
+        let Some(section) = sections.section(project_id) else {
+            return Vec::new();
+        };
+        rules::decision_threads(&sections.threads_with_parts(section))
+            .into_iter()
+            .cloned()
+            .collect()
     }
 
     /// A thread's decision card, made the first time it's drawn. Cards whose
     /// threads aren't waiting any more go, so a new card starts afresh.
-    pub(crate) fn decision_card(&mut self, thread: &str, cx: &mut Context<Self>) -> Entity<crate::project_decisions::DecisionCard> {
+    pub(crate) fn decision_card(
+        &mut self,
+        thread: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::project_decisions::DecisionCard> {
         if let Some(card) = self.projects.decision_cards.get(thread) {
             return card.clone();
         }
         let threads = &self.threads;
-        self.projects.decision_cards.retain(|id, _| threads.get(id).map(|t| &**t).is_some_and(rules::is_waiting));
+        self.projects
+            .decision_cards
+            .retain(|id, _| threads.get(id).map(|t| &**t).is_some_and(rules::is_waiting));
         let app = cx.entity().downgrade();
         let card = cx.new(|_| DecisionCard::new(app, thread.to_owned()));
-        self.projects.decision_cards.insert(thread.to_owned(), card.clone());
+        self.projects
+            .decision_cards
+            .insert(thread.to_owned(), card.clone());
         card
     }
 
     /// Sends a decision's answers to its thread (`sendDecision`, by way of
     /// `post`): it needs the runner there to take it, as a message from the
     /// thread's own box does.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn send_decision(&mut self, thread: String, seq: u64, text: String, images: Vec<ImageRef>, answers: Value, words: Vec<String>, card: WeakEntity<DecisionCard>, picks: Picks, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+    )]
+    pub(crate) fn send_decision(
+        &mut self,
+        thread: String,
+        seq: u64,
+        text: String,
+        images: Vec<ImageRef>,
+        answers: Value,
+        words: Vec<String>,
+        card: WeakEntity<DecisionCard>,
+        picks: Picks,
+        cx: &mut Context<Self>,
+    ) {
         // As a message from the thread's own box: one of this Mac's threads
         // waits for a restarting runner (`sendDecision`'s `holding`).
-        let remote = self.threads.get(&thread).is_some_and(|t| t.runner_id.is_some());
+        let remote = self
+            .threads
+            .get(&thread)
+            .is_some_and(|t| t.runner_id.is_some());
         let holding = !remote && self.client.restart_under_way();
         // Connected by the client's own word too: it says so a moment before
         // the app hears it, and the restart it held for is already over then
         // (Codex's review, 13 Nov).
-        let connected = matches!(self.status, Status::Connected { .. }) || self.client.connected_session().is_some();
+        let connected = self.connected() || self.client.connected_session().is_some();
         if !connected && !holding {
-            self.show_error("Not connected to the runner, so that wasn't sent.".to_owned(), cx);
+            self.show_error(
+                "Not connected to the runner, so that wasn't sent.".to_owned(),
+                cx,
+            );
             // Once this update is over: the card's own update is what sent
             // it (a pick, Return in its box), and GPUI refuses to update the
             // card again from inside that. Answering while the runner was
             // away crashed the app (12 Nov).
             cx.defer(move |cx| {
-                card.update(cx, |card, cx| card.restore(seq, picks, cx)).ok();
+                card.update(cx, |card, cx| card.restore(seq, picks, cx))
+                    .ok();
             });
             return;
         }
-        self.projects.decision_sends.insert(thread.clone(), DecisionSend { asks_seq: seq, answers: words });
+        self.projects.decision_sends.insert(
+            thread.clone(),
+            DecisionSend {
+                asks_seq: seq,
+                answers: words,
+            },
+        );
         cx.notify();
         // The runner it's shown on, as the composer's send says it (thread.rs, Daybreak 113).
         let runner_id = self.threads.get(&thread).and_then(|t| t.runner_id.clone());
         let mut params = json!({ "threadId": thread, "text": text, "runnerId": runner_id });
         if !images.is_empty() {
-            params["images"] = json!(images.iter().map(crate::composer::image_ref_json).collect::<Vec<_>>());
+            params["images"] = json!(images
+                .iter()
+                .map(crate::composer::image_ref_json)
+                .collect::<Vec<_>>());
         }
         if !answers.is_null() {
             params["answers"] = answers;
@@ -328,16 +534,40 @@ impl Threadbear {
         cx.spawn(async move |this, cx| {
             // The card says "Sending to" with its spinner meanwhile, held or not.
             let res = if let Some(place) = place {
-                crate::RT.spawn(async move { client.call_in_restart_order_at(place, "threads.send", params, Arc::new(|_| {})).await }).await.unwrap_or_else(|e| Err(threadbear_client::runner::RpcError { code: -1, message: e.to_string(), data: None }))
+                crate::RT
+                    .spawn(async move {
+                        client
+                            .call_in_restart_order_at(
+                                place,
+                                "threads.send",
+                                params,
+                                Arc::new(|_| {}),
+                            )
+                            .await
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(threadbear_client::runner::RpcError {
+                            code: -1,
+                            message: e.to_string(),
+                            data: None,
+                        })
+                    })
             } else {
                 call(client, "threads.send", params).await
             };
             this.update(cx, |this, cx| {
                 if let Err(e) = res {
-                    if this.projects.decision_sends.get(&thread).is_some_and(|s| s.asks_seq == seq) {
+                    if this
+                        .projects
+                        .decision_sends
+                        .get(&thread)
+                        .is_some_and(|s| s.asks_seq == seq)
+                    {
                         this.projects.decision_sends.remove(&thread);
                     }
-                    card.update(cx, |card, cx| card.restore(seq, picks, cx)).ok();
+                    card.update(cx, |card, cx| card.restore(seq, picks, cx))
+                        .ok();
                     this.show_error(e.message, cx);
                 }
                 cx.notify();
@@ -353,7 +583,12 @@ impl Threadbear {
     /// names it, so a quiet line of how many rather than a heading. When
     /// they've all been answered it says so where it is, with a way to the
     /// Project tab, rather than the page jumping away under the pointer.
-    pub(crate) fn render_decisions_tab(&mut self, project: &Project, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_decisions_tab(
+        &mut self,
+        project: &Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let threads = self.decision_threads_for(&project.id);
         if threads.is_empty() {
             let id = project.id.clone();
@@ -362,17 +597,36 @@ impl Threadbear {
                 .pt(px(4.))
                 .text_size(px(style::size::LABEL))
                 .line_height(px(16.))
-                .child(div().text_color(style::faint_text(cx)).child("Nothing waiting."))
                 .child(
-                    crate::highlights::tipped(div().id("decisions-show-project").cursor_pointer().text_color(style::link_text(cx)).hover(|s| s.underline()), "Its goals, state, notes and threads")
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.pick_project_tab(&id, rules::ProjectTab::Project, cx)))
-                        .child("Show the project"),
+                    div()
+                        .text_color(style::faint_text(cx))
+                        .child("Nothing waiting."),
+                )
+                .child(
+                    crate::highlights::tipped(
+                        div()
+                            .id("decisions-show-project")
+                            .cursor_pointer()
+                            .text_color(style::link_text(cx))
+                            .hover(|s| s.underline()),
+                        "Its goals, state, notes and threads",
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.pick_project_tab(&id, rules::ProjectTab::Project, cx)
+                    }))
+                    .child("Show the project"),
                 )
                 .into_any_element();
         }
         let refs: Vec<&ThreadSummary> = threads.iter().collect();
         let detail = rules::decision_heading(rules::decision_count(&refs), threads.len());
-        let mut section = v_flex().w_full().gap(px(12.)).child(div().text_size(px(style::size::SMALL)).line_height(px(14.)).text_color(style::faint_text(cx)).child(detail));
+        let mut section = v_flex().w_full().gap(px(12.)).child(
+            div()
+                .text_size(px(style::size::SMALL))
+                .line_height(px(14.))
+                .text_color(style::faint_text(cx))
+                .child(detail),
+        );
         for t in &threads {
             section = section.child(self.render_decision_card(t, window, cx));
         }
@@ -382,15 +636,32 @@ impl Threadbear {
     /// `DecisionCard`: the thread's title and how long ago, a line on what
     /// it's doing, its asks, and Open thread. While an answer's on its way,
     /// one line, "Sending to <title>…" with a spinner and what was answered.
-    fn render_decision_card(&mut self, t: &ThreadSummary, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_decision_card(
+        &mut self,
+        t: &ThreadSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let card = self.decision_card(&t.id, cx);
         card.update(cx, |card, _| card.prepare(t));
         let sent = self.projects.decision_sends.get(&t.id).cloned();
         let sending = rules::is_sending(t, sent.as_ref().map(|s| s.asks_seq));
-        let title = if t.title.is_empty() { "Untitled".to_owned() } else { t.title.clone() };
+        let title = if t.title.is_empty() {
+            "Untitled".to_owned()
+        } else {
+            t.title.clone()
+        };
         let (faint, secondary) = (style::faint_text(cx), style::secondary_text(cx));
         let id = t.id.clone();
-        let open = crate::project_page::small_push_button(SharedString::from(format!("decision-open-{}", t.id)), "Open thread", format!("Open {title} for the whole thread"), cx, cx.listener(move |this, _: &ClickEvent, window, cx| this.open_thread_from_page(id.clone(), window, cx)));
+        let open = crate::project_page::small_push_button(
+            SharedString::from(format!("decision-open-{}", t.id)),
+            "Open thread",
+            format!("Open {title} for the whole thread"),
+            cx,
+            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.open_thread_from_page(id.clone(), window, cx)
+            }),
+        );
         let body = match sent.filter(|_| sending) {
             Some(sent) => h_flex()
                 .w_full()
@@ -398,14 +669,39 @@ impl Threadbear {
                 .gap(px(8.))
                 .text_size(px(style::size::LABEL))
                 .line_height(px(16.))
-                .child(div().flex_none().size(px(12.)).child(Spinner::new().icon(gpui_kit::assets::IconName::LoaderCircle).color(secondary).with_size(px(12.))))
-                .child(h_flex().flex_shrink(1.).min_w_0().text_color(secondary).child(div().flex_none().child("Sending to ")).child(div().min_w_0().truncate().font_semibold().child(title.clone())).child(div().flex_none().child("…")))
-                .child(div().flex_shrink(1.).min_w_0().truncate().text_color(faint).child(sent.answers.join("; ")))
+                .child(
+                    div().flex_none().size(px(12.)).child(
+                        Spinner::new()
+                            .icon(gpui_kit::assets::IconName::LoaderCircle)
+                            .color(secondary)
+                            .with_size(px(12.)),
+                    ),
+                )
+                .child(
+                    h_flex()
+                        .flex_shrink(1.)
+                        .min_w_0()
+                        .text_color(secondary)
+                        .child(div().flex_none().child("Sending to "))
+                        .child(div().min_w_0().truncate().font_semibold().child(title))
+                        .child(div().flex_none().child("…")),
+                )
+                .child(
+                    div()
+                        .flex_shrink(1.)
+                        .min_w_0()
+                        .truncate()
+                        .text_color(faint)
+                        .child(sent.answers.join("; ")),
+                )
                 .child(div().flex_1())
                 .child(open)
                 .into_any_element(),
             None => {
-                let when = threadbear_core::sidebar::relative_short(t.activity_ms(), &threadbear_core::sidebar::local_now());
+                let when = threadbear_core::sidebar::relative_short(
+                    t.activity_ms(),
+                    &threadbear_core::sidebar::local_now(),
+                );
                 let asks = card.update(cx, |card, cx| card.render_asks(window, cx));
                 v_flex()
                     .w_full()
@@ -415,13 +711,41 @@ impl Threadbear {
                             .w_full()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().flex_shrink(1.).min_w_0().truncate().text_size(px(style::size::LABEL)).line_height(px(16.)).font_semibold().child(title.clone()))
-                            .child(div().flex_none().text_size(px(style::size::DETAIL)).line_height(px(15.)).text_color(faint).child(when))
+                            .child(
+                                div()
+                                    .flex_shrink(1.)
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(style::size::LABEL))
+                                    .line_height(px(16.))
+                                    .font_semibold()
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(style::size::DETAIL))
+                                    .line_height(px(15.))
+                                    .text_color(faint)
+                                    .child(when),
+                            )
                             .child(div().flex_1())
                             .child(open),
                     )
                     .when_some(rules::status_line(t), |s, line| {
-                        s.child(crate::highlights::tipped_as(div().id(SharedString::from(format!("decision-line-{}", t.id))).truncate().text_size(px(style::size::DETAIL)).line_height(px(15.)).text_color(secondary), line.clone(), gpui_kit::Role::GenericContainer).child(line))
+                        s.child(
+                            crate::highlights::tipped_as(
+                                div()
+                                    .id(SharedString::from(format!("decision-line-{}", t.id)))
+                                    .truncate()
+                                    .text_size(px(style::size::DETAIL))
+                                    .line_height(px(15.))
+                                    .text_color(secondary),
+                                line.clone(),
+                                gpui_kit::Role::GenericContainer,
+                            )
+                            .child(line),
+                        )
                     })
                     .child(div().w_full().pt(px(2.)).child(asks))
                     .into_any_element()
@@ -454,7 +778,15 @@ impl Threadbear {
         Some(
             self.decision_threads_for(&project.id)
                 .iter()
-                .map(|t| rules::decision_line(t, rules::is_sending(t, self.projects.decision_sends.get(&t.id).map(|s| s.asks_seq))))
+                .map(|t| {
+                    rules::decision_line(
+                        t,
+                        rules::is_sending(
+                            t,
+                            self.projects.decision_sends.get(&t.id).map(|s| s.asks_seq),
+                        ),
+                    )
+                })
                 .collect(),
         )
     }
@@ -464,10 +796,17 @@ impl Threadbear {
 /// a tab on the open project's page as a click does; `step` 1 or -1 is ⇧⌘]
 /// or ⇧⌘[. Says the tab showing after.
 #[cfg(feature = "automation")]
-pub(crate) fn tab_automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn tab_automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    cx: &mut App,
+) -> Result<Value, String> {
     let id = {
         let t = app.read(cx);
-        t.open_project().filter(|_| t.project_decisions_on()).map(|p| p.id.clone()).ok_or("no project page in tabs open")?
+        t.open_project()
+            .filter(|_| t.project_decisions_on())
+            .map(|p| p.id.clone())
+            .ok_or("no project page in tabs open")?
     };
     if let Some(raw) = cmd["tab"].as_str() {
         let tab = rules::ProjectTab::from_name(raw).ok_or("tab is decisions or project")?;
@@ -476,7 +815,10 @@ pub(crate) fn tab_automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App
     if let Some(by) = cmd["step"].as_i64() {
         app.update(cx, |t, cx| t.step_project_tab(by as i32, cx));
     }
-    Ok(json!(format!("ok {}", app.read(cx).project_tab(&id).name())))
+    Ok(json!(format!(
+        "ok {}",
+        app.read(cx).project_tab(&id).name()
+    )))
 }
 
 /// `decision`: a decision on the open project's page, through the card's own
@@ -485,7 +827,12 @@ pub(crate) fn tab_automation(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App
 /// its Something else box, `send` as ⌘Return there. Says the page's
 /// decisions after, as the dump does.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     let thread = {
         let t = app.read(cx);
         if !t.project_decisions_on() {
@@ -493,9 +840,19 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         }
         let project = t.open_project().ok_or("no project page open")?.id.clone();
         let shown = t.decision_threads_for(&project);
-        let titles = shown.iter().map(|s| s.title.clone()).collect::<Vec<_>>().join(", ");
-        let key = cmd["thread"].as_str().ok_or_else(|| format!("give a thread: {titles}"))?;
-        let thread = shown.iter().find(|s| s.id == key || s.title == key).cloned().ok_or_else(|| format!("no decision from {key}; there are {titles}"))?;
+        let titles = shown
+            .iter()
+            .map(|s| s.title.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let key = cmd["thread"]
+            .as_str()
+            .ok_or_else(|| format!("give a thread: {titles}"))?;
+        let thread = shown
+            .iter()
+            .find(|s| s.id == key || s.title == key)
+            .cloned()
+            .ok_or_else(|| format!("no decision from {key}; there are {titles}"))?;
         thread
     };
     let card = app.update(cx, |t, cx| t.decision_card(&thread.id, cx));
@@ -503,18 +860,33 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
     let asks = rules::decision_asks(&thread);
     if let Some(pick) = cmd["pick"].as_str() {
         let parts: Vec<usize> = pick.split(':').filter_map(|p| p.parse().ok()).collect();
-        let [ask, choice] = parts.as_slice() else { return Err(format!("no choice {pick}")) };
-        let Some(the_ask) = asks.get(ask.wrapping_sub(1)) else { return Err(format!("no choice {pick}")) };
+        let [ask, choice] = parts.as_slice() else {
+            return Err(format!("no choice {pick}"));
+        };
+        let Some(the_ask) = asks.get(ask.wrapping_sub(1)) else {
+            return Err(format!("no choice {pick}"));
+        };
         if *choice > composer::choices(the_ask).len() {
             return Err(format!("no choice {pick}"));
         }
-        let option = if *choice == 0 { OWN_ANSWER } else { *choice as i64 - 1 };
+        let option = if *choice == 0 {
+            OWN_ANSWER
+        } else {
+            *choice as i64 - 1
+        };
         let ask = ask - 1;
         card.update(cx, |card, cx| card.ask_pick_answer(ask, option, window, cx));
     }
     if let Some(value) = cmd["write"].as_str() {
-        let Some((n, words)) = value.split_once(':') else { return Err(format!("no ask in {value}")) };
-        let ask = n.parse::<usize>().ok().filter(|n| (1..=asks.len()).contains(n)).ok_or_else(|| format!("no ask in {value}"))? - 1;
+        let Some((n, words)) = value.split_once(':') else {
+            return Err(format!("no ask in {value}"));
+        };
+        let ask = n
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=asks.len()).contains(n))
+            .ok_or_else(|| format!("no ask in {value}"))?
+            - 1;
         let words = words.to_owned();
         card.update(cx, |card, cx| {
             if card.ask_pick(ask) != Some(OWN_ANSWER) {

@@ -1,5 +1,5 @@
 // Imports a trusted project patch from the bytes its trust hash was made
-// from, never from the folder as it is by then (docs/protocol.md,
+// from, never from the folder as it is by then (docs/protocol/trust.md,
 // "Trusting a folder's patches"). Checking a patch's hash and then
 // importing its path left a gap: a command that rewrote the patch, or a
 // helper it imports, between the two ran unhashed code under the earlier

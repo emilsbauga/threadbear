@@ -20,8 +20,8 @@ if [[ ! -d "$APP_ROOT/.fixtures" ]] || ! ls "$APP_ROOT/.fixtures" | grep -q '^ro
   echo "No fixtures yet. Run: node Tools/fixture-export/export.mjs --pick 87,451,2114,4100" >&2
   exit 1
 fi
-if [[ ! -d "$TOOLS_DIR/mock-runner/node_modules" ]]; then
-  (cd "$TOOLS_DIR/mock-runner" && npm install --silent)
+if [[ ! -d "$TOOLS_DIR/../../mock-runner/node_modules" ]]; then
+  (cd "$TOOLS_DIR/../../mock-runner" && npm install --silent)
 fi
 
 THREADBEAR_APP_DIR="$WORK/Threadbear.app" THREADBEAR_BUILD_CONFIGURATION=release bash "$APP_ROOT/build-app.sh" >/dev/null
@@ -59,8 +59,8 @@ if [[ ${#SOURCES[@]} -gt 0 ]]; then
   done
 fi
 
-node "$TOOLS_DIR/mock-runner/server.mjs" --data-dir "$DATA_DIR" --filler 16 --quiet \
-  --fixtures "$TOOLS_DIR/mock-runner/fixtures" --fixtures "$APP_ROOT/.fixtures" --fixtures "$COPIES" &
+node "$TOOLS_DIR/../../mock-runner/server.mjs" --data-dir "$DATA_DIR" --filler 16 --quiet \
+  --fixtures "$TOOLS_DIR/../../mock-runner/fixtures" --fixtures "$APP_ROOT/.fixtures" --fixtures "$COPIES" &
 MOCK_PID=$!
 cleanup() {
   kill "$MOCK_PID" 2>/dev/null || true

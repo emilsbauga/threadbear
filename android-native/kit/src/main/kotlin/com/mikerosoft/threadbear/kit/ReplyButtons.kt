@@ -2,7 +2,7 @@ package com.mikerosoft.threadbear.kit
 
 /**
  * An agent's `[title](button:<id>)` links drawn as buttons (ReplyButtons.swift,
- * docs/protocol.md "Reply buttons", backend API 59): blue starts a thread,
+ * docs/protocol/events.md "Reply buttons", backend API 59): blue starts a thread,
  * purple sends a message, green with a tick once pressed. The web page's
  * reply-buttons.ts says the same; keep them alike. A row carries what a
  * button says and where it goes (MessageButton), never the brief or message
@@ -60,6 +60,21 @@ object ReplyButtons {
         if (status?.state == CommandState.FAILED) return Look.Failed(status.note ?: "The runner couldn't press it.")
         button.failed?.let { return Look.Failed(it) }
         return Look.Ready
+    }
+
+    /**
+     * What a button shows with this phone's press as a [PendingCommand]: one
+     * the Mac hasn't picked up in time can be pressed again (the runner
+     * presses it once however many times it's asked), saying why, rather
+     * than spinning for ever.
+     */
+    fun look(button: MessageButton, pending: PendingCommand): Look = when (pending) {
+        PendingCommand.Idle -> look(button, null, asking = false)
+        is PendingCommand.Sending, is PendingCommand.Queued, is PendingCommand.Taken -> look(button, null, asking = true)
+        is PendingCommand.Done -> look(button, pending.result ?: CommandStatus(CommandState.DONE), asking = false)
+        is PendingCommand.Failed -> look(button, CommandStatus(CommandState.FAILED, note = pending.reason), asking = false)
+        is PendingCommand.TimedOut -> button.pressedThreadId?.let { Look.Pressed(it) }
+            ?: Look.Failed(pending.timedOutNote ?: "The Mac hasn't picked this up yet.")
     }
 
     /** What a screen reader says, and where it goes. */

@@ -1,5 +1,8 @@
 {
   "convex/boxMachine.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
     "machines/no-direct-state-writes": {
       "count": 2
     }
@@ -92,6 +95,9 @@
     "@convex-dev/no-process-env": {
       "count": 1
     },
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
     "machines/no-direct-state-writes": {
       "count": 2
     }
@@ -118,11 +124,17 @@
   "convex/projectNotes.ts": {
     "@convex-dev/explicit-table-ids": {
       "count": 6
+    },
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
     }
   },
   "convex/push.ts": {
     "@convex-dev/no-process-env": {
       "count": 6
+    },
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
     }
   },
   "convex/relay.ts": {
@@ -132,6 +144,9 @@
     "@convex-dev/no-process-env": {
       "count": 1
     },
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
     "machines/no-direct-state-writes": {
       "count": 2
     }
@@ -139,6 +154,11 @@
   "convex/requestMachine.ts": {
     "machines/no-direct-state-writes": {
       "count": 2
+    }
+  },
+  "convex/runnerAccess.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 9
     }
   },
   "convex/schema.ts": {
@@ -178,6 +198,9 @@
     "@convex-dev/no-process-env": {
       "count": 4
     },
+    "@typescript-eslint/no-explicit-any": {
+      "count": 41
+    },
     "machines/no-direct-state-writes": {
       "count": 10
     }
@@ -187,9 +210,19 @@
       "count": 8
     }
   },
+  "convex/uploads.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
+    }
+  },
   "convex/wakes.ts": {
     "@convex-dev/explicit-table-ids": {
       "count": 3
+    }
+  },
+  "convex/webPush.ts": {
+    "@typescript-eslint/no-floating-promises": {
+      "count": 1
     }
   },
   "relay/convex/apns.ts": {
@@ -212,18 +245,69 @@
       "count": 1
     }
   },
+  "runner/src/adapters/claude/normalize.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/src/adapters/claude/subagents.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/src/adapters/codex/normalize.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/src/adapters/codex/tools.ts": {
     "@eslint-community/eslint-comments/require-description": {
       "count": 3
     }
   },
   "runner/src/adapters/codex/types.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
     "mikecann-lint/prefer-kind-discriminant": {
       "count": 9
     }
   },
+  "runner/src/box-save.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/src/cli.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
+  "runner/src/client.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
+    }
+  },
+  "runner/src/github-pr.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 7
+    }
+  },
+  "runner/src/handover.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
+  "runner/src/patch-commands.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/src/patch-trust.ts": {
     "@eslint-community/eslint-comments/require-description": {
+      "count": 1
+    },
+    "@typescript-eslint/no-explicit-any": {
       "count": 1
     }
   },
@@ -232,24 +316,91 @@
       "count": 23
     }
   },
+  "runner/src/reviews.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
+  "runner/src/rpc.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/src/runner/moves.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 9
+    }
+  },
+  "runner/src/script-trust.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 8
+    }
+  },
   "runner/test/deploy/deploy.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
     }
   },
+  "runner/test/e2e/codex-install.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
   "runner/test/e2e/codex.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    },
     "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/e2e/edit.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/e2e/handover.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/e2e/models-pool.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/e2e/pools.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
       "count": 1
     }
   },
   "runner/test/e2e/runner.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 3
     }
   },
   "runner/test/e2e/sync.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 48
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 2
+    }
+  },
+  "runner/test/e2e/tools.e2e.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/helpers/convex-memory.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 26
     }
   },
   "runner/test/helpers/fake-acp-agent.mjs": {
@@ -257,12 +408,83 @@
       "count": 1
     }
   },
+  "runner/test/helpers/fake-fly.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/helpers/fakes.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/helpers/protocol-check.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
+  "runner/test/helpers/routes.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 10
+    }
+  },
+  "runner/test/unit/accounts-usage.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 18
+    }
+  },
+  "runner/test/unit/acp-adapter.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/adapter.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 7
+    }
+  },
+  "runner/test/unit/agent-write-trust.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 4
+    }
+  },
+  "runner/test/unit/app-restarts.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/test/unit/awake-timer.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 3
     }
   },
+  "runner/test/unit/backend-limits.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 28
+    }
+  },
+  "runner/test/unit/box-purge.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 4
+    }
+  },
+  "runner/test/unit/buttons.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 6
+    }
+  },
+  "runner/test/unit/card-review.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/test/unit/codex-adapter.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 21
     }
@@ -272,9 +494,29 @@
       "count": 2
     }
   },
+  "runner/test/unit/codex-normalize.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 14
+    }
+  },
+  "runner/test/unit/command-lifecycle-backend.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
   "runner/test/unit/context-budget.test.ts": {
     "@eslint-community/eslint-comments/require-description": {
       "count": 1
+    }
+  },
+  "runner/test/unit/deploy-steps.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/docs-search.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
     }
   },
   "runner/test/unit/frozen-cli.test.ts": {
@@ -282,7 +524,15 @@
       "count": 2
     }
   },
+  "runner/test/unit/github-pr.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
   "runner/test/unit/handover.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 35
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 6
     }
@@ -292,9 +542,24 @@
       "count": 2
     }
   },
+  "runner/test/unit/instructions.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/lab-review.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
+    }
+  },
   "runner/test/unit/land-queue.test.ts": {
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
+    }
+  },
+  "runner/test/unit/login-notes.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
     }
   },
   "runner/test/unit/main.test.ts": {
@@ -302,8 +567,51 @@
       "count": 1
     }
   },
+  "runner/test/unit/models-pool.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/models.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 21
+    }
+  },
+  "runner/test/unit/move-approval.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/move-credentials.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/move-runner.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 4
+    }
+  },
+  "runner/test/unit/move-schedules.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 9
+    }
+  },
+  "runner/test/unit/moves-backend.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
   "runner/test/unit/moves.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
     "mikecann-lint/no-sleep-in-tests": {
+      "count": 3
+    }
+  },
+  "runner/test/unit/normalize.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
       "count": 3
     }
   },
@@ -318,6 +626,9 @@
     }
   },
   "runner/test/unit/patch-trust-later.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 13
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
     }
@@ -333,18 +644,62 @@
     }
   },
   "runner/test/unit/proc.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 3
     }
   },
   "runner/test/unit/project-heads.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 14
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 3
     }
   },
+  "runner/test/unit/projects.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 22
+    }
+  },
+  "runner/test/unit/provider-switch.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/push-hold.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 22
+    }
+  },
+  "runner/test/unit/raising-access.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 7
+    }
+  },
+  "runner/test/unit/relay-install.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/relay-versions.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/test/unit/relay.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 13
+    }
+  },
+  "runner/test/unit/release-wait.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
     }
   },
   "runner/test/unit/release.test.ts": {
@@ -358,22 +713,69 @@
     }
   },
   "runner/test/unit/restart.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 6
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
     }
   },
+  "runner/test/unit/reviews.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 33
+    }
+  },
   "runner/test/unit/rpc.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 29
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 6
     }
   },
+  "runner/test/unit/runner-keys-backend.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 12
+    }
+  },
+  "runner/test/unit/runner-message-queue.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/runner-network.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
   "runner/test/unit/runner-pools.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
     }
   },
+  "runner/test/unit/runner-providers.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
+    }
+  },
+  "runner/test/unit/runner-restart-carry-on.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
   "runner/test/unit/runner.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 24
+    },
     "mikecann-lint/no-sleep-in-tests": {
+      "count": 1
+    }
+  },
+  "runner/test/unit/sandbox-removed.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
       "count": 1
     }
   },
@@ -382,9 +784,19 @@
       "count": 1
     }
   },
+  "runner/test/unit/share-image-route-backend.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    }
+  },
   "runner/test/unit/shared-cargo.test.ts": {
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
+    }
+  },
+  "runner/test/unit/shared-usage-trust.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 10
     }
   },
   "runner/test/unit/shell-allowlist.test.ts": {
@@ -394,6 +806,21 @@
   },
   "runner/test/unit/site-serve.test.ts": {
     "mikecann-lint/no-sleep-in-tests": {
+      "count": 2
+    }
+  },
+  "runner/test/unit/slash-commands.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 4
+    }
+  },
+  "runner/test/unit/store.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 6
+    }
+  },
+  "runner/test/unit/subagents.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
       "count": 2
     }
   },
@@ -407,6 +834,16 @@
       "count": 1
     }
   },
+  "runner/test/unit/unvouched-upgrade.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 5
+    }
+  },
+  "runner/test/unit/upload-claim-backend.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/test/unit/upstream-limits.test.ts": {
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
@@ -417,12 +854,25 @@
       "count": 2
     }
   },
+  "runner/test/unit/usage-shared.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    }
+  },
   "runner/test/unit/windows-release.test.ts": {
     "mikecann-lint/no-sleep-in-tests": {
       "count": 4
     }
   },
+  "runner/test/unit/worktrees-cleanup.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 6
+    }
+  },
   "runner/test/unit/worktrees-landing.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 1
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 1
     }
@@ -433,14 +883,19 @@
     }
   },
   "runner/test/unit/worktrees-spares.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 11
+    },
     "mikecann-lint/no-sleep-in-tests": {
       "count": 2
     }
   },
-  "web/src/App.tsx": {
-    "mikecann-lint/click-shows-progress": {
+  "runner/test/unit/year-token-backend.test.ts": {
+    "@typescript-eslint/no-explicit-any": {
       "count": 3
-    },
+    }
+  },
+  "web/src/App.tsx": {
     "react-hooks/exhaustive-deps": {
       "count": 4
     },
@@ -477,9 +932,6 @@
     }
   },
   "web/src/pages.tsx": {
-    "mikecann-lint/click-shows-progress": {
-      "count": 2
-    },
     "react-hooks/purity": {
       "count": 2
     },
@@ -501,10 +953,10 @@
     }
   },
   "web/src/share.tsx": {
-    "mikecann-lint/click-shows-progress": {
+    "@typescript-eslint/no-misused-promises": {
       "count": 1
     },
-    "react-hooks/set-state-in-effect": {
+    "mikecann-lint/click-shows-progress": {
       "count": 1
     }
   },

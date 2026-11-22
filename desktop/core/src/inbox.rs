@@ -2,10 +2,10 @@
 // (app/Sources/ThreadbearCore/Threads/ThreadSections.swift), which the phone's
 // InboxSections and the website's web/src/sections.ts follow too. A summary
 // is what `threads.list` gives; what a row says about it is in `sidebar.rs`.
-use std::borrow::Borrow;
-use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
+use std::borrow::Borrow;
+use std::collections::HashMap;
 
 pub struct ThreadList {
     pub rows: Vec<ThreadSummary>,
@@ -33,7 +33,9 @@ impl ThreadList {
     pub fn apply<T: From<ThreadSummary>>(self, threads: &mut HashMap<String, T>) -> bool {
         // Missing rows only mean deletion in a fully readable, nonempty list.
         // In particular, never stop Terminal shells on an empty snapshot.
-        if self.complete { threads.clear(); }
+        if self.complete {
+            threads.clear();
+        }
         threads.extend(self.rows.into_iter().map(|t| (t.id.clone(), T::from(t))));
         self.complete
     }
@@ -145,6 +147,10 @@ pub struct ThreadSummary {
     pub moving: Option<Value>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub asked: Option<String>,
+    /// Mike's first message to it, one line (protocol "What Mike first
+    /// asked"): the Feed's card leads with it, else the title.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub request: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub preview: String,
     /// The librarian's search words, for finding a thread by what it's about
@@ -234,7 +240,11 @@ pub struct OpenAsk {
 /// its card away, until its next update (13 Nov 2026, the implicit state
 /// machines scan; the Swift app's `threads[threadId] == guess`). Says
 /// whether it put it back.
-pub fn roll_back<T: Borrow<ThreadSummary>>(threads: &mut HashMap<String, T>, before: Option<T>, guess: Option<&ThreadSummary>) -> bool {
+pub fn roll_back<T: Borrow<ThreadSummary>>(
+    threads: &mut HashMap<String, T>,
+    before: Option<T>,
+    guess: Option<&ThreadSummary>,
+) -> bool {
     let Some(before) = before else { return false };
     if threads.get(&summary(&before).id).map(summary) != guess {
         return false;
@@ -246,7 +256,10 @@ pub fn roll_back<T: Borrow<ThreadSummary>>(threads: &mut HashMap<String, T>, bef
 impl OpenAsk {
     /// Where it's to be done, in plain words (`plainWhere`).
     pub fn where_text(&self) -> Option<String> {
-        self.place.as_deref().filter(|w| !w.is_empty()).map(crate::sidebar::preview_plain)
+        self.place
+            .as_deref()
+            .filter(|w| !w.is_empty())
+            .map(crate::sidebar::preview_plain)
     }
 }
 
@@ -297,14 +310,32 @@ impl ThreadSummary {
     /// before. Told apart by the move's id, so a second try that also failed
     /// while the app was away still says so (Codex's review).
     pub fn move_failure(&self, before: &ThreadSummary) -> Option<String> {
-        let failed = |t: &ThreadSummary| t.moving.as_ref().filter(|m| m.get("state").and_then(Value::as_str) == Some("failed")).map(|m| m.get("moveId").and_then(Value::as_str).unwrap_or("").to_owned());
+        let failed = |t: &ThreadSummary| {
+            t.moving
+                .as_ref()
+                .filter(|m| m.get("state").and_then(Value::as_str) == Some("failed"))
+                .map(|m| {
+                    m.get("moveId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned()
+                })
+        };
         let now = failed(self)?;
         if failed(before).is_some_and(|was| was == now) {
             return None;
         }
         let moving = self.moving.as_ref()?;
-        let to = moving.get("toName").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("the other machine");
-        let why = moving.get("note").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let to = moving
+            .get("toName")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("the other machine");
+        let why = moving
+            .get("note")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         Some(match why {
             Some(why) => format!("Couldn't move \"{}\" to {to}. {why}", self.title),
             None => format!("Couldn't move \"{}\" to {to}.", self.title),
@@ -324,17 +355,28 @@ impl ThreadSummary {
     }
     /// The background list, read leniently: a malformed entry is left out.
     pub fn background_tasks(&self) -> Vec<BackgroundTask> {
-        self.background.iter().flatten().filter_map(|v| crate::wire::read(v.clone())).collect()
+        self.background
+            .iter()
+            .flatten()
+            .filter_map(|v| crate::wire::read(v.clone()))
+            .collect()
     }
     /// What's still open on the done card, as the reducer takes it
     /// (Swift `ThreadSummary.looseEnds`, which decodes it leniently too).
     pub fn loose_ends_check(&self) -> Option<crate::reducer::LooseEnds> {
-        self.loose_ends.as_ref().and_then(crate::reducer::LooseEnds::decode)
+        self.loose_ends
+            .as_ref()
+            .and_then(crate::reducer::LooseEnds::decode)
     }
     /// Sub-agents or a workflow still at work, or just finished with their
     /// result still to be read (Swift `agentsStillWorking`).
     pub fn agents_still_working(&self) -> bool {
-        self.background.iter().flatten().any(|b| matches!(b.get("kind").and_then(Value::as_str), Some("agent") | Some("other")))
+        self.background.iter().flatten().any(|b| {
+            matches!(
+                b.get("kind").and_then(Value::as_str),
+                Some("agent") | Some("other")
+            )
+        })
     }
     /// The first name for `agents_still_working`, kept for the thread pane.
     pub fn working(&self) -> bool {
@@ -351,9 +393,12 @@ impl ThreadSummary {
     /// A design review waiting on Mike, once the thread has finished working
     /// (Swift `reviewWaiting`).
     pub fn review_waiting(&self) -> bool {
-        self.pending_reviews.unwrap_or(0) > 0 && !self.busy() && self.background.as_ref().is_none_or(|b| b.is_empty())
+        self.pending_reviews.unwrap_or(0) > 0
+            && !self.busy()
+            && self.background.as_ref().is_none_or(|b| b.is_empty())
     }
-    fn needs_answer(&self) -> bool {
+    /// Waiting on an answer from Mike (a card, a question).
+    pub fn needs_answer(&self) -> bool {
         self.status == "waiting"
     }
     /// Its turn is stuck on a card only Mike can answer (a permission, a
@@ -380,10 +425,18 @@ impl ThreadSummary {
     /// before landing showed Done, and Mike archived it with nothing landed.
     /// The runner only sends either while the thread is hibernating.
     pub fn waiting_on_work(&self) -> bool {
-        if self.is_archived() || (self.snoozed_until.is_none() && self.snoozed_until_restart != Some(true)) {
+        if self.is_archived()
+            || (self.snoozed_until.is_none() && self.snoozed_until_restart != Some(true))
+        {
             return false;
         }
-        self.awaiting_app_restart == Some(true) || self.waiting_on.iter().flatten().any(|w| w.get("done").and_then(Value::as_bool) != Some(true)) || self.waiting_to_land().is_some()
+        self.awaiting_app_restart == Some(true)
+            || self
+                .waiting_on
+                .iter()
+                .flatten()
+                .any(|w| w.get("done").and_then(Value::as_bool) != Some(true))
+            || self.waiting_to_land().is_some()
     }
     /// Hibernating until something its own agent is watching for ("when the
     /// landing finishes") while its commits aren't on main yet: waiting to
@@ -392,14 +445,21 @@ impl ThreadSummary {
     pub fn waiting_to_land(&self) -> Option<String> {
         let wake = self.wake_when.as_ref()?;
         // Watching for something to happen, not just a time in its words.
-        if wake.get("agent").and_then(Value::as_bool) != Some(true) || wake.get("topic").and_then(Value::as_str).is_none() {
+        if wake.get("agent").and_then(Value::as_bool) != Some(true)
+            || wake.get("topic").and_then(Value::as_str).is_none()
+        {
             return None;
         }
-        self.loose_ends_check()?.ends.into_iter().find(|e| e.kind == "unlanded").map(|e| e.text)
+        self.loose_ends_check()?
+            .ends
+            .into_iter()
+            .find(|e| e.kind == "unlanded")
+            .map(|e| e.text)
     }
     /// Snoozed past `now_ms`. A restart snooze carries a far-off `snoozedUntil` too.
     pub fn snoozed(&self, now_ms: i64) -> bool {
-        self.snoozed_until_restart == Some(true) || self.snoozed_until_ms().is_some_and(|t| t > now_ms)
+        self.snoozed_until_restart == Some(true)
+            || self.snoozed_until_ms().is_some_and(|t| t > now_ms)
     }
     pub fn snoozed_until_ms(&self) -> Option<i64> {
         self.snoozed_until.as_deref().and_then(parse_ms)
@@ -411,7 +471,11 @@ impl ThreadSummary {
         if self.review_waiting() || self.needs_answer() {
             0
         } else if self.needs_you {
-            if broken { 1 } else { 2 }
+            if broken {
+                1
+            } else {
+                2
+            }
         } else if broken {
             3
         } else {
@@ -425,12 +489,25 @@ impl ThreadSummary {
     /// The line under a row's title: its projects, or its folder (`ProjectMark.place`).
     pub fn place(&self) -> String {
         match self.projects.as_deref() {
-            Some(projects) if !projects.is_empty() => projects.iter().map(|p| if p.title.is_empty() { "Untitled project" } else { p.title.as_str() }).collect::<Vec<_>>().join(", "),
+            Some(projects) if !projects.is_empty() => projects
+                .iter()
+                .map(|p| {
+                    if p.title.is_empty() {
+                        "Untitled project"
+                    } else {
+                        p.title.as_str()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
             _ => folder_name(&self.cwd),
         }
     }
     pub fn activity_ms(&self) -> i64 {
-        parse_ms(&self.last_activity_at).or_else(|| self.updated_at.as_deref().and_then(parse_ms)).or_else(|| self.created_at.as_deref().and_then(parse_ms)).unwrap_or(0)
+        parse_ms(&self.last_activity_at)
+            .or_else(|| self.updated_at.as_deref().and_then(parse_ms))
+            .or_else(|| self.created_at.as_deref().and_then(parse_ms))
+            .unwrap_or(0)
     }
     pub fn archived_ms(&self) -> Option<i64> {
         self.archived_at.as_deref().and_then(parse_ms)
@@ -442,22 +519,42 @@ impl ThreadSummary {
         self.starred_at.is_some()
     }
     pub fn waiting_for_room_until_ms(&self) -> Option<i64> {
-        self.waiting_for_room.as_ref()?.get("until")?.as_str().and_then(parse_ms)
+        self.waiting_for_room
+            .as_ref()?
+            .get("until")?
+            .as_str()
+            .and_then(parse_ms)
     }
     /// The thread's panels (a page, a picture or a list), read leniently.
     pub fn panels(&self) -> Vec<crate::highlights::Panel> {
-        self.panels.iter().flatten().filter_map(crate::highlights::Panel::from_value).collect()
+        self.panels
+            .iter()
+            .flatten()
+            .filter_map(crate::highlights::Panel::from_value)
+            .collect()
     }
     /// Its action chips, read leniently.
     pub fn actions(&self) -> Vec<crate::highlights::Action> {
-        self.actions.iter().flatten().filter_map(|v| crate::wire::read(v.clone())).collect()
+        self.actions
+            .iter()
+            .flatten()
+            .filter_map(|v| crate::wire::read(v.clone()))
+            .collect()
     }
     /// The patches that apply to it, read leniently.
     pub fn patches(&self) -> Vec<crate::highlights::PatchInfo> {
-        self.patches.iter().flatten().filter_map(|v| crate::wire::read(v.clone())).collect()
+        self.patches
+            .iter()
+            .flatten()
+            .filter_map(|v| crate::wire::read(v.clone()))
+            .collect()
     }
     pub fn hooks(&self) -> Vec<crate::highlights::HookInfo> {
-        self.hooks.iter().flatten().filter_map(|v| crate::wire::read(v.clone())).collect()
+        self.hooks
+            .iter()
+            .flatten()
+            .filter_map(|v| crate::wire::read(v.clone()))
+            .collect()
     }
     /// A thread on another runner, shown here (`isRemote`).
     pub fn is_remote(&self) -> bool {
@@ -529,7 +626,7 @@ impl InboxOrder {
 /// copying 1,400 real-sized summaries took 17 ms each time (sidebar_cost.rs).
 #[derive(Clone)]
 pub struct Section<T = ThreadSummary> {
-    #[allow(dead_code)] // the tests find sections by it
+    #[allow(dead_code, reason = "the tests find sections by it")]
     pub key: &'static str,
     pub title: &'static str,
     pub rows: Vec<T>,
@@ -537,7 +634,10 @@ pub struct Section<T = ThreadSummary> {
 
 /// Sections in the Mac app's default order (`ThreadSections.build`), with no
 /// schedules known.
-pub fn sections<'a>(threads: impl IntoIterator<Item = &'a ThreadSummary>, now_ms: i64) -> Vec<Section> {
+pub fn sections<'a>(
+    threads: impl IntoIterator<Item = &'a ThreadSummary>,
+    now_ms: i64,
+) -> Vec<Section> {
     sections_ordered(threads, now_ms, InboxOrder::NeedsYou, &HashMap::new())
 }
 
@@ -555,11 +655,22 @@ pub struct Wake {
 pub fn wakes(schedules: &[crate::highlights::Schedule]) -> HashMap<String, Wake> {
     let mut soonest: HashMap<String, Wake> = HashMap::new();
     for schedule in schedules.iter().filter(|s| s.is_active()) {
-        let (Some(thread), Some(at_ms)) = (schedule.thread_id.as_ref(), schedule.next_run_at.as_deref().and_then(parse_ms)) else { continue };
+        let (Some(thread), Some(at_ms)) = (
+            schedule.thread_id.as_ref(),
+            schedule.next_run_at.as_deref().and_then(parse_ms),
+        ) else {
+            continue;
+        };
         if soonest.get(thread).is_some_and(|w| w.at_ms <= at_ms) {
             continue;
         }
-        soonest.insert(thread.clone(), Wake { at_ms, when_text: schedule.when_text.clone() });
+        soonest.insert(
+            thread.clone(),
+            Wake {
+                at_ms,
+                when_text: schedule.when_text.clone(),
+            },
+        );
     }
     soonest
 }
@@ -567,11 +678,18 @@ pub fn wakes(schedules: &[crate::highlights::Schedule]) -> HashMap<String, Wake>
 /// `ThreadSections.needsYouCount`: the threads waiting on Mike, for the Dock
 /// badge, without sorting anything: one in the Inbox, or starred and awake,
 /// that wants him (`wants_you`).
-pub fn needs_you_count<'a>(threads: impl IntoIterator<Item = &'a ThreadSummary>, now_ms: i64) -> usize {
+pub fn needs_you_count<'a>(
+    threads: impl IntoIterator<Item = &'a ThreadSummary>,
+    now_ms: i64,
+) -> usize {
     threads
         .into_iter()
         .filter(|t| {
-            if !t.wants_you() || t.is_archived() || t.backlog.is_some() || t.backlogged == Some(true) {
+            if !t.wants_you()
+                || t.is_archived()
+                || t.backlog.is_some()
+                || t.backlogged == Some(true)
+            {
                 return false;
             }
             if t.is_starred() {
@@ -582,7 +700,11 @@ pub fn needs_you_count<'a>(threads: impl IntoIterator<Item = &'a ThreadSummary>,
             }
             // In the Inbox: what needs Mike goes there even with work going in
             // the background; otherwise a running thread is under Running.
-            t.review_waiting() || t.needs_answer() || t.waiting_on_mike() || (t.needs_you && !t.working_in_background()) || !(t.busy() || t.working_in_background())
+            t.review_waiting()
+                || t.needs_answer()
+                || t.waiting_on_mike()
+                || (t.needs_you && !t.working_in_background())
+                || !(t.busy() || t.working_in_background())
         })
         .count()
 }
@@ -595,10 +717,19 @@ pub fn dock_badge(count: usize) -> Option<String> {
 /// What a notification for a thread that's come to need Mike says
 /// (`Notifier.post`): its title, and what it asked for, else its last words.
 pub fn notification_words(t: &ThreadSummary) -> (String, String) {
-    let title = if t.title.is_empty() { "Threadbear".to_owned() } else { t.title.clone() };
+    let title = if t.title.is_empty() {
+        "Threadbear".to_owned()
+    } else {
+        t.title.clone()
+    };
     let body = if t.status == "waiting" {
         "Waiting for you to answer.".to_owned()
-    } else if let Some(action) = t.asks.as_ref().and_then(|asks| asks.iter().find(|a| a.ticked != Some(true))).map(|a| crate::sidebar::preview_plain(&a.action)) {
+    } else if let Some(action) = t
+        .asks
+        .as_ref()
+        .and_then(|asks| asks.iter().find(|a| a.ticked != Some(true)))
+        .map(|a| crate::sidebar::preview_plain(&a.action))
+    {
         action
     } else if t.preview.is_empty() {
         "Finished.".to_owned()
@@ -612,8 +743,15 @@ pub fn notification_words(t: &ThreadSummary) -> (String, String) {
 /// need Mike (it didn't before, or wasn't known) and he isn't looking at it.
 /// Never another runner's thread: notifications are low-key, and that Mac's
 /// app says so there.
-pub fn should_notify(before: Option<&ThreadSummary>, after: &ThreadSummary, looking_at_it: bool) -> bool {
-    after.needs_you && !before.is_some_and(|b| b.needs_you) && !looking_at_it && after.runner_id.is_none()
+pub fn should_notify(
+    before: Option<&ThreadSummary>,
+    after: &ThreadSummary,
+    looking_at_it: bool,
+) -> bool {
+    after.needs_you
+        && !before.is_some_and(|b| b.needs_you)
+        && !looking_at_it
+        && after.runner_id.is_none()
 }
 
 /// The notification's identifier, as the Swift app's (`Notifier.post`): one
@@ -625,32 +763,55 @@ pub fn notification_tag(t: &ThreadSummary) -> String {
 
 /// The thread a notification's tag names (`notification_tag`).
 pub fn thread_in_tag(tag: &str) -> Option<&str> {
-    tag.rsplit_once('-').map(|(id, _)| id).filter(|id| !id.is_empty())
+    tag.rsplit_once('-')
+        .map(|(id, _)| id)
+        .filter(|id| !id.is_empty())
 }
 
 /// `ThreadSections.build`: where each thread goes and the order within each
 /// heading. `wakes` are the threads a schedule is due to message
 /// (`inbox::wakes`): one that's idle with nothing for Mike waits for it under
 /// Hibernating rather than sitting in the Inbox.
-pub fn sections_ordered<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl IntoIterator<Item = &'a T>, now_ms: i64, order: InboxOrder, wakes: &HashMap<String, Wake>) -> Vec<Section<T>> {
+pub fn sections_ordered<'a, T: Borrow<ThreadSummary> + Clone + 'a>(
+    threads: impl IntoIterator<Item = &'a T>,
+    now_ms: i64,
+    order: InboxOrder,
+    wakes: &HashMap<String, Wake>,
+) -> Vec<Section<T>> {
     sections_with(threads, now_ms, order, wakes, None)
 }
 
 /// `sections_ordered` with nested threads (the nestedThreads experiment,
 /// nested.rs): a nested thread has no row of its own, and a starter's row goes
 /// where its group does, ordered by the group's most urgent and newest member.
-pub fn sections_nested<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl IntoIterator<Item = &'a T>, now_ms: i64, order: InboxOrder, wakes: &HashMap<String, Wake>, nesting: &crate::nested::Nesting) -> Vec<Section<T>> {
+pub fn sections_nested<'a, T: Borrow<ThreadSummary> + Clone + 'a>(
+    threads: impl IntoIterator<Item = &'a T>,
+    now_ms: i64,
+    order: InboxOrder,
+    wakes: &HashMap<String, Wake>,
+    nesting: &crate::nested::Nesting,
+) -> Vec<Section<T>> {
     sections_with(threads, now_ms, order, wakes, Some(nesting))
 }
 
-fn sections_with<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl IntoIterator<Item = &'a T>, now_ms: i64, order: InboxOrder, wakes: &HashMap<String, Wake>, nesting: Option<&crate::nested::Nesting>) -> Vec<Section<T>> {
-    let (mut starred, mut backlog, mut inbox, mut running, mut hibernating, mut archived) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+fn sections_with<'a, T: Borrow<ThreadSummary> + Clone + 'a>(
+    threads: impl IntoIterator<Item = &'a T>,
+    now_ms: i64,
+    order: InboxOrder,
+    wakes: &HashMap<String, Wake>,
+    nesting: Option<&crate::nested::Nesting>,
+) -> Vec<Section<T>> {
+    let (mut starred, mut backlog, mut inbox, mut running, mut hibernating, mut archived) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
     for row in threads {
         let t = summary(row);
         if nesting.is_some_and(|n| n.is_nested(&t.id)) {
             continue;
         }
-        let key = nesting.and_then(|n| n.group(&t.id)).map(|g| g.section).unwrap_or_else(|| section_of(t, now_ms, wakes));
+        let key = nesting
+            .and_then(|n| n.group(&t.id))
+            .map(|g| g.section)
+            .unwrap_or_else(|| section_of(t, now_ms, wakes));
         let section = match key {
             "archived" => &mut archived,
             "backlog" => &mut backlog,
@@ -663,13 +824,45 @@ fn sections_with<'a, T: Borrow<ThreadSummary> + Clone + 'a>(threads: impl IntoIt
     }
     // A group's row sorts by its most urgent and newest member.
     let keys = |t: &ThreadSummary| match nesting.and_then(|n| n.group(&t.id)) {
-        Some(g) => SortKeys { urgency: g.urgency, activity_ms: g.activity_ms, card: g.card },
-        None => SortKeys { urgency: t.urgency(), activity_ms: t.activity_ms(), card: t.on_card() },
+        Some(g) => SortKeys {
+            urgency: g.urgency,
+            activity_ms: g.activity_ms,
+            card: g.card,
+        },
+        None => SortKeys {
+            urgency: t.urgency(),
+            activity_ms: t.activity_ms(),
+            card: t.on_card(),
+        },
     };
-    let mut sections = sort_sections(starred, inbox, running, hibernating, archived, order, wakes, &keys);
-    backlog.sort_by_cached_key(|t| (std::cmp::Reverse(summary(t).activity_ms()), summary(t).id.clone()));
-    let at = sections.iter().position(|s| s.key != "starred").unwrap_or(sections.len());
-    sections.insert(at, Section { key: "backlog", title: "Backlog", rows: backlog });
+    let mut sections = sort_sections(
+        starred,
+        inbox,
+        running,
+        hibernating,
+        archived,
+        order,
+        wakes,
+        &keys,
+    );
+    backlog.sort_by_cached_key(|t| {
+        (
+            std::cmp::Reverse(summary(t).activity_ms()),
+            summary(t).id.clone(),
+        )
+    });
+    let at = sections
+        .iter()
+        .position(|s| s.key != "starred")
+        .unwrap_or(sections.len());
+    sections.insert(
+        at,
+        Section {
+            key: "backlog",
+            title: "Backlog",
+            rows: backlog,
+        },
+    );
     sections
 }
 
@@ -687,11 +880,19 @@ pub fn section_of(t: &ThreadSummary, now_ms: i64, wakes: &HashMap<String, Wake>)
         "running"
     } else if t.snoozed(now_ms) {
         "hibernating"
-    } else if t.review_waiting() || t.needs_answer() || t.waiting_on_mike() || (t.needs_you && !t.working_in_background()) {
+    } else if t.review_waiting()
+        || t.needs_answer()
+        || t.waiting_on_mike()
+        || (t.needs_you && !t.working_in_background())
+    {
         "inbox"
     } else if t.busy() || t.working_in_background() {
         "running"
-    } else if t.status == "idle" && t.needs.as_deref() != Some("you") && t.waiting_for_room.is_none() && wakes.contains_key(&t.id) {
+    } else if t.status == "idle"
+        && t.needs.as_deref() != Some("you")
+        && t.waiting_for_room.is_none()
+        && wakes.contains_key(&t.id)
+    {
         "hibernating"
     } else {
         "inbox"
@@ -731,8 +932,20 @@ struct SortKeys {
     card: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sort_sections<T: Borrow<ThreadSummary>>(mut starred: Vec<T>, mut inbox: Vec<T>, mut running: Vec<T>, mut hibernating: Vec<T>, mut archived: Vec<T>, order: InboxOrder, wakes: &HashMap<String, Wake>, keys: &dyn Fn(&ThreadSummary) -> SortKeys) -> Vec<Section<T>> {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn sort_sections<T: Borrow<ThreadSummary>>(
+    mut starred: Vec<T>,
+    mut inbox: Vec<T>,
+    mut running: Vec<T>,
+    mut hibernating: Vec<T>,
+    mut archived: Vec<T>,
+    order: InboxOrder,
+    wakes: &HashMap<String, Wake>,
+    keys: &dyn Fn(&ThreadSummary) -> SortKeys,
+) -> Vec<Section<T>> {
     // Sorted by keys worked out once per thread: a time is text to be read,
     // and comparing two threads by reading theirs again each time cost the
     // app more than drawing a frame does (the activity bar's badge counts the
@@ -741,7 +954,9 @@ fn sort_sections<T: Borrow<ThreadSummary>>(mut starred: Vec<T>, mut inbox: Vec<T
     let newest_first = |t: &ThreadSummary| (Reverse(keys(t).activity_ms), t.id.clone());
     starred.sort_by(|a, b| {
         let (a, b) = (summary(a), summary(b));
-        a.starred_at.cmp(&b.starred_at).then_with(|| a.id.cmp(&b.id))
+        a.starred_at
+            .cmp(&b.starred_at)
+            .then_with(|| a.id.cmp(&b.id))
     });
     // A thread whose turn is stuck on a card goes first in every order: the
     // card runs out, and sorted oldest first it had only just been active,
@@ -749,21 +964,42 @@ fn sort_sections<T: Borrow<ThreadSummary>>(mut starred: Vec<T>, mut inbox: Vec<T
     // ask_secret card timed out unseen (19 Nov).
     let card_first = |t: &ThreadSummary| !keys(t).card;
     match order {
-        InboxOrder::NeedsYou => inbox.sort_by_cached_key(|t| (keys(summary(t)).urgency, newest_first(summary(t)))),
-        InboxOrder::Newest => inbox.sort_by_cached_key(|t| (card_first(summary(t)), newest_first(summary(t)))),
-        InboxOrder::Oldest => inbox.sort_by_cached_key(|t| (card_first(summary(t)), keys(summary(t)).activity_ms, Reverse(summary(t).id.clone()))),
+        InboxOrder::NeedsYou => {
+            inbox.sort_by_cached_key(|t| (keys(summary(t)).urgency, newest_first(summary(t))))
+        }
+        InboxOrder::Newest => {
+            inbox.sort_by_cached_key(|t| (card_first(summary(t)), newest_first(summary(t))))
+        }
+        InboxOrder::Oldest => inbox.sort_by_cached_key(|t| {
+            (
+                card_first(summary(t)),
+                keys(summary(t)).activity_ms,
+                Reverse(summary(t).id.clone()),
+            )
+        }),
     }
     running.sort_by_cached_key(|t| newest_first(summary(t)));
     // A snooze's time, or for one waiting on a schedule its next run. Back on
     // restart has no time, so it goes last.
-    let wakes_at = |t: &ThreadSummary| t.snoozed_until_ms().filter(|_| t.snoozed_until_restart != Some(true)).or_else(|| wakes.get(&t.id).map(|w| w.at_ms)).unwrap_or(i64::MAX);
+    let wakes_at = |t: &ThreadSummary| {
+        t.snoozed_until_ms()
+            .filter(|_| t.snoozed_until_restart != Some(true))
+            .or_else(|| wakes.get(&t.id).map(|w| w.at_ms))
+            .unwrap_or(i64::MAX)
+    };
     hibernating.sort_by_cached_key(|t| (wakes_at(summary(t)), newest_first(summary(t))));
     archived.sort_by_cached_key(|t| (Reverse(summary(t).archived_ms()), summary(t).id.clone()));
-    [("starred", "Starred", starred), ("inbox", "Inbox", inbox), ("running", "Running", running), ("hibernating", "Hibernating", hibernating), ("archived", "Archived", archived)]
-        .into_iter()
-        .filter(|(key, _, rows)| !rows.is_empty() || *key == "inbox")
-        .map(|(key, title, rows)| Section { key, title, rows })
-        .collect()
+    [
+        ("starred", "Starred", starred),
+        ("inbox", "Inbox", inbox),
+        ("running", "Running", running),
+        ("hibernating", "Hibernating", hibernating),
+        ("archived", "Archived", archived),
+    ]
+    .into_iter()
+    .filter(|(key, _, rows)| !rows.is_empty() || *key == "inbox")
+    .map(|(key, title, rows)| Section { key, title, rows })
+    .collect()
 }
 
 /// Whether a sidebar search finds this thread: its title or its last reply,
@@ -774,7 +1010,14 @@ fn sort_sections<T: Borrow<ThreadSummary>>(mut starred: Vec<T>, mut inbox: Vec<T
 /// appointment).
 pub fn matches(t: &ThreadSummary, query: &str) -> bool {
     let query = fold(query);
-    [Some(t.title.as_str()), Some(t.preview.as_str()), t.keywords.as_deref()].into_iter().flatten().any(|text| fold(text).contains(&query))
+    [
+        Some(t.title.as_str()),
+        Some(t.preview.as_str()),
+        t.keywords.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|text| fold(text).contains(&query))
 }
 
 /// Lower case with the accents taken off, for comparing as Swift's
@@ -823,29 +1066,54 @@ fn plain_letter(c: char) -> Option<char> {
 /// The last part of a folder's path, on any platform.
 pub fn folder_name(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
-    trimmed.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(path).to_string()
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 /// "claude-opus-5-5" → "Claude Opus 5.5", "opus" → "Claude Opus",
 /// "gpt-6-astra" → "GPT-6 Astra", and with no model the CLI's name: a port
 /// of web/src/format.ts's `modelLabel`.
 pub fn model_label(provider: &str, model: Option<&str>) -> String {
-    let cli = if provider == "codex" { "Codex" } else { "Claude" };
-    let Some(model) = model.filter(|m| !m.is_empty()) else { return cli.into() };
+    let cli = if provider == "codex" {
+        "Codex"
+    } else {
+        "Claude"
+    };
+    let Some(model) = model.filter(|m| !m.is_empty()) else {
+        return cli.into();
+    };
     let id = match model.find('[') {
         Some(at) if model.ends_with(']') => &model[..at],
         _ => model,
     };
-    let cap = |w: &str| w.chars().next().map(|c| c.to_uppercase().collect::<String>() + &w[c.len_utf8()..]).unwrap_or_default();
+    let cap = |w: &str| {
+        w.chars()
+            .next()
+            .map(|c| c.to_uppercase().collect::<String>() + &w[c.len_utf8()..])
+            .unwrap_or_default()
+    };
     let lower = id.to_lowercase();
     let rest = lower.strip_prefix("claude-").unwrap_or(&lower);
     for family in ["opus", "sonnet", "haiku", "fable"] {
         if let Some(after) = rest.strip_prefix(family) {
-            let nums: Vec<&str> = after.split('-').skip(1).take(2).take_while(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())).collect();
+            let nums: Vec<&str> = after
+                .split('-')
+                .skip(1)
+                .take(2)
+                .take_while(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                .collect();
             if !after.is_empty() && !after.starts_with('-') {
                 break;
             }
-            let version = if nums.is_empty() { String::new() } else { format!(" {}", nums.join(".")) };
+            let version = if nums.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", nums.join("."))
+            };
             return format!("Claude {}{version}", cap(family));
         }
     }
@@ -853,7 +1121,10 @@ pub fn model_label(provider: &str, model: Option<&str>) -> String {
         let mut parts = after.splitn(2, '-');
         let version = parts.next().unwrap_or("");
         if !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            let name = parts.next().map(|n| format!(" {}", n.split('-').map(cap).collect::<Vec<_>>().join(" "))).unwrap_or_default();
+            let name = parts
+                .next()
+                .map(|n| format!(" {}", n.split('-').map(cap).collect::<Vec<_>>().join(" ")))
+                .unwrap_or_default();
             return format!("GPT-{version}{name}");
         }
     }
@@ -887,7 +1158,12 @@ pub fn iso_time(ms: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z", rest / 3600, rest % 3600 / 60, rest % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// ISO 8601 in UTC (the protocol's times) to milliseconds since 1970.
@@ -897,7 +1173,14 @@ pub fn parse_ms(iso: &str) -> Option<i64> {
         return None;
     }
     let num = |r: std::ops::Range<usize>| iso.get(r)?.parse::<i64>().ok();
-    let (y, mo, d, h, mi, s) = (num(0..4)?, num(5..7)?, num(8..10)?, num(11..13)?, num(14..16)?, num(17..19)?);
+    let (y, mo, d, h, mi, s) = (
+        num(0..4)?,
+        num(5..7)?,
+        num(8..10)?,
+        num(11..13)?,
+        num(14..16)?,
+        num(17..19)?,
+    );
     // Up to three digits of a fraction as milliseconds (".5" is 500), read
     // in place: it's read for every thread as lists sort.
     let frac = if b.get(19) == Some(&b'.') {
@@ -927,10 +1210,25 @@ mod tests {
 
     #[test]
     fn a_thread_on_its_way_to_another_machine_says_so_in_its_box() {
-        let moving = |state: &str| thread(1, json!({ "moving": { "moveId": "m1", "to": "r2", "toName": "mac-mini", "state": state } }));
-        assert_eq!(moving("copying").moving_line().as_deref(), Some("Moving to mac-mini…"));
-        assert_eq!(moving("ready").moving_line().as_deref(), Some("Moving to mac-mini once this turn ends…"));
-        assert_eq!(moving("failed").moving_line(), None, "a failed move gives the box back");
+        let moving = |state: &str| {
+            thread(
+                1,
+                json!({ "moving": { "moveId": "m1", "to": "r2", "toName": "mac-mini", "state": state } }),
+            )
+        };
+        assert_eq!(
+            moving("copying").moving_line().as_deref(),
+            Some("Moving to mac-mini…")
+        );
+        assert_eq!(
+            moving("ready").moving_line().as_deref(),
+            Some("Moving to mac-mini once this turn ends…")
+        );
+        assert_eq!(
+            moving("failed").moving_line(),
+            None,
+            "a failed move gives the box back"
+        );
         assert_eq!(moving("cancelled").moving_line(), None);
         assert_eq!(thread(2, json!({})).moving_line(), None);
     }
@@ -938,8 +1236,11 @@ mod tests {
     #[test]
     fn a_move_that_just_failed_says_where_it_was_going_and_why() {
         let moving = |state: &str, note: Option<&str>| {
-            let mut m = json!({ "moveId": "m1", "to": "r2", "toName": "Hetzner Cloud", "state": state });
-            if let Some(n) = note { m["note"] = json!(n); }
+            let mut m =
+                json!({ "moveId": "m1", "to": "r2", "toName": "Hetzner Cloud", "state": state });
+            if let Some(n) = note {
+                m["note"] = json!(n);
+            }
             thread(1, json!({ "moving": m }))
         };
         let why = "The thread or where it would go changed since the Move sheet looked, so it stays where it is.";
@@ -947,8 +1248,17 @@ mod tests {
             moving("failed", Some(why)).move_failure(&moving("asking", None)).as_deref(),
             Some("Couldn't move \"Thread 1\" to Hetzner Cloud. The thread or where it would go changed since the Move sheet looked, so it stays where it is.")
         );
-        assert_eq!(moving("failed", None).move_failure(&thread(1, json!({}))).as_deref(), Some("Couldn't move \"Thread 1\" to Hetzner Cloud."));
-        assert_eq!(moving("failed", Some(why)).move_failure(&moving("failed", Some(why))), None, "said once, not on every update after");
+        assert_eq!(
+            moving("failed", None)
+                .move_failure(&thread(1, json!({})))
+                .as_deref(),
+            Some("Couldn't move \"Thread 1\" to Hetzner Cloud.")
+        );
+        assert_eq!(
+            moving("failed", Some(why)).move_failure(&moving("failed", Some(why))),
+            None,
+            "said once, not on every update after"
+        );
         let mut second = moving("failed", Some("Hetzner Cloud has no Claude login."));
         second.moving.as_mut().unwrap()["moveId"] = json!("m2");
         assert_eq!(
@@ -956,8 +1266,15 @@ mod tests {
             Some("Couldn't move \"Thread 1\" to Hetzner Cloud. Hetzner Cloud has no Claude login."),
             "another move that failed while the app was away"
         );
-        assert_eq!(moving("copying", None).move_failure(&moving("asking", None)), None);
-        assert_eq!(moving("cancelled", None).move_failure(&moving("asking", None)), None, "Mike called it off himself");
+        assert_eq!(
+            moving("copying", None).move_failure(&moving("asking", None)),
+            None
+        );
+        assert_eq!(
+            moving("cancelled", None).move_failure(&moving("asking", None)),
+            None,
+            "Mike called it off himself"
+        );
     }
 
     fn thread(n: u32, over: Value) -> ThreadSummary {
@@ -966,11 +1283,16 @@ mod tests {
             "provider": "claude", "status": "idle", "needsYou": false,
             "lastActivityAt": format!("2026-11-06T10:{n:02}:00Z"), "preview": "", "lastSeq": 10, "lastSeenSeq": 10
         });
-        v.as_object_mut().unwrap().extend(over.as_object().unwrap().clone());
+        v.as_object_mut()
+            .unwrap()
+            .extend(over.as_object().unwrap().clone());
         serde_json::from_value(v).unwrap()
     }
     fn ids(s: &[Section], key: &str) -> Vec<String> {
-        s.iter().find(|x| x.key == key).map(|x| x.rows.iter().map(|r| r.id.clone()).collect()).unwrap_or_default()
+        s.iter()
+            .find(|x| x.key == key)
+            .map(|x| x.rows.iter().map(|r| r.id.clone()).collect())
+            .unwrap_or_default()
     }
     fn now() -> i64 {
         parse_ms("2026-11-06T12:00:00Z").unwrap()
@@ -978,28 +1300,46 @@ mod tests {
 
     #[test]
     fn a_thread_with_a_message_on_its_way_is_running_not_in_the_inbox() {
-        let waiting = thread(1, json!({ "needs": "you", "needsYou": true, "lastSeenSeq": 3, "asks": [{ "action": "Send the reply?" }] }));
+        let waiting = thread(
+            1,
+            json!({ "needs": "you", "needsYou": true, "lastSeenSeq": 3, "asks": [{ "action": "Send the reply?" }] }),
+        );
         assert_eq!(section_of(&waiting, now(), &HashMap::new()), "inbox");
         let sending = as_sending(&waiting);
         assert_eq!(section_of(&sending, now(), &HashMap::new()), "running");
         assert_eq!(ids(&sections([&sending], now()), "running"), ["t1"]);
         // A starred one stays where Mike put it, and one already working
         // keeps what it's doing.
-        let starred = as_sending(&thread(2, json!({ "needsYou": true, "starredAt": "2026-11-06T09:00:00Z" })));
+        let starred = as_sending(&thread(
+            2,
+            json!({ "needsYou": true, "starredAt": "2026-11-06T09:00:00Z" }),
+        ));
         assert_eq!(section_of(&starred, now(), &HashMap::new()), "starred");
-        assert_eq!(as_sending(&thread(3, json!({ "status": "running" }))).status, "running");
+        assert_eq!(
+            as_sending(&thread(3, json!({ "status": "running" }))).status,
+            "running"
+        );
         // Written instead of answering a permission card.
         let card = thread(4, json!({ "status": "waiting", "needsYou": true }));
         assert_eq!(section_of(&card, now(), &HashMap::new()), "inbox");
-        assert_eq!(section_of(&as_sending(&card), now(), &HashMap::new()), "running");
+        assert_eq!(
+            section_of(&as_sending(&card), now(), &HashMap::new()),
+            "running"
+        );
     }
 
     #[test]
     fn the_badge_counts_what_waits_on_mike_and_a_notification_says_what_it_asked() {
-        let asks = thread(1, json!({ "needs": "you", "needsYou": true, "asks": [{ "action": "Ship **it**?" }] }));
+        let asks = thread(
+            1,
+            json!({ "needs": "you", "needsYou": true, "asks": [{ "action": "Ship **it**?" }] }),
+        );
         let unread = thread(2, json!({ "needsYou": true, "lastSeenSeq": 3 }));
         let read = thread(3, json!({}));
-        let asleep = thread(4, json!({ "needsYou": true, "snoozedUntil": "2026-11-07T00:00:00Z" }));
+        let asleep = thread(
+            4,
+            json!({ "needsYou": true, "snoozedUntil": "2026-11-07T00:00:00Z" }),
+        );
         let all = [asks.clone(), unread, read, asleep];
         assert_eq!(needs_you_count(&all, now()), 2);
         assert_eq!(dock_badge(2).as_deref(), Some("2"));
@@ -1011,7 +1351,10 @@ mod tests {
 
     #[test]
     fn search_finds_the_librarians_words_whatever_the_case_and_accents() {
-        let t = thread(1, json!({ "title": "Café plans", "preview": "Booked the RÉSUMÉ review", "keywords": "dentist wisdom tooth" }));
+        let t = thread(
+            1,
+            json!({ "title": "Café plans", "preview": "Booked the RÉSUMÉ review", "keywords": "dentist wisdom tooth" }),
+        );
         assert!(matches(&t, "cafe"), "an accent in the title");
         assert!(matches(&t, "CAFÉ"));
         assert!(matches(&t, "resume"), "and in the preview");
@@ -1026,26 +1369,52 @@ mod tests {
         let quiet = thread(1, json!({}));
         let needy = thread(1, json!({ "needsYou": true, "lastSeq": 42 }));
         assert!(should_notify(Some(&quiet), &needy, false));
-        assert!(should_notify(None, &needy, false), "a thread first heard of needing him");
-        assert!(!should_notify(Some(&needy), &needy, false), "only when it starts");
-        assert!(!should_notify(Some(&quiet), &needy, true), "not while he's looking at it");
+        assert!(
+            should_notify(None, &needy, false),
+            "a thread first heard of needing him"
+        );
+        assert!(
+            !should_notify(Some(&needy), &needy, false),
+            "only when it starts"
+        );
+        assert!(
+            !should_notify(Some(&quiet), &needy, true),
+            "not while he's looking at it"
+        );
         let mut remote = needy.clone();
         remote.runner_id = Some("other-mac".into());
-        assert!(!should_notify(Some(&quiet), &remote, false), "another runner's says so on that Mac");
+        assert!(
+            !should_notify(Some(&quiet), &remote, false),
+            "another runner's says so on that Mac"
+        );
         let tag = notification_tag(&needy);
         assert_eq!(tag, "t1-42");
         assert_eq!(thread_in_tag(&tag), Some("t1"));
-        assert_eq!(thread_in_tag("b0e6c5a2-1111-2222-3333-444455556666-7"), Some("b0e6c5a2-1111-2222-3333-444455556666"), "a thread id has dashes of its own");
+        assert_eq!(
+            thread_in_tag("b0e6c5a2-1111-2222-3333-444455556666-7"),
+            Some("b0e6c5a2-1111-2222-3333-444455556666"),
+            "a thread id has dashes of its own"
+        );
         assert_eq!(thread_in_tag("nothing"), None);
     }
 
     #[test]
     fn a_thread_waiting_on_its_schedule_hibernates_until_it() {
         use crate::highlights::Schedule;
-        let schedule = |id: &str, thread: &str, next: &str, paused: bool| Schedule { id: id.into(), thread_id: Some(thread.into()), next_run_at: Some(next.into()), when_text: "Weekdays at 9:00".into(), paused, ..Default::default() };
+        let schedule = |id: &str, thread: &str, next: &str, paused: bool| Schedule {
+            id: id.into(),
+            thread_id: Some(thread.into()),
+            next_run_at: Some(next.into()),
+            when_text: "Weekdays at 9:00".into(),
+            paused,
+            ..Default::default()
+        };
         let quiet = thread(1, json!({}));
         let later = thread(2, json!({}));
-        let asks = thread(3, json!({ "needs": "you", "needsYou": true, "asks": [{ "action": "Ship it?" }] }));
+        let asks = thread(
+            3,
+            json!({ "needs": "you", "needsYou": true, "asks": [{ "action": "Ship it?" }] }),
+        );
         let paused = thread(4, json!({}));
         let schedules = [
             schedule("s1", "t1", "2026-11-07T09:00:00Z", false),
@@ -1055,16 +1424,36 @@ mod tests {
             schedule("s4", "t4", "2026-11-06T13:00:00Z", true),
         ];
         let wakes = wakes(&schedules);
-        assert_eq!(wakes["t1"].at_ms, parse_ms("2026-11-06T13:00:00Z").unwrap(), "the soonest of its schedules");
+        assert_eq!(
+            wakes["t1"].at_ms,
+            parse_ms("2026-11-06T13:00:00Z").unwrap(),
+            "the soonest of its schedules"
+        );
         assert!(!wakes.contains_key("t4"), "a paused schedule wakes nothing");
-        let s = sections_ordered(&[quiet, later, asks, paused], now(), InboxOrder::NeedsYou, &wakes);
-        assert_eq!(ids(&s, "hibernating"), ["t2", "t1"], "soonest to wake first");
-        assert_eq!(ids(&s, "inbox"), ["t3", "t4"], "one that needs Mike stays where he'll see it");
+        let s = sections_ordered(
+            &[quiet, later, asks, paused],
+            now(),
+            InboxOrder::NeedsYou,
+            &wakes,
+        );
+        assert_eq!(
+            ids(&s, "hibernating"),
+            ["t2", "t1"],
+            "soonest to wake first"
+        );
+        assert_eq!(
+            ids(&s, "inbox"),
+            ["t3", "t4"],
+            "one that needs Mike stays where he'll see it"
+        );
     }
 
     #[test]
     fn threads_go_under_the_headings_the_mac_app_uses() {
-        let asks = thread(1, json!({ "needs": "you", "needsYou": true, "asks": [{ "action": "Ship it?" }] }));
+        let asks = thread(
+            1,
+            json!({ "needs": "you", "needsYou": true, "asks": [{ "action": "Ship it?" }] }),
+        );
         let running = thread(2, json!({ "status": "running" }));
         let done = thread(3, json!({}));
         let asleep = thread(4, json!({ "snoozedUntil": "2026-11-07T00:00:00Z" }));
@@ -1079,32 +1468,82 @@ mod tests {
 
     #[test]
     fn a_thread_waiting_on_its_own_work_stays_under_running() {
-        let waiting = thread(1, json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] }));
-        let heard = thread(2, json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI", "done": true }] }));
-        let for_app = thread(3, json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "awaitingAppRestart": true }));
+        let waiting = thread(
+            1,
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] }),
+        );
+        let heard = thread(
+            2,
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI", "done": true }] }),
+        );
+        let for_app = thread(
+            3,
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "awaitingAppRestart": true }),
+        );
         let asleep = thread(4, json!({ "snoozedUntil": "2026-11-07T00:00:00Z" }));
-        let archived = thread(5, json!({ "snoozedUntil": "2026-11-07T00:00:00Z", "archivedAt": "2026-11-06T09:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] }));
+        let archived = thread(
+            5,
+            json!({ "snoozedUntil": "2026-11-07T00:00:00Z", "archivedAt": "2026-11-06T09:00:00Z", "waitingOn": [{ "threadId": "x", "title": "Fix main's CI" }] }),
+        );
         let all = [waiting, heard, for_app, asleep, archived];
         let s = sections(&all, now());
-        assert_eq!(ids(&s, "running"), ["t3", "t1"], "still at its job, so not hibernating (newest first)");
-        assert_eq!(ids(&s, "hibernating"), ["t4", "t2"], "one whose wait is over, or Mike's own snooze");
-        assert_eq!(ids(&s, "archived"), ["t5"], "archiving it still puts it away");
+        assert_eq!(
+            ids(&s, "running"),
+            ["t3", "t1"],
+            "still at its job, so not hibernating (newest first)"
+        );
+        assert_eq!(
+            ids(&s, "hibernating"),
+            ["t4", "t2"],
+            "one whose wait is over, or Mike's own snooze"
+        );
+        assert_eq!(
+            ids(&s, "archived"),
+            ["t5"],
+            "archiving it still puts it away"
+        );
         let woken = thread(6, json!({ "needs": "nothing", "awaitingAppRestart": true }));
-        assert!(!woken.waiting_on_work(), "only while it's hibernating for it");
+        assert!(
+            !woken.waiting_on_work(),
+            "only while it's hibernating for it"
+        );
     }
 
     #[test]
     fn a_thread_hibernating_with_its_commits_not_on_main_stays_under_running() {
         let unlanded = json!({ "seq": 4, "ends": [{ "kind": "unlanded", "text": "1 commit on thread/x isn't on main" }] });
         let watching = json!({ "said": "when the landing finishes", "topic": "the landing has finished", "agent": true });
-        let landing = thread(1, json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00Z", "wakeWhen": watching, "looseEnds": unlanded }));
-        let landed = thread(2, json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00Z", "wakeWhen": watching, "looseEnds": { "seq": 4, "ends": [] } }));
-        let mikes_own = thread(3, json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "looseEnds": unlanded }));
-        let mikes_words = thread(4, json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00Z", "wakeWhen": { "said": "next time I talk about billing", "topic": "billing" }, "looseEnds": unlanded }));
-        let a_time = thread(5, json!({ "needs": "nothing", "snoozedUntil": "2026-11-08T00:00:00Z", "wakeWhen": { "said": "tomorrow morning", "agent": true }, "looseEnds": unlanded }));
+        let landing = thread(
+            1,
+            json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00Z", "wakeWhen": watching, "looseEnds": unlanded }),
+        );
+        let landed = thread(
+            2,
+            json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00Z", "wakeWhen": watching, "looseEnds": { "seq": 4, "ends": [] } }),
+        );
+        let mikes_own = thread(
+            3,
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-07T00:00:00Z", "looseEnds": unlanded }),
+        );
+        let mikes_words = thread(
+            4,
+            json!({ "needs": "nothing", "snoozedUntil": "9999-12-31T00:00:00Z", "wakeWhen": { "said": "next time I talk about billing", "topic": "billing" }, "looseEnds": unlanded }),
+        );
+        let a_time = thread(
+            5,
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-08T00:00:00Z", "wakeWhen": { "said": "tomorrow morning", "agent": true }, "looseEnds": unlanded }),
+        );
         let s = sections(&[landing, landed, mikes_own, mikes_words, a_time], now());
-        assert_eq!(ids(&s, "running"), ["t1"], "waiting to land is still at its job");
-        assert_eq!(ids(&s, "hibernating"), ["t3", "t5", "t4", "t2"], "nothing left to land, Mike hibernated it himself, or only a time");
+        assert_eq!(
+            ids(&s, "running"),
+            ["t1"],
+            "waiting to land is still at its job"
+        );
+        assert_eq!(
+            ids(&s, "hibernating"),
+            ["t3", "t5", "t4", "t2"],
+            "nothing left to land, Mike hibernated it himself, or only a time"
+        );
     }
 
     #[test]
@@ -1118,13 +1557,20 @@ mod tests {
 
     #[test]
     fn a_thread_stuck_on_an_answer_comes_first_then_newest() {
-        let all = [thread(1, json!({})), thread(2, json!({})), thread(3, json!({ "status": "waiting" }))];
+        let all = [
+            thread(1, json!({})),
+            thread(2, json!({})),
+            thread(3, json!({ "status": "waiting" })),
+        ];
         assert_eq!(ids(&sections(&all, now()), "inbox"), ["t3", "t2", "t1"]);
     }
 
     #[test]
     fn sub_agents_still_going_keep_it_running() {
-        let all = [thread(1, json!({ "needs": "you", "background": [{ "kind": "agent" }] }))];
+        let all = [thread(
+            1,
+            json!({ "needs": "you", "background": [{ "kind": "agent" }] }),
+        )];
         assert_eq!(ids(&sections(&all, now()), "running"), ["t1"]);
     }
 
@@ -1133,7 +1579,13 @@ mod tests {
         assert!(thread(1, json!({ "lastSeq": 12 })).unread());
         assert!(!thread(1, json!({})).unread());
         let none: [ThreadSummary; 0] = [];
-        assert_eq!(sections(&none, now()).iter().map(|s| s.key).collect::<Vec<_>>(), ["backlog", "inbox"]);
+        assert_eq!(
+            sections(&none, now())
+                .iter()
+                .map(|s| s.key)
+                .collect::<Vec<_>>(),
+            ["backlog", "inbox"]
+        );
     }
 
     #[test]
@@ -1142,7 +1594,10 @@ mod tests {
         assert_eq!(parse_ms("1970-01-01T00:00:01.25Z"), Some(1250));
         assert_eq!(parse_ms("1970-01-01T00:00:01.123456Z"), Some(1123));
         assert_eq!(parse_ms("1970-01-01T00:00:01.Z"), Some(1000));
-        assert_eq!(parse_ms("2026-11-06T12:00:00Z").unwrap() - parse_ms("2026-11-06T11:00:00Z").unwrap(), 3_600_000);
+        assert_eq!(
+            parse_ms("2026-11-06T12:00:00Z").unwrap() - parse_ms("2026-11-06T11:00:00Z").unwrap(),
+            3_600_000
+        );
         assert_eq!(folder_name("/home/alex/dev/x/"), "x");
         assert_eq!(folder_name(r"C:\Users\alex\dev\y"), "y");
         assert_eq!(ago(now() - 5 * 60_000, now()), "5m");
@@ -1150,20 +1605,33 @@ mod tests {
 
     #[test]
     fn model_names() {
-        assert_eq!(model_label("claude", Some("claude-opus-5-5")), "Claude Opus 5.5");
-        assert_eq!(model_label("claude", Some("claude-fable-5-1[1m]")), "Claude Fable 5.1");
+        assert_eq!(
+            model_label("claude", Some("claude-opus-5-5")),
+            "Claude Opus 5.5"
+        );
+        assert_eq!(
+            model_label("claude", Some("claude-fable-5-1[1m]")),
+            "Claude Fable 5.1"
+        );
         assert_eq!(model_label("claude", Some("opus")), "Claude Opus");
         assert_eq!(model_label("codex", Some("gpt-6-astra")), "GPT-6 Astra");
         assert_eq!(model_label("codex", Some("gpt-6.1-sol")), "GPT-6.1 Sol");
         assert_eq!(model_label("claude", None), "Claude");
-        assert_eq!(model_label("codex", Some("something-else")), "something-else");
+        assert_eq!(
+            model_label("codex", Some("something-else")),
+            "something-else"
+        );
     }
 
     // A star that fails rolls back; one that fails after a thread.updated
     // brought the thread's newer state leaves that state standing.
     #[test]
     fn a_failed_change_rolls_back_only_while_the_row_is_still_its_guess() {
-        let before = ThreadSummary { id: "t".into(), status: "running".into(), ..Default::default() };
+        let before = ThreadSummary {
+            id: "t".into(),
+            status: "running".into(),
+            ..Default::default()
+        };
         let mut guess = before.clone();
         guess.starred_at = Some("2026-11-13T00:00:00Z".into());
         let mut threads: HashMap<String, ThreadSummary> = HashMap::new();

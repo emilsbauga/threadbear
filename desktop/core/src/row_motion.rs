@@ -45,7 +45,13 @@ impl Glides {
     /// else is set to glide there and one that wasn't there fades in, unless
     /// it's `quiet` (a section folding moves its rows itself). Nothing moves
     /// on the first rows, nor under Reduce Motion (`reduce`).
-    pub fn rows_drawn(&mut self, rows: Vec<String>, quiet: &HashSet<String>, reduce: bool, now: Instant) {
+    pub fn rows_drawn(
+        &mut self,
+        rows: Vec<String>,
+        quiet: &HashSet<String>,
+        reduce: bool,
+        now: Instant,
+    ) {
         let Some(before) = self.last.as_ref() else {
             self.last = Some(rows);
             return;
@@ -89,7 +95,9 @@ impl Glides {
                 let elapsed = now.saturating_duration_since(start);
                 let left = spring(elapsed.as_secs_f32());
                 // Done once it's settled to under a quarter of a point.
-                if elapsed >= GLIDE_LIMIT || (elapsed > Duration::from_millis(200) && (left * delta).abs() < 0.25) {
+                if elapsed >= GLIDE_LIMIT
+                    || (elapsed > Duration::from_millis(200) && (left * delta).abs() < 0.25)
+                {
                     self.gliding.remove(id);
                     0.
                 } else {
@@ -122,10 +130,18 @@ mod tests {
 
     #[test]
     fn a_glide_settles_quickly_with_a_touch_of_overshoot() {
-        assert!((spring(0.) - 1.).abs() < 1e-6, "it starts where the row was");
+        assert!(
+            (spring(0.) - 1.).abs() < 1e-6,
+            "it starts where the row was"
+        );
         assert!(spring(0.16) < 0.3, "most of the way there in half the time");
-        let lowest = (0..60).map(|i| spring(i as f32 / 100.)).fold(f32::MAX, f32::min);
-        assert!(lowest < 0. && lowest > -0.05, "a little past its place, not a bounce: {lowest}");
+        let lowest = (0..60)
+            .map(|i| spring(i as f32 / 100.))
+            .fold(f32::MAX, f32::min);
+        assert!(
+            lowest < 0. && lowest > -0.05,
+            "a little past its place, not a bounce: {lowest}"
+        );
         assert!(spring(0.5).abs() < 0.01, "settled by half a second");
     }
 
@@ -139,7 +155,10 @@ mod tests {
         // b goes to the top and c turns up.
         glides.rows_drawn(ids(&["b", "c", "a"]), &HashSet::new(), false, now);
         assert!(glides.arrived("c", now).is_some());
-        assert!(glides.arrived("c", now + ARRIVE).is_none(), "faded in by then");
+        assert!(
+            glides.arrived("c", now + ARRIVE).is_none(),
+            "faded in by then"
+        );
         // Laid out at the top now, b is painted where it was and eases up.
         assert_eq!(glides.place("b", 0., now), 51.);
         assert!(glides.place("b", 0., now + Duration::from_millis(160)) < 51. * 0.3);
@@ -167,13 +186,19 @@ mod tests {
         let now = Instant::now();
         let mut glides = Glides::default();
         glides.rows_drawn(ids(&["a"]), &HashSet::new(), false, now);
-        assert!(glides.arrived("a", now).is_none(), "the first rows don't fade in");
+        assert!(
+            glides.arrived("a", now).is_none(),
+            "the first rows don't fade in"
+        );
         glides.place("a", 0., now);
         glides.rows_drawn(ids(&["b", "a"]), &HashSet::new(), true, now);
         assert!(glides.arrived("b", now).is_none());
         assert_eq!(glides.place("a", 51., now), 0.);
         let quiet: HashSet<String> = ["c".to_string()].into();
         glides.rows_drawn(ids(&["b", "a", "c"]), &quiet, false, now);
-        assert!(glides.arrived("c", now).is_none(), "a folding section's rows have its own motion");
+        assert!(
+            glides.arrived("c", now).is_none(),
+            "a folding section's rows have its own motion"
+        );
     }
 }

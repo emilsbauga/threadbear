@@ -18,10 +18,10 @@
 use crate::app::Threadbear;
 use crate::highlights::{icon, palette, tipped, tipped_as, Palette};
 use crate::push_button::PushButton;
+use crate::spinner::Spinner;
 use crate::style::{self, px};
 use crate::web_runtime::{self, Engine};
 use futures::StreamExt as _;
-use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -101,6 +101,9 @@ pub(crate) struct WebPanels {
     client: Option<Arc<Client>>,
     /// Links that left a panel for the browser, newest last (the dump's).
     left: Vec<String>,
+    /// What each page the app made does with a click on one of its own
+    /// links (`made_page`), by the page's key.
+    asks: HashMap<String, Rc<dyn Fn(&str, &mut App)>>,
     /// Whether something could be over the pages in the last frame.
     covered: bool,
 }
@@ -110,7 +113,18 @@ impl Global for Shared {}
 
 pub(crate) fn init(cx: &mut App) {
     let selections = load_selections();
-    let entity = cx.new(|_| WebPanels { pages: Vec::new(), failed: HashMap::new(), making: HashSet::new(), convex: HashMap::new(), selections, renewing: HashSet::new(), client: None, left: Vec::new(), covered: false });
+    let entity = cx.new(|_| WebPanels {
+        pages: Vec::new(),
+        failed: HashMap::new(),
+        making: HashSet::new(),
+        convex: HashMap::new(),
+        selections,
+        renewing: HashSet::new(),
+        client: None,
+        left: Vec::new(),
+        asks: HashMap::new(),
+        covered: false,
+    });
     cx.set_global(Shared(entity.clone()));
     // The app draws the panels, so it's told when a page, a Convex panel or
     // the runtime changes.
@@ -121,14 +135,16 @@ pub(crate) fn init(cx: &mut App) {
         }
     })
     .detach();
-    cx.observe_new(move |app: &mut Threadbear, _: Option<&mut Window>, cx: &mut Context<Threadbear>| {
-        let client = app.client.clone();
-        entity.update(cx, |p, _| p.client = Some(client));
-        cx.observe(&entity, |_, _, cx| cx.notify()).detach();
-        if let Some(runtime) = web_runtime::runtime(cx) {
-            cx.observe(&runtime, |_, _, cx| cx.notify()).detach();
-        }
-    })
+    cx.observe_new(
+        move |app: &mut Threadbear, _: Option<&mut Window>, cx: &mut Context<Threadbear>| {
+            let client = app.client.clone();
+            entity.update(cx, |p, _| p.client = Some(client));
+            cx.observe(&entity, |_, _, cx| cx.notify()).detach();
+            if let Some(runtime) = web_runtime::runtime(cx) {
+                cx.observe(&runtime, |_, _, cx| cx.notify()).detach();
+            }
+        },
+    )
     .detach();
 }
 
@@ -147,7 +163,9 @@ thread_local! {
 /// or typed in within the last minute, counts as being typed in (core's
 /// `web_page_holds`). Asked once a second (app_update.rs).
 pub(crate) fn holds_a_restart(cx: &App) -> bool {
-    let Some(panels) = panels(cx) else { return false };
+    let Some(panels) = panels(cx) else {
+        return false;
+    };
     let now = std::time::Instant::now();
     USED.with(|used| {
         let mut used = used.borrow_mut();
@@ -188,9 +206,17 @@ fn edit_key(keystroke: &Keystroke, cx: &App) -> bool {
         ("z", true) => "redo",
         _ => return false,
     };
-    let Some(panels) = panels(cx) else { return false };
+    let Some(panels) = panels(cx) else {
+        return false;
+    };
     let p = panels.read(cx);
-    let Some(kept) = p.pages.iter().find(|k| !k.page.hidden() && k.page.has_keyboard()) else { return false };
+    let Some(kept) = p
+        .pages
+        .iter()
+        .find(|k| !k.page.hidden() && k.page.has_keyboard())
+    else {
+        return false;
+    };
     kept.page.edit(command);
     EDITS.with(|e| {
         let mut e = e.borrow_mut();
@@ -226,7 +252,15 @@ pub(crate) fn sweeper(menu_at: Option<Point<Pixels>>, popover: bool) -> AnyEleme
             // from a page that had it, as a click in another view takes it in
             // any Mac app. GPUI's view never asks for it on a click itself.
             window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
-                if phase.capture() && threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut())) == threadbear_web::KeyboardHolder::Page {
+                if phase.capture()
+                    // SAFETY: null or the content view of `window`, open while
+                    // its event is handled, on the main thread.
+                    && unsafe {
+                        threadbear_web::keyboard_holder(
+                            native_view(window).unwrap_or(std::ptr::null_mut()),
+                        )
+                    } == threadbear_web::KeyboardHolder::Page
+                {
                     keyboard_to_app(window);
                 }
             });
@@ -246,33 +280,71 @@ pub(crate) fn sweeper(menu_at: Option<Point<Pixels>>, popover: bool) -> AnyEleme
 /// does this.
 pub(crate) fn keyboard_to_app(window: &Window) {
     if let Some(view) = native_view(window) {
-        threadbear_web::take_keyboard(view);
+        // SAFETY: the content view of `window`, open while it's borrowed
+        // here, on the main thread.
+        unsafe { threadbear_web::take_keyboard(view) };
     }
 }
 
 /// The automation's `native-keys`: `text` typed through AppKit, so the keys
 /// go wherever AppKit sends a person's (`keyboard` in the dump).
-pub(crate) fn send_keys(window: AnyWindowHandle, text: &str, cx: &mut AsyncApp) -> Result<(), String> {
-    let view = cx.update_window(window, |_, window, _| native_view(window).map(|v| v as usize)).map_err(|e| e.to_string())?.ok_or("the window has no view")?;
-    threadbear_web::send_keys(view as *mut c_void, text);
+pub(crate) fn send_keys(
+    window: AnyWindowHandle,
+    text: &str,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let view = cx
+        .update_window(window, |_, window, _| {
+            native_view(window).map(|v| v as usize)
+        })
+        .map_err(|e| e.to_string())?
+        .ok_or("the window has no view")?;
+    // SAFETY: the content view of `window`, read just now in this task on the
+    // main thread, with nothing awaited in between for it to close.
+    unsafe { threadbear_web::send_keys(view as *mut c_void, text) };
     Ok(())
 }
 
 /// The automation's `native-click`: a click at (`x`, `y`) in the window,
 /// through AppKit.
 /// Says what AppKit hit, and where the pages' views are in the window.
-pub(crate) fn send_click(window: AnyWindowHandle, x: f32, y: f32, cx: &mut AsyncApp) -> Result<String, String> {
-    let view = cx.update_window(window, |_, window, _| native_view(window).map(|v| v as usize)).map_err(|e| e.to_string())?.ok_or("the window has no view")?;
-    Ok(threadbear_web::send_click(view as *mut c_void, x, y))
+pub(crate) fn send_click(
+    window: AnyWindowHandle,
+    x: f32,
+    y: f32,
+    cx: &mut AsyncApp,
+) -> Result<String, String> {
+    let view = cx
+        .update_window(window, |_, window, _| {
+            native_view(window).map(|v| v as usize)
+        })
+        .map_err(|e| e.to_string())?
+        .ok_or("the window has no view")?;
+    // SAFETY: the content view of `window`, read just now in this task on the
+    // main thread, with nothing awaited in between for it to close.
+    Ok(unsafe { threadbear_web::send_click(view as *mut c_void, x, y) })
 }
 
 /// Who has the main window's keyboard, for the dump: "app" (GPUI's own
 /// view), "page", "hidden page", "window" (nobody) or "other".
 pub(crate) fn keyboard_dump(window: &Window) -> Value {
-    json!(threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut())).name())
+    json!(
+        // SAFETY: null or the content view of `window`, open while it's
+        // borrowed here, on the main thread.
+        unsafe {
+            threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut()))
+        }
+        .name()
+    )
 }
 
-fn sweep(frame: u64, menu_at: Option<Point<Pixels>>, popover: bool, window: &mut Window, cx: &mut App) {
+fn sweep(
+    frame: u64,
+    menu_at: Option<Point<Pixels>>,
+    popover: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(panels) = panels(cx) else { return };
     let modal = window.has_active_dialog(cx) || window.has_active_sheet(cx) || popover;
     let height = f32::from(window.viewport_size().height);
@@ -286,15 +358,30 @@ fn sweep(frame: u64, menu_at: Option<Point<Pixels>>, popover: bool, window: &mut
         let (stamp, b) = kept.drawn.get();
         // A menu opens down and to the right of where it was asked for, about
         // this wide: one reaching the page's column covers it.
-        let menu_over = menu_at.is_some_and(|at| at.x + px(300.) > b.origin.x && at.x < b.origin.x + b.size.width);
+        let menu_over = menu_at
+            .is_some_and(|at| at.x + px(300.) > b.origin.x && at.x < b.origin.x + b.size.width);
         // One not drawn yet could be anywhere, so it covers the page until
         // its first frame says where it is.
-        let kit_over = kit_menus.iter().any(|m| m.size.width <= px(0.) || (m.origin.x < b.origin.x + b.size.width && m.origin.x + m.size.width > b.origin.x));
+        let kit_over = kit_menus.iter().any(|m| {
+            m.size.width <= px(0.)
+                || (m.origin.x < b.origin.x + b.size.width
+                    && m.origin.x + m.size.width > b.origin.x)
+        });
         let covered = modal || menu_over || kit_over;
         covered_any |= covered && stamp == frame;
         kit_covered |= kit_over && stamp == frame;
-        if stamp == frame && !covered && f32::from(b.size.width) >= 1. && f32::from(b.size.height) >= 1. {
-            kept.page.set_bounds(f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height), height);
+        if stamp == frame
+            && !covered
+            && f32::from(b.size.width) >= 1.
+            && f32::from(b.size.height) >= 1.
+        {
+            kept.page.set_bounds(
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+                height,
+            );
             kept.page.set_hidden(false);
         } else {
             kept.page.set_hidden(true);
@@ -312,8 +399,15 @@ fn sweep(frame: u64, menu_at: Option<Point<Pixels>>, popover: bool, window: &mut
     // and ⌘V still reaches GPUI (Mike, 12 Nov, a dictated paste and then
     // nothing he typed; features/tools/real-typing.ts plays it with real keys).
     use threadbear_web::KeyboardHolder;
-    let holder = threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut()));
-    if matches!(holder, KeyboardHolder::HiddenPage | KeyboardHolder::Window | KeyboardHolder::Other) {
+    // SAFETY: null or the content view of `window`, open while it's borrowed
+    // here, on the main thread.
+    let holder = unsafe {
+        threadbear_web::keyboard_holder(native_view(window).unwrap_or(std::ptr::null_mut()))
+    };
+    if matches!(
+        holder,
+        KeyboardHolder::HiddenPage | KeyboardHolder::Window | KeyboardHolder::Other
+    ) {
         keyboard_to_app(window);
     }
 }
@@ -354,7 +448,14 @@ impl WebPanels {
 
     /// Makes the page for `key` in `parent`, closing the one used longest ago
     /// if that makes more than four.
-    fn make(&mut self, key: String, url: String, kind: PanelKind, parent: *mut c_void, cx: &mut Context<Self>) {
+    fn make(
+        &mut self,
+        key: String,
+        url: String,
+        kind: PanelKind,
+        parent: *mut c_void,
+        cx: &mut Context<Self>,
+    ) {
         self.making.remove(&key);
         if self.page(&key).is_some() {
             return;
@@ -364,16 +465,26 @@ impl WebPanels {
                 let named = key.clone();
                 let task = cx.spawn(async move |this, cx| {
                     while let Some(event) = events.next().await {
-                        if this.update(cx, |p, cx| p.page_said(&named, event, cx)).is_err() {
+                        if this
+                            .update(cx, |p, cx| p.page_said(&named, event, cx))
+                            .is_err()
+                        {
                             break;
                         }
                     }
                 });
                 self.failed.remove(&key);
-                self.pages.push(Kept { key, page: Rc::new(page), drawn: Rc::new(Cell::new((0, Bounds::default()))), _events: task });
+                self.pages.push(Kept {
+                    key,
+                    page: Rc::new(page),
+                    drawn: Rc::new(Cell::new((0, Bounds::default()))),
+                    _events: task,
+                });
                 while self.pages.len() > CAPACITY {
                     // Never the one just made: it's last.
-                    self.pages.remove(0).page.set_hidden(true);
+                    let closed = self.pages.remove(0);
+                    closed.page.set_hidden(true);
+                    self.asks.remove(&closed.key);
                 }
             }
             Err(why) => {
@@ -395,8 +506,13 @@ impl WebPanels {
                 crate::open_gate::open_web(&url, cx);
             }
             PanelEvent::Changed => {}
+            // Once this update is over: what it does may come back here.
+            PanelEvent::Asked(rest) => {
+                if let Some(ask) = self.asks.get(key).cloned() {
+                    cx.defer(move |cx| ask(&rest, cx));
+                }
+            }
         }
-        let _ = key;
         cx.notify();
     }
 
@@ -409,6 +525,9 @@ impl WebPanels {
         }
         self.pages.retain(|k| k.key != key);
         self.failed.remove(key);
+        self.asks.remove(key);
+        // One asked for this frame and closed before it was made isn't.
+        self.making.remove(key);
     }
 }
 
@@ -417,7 +536,13 @@ impl WebPanels {
 /// app closes a preview opened over it). A page not made yet loads fresh
 /// when it's drawn, so there's nothing to do for it.
 pub(crate) fn reload_requested(thread: &ThreadSummary, panel_id: &str, cx: &mut App) {
-    let Some(panel) = thread.panels().into_iter().find(|p| p.id == panel_id && p.kind == "url") else { return };
+    let Some(panel) = thread
+        .panels()
+        .into_iter()
+        .find(|p| p.id == panel_id && p.kind == "url")
+    else {
+        return;
+    };
     let Some(panels) = panels(cx) else { return };
     let key = match &panel.convex {
         Some(configured) => format!("convex:{}", panels.read(cx).selected(configured)),
@@ -452,9 +577,22 @@ fn page_key(key: String, pinned: bool) -> String {
 /// The pane's slot for a page: a page kept from before, placed here this
 /// frame, or (the first time) one made just after it. `parent` is the
 /// window's view.
-fn slot(panels: &Entity<WebPanels>, key: &str, url: &str, kind: impl FnOnce() -> PanelKind, parent: *mut c_void, open: Option<Opener>, cx: &mut App) -> AnyElement {
+fn slot(
+    panels: &Entity<WebPanels>,
+    key: &str,
+    url: &str,
+    kind: impl FnOnce() -> PanelKind,
+    parent: *mut c_void,
+    open: Option<Opener>,
+    cx: &mut App,
+) -> AnyElement {
     if let Some(drawn) = panels.update(cx, |p, _| p.touch(key)) {
-        return canvas(move |bounds, _, _| drawn.set((frame_now(), bounds)), |_, _, _, _| {}).size_full().into_any_element();
+        return canvas(
+            move |bounds, _, _| drawn.set((frame_now(), bounds)),
+            |_, _, _, _| {},
+        )
+        .size_full()
+        .into_any_element();
     }
     if let Some(why) = panels.read(cx).failed.get(key).cloned() {
         return away(&format!("Couldn't show this page: {why}"), open, cx);
@@ -478,8 +616,24 @@ thread_local! {
 /// folder's named assets (threadbear_web::preview_rules), with its scripts on
 /// only for `scripts_for`'s bytes. `real` is the file the open gate found;
 /// `opened` makes opening it again a fresh page, read again.
-pub(crate) fn local_page(real: &str, scripts_for: Option<&str>, opened: u64, main: bool, window: &mut Window, cx: &mut App) -> AnyElement {
-    sealed_page(&format!("preview:{opened}:{}:{real}", scripts_for.unwrap_or("")), real, scripts_for, false, false, main, window, cx)
+pub(crate) fn local_page(
+    real: &str,
+    scripts_for: Option<&str>,
+    opened: u64,
+    main: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    sealed_page(
+        &format!("preview:{opened}:{}:{real}", scripts_for.unwrap_or("")),
+        real,
+        scripts_for,
+        false,
+        false,
+        main,
+        window,
+        cx,
+    )
 }
 
 /// A live page's card in the transcript (live_pages.rs): the same sealed
@@ -488,8 +642,106 @@ pub(crate) fn local_page(real: &str, scripts_for: Option<&str>, opened: u64, mai
 /// native view can't be cut to the scrolled list, so partly out it hides,
 /// and Chromium pauses a hidden page. `in_pane`: the same page opened big in
 /// the side pane (Full size), placed whole as the pane's other pages are.
-pub(crate) fn live_page(real: &str, digest: &str, run: u64, in_pane: bool, main: bool, window: &mut Window, cx: &mut App) -> AnyElement {
-    sealed_page(&live_key(real, digest, run), real, Some(digest), !in_pane, true, main, window, cx)
+pub(crate) fn live_page(
+    real: &str,
+    digest: &str,
+    run: u64,
+    in_pane: bool,
+    main: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    sealed_page(
+        &live_key(real, digest, run),
+        real,
+        Some(digest),
+        !in_pane,
+        true,
+        main,
+        window,
+        cx,
+    )
+}
+
+/// A page the app made itself, in the pane (a design review's,
+/// review_pane.rs): sealed like any local page, its scripts off, answered
+/// from `site` (`Site::made`). A click on one of its own links comes to
+/// `asked` with what the link named (threadbear_web::preview_rules::asked),
+/// and goes nowhere. One view a `key`.
+pub(crate) fn made_page(
+    key: &str,
+    site: Arc<threadbear_core::local_preview::Site>,
+    asked: Rc<dyn Fn(&str, &mut App)>,
+    main: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let Some(panels) = panels(cx) else {
+        return note("This page can't show here.", cx);
+    };
+    let parent = match running("hl-page", "this page", main, None, window, cx) {
+        Ok(parent) => parent,
+        Err(instead) => return instead,
+    };
+    let key = key.to_owned();
+    if let Some(drawn) = panels.update(cx, |p, _| p.touch(&key)) {
+        return placed(drawn, false);
+    }
+    if let Some(why) = panels.read(cx).failed.get(&key).cloned() {
+        return note(&format!("Couldn't show this page: {why}"), cx);
+    }
+    if panels.update(cx, |p, _| p.making.insert(key.clone())) {
+        let preview = threadbear_web::PreviewSite::made(site);
+        let (panels, url) = (panels.clone(), preview.page_url());
+        // After this frame, as a panel's page is made.
+        cx.defer(move |cx| {
+            panels.update(cx, |p, cx| {
+                // Closed in the meantime (`forget`): no view left behind.
+                if !p.making.contains(&key) {
+                    return;
+                }
+                p.asks.insert(key.clone(), asked);
+                p.make(key, url, PanelKind::Preview(preview), parent, cx);
+            })
+        });
+    }
+    div().size_full().into_any_element()
+}
+
+/// Loads a made page again where it is, after its site's document changed
+/// (`Site::remake`). Nothing for a page not made yet: it loads the new one.
+pub(crate) fn reload_made_page(key: &str, cx: &App) {
+    if let Some(page) = panels(cx).and_then(|p| p.read(cx).page(key).cloned()) {
+        page.reload();
+    }
+}
+
+/// Runs a script of the app's own in a made page, through its DevTools (the
+/// page's own scripts stay off): a tick set where the page stands. If it
+/// doesn't answer true, the page is loaded again, which shows the same
+/// from its top. Nothing for a page not made yet: it loads as it now is.
+pub(crate) fn run_in_made_page(key: &str, script: String, cx: &mut App) {
+    let Some(page) = panels(cx).and_then(|p| p.read(cx).page(key).cloned()) else {
+        return;
+    };
+    let answer = page.devtools(
+        "Runtime.evaluate",
+        json!({ "expression": script, "returnByValue": true }),
+    );
+    cx.spawn(async move |_| {
+        let done = matches!(answer.await, Ok(Ok(said)) if said["result"]["value"] == json!(true));
+        if !done {
+            page.reload();
+        }
+    })
+    .detach();
+}
+
+/// Closes a made page's view, when what it showed is closed.
+pub(crate) fn close_made_page(key: &str, cx: &mut App) {
+    if let Some(panels) = panels(cx) {
+        panels.update(cx, |p, _| p.forget(key));
+    }
 }
 
 thread_local! {
@@ -520,7 +772,12 @@ pub(crate) fn close_live_pages(keep: Option<(&str, &str, u64)>, cx: &mut App) {
     let Some(panels) = panels(cx) else { return };
     let keep = keep.map(|(real, digest, run)| live_key(real, digest, run));
     panels.update(cx, |p, _| {
-        let gone: Vec<String> = p.pages.iter().map(|k| k.key.clone()).filter(|k| k.starts_with("live:") && Some(k) != keep.as_ref()).collect();
+        let gone: Vec<String> = p
+            .pages
+            .iter()
+            .map(|k| k.key.clone())
+            .filter(|k| k.starts_with("live:") && Some(k) != keep.as_ref())
+            .collect();
         for key in gone {
             p.forget(&key);
         }
@@ -553,8 +810,23 @@ fn placed(drawn: Rc<Cell<(u64, Bounds<Pixels>)>>, clip: bool) -> AnyElement {
     .into_any_element()
 }
 
-fn sealed_page(key: &str, real: &str, scripts_for: Option<&str>, clip: bool, live: bool, main: bool, window: &mut Window, cx: &mut App) -> AnyElement {
-    let Some(panels) = panels(cx) else { return note("This page can't show here.", cx) };
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn sealed_page(
+    key: &str,
+    real: &str,
+    scripts_for: Option<&str>,
+    clip: bool,
+    live: bool,
+    main: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let Some(panels) = panels(cx) else {
+        return note("This page can't show here.", cx);
+    };
     let parent = match running("hl-page", "this page", main, None, window, cx) {
         Ok(parent) => parent,
         Err(instead) => {
@@ -573,16 +845,30 @@ fn sealed_page(key: &str, real: &str, scripts_for: Option<&str>, clip: bool, liv
     if panels.update(cx, |p, _| p.making.insert(key.clone())) {
         // A live page gets its own bytes and nothing beside it.
         let site = match (live, scripts_for) {
-            (true, Some(digest)) => threadbear_core::local_preview::Site::page_only(std::path::Path::new(real), digest.to_owned()),
-            _ => threadbear_core::local_preview::Site::new(std::path::Path::new(real), scripts_for.map(str::to_owned)),
+            (true, Some(digest)) => threadbear_core::local_preview::Site::page_only(
+                std::path::Path::new(real),
+                digest.to_owned(),
+            ),
+            _ => threadbear_core::local_preview::Site::new(
+                std::path::Path::new(real),
+                scripts_for.map(str::to_owned),
+            ),
         };
         match site {
             Some(site) => {
                 let site = Arc::new(site);
-                let preview = if live { threadbear_web::PreviewSite::live(site) } else { threadbear_web::PreviewSite::new(site, scripts_for.is_some()) };
+                let preview = if live {
+                    threadbear_web::PreviewSite::live(site)
+                } else {
+                    threadbear_web::PreviewSite::new(site, scripts_for.is_some())
+                };
                 let (panels, url) = (panels.clone(), preview.page_url());
                 // After this frame, as a panel's page is made.
-                cx.defer(move |cx| panels.update(cx, |p, cx| p.make(key, url, PanelKind::Preview(preview), parent, cx)));
+                cx.defer(move |cx| {
+                    panels.update(cx, |p, cx| {
+                        p.make(key, url, PanelKind::Preview(preview), parent, cx)
+                    })
+                });
             }
             None => {
                 panels.update(cx, |p, cx| {
@@ -610,16 +896,38 @@ struct Opener {
 /// only when it changes). None for a panel that isn't a page.
 /// `pinned`: drawn in a pinned copy of the panel (pinned_panels.rs), with a
 /// page of its own.
-pub(crate) fn section(app: &Threadbear, thread: &ThreadSummary, panel_id: &str, pinned: bool, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let panel = thread.panels().into_iter().find(|p| p.id == panel_id && p.kind == "url")?;
+pub(crate) fn section(
+    app: &Threadbear,
+    thread: &ThreadSummary,
+    panel_id: &str,
+    pinned: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let panel = thread
+        .panels()
+        .into_iter()
+        .find(|p| p.id == panel_id && p.kind == "url")?;
     let panels = panels(cx)?;
     let main = window.window_handle() == app.main_window;
     let body = match &panel.convex {
-        Some(configured) => convex_view(&panels, thread, &panel, configured, main, pinned, window, cx),
+        Some(configured) => convex_view(
+            &panels, thread, &panel, configured, main, pinned, window, cx,
+        ),
         None => page_view(&panels, &panel, main, pinned, window, cx),
     };
-    let id = if pinned { format!("web-panel-pin-{}-{panel_id}", thread.id) } else { format!("web-panel-{panel_id}") };
-    Some(div().id(SharedString::from(id)).size_full().child(body).into_any_element())
+    let id = if pinned {
+        format!("web-panel-pin-{}-{panel_id}", thread.id)
+    } else {
+        format!("web-panel-{panel_id}")
+    };
+    Some(
+        div()
+            .id(SharedString::from(id))
+            .size_full()
+            .child(body)
+            .into_any_element(),
+    )
 }
 
 /// What a patch's url panel can be: a web page, or one of the app's own
@@ -629,43 +937,105 @@ fn loads_in_panel(url: &str) -> bool {
     threadbear_web::site(url).is_some() || url.starts_with("data:")
 }
 
-fn page_view(panels: &Entity<WebPanels>, panel: &Panel, main: bool, pinned: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+fn page_view(
+    panels: &Entity<WebPanels>,
+    panel: &Panel,
+    main: bool,
+    pinned: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let Some(url) = panel.url.clone().filter(|u| !u.trim().is_empty()) else {
         return note("This panel has no page to show.", cx);
     };
-    let open = Some(Opener { url: url.clone(), tip: "Open in browser".into() });
+    let open = Some(Opener {
+        url: url.clone(),
+        tip: "Open in browser".into(),
+    });
     if !loads_in_panel(&url) {
-        return away("This panel's page isn't a web page, so it opens outside the app.", open, cx);
+        return away(
+            "This panel's page isn't a web page, so it opens outside the app.",
+            open,
+            cx,
+        );
     }
-    match running(&format!("web-panel-{}", panel.id), "this panel's page", main, open.clone(), window, cx) {
-        Ok(parent) => slot(panels, &page_key(url.clone(), pinned), &url, || PanelKind::Patch, parent, open, cx),
+    match running(
+        &format!("web-panel-{}", panel.id),
+        "this panel's page",
+        main,
+        open.clone(),
+        window,
+        cx,
+    ) {
+        Ok(parent) => slot(
+            panels,
+            &page_key(url.clone(), pinned),
+            &url,
+            || PanelKind::Patch,
+            parent,
+            open,
+            cx,
+        ),
         Err(instead) => instead,
     }
 }
 
 /// The window's view once Chromium's running here, or what to show until it
 /// is: the question, why not, or a note while it starts.
-fn running(id: &str, wants: &str, main: bool, open: Option<Opener>, window: &mut Window, cx: &mut App) -> Result<*mut c_void, AnyElement> {
+fn running(
+    id: &str,
+    wants: &str,
+    main: bool,
+    open: Option<Opener>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<*mut c_void, AnyElement> {
     if !main {
         // Its view is one per page, kept in the main window.
-        return Err(away("This panel's page shows when it's in the main window.", open, cx));
+        return Err(away(
+            "This panel's page shows when it's in the main window.",
+            open,
+            cx,
+        ));
     }
-    let Some(runtime) = web_runtime::runtime(cx) else { return Err(away("There's no web runtime here, so this page opens in your browser.", open, cx)) };
+    let Some(runtime) = web_runtime::runtime(cx) else {
+        return Err(away(
+            "There's no web runtime here, so this page opens in your browser.",
+            open,
+            cx,
+        ));
+    };
     if runtime.read(cx).state == State::Ready {
         if runtime.update(cx, |r, cx| r.ensure_engine(cx)) {
-            return native_view(window).ok_or_else(|| away("The window has no view to show the page in.", open, cx));
+            return native_view(window)
+                .ok_or_else(|| away("The window has no view to show the page in.", open, cx));
         }
         return Err(match &runtime.read(cx).engine {
-            Engine::Failed(why) => away_with(&format!("The web runtime didn't start: {why}"), web_runtime::try_again_button("web-panel-try-again", cx), open, cx),
+            Engine::Failed(why) => away_with(
+                &format!("The web runtime didn't start: {why}"),
+                web_runtime::try_again_button("web-panel-try-again", cx),
+                open,
+                cx,
+            ),
             _ => starting(cx),
         });
     }
     if let Some(prompt) = web_runtime::prompt(id, wants, cx) {
         let p = palette(cx);
-        return Err(v_flex().size_full().items_center().justify_center().gap(px(14.)).p(px(24.)).child(div().max_w(px(320.)).child(prompt)).children(open.map(|o| open_button(&o, p, cx))).into_any_element());
+        return Err(v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap(px(14.))
+            .p(px(24.))
+            .child(div().max_w(px(320.)).child(prompt))
+            .children(open.map(|o| open_button(&o, p, cx)))
+            .into_any_element());
     }
     let why = match &runtime.read(cx).state {
-        State::Unavailable => "There's no web runtime for this system yet, so this page opens in your browser.",
+        State::Unavailable => {
+            "There's no web runtime for this system yet, so this page opens in your browser."
+        }
         _ => "This page shows here once the web runtime is installed (Settings > General).",
     };
     Err(away(why, open, cx))
@@ -679,7 +1049,12 @@ fn starting(cx: &App) -> AnyElement {
         .justify_center()
         .gap(px(10.))
         .child(Spinner::new().color(secondary).with_size(px(14.)))
-        .child(div().text_size(px(style::size::LABEL)).text_color(secondary).child("Starting the web runtime…"))
+        .child(
+            div()
+                .text_size(px(style::size::LABEL))
+                .text_color(secondary)
+                .child("Starting the web runtime…"),
+        )
         .into_any_element()
 }
 
@@ -702,14 +1077,28 @@ fn away_with(text: &str, button: Option<AnyElement>, open: Option<Opener>, cx: &
         .justify_center()
         .gap(px(12.))
         .p(px(24.))
-        .child(div().max_w(px(320.)).text_center().text_size(px(style::size::LABEL)).line_height(px(18.)).text_color(p.secondary).child(text.to_owned()))
-        .child(h_flex().gap(px(8.)).children(button).children(open.map(|o| open_button(&o, p, cx))))
+        .child(
+            div()
+                .max_w(px(320.))
+                .text_center()
+                .text_size(px(style::size::LABEL))
+                .line_height(px(18.))
+                .text_color(p.secondary)
+                .child(text.to_owned()),
+        )
+        .child(
+            h_flex()
+                .gap(px(8.))
+                .children(button)
+                .children(open.map(|o| open_button(&o, p, cx))),
+        )
         .into_any_element()
 }
 
 fn open_button(open: &Opener, _p: Palette, cx: &App) -> AnyElement {
     let url = open.url.clone();
-    PushButton::new("web-panel-open", "Open in browser", open.tip.clone()).render(cx, move |_, _, cx| crate::files::open_web(&url, cx))
+    PushButton::new("web-panel-open", "Open in browser", open.tip.clone())
+        .render(cx, move |_, _, cx| crate::files::open_web(&url, cx))
 }
 
 // ---------------------------------------------------------------- the bar
@@ -723,9 +1112,19 @@ pub(crate) fn bar_buttons(app: &Threadbear, panel_id: &str, cx: &mut App) -> Opt
         Some((thread, id)) => ((**app.threads.get(thread)?).clone(), id, true),
         None => (app.pane_thread()?, panel_id, false),
     };
-    let panel = thread.panels().into_iter().find(|p| p.id == panel_id && p.kind == "url")?;
+    let panel = thread
+        .panels()
+        .into_iter()
+        .find(|p| p.id == panel_id && p.kind == "url")?;
     // Over a preview the side pane draws its own bar.
-    if !pinned && app.side.read(cx).previews.get(&thread.id).is_some_and(|pv| pv.from == panel_id) {
+    if !pinned
+        && app
+            .side
+            .read(cx)
+            .previews
+            .get(&thread.id)
+            .is_some_and(|pv| pv.from == panel_id)
+    {
         return None;
     }
     let panels = panels(cx)?;
@@ -738,72 +1137,153 @@ pub(crate) fn bar_buttons(app: &Threadbear, panel_id: &str, cx: &mut App) -> Opt
         // A key and a reload only mean something with the dashboard here.
         let here = web_runtime::runtime(cx).is_some_and(|r| r.read(cx).engine == Engine::Running);
         if here {
-            let (renew, reload) = (panels.clone(), page.clone());
+            let (renew, reload) = (panels, page.clone());
             let deployment = selected.clone();
-            row = row.child(bar_button("web-bar-key", "key", format!("Make a new deploy key for {selected}, if the old one was revoked"), false, p, move |cx| {
-                renew.update(cx, |p, cx| p.renew(&deployment, cx));
-            }));
-            row = row.child(bar_button("web-bar-reload", "arrow.clockwise", "Reload panel".into(), page.as_ref().is_some_and(|pg| pg.loading()), p, move |_| {
-                if let Some(page) = &reload {
-                    page.reload();
-                }
-            }));
+            row = row.child(bar_button(
+                "web-bar-key",
+                "key",
+                format!("Make a new deploy key for {selected}, if the old one was revoked"),
+                false,
+                p,
+                move |cx| {
+                    renew.update(cx, |p, cx| p.renew(&deployment, cx));
+                },
+            ));
+            row = row.child(bar_button(
+                "web-bar-reload",
+                "arrow.clockwise",
+                "Reload panel".into(),
+                page.as_ref().is_some_and(|pg| pg.loading()),
+                p,
+                move |_| {
+                    if let Some(page) = &reload {
+                        page.reload();
+                    }
+                },
+            ));
         }
         if let Some(url) = convex::browser_url(&selected) {
-            row = row.child(bar_button("web-bar-open", "arrow.up.right", format!("Open {selected} in browser"), false, p, move |cx| {
-                crate::files::open_web(&url, cx);
-            }));
+            row = row.child(bar_button(
+                "web-bar-open",
+                "arrow.up.right",
+                format!("Open {selected} in browser"),
+                false,
+                p,
+                move |cx| {
+                    crate::files::open_web(&url, cx);
+                },
+            ));
         }
         return Some(row.into_any_element());
     }
-    let url = panel.url.clone().filter(|u| !u.trim().is_empty())?;
-    let page = panels.read(cx).page(&page_key(url.clone(), pinned)).cloned();
+    let url = panel.url.filter(|u| !u.trim().is_empty())?;
+    let page = panels
+        .read(cx)
+        .page(&page_key(url.clone(), pinned))
+        .cloned();
     // Its own page moved on to another (a same-site link, a script's
     // window.open): back a page at a time.
     if let Some(page) = page.clone().filter(|pg| pg.can_go_back()) {
-        row = row.child(bar_button("web-bar-back", "chevron.left", "Back".into(), false, p, move |_| page.go_back()));
+        row = row.child(bar_button(
+            "web-bar-back",
+            "chevron.left",
+            "Back".into(),
+            false,
+            p,
+            move |_| page.go_back(),
+        ));
     }
-    if let Some(page) = page.clone() {
+    if let Some(page) = page {
         let loading = page.loading();
-        row = row.child(bar_button("web-bar-reload", "arrow.clockwise", "Reload the panel's own page".into(), loading, p, move |_| page.reload()));
+        row = row.child(bar_button(
+            "web-bar-reload",
+            "arrow.clockwise",
+            "Reload the panel's own page".into(),
+            loading,
+            p,
+            move |_| page.reload(),
+        ));
     }
-    row = row.child(bar_button("web-bar-open", "arrow.up.right", "Open in browser".into(), false, p, move |cx| {
-        // The panel's page is the patch's to say: a web page opens, anything
-        // else goes through the gate's rules as any link does.
-        if loads_in_panel(&url) && !url.starts_with("data:") {
-            crate::files::open_web(&url, cx);
-        } else {
-            crate::open_gate::open_link(&url, crate::open_gate::Origin::OtherMac, "", cx);
-        }
-    }));
+    row = row.child(bar_button(
+        "web-bar-open",
+        "arrow.up.right",
+        "Open in browser".into(),
+        false,
+        p,
+        move |cx| {
+            // The panel's page is the patch's to say: a web page opens, anything
+            // else goes through the gate's rules as any link does.
+            if loads_in_panel(&url) && !url.starts_with("data:") {
+                crate::files::open_web(&url, cx);
+            } else {
+                crate::open_gate::open_link(&url, crate::open_gate::Origin::OtherMac, "", cx);
+            }
+        },
+    ));
     Some(row.into_any_element())
 }
 
 /// `PaneHeaderButton`: a 26-point square with its symbol, grey until the
 /// pointer's on it. `busy` shows a spinner in its place while what it
 /// started is under way (a reload), and still takes a click.
-fn bar_button(id: &'static str, symbol: &str, tip: String, busy: bool, p: Palette, action: impl Fn(&mut App) + 'static) -> AnyElement {
+fn bar_button(
+    id: &'static str,
+    symbol: &str,
+    tip: String,
+    busy: bool,
+    p: Palette,
+    action: impl Fn(&mut App) + 'static,
+) -> AnyElement {
     let hover = p.hover;
     let fg = p.fg;
-    let body: AnyElement = if busy { Spinner::new().color(p.secondary).with_size(px(11.)).into_any_element() } else { icon(symbol, style::size::LABEL, p.secondary).into_any_element() };
-    tipped(div().id(id).size(px(26.)).flex().flex_none().items_center().justify_center().rounded(px(6.)).hover(move |s| s.bg(hover).text_color(fg)).cursor_pointer().child(body), tip)
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(move |_, _, cx| action(cx))
-        .into_any_element()
+    let body: AnyElement = if busy {
+        Spinner::new()
+            .color(p.secondary)
+            .with_size(px(11.))
+            .into_any_element()
+    } else {
+        icon(symbol, style::size::LABEL, p.secondary).into_any_element()
+    };
+    tipped(
+        div()
+            .id(id)
+            .size(px(26.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .hover(move |s| s.bg(hover).text_color(fg))
+            .cursor_pointer()
+            .child(body),
+        tip,
+    )
+    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    .on_click(move |_, _, cx| action(cx))
+    .into_any_element()
 }
 
 // ---------------------------------------------------------------- Convex
 
 impl WebPanels {
     fn selected(&self, configured: &Deployment) -> String {
-        self.selections.get(&configured.deployment).cloned().unwrap_or_else(|| configured.deployment.clone())
+        self.selections
+            .get(&configured.deployment)
+            .cloned()
+            .unwrap_or_else(|| configured.deployment.clone())
     }
 
     fn select(&mut self, configured: &Deployment, deployment: &str, cx: &mut Context<Self>) {
-        self.selections.insert(configured.deployment.clone(), deployment.to_owned());
+        self.selections
+            .insert(configured.deployment.clone(), deployment.to_owned());
         save_selections(&self.selections);
         // Every panel showing that project now wants that deployment's key.
-        let states: Vec<String> = self.convex.iter().filter(|(_, s)| s.configured.deployment == configured.deployment).map(|(k, _)| k.clone()).collect();
+        let states: Vec<String> = self
+            .convex
+            .iter()
+            .filter(|(_, s)| s.configured.deployment == configured.deployment)
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in states {
             self.fetch(&key, cx);
         }
@@ -811,39 +1291,69 @@ impl WebPanels {
     }
 
     /// The panel's state, made (and its lookups started) the first time it's drawn.
-    fn ensure_convex(&mut self, state_key: &str, thread: &ThreadSummary, panel: &Panel, configured: &Deployment, keys: bool, cx: &mut Context<Self>) {
+    fn ensure_convex(
+        &mut self,
+        state_key: &str,
+        thread: &ThreadSummary,
+        panel: &Panel,
+        configured: &Deployment,
+        keys: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !self.convex.contains_key(state_key) {
-            self.convex.insert(state_key.to_owned(), ConvexState { thread: thread.id.clone(), panel: panel.id.clone(), configured: configured.clone(), loading_choices: true, ..Default::default() });
+            self.convex.insert(
+                state_key.to_owned(),
+                ConvexState {
+                    thread: thread.id.clone(),
+                    panel: panel.id.clone(),
+                    configured: configured.clone(),
+                    loading_choices: true,
+                    ..Default::default()
+                },
+            );
             self.load_choices(state_key, false, cx);
         }
         // A key only once there's a page to give it to: the runner makes
         // one on Convex the first time.
         let state = &self.convex[state_key];
         let wants = self.selected(configured);
-        let has = state.key.as_ref().is_some_and(|k| k.deployment == wants) || state.fetching.as_deref() == Some(wants.as_str()) || state.failure.is_some() || state.sign_in.is_some();
+        let has = state.key.as_ref().is_some_and(|k| k.deployment == wants)
+            || state.fetching.as_deref() == Some(wants.as_str())
+            || state.failure.is_some()
+            || state.sign_in.is_some();
         if keys && !has {
             self.fetch(state_key, cx);
         }
     }
 
     fn load_choices(&mut self, state_key: &str, refresh: bool, cx: &mut Context<Self>) {
-        let (Some(client), Some(state)) = (self.client.clone(), self.convex.get_mut(state_key)) else { return };
+        let (Some(client), Some(state)) = (self.client.clone(), self.convex.get_mut(state_key))
+        else {
+            return;
+        };
         state.loading_choices = true;
-        let params = json!({ "threadId": state.thread, "panelId": state.panel, "refresh": refresh });
+        let params =
+            json!({ "threadId": state.thread, "panelId": state.panel, "refresh": refresh });
         let state_key = state_key.to_owned();
         cx.spawn(async move |this, cx| {
             let answer = crate::call(client, "panels.convexDeployments", params).await;
             this.update(cx, |p, cx| {
                 let selected = p.convex.get(&state_key).map(|s| p.selected(&s.configured));
-                let Some(state) = p.convex.get_mut(&state_key) else { return };
-                match answer.map(|v| serde_json::from_value::<convex::Choices>(v).unwrap_or_default()) {
+                let Some(state) = p.convex.get_mut(&state_key) else {
+                    return;
+                };
+                match answer
+                    .map(|v| serde_json::from_value::<convex::Choices>(v).unwrap_or_default())
+                {
                     Ok(listed) => {
-                        state.choices = convex::with_configured(listed.deployments, &state.configured);
+                        state.choices =
+                            convex::with_configured(listed.deployments, &state.configured);
                         state.note = listed.note;
                     }
                     Err(e) => {
                         state.choices = convex::with_configured(Vec::new(), &state.configured);
-                        state.note = Some(format!("Couldn't load other deployments: {}", e.message));
+                        state.note =
+                            Some(format!("Couldn't load other deployments: {}", e.message));
                     }
                 }
                 state.loading_choices = false;
@@ -863,11 +1373,17 @@ impl WebPanels {
     /// Asks the runner for the shown deployment's key (`panels.convexKey`),
     /// renewing it if New deploy key was pressed for it.
     fn fetch(&mut self, state_key: &str, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else { return };
-        let Some(configured) = self.convex.get(state_key).map(|s| s.configured.clone()) else { return };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(configured) = self.convex.get(state_key).map(|s| s.configured.clone()) else {
+            return;
+        };
         let target = self.selected(&configured);
         let renew = self.renewing.remove(&target);
-        let Some(state) = self.convex.get_mut(state_key) else { return };
+        let Some(state) = self.convex.get_mut(state_key) else {
+            return;
+        };
         if renew || state.key.as_ref().is_some_and(|k| k.deployment != target) {
             state.key = None;
         }
@@ -879,9 +1395,13 @@ impl WebPanels {
             let answer = crate::call(client, "panels.convexKey", params).await;
             this.update(cx, |p, cx| {
                 let now = p.convex.get(&state_key).map(|s| p.selected(&s.configured));
-                let Some(state) = p.convex.get_mut(&state_key) else { return };
+                let Some(state) = p.convex.get_mut(&state_key) else {
+                    return;
+                };
                 // A newer choice was made while this was on its way.
-                if now.as_deref() != Some(target.as_str()) || state.fetching.as_deref() != Some(target.as_str()) {
+                if now.as_deref() != Some(target.as_str())
+                    || state.fetching.as_deref() != Some(target.as_str())
+                {
                     return;
                 }
                 state.fetching = None;
@@ -890,7 +1410,12 @@ impl WebPanels {
                         state.key = Some(key);
                         state.sign_in_failure = None;
                     }
-                    Ok(Err(_)) => state.failure = Some(("The runner's answer had no deploy key in it.".into(), -32000)),
+                    Ok(Err(_)) => {
+                        state.failure = Some((
+                            "The runner's answer had no deploy key in it.".into(),
+                            -32000,
+                        ))
+                    }
                     Err(e) => state.failure = Some((e.message, e.code)),
                 }
                 cx.notify();
@@ -906,7 +1431,12 @@ impl WebPanels {
         self.forget(&format!("convex:{deployment}"));
         self.forget(&pinned_key(&format!("convex:{deployment}")));
         self.renewing.insert(deployment.to_owned());
-        let states: Vec<String> = self.convex.iter().filter(|(_, s)| self.selected(&s.configured) == deployment).map(|(k, _)| k.clone()).collect();
+        let states: Vec<String> = self
+            .convex
+            .iter()
+            .filter(|(_, s)| self.selected(&s.configured) == deployment)
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in states {
             if let Some(state) = self.convex.get_mut(&key) {
                 state.key = None;
@@ -920,17 +1450,30 @@ impl WebPanels {
     /// in the browser on this Mac (any browser can approve it, so another
     /// Mac's runner works too), polls until it's done, then asks for the key.
     fn sign_in(&mut self, state_key: &str, force: bool, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else { return };
-        let Some(state) = self.convex.get_mut(state_key) else { return };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(state) = self.convex.get_mut(state_key) else {
+            return;
+        };
         state.sign_in_failure = None;
-        state.sign_in = Some(Login { state: "waiting".into(), ..Default::default() });
+        state.sign_in = Some(Login {
+            state: "waiting".into(),
+            ..Default::default()
+        });
         let (thread, panel) = (state.thread.clone(), state.panel.clone());
         let key = state_key.to_owned();
         let task = cx.spawn(async move |this, cx| {
-            let mut answer = crate::call(client.clone(), "panels.convexLogin", json!({ "threadId": thread, "panelId": panel, "force": force })).await.map(|v| serde_json::from_value::<Login>(v).unwrap_or_default());
+            let mut answer = crate::call(
+                client.clone(),
+                "panels.convexLogin",
+                json!({ "threadId": thread, "panelId": panel, "force": force }),
+            )
+            .await
+            .map(|v| serde_json::from_value::<Login>(v).unwrap_or_default());
             if let Ok(started) = &answer {
                 if let Some(page) = started.page() {
-                    let _ = cx.update(|cx| crate::files::open_web(&page, cx));
+                    cx.update(|cx| crate::files::open_web(&page, cx));
                 }
             }
             loop {
@@ -957,10 +1500,18 @@ impl WebPanels {
                     cx.notify();
                 });
                 cx.background_executor().timer(Duration::from_secs(2)).await;
-                answer = crate::call(client.clone(), "panels.convexLogin", json!({ "threadId": thread, "panelId": panel, "check": true })).await.map(|v| serde_json::from_value::<Login>(v).unwrap_or_default());
+                answer = crate::call(
+                    client.clone(),
+                    "panels.convexLogin",
+                    json!({ "threadId": thread, "panelId": panel, "check": true }),
+                )
+                .await
+                .map(|v| serde_json::from_value::<Login>(v).unwrap_or_default());
             }
             let _ = this.update(cx, |p, cx| {
-                let Some(s) = p.convex.get_mut(&key) else { return };
+                let Some(s) = p.convex.get_mut(&key) else {
+                    return;
+                };
                 s.sign_in = None;
                 match answer {
                     Ok(done) if done.state == "done" => {
@@ -968,7 +1519,13 @@ impl WebPanels {
                         p.load_choices(&key, true, cx);
                         p.fetch(&key, cx);
                     }
-                    Ok(other) => s.sign_in_failure = Some(other.message.unwrap_or_else(|| "The sign-in didn't finish. Try again.".into())),
+                    Ok(other) => {
+                        s.sign_in_failure = Some(
+                            other
+                                .message
+                                .unwrap_or_else(|| "The sign-in didn't finish. Try again.".into()),
+                        )
+                    }
                     Err(e) => s.sign_in_failure = Some(e.message),
                 }
                 cx.notify();
@@ -995,30 +1552,70 @@ impl WebPanels {
 /// the page gets a deploy key.
 fn embedded() -> String {
     #[cfg(feature = "automation")]
-    if let Some(url) = std::env::var("THREADBEAR_CONVEX_EMBEDDED").ok().filter(|u| u.starts_with("http://127.0.0.1:")) {
+    if let Some(url) = std::env::var("THREADBEAR_CONVEX_EMBEDDED")
+        .ok()
+        .filter(|u| u.starts_with("http://127.0.0.1:"))
+    {
         return url;
     }
     convex::EMBEDDED.to_owned()
 }
 
-fn convex_view(panels: &Entity<WebPanels>, thread: &ThreadSummary, panel: &Panel, configured: &Deployment, main: bool, pinned: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+)]
+fn convex_view(
+    panels: &Entity<WebPanels>,
+    thread: &ThreadSummary,
+    panel: &Panel,
+    configured: &Deployment,
+    main: bool,
+    pinned: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let state_key = format!("{}/{}", thread.id, panel.id);
     let selected = panels.read(cx).selected(configured);
-    let open = convex::browser_url(&selected).map(|url| Opener { url, tip: format!("Open {selected} in browser") });
+    let open = convex::browser_url(&selected).map(|url| Opener {
+        url,
+        tip: format!("Open {selected} in browser"),
+    });
     // The page, if Chromium's running here; else what's shown instead.
-    let parent = running(&format!("convex-panel-{}", panel.id), "the Convex dashboard here", main, open.clone(), window, cx);
-    panels.update(cx, |p, cx| p.ensure_convex(&state_key, thread, panel, configured, parent.is_ok(), cx));
+    let parent = running(
+        &format!("convex-panel-{}", panel.id),
+        "the Convex dashboard here",
+        main,
+        open.clone(),
+        window,
+        cx,
+    );
+    panels.update(cx, |p, cx| {
+        p.ensure_convex(&state_key, thread, panel, configured, parent.is_ok(), cx)
+    });
     let header = convex_header(panels, &state_key, configured, &selected, window, cx);
     let body = match parent {
         Err(instead) => instead,
         Ok(parent) => convex_body(panels, &state_key, &selected, pinned, parent, open, cx),
     };
-    v_flex().size_full().child(header).child(div().h(px(1.)).flex_none().bg(style::hairline(cx))).child(div().flex_1().min_h_0().child(body)).into_any_element()
+    v_flex()
+        .size_full()
+        .child(header)
+        .child(div().h(px(1.)).flex_none().bg(style::hairline(cx)))
+        .child(div().flex_1().min_h_0().child(body))
+        .into_any_element()
 }
 
 /// The project, the deployment menu and the deployment's name, with the
 /// runner's note on what it couldn't list under them.
-fn convex_header(panels: &Entity<WebPanels>, state_key: &str, configured: &Deployment, selected: &str, window: &mut Window, cx: &mut App) -> AnyElement {
+fn convex_header(
+    panels: &Entity<WebPanels>,
+    state_key: &str,
+    configured: &Deployment,
+    selected: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let p = palette(cx);
     let state = panels.read(cx).convex.get(state_key);
     let loading = state.is_none_or(|s| s.loading_choices);
@@ -1027,10 +1624,21 @@ fn convex_header(panels: &Entity<WebPanels>, state_key: &str, configured: &Deplo
     let note = state.and_then(|s| s.note.clone());
     let mut row = h_flex().gap(px(8.)).items_center().min_w_0();
     if let (Some(project), Some(tip)) = (&configured.project, configured.project_tip()) {
-        row = row.child(tipped_as(div().id("convex-project").flex_none().text_size(px(style::size::LABEL)).font_weight(FontWeight::SEMIBOLD).text_color(p.fg).child(project.clone()), tip, gpui_kit::Role::GenericContainer));
+        row = row.child(tipped_as(
+            div()
+                .id("convex-project")
+                .flex_none()
+                .text_size(px(style::size::LABEL))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.fg)
+                .child(project.clone()),
+            tip,
+            gpui_kit::Role::GenericContainer,
+        ));
     }
     let view = native_view(window);
-    let (menu_panels, menu_key, menu_configured) = (panels.clone(), state_key.to_owned(), configured.clone());
+    let (menu_panels, menu_key, menu_configured) =
+        (panels.clone(), state_key.to_owned(), configured.clone());
     let hover = p.hover;
     let mut menu = div()
         .id("convex-deployment-menu")
@@ -1049,39 +1657,92 @@ fn convex_header(panels: &Entity<WebPanels>, state_key: &str, configured: &Deplo
     if loading {
         menu = menu.opacity(0.5);
     } else {
-        menu = menu.cursor_pointer().hover(move |s| s.bg(hover)).on_click(move |event, _, cx| {
-            let at = event.position();
-            open_deployment_menu(&menu_panels, &menu_key, &menu_configured, view, at, cx);
-        });
+        menu = menu
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(move |event, _, cx| {
+                let at = event.position();
+                open_deployment_menu(&menu_panels, &menu_key, &menu_configured, view, at, cx);
+            });
     }
     row = row.child(tipped(menu, "Choose the deployment shown in this panel"));
-    row = row.child(tipped_as(div().id("convex-deployment").min_w_0().truncate().font_family(cx.theme().mono_font_family.clone()).text_size(px(style::size::SMALL)).text_color(p.secondary).child(selected.to_owned()), selected.to_owned(), gpui_kit::Role::GenericContainer));
+    row = row.child(tipped_as(
+        div()
+            .id("convex-deployment")
+            .min_w_0()
+            .truncate()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_size(px(style::size::SMALL))
+            .text_color(p.secondary)
+            .child(selected.to_owned()),
+        selected.to_owned(),
+        gpui_kit::Role::GenericContainer,
+    ));
     row = row.child(div().flex_1());
     if loading {
         row = row.child(Spinner::new().color(p.secondary).with_size(px(10.)));
     }
-    let mut header = v_flex().flex_none().gap(px(6.)).px(px(12.)).py(px(8.)).child(row);
+    let mut header = v_flex()
+        .flex_none()
+        .gap(px(6.))
+        .px(px(12.))
+        .py(px(8.))
+        .child(row);
     if let Some(note) = note {
-        header = header.child(tipped_as(div().id("convex-choices-note").text_size(px(style::size::SMALL)).line_height(px(15.)).text_color(p.secondary).line_clamp(2).child(note.clone()), note, gpui_kit::Role::GenericContainer));
+        header = header.child(tipped_as(
+            div()
+                .id("convex-choices-note")
+                .text_size(px(style::size::SMALL))
+                .line_height(px(15.))
+                .text_color(p.secondary)
+                .line_clamp(2)
+                .child(note.clone()),
+            note,
+            gpui_kit::Role::GenericContainer,
+        ));
     }
     header.into_any_element()
 }
 
 /// The deployment menu, native so it comes up over the page: each choice
 /// with its label and name, ticked when shown, then Refresh deployments.
-fn open_deployment_menu(panels: &Entity<WebPanels>, state_key: &str, configured: &Deployment, view: Option<*mut c_void>, at: Point<Pixels>, cx: &mut App) {
+fn open_deployment_menu(
+    panels: &Entity<WebPanels>,
+    state_key: &str,
+    configured: &Deployment,
+    view: Option<*mut c_void>,
+    at: Point<Pixels>,
+    cx: &mut App,
+) {
     let Some(view) = view else { return };
     let (choices, selected) = {
         let p = panels.read(cx);
-        (p.convex.get(state_key).map(|s| s.choices.clone()).unwrap_or_default(), p.selected(configured))
+        (
+            p.convex
+                .get(state_key)
+                .map(|s| s.choices.clone())
+                .unwrap_or_default(),
+            p.selected(configured),
+        )
     };
     let mut items: Vec<threadbear_web::MenuItem> = choices
         .iter()
-        .map(|c| threadbear_web::MenuItem { title: format!("{} · {}", c.label, c.deployment), symbol: "server.rack".into(), tip: format!("Show {} in this panel", c.deployment), checked: c.deployment == selected })
+        .map(|c| threadbear_web::MenuItem {
+            title: format!("{} · {}", c.label, c.deployment),
+            symbol: "server.rack".into(),
+            tip: format!("Show {} in this panel", c.deployment),
+            checked: c.deployment == selected,
+        })
         .collect();
     items.push(threadbear_web::MenuItem::default());
-    items.push(threadbear_web::MenuItem { title: "Refresh deployments".into(), symbol: "arrow.clockwise".into(), tip: "Look up this project's development and production deployments again".into(), checked: false });
-    let (panels, state_key, configured) = (panels.clone(), state_key.to_owned(), configured.clone());
+    items.push(threadbear_web::MenuItem {
+        title: "Refresh deployments".into(),
+        symbol: "arrow.clockwise".into(),
+        tip: "Look up this project's development and production deployments again".into(),
+        checked: false,
+    });
+    let (panels, state_key, configured) =
+        (panels.clone(), state_key.to_owned(), configured.clone());
     panels.update(cx, |p, cx| {
         if let Some(s) = p.convex.get_mut(&state_key) {
             s.menu_open = true;
@@ -1091,14 +1752,22 @@ fn open_deployment_menu(panels: &Entity<WebPanels>, state_key: &str, configured:
     // From a task, outside the app's update: the menu's loop runs until it's
     // closed, and the windows go on drawing behind it (as alert.rs's do).
     cx.spawn(async move |cx| {
-        let chosen = threadbear_web::popup_menu(view, f32::from(at.x), f32::from(at.y) + 4., &items);
+        // SAFETY: the content view of the window the menu was clicked in
+        // (native_view), and this task runs on the main thread on its loop's
+        // next turn. The click being handled is the menu's, so nothing has
+        // asked that window to close by then.
+        let chosen = unsafe {
+            threadbear_web::popup_menu(view, f32::from(at.x), f32::from(at.y) + 4., &items)
+        };
         cx.update(|cx| {
             panels.update(cx, |p, cx| {
                 if let Some(s) = p.convex.get_mut(&state_key) {
                     s.menu_open = false;
                 }
                 match chosen {
-                    Some(i) if i < choices.len() => p.select(&configured, &choices[i].deployment, cx),
+                    Some(i) if i < choices.len() => {
+                        p.select(&configured, &choices[i].deployment, cx)
+                    }
                     Some(i) if i == items.len() - 1 => p.load_choices(&state_key, true, cx),
                     _ => {}
                 }
@@ -1111,27 +1780,83 @@ fn open_deployment_menu(panels: &Entity<WebPanels>, state_key: &str, configured:
 
 /// The dashboard once there's a key, the sign-in under way, why there's no
 /// key with what to do about it, or a note while it's asked for.
-fn convex_body(panels: &Entity<WebPanels>, state_key: &str, selected: &str, pinned: bool, parent: *mut c_void, open: Option<Opener>, cx: &mut App) -> AnyElement {
+fn convex_body(
+    panels: &Entity<WebPanels>,
+    state_key: &str,
+    selected: &str,
+    pinned: bool,
+    parent: *mut c_void,
+    open: Option<Opener>,
+    cx: &mut App,
+) -> AnyElement {
     let p = palette(cx);
     let (key, sign_in, failure, sign_in_failure, loading) = {
         let s = panels.read(cx).convex.get(state_key);
-        (s.and_then(|s| s.key.clone()), s.and_then(|s| s.sign_in.clone()), s.and_then(|s| s.failure.clone()), s.and_then(|s| s.sign_in_failure.clone()), s.is_none_or(|s| s.loading_choices))
+        (
+            s.and_then(|s| s.key.clone()),
+            s.and_then(|s| s.sign_in.clone()),
+            s.and_then(|s| s.failure.clone()),
+            s.and_then(|s| s.sign_in_failure.clone()),
+            s.is_none_or(|s| s.loading_choices),
+        )
     };
     if let Some(key) = key.filter(|k| k.deployment == selected) {
         let url = embedded();
         let origin = convex::origin_of(&url);
-        let script = move || PanelKind::Convex { credentials_script: convex::credentials_script(&key, &origin) };
-        return slot(panels, &page_key(format!("convex:{selected}"), pinned), &url, script, parent, open, cx);
+        let script = move || PanelKind::Convex {
+            credentials_script: convex::credentials_script(&key, &origin),
+        };
+        return slot(
+            panels,
+            &page_key(format!("convex:{selected}"), pinned),
+            &url,
+            script,
+            parent,
+            open,
+            cx,
+        );
     }
-    let words = |text: String, color: Hsla, weight: FontWeight| div().max_w(px(320.)).text_center().text_size(px(style::size::LABEL)).line_height(px(18.)).font_weight(weight).text_color(color).child(text);
-    let column = || v_flex().size_full().items_center().justify_center().gap(px(12.)).p(px(24.));
+    let words = |text: String, color: Hsla, weight: FontWeight| {
+        div()
+            .max_w(px(320.))
+            .text_center()
+            .text_size(px(style::size::LABEL))
+            .line_height(px(18.))
+            .font_weight(weight)
+            .text_color(color)
+            .child(text)
+    };
+    let column = || {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .p(px(24.))
+    };
     if let Some(login) = sign_in.filter(|l| l.state == "waiting") {
         let stop = (panels.clone(), state_key.to_owned());
         let mut buttons = h_flex().gap(px(8.));
         if let Some(page) = login.page() {
-            buttons = buttons.child(PushButton::new("convex-sign-in-again", "Open the page again", "Open Convex's sign-in page in your browser").render(cx, move |_, _, cx| crate::files::open_web(&page, cx)));
+            buttons = buttons.child(
+                PushButton::new(
+                    "convex-sign-in-again",
+                    "Open the page again",
+                    "Open Convex's sign-in page in your browser",
+                )
+                .render(cx, move |_, _, cx| crate::files::open_web(&page, cx)),
+            );
         }
-        buttons = buttons.child(PushButton::new("convex-sign-in-cancel", "Cancel", "Stop waiting for the sign-in").render(cx, move |_, _, cx| stop.0.update(cx, |p, cx| p.stop_sign_in(&stop.1, cx))));
+        buttons = buttons.child(
+            PushButton::new(
+                "convex-sign-in-cancel",
+                "Cancel",
+                "Stop waiting for the sign-in",
+            )
+            .render(cx, move |_, _, cx| {
+                stop.0.update(cx, |p, cx| p.stop_sign_in(&stop.1, cx))
+            }),
+        );
         return column()
             .child(Spinner::new().color(p.secondary).with_size(px(14.)))
             .child(words("Approve the sign-in in your browser.".into(), p.fg, FontWeight::MEDIUM))
@@ -1142,26 +1867,78 @@ fn convex_body(panels: &Entity<WebPanels>, state_key: &str, selected: &str, pinn
     if let Some((message, code)) = failure {
         let mut col = column();
         if code == convex::SIGNED_OUT {
-            col = col.child(words("Sign in to Convex to see this dashboard.".into(), p.fg, FontWeight::MEDIUM)).child(words("Your browser opens to approve it, then the dashboard loads here by itself.".into(), p.secondary, FontWeight::NORMAL));
+            col = col
+                .child(words(
+                    "Sign in to Convex to see this dashboard.".into(),
+                    p.fg,
+                    FontWeight::MEDIUM,
+                ))
+                .child(words(
+                    "Your browser opens to approve it, then the dashboard loads here by itself."
+                        .into(),
+                    p.secondary,
+                    FontWeight::NORMAL,
+                ));
         } else {
             col = col.child(words(message, p.secondary, FontWeight::NORMAL));
         }
         if let Some(why) = sign_in_failure {
-            col = col.child(div().max_w(px(320.)).text_center().text_size(px(style::size::SMALL)).text_color(p.secondary).child(why));
+            col = col.child(
+                div()
+                    .max_w(px(320.))
+                    .text_center()
+                    .text_size(px(style::size::SMALL))
+                    .text_color(p.secondary)
+                    .child(why),
+            );
         }
         let mut buttons = h_flex().gap(px(8.));
         if code == convex::SIGNED_OUT {
             let go = (panels.clone(), state_key.to_owned());
-            buttons = buttons.child(PushButton::new("convex-sign-in", "Sign in to Convex", "Sign the runner's Convex CLI in, in your browser").render(cx, move |_, _, cx| go.0.update(cx, |p, cx| p.sign_in(&go.1, false, cx))));
+            buttons = buttons.child(
+                PushButton::new(
+                    "convex-sign-in",
+                    "Sign in to Convex",
+                    "Sign the runner's Convex CLI in, in your browser",
+                )
+                .render(cx, move |_, _, cx| {
+                    go.0.update(cx, |p, cx| p.sign_in(&go.1, false, cx))
+                }),
+            );
         } else if code == convex::NO_ACCESS {
             let go = (panels.clone(), state_key.to_owned());
-            buttons = buttons.child(PushButton::new("convex-sign-in-other", "Sign in as someone else", "Sign the runner's Convex CLI in with another Convex account").render(cx, move |_, _, cx| go.0.update(cx, |p, cx| p.sign_in(&go.1, true, cx))));
+            buttons = buttons.child(
+                PushButton::new(
+                    "convex-sign-in-other",
+                    "Sign in as someone else",
+                    "Sign the runner's Convex CLI in with another Convex account",
+                )
+                .render(cx, move |_, _, cx| {
+                    go.0.update(cx, |p, cx| p.sign_in(&go.1, true, cx))
+                }),
+            );
         }
         let again = (panels.clone(), state_key.to_owned());
-        buttons = buttons.child(PushButton::new("convex-try-again", "Try again", "Ask the runner for a deploy key again").render(cx, move |_, _, cx| again.0.update(cx, |p, cx| p.fetch(&again.1, cx))));
+        buttons = buttons.child(
+            PushButton::new(
+                "convex-try-again",
+                "Try again",
+                "Ask the runner for a deploy key again",
+            )
+            .render(cx, move |_, _, cx| {
+                again.0.update(cx, |p, cx| p.fetch(&again.1, cx))
+            }),
+        );
         return col.child(buttons).into_any_element();
     }
-    note(&if loading { "Finding deployments…".to_owned() } else { format!("Getting a deploy key for {selected}…") }, cx)
+    note(
+        &if loading {
+            "Finding deployments…".to_owned()
+        } else {
+            format!("Getting a deploy key for {selected}…")
+        },
+        cx,
+    )
 }
 
 // ---------------------------------------------------------------- remembered
@@ -1176,15 +1953,23 @@ struct Stored {
 /// A small file in the data folder, as the Files panel's choices are
 /// (files_store.rs); the Swift app keeps these in UserDefaults.
 fn store_path() -> std::path::PathBuf {
-    threadbear_client::config::RunnerConfig::from_env().home.join("desktop-web-panels.json")
+    threadbear_client::config::RunnerConfig::from_env()
+        .home
+        .join("desktop-web-panels.json")
 }
 
 fn load_selections() -> HashMap<String, String> {
-    std::fs::read_to_string(store_path()).ok().and_then(|text| serde_json::from_str::<Stored>(&text).ok()).unwrap_or_default().convex_deployments
+    std::fs::read_to_string(store_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Stored>(&text).ok())
+        .unwrap_or_default()
+        .convex_deployments
 }
 
 fn save_selections(selections: &HashMap<String, String>) {
-    if let Ok(text) = serde_json::to_string_pretty(&Stored { convex_deployments: selections.clone() }) {
+    if let Ok(text) = serde_json::to_string_pretty(&Stored {
+        convex_deployments: selections.clone(),
+    }) {
         // Best effort: it's a preference, not data. Written whole, and only
         // this user's, as everything in the data folder is.
         let _ = threadbear_core::private_file::write(&store_path(), text.as_bytes());
@@ -1197,7 +1982,8 @@ fn save_selections(selections: &HashMap<String, String>) {
 /// the Convex dashboard's as the embedded page.
 fn dumped_url(key: &str) -> String {
     let key = key.strip_prefix("pin:").unwrap_or(key);
-    key.strip_prefix("convex:").map_or(key.to_owned(), |_| embedded())
+    key.strip_prefix("convex:")
+        .map_or(key.to_owned(), |_| embedded())
 }
 
 fn page_dump(key: &str, kept: Option<&Kept>, frame: u64) -> Value {
@@ -1228,7 +2014,9 @@ fn page_dump(key: &str, kept: Option<&Kept>, frame: u64) -> Value {
 
 /// The dump's `webPanels`: every page kept, and the links that left one.
 pub(crate) fn dump(cx: &App) -> Value {
-    let Some(panels) = panels(cx) else { return Value::Null };
+    let Some(panels) = panels(cx) else {
+        return Value::Null;
+    };
     let p = panels.read(cx);
     let frame = frame_now();
     json!({
@@ -1245,8 +2033,19 @@ pub(crate) fn dump(cx: &App) -> Value {
 /// The pane's `web`, for a page panel that's showing: what it shows (a page,
 /// the runtime's question, why it can't, or a note), its bar's buttons, and
 /// for the Convex panel its header and state.
-pub(crate) fn fill_pane_dump(pane: &mut serde_json::Map<String, Value>, thread: &ThreadSummary, id: &str, cx: &App) {
-    let Some(panel) = thread.panels().into_iter().find(|p| p.id == id && p.kind == "url") else { return };
+pub(crate) fn fill_pane_dump(
+    pane: &mut serde_json::Map<String, Value>,
+    thread: &ThreadSummary,
+    id: &str,
+    cx: &App,
+) {
+    let Some(panel) = thread
+        .panels()
+        .into_iter()
+        .find(|p| p.id == id && p.kind == "url")
+    else {
+        return;
+    };
     let Some(panels) = panels(cx) else { return };
     let p = panels.read(cx);
     let runtime = web_runtime::runtime(cx).map(|r| r.read(cx));
@@ -1254,12 +2053,22 @@ pub(crate) fn fill_pane_dump(pane: &mut serde_json::Map<String, Value>, thread: 
     let blocked = match runtime {
         _ if ready => None,
         Some(r) if r.asks() => Some(("prompt", String::new())),
-        Some(r) if r.state == State::Ready => Some(("starting", match &r.engine {
-            Engine::Failed(why) => format!("The web runtime didn't start: {why}"),
-            _ => "Starting the web runtime…".into(),
-        })),
-        Some(r) if r.state == State::Unavailable => Some(("note", "There's no web runtime for this system yet, so this page opens in your browser.".into())),
-        _ => Some(("note", "This page shows here once the web runtime is installed (Settings > General).".into())),
+        Some(r) if r.state == State::Ready => Some((
+            "starting",
+            match &r.engine {
+                Engine::Failed(why) => format!("The web runtime didn't start: {why}"),
+                _ => "Starting the web runtime…".into(),
+            },
+        )),
+        Some(r) if r.state == State::Unavailable => Some((
+            "note",
+            "There's no web runtime for this system yet, so this page opens in your browser."
+                .into(),
+        )),
+        _ => Some((
+            "note",
+            "This page shows here once the web runtime is installed (Settings > General).".into(),
+        )),
     };
     let mut web = serde_json::Map::new();
     let page_key;
@@ -1272,8 +2081,16 @@ pub(crate) fn fill_pane_dump(pane: &mut serde_json::Map<String, Value>, thread: 
         let shows = match (blocked.as_ref(), state) {
             (Some((what, _)), _) => (*what).to_owned(),
             (None, None) => "finding".into(),
-            (None, Some(s)) if s.key.as_ref().is_some_and(|k| k.deployment == selected) => if p.page(&page_key).is_some() { "page".into() } else { "loading".into() },
-            (None, Some(s)) if s.sign_in.as_ref().is_some_and(|l| l.state == "waiting") => "signingIn".into(),
+            (None, Some(s)) if s.key.as_ref().is_some_and(|k| k.deployment == selected) => {
+                if p.page(&page_key).is_some() {
+                    "page".into()
+                } else {
+                    "loading".into()
+                }
+            }
+            (None, Some(s)) if s.sign_in.as_ref().is_some_and(|l| l.state == "waiting") => {
+                "signingIn".into()
+            }
             (None, Some(s)) if s.failure.is_some() => "failed".into(),
             (None, Some(s)) if s.loading_choices => "finding".into(),
             _ => "gettingKey".into(),
@@ -1294,7 +2111,9 @@ pub(crate) fn fill_pane_dump(pane: &mut serde_json::Map<String, Value>, thread: 
             }),
         );
         if ready {
-            buttons.push(format!("Make a new deploy key for {selected}, if the old one was revoked"));
+            buttons.push(format!(
+                "Make a new deploy key for {selected}, if the old one was revoked"
+            ));
             buttons.push("Reload panel".into());
         }
         if convex::browser_url(&selected).is_some() {
@@ -1324,7 +2143,10 @@ pub(crate) fn fill_pane_dump(pane: &mut serde_json::Map<String, Value>, thread: 
         web.insert("note".into(), json!(why));
     }
     if let Some(why) = p.failed.get(&page_key) {
-        web.insert("note".into(), json!(format!("Couldn't show this page: {why}")));
+        web.insert(
+            "note".into(),
+            json!(format!("Couldn't show this page: {why}")),
+        );
     }
     web.insert("buttons".into(), json!(buttons));
     let kept = p.pages.iter().find(|k| k.key == page_key);
@@ -1354,11 +2176,19 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
     // `choose`: a pick from a Convex panel's deployment menu, which is a
     // native menu a script can't reach.
     if cmd["do"] == "choose" {
-        let deployment = cmd["deployment"].as_str().ok_or("choose needs deployment")?.to_owned();
+        let deployment = cmd["deployment"]
+            .as_str()
+            .ok_or("choose needs deployment")?
+            .to_owned();
         return cx.update(|cx| {
             let panels = panels(cx).ok_or("no web panels")?;
             panels.update(cx, |p, cx| {
-                let configured = p.convex.values().find(|s| s.choices.iter().any(|c| c.deployment == deployment)).map(|s| s.configured.clone()).ok_or(format!("no Convex panel offers {deployment}"))?;
+                let configured = p
+                    .convex
+                    .values()
+                    .find(|s| s.choices.iter().any(|c| c.deployment == deployment))
+                    .map(|s| s.configured.clone())
+                    .ok_or(format!("no Convex panel offers {deployment}"))?;
                 p.select(&configured, &deployment, cx);
                 Ok(json!({ "chosen": deployment }))
             })
@@ -1383,16 +2213,32 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
         if since.elapsed() > wait {
             return Err("there's no panel page".into());
         }
-        cx.background_executor().timer(Duration::from_millis(100)).await;
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
     };
     match cmd["do"].as_str().unwrap_or("") {
         "eval" => {
             let js = cmd["js"].as_str().ok_or("eval needs js")?;
-            let answer = page.devtools("Runtime.evaluate", json!({ "expression": js, "returnByValue": true, "awaitPromise": true })).await.map_err(|_| "the page went away".to_owned())??;
+            let answer = page
+                .devtools(
+                    "Runtime.evaluate",
+                    json!({ "expression": js, "returnByValue": true, "awaitPromise": true }),
+                )
+                .await
+                .map_err(|_| "the page went away".to_owned())??;
             if let Some(why) = answer.get("exceptionDetails") {
-                return Err(format!("the script threw: {}", why["exception"]["description"].as_str().or(why["text"].as_str()).unwrap_or("?")));
+                return Err(format!(
+                    "the script threw: {}",
+                    why["exception"]["description"]
+                        .as_str()
+                        .or(why["text"].as_str())
+                        .unwrap_or("?")
+                ));
             }
-            return Ok(json!({ "value": answer["result"]["value"], "page": cx.update(|cx| dump_page(&key, cx)) }));
+            return Ok(
+                json!({ "value": answer["result"]["value"], "page": cx.update(|cx| dump_page(&key, cx)) }),
+            );
         }
         "click" => {
             let selector = cmd["selector"].as_str().ok_or("click needs selector")?;
@@ -1411,9 +2257,17 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
                 // Counted as a person's click in the page, as AppKit counts
                 // a real one (LeaveGate).
                 page.note_input();
-                let done = page.devtools("Runtime.evaluate", json!({ "expression": click, "returnByValue": true, "userGesture": true })).await.map_err(|_| "the page went away".to_owned())?;
+                let done = page
+                    .devtools(
+                        "Runtime.evaluate",
+                        json!({ "expression": click, "returnByValue": true, "userGesture": true }),
+                    )
+                    .await
+                    .map_err(|_| "the page went away".to_owned())?;
                 match done {
-                    Ok(done) if done["result"]["value"] != json!(true) => return Err(format!("nothing in the page matches {selector}")),
+                    Ok(done) if done["result"]["value"] != json!(true) => {
+                        return Err(format!("nothing in the page matches {selector}"))
+                    }
                     Ok(_) => {}
                     // The click took the page somewhere before DevTools could
                     // answer: it worked.
@@ -1426,11 +2280,19 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
         // DevTools' Input domain as a real drop is delivered: `file` is its path.
         "drop" => {
             let file = cmd["file"].as_str().ok_or("drop needs file")?;
-            let (x, y) = (cmd["x"].as_f64().unwrap_or(60.), cmd["y"].as_f64().unwrap_or(60.));
+            let (x, y) = (
+                cmd["x"].as_f64().unwrap_or(60.),
+                cmd["y"].as_f64().unwrap_or(60.),
+            );
             // Copy, link or move, as the Finder offers.
             let data = json!({ "items": [], "files": [file], "dragOperationsMask": 1 | 2 | 16 });
             for kind in ["dragEnter", "dragOver", "drop"] {
-                page.devtools("Input.dispatchDragEvent", json!({ "type": kind, "x": x, "y": y, "data": data })).await.map_err(|_| "the page went away".to_owned())??;
+                page.devtools(
+                    "Input.dispatchDragEvent",
+                    json!({ "type": kind, "x": x, "y": y, "data": data }),
+                )
+                .await
+                .map_err(|_| "the page went away".to_owned())??;
             }
         }
         // The keyboard, as a click in the page gives it. A scripted app's
@@ -1440,7 +2302,12 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
         // front window does.
         "focus" => {
             page.focus();
-            page.devtools("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })).await.map_err(|_| "the page went away".to_owned())??;
+            page.devtools(
+                "Emulation.setFocusEmulationEnabled",
+                json!({ "enabled": true }),
+            )
+            .await
+            .map_err(|_| "the page went away".to_owned())??;
         }
         "wait" => {
             let title = cmd["title"].as_str();
@@ -1450,12 +2317,22 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
                     break;
                 }
                 if since.elapsed() > wait {
-                    return Err(format!("the page didn't finish (title {:?}, loading {})", page.title(), page.loading()));
+                    return Err(format!(
+                        "the page didn't finish (title {:?}, loading {})",
+                        page.title(),
+                        page.loading()
+                    ));
                 }
-                cx.background_executor().timer(Duration::from_millis(100)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
             }
         }
-        other => return Err(format!("do must be eval, click, drop, focus, wait or choose, not {other:?}")),
+        other => {
+            return Err(format!(
+                "do must be eval, click, drop, focus, wait or choose, not {other:?}"
+            ))
+        }
     }
     Ok(cx.update(|cx| dump_page(&key, cx)))
 }
@@ -1463,17 +2340,37 @@ pub(crate) async fn automation(cmd: &Value, cx: &mut AsyncApp) -> Result<Value, 
 /// Swift's `convex` command, using the same validated list and selection
 /// model as the deployment menu, even before a page has been made.
 #[cfg(feature = "automation")]
-pub(crate) async fn convex_command(app: &WeakEntity<Threadbear>, cmd: &Value, cx: &mut AsyncApp) -> Result<Value, String> {
-    let (thread, panel, configured, client) = app.read_with(cx, |app, _| {
-        let thread = app.open_thread()?;
-        let panel = thread.panels().into_iter().find(|p| p.convex.is_some())?;
-        Some((thread.id.clone(), panel.id.clone(), panel.convex?, app.client.clone()))
-    }).map_err(|e| e.to_string())?.ok_or("no Convex cloud panel")?;
+pub(crate) async fn convex_command(
+    app: &WeakEntity<Threadbear>,
+    cmd: &Value,
+    cx: &mut AsyncApp,
+) -> Result<Value, String> {
+    let (thread, panel, configured, client) = app
+        .read_with(cx, |app, _| {
+            let thread = app.open_thread()?;
+            let panel = thread.panels().into_iter().find(|p| p.convex.is_some())?;
+            Some((
+                thread.id.clone(),
+                panel.id.clone(),
+                panel.convex?,
+                app.client.clone(),
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .ok_or("no Convex cloud panel")?;
     if let Some(deployment) = cmd["deployment"].as_str() {
-        let answer = crate::call(client, "panels.convexDeployments", json!({ "threadId": thread, "panelId": panel })).await.map_err(|e| e.message)?;
+        let answer = crate::call(
+            client,
+            "panels.convexDeployments",
+            json!({ "threadId": thread, "panelId": panel }),
+        )
+        .await
+        .map_err(|e| e.message)?;
         let listed: convex::Choices = serde_json::from_value(answer).map_err(|e| e.to_string())?;
         let choices = convex::with_configured(listed.deployments, &configured);
-        if !choices.iter().any(|c| c.deployment == deployment) { return Err("unknown deployment".into()); }
+        if !choices.iter().any(|c| c.deployment == deployment) {
+            return Err("unknown deployment".into());
+        }
         cx.update(|cx| {
             let panels = panels(cx).ok_or("no web panels")?;
             panels.update(cx, |p, cx| p.select(&configured, deployment, cx));
@@ -1483,13 +2380,18 @@ pub(crate) async fn convex_command(app: &WeakEntity<Threadbear>, cmd: &Value, cx
     cx.update(|cx| {
         let panels = panels(cx).ok_or("no web panels")?;
         let selected = panels.read(cx).selected(&configured);
-        Ok(json!(format!("ok {selected} browser={}", convex::browser_url(&selected).unwrap_or_else(|| "none".into()))))
+        Ok(json!(format!(
+            "ok {selected} browser={}",
+            convex::browser_url(&selected).unwrap_or_else(|| "none".into())
+        )))
     })
 }
 
 #[cfg(feature = "automation")]
 fn dump_page(key: &str, cx: &App) -> Value {
-    let Some(panels) = panels(cx) else { return Value::Null };
+    let Some(panels) = panels(cx) else {
+        return Value::Null;
+    };
     let p = panels.read(cx);
     page_dump(key, p.pages.iter().find(|k| k.key == key), frame_now())
 }

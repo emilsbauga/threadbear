@@ -72,6 +72,10 @@ When("the app's next version is building", async function (this: ThreadbearWorld
   await this.app.do({ cmd: 'updates', preview: 'building' });
 });
 
+When("the app's next version is queued behind other work on its Mac", async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'updates', preview: 'queued' });
+});
+
 When("the app has no update on its way", async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'updates', preview: 'none' });
 });

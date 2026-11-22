@@ -1,4 +1,4 @@
-// One small-model call on an ACP agent's login (docs/protocol.md, "Settings
+// One small-model call on an ACP agent's login (docs/protocol/settings.md, "Settings
 // and models"): start the agent in an empty folder, open a session with no
 // MCP servers, send the prompt, collect the words, stop it.
 //
@@ -73,7 +73,7 @@ export function acpAsker(deps: AcpAskerDeps): Asker {
     delete env.CLAUDE_CONFIG_DIR;
     delete env.CLAUDE_AGENT_SDK_CLIENT_APP;
     const args = deps.agent.args({ dataDir: deps.dataDir, noTools: true, binary });
-    const proc = new AcpProcess({ binary, args, env: { ...env, ...deps.agent.env({ noTools: true }) }, cwd: req.cwd, registry: deps.registry, log: deps.log, label: `ask:${req.account.id}`, timings: deps.timings });
+    const proc = new AcpProcess({ binary, args, env: { ...env, ...deps.agent.env({ noTools: true, binary }) }, cwd: req.cwd, registry: deps.registry, log: deps.log, label: `ask:${req.account.id}`, timings: deps.timings });
     let text = '';
     // As AcpSession's checkGuard: Grok must report Threadbear's hook running
     // before anything comes from the model, or the job is stopped there.

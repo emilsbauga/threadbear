@@ -90,9 +90,9 @@ class InboxTest {
         assertEquals(folds, SectionFolds.fromSaved(folds.saved + "someday"))
     }
 
-    /** The same cases the Mac, the iPhone and the website run (app/Tests/Fixtures). */
+    /** The same cases the Mac, the iPhone and the website run (shared/cases/inbox-urgency.json). */
     @Test fun urgencyMatchesTheSharedCases() {
-        val file = File("../../app/Tests/Fixtures/inbox-urgency-cases.json")
+        val file = File("../../shared/cases/inbox-urgency.json")
         val cases = (parseJson(file.readText()) as JsonObject).arr("cases")!!
         assertTrue(cases.size > 5)
         for (c in cases) {

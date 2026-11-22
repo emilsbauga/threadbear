@@ -1,8 +1,11 @@
 package com.mikerosoft.threadbear.kit
 
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonObject
 
 /** The phone's copy of the Mac's LinkPolicy: a reply's link to another app waits for a yes, a web page opens (Daybreak, 7 Nov). */
 class LinkPolicyTest {
@@ -27,5 +30,22 @@ class LinkPolicyTest {
         assertEquals(200 + 1 + 100, shown.length)
         assert(shown.startsWith("https://x.dev/") && shown.endsWith("END") && "…" in shown)
         assertEquals("https://x.dev", LinkPolicy.shown("https://x.dev"))
+    }
+
+    /** The cases the desktop app, the iPhone and the website run too (shared/cases/link-policy.json). */
+    @Test fun linksFollowTheSharedCases() {
+        val cases = (parseJson(File("../../shared/cases/link-policy.json").readText()) as JsonObject).arr("cases")!!
+        assertTrue(cases.size >= 40)
+        for (c in cases) {
+            val o = c as JsonObject
+            if (o.obj("differs")?.str("android") != null) continue
+            val kind = when (LinkPolicy.kind(o.str("input")!!)) {
+                is LinkPolicy.Kind.Web -> "web"
+                is LinkPolicy.Kind.Ask -> "ask"
+                is LinkPolicy.Kind.File -> "file"
+                LinkPolicy.Kind.Refuse -> "refuse"
+            }
+            assertEquals(o.str("expect"), kind, o.str("name"))
+        }
     }
 }

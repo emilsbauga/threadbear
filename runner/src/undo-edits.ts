@@ -1,5 +1,5 @@
 // Putting back the files an agent changed, from the thread's own edit.diff
-// events, for an edit of an earlier message (docs/protocol.md, "Editing a
+// events, for an edit of an earlier message (docs/protocol/threads.md, "Editing a
 // message") when the CLI has no checkpoints of its own: every Codex thread,
 // and Claude sessions from before checkpoints were on.
 //

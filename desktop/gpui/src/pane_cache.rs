@@ -32,7 +32,10 @@ const EVICTED_REMEMBERED: usize = 200;
 impl PaneCache {
     /// The thread's kept pane, taken out to be shown.
     pub(crate) fn take(&mut self, id: &str, cx: &App) -> Option<Entity<ThreadPane>> {
-        let ix = self.panes.iter().position(|p| p.read(cx).summary.id == id)?;
+        let ix = self
+            .panes
+            .iter()
+            .position(|p| p.read(cx).summary.id == id)?;
         Some(self.panes.remove(ix))
     }
 
@@ -70,7 +73,9 @@ impl PaneCache {
 
     /// Lets go of every pane whose thread `keep_if` says no to, unsubscribing.
     pub(crate) fn retain(&mut self, cx: &App, mut keep_if: impl FnMut(&str) -> bool) {
-        let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.panes).into_iter().partition(|p| keep_if(&p.read(cx).summary.id));
+        let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.panes)
+            .into_iter()
+            .partition(|p| keep_if(&p.read(cx).summary.id));
         for pane in gone {
             pane.read(cx).unsubscribe();
         }
@@ -82,7 +87,10 @@ impl PaneCache {
     }
 
     pub(crate) fn get(&self, id: &str, cx: &App) -> Option<Entity<ThreadPane>> {
-        self.panes.iter().find(|p| p.read(cx).summary.id == id).cloned()
+        self.panes
+            .iter()
+            .find(|p| p.read(cx).summary.id == id)
+            .cloned()
     }
 
     /// How many threads are kept, the open one not counted.
@@ -97,6 +105,9 @@ impl PaneCache {
 
     /// The kept threads, least recently shown first, for the automation's dump.
     pub(crate) fn ids(&self, cx: &App) -> Vec<String> {
-        self.panes.iter().map(|p| p.read(cx).summary.id.clone()).collect()
+        self.panes
+            .iter()
+            .map(|p| p.read(cx).summary.id.clone())
+            .collect()
     }
 }

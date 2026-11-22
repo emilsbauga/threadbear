@@ -2,15 +2,18 @@ package com.mikerosoft.threadbear.android
 
 import android.content.Context
 import com.mikerosoft.threadbear.kit.BackendApi
+import com.mikerosoft.threadbear.kit.CommandKey
 import com.mikerosoft.threadbear.kit.CommandState
-import com.mikerosoft.threadbear.kit.CommandStatus
 import com.mikerosoft.threadbear.kit.MessageButton
+import com.mikerosoft.threadbear.kit.PendingCommand
+import com.mikerosoft.threadbear.kit.PendingCommands
 import com.mikerosoft.threadbear.kit.PhoneBackend
 import com.mikerosoft.threadbear.kit.PhoneThread
 import com.mikerosoft.threadbear.kit.ReplyButtons
 import com.mikerosoft.threadbear.kit.SlashCommand
 import com.mikerosoft.threadbear.kit.SlashPalette
 import java.util.WeakHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,7 +39,6 @@ class ThreadExtras(private val model: AppModel, context: Context) {
         val b = model.backend.value
         if (b !== forBackend) {
             forBackend = b
-            presses.value = emptyMap()
             slashCommands.value = emptyMap()
             slashProblem.value = emptyMap()
             slashLoading.clear()
@@ -47,17 +49,12 @@ class ThreadExtras(private val model: AppModel, context: Context) {
     // Reply buttons
 
     /**
-     * Reply buttons pressed from this phone, by "<threadId> <buttonId>",
-     * until the row says so itself: on the way (a null status) or the
-     * command's state. A row outside the live tail may never catch up.
+     * A reply button with this phone's press on top (AppModel.commands), kept
+     * once done: a row outside the live tail may never catch up. One the Mac
+     * hasn't picked up in time can be pressed again, saying why.
      */
-    val presses = MutableStateFlow<Map<String, CommandStatus?>>(emptyMap())
-
-    fun look(button: MessageButton, threadId: String, presses: Map<String, CommandStatus?> = this.presses.value): ReplyButtons.Look {
-        val key = "$threadId ${button.id}"
-        val press = presses[key]
-        return ReplyButtons.look(button, press, asking = key in presses && press == null)
-    }
+    fun look(button: MessageButton, threadId: String, pending: Map<CommandKey, PendingCommands.Entry> = model.commands.entries.value): ReplyButtons.Look =
+        ReplyButtons.look(button, pending[CommandKey.Press(threadId, button.id)]?.state ?: PendingCommand.Idle)
 
     /**
      * A tap on a reply button: presses it once (a second tap while it's on
@@ -75,17 +72,8 @@ class ThreadExtras(private val model: AppModel, context: Context) {
             else -> Unit
         }
         val b = backend() ?: return
-        val key = "$threadId ${button.id}"
-        presses.update { it + (key to null) }
-        scope.launch {
-            try {
-                val command = b.press(threadId, button.id)
-                val status = b.command(command).first { it == null || it.state == CommandState.DONE || it.state == CommandState.FAILED }
-                presses.update { it + (key to (status ?: CommandStatus(CommandState.DONE))) }
-            } catch (e: Exception) {
-                presses.update { it + (key to CommandStatus(CommandState.FAILED, e.message ?: "The runner couldn't press it.")) }
-            }
-        }
+        // Kept once done, for the thread it opens.
+        model.commands.start(CommandKey.Press(threadId, button.id), settleMs = null, send = { b.press(threadId, button.id) })
     }
 
     // Slash commands
@@ -127,6 +115,8 @@ class ThreadExtras(private val model: AppModel, context: Context) {
                     status?.state == CommandState.DONE -> slashCommands.update { it + (threadId to (status.commands ?: emptyList())) }
                     else -> slashProblem.update { it + (threadId to "Its Mac hasn't answered yet. You can still type a command and send it.") }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 slashProblem.update { it + (threadId to "Couldn't get its commands: ${e.message}") }
             } finally {

@@ -1,4 +1,4 @@
-// A design review for the phone (docs/protocol.md, "Reviews on the phone"):
+// A design review for the phone (docs/protocol/events.md, "Reviews on the phone"):
 // its words, choices and notes, with each still named by an opaque source
 // instead of its path on this Mac. Nothing path-like goes: not the option's
 // files, its live url, nor the pictures pasted into a draft on the Mac

@@ -33,11 +33,26 @@ impl Colours {
         static LIGHT: OnceLock<[Rgb8; 256]> = OnceLock::new();
         let dark = cx.theme().is_dark();
         // sRGB(0.11, 0.11, 0.12) and white at 0.9 on dark; white and 0.12 on light.
-        let (background, foreground) = if dark { ((28, 28, 31), (230, 230, 230)) } else { ((255, 255, 255), (31, 31, 31)) };
-        let palette = *(if dark { &DARK } else { &LIGHT }).get_or_init(|| rules::palette(background, foreground));
+        let (background, foreground) = if dark {
+            ((28, 28, 31), (230, 230, 230))
+        } else {
+            ((255, 255, 255), (31, 31, 31))
+        };
+        let palette = *(if dark { &DARK } else { &LIGHT })
+            .get_or_init(|| rules::palette(background, foreground));
         // NSColor.selectedTextBackgroundColor in each look.
-        let selection = if dark { rgb_hsla((63, 99, 139)) } else { rgb_hsla((179, 215, 255)) };
-        Colours { background, foreground, cursor: style::control_accent(cx), selection, palette }
+        let selection = if dark {
+            rgb_hsla((63, 99, 139))
+        } else {
+            rgb_hsla((179, 215, 255))
+        };
+        Colours {
+            background,
+            foreground,
+            cursor: style::control_accent(cx),
+            selection,
+            palette,
+        }
     }
 
     pub(crate) fn background_hsla(&self) -> Hsla {
@@ -84,7 +99,8 @@ impl Colours {
             Background => self.background,
             Cursor => hsla_rgb(self.cursor),
             DimForeground => dim(self.foreground, self.background),
-            DimBlack | DimRed | DimGreen | DimYellow | DimBlue | DimMagenta | DimCyan | DimWhite => {
+            DimBlack | DimRed | DimGreen | DimYellow | DimBlue | DimMagenta | DimCyan
+            | DimWhite => {
                 let base = name as usize - DimBlack as usize;
                 dim(self.palette[base], self.background)
             }
@@ -96,16 +112,29 @@ impl Colours {
 /// Faint text (SGR 2): two thirds of the way from the background.
 fn dim(colour: Rgb8, background: Rgb8) -> Rgb8 {
     let mix = |c: u8, b: u8| ((f32::from(c) * 2. + f32::from(b)) / 3.).round() as u8;
-    (mix(colour.0, background.0), mix(colour.1, background.1), mix(colour.2, background.2))
+    (
+        mix(colour.0, background.0),
+        mix(colour.1, background.1),
+        mix(colour.2, background.2),
+    )
 }
 
 fn rgb_hsla((r, g, b): Rgb8) -> Hsla {
-    Hsla::from(Rgba { r: f32::from(r) / 255., g: f32::from(g) / 255., b: f32::from(b) / 255., a: 1. })
+    Hsla::from(Rgba {
+        r: f32::from(r) / 255.,
+        g: f32::from(g) / 255.,
+        b: f32::from(b) / 255.,
+        a: 1.,
+    })
 }
 
 fn hsla_rgb(colour: Hsla) -> Rgb8 {
     let c = Rgba::from(colour);
-    ((c.r * 255.).round() as u8, (c.g * 255.).round() as u8, (c.b * 255.).round() as u8)
+    (
+        (c.r * 255.).round() as u8,
+        (c.g * 255.).round() as u8,
+        (c.b * 255.).round() as u8,
+    )
 }
 
 /// The font: the Mac's own monospaced system font (SF Mono), as the Swift
@@ -120,7 +149,10 @@ fn family(cx: &App) -> SharedString {
                 let system = font(".AppleSystemUIFontMonospaced");
                 let text = cx.text_system();
                 let id = text.resolve_font(&system);
-                if text.get_font_for_id(id).is_some_and(|f| f.family == system.family) {
+                if text
+                    .get_font_for_id(id)
+                    .is_some_and(|f| f.family == system.family)
+                {
                     return system.family;
                 }
             }
@@ -143,10 +175,19 @@ fn metrics(window: &Window, cx: &App) -> Metrics {
     let size = gpui_kit::px(style::zoomed(style::size::CODE + 1.));
     let text = window.text_system();
     let id = text.resolve_font(&font);
-    let advance = text.advance(id, size, 'W').map(|s| f32::from(s.width)).unwrap_or(f32::from(size) * 0.6);
-    let height = (f32::from(text.ascent(id, size)) + f32::from(text.descent(id, size)).abs()).ceil();
+    let advance = text
+        .advance(id, size, 'W')
+        .map(|s| f32::from(s.width))
+        .unwrap_or(f32::from(size) * 0.6);
+    let height =
+        (f32::from(text.ascent(id, size)) + f32::from(text.descent(id, size)).abs()).ceil();
     let scale = window.scale_factor();
-    Metrics { font, size, cell_width: ((advance * scale).round() / scale).max(1.), cell_height: ((height * scale).ceil() / scale).max(1.) }
+    Metrics {
+        font,
+        size,
+        cell_width: ((advance * scale).round() / scale).max(1.),
+        cell_height: ((height * scale).ceil() / scale).max(1.),
+    }
 }
 
 pub(crate) struct TerminalElement {
@@ -158,7 +199,11 @@ pub(crate) struct TerminalElement {
 
 impl TerminalElement {
     pub(crate) fn new(session: Entity<Session>, focused: bool, blink_shown: bool) -> Self {
-        TerminalElement { session, focused, blink_shown }
+        TerminalElement {
+            session,
+            focused,
+            blink_shown,
+        }
     }
 }
 
@@ -201,13 +246,31 @@ struct Run {
 }
 
 impl Run {
-    fn same_look(&self, colour: Rgb8, bold: bool, italic: bool, underline: bool, strike: bool) -> bool {
-        !self.wide && self.colour == colour && self.bold == bold && self.italic == italic && self.underline == underline && self.strike == strike
+    fn same_look(
+        &self,
+        colour: Rgb8,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        strike: bool,
+    ) -> bool {
+        !self.wide
+            && self.colour == colour
+            && self.bold == bold
+            && self.italic == italic
+            && self.underline == underline
+            && self.strike == strike
     }
 }
 
 /// Neighbouring cells with the same background are one rectangle.
-fn push_background(row: usize, col: usize, cells: usize, colour: Rgb8, backgrounds: &mut Vec<(usize, usize, usize, Rgb8)>) {
+fn push_background(
+    row: usize,
+    col: usize,
+    cells: usize,
+    colour: Rgb8,
+    backgrounds: &mut Vec<(usize, usize, usize, Rgb8)>,
+) {
     if let Some(last) = backgrounds.last_mut() {
         if last.0 == row && last.1 + last.2 == col && last.3 == colour {
             last.2 += cells;
@@ -229,30 +292,63 @@ impl Element for TerminalElement {
         None
     }
 
-    fn request_layout(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
         (window.request_layout(style, [], cx), ())
     }
 
-    fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> Prepainted {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "baselined at 225 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
+    )]
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Prepainted {
         let m = metrics(window, cx);
         let (cw, ch) = (m.cell_width, m.cell_height);
         let cols = ((f32::from(bounds.size.width) / cw).floor() as u16).max(2);
         let rows = ((f32::from(bounds.size.height) / ch).floor() as u16).max(1);
-        let grid = GridSize { cols, rows, cell_width: cw, cell_height: ch };
+        let grid = GridSize {
+            cols,
+            rows,
+            cell_width: cw,
+            cell_height: ch,
+        };
         // The panel's size is the shell's: the grid follows it, and the pty
         // tells the program (SIGWINCH).
         self.session.update(cx, |s, _| {
             s.resize(grid);
-            s.drawn_at = Some(DrawnAt { origin: bounds.origin, cell_width: gpui_kit::px(cw), cell_height: gpui_kit::px(ch) });
+            s.drawn_at = Some(DrawnAt {
+                origin: bounds.origin,
+                cell_width: gpui_kit::px(cw),
+                cell_height: gpui_kit::px(ch),
+            });
         });
         crate::terminal::note_size(grid, cx);
         let colours = Colours::current(cx);
         let default_bg = colours.background;
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        let cell_rect = |col: usize, row: usize, cells: usize| Bounds { origin: point(bounds.origin.x + gpui_kit::px(cw * col as f32), bounds.origin.y + gpui_kit::px(ch * row as f32)), size: size(gpui_kit::px(cw * cells as f32), gpui_kit::px(ch)) };
+        let cell_rect = |col: usize, row: usize, cells: usize| Bounds {
+            origin: point(
+                bounds.origin.x + gpui_kit::px(cw * col as f32),
+                bounds.origin.y + gpui_kit::px(ch * row as f32),
+            ),
+            size: size(gpui_kit::px(cw * cells as f32), gpui_kit::px(ch)),
+        };
 
         let session = self.session.read(cx);
         let marked = session.marked.clone();
@@ -265,10 +361,13 @@ impl Element for TerminalElement {
         // Its blink's gone half, unless a program asked for a steady cursor
         // or another view has the keyboard (then it's a steady outline).
         let blinked_out = self.focused && !self.blink_shown && term.cursor_style().blinking;
-        let cursor_shown = cursor.shape != CursorShape::Hidden && (0..rows as i32).contains(&cursor_row) && !blinked_out;
+        let cursor_shown = cursor.shape != CursorShape::Hidden
+            && (0..rows as i32).contains(&cursor_row)
+            && !blinked_out;
         // Focused, the usual block in the accent; not, an outline of it, as
         // SwiftTerm draws it when another view has the keyboard.
-        let solid_cursor = cursor_shown && self.focused && cursor.shape == CursorShape::Block && marked.is_empty();
+        let solid_cursor =
+            cursor_shown && self.focused && cursor.shape == CursorShape::Block && marked.is_empty();
         let set = content.colors;
 
         let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
@@ -292,7 +391,10 @@ impl Element for TerminalElement {
             if cell.flags.contains(Flags::DIM) {
                 fg = dim(fg, bg);
             }
-            let selected = selection.is_some_and(|s| s.contains(point) || (wide && s.contains(GridPoint::new(point.line, point.column + 1))));
+            let selected = selection.is_some_and(|s| {
+                s.contains(point)
+                    || (wide && s.contains(GridPoint::new(point.line, point.column + 1)))
+            });
             if selected {
                 bg = hsla_rgb(colours.selection);
             }
@@ -306,13 +408,45 @@ impl Element for TerminalElement {
             if bg != default_bg {
                 push_background(row, col, cells, bg, &mut bg_cells);
             }
-            let c = if cell.c.is_control() || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) { ' ' } else { cell.c };
-            let (bold, italic) = (cell.flags.contains(Flags::BOLD), cell.flags.contains(Flags::ITALIC));
-            let (underline, strike) = (cell.flags.intersects(Flags::ALL_UNDERLINES), cell.flags.contains(Flags::STRIKEOUT));
-            let extend = runs.last().is_some_and(|(r, run)| *r == row && run.column + run.cells == col && run.same_look(fg, bold, italic, underline, strike) && !wide);
+            let c = if cell.c.is_control() || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                ' '
+            } else {
+                cell.c
+            };
+            let (bold, italic) = (
+                cell.flags.contains(Flags::BOLD),
+                cell.flags.contains(Flags::ITALIC),
+            );
+            let (underline, strike) = (
+                cell.flags.intersects(Flags::ALL_UNDERLINES),
+                cell.flags.contains(Flags::STRIKEOUT),
+            );
+            let extend = runs.last().is_some_and(|(r, run)| {
+                *r == row
+                    && run.column + run.cells == col
+                    && run.same_look(fg, bold, italic, underline, strike)
+                    && !wide
+            });
             if !extend {
-                runs.push((row, Run { column: col, cells: 0, text: String::new(), colour: fg, bold, italic, underline, strike, wide }));
+                runs.push((
+                    row,
+                    Run {
+                        column: col,
+                        cells: 0,
+                        text: String::new(),
+                        colour: fg,
+                        bold,
+                        italic,
+                        underline,
+                        strike,
+                        wide,
+                    },
+                ));
             }
+            #[expect(
+                clippy::expect_used,
+                reason = "a run is pushed just above whenever the list is empty"
+            )]
             let (_, run) = runs.last_mut().expect("a run");
             run.text.push(c);
             for extra in cell.zerowidth().into_iter().flatten() {
@@ -330,8 +464,23 @@ impl Element for TerminalElement {
         } else {
             let rect = cell_rect(cursor.point.column.0, cursor_row as usize, 1);
             match cursor.shape {
-                CursorShape::Beam => Some(CursorLook::Bar(Bounds { origin: rect.origin, size: size(gpui_kit::px(2.), rect.size.height) }, colours.cursor)),
-                CursorShape::Underline => Some(CursorLook::Bar(Bounds { origin: point(rect.origin.x, rect.origin.y + rect.size.height - gpui_kit::px(2.)), size: size(rect.size.width, gpui_kit::px(2.)) }, colours.cursor)),
+                CursorShape::Beam => Some(CursorLook::Bar(
+                    Bounds {
+                        origin: rect.origin,
+                        size: size(gpui_kit::px(2.), rect.size.height),
+                    },
+                    colours.cursor,
+                )),
+                CursorShape::Underline => Some(CursorLook::Bar(
+                    Bounds {
+                        origin: point(
+                            rect.origin.x,
+                            rect.origin.y + rect.size.height - gpui_kit::px(2.),
+                        ),
+                        size: size(rect.size.width, gpui_kit::px(2.)),
+                    },
+                    colours.cursor,
+                )),
                 _ => Some(CursorLook::Outline(rect, colours.cursor)),
             }
         };
@@ -359,8 +508,15 @@ impl Element for TerminalElement {
                 font,
                 color: colour,
                 background_color: None,
-                underline: run.underline.then_some(UnderlineStyle { thickness: gpui_kit::px(1.), color: Some(colour), wavy: false }),
-                strikethrough: run.strike.then_some(StrikethroughStyle { thickness: gpui_kit::px(1.), color: Some(colour) }),
+                underline: run.underline.then_some(UnderlineStyle {
+                    thickness: gpui_kit::px(1.),
+                    color: Some(colour),
+                    wavy: false,
+                }),
+                strikethrough: run.strike.then_some(StrikethroughStyle {
+                    thickness: gpui_kit::px(1.),
+                    color: Some(colour),
+                }),
             };
             // Every character in its own cell, whatever its glyph's width.
             let force = (!run.wide).then_some(gpui_kit::px(cw));
@@ -369,15 +525,48 @@ impl Element for TerminalElement {
         }
         let marked = (!marked.is_empty()).then(|| {
             let colour = rgb_hsla(colours.foreground);
-            let style = TextRun { len: marked.len(), font: m.font.clone(), color: colour, background_color: None, underline: Some(UnderlineStyle { thickness: gpui_kit::px(1.), color: Some(colour), wavy: false }), strikethrough: None };
+            let style = TextRun {
+                len: marked.len(),
+                font: m.font.clone(),
+                color: colour,
+                background_color: None,
+                underline: Some(UnderlineStyle {
+                    thickness: gpui_kit::px(1.),
+                    color: Some(colour),
+                    wavy: false,
+                }),
+                strikethrough: None,
+            };
             let shaped = text.shape_line(marked.into(), m.size, &[style], None);
             let rect = cell_rect(cursor_cell.0, cursor_cell.1, 1);
-            (Bounds { origin: rect.origin, size: size(shaped.width.max(rect.size.width), rect.size.height) }, shaped)
+            (
+                Bounds {
+                    origin: rect.origin,
+                    size: size(shaped.width.max(rect.size.width), rect.size.height),
+                },
+                shaped,
+            )
         });
-        Prepainted { backgrounds, lines, cursor: cursor_look, marked, hitbox, cell_height: gpui_kit::px(ch) }
+        Prepainted {
+            backgrounds,
+            lines,
+            cursor: cursor_look,
+            marked,
+            hitbox,
+            cell_height: gpui_kit::px(ch),
+        }
     }
 
-    fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), p: &mut Prepainted, window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        p: &mut Prepainted,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let background = Colours::current(cx).background_hsla();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for (rect, colour) in &p.backgrounds {
@@ -387,18 +576,31 @@ impl Element for TerminalElement {
                 let _ = line.paint(*origin, p.cell_height, TextAlign::Left, None, window, cx);
             }
             match &p.cursor {
-                Some(CursorLook::Outline(rect, colour)) => window.paint_quad(outline(*rect, *colour, BorderStyle::Solid)),
+                Some(CursorLook::Outline(rect, colour)) => {
+                    window.paint_quad(outline(*rect, *colour, BorderStyle::Solid))
+                }
                 Some(CursorLook::Bar(rect, colour)) => window.paint_quad(fill(*rect, *colour)),
                 Some(CursorLook::Block) | None => {}
             }
             if let Some((rect, line)) = &p.marked {
                 window.paint_quad(fill(*rect, background));
-                let _ = line.paint(rect.origin, p.cell_height, TextAlign::Left, None, window, cx);
+                let _ = line.paint(
+                    rect.origin,
+                    p.cell_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
         });
 
         let focus = self.session.read(cx).focus.clone();
-        window.handle_input(&focus, ElementInputHandler::new(bounds, self.session.clone()), cx);
+        window.handle_input(
+            &focus,
+            ElementInputHandler::new(bounds, self.session.clone()),
+            cx,
+        );
         window.set_cursor_style(CursorStyle::IBeam, &p.hitbox);
 
         let (session, hitbox) = (self.session.clone(), p.hitbox.clone());

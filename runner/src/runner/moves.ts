@@ -1,5 +1,5 @@
 // Moving a thread to another runner: this runner's side of each step
-// (src/moves.ts decides when; docs/protocol.md, "Moving a thread to
+// (src/moves.ts decides when; docs/protocol/moves.md, "Moving a thread to
 // another runner"). Part of the Runner (runner.ts); each method's `this` is
 // the Runner.
 //
@@ -32,6 +32,7 @@ import { isPermissionMode } from '../protocol.ts';
 import { isThreadIdShape } from '../thread-id.ts';
 import { fitReview, keepPictureMarkers } from '../reviews.ts';
 import { cleanUpWorktree, makeWorktree, MAIN, parseCheckouts, realpath, type WorktreeRecord } from '../worktrees.ts';
+import { runningSession } from '../cli-session.ts';
 
 // What T placed for a move, so adopting after a restart and throwing it
 // away after a failure both know (<home>/moves/<moveId>/placed.json).
@@ -722,7 +723,7 @@ export const movesPart = {
     const shells = rt.tasks.filter((t) => t.kind !== 'agent').length;
     if (shells) leftBehind.push(`${shells} background ${shells === 1 ? 'job was' : 'jobs were'} stopped, as they can't move.`);
     this.flushDeltas(st);
-    if (rt.session && !rt.closing) {
+    if (runningSession(rt)) {
       this.rememberStoppedWork(st);
       this.releaseSession(st);
     }
@@ -1192,7 +1193,7 @@ export const movesPart = {
     // The turn ends by itself if it can; if not, closing its CLI ends it.
     await waitFor(() => Boolean(rt.turn), opts.turnGraceMs ?? 30_000);
     this.flushDeltas(st);
-    if (rt.session && !rt.closing) {
+    if (runningSession(rt)) {
       this.rememberStoppedWork(st);
       this.releaseSession(st);
     }
@@ -1275,7 +1276,7 @@ export const movesPart = {
     if (!st?.rec.waitingForToken) return;
     delete st.rec.waitingForToken;
     this.markDirty(st);
-    if (st.rt.session && !st.rt.closing) this.releaseSession(st);
+    if (runningSession(st.rt)) this.releaseSession(st);
     const queued = st.rec.queue.length > 0;
     this.releaseTurns(threadId, 'token');
     if (!queued && this.bucket(st.rec) === 'inbox') this.carryOn(st, CARRY_ON_TOKEN);

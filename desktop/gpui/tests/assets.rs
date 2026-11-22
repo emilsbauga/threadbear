@@ -12,6 +12,9 @@ fn icons_are_embedded_even_in_debug_builds() {
         // RustEmbed reads an owned buffer from disk in its default debug mode.
         // Borrowed bytes prove these survive copying the binary off its host.
         assert!(matches!(bytes, Cow::Borrowed(_)), "{name} came from disk");
-        assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"), "{name}");
+        assert!(
+            std::str::from_utf8(&bytes).unwrap().contains("<svg"),
+            "{name}"
+        );
     }
 }

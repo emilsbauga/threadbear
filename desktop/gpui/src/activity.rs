@@ -90,19 +90,46 @@ fn record(mut e: ActivityEvent) {
 }
 
 /// From the app's start: records nothing unless it's switched on.
-pub(crate) fn install(app: WeakEntity<Threadbear>, main: AnyWindowHandle, home: &Path, on: bool, showing: Vec<String>, cx: &mut App) {
+pub(crate) fn install(
+    app: WeakEntity<Threadbear>,
+    main: AnyWindowHandle,
+    home: &Path,
+    on: bool,
+    showing: Vec<String>,
+    cx: &mut App,
+) {
     let (writer, lines) = mpsc::channel();
     let folder = home.join("activity");
-    let _ = std::thread::Builder::new().name("activity log".into()).spawn(move || write_lines(folder, lines));
-    let build = crate::installed::launch().build.as_ref().map(|b| b.short.clone()).filter(|s| !s.is_empty());
+    let _ = std::thread::Builder::new()
+        .name("activity log".into())
+        .spawn(move || write_lines(folder, lines));
+    let build = crate::installed::launch()
+        .build
+        .as_ref()
+        .map(|b| b.short.clone())
+        .filter(|s| !s.is_empty());
     RECORDER.with(|r| {
-        *r.borrow_mut() = Some(Recorder { app, main, writer, build: build.clone(), click: None, key: None, place: None, showing: Some(showing.clone()), hover: None, app_active: false, last_window: None });
+        *r.borrow_mut() = Some(Recorder {
+            app,
+            main,
+            writer,
+            build: build.clone(),
+            click: None,
+            key: None,
+            place: None,
+            showing: Some(showing.clone()),
+            hover: None,
+            app_active: false,
+            last_window: None,
+        });
     });
     ON.store(on, Ordering::Relaxed);
     // A shortcut is noted before it's handled, so a menu item's command can
     // claim it (`menu_chosen`), and written after, if none did.
-    cx.intercept_keystrokes(|event, _, _| key_down(&event.keystroke)).detach();
-    cx.observe_keystrokes(|_, window, cx| key_handled(window, cx)).detach();
+    cx.intercept_keystrokes(|event, _, _| key_down(&event.keystroke))
+        .detach();
+    cx.observe_keystrokes(|_, window, cx| key_handled(window, cx))
+        .detach();
     let mut launch = event("launch");
     launch.version = Some(env!("CARGO_PKG_VERSION").into());
     launch.build = build;
@@ -143,13 +170,25 @@ pub(crate) fn flush() {
 /// with its name and size, or from the window's root with none (tips.rs).
 /// The first part of a press to arrive starts it; it's written once the
 /// press has been dispatched, named by the smallest tip under it.
-pub(crate) fn press(e: &MouseDownEvent, claim: Option<(f32, SharedString)>, window: &mut Window, cx: &mut App) {
+pub(crate) fn press(
+    e: &MouseDownEvent,
+    claim: Option<(f32, SharedString)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     if !is_on() {
         return;
     }
     let first = with(|r| {
         let first = r.click.is_none();
-        let pending = r.click.get_or_insert_with(|| PendingClick { window: window.window_handle(), position: e.position, button: e.button, clicks: e.click_count, modifiers: e.modifiers, best: None });
+        let pending = r.click.get_or_insert_with(|| PendingClick {
+            window: window.window_handle(),
+            position: e.position,
+            button: e.button,
+            clicks: e.click_count,
+            modifiers: e.modifiers,
+            best: None,
+        });
         if let Some((area, text)) = claim {
             if pending.best.as_ref().is_none_or(|(best, _)| area < *best) {
                 pending.best = Some((area, text));
@@ -163,14 +202,30 @@ pub(crate) fn press(e: &MouseDownEvent, claim: Option<(f32, SharedString)>, wind
 }
 
 pub(crate) fn flush_click(cx: &mut App) {
-    let Some((pending, app, main)) = with(|r| r.click.take().map(|c| (c, r.app.clone(), r.main))).flatten() else { return };
+    let Some((pending, app, main)) =
+        with(|r| r.click.take().map(|c| (c, r.app.clone(), r.main))).flatten()
+    else {
+        return;
+    };
     let mut e = event("click");
-    e.target = pending.best.as_ref().and_then(|(_, text)| ActivityEvent::label(text));
+    e.target = pending
+        .best
+        .as_ref()
+        .and_then(|(_, text)| ActivityEvent::label(text));
     e.window = Some(window_name(pending.window, main, &app, cx));
     if let Some(app) = app.upgrade() {
         if pending.window == main {
-            let at = threadbear_dock::Point::new(f64::from(pending.position.x), f64::from(pending.position.y));
-            e.panel = app.read(cx).dock.read(cx).controller.panel_at(at, threadbear_dock::DockWindow::Main).map(|p| rules::panel_name(&p));
+            let at = threadbear_dock::Point::new(
+                f64::from(pending.position.x),
+                f64::from(pending.position.y),
+            );
+            e.panel = app
+                .read(cx)
+                .dock
+                .read(cx)
+                .controller
+                .panel_at(at, threadbear_dock::DockWindow::Main)
+                .map(|p| rules::panel_name(&p));
         }
         e.thread = app.read(cx).selected.clone();
     }
@@ -202,8 +257,12 @@ fn key_down(keystroke: &Keystroke) {
 }
 
 fn key_handled(window: &mut Window, cx: &mut App) {
-    let Some(Some(name)) = with(|r| r.key.take()) else { return };
-    let Some((app, main)) = with(|r| (r.app.clone(), r.main)) else { return };
+    let Some(Some(name)) = with(|r| r.key.take()) else {
+        return;
+    };
+    let Some((app, main)) = with(|r| (r.app.clone(), r.main)) else {
+        return;
+    };
     let mut e = event("key");
     e.target = Some(name);
     let here = window_name(window.window_handle(), main, &app, cx);
@@ -236,10 +295,14 @@ pub(crate) fn hover(text: &str, window: &mut Window, cx: &mut App) {
     if !is_on() {
         return;
     }
-    let Some(label) = ActivityEvent::label(text) else { return };
+    let Some(label) = ActivityEvent::label(text) else {
+        return;
+    };
     let now = Instant::now();
     let seen = with(|r| {
-        let seen = r.hover.as_ref().is_some_and(|(last, at)| *last == label && now.duration_since(*at) < Duration::from_secs(5));
+        let seen = r.hover.as_ref().is_some_and(|(last, at)| {
+            *last == label && now.duration_since(*at) < Duration::from_secs(5)
+        });
         if !seen {
             r.hover = Some((label.clone(), now));
         }
@@ -248,7 +311,9 @@ pub(crate) fn hover(text: &str, window: &mut Window, cx: &mut App) {
     if seen != Some(false) {
         return;
     }
-    let Some((app, main)) = with(|r| (r.app.clone(), r.main)) else { return };
+    let Some((app, main)) = with(|r| (r.app.clone(), r.main)) else {
+        return;
+    };
     let mut e = event("hover");
     e.target = Some(label);
     let here = window_name(window.window_handle(), main, &app, cx);
@@ -260,7 +325,13 @@ pub(crate) fn hover(text: &str, window: &mut Window, cx: &mut App) {
 
 /// Where the window is now, once per change: the sidebar's view, the thread
 /// or sub-agent open, a project's page or a view's own page.
-pub(crate) fn view(mode: &str, thread: Option<&str>, subagent: Option<&str>, project: Option<&str>, page: Option<&str>) {
+pub(crate) fn view(
+    mode: &str,
+    thread: Option<&str>,
+    subagent: Option<&str>,
+    project: Option<&str>,
+    page: Option<&str>,
+) {
     if !is_on() {
         return;
     }
@@ -286,7 +357,13 @@ pub(crate) fn view(mode: &str, thread: Option<&str>, subagent: Option<&str>, pro
 /// windows of their own. Written when that changes, not for every divider
 /// dragged.
 pub(crate) fn showing(layout: &threadbear_dock::DockLayout) -> Vec<String> {
-    layout.groups().into_iter().map(|g| g.selected).chain(layout.floating.iter().map(|f| f.panel.clone())).map(|p| rules::panel_name(&p)).collect()
+    layout
+        .groups()
+        .into_iter()
+        .map(|g| g.selected)
+        .chain(layout.floating.iter().map(|f| f.panel.clone()))
+        .map(|p| rules::panel_name(&p))
+        .collect()
 }
 
 pub(crate) fn panels(now: Vec<String>) {
@@ -339,7 +416,9 @@ pub(crate) fn answered(thread: &str, decision: &str) {
 /// `looking_changed`): the app coming to the front or going behind another
 /// app, and another of its windows coming to the front.
 pub(crate) fn window_active(window: u64, active: bool, cx: &mut App) {
-    let Some(was) = with(|r| r.app_active) else { return };
+    let Some(was) = with(|r| r.app_active) else {
+        return;
+    };
     if active {
         with(|r| r.app_active = true);
         if !was {
@@ -356,10 +435,17 @@ pub(crate) fn window_active(window: u64, active: bool, cx: &mut App) {
             // being updated. Opening Settings with the log on crashed the app
             // (Mike, 12 Nov).
             cx.defer(move |cx| {
-                let Some((app, main)) = with(|r| (r.app.clone(), r.main)) else { return };
-                let handle = cx.windows().into_iter().find(|w| w.window_id().as_u64() == window);
+                let Some((app, main)) = with(|r| (r.app.clone(), r.main)) else {
+                    return;
+                };
+                let handle = cx
+                    .windows()
+                    .into_iter()
+                    .find(|w| w.window_id().as_u64() == window);
                 let mut e = e;
-                e.window = Some(handle.map_or_else(|| "window".to_owned(), |h| window_name(h, main, &app, cx)));
+                e.window = Some(
+                    handle.map_or_else(|| "window".to_owned(), |h| window_name(h, main, &app, cx)),
+                );
                 record(e);
             });
         }
@@ -370,7 +456,9 @@ pub(crate) fn window_active(window: u64, active: bool, cx: &mut App) {
     // window, some only ever through it).
     if was && !crate::thread::is_looking() {
         cx.defer(|_| {
-            if !crate::thread::is_looking() && with(|r| std::mem::replace(&mut r.app_active, false)) == Some(true) {
+            if !crate::thread::is_looking()
+                && with(|r| std::mem::replace(&mut r.app_active, false)) == Some(true)
+            {
                 app_state("inactive");
             }
         });
@@ -384,11 +472,20 @@ fn app_state(state: &str) {
 }
 
 /// "main", "settings", or "window" for another of the app's windows.
-fn window_name(window: AnyWindowHandle, main: AnyWindowHandle, app: &WeakEntity<Threadbear>, cx: &App) -> String {
+fn window_name(
+    window: AnyWindowHandle,
+    main: AnyWindowHandle,
+    app: &WeakEntity<Threadbear>,
+    cx: &App,
+) -> String {
     if window == main {
         return "main".into();
     }
-    if app.upgrade().and_then(|a| a.read(cx).settings_window.as_ref().map(|(w, _)| *w)) == Some(window) {
+    if app
+        .upgrade()
+        .and_then(|a| a.read(cx).settings_window.as_ref().map(|(w, _)| *w))
+        == Some(window)
+    {
         return "settings".into();
     }
     "window".into()
@@ -417,7 +514,10 @@ fn write_lines(folder: PathBuf, lines: mpsc::Receiver<Write>) {
                 }
                 if f.metadata().map_or(0, |m| m.len()) > rules::MAX_DAY_BYTES {
                     full = true;
-                    eprintln!("threadbear: {name} is past {} MB; nothing more is kept today", rules::MAX_DAY_BYTES / 1_048_576);
+                    eprintln!(
+                        "threadbear: {name} is past {} MB; nothing more is kept today",
+                        rules::MAX_DAY_BYTES / 1_048_576
+                    );
                     continue;
                 }
                 use std::io::Write as _;
@@ -441,7 +541,12 @@ fn open(folder: &Path, name: &str) -> Option<std::fs::File> {
     }
     // Time Machine leaves it out; it's only for working on the app.
     exclude_from_backup(folder);
-    let names: Vec<String> = std::fs::read_dir(folder).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+    let names: Vec<String> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
     for old in rules::expired(&names, threadbear_core::chrono::Local::now().date_naive()) {
         let _ = std::fs::remove_file(folder.join(old));
     }
@@ -462,12 +567,26 @@ fn exclude_from_backup(folder: &Path) {
     use std::os::unix::ffi::OsStrExt as _;
     const NAME: &[u8] = b"com.apple.metadata:com_apple_backup_excludeItem\0";
     const VALUE: [u8; 61] = [
-        0x62, 0x70, 0x6C, 0x69, 0x73, 0x74, 0x30, 0x30, 0x5F, 0x10, 0x11, 0x63, 0x6F, 0x6D, 0x2E, 0x61, 0x70, 0x70, 0x6C, 0x65, 0x2E, 0x62, 0x61, 0x63, 0x6B, 0x75, 0x70, 0x64, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1C,
+        0x62, 0x70, 0x6C, 0x69, 0x73, 0x74, 0x30, 0x30, 0x5F, 0x10, 0x11, 0x63, 0x6F, 0x6D, 0x2E,
+        0x61, 0x70, 0x70, 0x6C, 0x65, 0x2E, 0x62, 0x61, 0x63, 0x6B, 0x75, 0x70, 0x64, 0x08, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C,
     ];
-    let Ok(path) = std::ffi::CString::new(folder.as_os_str().as_bytes()) else { return };
+    let Ok(path) = std::ffi::CString::new(folder.as_os_str().as_bytes()) else {
+        return;
+    };
     // SAFETY: a nul-terminated path and name, and a value of the length given.
-    unsafe { libc::setxattr(path.as_ptr(), NAME.as_ptr().cast(), VALUE.as_ptr().cast(), VALUE.len(), 0, 0) };
+    unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            NAME.as_ptr().cast(),
+            VALUE.as_ptr().cast(),
+            VALUE.len(),
+            0,
+            0,
+        )
+    };
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -476,7 +595,12 @@ fn exclude_from_backup(_folder: &Path) {}
 impl Threadbear {
     /// A menu item's command, from the menu bar or its key (the shell's
     /// actions), noted, then run.
-    pub(crate) fn command_chosen(&mut self, command: crate::shell::Command, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn command_chosen(
+        &mut self,
+        command: crate::shell::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if is_on() {
             menu_chosen(self.menu_path(command, cx), self.selected.clone());
         }
@@ -502,22 +626,40 @@ impl Threadbear {
 /// says whether it's on, how many lines today has and the last few
 /// (`"last": N`).
 #[cfg(feature = "automation")]
-pub(crate) async fn automation(app: &WeakEntity<Threadbear>, window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
-    let home = app.read_with(cx, |t, _| t.settings.path().parent().map(Path::to_path_buf)).map_err(|e| e.to_string())?.ok_or("no data folder")?;
+pub(crate) async fn automation(
+    app: &WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
+    let home = app
+        .read_with(cx, |t, _| t.settings.path().parent().map(Path::to_path_buf))
+        .map_err(|e| e.to_string())?
+        .ok_or("no data folder")?;
     let weak = app.clone();
     cx.update_window(window, |_, window, cx| -> Result<(), String> {
         crate::thread::scripted_input(|| {
-            let Some(app) = weak.upgrade() else { return Err("the app has gone".to_owned()) };
+            let Some(app) = weak.upgrade() else {
+                return Err("the app has gone".to_owned());
+            };
             if let Some(on) = cmd["on"].as_bool() {
                 app.update(cx, |t, cx| t.set_activity_log(on, cx));
             }
             if let Some(tip) = cmd["click"].as_str() {
-                let button = if cmd["button"] == "right" { MouseButton::Right } else { MouseButton::Left };
+                let button = if cmd["button"] == "right" {
+                    MouseButton::Right
+                } else {
+                    MouseButton::Left
+                };
                 crate::tips::simulate_press(tip, button, window, cx)?;
                 flush_click(cx);
             }
             if let Some(key) = cmd["key"].as_str() {
-                let chord = if cmd["command"].as_bool() == Some(true) { format!("secondary-{key}") } else { key.to_owned() };
+                let chord = if cmd["command"].as_bool() == Some(true) {
+                    format!("secondary-{key}")
+                } else {
+                    key.to_owned()
+                };
                 use gpui_kit::test::TestWindowExt as _;
                 window.press(&chord, cx);
             }
@@ -526,21 +668,41 @@ pub(crate) async fn automation(app: &WeakEntity<Threadbear>, window: AnyWindowHa
     })
     .map_err(|e| e.to_string())??;
     if cmd["window"] == "settings" {
-        app.update(cx, |t, cx| t.open_settings(None, cx)).map_err(|e| e.to_string())?;
+        app.update(cx, |t, cx| t.open_settings(None, cx))
+            .map_err(|e| e.to_string())?;
         // The window opens once that update is over.
-        cx.background_executor().timer(Duration::from_millis(300)).await;
-        let handle = app.read_with(cx, |t, _| t.settings_window.as_ref().map(|(w, _)| *w)).map_err(|e| e.to_string())?.ok_or("Settings didn't open")?;
+        cx.background_executor()
+            .timer(Duration::from_millis(300))
+            .await;
+        let handle = app
+            .read_with(cx, |t, _| t.settings_window.as_ref().map(|(w, _)| *w))
+            .map_err(|e| e.to_string())?
+            .ok_or("Settings didn't open")?;
         // As its window's activation observer does (settings_window.rs):
         // inside the app's own update.
-        app.update(cx, |t, cx| t.looking_changed(handle.window_id().as_u64(), true, cx)).map_err(|e| e.to_string())?;
+        app.update(cx, |t, cx| {
+            t.looking_changed(handle.window_id().as_u64(), true, cx)
+        })
+        .map_err(|e| e.to_string())?;
     }
     // A key's line waits for its dispatch to finish, as the Swift app's waits a turn.
-    cx.background_executor().timer(Duration::from_millis(300)).await;
+    cx.background_executor()
+        .timer(Duration::from_millis(300))
+        .await;
     flush();
-    let file = home.join("activity").join(rules::file_name(threadbear_core::chrono::Local::now().date_naive()));
+    let file = home.join("activity").join(rules::file_name(
+        threadbear_core::chrono::Local::now().date_naive(),
+    ));
     let text = std::fs::read_to_string(file).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let last = cmd["last"].as_u64().unwrap_or(3) as usize;
-    let tail: String = lines[lines.len().saturating_sub(last)..].iter().map(|l| format!(" | {l}")).collect();
-    Ok(serde_json::Value::from(format!("ok {} {} lines today{tail}", if is_on() { "on" } else { "off" }, lines.len())))
+    let tail: String = lines[lines.len().saturating_sub(last)..]
+        .iter()
+        .map(|l| format!(" | {l}"))
+        .collect();
+    Ok(serde_json::Value::from(format!(
+        "ok {} {} lines today{tail}",
+        if is_on() { "on" } else { "off" },
+        lines.len()
+    )))
 }

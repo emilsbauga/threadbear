@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
-function checkout(feature: string) {
+function checkout(feature: string, typecheck = 'true') {
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tb-check-features-'));
   const put = (rel: string, text: string) => {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
@@ -37,10 +37,13 @@ function checkout(feature: string) {
   put('package.json', JSON.stringify({ scripts: { 'convex:typecheck': 'true', 'web:typecheck': 'true', 'web:test': 'true', lint: 'true', 'lint:files': 'true' } }));
   put('node_modules/.keep', '');
   put('app/Tools/ok.mjs', '');
-  put('app/Tools/mock-runner/ok.mjs', '');
+  put('mock-runner/ok.mjs', '');
   put('docs/gpui-port/features.md', '| `highlights.board` | The board |\n');
   put('features/board.feature', feature);
   put('features/steps/board.steps.ts', '');
+  // The steps' typecheck (features/tsconfig.json), a stand-in too.
+  put('features/package.json', JSON.stringify({ scripts: { typecheck } }));
+  put('features/node_modules/.keep', '');
   return root;
 }
 
@@ -88,6 +91,37 @@ test('a change nowhere near the specs skips it', () => {
     const r = quick(root, ['convex/x.ts']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /^skip  feature pairing/m, r.out);
+    assert.match(r.out, /^skip  features typecheck/m, r.out);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The steps and tools are TypeScript Node runs as it is: before features/ had
+// a tsconfig, a type error there showed up only when the Desktop workflow ran
+// that spec. --quick typechecks them when they, or the one file outside
+// features/ they import, changed.
+test("a type error in the specs' steps fails --quick, and a change to what they import runs it", () => {
+  // node, not `echo ...; exit 2`: npm runs scripts with cmd.exe on Windows,
+  // where ; doesn't end a command and the stand-in passed.
+  const root = checkout(perScenario, `node -e "console.log('steps/board.steps.ts(1,1): error TS2339: nope'); process.exit(2)"`);
+  try {
+    for (const changed of ['features/steps/board.steps.ts', 'desktop/scripts/own-folder.ts']) {
+      const r = quick(root, [changed]);
+      assert.equal(r.status, 1, `${changed}: ${r.out}`);
+      assert.match(r.out, /^FAIL  features typecheck/m, `${changed}: ${r.out}`);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the specs' steps typechecking passes --quick", () => {
+  const root = checkout(perScenario);
+  try {
+    const r = quick(root, ['features/support/world.ts']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /^ok    features typecheck/m, r.out);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

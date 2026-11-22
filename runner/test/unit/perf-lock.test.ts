@@ -505,7 +505,7 @@ test('worker death reaps children that Node launched without the proof descripto
     fs.writeFileSync(${JSON.stringify(workerPid)}, String(process.pid));
     spawn('perl', ['-MPOSIX', '-e', 'POSIX::close(197); $SIG{HUP}=$SIG{TERM}="IGNORE"; open(my $f, ">", $ARGV[0]); print {$f} $$; close $f; sleep 1 while 1;', ${JSON.stringify(pidfile)}], { stdio: 'ignore' });
     setInterval(() => {}, 1000);`);
-  const first = h.run([process.execPath, entry]);
+  h.run([process.execPath, entry]);
   await until(() => fs.existsSync(pidfile) && Number(fs.readFileSync(pidfile, 'utf8')) > 1, 'background child did not start');
   const pid = Number(fs.readFileSync(pidfile, 'utf8'));
   const firstBorn = born(String(pid));

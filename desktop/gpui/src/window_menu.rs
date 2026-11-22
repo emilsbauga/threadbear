@@ -76,13 +76,55 @@ impl EditItem {
     pub(crate) fn key(self) -> Option<&'static str> {
         let mac = cfg!(target_os = "macos");
         Some(match self {
-            EditItem::Undo => if mac { "⌘Z" } else { "Ctrl+Z" },
-            EditItem::Redo => if mac { "⇧⌘Z" } else { "Ctrl+Y" },
-            EditItem::Cut => if mac { "⌘X" } else { "Ctrl+X" },
-            EditItem::Copy => if mac { "⌘C" } else { "Ctrl+C" },
-            EditItem::Paste => if mac { "⌘V" } else { "Ctrl+V" },
-            EditItem::PasteAndMatchStyle => if mac { "⌥⇧⌘V" } else { "Ctrl+Shift+V" },
-            EditItem::SelectAll => if mac { "⌘A" } else { "Ctrl+A" },
+            EditItem::Undo => {
+                if mac {
+                    "⌘Z"
+                } else {
+                    "Ctrl+Z"
+                }
+            }
+            EditItem::Redo => {
+                if mac {
+                    "⇧⌘Z"
+                } else {
+                    "Ctrl+Y"
+                }
+            }
+            EditItem::Cut => {
+                if mac {
+                    "⌘X"
+                } else {
+                    "Ctrl+X"
+                }
+            }
+            EditItem::Copy => {
+                if mac {
+                    "⌘C"
+                } else {
+                    "Ctrl+C"
+                }
+            }
+            EditItem::Paste => {
+                if mac {
+                    "⌘V"
+                } else {
+                    "Ctrl+V"
+                }
+            }
+            EditItem::PasteAndMatchStyle => {
+                if mac {
+                    "⌥⇧⌘V"
+                } else {
+                    "Ctrl+Shift+V"
+                }
+            }
+            EditItem::SelectAll => {
+                if mac {
+                    "⌘A"
+                } else {
+                    "Ctrl+A"
+                }
+            }
             EditItem::Delete => return None,
         })
     }
@@ -121,14 +163,26 @@ pub(crate) fn install(main: &mut Window, cx: &mut App) {
         with_front_window(cx, |window| window.zoom_window());
     });
     cx.on_action(|_: &crate::shell::BringAllToFront, cx| bring_all_to_front(cx));
-    let paste_plain = if cfg!(target_os = "macos") { "alt-shift-cmd-v" } else { "ctrl-shift-v" };
-    cx.bind_keys([KeyBinding::new(paste_plain, crate::composer_spelling::PasteAndMatchStyle, None)]);
+    let paste_plain = if cfg!(target_os = "macos") {
+        "alt-shift-cmd-v"
+    } else {
+        "ctrl-shift-v"
+    };
+    cx.bind_keys([KeyBinding::new(
+        paste_plain,
+        crate::composer_spelling::PasteAndMatchStyle,
+        None,
+    )]);
     // ⌘Z outside a text box too, where a text box's own binding doesn't
     // reach: it's how an archive comes back (shell.rs,
     // `undo_key_is_archive`). A Mac's only: elsewhere it'd be Ctrl+Z, which
     // a terminal panel needs for itself.
     if cfg!(target_os = "macos") {
-        cx.bind_keys([KeyBinding::new("cmd-z", gpui_kit::component::input::Undo, None)]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-z",
+            gpui_kit::component::input::Undo,
+            None,
+        )]);
     }
 }
 
@@ -142,7 +196,9 @@ fn with_front_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
 /// front (`close_window`).
 pub(crate) fn close_front_window(cx: &mut App) {
     if let Some(front) = cx.active_window() {
-        front.update(cx, |_, window, cx| close_window(window, cx)).ok();
+        front
+            .update(cx, |_, window, cx| close_window(window, cx))
+            .ok();
     }
 }
 
@@ -163,7 +219,10 @@ pub(crate) fn close_window(window: &mut Window, cx: &mut App) {
     {
         // Off the Mac there's no asking the window as its button does, so
         // the main window quits and another just goes.
-        if cx.try_global::<MainWindow>().is_some_and(|m| m.0 == window.window_handle()) {
+        if cx
+            .try_global::<MainWindow>()
+            .is_some_and(|m| m.0 == window.window_handle())
+        {
             cx.quit();
         } else {
             window.remove_window();
@@ -177,7 +236,9 @@ pub(crate) fn ns_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app
     use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let handle = HasWindowHandle::window_handle(window).ok()?;
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return None };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return None;
+    };
     // SAFETY: the window's content view, alive while the window is, which
     // it is for this call.
     let view: &NSView = unsafe { &*(h.ns_view.as_ptr() as *const NSView) };
@@ -193,7 +254,9 @@ fn after_this<T: objc2::Message>(target: &T, action: objc2::runtime::Sel) {
     let none: Option<&objc2::runtime::AnyObject> = None;
     // SAFETY: NSObject's performSelector:withObject:afterDelay:, with a
     // selector the target answers and a nil argument.
-    let _: () = unsafe { objc2::msg_send![target, performSelector: action, withObject: none, afterDelay: 0.0f64] };
+    let _: () = unsafe {
+        objc2::msg_send![target, performSelector: action, withObject: none, afterDelay: 0.0f64]
+    };
 }
 
 /// Window > Bring All to Front: every one of the app's windows over other
@@ -204,18 +267,27 @@ pub(crate) fn bring_all_to_front(cx: &mut App) {
         use objc2::MainThreadMarker;
         use objc2_app_kit::NSApplication;
         let _ = cx;
-        let Some(mtm) = MainThreadMarker::new() else { return };
-        after_this(&*NSApplication::sharedApplication(mtm), objc2::sel!(arrangeInFront:));
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        after_this(
+            &*NSApplication::sharedApplication(mtm),
+            objc2::sel!(arrangeInFront:),
+        );
     }
     #[cfg(not(target_os = "macos"))]
     {
         let front = cx.active_window();
         let windows = cx.windows();
         for handle in windows.into_iter().filter(|w| Some(*w) != front) {
-            handle.update(cx, |_, window, _| window.activate_window()).ok();
+            handle
+                .update(cx, |_, window, _| window.activate_window())
+                .ok();
         }
         if let Some(front) = front {
-            front.update(cx, |_, window, _| window.activate_window()).ok();
+            front
+                .update(cx, |_, window, _| window.activate_window())
+                .ok();
         }
     }
 }
@@ -228,8 +300,12 @@ pub(crate) fn bring_all_to_front(cx: &mut App) {
 pub(crate) fn system_items(menu: &str, ours: &[String]) -> Vec<String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSApplication;
-    let Some(mtm) = MainThreadMarker::new() else { return Vec::new() };
-    let Some(bar) = NSApplication::sharedApplication(mtm).mainMenu() else { return Vec::new() };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
+    let Some(bar) = NSApplication::sharedApplication(mtm).mainMenu() else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for top in bar.itemArray().iter() {
         let Some(sub) = top.submenu() else { continue };

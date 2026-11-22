@@ -26,10 +26,75 @@ test("a df answer that can't be used doesn't stop the check, and is never run or
 });
 
 test('a check that fails on a host left short of room says so last', () => {
-  const s = setup({ h1: { state: 'free', dfAfter: macDf(0.5 * GiB) } });
+  const s = setup({ h1: { state: 'free', dfAfter: macDf(1.5 * GiB) } });
   const r = s.run('h1', 3600, '', { RUN_FAILS: '1' });
   assert.equal(r.status, 1, r.stdout + r.stderr);
-  assert.equal(r.stderr.trim().split('\n').at(-1), 'h1 had only 0.5 GiB free when this failed, and this check wants 8 GiB, which may be why. Free some space there and run it again.');
+  assert.equal(r.stderr.trim().split('\n').at(-1), 'h1 had only 1.5 GiB free when this failed, and this check wants 8 GiB, which may be why. Free some space there and run it again.');
+});
+
+// Under 1 GiB it ran out: what failed may have failed for want of space, and
+// the landing isn't to blame (20 Nov, the cloud box at 0.1 GiB mid-check).
+test('a check that fails on a host that ran out of disk during it runs again on another host', () => {
+  const s = setup({ h1: { state: 'free', outOfDisk: 1 }, h2: { state: 'free' } });
+  const r = s.run('h1,h2', 3600);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /h1 ran out of disk during this check \(0\.0 GiB free at the lowest\), so what failed there may have failed for want of space\. Running it again on another host\./);
+  assert.match(r.stdout, /ran on h2 now/);
+  assert.deepEqual(r.copies, ['h1', 'h2']);
+  // tb land reads the last host's lines as the check's.
+  assert.match(r.stdout.split(/^Checking on /m).at(-1)!, /^h2 /);
+  assert.deepEqual(r.left('h1'), []);
+});
+
+test('with only the one host, a check that ran it out of disk runs there again', () => {
+  const s = setup({ h1: { state: 'free', outOfDisk: 1 } });
+  const r = s.run('h1', 3600);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /h1 ran out of disk during this check .* Running it again there, after giving back idle build folders\./);
+  assert.equal(r.copies.length, 2);
+});
+
+test('a check only the host that ran out can take runs there again, not given up for one that cannot', () => {
+  // Touching app/ needs a Mac: the Linux host can't take it.
+  const s = setup({ h1: { state: 'free', outOfDisk: 1 }, h2: { state: 'free', os: 'Linux' } });
+  fs.mkdirSync(path.join(s.repo, 'app'));
+  fs.writeFileSync(path.join(s.repo, 'app', 'x.swift'), '\n');
+  const r = s.run('h1,h2', 3600);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /No other host could take it, so h1 is tried again/);
+  assert.deepEqual(r.copies, ['h1', 'h1']);
+});
+
+test('every host set aside for running out of disk comes back when none of the rest can take it', () => {
+  // h1 and h2 (Macs) each run out once; h3 is Linux and can't take a Mac check.
+  const s = setup({ h1: { state: 'free', outOfDisk: 1 }, h2: { state: 'free', outOfDisk: 1 }, h3: { state: 'free', os: 'Linux' } });
+  fs.mkdirSync(path.join(s.repo, 'app'));
+  fs.writeFileSync(path.join(s.repo, 'app', 'x.swift'), '\n');
+  const r = s.run('h1,h2,h3', 3600);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stderr, /so h1 is tried again/);
+  assert.match(r.stderr, /so h2 is tried again/);
+  assert.deepEqual(r.copies, ['h1', 'h2', 'h1']);
+});
+
+test('a check that runs out of disk every time ends as no host able to run it, and says so last', () => {
+  const s = setup({ h1: { state: 'free', outOfDisk: 9 }, h2: { state: 'free', outOfDisk: 9 } });
+  const r = s.run('h1,h2', 3600, '', { THREADBEAR_CHECK_BUSY_EXIT: '69' });
+  assert.equal(r.status, 69, r.stdout + r.stderr);
+  // h1, then h2, then h2 again (the only one left), then given up.
+  assert.equal(r.copies.length, 3, r.copies.join(' '));
+  assert.match(r.stderr.trim().split('\n').at(-1)!, /^This check failed because h2 ran out of disk during it \(0\.0 GiB free at the lowest\), not because of anything it checks: each of its 3 tries ran a host out of disk\./);
+  // Without the variable it's an ordinary failure's exit.
+  const plain = setup({ h1: { state: 'free', outOfDisk: 9 } }).run('h1', 3600);
+  assert.equal(plain.status, 1, plain.stdout + plain.stderr);
+});
+
+test('a check that fails with plenty of room left at its lowest is not run again', () => {
+  const s = setup({ h1: { state: 'free' }, h2: { state: 'free' } });
+  const r = s.run('h1,h2', 3600, '', { RUN_FAILS: '1', KEPT_KB: String(3 * GiB) });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.deepEqual(r.copies, ['h1']);
+  assert.doesNotMatch(r.stderr, /ran out of disk/);
 });
 
 test('a check that fails with plenty of room, or that passes on a low host, says nothing about it', () => {
@@ -152,10 +217,10 @@ test('a failure is judged by the disk as it failed, not after its temp files wen
   assert.match(r.stderr.trim().split('\n').at(-1)!, /^h1 had only 1\.0 GiB free when this failed/);
 
   // A write the full disk cut short leaves it empty: ask the host now instead.
-  const empty = setup({ h1: { state: 'free', dfAfter: macDf(0.5 * GiB) } });
+  const empty = setup({ h1: { state: 'free', dfAfter: macDf(1.5 * GiB) } });
   const e = empty.run('h1', 3600, '', { RUN_FAILS: '1', KEPT_EMPTY: '1' });
   assert.equal(e.status, 1, e.stdout + e.stderr);
-  assert.match(e.stderr, /h1 had only 0\.5 GiB free when this failed/);
+  assert.match(e.stderr, /h1 had only 1\.5 GiB free when this failed/);
 });
 
 // The host's side for real: a scratch copy whose check.sh fails, with temp

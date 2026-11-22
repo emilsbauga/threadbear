@@ -38,3 +38,6 @@ libc = "=0.2.191"
 [build-dependencies]
 # Compiles native/appkit_hooks.m on a Mac. Already in the build.
 cc = "=1.11.0"
+
+[lints]
+workspace = true

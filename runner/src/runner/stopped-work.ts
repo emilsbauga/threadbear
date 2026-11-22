@@ -8,6 +8,7 @@ import type { BackgroundTask as ProtocolBackgroundTask } from '../protocol.ts';
 import type { BackgroundTask } from '../adapters/types.ts';
 import type { ThreadState } from '../runner.ts';
 import { CARRY_ON_RESTART, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, stoppedWorkMessage } from '../runner.ts';
+import { runningSession } from '../cli-session.ts';
 
 export const stoppedWorkPart = {
   rememberStoppedWork(this: Runner, st: ThreadState): void {
@@ -138,7 +139,7 @@ export const stoppedWorkPart = {
     const out: { threadId: string; turnId: string; sessionId: string; quietMs: number }[] = [];
     for (const { rec, rt } of this.threads.values()) {
       const turn = rt.turn;
-      if (!turn || rt.deleted || !rt.session || rt.closing || rec.provider !== 'claude' || !rec.nativeSessionId) continue;
+      if (!turn || rt.deleted || !runningSession(rt) || rec.provider !== 'claude' || !rec.nativeSessionId) continue;
       if (turn.auto && !turn.cliStarted) continue;
       if (rec.status === 'waiting') continue;
       const quietMs = now - Math.max(turn.startedAt, rt.lastOutputAt ?? 0);

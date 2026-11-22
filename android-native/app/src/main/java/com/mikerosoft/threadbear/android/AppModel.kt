@@ -5,6 +5,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import com.mikerosoft.threadbear.kit.BackendApi
+import com.mikerosoft.threadbear.kit.CommandKey
+import com.mikerosoft.threadbear.kit.PendingCommand
+import com.mikerosoft.threadbear.kit.PendingCommands
 import com.mikerosoft.threadbear.kit.InboxSections
 import com.mikerosoft.threadbear.kit.Pairing
 import com.mikerosoft.threadbear.kit.PairingRequest
@@ -103,12 +106,14 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
 
     val folds = MutableStateFlow(SectionFolds.fromSaved(prefs.getStringSet("folds", null)?.toList()))
 
-    /** Archived (or hibernated) from here, hidden until the list agrees. */
-    val puttingAway = MutableStateFlow<Set<String>>(emptySet())
-    /** Renamed from here: the new title shows at once, until the list has it (or it fails). */
-    val renamed = MutableStateFlow<Map<String, String>>(emptyMap())
-    /** Stop pressed, until the turn ends. */
-    val stopping = MutableStateFlow<Set<String>>(emptySet())
+    /**
+     * Every command sent from here and waited on (archive, hibernate, rename,
+     * star, wake, mark read, bring back, Stop, reply buttons, card answers), by
+     * what it's about: the one place a control reads whether it's on its way,
+     * done, refused or timed out (the kit's PendingCommand). Its rows follow
+     * whichever backend is current.
+     */
+    val commands = PendingCommands<CommandKey>(scope, rows = { id -> _backend.flatMapLatest { it?.command(id) ?: emptyFlow() } })
 
     /** The inbox's and the shell's own state (ShellModel.kt): Pocket, Settings, row moves. */
     val shell: ShellModel by lazy { ShellModel(this, context, scope) }
@@ -193,7 +198,11 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         scope.launch {
             var was = false
             connected.collect { up ->
-                if (up && !was) _backend.value?.let { askIdentity(it) }
+                if (up && !was) {
+                    _backend.value?.let { askIdentity(it) }
+                    // Nothing could be heard while it was down: each command's clock starts again.
+                    commands.reconnected()
+                }
                 was = up
             }
         }
@@ -262,12 +271,17 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
                 // registerPush moves to the new token.
                 val old = _pairing.value
                 pairingChanged(forget = old != null && old.deploymentUrl != pairing.deploymentUrl)
+                // Nothing on its way to the old pairing is watched on the new one.
+                commands.clear()
                 store.save(pairing)
                 trial.close()
                 connect(pairing)
                 setIdentity(me)
                 note("Paired with ${shown.host}")
                 registerPush()
+            } catch (e: CancellationException) {
+                trial.close()
+                throw e
             } catch (e: Exception) {
                 trial.close()
                 report(e)
@@ -381,6 +395,7 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
     fun unpair() {
         store.clear()
         pairingChanged(forget = true)
+        commands.clear()
         shell.clear()
         transport?.close()
         transport = null
@@ -392,70 +407,100 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
 
     // Changes, each showing at once
 
+    /**
+     * A star, wake, mark read or bring back, from a row, its menu or the
+     * thread's: shown at once ([shown]), put back with why if the runner
+     * refuses it, and said if the Mac hasn't picked it up in a while.
+     */
     fun change(threadId: String, change: ThreadChange) {
-        // Archive and hibernate wait for the runner to say, as the iPhone's do (ShellModel).
-        when (change) {
-            ThreadChange.Archive -> return shell.archive(threadId)
+        val (key, value, verb) = when (change) {
+            // Archive and hibernate take the row off the inbox (ShellModel).
+            ThreadChange.Archive, is ThreadChange.ArchiveWithVerdict -> return shell.archive(threadId, change)
             is ThreadChange.Snooze, ThreadChange.SnoozeUntilRestart -> return shell.hibernate(threadId, change)
-            else -> {}
+            is ThreadChange.Rename -> return rename(threadId, change.title)
+            is ThreadChange.Star -> Triple(CommandKey.Star(threadId), if (change.on) "on" else "off", if (change.on) "star" else "unstar")
+            ThreadChange.Wake -> Triple(CommandKey.Wake(threadId), null, "wake")
+            ThreadChange.MarkSeen -> Triple(CommandKey.MarkSeen(threadId), null, "mark as read")
+            ThreadChange.Unarchive -> Triple(CommandKey.Unarchive(threadId), null, "bring back")
         }
         val b = _backend.value ?: return
-        if (change is ThreadChange.Rename) return rename(b, threadId, change)
-        val hides = change is ThreadChange.Archive || change is ThreadChange.ArchiveWithVerdict || change is ThreadChange.Snooze
-        if (hides) puttingAway.update { it + threadId }
-        scope.launch {
-            try {
-                b.update(threadId, change)
-                // Shown gone until the list has caught up, then let go.
-                delay(8000)
-            } catch (e: Exception) {
-                report(e)
-            } finally {
-                if (hides) puttingAway.update { it - threadId }
-            }
-        }
+        // Brought back: an archive of it from here that's done but not yet let go mustn't hide it.
+        if (key is CommandKey.Unarchive) commands.forget(CommandKey.Archive(threadId))
+        // Starring again while one's on its way: the newest tap wins.
+        if (key is CommandKey.Star && commands[key].holdsChange) commands.forget(key)
+        commands.start(key, value, send = { b.update(threadId, change) }) { said(it, "The runner couldn't $verb that thread.") }
+    }
+
+    /**
+     * A thread as this phone shows it: with the changes tapped here that the
+     * runner hasn't made yet (a star, read, woken, back from the archive, a
+     * new title), at once and until it's done or refused. [pending] is
+     * [commands]' entries as the screen collected them, so it redraws.
+     */
+    fun shown(thread: PhoneThread, pending: Map<CommandKey, PendingCommands.Entry>): PhoneThread {
+        val id = thread.threadId
+        fun held(key: CommandKey) = pending[key]?.takeIf { it.state.holdsChange }
+        var t = thread
+        held(CommandKey.Star(id))?.let { t = t.copy(starredAt = if (it.value == "on") t.starredAt ?: Instant.now() else null) }
+        if (held(CommandKey.MarkSeen(id)) != null) t = t.copy(unread = false, needsYou = false)
+        if (held(CommandKey.Wake(id)) != null) t = t.copy(snoozedUntil = null, snoozedUntilRestart = null)
+        if (held(CommandKey.Unarchive(id)) != null) t = t.copy(archivedAt = null)
+        held(CommandKey.Rename(id))?.value?.let { t = t.copy(title = it) }
+        return t
     }
 
     /** A thread's title as shown here: one just typed on this phone, else its own. */
-    fun title(thread: PhoneThread, renamed: Map<String, String>) =
-        (renamed[thread.threadId] ?: thread.title).ifEmpty { "Untitled" }
+    fun title(thread: PhoneThread, pending: Map<CommandKey, PendingCommands.Entry>) =
+        shown(thread, pending).title.ifEmpty { "Untitled" }
 
-    private fun rename(b: PhoneBackend, threadId: String, change: ThreadChange.Rename) {
-        val title = change.title.trim()
-        if (title.isEmpty()) return
-        renamed.update { it + (threadId to title) }
-        scope.launch {
-            try {
-                b.update(threadId, ThreadChange.Rename(title))
-                // The live thread carries the new title within a moment.
-                delay(3000)
-            } catch (e: Exception) {
-                report(e)
-            } finally {
-                // A later rename may have replaced this one meanwhile.
-                renamed.update { if (it[threadId] == title) it - threadId else it }
-            }
+    /** Woken or brought back from here and not refused: gone from its put-away list at once. */
+    fun bringingBack(pending: Map<CommandKey, PendingCommands.Entry>): Set<String> = pending.mapNotNullTo(HashSet()) { (key, entry) ->
+        when (key) {
+            is CommandKey.Wake -> key.threadId
+            is CommandKey.Unarchive -> key.threadId
+            else -> null
+        }?.takeIf { entry.state.holdsChange }
+    }
+
+    /**
+     * Where a command ended, said where he's looking: a refusal always, and a
+     * time-out only while a runner looks online (asleep, the inbox says so already).
+     */
+    fun said(state: PendingCommand, fallback: String) {
+        val failure = state.failure(fallback)
+        when {
+            failure != null -> note(failure)
+            // The phone not reaching the server is always news; the Mac not picking it up only while a runner looks online.
+            state is PendingCommand.TimedOut && (state.id == null || runners.value.any { it.isOnline(Instant.now()) }) -> state.timedOutNote?.let(::note)
         }
     }
+
+    /** Renames a thread, the new title at once; a second rename replaces one still on its way. */
+    private fun rename(threadId: String, title: String) {
+        val b = _backend.value ?: return
+        val words = title.trim()
+        if (words.isEmpty()) return
+        commands.forget(CommandKey.Rename(threadId))
+        commands.start(CommandKey.Rename(threadId), words, send = { b.update(threadId, ThreadChange.Rename(words)) }) {
+            said(it, "The runner couldn't rename that thread.")
+        }
+    }
+
+    /** Stop is on its way: a spinner taking no more taps until the turn ends, it's refused, or the Mac hasn't picked it up. */
+    fun stopping(threadId: String, pending: Map<CommandKey, PendingCommands.Entry>) =
+        pending[CommandKey.Stop(threadId)]?.state?.locked == true
 
     fun stop(threadId: String) {
         val b = _backend.value ?: return
-        if (threadId in stopping.value) return
-        stopping.update { it + threadId }
-        scope.launch {
-            try {
-                b.interrupt(threadId)
-                // Spinning until the turn ends (stopped()), or a while at most.
-                delay(30_000)
-            } catch (e: Exception) {
-                report(e)
-            } finally {
-                stopping.update { it - threadId }
-            }
-        }
+        // Ten seconds after it's done at most, in case the thread's screen has gone.
+        commands.start(CommandKey.Stop(threadId), settleMs = 10_000, send = { b.interrupt(threadId) }) { said(it, "That Mac couldn't stop it.") }
     }
 
-    fun stopped(threadId: String) = stopping.update { it - threadId }
+    /** The thread's turn is over: its Stop is done. */
+    fun stopped(threadId: String) {
+        // However far Stop got (the turn may end before its command says done): a refusal stays, to be said.
+        if (commands[CommandKey.Stop(threadId)] !is PendingCommand.Failed) commands.forget(CommandKey.Stop(threadId))
+    }
 
     fun needsYouCount(threads: List<PhoneThread>) =
         InboxSections.build(threads, Instant.now(), InboxSections.wakes(wakes.value)).needsYouCount

@@ -39,7 +39,7 @@ private val SendPurple = Color(0xFFBF5AF2)
 private val PressedGreen = Color(0xFF30D158)
 
 /**
- * A reply button (docs/protocol.md, "Reply buttons"): blue starts a thread,
+ * A reply button (docs/protocol/events.md, "Reply buttons"): blue starts a thread,
  * purple sends a message, green with a tick once pressed, which then opens
  * the thread it started or messaged. A spinner while a press is on its way,
  * and the error under it if the press failed. The kit's ReplyButtons says
@@ -51,8 +51,8 @@ fun ReplyButtonPill(button: MessageButton) {
     val extras = ThreadExtras.of(model, LocalContext.current)
     val threadId = LocalButtonThread.current
     val push = LocalPushThread.current
-    val presses by extras.presses.collectAsStateWithLifecycle()
-    val look = threadId?.let { extras.look(button, it, presses) } ?: ReplyButtons.Look.Ready
+    val pending by model.commands.entries.collectAsStateWithLifecycle()
+    val look = threadId?.let { extras.look(button, it, pending) } ?: ReplyButtons.Look.Ready
     val pressed = look is ReplyButtons.Look.Pressed
     val failed = look as? ReplyButtons.Look.Failed
     // Nothing to open: the thread it went to isn't known.

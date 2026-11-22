@@ -8,7 +8,10 @@
 // on the icon puts it in a popover beside it with Restart to Update, the quick
 // way to take one (Swift's AppUpdatePopover).
 use crate::a11y::A11yRole as _;
-use crate::activity_panels::{button_row, panel_column, push_button, small_heading, system_orange, text_button, text_line, MenuLabel};
+use crate::activity_panels::{
+    button_row, panel_column, push_button, small_heading, system_orange, text_button, text_line,
+    MenuLabel,
+};
 use crate::app::Threadbear;
 use crate::{call, icons, now_ms, shell, style};
 use gpui_kit::base::TestSupportExt as _;
@@ -18,15 +21,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
+use crate::tips::Tip as _;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::new_thread::{Draft, NewThreadPicks};
 use threadbear_core::updates::{self as rules, AppSide, CliStatus, RunnerUpdates};
-use crate::tips::Tip as _;
-
-
 
 /// The Updates panel's state in the app (`Threadbear::updates_panel`).
 #[derive(Default)]
@@ -79,9 +80,18 @@ fn fetch_picture(url: &str) -> Result<Image, String> {
     // composer_url's address check is the Mac's (its interface list); the
     // address is the runner's, made from Mike's site, so elsewhere a plain one.
     #[cfg(not(target_os = "macos"))]
-    let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).timeout_global(Some(std::time::Duration::from_secs(30))).build().into();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
     let mut response = agent.get(url).call().map_err(|e| e.to_string())?;
-    let data = response.body_mut().with_config().limit(4 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string())?;
+    let data = response
+        .body_mut()
+        .with_config()
+        .limit(4 * 1024 * 1024)
+        .read_to_vec()
+        .map_err(|e| e.to_string())?;
     let format = match image::guess_format(&data).map_err(|e| e.to_string())? {
         image::ImageFormat::Png => ImageFormat::Png,
         image::ImageFormat::Jpeg => ImageFormat::Jpeg,
@@ -102,7 +112,11 @@ impl Threadbear {
     pub(crate) fn updates_from_hello(&mut self, hello: &Value) {
         let panel = &mut self.updates_panel;
         panel.clis = rules::decode_clis_with(&hello["clis"], &self.logins);
-        panel.clis_supported = if panel.clis.is_empty() { None } else { Some(true) };
+        panel.clis_supported = if panel.clis.is_empty() {
+            None
+        } else {
+            Some(true)
+        };
         panel.runner = RunnerUpdates::decode(&hello["updates"]);
         panel.busy.clear();
     }
@@ -152,7 +166,11 @@ impl Threadbear {
 
     /// Something on its way for the runner or a CLI: the icon's grey dot.
     pub(crate) fn updates_quiet_dot(&self) -> bool {
-        rules::quiet_dot(&self.app_side(), self.updates_panel.runner.as_ref(), &self.updates_panel.clis)
+        rules::quiet_dot(
+            &self.app_side(),
+            self.updates_panel.runner.as_ref(),
+            &self.updates_panel.clis,
+        )
     }
 
     /// The ring while the next version builds, green once it's ready.
@@ -166,7 +184,11 @@ impl Threadbear {
     }
 
     pub(crate) fn updates_tooltip(&self) -> String {
-        rules::icon_tooltip(&self.app_side(), self.updates_panel.runner.as_ref(), &self.updates_panel.clis)
+        rules::icon_tooltip(
+            &self.app_side(),
+            self.updates_panel.runner.as_ref(),
+            &self.updates_panel.clis,
+        )
     }
 
     // The buttons.
@@ -174,7 +196,14 @@ impl Threadbear {
     /// A CLI call: the button spins until the runner takes it, and the list it
     /// answers with is the new one; progress comes through `clis.updated`.
     /// `undo` puts back a change shown before the answer (the policy).
-    fn cli_call(&mut self, key: String, method: &'static str, params: Value, undo: Option<Box<dyn FnOnce(&mut Threadbear)>>, cx: &mut Context<Self>) {
+    fn cli_call(
+        &mut self,
+        key: String,
+        method: &'static str,
+        params: Value,
+        undo: Option<Box<dyn FnOnce(&mut Threadbear)>>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.updates_panel.busy.insert(key.clone()) {
             return;
         }
@@ -213,7 +242,13 @@ impl Threadbear {
     }
 
     /// Update, Update anyway (`force`, past a hold) or Go back (`version`).
-    pub(crate) fn update_cli(&mut self, provider: &str, version: Option<String>, force: bool, cx: &mut Context<Self>) {
+    pub(crate) fn update_cli(
+        &mut self,
+        provider: &str,
+        version: Option<String>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
         let mut params = json!({ "provider": provider });
         if let Some(version) = version {
             params["version"] = json!(version);
@@ -221,24 +256,49 @@ impl Threadbear {
         if force {
             params["force"] = json!(true);
         }
-        self.cli_call(format!("update/{provider}"), "clis.update", params, None, cx);
+        self.cli_call(
+            format!("update/{provider}"),
+            "clis.update",
+            params,
+            None,
+            cx,
+        );
     }
 
     /// The menu says the new setting at once, and goes back if it's refused.
     pub(crate) fn set_cli_policy(&mut self, provider: &str, policy: &str, cx: &mut Context<Self>) {
-        let before = self.updates_panel.clis.iter().find(|c| c.provider == provider).map(|c| c.policy.clone());
-        if let Some(cli) = self.updates_panel.clis.iter_mut().find(|c| c.provider == provider) {
+        let before = self
+            .updates_panel
+            .clis
+            .iter()
+            .find(|c| c.provider == provider)
+            .map(|c| c.policy.clone());
+        if let Some(cli) = self
+            .updates_panel
+            .clis
+            .iter_mut()
+            .find(|c| c.provider == provider)
+        {
             cli.policy = policy.to_owned();
         }
         let (p, guess) = (provider.to_owned(), policy.to_owned());
         let undo: Box<dyn FnOnce(&mut Threadbear)> = Box::new(move |t| {
-            if let (Some(before), Some(cli)) = (before, t.updates_panel.clis.iter_mut().find(|c| c.provider == p)) {
+            if let (Some(before), Some(cli)) = (
+                before,
+                t.updates_panel.clis.iter_mut().find(|c| c.provider == p),
+            ) {
                 if cli.policy == guess {
                     cli.policy = before;
                 }
             }
         });
-        self.cli_call(format!("policy/{provider}"), "clis.setPolicy", json!({ "provider": provider, "policy": policy }), Some(undo), cx);
+        self.cli_call(
+            format!("policy/{provider}"),
+            "clis.setPolicy",
+            json!({ "provider": provider, "policy": policy }),
+            Some(undo),
+            cx,
+        );
     }
 
     /// Bring Them In, or Let's Discuss: a thread in the checkout the runner
@@ -246,18 +306,46 @@ impl Threadbear {
     /// through first and changes nothing until he says
     /// (`bringInUpstream`). On the new-thread box's login or pool and model,
     /// with full access; it spins until the runner has made it, then opens.
-    pub(crate) fn bring_in_upstream(&mut self, discuss: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn bring_in_upstream(
+        &mut self,
+        discuss: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.updates_panel.bringing_in || self.new_thread.creating {
             return;
         }
-        let Some(upstream) = self.updates_panel.runner.as_ref().and_then(|r| r.upstream.clone()) else { return };
-        let Some(release) = upstream.release.clone() else { return };
-        let prompt = if discuss { rules::discuss_prompt(&release) } else { rules::bring_in_prompt(&release) };
+        let Some(upstream) = self
+            .updates_panel
+            .runner
+            .as_ref()
+            .and_then(|r| r.upstream.clone())
+        else {
+            return;
+        };
+        let Some(release) = upstream.release.clone() else {
+            return;
+        };
+        let prompt = if discuss {
+            rules::discuss_prompt(&release)
+        } else {
+            rules::bring_in_prompt(&release)
+        };
         // This Mac's logins: the thread starts on this runner, whatever the
         // new-thread box has picked for another.
-        let picks = if self.new_thread.picks.runner.is_some() { NewThreadPicks::default() } else { self.new_thread.picks.clone() };
+        let picks = if self.new_thread.picks.runner.is_some() {
+            NewThreadPicks::default()
+        } else {
+            self.new_thread.picks.clone()
+        };
         let home = std::env::var("HOME").unwrap_or_default();
-        let draft = Draft { logins: &self.logins, picks: &picks, mem: &self.new_thread.prefs.remembered, home: &home, now_ms: now_ms() };
+        let draft = Draft {
+            logins: &self.logins,
+            picks: &picks,
+            mem: &self.new_thread.prefs.remembered,
+            home: &home,
+            now_ms: now_ms(),
+        };
         let mut params = draft.create_params(&prompt, vec![], false);
         if let Some(checkout) = upstream.checkout.as_deref().filter(|c| !c.is_empty()) {
             params["cwd"] = json!(checkout);
@@ -277,7 +365,9 @@ impl Threadbear {
                         t.threads.insert(id.clone(), std::sync::Arc::new(thread));
                         t.open(id, window, cx);
                     }
-                    Ok(_) => t.show_error("The runner didn't say what thread it made.".to_owned(), cx),
+                    Ok(_) => {
+                        t.show_error("The runner didn't say what thread it made.".to_owned(), cx)
+                    }
                     Err(e) => t.show_error(e.message, cx),
                 }
                 cx.notify();
@@ -339,14 +429,20 @@ impl Threadbear {
                         // The thread itself, so it opens before the list's
                         // own word of it arrives (open goes nowhere for a
                         // thread it doesn't know; Windows lost that race).
-                        if let Ok(thread) = serde_json::from_value::<ThreadSummary>(v["thread"].clone()) {
+                        if let Ok(thread) =
+                            serde_json::from_value::<ThreadSummary>(v["thread"].clone())
+                        {
                             if !thread.id.is_empty() && !t.threads.contains_key(&thread.id) {
-                                t.threads.insert(thread.id.clone(), std::sync::Arc::new(thread));
+                                t.threads
+                                    .insert(thread.id.clone(), std::sync::Arc::new(thread));
                             }
                         }
                         match v["threadId"].as_str() {
                             Some(id) if !id.is_empty() => t.open(id.to_owned(), window, cx),
-                            _ => t.show_error("The runner didn't say what thread it made.".to_owned(), cx),
+                            _ => t.show_error(
+                                "The runner didn't say what thread it made.".to_owned(),
+                                cx,
+                            ),
                         }
                     }
                     Err(e) => t.show_error(e.message, cx),
@@ -361,7 +457,9 @@ impl Threadbear {
     /// Dismiss: off the list at once, back with the error if the runner
     /// refuses.
     fn dismiss_swift_change(&mut self, commit: String, cx: &mut Context<Self>) {
-        let Some(runner) = self.updates_panel.runner.as_mut() else { return };
+        let Some(runner) = self.updates_panel.runner.as_mut() else {
+            return;
+        };
         let before = runner.swift_changes.clone();
         runner.swift_changes.retain(|c| c.commit != commit);
         cx.notify();
@@ -388,7 +486,9 @@ impl Threadbear {
     /// A request's answer, ahead of the `runner.updates` that follows it.
     fn take_swift_changes(&mut self, v: &Value) {
         if let (Some(runner), true) = (self.updates_panel.runner.as_mut(), v.is_object()) {
-            runner.swift_changes = RunnerUpdates::decode(&json!({ "swiftChanges": v })).map(|u| u.swift_changes).unwrap_or_default();
+            runner.swift_changes = RunnerUpdates::decode(&json!({ "swiftChanges": v }))
+                .map(|u| u.swift_changes)
+                .unwrap_or_default();
         }
     }
 
@@ -406,7 +506,11 @@ impl Threadbear {
     /// `UpdatesPanel`: a fork's own Swift changes when it has any, App,
     /// Runner, From Mike when there's a release to say anything about, and
     /// the CLIs.
-    pub(crate) fn render_updates_panel(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_updates_panel(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let fg = style::label_text(cx);
         let line = |text: String| text_line(text, 12., fg).into_any_element();
         let app = self.render_app_update(cx);
@@ -414,16 +518,33 @@ impl Threadbear {
         // that asks for something doing, and its buttons stay in reach in a
         // short window (GitHub's Mac, 1024x768, missed the second row's).
         let mut sections = Vec::new();
-        let swift = self.updates_panel.runner.as_ref().map(|r| r.swift_changes.clone()).unwrap_or_default();
+        let swift = self
+            .updates_panel
+            .runner
+            .as_ref()
+            .map(|r| r.swift_changes.clone())
+            .unwrap_or_default();
         if !swift.is_empty() {
-            sections.push(section("Not in the new app yet", self.render_swift_changes(&swift, cx), cx));
+            sections.push(section(
+                "Not in the new app yet",
+                self.render_swift_changes(&swift, cx),
+                cx,
+            ));
         }
         sections.push(section("App", app, cx));
         sections.push(section("Runner", self.render_runner_updates(cx), cx));
-        let upstream = self.updates_panel.runner.as_ref().and_then(|r| r.upstream.clone());
+        let upstream = self
+            .updates_panel
+            .runner
+            .as_ref()
+            .and_then(|r| r.upstream.clone());
         if let Some(text) = rules::upstream_line(upstream.as_ref()) {
             let mut content = vec![line(text)];
-            if let Some(release) = upstream.as_ref().filter(|u| u.available()).and_then(|u| u.release.clone()) {
+            if let Some(release) = upstream
+                .as_ref()
+                .filter(|u| u.available())
+                .and_then(|u| u.release.clone())
+            {
                 content.extend(self.render_release(&release, cx));
             }
             sections.push(section("From Mike", content, cx));
@@ -439,16 +560,27 @@ impl Threadbear {
     /// once a new version is ready, or the log once a build failed. It
     /// follows the update as it goes, so one opened mid-build gets its
     /// button once the build is staged.
-    pub(crate) fn with_update_popover(&mut self, icon: AnyElement, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let popover = self.updates_panel.popover.then(|| self.render_update_popover(window, cx));
+    pub(crate) fn with_update_popover(
+        &mut self,
+        icon: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let popover = self
+            .updates_panel
+            .popover
+            .then(|| self.render_update_popover(window, cx));
         div()
             .id("rail-updates-wrap")
             .relative()
             .flex_none()
-            .on_mouse_down(MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                cx.stop_propagation();
-                this.toggle_update_popover(window, cx);
-            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_update_popover(window, cx);
+                }),
+            )
             .child(icon)
             .children(popover)
             .into_any_element()
@@ -458,34 +590,77 @@ impl Threadbear {
         let panel = &mut self.updates_panel;
         panel.popover = !panel.popover;
         if panel.popover {
-            let focus = panel.popover_focus.get_or_insert_with(|| cx.focus_handle()).clone();
+            let focus = panel
+                .popover_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
             window.focus(&focus, cx);
             crate::web_panels::keyboard_to_app(window);
         }
         cx.notify();
     }
 
-    fn render_update_popover(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_update_popover(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let side = self.app_side();
-        let staged = self.updater.staged.as_ref().map(|s| s.short.clone()).filter(|_| side.staged.is_some());
+        let staged = self
+            .updater
+            .staged
+            .as_ref()
+            .map(|s| s.short.clone())
+            .filter(|_| side.staged.is_some());
         let secondary = style::secondary_text(cx);
         let line = h_flex()
             .gap(px(7.))
             .items_center()
-            .when(side.building && side.staged.is_none(), |s| s.child(div().size(px(11.)).child(crate::spinner::Spinner::new().icon(gpui_kit::assets::IconName::LoaderCircle).color(secondary).with_size(px(11.)))))
-            .child(div().whitespace_nowrap().text_size(px(12.)).text_color(style::label_text(cx)).child(rules::popover_line(&side)));
+            .when(side.building && side.staged.is_none(), |s| {
+                s.child(
+                    div().size(px(11.)).child(
+                        crate::spinner::Spinner::new()
+                            .icon(gpui_kit::assets::IconName::LoaderCircle)
+                            .color(secondary)
+                            .with_size(px(11.)),
+                    ),
+                )
+            })
+            .child(
+                div()
+                    .whitespace_nowrap()
+                    .text_size(px(12.))
+                    .text_color(style::label_text(cx))
+                    .child(rules::popover_line(&side)),
+            );
         let button = match &staged {
             // Return takes it, as the popover is there for this.
-            Some(short) => Some(push_button("updates-popover-restart", "Restart to Update", format!("Quit and reopen on {short}. Running threads carry on in the runner."), false, false, cx, |t, _, cx| {
-                t.updates_panel.popover = false;
-                t.restart_to_update(cx);
-            })),
+            Some(short) => Some(push_button(
+                "updates-popover-restart",
+                "Restart to Update",
+                format!("Quit and reopen on {short}. Running threads carry on in the runner."),
+                false,
+                false,
+                cx,
+                |t, _, cx| {
+                    t.updates_panel.popover = false;
+                    t.restart_to_update(cx);
+                },
+            )),
             // Not while a newer main builds: the line is about that.
-            None if side.failed && !side.building => Some(push_button("updates-popover-log", "Show the Log", "Open the update build's log, to see why it failed", false, false, cx, |t, _, cx| {
-                t.updates_panel.popover = false;
-                cx.notify();
-                crate::open_gate::open_own(&crate::app_update::log_path(), cx);
-            })),
+            None if side.failed && !side.building => Some(push_button(
+                "updates-popover-log",
+                "Show the Log",
+                "Open the update build's log, to see why it failed",
+                false,
+                false,
+                cx,
+                |t, _, cx| {
+                    t.updates_panel.popover = false;
+                    cx.notify();
+                    crate::open_gate::open_own(&crate::app_update::log_path(), cx);
+                },
+            )),
             None => None,
         };
         let focus = self.updates_panel.popover_focus.clone();
@@ -501,16 +676,18 @@ impl Threadbear {
             .border_color(border)
             .shadow_lg()
             .when_some(focus, |s, f| s.track_focus(&f))
-            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| match ev.keystroke.key.as_str() {
-                "enter" if this.updater.staged.is_some() => {
-                    this.updates_panel.popover = false;
-                    this.restart_to_update(cx);
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                match ev.keystroke.key.as_str() {
+                    "enter" if this.updater.staged.is_some() => {
+                        this.updates_panel.popover = false;
+                        this.restart_to_update(cx);
+                    }
+                    "escape" => {
+                        this.updates_panel.popover = false;
+                        cx.notify();
+                    }
+                    _ => {}
                 }
-                "escape" => {
-                    this.updates_panel.popover = false;
-                    cx.notify();
-                }
-                _ => {}
             }))
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.updates_panel.popover = false;
@@ -523,7 +700,15 @@ impl Threadbear {
             .absolute()
             .left(px(crate::rails::BUTTON + 8.))
             .bottom_0()
-            .child(deferred(anchored().anchor(Anchor::BottomLeft).snap_to_window_with_margin(px(8.)).child(body)).with_priority(2))
+            .child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::BottomLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(body),
+                )
+                .with_priority(2),
+            )
             .into_any_element()
     }
 
@@ -531,16 +716,40 @@ impl Threadbear {
     /// way, with Restart to Update once it's ready, or the log once it failed.
     fn render_app_update(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let side = self.app_side();
-        let mut out = vec![text_line(rules::app_line(&side), 12., style::label_text(cx)).into_any_element()];
+        let mut out =
+            vec![text_line(rules::app_line(&side), 12., style::label_text(cx)).into_any_element()];
         // The thread whose box holds it, to go and send or clear it there.
-        if let (Some(threadbear_core::app_update::RestartWait::Held(_)), Some(id)) = (&side.wait, self.updater.hold_thread.clone()) {
+        if let (Some(threadbear_core::app_update::RestartWait::Held(_)), Some(id)) =
+            (&side.wait, self.updater.hold_thread.clone())
+        {
             let open = id.clone();
-            out.push(text_button(SharedString::from(format!("updates-hold-{id}")), self.thread_title(&id), "Open the thread with the words still typed", 12., true, false, cx, move |t, window, cx| t.open(open.clone(), window, cx)));
+            out.push(text_button(
+                SharedString::from(format!("updates-hold-{id}")),
+                self.thread_title(&id),
+                "Open the thread with the words still typed",
+                12.,
+                true,
+                false,
+                cx,
+                move |t, window, cx| t.open(open.clone(), window, cx),
+            ));
         }
         if side.staged.is_some() {
             out.push(h_flex().child(push_button("updates-restart", "Restart to Update", "Quit and reopen on the new version. Running threads carry on in the runner.", false, false, cx, |t, _, cx| t.restart_to_update(cx))).into_any_element());
         } else if side.failed {
-            out.push(h_flex().child(push_button("updates-log", "Show the Log", "Open the update build's log, to see why it failed", false, false, cx, |_, _, cx| crate::open_gate::open_own(&crate::app_update::log_path(), cx))).into_any_element());
+            out.push(
+                h_flex()
+                    .child(push_button(
+                        "updates-log",
+                        "Show the Log",
+                        "Open the update build's log, to see why it failed",
+                        false,
+                        false,
+                        cx,
+                        |_, _, cx| crate::open_gate::open_own(&crate::app_update::log_path(), cx),
+                    ))
+                    .into_any_element(),
+            );
         }
         out
     }
@@ -550,11 +759,22 @@ impl Threadbear {
     fn render_runner_updates(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let fg = style::label_text(cx);
         let line = |text: String| text_line(text, 12., fg).into_any_element();
-        let Some(runner) = self.updates_panel.runner.clone() else { return rules::runner_lines(None).into_iter().map(line).collect() };
-        let (build, old, launcher) = (rules::build_line(&runner), rules::old_runners_line(&runner), rules::launcher_line(&runner));
+        let Some(runner) = self.updates_panel.runner.clone() else {
+            return rules::runner_lines(None).into_iter().map(line).collect();
+        };
+        let (build, old, launcher) = (
+            rules::build_line(&runner),
+            rules::old_runners_line(&runner),
+            rules::launcher_line(&runner),
+        );
         let not_following = rules::follow_lines(&runner);
         let mut out = Vec::new();
-        if build.is_none() && old.is_none() && launcher.is_none() && not_following.is_empty() && runner.web_runtime_problem.is_none() {
+        if build.is_none()
+            && old.is_none()
+            && launcher.is_none()
+            && not_following.is_empty()
+            && runner.web_runtime_problem.is_none()
+        {
             out.push(line("The runner is up to date.".to_owned()));
         }
         out.extend(not_following.into_iter().map(line));
@@ -564,19 +784,52 @@ impl Threadbear {
             out.push(line(old));
             for id in runner.old_runners.iter().flat_map(|o| o.threads.iter()) {
                 let open = id.clone();
-                out.push(text_button(SharedString::from(format!("updates-old-{id}")), self.thread_title(id), "Open this thread", 12., true, false, cx, move |t, window, cx| t.open(open.clone(), window, cx)));
+                out.push(text_button(
+                    SharedString::from(format!("updates-old-{id}")),
+                    self.thread_title(id),
+                    "Open this thread",
+                    12.,
+                    true,
+                    false,
+                    cx,
+                    move |t, window, cx| t.open(open.clone(), window, cx),
+                ));
             }
         }
         if let Some(launcher) = launcher {
             out.push(line(launcher));
-            let log = runner.reinstall.as_ref().filter(|r| r.state == "failed").and_then(|r| r.log_file.clone());
+            let log = runner
+                .reinstall
+                .as_ref()
+                .filter(|r| r.state == "failed")
+                .and_then(|r| r.log_file.clone());
             if let Some((label, tip, on_its_way)) = rules::launcher_button(&runner) {
                 let busy = on_its_way || self.updates_panel.reinstalling;
                 out.push(
                     h_flex()
                         .gap(px(6.))
-                        .child(push_button("updates-reinstall", label, tip, false, busy, cx, |t, _, cx| t.reinstall_runner(cx)))
-                        .children(log.map(|file| push_button("updates-reinstall-log", "Show the Log", "Open the update's output, to see why it didn't work", false, false, cx, move |_, _, cx| crate::open_gate::open_own(std::path::Path::new(&file), cx))))
+                        .child(push_button(
+                            "updates-reinstall",
+                            label,
+                            tip,
+                            false,
+                            busy,
+                            cx,
+                            |t, _, cx| t.reinstall_runner(cx),
+                        ))
+                        .children(log.map(|file| {
+                            push_button(
+                                "updates-reinstall-log",
+                                "Show the Log",
+                                "Open the update's output, to see why it didn't work",
+                                false,
+                                false,
+                                cx,
+                                move |_, _, cx| {
+                                    crate::open_gate::open_own(std::path::Path::new(&file), cx)
+                                },
+                            )
+                        }))
                         .into_any_element(),
                 );
             }
@@ -586,7 +839,11 @@ impl Threadbear {
 
     /// Mike's plain-words notes, or commit subjects from a release made
     /// before there were any, then Bring Them In and Let's Discuss.
-    fn render_release(&mut self, release: &rules::Release, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_release(
+        &mut self,
+        release: &rules::Release,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let mut out = Vec::new();
         match rules::release_digest(release) {
             Some(digest) => out.extend(self.render_digest(&digest, cx)),
@@ -599,7 +856,11 @@ impl Threadbear {
         ];
         // Both stay put and take no clicks while the thread is on its way.
         let row = button_row(buttons, busy, cx);
-        out.push(if busy { div().opacity(0.5).child(row).into_any_element() } else { row });
+        out.push(if busy {
+            div().opacity(0.5).child(row).into_any_element()
+        } else {
+            row
+        });
         out
     }
 
@@ -618,17 +879,46 @@ impl Threadbear {
             // A frame of its own holds the picture to the card's height
             // (an img's own size gave way to a tall picture's), and the whole
             // picture fits in it: a crop of a screenshot cut its words.
-            let frame = div().w_full().h(px(CARD_PICTURE)).flex_none().overflow_hidden().bg(hsla(0., 0., 0., 0.25)).border_b_1().border_color(style::hairline(cx));
+            let frame = div()
+                .w_full()
+                .h(px(CARD_PICTURE))
+                .flex_none()
+                .overflow_hidden()
+                .bg(hsla(0., 0., 0., 0.25))
+                .border_b_1()
+                .border_color(style::hairline(cx));
             // Loading or failed: the card keeps its shape, and its title says what it is.
             let picture: AnyElement = match self.updates_panel.pictures.get(&card.picture) {
-                Some(Picture::Ready(image)) => frame.child(img(ImageSource::Image(image.clone())).size_full().object_fit(ObjectFit::Contain)).into_any_element(),
+                Some(Picture::Ready(image)) => frame
+                    .child(
+                        img(ImageSource::Image(image.clone()))
+                            .size_full()
+                            .object_fit(ObjectFit::Contain),
+                    )
+                    .into_any_element(),
                 _ => frame.into_any_element(),
             };
             let play = card.clip.then(|| {
-                div().absolute().right(px(6.)).top(px(CARD_PICTURE - 20.)).px(px(5.)).py(px(1.)).rounded(px(8.)).bg(hsla(0., 0., 0., 0.65)).child(icons::symbol("play").size(px(9.)).text_color(hsla(0., 0., 1., 1.)))
+                div()
+                    .absolute()
+                    .right(px(6.))
+                    .top(px(CARD_PICTURE - 20.))
+                    .px(px(5.))
+                    .py(px(1.))
+                    .rounded(px(8.))
+                    .bg(hsla(0., 0., 0., 0.65))
+                    .child(
+                        icons::symbol("play")
+                            .size(px(9.))
+                            .text_color(hsla(0., 0., 1., 1.)),
+                    )
             });
             let link = link.clone();
-            let tip = if card.clip { format!("{}\nOpens the clip on the What's new page", card.text) } else { format!("{}\nOpens it on the What's new page", card.text) };
+            let tip = if card.clip {
+                format!("{}\nOpens the clip on the What's new page", card.text)
+            } else {
+                format!("{}\nOpens it on the What's new page", card.text)
+            };
             cards.push(
                 crate::highlights::tipped(
                     div()
@@ -645,7 +935,12 @@ impl Threadbear {
                         .hover(|s| s.border_color(style::secondary_text(cx).opacity(0.5)))
                         .child(picture)
                         .children(play)
-                        .child(text_line(card.title.clone(), 11.5, fg).px(px(8.)).py(px(5.)).line_clamp(2)),
+                        .child(
+                            text_line(card.title.clone(), 11.5, fg)
+                                .px(px(8.))
+                                .py(px(5.))
+                                .line_clamp(2),
+                        ),
                     tip,
                 )
                 .on_click(move |_, _, cx| crate::files::open_web(&link, cx))
@@ -660,22 +955,52 @@ impl Threadbear {
             }
             // A last card on its own keeps half the width, as in a grid.
             let spacer = (row.len() == 1).then(|| div().flex_1().into_any_element());
-            out.push(h_flex().gap(px(8.)).items_start().children(row).children(spacer).into_any_element());
+            out.push(
+                h_flex()
+                    .gap(px(8.))
+                    .items_start()
+                    .children(row)
+                    .children(spacer)
+                    .into_any_element(),
+            );
         }
         let page = d.page.clone();
-        let more = if d.more > 0 { format!("See all, and {} more like these", d.more) } else { "See all".to_owned() };
+        let more = if d.more > 0 {
+            format!("See all, and {} more like these", d.more)
+        } else {
+            "See all".to_owned()
+        };
         let counts = rules::digest_counts(d);
         out.push(
             h_flex()
                 .gap(px(10.))
                 .pt(px(2.))
-                .when(!counts.is_empty(), |r| r.child(text_line(counts, 11., secondary)))
-                .child(text_button("updates-changelog", "See all", format!("{more} on the What's new page"), 11., true, false, cx, move |_, _, cx| crate::files::open_web(&page, cx)))
+                .when(!counts.is_empty(), |r| {
+                    r.child(text_line(counts, 11., secondary))
+                })
+                .child(text_button(
+                    "updates-changelog",
+                    "See all",
+                    format!("{more} on the What's new page"),
+                    11.,
+                    true,
+                    false,
+                    cx,
+                    move |_, _, cx| crate::files::open_web(&page, cx),
+                ))
                 .into_any_element(),
         );
         if let Some(line) = rules::important_line(d.important.len()) {
             let whys = rules::important_tip(&d.important);
-            out.push(crate::highlights::tipped(div().id("updates-important").child(text_line(line, 11., system_orange(cx))), whys).into_any_element());
+            out.push(
+                crate::highlights::tipped(
+                    div()
+                        .id("updates-important")
+                        .child(text_line(line, 11., system_orange(cx))),
+                    whys,
+                )
+                .into_any_element(),
+            );
         }
         out.extend(notes_lines(d.notes.clone(), cx));
         out
@@ -686,11 +1011,16 @@ impl Threadbear {
         if self.updates_panel.pictures.contains_key(url) {
             return;
         }
-        self.updates_panel.pictures.insert(url.to_owned(), Picture::Loading);
+        self.updates_panel
+            .pictures
+            .insert(url.to_owned(), Picture::Loading);
         let url = url.to_owned();
         cx.spawn(async move |this, cx| {
             let from = url.clone();
-            let got = cx.background_executor().spawn(async move { fetch_picture(&from) }).await;
+            let got = cx
+                .background_executor()
+                .spawn(async move { fetch_picture(&from) })
+                .await;
             let _ = this.update(cx, |t, cx| {
                 let picture = match got {
                     Ok(image) => Picture::Ready(Arc::new(image)),
@@ -708,9 +1038,14 @@ impl Threadbear {
 
     /// Each change: its subject, when and what, and Port this and Dismiss,
     /// or a link to the thread already rebuilding it.
-    fn render_swift_changes(&mut self, changes: &[rules::SwiftChange], cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_swift_changes(
+        &mut self,
+        changes: &[rules::SwiftChange],
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let (fg, secondary) = (style::label_text(cx), style::secondary_text(cx));
-        let mut out = vec![text_line(rules::swift_changes_line(changes.len()), 12., fg).into_any_element()];
+        let mut out =
+            vec![text_line(rules::swift_changes_line(changes.len()), 12., fg).into_any_element()];
         for c in changes {
             let commit = c.commit.clone();
             let mut row = v_flex()
@@ -720,7 +1055,16 @@ impl Threadbear {
                 .child(text_line(rules::swift_change_detail(c), 11., secondary).truncate());
             if let Some(id) = c.thread_id.clone() {
                 let title = format!("Being rebuilt in {}", self.thread_title(&id));
-                row = row.child(text_button(SharedString::from(format!("updates-swift-open-{commit}")), title, "Open the thread rebuilding this change", 11., true, false, cx, move |t, window, cx| t.open(id.clone(), window, cx)));
+                row = row.child(text_button(
+                    SharedString::from(format!("updates-swift-open-{commit}")),
+                    title,
+                    "Open the thread rebuilding this change",
+                    11.,
+                    true,
+                    false,
+                    cx,
+                    move |t, window, cx| t.open(id.clone(), window, cx),
+                ));
             } else {
                 let busy = self.updates_panel.porting.contains(&commit);
                 let (port, dismiss) = (commit.clone(), commit.clone());
@@ -742,14 +1086,20 @@ impl Threadbear {
     /// Check now.
     fn render_clis(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (secondary, tertiary) = (style::secondary_text(cx), style::tertiary_label(cx));
-        if self.updates_panel.clis_supported == Some(false) || (self.updates_panel.clis_supported.is_none() && self.updates_panel.clis.is_empty()) {
-            return text_line("The CLI versions need a newer runner.", 12., secondary).into_any_element();
+        if self.updates_panel.clis_supported == Some(false)
+            || (self.updates_panel.clis_supported.is_none() && self.updates_panel.clis.is_empty())
+        {
+            return text_line("The CLI versions need a newer runner.", 12., secondary)
+                .into_any_element();
         }
         let mut column = v_flex().gap(px(12.));
         for cli in self.updates_panel.clis.clone() {
             column = column.child(self.render_cli_row(&cli, cx));
         }
-        let checked = rules::checked_line(&self.updates_panel.clis, &threadbear_core::sidebar::local_now());
+        let checked = rules::checked_line(
+            &self.updates_panel.clis,
+            &threadbear_core::sidebar::local_now(),
+        );
         let busy = self.updates_panel.busy.contains("check");
         column
             .child(
@@ -757,7 +1107,16 @@ impl Threadbear {
                     .items_center()
                     .children(checked.map(|c| text_line(c, 11., tertiary)))
                     .child(div().flex_1())
-                    .child(text_button("updates-check", "Check now", "Look for new versions of the CLIs now", 11., false, busy, cx, |t, _, cx| t.check_clis(cx))),
+                    .child(text_button(
+                        "updates-check",
+                        "Check now",
+                        "Look for new versions of the CLIs now",
+                        11.,
+                        false,
+                        busy,
+                        cx,
+                        |t, _, cx| t.check_clis(cx),
+                    )),
             )
             .into_any_element()
     }
@@ -766,14 +1125,32 @@ impl Threadbear {
     /// doing, what a held one lacks, and whether updates install by
     /// themselves, with Go back for a kept version.
     fn render_cli_row(&mut self, cli: &CliStatus, cx: &mut Context<Self>) -> AnyElement {
-        let (fg, secondary, tertiary) = (style::label_text(cx), style::secondary_text(cx), style::tertiary_label(cx));
+        let (fg, secondary, tertiary) = (
+            style::label_text(cx),
+            style::secondary_text(cx),
+            style::tertiary_label(cx),
+        );
         let provider = cli.provider.clone();
-        let updating = self.updates_panel.busy.contains(&format!("update/{provider}"));
+        let updating = self
+            .updates_panel
+            .busy
+            .contains(&format!("update/{provider}"));
         let title = rules::update_title(cli);
         // Its first line's baseline on the button's, as the Swift row's
         // `.firstTextBaseline` puts it.
         // Being looked into needs nothing from Mike, so it isn't orange.
-        let status = text_line(rules::status_line(cli), 12., if cli.status == "held" && !rules::is_investigated(cli) { system_orange(cx) } else { fg }).flex_1().min_w_0().when(title.is_some(), |s| s.mt(px(2.)));
+        let status = text_line(
+            rules::status_line(cli),
+            12.,
+            if cli.status == "held" && !rules::is_investigated(cli) {
+                system_orange(cx)
+            } else {
+                fg
+            },
+        )
+        .flex_1()
+        .min_w_0()
+        .when(title.is_some(), |s| s.mt(px(2.)));
         let mut top = h_flex().items_start().gap(px(6.)).child(status);
         if let Some(title) = title {
             let tip = if cli.can_update_now {
@@ -784,19 +1161,47 @@ impl Threadbear {
                 "Install the new version now"
             };
             let (p, force) = (provider.clone(), cli.status == "held");
-            top = top.child(push_button(SharedString::from(format!("updates-update-{provider}")), title, tip, true, updating, cx, move |t, _, cx| t.update_cli(&p, None, force, cx)));
+            top = top.child(push_button(
+                SharedString::from(format!("updates-update-{provider}")),
+                title,
+                tip,
+                true,
+                updating,
+                cx,
+                move |t, _, cx| t.update_cli(&p, None, force, cx),
+            ));
         }
         let mut row = v_flex().gap(px(6.)).child(top);
         if let (true, Some(text)) = (rules::is_updating(cli), rules::banner_text(cli)) {
             row = row.child(text_line(text, 11., secondary));
         }
-        if let Some(missing) = cli.hold.as_ref().map(|h| &h.missing).filter(|m| !m.is_empty()) {
-            row = row.child(text_line(format!("Missing: {}", missing.join(", ")), 11., tertiary).line_clamp(2));
+        if let Some(missing) = cli
+            .hold
+            .as_ref()
+            .map(|h| &h.missing)
+            .filter(|m| !m.is_empty())
+        {
+            row = row.child(
+                text_line(format!("Missing: {}", missing.join(", ")), 11., tertiary).line_clamp(2),
+            );
         }
         if let Some(id) = rules::hold_thread(cli) {
             let open = id.to_owned();
-            let tip = if rules::is_investigated(cli) { "Open the thread looking into it" } else { "Open the thread that looked into it" };
-            row = row.child(text_button(SharedString::from(format!("updates-hold-{provider}")), self.thread_title(id), tip, 12., true, false, cx, move |t, window, cx| t.open(open.clone(), window, cx)));
+            let tip = if rules::is_investigated(cli) {
+                "Open the thread looking into it"
+            } else {
+                "Open the thread that looked into it"
+            };
+            row = row.child(text_button(
+                SharedString::from(format!("updates-hold-{provider}")),
+                self.thread_title(id),
+                tip,
+                12.,
+                true,
+                false,
+                cx,
+                move |t, window, cx| t.open(open.clone(), window, cx),
+            ));
         }
         if let Some(managed) = rules::managed_line(cli) {
             row = row.child(text_line(managed, 11., tertiary));
@@ -808,9 +1213,20 @@ impl Threadbear {
             bottom = bottom.child(self.render_policy_menu(cli, cx));
         }
         bottom = bottom.child(div().flex_1());
-        if let (Some(back), Some(previous)) = (rules::go_back_title(cli), cli.previous_version.clone()) {
+        if let (Some(back), Some(previous)) =
+            (rules::go_back_title(cli), cli.previous_version.clone())
+        {
             let p = provider.clone();
-            bottom = bottom.child(text_button(SharedString::from(format!("updates-back-{provider}")), back, "Go back to the version you had before the last update", 11., false, updating, cx, move |t, _, cx| t.update_cli(&p, Some(previous.clone()), false, cx)));
+            bottom = bottom.child(text_button(
+                SharedString::from(format!("updates-back-{provider}")),
+                back,
+                "Go back to the version you had before the last update",
+                11.,
+                false,
+                updating,
+                cx,
+                move |t, _, cx| t.update_cli(&p, Some(previous.clone()), false, cx),
+            ));
         }
         row.child(bottom).into_any_element()
     }
@@ -821,33 +1237,61 @@ impl Threadbear {
     fn render_policy_menu(&mut self, cli: &CliStatus, cx: &mut Context<Self>) -> AnyElement {
         let tip = "Whether new versions install by themselves";
         let provider = cli.provider.clone();
-        let busy = self.updates_panel.busy.contains(&format!("policy/{provider}"));
+        let busy = self
+            .updates_panel
+            .busy
+            .contains(&format!("policy/{provider}"));
         let current = cli.policy.clone();
         let app = cx.entity().downgrade();
         let words = format!("Updates: {}", rules::policy_title(&cli.policy));
-        let holder = div().id(SharedString::from(format!("updates-policy-{}", cli.provider))).flex_none().test_support().a11y_role(Role::GenericContainer).aria_label(tip).tip(tip);
+        let holder = div()
+            .id(SharedString::from(format!(
+                "updates-policy-{}",
+                cli.provider
+            )))
+            .flex_none()
+            .test_support()
+            .a11y_role(Role::GenericContainer)
+            .aria_label(tip)
+            .tip(tip);
         if busy {
             // Taking no other choice until the runner has this one.
-            return holder.opacity(0.5).child(MenuLabel::new(SharedString::from(format!("updates-policy-{provider}-label")), words, 11., style::label_text(cx))).into_any_element();
+            return holder
+                .opacity(0.5)
+                .child(MenuLabel::new(
+                    SharedString::from(format!("updates-policy-{provider}-label")),
+                    words,
+                    11.,
+                    style::label_text(cx),
+                ))
+                .into_any_element();
         }
-        let menu = MenuLabel::new(SharedString::from(format!("updates-policy-{provider}-label")), words, 11., style::label_text(cx))
-            .dropdown_menu(move |menu: PopupMenu, _, _| {
-                let mut menu = menu;
-                for policy in rules::POLICIES {
-                    let (app, p) = (app.clone(), provider.clone());
-                    let checked = current == policy;
-                    let mut item = PopupMenuItem::new(rules::policy_title(policy)).checked(checked).on_click(move |_, _, cx| {
-                        app.update(cx, |t, cx| t.set_cli_policy(&p, policy, cx)).ok();
+        let menu = MenuLabel::new(
+            SharedString::from(format!("updates-policy-{provider}-label")),
+            words,
+            11.,
+            style::label_text(cx),
+        )
+        .dropdown_menu(move |menu: PopupMenu, _, _| {
+            let mut menu = menu;
+            for policy in rules::POLICIES {
+                let (app, p) = (app.clone(), provider.clone());
+                let checked = current == policy;
+                let mut item = PopupMenuItem::new(rules::policy_title(policy))
+                    .checked(checked)
+                    .on_click(move |_, _, cx| {
+                        app.update(cx, |t, cx| t.set_cli_policy(&p, policy, cx))
+                            .ok();
                     });
-                    // A real tick beside the icon: the tick used to be the
-                    // icon, so it was hidden along with all of them.
-                    if !checked {
-                        item = item.icon(icons::symbol(rules::policy_symbol(policy)));
-                    }
-                    menu = menu.item(item);
+                // A real tick beside the icon: the tick used to be the
+                // icon, so it was hidden along with all of them.
+                if !checked {
+                    item = item.icon(icons::symbol(rules::policy_symbol(policy)));
                 }
-                menu
-            });
+                menu = menu.item(item);
+            }
+            menu
+        });
         holder.child(menu).into_any_element()
     }
 
@@ -856,30 +1300,52 @@ impl Threadbear {
     /// What the panel says, a line each, in the Swift app's dump shape.
     pub(crate) fn updates_dump(&self, cx: &App) -> Value {
         let mut lines = Vec::new();
-        let swift = self.updates_panel.runner.as_ref().map(|r| r.swift_changes.as_slice()).unwrap_or_default();
+        let swift = self
+            .updates_panel
+            .runner
+            .as_ref()
+            .map(|r| r.swift_changes.as_slice())
+            .unwrap_or_default();
         if !swift.is_empty() {
             lines.push("# Not in the new app yet".to_owned());
             lines.push(rules::swift_changes_line(swift.len()));
             for c in swift {
-                lines.push(format!("  {} ({})", c.subject, rules::swift_change_detail(c)));
+                lines.push(format!(
+                    "  {} ({})",
+                    c.subject,
+                    rules::swift_change_detail(c)
+                ));
                 lines.push(match &c.thread_id {
                     Some(id) => format!("  > Being rebuilt in {}", self.thread_title(id)),
-                    None if self.updates_panel.porting.contains(&c.commit) => "  [Port this: starting] [Dismiss]".to_owned(),
+                    None if self.updates_panel.porting.contains(&c.commit) => {
+                        "  [Port this: starting] [Dismiss]".to_owned()
+                    }
                     None => "  [Port this] [Dismiss]".to_owned(),
                 });
             }
         }
         let side = self.app_side();
         lines.extend(["# App".to_owned(), rules::app_line(&side)]);
-        if let (Some(threadbear_core::app_update::RestartWait::Held(_)), Some(id)) = (&side.wait, &self.updater.hold_thread) {
+        if let (Some(threadbear_core::app_update::RestartWait::Held(_)), Some(id)) =
+            (&side.wait, &self.updater.hold_thread)
+        {
             lines.push(format!("  > {}", self.thread_title(id)));
         }
         lines.push("# Runner".to_owned());
         match &self.updates_panel.runner {
             Some(runner) => {
-                let (build, old, launcher) = (rules::build_line(runner), rules::old_runners_line(runner), rules::launcher_line(runner));
+                let (build, old, launcher) = (
+                    rules::build_line(runner),
+                    rules::old_runners_line(runner),
+                    rules::launcher_line(runner),
+                );
                 let not_following = rules::follow_lines(runner);
-                if build.is_none() && old.is_none() && launcher.is_none() && not_following.is_empty() && runner.web_runtime_problem.is_none() {
+                if build.is_none()
+                    && old.is_none()
+                    && launcher.is_none()
+                    && not_following.is_empty()
+                    && runner.web_runtime_problem.is_none()
+                {
                     lines.push("The runner is up to date.".to_owned());
                 }
                 lines.extend(not_following);
@@ -887,7 +1353,13 @@ impl Threadbear {
                 lines.extend(build);
                 if let Some(old) = old {
                     lines.push(old);
-                    lines.extend(runner.old_runners.iter().flat_map(|o| o.threads.iter()).map(|id| format!("  > {}", self.thread_title(id))));
+                    lines.extend(
+                        runner
+                            .old_runners
+                            .iter()
+                            .flat_map(|o| o.threads.iter())
+                            .map(|id| format!("  > {}", self.thread_title(id))),
+                    );
                 }
                 if let Some(launcher) = launcher {
                     lines.push(launcher);
@@ -899,19 +1371,34 @@ impl Threadbear {
             }
             None => lines.extend(rules::runner_lines(None)),
         }
-        let upstream = self.updates_panel.runner.as_ref().and_then(|r| r.upstream.as_ref());
+        let upstream = self
+            .updates_panel
+            .runner
+            .as_ref()
+            .and_then(|r| r.upstream.as_ref());
         if let Some(text) = rules::upstream_line(upstream) {
             lines.push("# From Mike".to_owned());
             lines.push(text);
-            if let Some(release) = upstream.filter(|u| u.available()).and_then(|u| u.release.as_ref()) {
+            if let Some(release) = upstream
+                .filter(|u| u.available())
+                .and_then(|u| u.release.as_ref())
+            {
                 // The page's cards as "[card] <title> (clip) -> <link>", then
                 // the counts and See all, the Important line, and any notes.
                 let groups = match rules::release_digest(release) {
                     Some(d) => {
                         for (card, link) in &d.cards {
-                            lines.push(format!("[card] {}{} -> {link}", card.title, if card.clip { " (clip)" } else { "" }));
+                            lines.push(format!(
+                                "[card] {}{} -> {link}",
+                                card.title,
+                                if card.clip { " (clip)" } else { "" }
+                            ));
                         }
-                        lines.push(format!("{} [See all -> {}]", rules::digest_counts(&d), d.page).trim_start().to_owned());
+                        lines.push(
+                            format!("{} [See all -> {}]", rules::digest_counts(&d), d.page)
+                                .trim_start()
+                                .to_owned(),
+                        );
                         if let Some(line) = rules::important_line(d.important.len()) {
                             lines.push(format!("{line} (tip: {})", d.important.join("; ")));
                         }
@@ -928,12 +1415,19 @@ impl Threadbear {
         }
         lines.push("# CLIs".to_owned());
         let clis = &self.updates_panel.clis;
-        if self.updates_panel.clis_supported == Some(false) || (self.updates_panel.clis_supported.is_none() && clis.is_empty()) {
+        if self.updates_panel.clis_supported == Some(false)
+            || (self.updates_panel.clis_supported.is_none() && clis.is_empty())
+        {
             lines.push("The CLI versions need a newer runner.".to_owned());
         } else {
             for cli in clis {
                 lines.push(rules::dump_line(cli));
-                if let Some(missing) = cli.hold.as_ref().map(|h| &h.missing).filter(|m| !m.is_empty()) {
+                if let Some(missing) = cli
+                    .hold
+                    .as_ref()
+                    .map(|h| &h.missing)
+                    .filter(|m| !m.is_empty())
+                {
                     lines.push(format!("  Missing: {}", missing.join(", ")));
                 }
                 if let Some(id) = rules::hold_thread(cli) {
@@ -942,7 +1436,9 @@ impl Threadbear {
                 lines.extend(rules::managed_line(cli).map(|m| format!("  {m}")));
             }
             let checked = rules::checked_line(clis, &threadbear_core::sidebar::local_now());
-            lines.push(checked.map_or_else(|| "[Check now]".to_owned(), |c| format!("{c} [Check now]")));
+            lines.push(
+                checked.map_or_else(|| "[Check now]".to_owned(), |c| format!("{c} [Check now]")),
+            );
         }
         json!({ "shown": self.activity_panel_showing(shell::UPDATES, cx), "lines": lines })
     }
@@ -955,16 +1451,29 @@ fn notes_lines(groups: Vec<(Option<String>, Vec<String>)>, cx: &App) -> Vec<AnyE
     let mut out = Vec::new();
     for (heading, lines) in groups {
         if let Some(heading) = heading {
-            out.push(text_line(heading, 11., fg).font_weight(FontWeight::MEDIUM).pt(px(2.)).into_any_element());
+            out.push(
+                text_line(heading, 11., fg)
+                    .font_weight(FontWeight::MEDIUM)
+                    .pt(px(2.))
+                    .into_any_element(),
+            );
         }
-        out.extend(lines.into_iter().map(|l| text_line(l, 11., secondary).line_clamp(2).into_any_element()));
+        out.extend(lines.into_iter().map(|l| {
+            text_line(l, 11., secondary)
+                .line_clamp(2)
+                .into_any_element()
+        }));
     }
     out
 }
 
 /// Small headings, as the Usage panel groups its logins (`section`).
 fn section(title: &'static str, content: Vec<AnyElement>, cx: &App) -> AnyElement {
-    v_flex().gap(px(7.)).child(small_heading(title, cx)).children(content).into_any_element()
+    v_flex()
+        .gap(px(7.))
+        .child(small_heading(title, cx))
+        .children(content)
+        .into_any_element()
 }
 
 /// The automation's `updates` (the Swift app's): `show` opens or closes the
@@ -972,7 +1481,12 @@ fn section(title: &'static str, content: Vec<AnyElement>, cx: &App) -> AnyElemen
 /// the panel says about the app and the runner. `preview` makes up the app's
 /// own update first (`staged`, `building`, `settling`, `failed`, `waiting` or `none`), as
 /// the Swift app's; this app has no right-click popover (`rightClick`).
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     // What a restart onto an update leaves for the next launch, put back as
     // that launch does (app_update.rs, `restore_after_update`): a scripted
     // app never restarts itself.
@@ -997,8 +1511,21 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
         return Ok(json!("ok"));
     }
     if let Some(state) = cmd["preview"].as_str() {
-        if !["staged", "building", "settling", "failed", "waiting", "no-builder", "none"].contains(&state) {
-            return Err("preview is staged, building, settling, failed, waiting, no-builder or none".into());
+        if ![
+            "staged",
+            "building",
+            "queued",
+            "settling",
+            "failed",
+            "waiting",
+            "no-builder",
+            "none",
+        ]
+        .contains(&state)
+        {
+            return Err(
+                "preview is staged, building, queued, settling, failed, waiting, no-builder or none".into(),
+            );
         }
         app.update(cx, |t, cx| t.preview_update(state, cx));
     }
@@ -1009,14 +1536,20 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
             t.toggle_update_popover(window, cx);
             t.updates_panel.popover
         });
-        return Ok(json!(format!("ok popover {}", if shown { "shown" } else { "closed" })));
+        return Ok(json!(format!(
+            "ok popover {}",
+            if shown { "shown" } else { "closed" }
+        )));
     }
     if let Some(popover) = cmd["popover"].as_bool() {
         app.update(cx, |t, cx| {
             t.updates_panel.popover = popover;
             cx.notify();
         });
-        return Ok(json!(format!("ok popover {}", if popover { "shown" } else { "closed" })));
+        return Ok(json!(format!(
+            "ok popover {}",
+            if popover { "shown" } else { "closed" }
+        )));
     }
     if let Some(show) = cmd["show"].as_bool() {
         let shown = app.update(cx, |t, cx| {
@@ -1034,8 +1567,24 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
     let t = app.read(cx);
     let side = t.app_side();
     let runner = t.updates_panel.runner.as_ref();
-    let popover = format!("popover: {}, {}", if t.updates_panel.popover { "shown" } else { "closed" }, rules::popover_line(&side));
-    let mut lines = vec![format!("shown: {}", rules::shown(&side, runner)), format!("tip: {}", t.updates_tooltip().replace('\n', " / ")), popover, rules::app_line(&side)];
+    let popover = format!(
+        "popover: {}, {}",
+        if t.updates_panel.popover {
+            "shown"
+        } else {
+            "closed"
+        },
+        rules::popover_line(&side)
+    );
+    let mut lines = vec![
+        format!("shown: {}", rules::shown(&side, runner)),
+        format!("tip: {}", t.updates_tooltip().replace('\n', " / ")),
+        popover,
+        rules::app_line(&side),
+    ];
     lines.extend(rules::runner_lines(runner));
-    Ok(json!(format!("ok {}", serde_json::to_string(&lines).unwrap_or_default())))
+    Ok(json!(format!(
+        "ok {}",
+        serde_json::to_string(&lines).unwrap_or_default()
+    )))
 }

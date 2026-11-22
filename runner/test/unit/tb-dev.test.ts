@@ -21,7 +21,7 @@ const TB = path.resolve(import.meta.dirname, '..', '..', 'bin', 'tb');
 // How tb prints itself: quoted when the checkout path has a space (the
 // runner's update checkout is under ~/Library/Application Support).
 const TB_SH = shQuote(TB);
-const MOCK = path.join(import.meta.dirname, '..', '..', '..', 'app', 'Tools', 'mock-runner');
+const MOCK = path.join(import.meta.dirname, '..', '..', '..', 'mock-runner');
 
 const T: ThreadSummary = {
   id: 'abcdef12-0000-4000-8000-000000000000',
@@ -290,11 +290,16 @@ test('the mock runner loads an export', { skip: !fs.existsSync(path.join(MOCK, '
 
 test('tb export finds the checkout to put fixtures in', () => {
   const root = tmpDir();
-  fs.mkdirSync(path.join(root, 'app', 'Tools', 'mock-runner'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'app', 'Tools', 'mock-runner', 'server.mjs'), '');
+  fs.mkdirSync(path.join(root, 'mock-runner'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'mock-runner', 'server.mjs'), '');
   fs.mkdirSync(path.join(root, 'runner', 'src'), { recursive: true });
   assert.equal(findRepoRoot([path.join(root, 'runner', 'src')]), root);
   assert.equal(findRepoRoot([tmpDir()]), undefined);
+  // A fork from before the mock runner moved out of app/Tools.
+  const old = tmpDir();
+  fs.mkdirSync(path.join(old, 'app', 'Tools', 'mock-runner'), { recursive: true });
+  fs.writeFileSync(path.join(old, 'app', 'Tools', 'mock-runner', 'server.mjs'), '');
+  assert.equal(findRepoRoot([old]), old);
 });
 
 test('tb logs reads the last lines from the end, filtered to a thread', () => {
@@ -393,7 +398,7 @@ test('tb status, self, show, export and rpc against a runner', async () => {
     // The debug app comes first, and there's no bare mock runner line to
     // run in the foreground by mistake.
     // The path is quoted when the checkout sits under a dir with a space.
-    assert.match(r.out, new RegExp(`\\n  ('[^']*|\\S*)${escapeRegExp(`app${path.sep}Tools${path.sep}dev-app.sh`)}'? start --mock --fixtures `));
+    assert.match(r.out, new RegExp(`\\n  ('[^']*|\\S*)${escapeRegExp(`desktop${path.sep}scripts${path.sep}dev-app.sh`)}'? start --mock --fixtures `));
     assert.doesNotMatch(r.out, /server\.mjs/);
     assert.match(r.out, new RegExp(`tb'? events ${thread.id.slice(0, 8)} --from N --to M\n`));
     assert.equal(fs.readFileSync(path.join(out, 'events.ndjson'), 'utf8').trim().split('\n').length, 4);

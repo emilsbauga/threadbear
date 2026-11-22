@@ -34,14 +34,28 @@ fn path() -> PathBuf {
 }
 
 pub(crate) fn load() -> FilePrefs {
-    let stored: Stored = std::fs::read_to_string(path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    let stored: Stored = std::fs::read_to_string(path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
     let sort = match stored.folder_sort.as_deref().and_then(SortKey::from_name) {
-        Some(key) => FolderSort { key, ascending: stored.folder_sort_ascending.unwrap_or(key == SortKey::Name) },
+        Some(key) => FolderSort {
+            key,
+            ascending: stored.folder_sort_ascending.unwrap_or(key == SortKey::Name),
+        },
         None => FolderSort::default(),
     };
     FilePrefs {
-        markdown_view: stored.markdown_view.as_deref().and_then(MarkdownView::from_name).unwrap_or_default(),
-        folder_mode: stored.folder_mode.as_deref().and_then(FolderMode::from_name).unwrap_or_default(),
+        markdown_view: stored
+            .markdown_view
+            .as_deref()
+            .and_then(MarkdownView::from_name)
+            .unwrap_or_default(),
+        folder_mode: stored
+            .folder_mode
+            .as_deref()
+            .and_then(FolderMode::from_name)
+            .unwrap_or_default(),
         folder_sort: sort,
         show_hidden: stored.folder_show_hidden.unwrap_or(false),
     }

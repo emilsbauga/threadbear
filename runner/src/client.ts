@@ -22,7 +22,7 @@ export type RunnerClientOptions = {
   // Sends the token as a bearer header instead of answering a challenge.
   // Only for a runner a file in the data dir says can't answer one (a
   // draining runner older than the challenge, handover.ts); never chosen
-  // from what a server says (docs/protocol.md, "Auth").
+  // from what a server says (docs/protocol/connection.md, "Auth").
   legacyHeader?: boolean;
   authTimeoutMs?: number;
   // The kind of server this means to reach, which the proofs are bound to:
@@ -34,7 +34,7 @@ export type RunnerClientOptions = {
   socket?: import('node:net').Socket;
   // The thread whose key `token` is (tb inside a thread, tb-connect.ts). The
   // runner works the key out from this and treats the connection as that
-  // thread (docs/protocol.md, "A thread's own key").
+  // thread (docs/protocol/connection.md, "A thread's own key").
   threadId?: string;
 };
 
@@ -50,7 +50,7 @@ export class RunnerClient {
   private proving?: (msg: any) => void;
 
   // With a token, `opened` resolves once both sides have proved they have
-  // it (docs/protocol.md, "Auth"); the token itself never goes out.
+  // it (docs/protocol/connection.md, "Auth"); the token itself never goes out.
   // Without one (tests), it resolves when the socket opens.
   constructor(url: string, token?: string, opts: RunnerClientOptions = {}) {
     const legacy = Boolean(token && opts.legacyHeader);

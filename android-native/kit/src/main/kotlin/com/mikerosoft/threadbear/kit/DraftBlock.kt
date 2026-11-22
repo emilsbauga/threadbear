@@ -198,7 +198,8 @@ data class DraftBlock(val kind: Kind, val source: String) {
                 if (!label.isNullOrEmpty()) return Token.Mention(if (first == '#' && !label.startsWith("#")) "#$label" else label)
                 if (first == '!') {
                     // <!subteam^S123> and <!date^...> carry a label or nothing useful.
-                    return Token.Mention("@" + name.split("^").first())
+                    // The first part that isn't empty, so <!^S1> is "@S1" (shared/cases/draft-blocks.json).
+                    return Token.Mention("@" + (name.split("^").firstOrNull { it.isNotEmpty() } ?: name))
                 }
                 return Token.Mention("$first$name")
             }

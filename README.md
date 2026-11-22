@@ -12,7 +12,7 @@
 <h1 align="center">Threadbear</h1>
 
 <p align="center">
-  A desktop app (Mac, Windows and Linux) for running your Claude Code, Codex, Grok, Cursor and OpenCode threads, on the subscriptions you already have.<br>
+  A desktop app (Mac, Windows and Linux) for running your Claude Code, Codex, Grok, Cursor, OpenCode and Gemini threads, on the subscriptions you already have.<br>
   You get all of the source, so when something bugs you, you (or more likely your agent) can change it.
 </p>
 
@@ -96,7 +96,8 @@ You fork the code, so you can change anything. My changes come as a daily releas
   whichever machine you pick.
 - **Runs on your own logins.** It drives the official `claude` and `codex`
   command line tools, logged in as you, and never reads or copies your login
-  tokens. Grok, Cursor and OpenCode get threads too, through their own CLIs
+  tokens. Grok, Cursor, OpenCode and Gemini (on a Google AI plan) get threads
+  too, through their own CLIs
   ([more on those](docs/guide.md#accounts-pools-and-usage)).
 
 The [launch video](https://www.youtube.com/watch?v=HCR6jqR0LEI) goes through
@@ -111,8 +112,8 @@ You'll need:
 - A Mac with Apple silicon, on macOS 26 or later (Windows and Linux work too,
   but these steps are written for a Mac for now)
 - Xcode's command line tools (`xcode-select --install`), and Node 24 or newer
-- Claude Code or Codex, installed and logged in. Grok, Cursor and OpenCode
-  can run threads too, but titles and the librarian need a Claude login
+- Claude Code or Codex, installed and logged in. Grok, Cursor, OpenCode
+  and Gemini can run threads too, but titles and the librarian need a Claude login
 - A free [Convex](https://convex.dev) account
 - The GitHub CLI (`gh`), to make your fork
 
@@ -178,9 +179,11 @@ If you're an agent, start here:
   [docs/on-your-mac.md](docs/on-your-mac.md), then follow
   [INSTALL.md](INSTALL.md).
 - **Working on the code:** read [AGENTS.md](AGENTS.md) first for the rules,
-  then [docs/plan.md](docs/plan.md) for how it fits together and
-  [docs/protocol.md](docs/protocol.md), the contract between the runner and
-  the apps.
+  then [runner/README.md](runner/README.md) and
+  [desktop/README.md](desktop/README.md) for how it fits together, and the
+  part of [docs/protocol.md](docs/protocol.md), the contract between the
+  runner and the apps, that you're changing. Finished plans are kept as
+  history in [docs/archive/](docs/archive/).
 - **Sending Mike a change:** [CONTRIBUTING.md](CONTRIBUTING.md) says what
   he takes and how, so read it before you start.
 - **The backend, iPhone app and website:**
@@ -197,13 +200,15 @@ If you're an agent, start here:
 Where things are:
 
 - `runner/`: the runner (TypeScript), the background process that drives the
-  `claude` and `codex` CLIs, and Grok, Cursor and OpenCode over the Agent
-  Client Protocol
+  `claude` and `codex` CLIs, and Grok, Cursor, OpenCode and Gemini
+  (Antigravity) over the Agent Client Protocol
 - `desktop/`: the desktop app (Rust and GPUI), for Mac, Windows and Linux
 - `app/`: the old Mac app (SwiftUI and AppKit), frozen now
 - `ios/`: the iPhone app, `android-native/`: the Android app
 - `convex/`: the backend, `web/`: the website
 - `relay/`: the push relay (Mike's, shared by everyone)
+- `mock-runner/`: a stand-in runner with demo threads, for the apps' tests,
+  `shared/`: what more than one app uses (test cases, pictures, Pele)
 - `site/`: the landing page at threadbear.mikecann.app
 - `docs/`: how it all works
 
@@ -211,4 +216,4 @@ Where things are:
 
 MIT, see [LICENSE](LICENSE). The fonts and icons under `site/` keep their own
 licences, beside them, as does [Pele](https://pele.run/) (MIT), the diagram
-library bundled in the Mac and iPhone apps (`Rich/pele-LICENSE.txt`).
+library bundled in the apps (`shared/rich/pele-LICENSE.txt`).

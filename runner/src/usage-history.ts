@@ -1,5 +1,5 @@
 // Each login's 5-hour and weekly windows over time, for the Usage panel's
-// charts and how fast a window is going down (docs/protocol.md, "Usage
+// charts and how fast a window is going down (docs/protocol/settings.md, "Usage
 // history"). UsageStore hands over whatever it would show every time it
 // looks again (a new limits.json, a live reading, a reset); a sample is
 // kept when the window moved by half a point or more, or 30 minutes after

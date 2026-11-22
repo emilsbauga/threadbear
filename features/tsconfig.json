@@ -1,0 +1,21 @@
+{
+  // The specs' steps and the tools that drive the desktop app. Node runs them
+  // as they are (type stripping), so nothing checked their types until a spec
+  // failed in CI: `npm run typecheck` here, and check.sh's "features
+  // typecheck" step, do that now.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["esnext"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["support/**/*.ts", "steps/**/*.ts", "tools/**/*.ts"]
+}

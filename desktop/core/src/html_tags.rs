@@ -25,7 +25,9 @@ pub fn each_attribute(text: &[u8], mut visit: impl FnMut(&[u8], &[u8], &[u8]) ->
     let n = text.len();
     let mut i = 0;
     while i < n {
-        let Some(lt) = text[i..].iter().position(|&b| b == b'<') else { return };
+        let Some(lt) = text[i..].iter().position(|&b| b == b'<') else {
+            return;
+        };
         i += lt + 1;
         if !text.get(i).is_some_and(u8::is_ascii_alphabetic) {
             continue;
@@ -72,7 +74,9 @@ pub fn each_attribute(text: &[u8], mut visit: impl FnMut(&[u8], &[u8], &[u8]) ->
                 None => return,
                 Some(&q @ (b'"' | b'\'')) => {
                     let start = i + 1;
-                    let Some(len) = text[start..].iter().position(|&b| b == q) else { return };
+                    let Some(len) = text[start..].iter().position(|&b| b == q) else {
+                        return;
+                    };
                     i = start + len + 1;
                     &text[start..start + len]
                 }
@@ -109,7 +113,10 @@ pub fn drag_html_shows_image(html: &[u8], url: &str) -> bool {
     let want = url.as_bytes();
     let mut found = false;
     each_attribute(html, |tag, name, value| {
-        if tag.eq_ignore_ascii_case(b"img") && name.eq_ignore_ascii_case(b"src") && unescaped_amp_eq(value, want) {
+        if tag.eq_ignore_ascii_case(b"img")
+            && name.eq_ignore_ascii_case(b"src")
+            && unescaped_amp_eq(value, want)
+        {
             found = true;
         }
         !found
@@ -157,23 +164,69 @@ pub(crate) mod tests {
     #[test]
     fn reads_each_value_once() {
         let a = |t: &str, n: &str, v: &str| (t.to_owned(), n.to_owned(), v.to_owned());
-        assert_eq!(attributes("<img src=srcset=one.png>"), [a("img", "src", "srcset=one.png")], "srcset= inside a value is the value");
-        assert_eq!(attributes("<img alt=\"src=x.png\" src = 'y.png' hidden data=z.png/>"), [a("img", "alt", "src=x.png"), a("img", "src", "y.png"), a("img", "data", "z.png/")]);
-        assert_eq!(attributes("<p>src=x.png</p><a\nhref=b.css>"), [a("a", "href", "b.css")], "text between tags names nothing");
-        assert_eq!(attributes("<img src=\"never closed"), [], "a quote that never closes ends it");
-        assert_eq!(attributes("<a b=>c</a><img/src=d.png>"), [a("a", "b", ""), a("img", "src", "d.png")]);
+        assert_eq!(
+            attributes("<img src=srcset=one.png>"),
+            [a("img", "src", "srcset=one.png")],
+            "srcset= inside a value is the value"
+        );
+        assert_eq!(
+            attributes("<img alt=\"src=x.png\" src = 'y.png' hidden data=z.png/>"),
+            [
+                a("img", "alt", "src=x.png"),
+                a("img", "src", "y.png"),
+                a("img", "data", "z.png/")
+            ]
+        );
+        assert_eq!(
+            attributes("<p>src=x.png</p><a\nhref=b.css>"),
+            [a("a", "href", "b.css")],
+            "text between tags names nothing"
+        );
+        assert_eq!(
+            attributes("<img src=\"never closed"),
+            [],
+            "a quote that never closes ends it"
+        );
+        assert_eq!(
+            attributes("<a b=>c</a><img/src=d.png>"),
+            [a("a", "b", ""), a("img", "src", "d.png")]
+        );
     }
 
     #[test]
     fn a_drag_shows_its_image_only_in_an_img_src() {
         let url = "https://cdn.example.com/p?id=1&size=2";
-        assert!(drag_html_shows_image(b"<meta charset=utf-8><img alt=x src=\"https://cdn.example.com/p?id=1&amp;size=2\">", url));
-        assert!(drag_html_shows_image(b"<IMG SRC='https://cdn.example.com/p?id=1&size=2'>", url));
-        assert!(!drag_html_shows_image(b"<a href=\"https://cdn.example.com/p?id=1&size=2\">link</a>", url), "a link isn't a picture");
-        assert!(!drag_html_shows_image(b"<img alt=\"src=https://cdn.example.com/p?id=1&size=2\">", url), "inside another value");
-        assert!(!drag_html_shows_image(b"<img src=\"https://cdn.example.com/p?id=1&size=23\">", url));
+        assert!(drag_html_shows_image(
+            b"<meta charset=utf-8><img alt=x src=\"https://cdn.example.com/p?id=1&amp;size=2\">",
+            url
+        ));
+        assert!(drag_html_shows_image(
+            b"<IMG SRC='https://cdn.example.com/p?id=1&size=2'>",
+            url
+        ));
+        assert!(
+            !drag_html_shows_image(
+                b"<a href=\"https://cdn.example.com/p?id=1&size=2\">link</a>",
+                url
+            ),
+            "a link isn't a picture"
+        );
+        assert!(
+            !drag_html_shows_image(
+                b"<img alt=\"src=https://cdn.example.com/p?id=1&size=2\">",
+                url
+            ),
+            "inside another value"
+        );
+        assert!(!drag_html_shows_image(
+            b"<img src=\"https://cdn.example.com/p?id=1&size=23\">",
+            url
+        ));
         let big = format!("<img src=\"{url}\">{}", " ".repeat(DRAG_HTML_BYTES));
-        assert!(!drag_html_shows_image(big.as_bytes(), url), "too big to be an image drag");
+        assert!(
+            !drag_html_shows_image(big.as_bytes(), url),
+            "too big to be an image drag"
+        );
     }
 
     /// This thread's CPU time (other tests run beside it), or the wall clock
@@ -181,15 +234,24 @@ pub(crate) mod tests {
     pub(crate) fn cpu_seconds() -> f64 {
         #[cfg(unix)]
         {
+            // SAFETY: timespec is a plain C struct of integers, so all zeros
+            // is a valid value.
             let mut at: libc::timespec = unsafe { std::mem::zeroed() };
-            // SAFETY: clock_gettime only writes the struct it's given.
-            assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut at) }, 0);
+            assert_eq!(
+                // SAFETY: clock_gettime only writes the timespec it's given,
+                // which is a live local borrowed mutably for the call.
+                unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut at) },
+                0
+            );
             at.tv_sec as f64 + at.tv_nsec as f64 / 1e9
         }
         #[cfg(not(unix))]
         {
             static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+            START
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_secs_f64()
         }
     }
 
@@ -198,7 +260,12 @@ pub(crate) mod tests {
     #[test]
     fn unclosed_tags_are_read_in_one_pass() {
         let url = "https://example.com/picture";
-        for html in ["<img ".repeat(DRAG_HTML_BYTES / 5), "<img src=x ".repeat(DRAG_HTML_BYTES / 11), "<img a=\"".repeat(DRAG_HTML_BYTES / 8), "<".repeat(DRAG_HTML_BYTES)] {
+        for html in [
+            "<img ".repeat(DRAG_HTML_BYTES / 5),
+            "<img src=x ".repeat(DRAG_HTML_BYTES / 11),
+            "<img a=\"".repeat(DRAG_HTML_BYTES / 8),
+            "<".repeat(DRAG_HTML_BYTES),
+        ] {
             let started = cpu_seconds();
             assert!(!drag_html_shows_image(html.as_bytes(), url));
             let spent = cpu_seconds() - started;
@@ -216,10 +283,16 @@ mod drag_source {
     /// the budget check spans two lines, so Windows CI failed on it alone.
     fn check_drag_source(source: &str) {
         let source = source.replace("\r\n", "\n");
-        assert!(!source.contains("NSRegularExpression"), "composer_media.m uses a regex again");
+        assert!(
+            !source.contains("NSRegularExpression"),
+            "composer_media.m uses a regex again"
+        );
         assert!(source.contains("if (!html) return false;\n  if (html.length > *budget) { *budget = 0; return false; }"), "one HTML budget for a drag's items, which an item with no HTML doesn't spend");
         assert!(source.contains("if (++seen > TB_DRAG_ITEMS) break;"));
-        assert!(!source.contains("imageURL(item)"), "every caller passes the budget");
+        assert!(
+            !source.contains("imageURL(item)"),
+            "every caller passes the budget"
+        );
         assert!(source.contains("tb_drag_html_shows_image(markup.bytes"));
     }
 
@@ -240,6 +313,9 @@ mod drag_source {
     #[test]
     #[should_panic(expected = "uses a regex again")]
     fn the_drag_source_checks_still_catch_a_regex() {
-        check_drag_source(&format!("{}\r\nNSRegularExpression *re;\r\n", SOURCE.replace('\n', "\r\n")));
+        check_drag_source(&format!(
+            "{}\r\nNSRegularExpression *re;\r\n",
+            SOURCE.replace('\n', "\r\n")
+        ));
     }
 }

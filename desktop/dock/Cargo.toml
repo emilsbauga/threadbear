@@ -39,3 +39,6 @@ path = "src/bin/dock-demo/main.rs"
 name = "press"
 path = "tests/press.rs"
 required-features = ["automation"]
+
+[lints]
+workspace = true

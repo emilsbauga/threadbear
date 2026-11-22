@@ -491,7 +491,7 @@ private struct ModelSettings: View {
 
 // MARK: Pools
 
-/// Settings › Pools (docs/pools-plan.md): the pools, and for the one picked,
+/// Settings › Pools (docs/archive/pools-plan.md): the pools, and for the one picked,
 /// its name, which logins are in it and in what order, and the folders
 /// whose new threads start on it. A change is saved (`pools.save`, which
 /// writes runner.json) as soon as the list is one the runner would take;

@@ -380,7 +380,7 @@ final class AppModel {
     /// with none picked it's the one with the most room (`newThreadAccountId`).
     /// With pools, a pick here pins the new thread to that login.
     var newThreadAccount: String?
-    /// The runner's pools (docs/pools-plan.md), in its order. Replaced whole
+    /// The runner's pools (docs/archive/pools-plan.md), in its order. Replaced whole
     /// by `pools.updated`.
     var pools: [Pool] = []
     /// Other runners' logins (accounts, pools, defaults), by runner id, from

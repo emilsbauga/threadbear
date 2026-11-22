@@ -3,7 +3,8 @@
 # file as a hard check and these as a report. Take a file off the list once
 # it passes there; the list only shrinks, except for a new test of something
 # that only runs on a Mac or Linux (tb land's, added 18 Nov: its test
-# harness makes repos through /bin/sh),
+# harness makes repos through /bin/sh, as do format-replay's and
+# format-tool's, 20 Nov),
 # and box mode's (box-mode, box-save, added 19 Nov: a box is a Linux machine,
 # and their tests make its repos through /bin/sh).
 account-isolation.test.ts
@@ -22,6 +23,8 @@ claude-trust.test.ts
 codex-approvals.test.ts
 contracts.test.ts
 desktop-ci-paths.test.ts
+format-replay.test.ts
+format-tool.test.ts
 gpui-dev-app.test.ts
 gpui-driver-evidence.test.ts
 hangup-guard.test.ts

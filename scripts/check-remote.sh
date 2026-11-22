@@ -129,6 +129,8 @@ if [ "${1:-}" = "--on-host" ]; then
   # Mac to fetch, and everything else goes.
   keep_logs() {
     local rc=$?
+    # The disk sampler (below) writes the lowest it saw and stops.
+    if [ -n "${sampler:-}" ]; then kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null; fi
     cd "$base" || return
     stop_left_in_run
     # A failed run's free space, before its temp files go: if they're what
@@ -153,7 +155,7 @@ if [ "${1:-}" = "--on-host" ]; then
   # each). npm ci only when the lockfile is new.
   # --runner (the runner's self-update) needs only the runner's: a broken
   # lockfile elsewhere mustn't hold the runner back (Codex, 9 Nov).
-  dep_dirs=". runner app/Tools/mock-runner"
+  dep_dirs=". runner mock-runner features"
   case " $* " in *" --runner "*) dep_dirs="runner" ;; esac
   for dir in $dep_dirs; do
     [ -f "$src/$dir/package-lock.json" ] || continue
@@ -199,14 +201,79 @@ if [ "${1:-}" = "--on-host" ]; then
   # change (cargo_step there says why).
   export CARGO_TARGET_DIR="$base/build/desktop-target" THREADBEAR_CHECK_SHARED_TARGET=1 \
     CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=10
+  # Smaller builds, as remote.sh has them: line numbers but not the rest of
+  # the debug info, and no incremental files. On the cloud box on 21 Nov the
+  # incremental folder was 2.8 of the target's 6.1 GiB, and nothing reuses
+  # it: every run is a fresh copy at src/, its crates touched by check.sh.
+  export CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_INCREMENTAL=0
   free_kb="$(cd "$base" && eval "$free_cmd")"
   case "$free_kb" in
     ""|*[!0123456789]*) ;;
-    *) if [ "$free_kb" -lt $((12 * 1048576)) ] && [ -d "$CARGO_TARGET_DIR" ]; then
-         echo "Short of disk here, so the desktop app's cargo target goes; it builds from cold this time."
-         rm -rf "$CARGO_TARGET_DIR"
+    *) if [ "$free_kb" -lt $((12 * 1048576)) ]; then
+         # Idle build folders first, longest unused first, until there's room
+         # (desktop/scripts/trim-remote-cache.sh): the GPUI ones remote.sh
+         # keeps, and cargo targets agents left here by hand, ~13 GiB of
+         # them on the cloud box when a group check ran it out of disk on
+         # 20 Nov. "held": this check has the host's lock it would take.
+         trim="$src/desktop/scripts/trim-remote-cache.sh"
+         if [ -f "$trim" ] && [ -d "$base/gpui" ]; then
+           (cd "$base/gpui" && bash "$trim" - held) 2>&1
+           free_kb="$(cd "$base" && eval "$free_cmd")"
+         fi
+         case "$free_kb" in ""|*[!0123456789]*) free_kb=0 ;; esac
+         if [ "$free_kb" -lt $((12 * 1048576)) ] && [ -d "$CARGO_TARGET_DIR" ]; then
+           echo "Short of disk here, so the desktop app's cargo target goes; it builds from cold this time."
+           rm -rf "$CARGO_TARGET_DIR"
+         fi
        fi ;;
   esac
+  # The lowest the disk goes during the run, every few seconds, for this Mac
+  # to read if it fails: a full disk breaks a build in ways that say nothing
+  # about space, and the disk can have room again by the time anyone asks
+  # (20 Nov: 0.1 GiB free mid-check, 8.3 after). Written over in place, in a
+  # file made now while there's room, as a full disk can't take a new one.
+  # A run that went under 1 GiB is tried again on another host.
+  min_file="$base/kept-$id/min-free-kb"
+  sampler=""
+  start_kb="$free_kb"
+  case "$start_kb" in ""|*[!0123456789]*) start_kb=999999999999999 ;; esac
+  [ "${#start_kb}" -le 15 ] || start_kb=999999999999999
+  if mkdir -p "$base/kept-$id" && printf '%015d' "$((10#$start_kb))" >"$min_file" 2>/dev/null; then
+    # It stops with this script however that ends: it may have this host's
+    # lock open (inherited from the flock that runs this), and one left
+    # behind would keep every later check out.
+    parent=$$
+    (
+      # Nothing it inherited stays open in it or its sleeps: Linux's flock
+      # hands its lock to the command it runs as an open file, and a sleep
+      # still holding that after the run would keep the next check, or this
+      # check's own retry, out (Gemini's review).
+      for fd in $(ls /dev/fd 2>/dev/null); do
+        case "$fd" in 0|1|2|*[!0123456789]*) ;; *) eval "exec $fd>&-" 2>/dev/null ;; esac
+      done
+      low="" kb="" nap=""
+      sample() {
+        kb="$(cd "$base" && eval "$free_cmd")"
+        # Past a disk's reserved blocks df can say less than nothing.
+        case "$kb" in -[0123456789]*) kb=0 ;; esac
+        case "$kb" in ""|*[!0123456789]*) return ;; esac
+        if [ "${#kb}" -le 15 ] && { [ -z "$low" ] || [ "$((10#$kb))" -lt "$low" ]; }; then
+          low="$((10#$kb))"
+          printf '%015d' "$low" 1<>"$min_file" 2>/dev/null
+        fi
+      }
+      # On TERM, one last look (a link can fill the disk between two), and
+      # the lowest written once more in case a write failed then.
+      trap '[ -z "$nap" ] || kill "$nap" 2>/dev/null; sample; [ -z "$low" ] || printf "%015d" "$low" 1<>"$min_file"; exit 0' TERM
+      while kill -0 "$parent" 2>/dev/null; do
+        sample
+        sleep "${THREADBEAR_CHECK_SAMPLE_SECS:-5}" & nap=$!
+        wait "$nap"
+        nap=""
+      done
+    ) </dev/null >/dev/null 2>&1 &
+    sampler=$!
+  fi
 
   cd "$src" || exit 1
   # Under a limit of its own as well: this Mac giving up on it (a dropped
@@ -430,23 +497,18 @@ changed="$(mktemp)"
 
 # Whether a Linux host can run this: only the runner's, Convex's and the
 # website's checks, so --quick, nothing changed under ios/ (ThreadbearKit's
-# tests), app/ or dock/ (the Mac app's release build) beyond what the GPUI
-# app shares (scripts/swift-freeze.sh --gpui-shared: the mock runner,
-# fixtures, art, which the Swift app's build no longer runs for, but not
-# the mock runner, whose Swift tests still run), and
-# something changed (with nothing, check.sh itself or --all, it runs
-# everything), no shots.
+# tests), app/ or dock/ (the Mac app's release build) or the mock runner
+# (its Swift tests, which check.sh runs whenever it or they change:
+# swift-freeze.sh --mock-tests), and something changed (with nothing,
+# check.sh itself or --all, it runs everything), no shots. What the GPUI
+# app shares with the Swift app (shared/'s art and Pele) is outside app/
+# since 21 Nov 2026 and doesn't build the frozen Swift app, so it can go to
+# Linux.
 linux_ok=0
-GPUI_SHARED="$("$ROOT/scripts/swift-freeze.sh" --gpui-shared 2>/dev/null)"
-# Without it, nothing counts as shared: an empty pattern would match every
-# line, and every change would look like none.
-[ -n "$GPUI_SHARED" ] || GPUI_SHARED='^$'
-# The mock runner, though shared, has Swift tests check.sh runs whenever it
-# or they change (swift-freeze.sh --mock-tests), and those need a Mac.
 MOCK_TESTS="$("$ROOT/scripts/swift-freeze.sh" --mock-tests 2>/dev/null | head -1)"
 [ -n "$MOCK_TESTS" ] || MOCK_TESTS='^$'
 if [ "$QUICK" = 1 ] && [ "$ALL" = 0 ] && [ -z "$SHOTS" ] && [ -s "$changed" ] \
-  && ! grep -qE '^ios/|^check\.sh$' "$changed" && ! grep -vE "$GPUI_SHARED" "$changed" | grep -E '^(app|dock)/' >/dev/null \
+  && ! grep -qE '^ios/|^check\.sh$' "$changed" && ! grep -E '^(app|dock)/' "$changed" >/dev/null \
   && ! grep -E "$MOCK_TESTS" "$changed" >/dev/null; then linux_ok=1; fi
 # (grep to /dev/null, not -q: -q closing the pipe early fails grep -v under
 # pipefail, and a big change would have looked like none.)
@@ -462,7 +524,7 @@ if [ "$RUNNER_ONLY" = 1 ] && [ -z "$SHOTS" ]; then linux_ok=1; fi
 # this a failure on the Linux box could never be looked into there (Codex's
 # review, 17 Nov). With --all too: tb land asks for it on main's run there,
 # and with --only it only forces the steps named (Codex's review, 17 Nov).
-LINUX_STEPS='^(runner typecheck|app tools parse|convex typecheck|web typecheck|web tests|site build|feature pairing|runner unit tests|desktop core tests|desktop app check|desktop app check \(as installed\)|[a-z ]+ packages)$'
+LINUX_STEPS='^(runner typecheck|app tools parse|convex typecheck|web typecheck|web tests|site build|feature pairing|runner unit tests|desktop format|desktop lint|desktop core tests|desktop app check|desktop app check \(as installed\)|[a-z ]+ packages)$'
 if [ -n "$ONLY" ] && [ "$QUICK" = 1 ] && [ -z "$SHOTS" ]; then
   linux_ok=1
   only_rest="$ONLY;"
@@ -491,6 +553,26 @@ fi
 # says which) writes only the node_modules and its temp files.
 MIN_FREE_GIB=8
 [ "$linux_ok" = 0 ] || MIN_FREE_GIB=2
+# A run that builds desktop/'s Rust wants as much as one with Swift, Linux
+# or not: cargo test, clippy and the app's two checks each build a set of
+# their own into its target, several GiB from cold, where 2 GiB is all a
+# Linux run asked for until the cloud box ran out during one (20 Nov).
+# Whether it does
+# is check.sh's own DESKTOP_NEEDS, read from it so the two can't differ:
+# what changed matches it, or nothing has (main runs everything), or --only
+# names a desktop step. Not --runner, which builds none.
+DESKTOP_NEEDS="$(sed -n "s/^DESKTOP_NEEDS='\(.*\)'\$/\1/p" "$ROOT/check.sh" 2>/dev/null | head -1)"
+builds_rust=0
+if [ -n "$DESKTOP_NEEDS" ] && [ "$RUNNER_ONLY" = 0 ]; then
+  if [ -n "$ONLY" ]; then
+    rust_steps=';desktop (core tests|lint|app check|build)'
+    [[ ";$ONLY" =~ $rust_steps ]] && builds_rust=1
+  elif [ "$ALL" = 1 ] || [ ! -s "$changed" ] || grep -E "$DESKTOP_NEEDS|^check\.sh\$" "$changed" >/dev/null; then
+    builds_rust=1
+  fi
+fi
+RUST_FREE_GIB=8
+[ "$builds_rust" = 0 ] || [ "$MIN_FREE_GIB" -ge "$RUST_FREE_GIB" ] || MIN_FREE_GIB=$RUST_FREE_GIB
 
 # Whether a df answer is under the limit: 0 yes, and FREE_GIB is it to one
 # place, rounded down; 1 no; 2 it isn't a number we can use. It's the host's
@@ -505,6 +587,19 @@ low_on_room() {
   local kb=$((10#$1))
   [ "$kb" -lt $((MIN_FREE_GIB * 1048576)) ] || return 1
   FREE_GIB="$((kb / 1048576)).$(((kb % 1048576) * 10 / 1048576))"
+}
+# Whether the disk ran out during a run: under 1 GiB at its lowest, which
+# remote.sh treats as a run that may have failed for want of space too.
+# OUT_GIB is it to one place. Only a number we can read counts.
+OUT_GIB=""
+ran_out() {
+  local kb="$1"
+  case "$kb" in -[0123456789]*) kb=0 ;; esac
+  case "$kb" in ""|*[!0123456789]*) return 1 ;; esac
+  [ "${#kb}" -le 15 ] || return 1
+  kb=$((10#$kb))
+  [ "$kb" -lt 1048576 ] || return 1
+  OUT_GIB="$((kb / 1048576)).$(((kb % 1048576) * 10 / 1048576))"
 }
 # The host just used, asked again after something failed there: true, with
 # FREE_GIB set, if it's low. Not if it's fine or can't be asked.
@@ -716,6 +811,28 @@ left_out="$(mktemp)"
 BASE_ARGS=(${ARGS[@]+"${ARGS[@]}"})
 SKIP=""
 tries=0
+# Checks that failed on a host that ran out of disk during them, run again
+# elsewhere (below): at most DISK_RETRIES, so a change whose own tests fill
+# a disk still ends.
+disk_tries=0
+DISK_RETRIES="${THREADBEAR_CHECK_DISK_RETRIES:-2}"
+# The hosts set aside after running out of disk, while the others are tried.
+# back_to_out_host: none of those could take it, so they all go back in,
+# with their idle build folders given back, and it's chosen again among them
+# (one may have room again now its run's files have gone; Codex's review).
+OUT_HOSTS=""
+back_to_out_host() {
+  [ -n "$OUT_HOSTS" ] || return 1
+  local hs="$OUT_HOSTS" rest="" s h
+  OUT_HOSTS=""
+  for s in $SKIP; do case " $hs " in *" $s "*) ;; *) rest+=" $s" ;; esac; done
+  SKIP="$rest"
+  for h in $hs; do
+    echo "No other host could take it, so $h is tried again, after giving back idle build folders there." >&2
+    make_room "$h" '$HOME/'"$BASE_REL" >/dev/null 2>&1
+  done
+  choose
+}
 # The copy lock: a kernel lock (lockf, or flock on Linux) held by a small
 # helper until this run lets go or ends, so one a killed run held frees
 # itself. The helper looks every second for its release file and for
@@ -814,7 +931,7 @@ while :; do
   if [ -n "$copied_host" ] && [ "$copy_secs" -ge "$stay_secs" ] && ! host_is_low; then
     # HOST, HOST_OS and remote_base are still the copy's.
     FREE=0
-  elif ! choose; then
+  elif ! choose && ! back_to_out_host; then
     [ -z "$copied_host" ] || watched "$copied_host" "${SSH[@]}" "$copied_host" "rm -rf '$remote_run'" 2>/dev/null
     rm -f "$files" "$changed" "$left_out"
     if [ -n "$LOW" ]; then
@@ -877,10 +994,20 @@ while :; do
       echo "Couldn't take the lock on this checkout's copy ($copylock; its folder must be this user's own, mode 700)." >&2
       exit 1
     fi
+    # A path that became a link, or stopped being one, since the mirror was
+    # made (scripts/fix-link-kinds.sh): rsync can't swap those over itself.
+    links=()
+    while IFS= read -r -d '' f; do
+      [ ! -L "$ROOT/$f" ] || links+=("$f")
+    done <"$files"
+    fix_links=":"
+    [ ! -f "$ROOT/scripts/fix-link-kinds.sh" ] \
+      || fix_links="bash -c $(printf '%q' "$(cat "$ROOT/scripts/fix-link-kinds.sh")") _ $(printf '%q ' "$mirror" ${links[@]+"${links[@]}"})"
     # By content (-c), not size and time: an edit that keeps both would
     # otherwise leave the mirror's old copy in the run.
     copy_it() {
       "${SSH[@]}" "$HOST" "umask 022 && mkdir -p '$mirror' '$remote_run' && touch '$mirror' && for d in '$remote_base/mirror' '$mirror' '$remote_run'; do [ -d \"\$d\" ] && [ ! -L \"\$d\" ] && [ -O \"\$d\" ] && chmod go-w \"\$d\" || { echo \"\$d on the check host isn't this account's own\" >&2; exit 1; }; done" \
+        && "${SSH[@]}" "$HOST" "$fix_links" \
         && rsync -azc --from0 --files-from="$files" -e "${SSH[*]}" "$ROOT/" "$HOST:$mirror/" \
         && rsync -a -e "${SSH[*]}" "$files" "$HOST:$remote_run.files" \
         && "${SSH[@]}" "$HOST" "rsync -a --from0 --files-from='$remote_run.files' '$mirror/' '$remote_run/' && rm -f '$remote_run.files'" \
@@ -1019,16 +1146,59 @@ while :; do
     tries=$((tries + 1))
     continue
   fi
+  # The lowest the disk went during the run (the sampler --on-host keeps),
+  # else the disk as the failure left it (keep_logs), else as it is now. -s:
+  # a full disk can leave a file empty. Leading zeros go: it's written
+  # padded, so it can be written over in place.
+  fail_kb=""
+  if [ "$code" != 0 ]; then
+    # Both files when there are both, the lower one counting: a disk that
+    # filled between two samples shows in the end's (Codex's review).
+    fail_kb=""
+    for kb in $(watched "$HOST" "${SSH[@]}" "$HOST" "cd '$remote_base' && if [ -s 'kept-$id/min-free-kb' ] || [ -s 'kept-$id/free-kb' ]; then cat 'kept-$id/min-free-kb' 2>/dev/null; echo; cat 'kept-$id/free-kb' 2>/dev/null; echo; else $free_cmd; fi" 2>/dev/null); do
+      case "$kb" in -[0123456789]*) kb=0 ;; esac
+      case "$kb" in ""|*[!0123456789]*) continue ;; esac
+      [ "${#kb}" -le 15 ] || continue
+      kb="$((10#$kb))"
+      if [ -z "$fail_kb" ] || [ "$kb" -lt "$fail_kb" ]; then fail_kb="$kb"; fi
+    done
+  fi
+  # A host that ran out of disk during the check: what failed failed for want
+  # of space, not for anything in what it checks, and counting it as the
+  # landing's would have tb land halve a group and look for a culprit that
+  # isn't there (20 Nov, the cloud box at 0.1 GiB). So it's run again on
+  # another host that can take it, or this one once idle build folders there
+  # are given back if it's the only one.
+  if [ "$code" != 0 ] && ran_out "$fail_kb"; then
+    if [ "$disk_tries" -lt "$DISK_RETRIES" ]; then
+      disk_tries=$((disk_tries + 1))
+      others=""
+      for h in "${HOSTS[@]}"; do
+        case "$h" in -*|""|"$HOST") continue ;; esac
+        case " $SKIP " in *" $h "*) continue ;; esac
+        others+=" $h"
+      done
+      if [ -n "$others" ]; then
+        echo "$HOST ran out of disk during this check (${OUT_GIB} GiB free at the lowest), so what failed there may have failed for want of space. Running it again on another host." >&2
+        # Set aside, not given up: if no other host can take it (a Linux
+        # one for a check that needs a Mac, one that's gone), it's run here
+        # again after all (Codex's and Gemini's reviews).
+        SKIP+=" $HOST"
+        OUT_HOSTS+=" $HOST"
+      else
+        echo "$HOST ran out of disk during this check (${OUT_GIB} GiB free at the lowest), so what failed there may have failed for want of space. Running it again there, after giving back idle build folders." >&2
+        make_room "$HOST" "$remote_base" >/dev/null 2>&1
+      fi
+      watched "$HOST" "${SSH[@]}" "$HOST" "rm -rf '$remote_base/kept-$id' '$remote_run'" 2>/dev/null
+      rm -rf "$local_logs"
+      copied_host=""
+      continue
+    fi
+    DISK_OUT=1
+  fi
   break
 done
 rm -f "$files" "$changed" "$left_out"
-
-# The disk as the failure left it (keep_logs), or as it is now if that couldn't
-# be written. -s: a full disk can leave the file empty.
-fail_kb=""
-if [ "$code" != 0 ]; then
-  fail_kb="$(watched "$HOST" "${SSH[@]}" "$HOST" "cd '$remote_base' && if [ -s 'kept-$id/free-kb' ]; then cat 'kept-$id/free-kb'; else $free_cmd; fi" 2>/dev/null)"
-fi
 
 # find, not a glob: the host's login shell may be zsh, which complains
 # out loud when a glob matches nothing.
@@ -1045,6 +1215,13 @@ if [ -n "$SHOTS" ]; then
 fi
 # Last, so it's the line read: what a full disk breaks often looks nothing like
 # one (a CodeSign error, 7 Nov).
+if [ "${DISK_OUT:-0}" = 1 ]; then
+  # Tried again and out of disk every time: the hosts' trouble, not the
+  # check's, so it ends as one that no host could take (BUSY_EXIT; tb land
+  # then blames none of the landings in it).
+  echo "This check failed because $HOST ran out of disk during it (${OUT_GIB} GiB free at the lowest), not because of anything it checks: each of its $((disk_tries + 1)) tries ran a host out of disk. Free some space there (desktop/scripts/trim-remote-cache.sh gives back idle build folders) and run it again." >&2
+  exit "$BUSY_EXIT"
+fi
 if low_on_room "$fail_kb"; then
   echo "$HOST had only $FREE_GIB GiB free when this failed, and this check wants $MIN_FREE_GIB GiB, which may be why. Free some space there and run it again." >&2
 fi

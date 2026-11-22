@@ -10,8 +10,9 @@ marker="$CARGO_TARGET_DIR/.perf-built-by"
 mkdir -p "$CARGO_TARGET_DIR"
 if [ "$(cat "$marker" 2>/dev/null || true)" != "$key" ]; then
   inputs=("$source/desktop")
-  for d in Art Rich; do
-    [ ! -d "$source/app/Sources/Threadbear/Resources/$d" ] || inputs+=("$source/app/Sources/Threadbear/Resources/$d")
+  # And what the app builds in from outside desktop/ (check.sh's DESKTOP_BUILT_IN).
+  for d in shared/art shared/rich; do
+    [ ! -d "$source/$d" ] || inputs+=("$source/$d")
   done
   find "${inputs[@]}" \( -type f -o -type l \) -not -path "$source/desktop/target/*" -exec touch {} +
   rm -f "$marker"

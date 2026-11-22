@@ -1,4 +1,4 @@
-// Slash commands from the message box (docs/protocol.md, "Slash commands"):
+// Slash commands from the message box (docs/protocol/threads.md, "Slash commands"):
 // the parser, what each provider does with one, the runner's own, and the
 // picker's list. Fake adapters (fakes.ts); the adapters' own mapping is in
 // codex-adapter.test.ts.

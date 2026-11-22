@@ -14,20 +14,33 @@ use gpui_kit::*;
 use std::time::Duration;
 
 pub fn run(main: AnyWindowHandle, cx: &mut App) {
-    let Ok(script) = std::env::var("BEARDOCK_EVENTS") else { return };
+    let Ok(script) = std::env::var("BEARDOCK_EVENTS") else {
+        return;
+    };
     // Only when the script moves the pointer itself; `pointer-test.sh` drives
     // the real pointer and only asks for screenshots.
     let moves = ["down", "drag", "dragby", "move", "right", "middle"];
-    threadbear_dock::platform::set_scripted_pointer(script.split(';').any(|s| s.split_whitespace().next().is_some_and(|c| moves.contains(&c))));
+    threadbear_dock::platform::set_scripted_pointer(script.split(';').any(|s| {
+        s.split_whitespace()
+            .next()
+            .is_some_and(|c| moves.contains(&c))
+    }));
     let quit = std::env::var_os("BEARDOCK_QUIT").is_some();
     cx.spawn(async move |cx: &mut AsyncApp| {
-        cx.background_executor().timer(Duration::from_millis(700)).await;
+        cx.background_executor()
+            .timer(Duration::from_millis(700))
+            .await;
         let mut window = main;
         let mut last = point(px(0.), px(0.));
         for step in script.split(';') {
             let parts: Vec<&str> = step.split_whitespace().collect();
             let Some(&cmd) = parts.first() else { continue };
-            let arg = |i: usize| parts.get(i).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.);
+            let arg = |i: usize| {
+                parts
+                    .get(i)
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .unwrap_or(0.)
+            };
             match cmd {
                 "down" => {
                     let p = point(px(arg(1)), px(arg(2)));
@@ -42,8 +55,12 @@ pub fn run(main: AnyWindowHandle, cx: &mut App) {
                     for i in 1..=10 {
                         let t = i as f32 / 10.;
                         let p = point(last.x + (to.x - last.x) * t, last.y + (to.y - last.y) * t);
-                        let _ = window.update(cx, |_, window, cx| window.pointer_move(p, Some(MouseButton::Left), cx));
-                        cx.background_executor().timer(Duration::from_millis(16)).await;
+                        let _ = window.update(cx, |_, window, cx| {
+                            window.pointer_move(p, Some(MouseButton::Left), cx)
+                        });
+                        cx.background_executor()
+                            .timer(Duration::from_millis(16))
+                            .await;
                     }
                     last = to;
                 }
@@ -54,21 +71,32 @@ pub fn run(main: AnyWindowHandle, cx: &mut App) {
                     // given in screen terms, and each step becomes window-local
                     // against wherever the window is by then.
                     let (dx, dy) = (arg(1), arg(2));
-                    let start = window.update(cx, |_, window, _| window.bounds().origin + last).unwrap_or_default();
+                    let start = window
+                        .update(cx, |_, window, _| window.bounds().origin + last)
+                        .unwrap_or_default();
                     let to = point(start.x + px(dx), start.y + px(dy));
                     for i in 1..=10 {
                         let t = i as f32 / 10.;
-                        let at = point(start.x + (to.x - start.x) * t, start.y + (to.y - start.y) * t);
+                        let at = point(
+                            start.x + (to.x - start.x) * t,
+                            start.y + (to.y - start.y) * t,
+                        );
                         let _ = window.update(cx, |_, window, cx| {
                             let local = at - window.bounds().origin;
                             window.pointer_move(local, Some(MouseButton::Left), cx);
                         });
-                        cx.background_executor().timer(Duration::from_millis(16)).await;
+                        cx.background_executor()
+                            .timer(Duration::from_millis(16))
+                            .await;
                     }
-                    last = window.update(cx, |_, window, _| to - window.bounds().origin).unwrap_or(last);
+                    last = window
+                        .update(cx, |_, window, _| to - window.bounds().origin)
+                        .unwrap_or(last);
                 }
                 "up" => {
-                    let _ = window.update(cx, |_, window, cx| window.pointer_up(last, MouseButton::Left, cx));
+                    let _ = window.update(cx, |_, window, cx| {
+                        window.pointer_up(last, MouseButton::Left, cx)
+                    });
                 }
                 "move" => {
                     last = point(px(arg(1)), px(arg(2)));
@@ -102,10 +130,16 @@ pub fn run(main: AnyWindowHandle, cx: &mut App) {
                     std::thread::sleep(Duration::from_millis(arg(1) as u64));
                 }
                 "wait" => {
-                    cx.background_executor().timer(Duration::from_millis(arg(1) as u64)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(arg(1) as u64))
+                        .await;
                 }
                 "shot" => {
-                    let path = parts.get(1).copied().unwrap_or("/tmp/beardock.png").to_string();
+                    let path = parts
+                        .get(1)
+                        .copied()
+                        .unwrap_or("/tmp/beardock.png")
+                        .to_string();
                     let _ = window.update(cx, |_, window, cx| {
                         window.render_frame(cx);
                         match window.render_to_image() {
@@ -127,7 +161,11 @@ pub fn run(main: AnyWindowHandle, cx: &mut App) {
                     }
                 }
                 "others" => {
-                    let prefix = parts.get(1).copied().unwrap_or("/tmp/beardock-window").to_string();
+                    let prefix = parts
+                        .get(1)
+                        .copied()
+                        .unwrap_or("/tmp/beardock-window")
+                        .to_string();
                     let windows = cx.update(|cx| cx.windows());
                     let mut n = 0;
                     for w in windows.into_iter().filter(|w| *w != window) {
@@ -149,16 +187,27 @@ pub fn run(main: AnyWindowHandle, cx: &mut App) {
                 "pos" => {
                     // The window's top-left on screen, for a test that drives the
                     // real pointer (desktop/dock/pointer-test.sh).
-                    let path = parts.get(1).copied().unwrap_or("/tmp/beardock-pos.txt").to_string();
-                    let origin = window.update(cx, |_, window, _| window.bounds().origin).unwrap_or_default();
-                    let _ = std::fs::write(&path, format!("{} {}\n", origin.x.as_f32(), origin.y.as_f32()));
+                    let path = parts
+                        .get(1)
+                        .copied()
+                        .unwrap_or("/tmp/beardock-pos.txt")
+                        .to_string();
+                    let origin = window
+                        .update(cx, |_, window, _| window.bounds().origin)
+                        .unwrap_or_default();
+                    let _ = std::fs::write(
+                        &path,
+                        format!("{} {}\n", origin.x.as_f32(), origin.y.as_f32()),
+                    );
                 }
                 "quit" => {
                     let _ = cx.update(|cx| cx.quit());
                 }
                 other => eprintln!("unknown step {other}"),
             }
-            cx.background_executor().timer(Duration::from_millis(30)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
         }
         if quit {
             let _ = cx.update(|cx| cx.quit());

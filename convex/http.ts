@@ -125,7 +125,7 @@ http.route({
 
 // A runner key's uploads (sync:iconUploadUrl hands out this URL with a
 // one-use ticket): the file is stored here and recorded as that runner's,
-// so its key can attach it, and only it (docs/protocol.md, "Runner keys").
+// so its key can attach it, and only it (docs/protocol/keys.md, "Runner keys").
 // Answers { storageId } as Convex's own upload URL does, so the runner's
 // uploader is the same for both. 429: over an allowance, try again later;
 // 403: this ticket won't do.

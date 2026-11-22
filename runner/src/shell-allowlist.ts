@@ -1,6 +1,6 @@
 // The short list of shell a command that runs by itself may use: a live
 // function's `sh(...)` (badges, `when`, summaries, list panels) and a
-// folder's Claude Code hooks and settings commands (docs/protocol.md,
+// folder's Claude Code hooks and settings commands (docs/protocol/trust.md,
 // "Commands that run by themselves", "Trusting a folder's Claude Code
 // hooks").
 //
@@ -1167,7 +1167,7 @@ class Allow {
     if (name === 'find') return this.find(args, ctx, line);
     if (name === 'awk' || name === 'gawk' || name === 'nawk' || name === 'mawk') return this.awk(args, ctx, line);
     if (HOOK_PROGRAMS.has(name)) return this.hookProgram(name, args, ctx, line);
-    this.refuse(ctx, line, `runs ${name}, which isn't on the short list of programs a Claude Code hook may run: ones that load no code from the folder, run nothing they're handed and write no file (docs/protocol.md, "The short list of shell").`);
+    this.refuse(ctx, line, `runs ${name}, which isn't on the short list of programs a Claude Code hook may run: ones that load no code from the folder, run nothing they're handed and write no file (docs/protocol/trust.md, "The short list of shell").`);
   }
 
   // A live command: only the programs on the live list, in their forms.
@@ -1192,7 +1192,7 @@ class Allow {
       return;
     }
     if (!Object.hasOwn(LIVE, name)) {
-      this.refuse(ctx, line, `runs ${name}, which isn't on the short list of programs a live command may run (docs/protocol.md, "The short list of shell").`);
+      this.refuse(ctx, line, `runs ${name}, which isn't on the short list of programs a live command may run (docs/protocol/trust.md, "The short list of shell").`);
     }
     const operands = this.spec(name, args, ctx, line, LIVE[name]!);
     if (name === 'ssh') this.remoteCommand(operands.slice(1).join(' '), ctx, line);

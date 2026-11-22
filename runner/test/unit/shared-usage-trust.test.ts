@@ -1,5 +1,5 @@
 // Who may share which logins' usage readings (convex/sync.ts sharedUsage,
-// docs/protocol.md "Runner keys"), against the in-memory backend. From
+// docs/protocol/keys.md "Runner keys"), against the in-memory backend. From
 // Gautam's 6 Nov 2026 scan of convex/ (F1, F3): a runner key wrote accounts
 // rows naming the main Mac's logins, with a reading from 2099 that said
 // blocked, and sharedUsage handed them to the main Mac, whose pools then

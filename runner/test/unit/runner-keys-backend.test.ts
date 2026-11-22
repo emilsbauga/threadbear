@@ -1316,3 +1316,18 @@ test("a sidebar row's mode is kept, and a runner key's is cut short", async () =
   const modes = Object.fromEntries((got as { threadId: string; permissionMode?: string }[]).map((r) => [r.threadId, r.permissionMode]));
   assert.deepEqual(modes, { A: 'auto', B: 'x'.repeat(16) });
 });
+
+// A sidebar row's `request` (API 96, docs/protocol/threads.md "What Mike first
+// asked") reaches the main Mac's watch, for its Feed, and a runner key's is
+// cut to 400 bytes, room for the runner's 200 characters of any text.
+test("a sidebar row's request is kept, and a runner key's is cut short", async () => {
+  const s = await setup();
+  const row = (threadId: string, request: string) => ({ threadId, title: 'x', cwd: '/', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: '', createdAt: 'c', lastActivityAt: 'l', request });
+  const accented = 'é'.repeat(200);
+  await call(s.ctx, sync.setThreadIndex, { key: MINI_KEY, runnerId: MINI, rows: [row('A', 'Fix the tests'), row('B', accented), row('C', 'x'.repeat(5000))], removed: [] });
+  const got = await call(s.ctx, sync.threadIndexSince, { key: OWNER, runners: [{ runnerId: MINI }] });
+  const requests = Object.fromEntries((got as { threadId: string; request?: string }[]).map((r) => [r.threadId, r.request]));
+  assert.equal(requests.A, 'Fix the tests');
+  assert.equal(requests.B, accented, '200 characters of two bytes each fit');
+  assert.ok(Buffer.byteLength(requests.C!) <= 400);
+});

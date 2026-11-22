@@ -6,7 +6,7 @@ import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 
-// A dialog left on the screen of a Mac nobody's looking at (docs/protocol.md,
+// A dialog left on the screen of a Mac nobody's looking at (docs/protocol/updates.md,
 // "A dialog on a Mac's screen").
 //
 // macOS asks about a protected folder or a removable drive in the name of

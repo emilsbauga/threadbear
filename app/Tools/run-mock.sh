@@ -16,11 +16,11 @@ if [[ ! -x "$BIN" ]]; then
   echo "No app at $BIN. Run ./build-app.sh first or set THREADBEAR_BIN." >&2
   exit 1
 fi
-if [[ ! -d "$TOOLS_DIR/mock-runner/node_modules" ]]; then
-  (cd "$TOOLS_DIR/mock-runner" && npm install --silent)
+if [[ ! -d "$TOOLS_DIR/../../mock-runner/node_modules" ]]; then
+  (cd "$TOOLS_DIR/../../mock-runner" && npm install --silent)
 fi
 
-node "$TOOLS_DIR/mock-runner/server.mjs" --data-dir "$DATA_DIR" "$@" &
+node "$TOOLS_DIR/../../mock-runner/server.mjs" --data-dir "$DATA_DIR" "$@" &
 MOCK_PID=$!
 cleanup() {
   kill "$MOCK_PID" 2>/dev/null || true

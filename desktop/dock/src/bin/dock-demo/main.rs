@@ -1,14 +1,26 @@
 // A playground for BearDock on GPUI: mock panels to drag about until docking
 // feels right, as dock/Sources/DockDemo is for the Swift one. The layout is saved
 // between launches; Reset puts it back. Run: `cargo run -p threadbear-dock --bin dock-demo`.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a demo program, not part of the app"
+)]
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::rc::Rc;
-use threadbear_dock::{DockContent, DockDrop, DockEdge, DockGroup, DockLayout, DockModel, DockNode, DockOptions, DockSplit, DockView, SplitAxis};
+use threadbear_dock::{
+    DockContent, DockDrop, DockEdge, DockGroup, DockLayout, DockModel, DockNode, DockOptions,
+    DockSplit, DockView, SplitAxis,
+};
 
 fn group(id: &str, panels: &[&str]) -> DockNode {
-    DockNode::Group(DockGroup::new(id, panels.iter().map(|p| p.to_string()).collect(), None))
+    DockNode::Group(DockGroup::new(
+        id,
+        panels.iter().map(|p| p.to_string()).collect(),
+        None,
+    ))
 }
 
 /// Option 2's three columns, with Threads' title hidden.
@@ -23,7 +35,10 @@ fn starting() -> DockLayout {
                 DockNode::Split(DockSplit::new(
                     "right",
                     SplitAxis::Vertical,
-                    vec![group("right-top", &["highlights", "worktrees"]), group("right-bottom", &["convex"])],
+                    vec![
+                        group("right-top", &["highlights", "worktrees"]),
+                        group("right-bottom", &["convex"]),
+                    ],
                     Some(vec![0.55, 0.45]),
                 )),
             ],
@@ -85,7 +100,13 @@ impl DockContent for Demo {
             "files" => L::Folder,
             _ => return None,
         };
-        Some(svg().path(icon.path()).size(rems(0.72)).text_color(rgb(0x8e8e93)).into_any_element())
+        Some(
+            svg()
+                .path(icon.path())
+                .size(rems(0.72))
+                .text_color(rgb(0x8e8e93))
+                .into_any_element(),
+        )
     }
 
     fn view(&self, panel: &str, _ghost: bool, _: &mut Window, cx: &mut App) -> AnyElement {
@@ -105,21 +126,40 @@ fn mock_panel(panel: &str, cx: &App) -> AnyElement {
     let text = theme.foreground;
     let tint = text.opacity(0.08);
     let rows = |lines: &[(&str, &str, &str)]| {
-        v_flex().gap(rems(0.15)).p(rems(0.5)).children(lines.iter().map(|(a, b, c)| {
-            h_flex()
-                .gap(rems(0.6))
-                .p(rems(0.5))
-                .rounded(rems(0.5))
-                .child(div().size(rems(1.75)).rounded(rems(0.4)).bg(tint))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w(rems(0.))
-                        .child(div().text_size(rems(0.8)).font_weight(FontWeight::MEDIUM).truncate().child(a.to_string()))
-                        .child(div().text_size(rems(0.69)).text_color(faint).child(b.to_string())),
-                )
-                .child(div().text_size(rems(0.69)).text_color(faint).child(c.to_string()))
-        }))
+        v_flex()
+            .gap(rems(0.15))
+            .p(rems(0.5))
+            .children(lines.iter().map(|(a, b, c)| {
+                h_flex()
+                    .gap(rems(0.6))
+                    .p(rems(0.5))
+                    .rounded(rems(0.5))
+                    .child(div().size(rems(1.75)).rounded(rems(0.4)).bg(tint))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(rems(0.))
+                            .child(
+                                div()
+                                    .text_size(rems(0.8))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(a.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.69))
+                                    .text_color(faint)
+                                    .child(b.to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(0.69))
+                            .text_color(faint)
+                            .child(c.to_string()),
+                    )
+            }))
     };
     match panel {
         "threads" => rows(&[
@@ -201,55 +241,64 @@ fn mock_panel(panel: &str, cx: &App) -> AnyElement {
 mod script;
 
 fn main() {
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx: &mut App| {
-        gpui_kit::init(cx);
-        let mode = match std::env::var("BEARDOCK_APPEARANCE").as_deref() {
-            Ok("light") => ThemeMode::Light,
-            _ => ThemeMode::Dark,
-        };
-        Theme::change(mode, None, cx);
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(|cx: &mut App| {
+            gpui_kit::init(cx);
+            let mode = match std::env::var("BEARDOCK_APPEARANCE").as_deref() {
+                Ok("light") => ThemeMode::Light,
+                _ => ThemeMode::Dark,
+            };
+            Theme::change(mode, None, cx);
 
-        let bounds = Bounds::centered(None, size(px(1320.), px(820.)), cx);
-        let opened = gpui_kit::open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions { title: Some("BearDock".into()), appears_transparent: true, traffic_light_position: None }),
-                // The dock's bars are the window's top edge. Without this AppKit
-                // treats them as a title bar and moves the window on a drag there,
-                // as BearDock's DockAnchor exists to stop. Any app embedding the
-                // dock in a window with no title bar needs the same.
-                app_owns_titlebar_drag: true,
-                window_min_size: Some(size(px(800.), px(500.))),
-                app_id: Some("beardock-demo".into()),
-                ..Default::default()
-            },
-            cx,
-            |_, cx| {
-                let layout = saved().unwrap_or_else(starting);
-                let model = cx.new(|_| {
-                    let mut m = DockModel::new(layout);
-                    m.on_change(|layout, _| save(layout));
-                    m
-                });
-                // The Mac's system blue, so the demo's targets look like Swift's.
-                let accent = rgb(0x0a84ff).into();
-                let options = DockOptions {
-                    traffic_lights: 78.,
-                    corner_moves_window: true,
-                    accent: Some(accent),
-                    // The app's bars move its window; this tries them the same way.
-                    bars_move_window: std::env::var_os("BEARDOCK_BARS_MOVE_WINDOW").is_some(),
-                    ..DockOptions::default()
-                };
-                cx.new(|cx| DemoRoot { dock: cx.new(|cx| DockView::new(model.clone(), Rc::new(Demo), options, cx)), model })
-            },
-        )
-        .expect("failed to open the window");
-        #[cfg(feature = "automation")]
-        script::run(opened.0, cx);
-        #[cfg(not(feature = "automation"))]
-        let _ = opened;
-    });
+            let bounds = Bounds::centered(None, size(px(1320.), px(820.)), cx);
+            let opened = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("BearDock".into()),
+                        appears_transparent: true,
+                        traffic_light_position: None,
+                    }),
+                    // The dock's bars are the window's top edge. Without this AppKit
+                    // treats them as a title bar and moves the window on a drag there,
+                    // as BearDock's DockAnchor exists to stop. Any app embedding the
+                    // dock in a window with no title bar needs the same.
+                    app_owns_titlebar_drag: true,
+                    window_min_size: Some(size(px(800.), px(500.))),
+                    app_id: Some("beardock-demo".into()),
+                    ..Default::default()
+                },
+                cx,
+                |_, cx| {
+                    let layout = saved().unwrap_or_else(starting);
+                    let model = cx.new(|_| {
+                        let mut m = DockModel::new(layout);
+                        m.on_change(|layout, _| save(layout));
+                        m
+                    });
+                    // The Mac's system blue, so the demo's targets look like Swift's.
+                    let accent = rgb(0x0a84ff).into();
+                    let options = DockOptions {
+                        traffic_lights: 78.,
+                        corner_moves_window: true,
+                        accent: Some(accent),
+                        // The app's bars move its window; this tries them the same way.
+                        bars_move_window: std::env::var_os("BEARDOCK_BARS_MOVE_WINDOW").is_some(),
+                        ..DockOptions::default()
+                    };
+                    cx.new(|cx| DemoRoot {
+                        dock: cx.new(|cx| DockView::new(model.clone(), Rc::new(Demo), options, cx)),
+                        model,
+                    })
+                },
+            )
+            .expect("failed to open the window");
+            #[cfg(feature = "automation")]
+            script::run(opened.0, cx);
+            #[cfg(not(feature = "automation"))]
+            let _ = opened;
+        });
 }
 
 /// The demo's window: the dock under a small toolbar to reopen closed panels.
@@ -262,7 +311,18 @@ impl Render for DemoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = self.model.clone();
         let layout = model.read(cx).layout().clone();
-        let closed: Vec<&str> = ["threads", "transcript", "highlights", "convex", "worktrees", "terminal", "files"].into_iter().filter(|p| !layout.contains(p)).collect();
+        let closed: Vec<&str> = [
+            "threads",
+            "transcript",
+            "highlights",
+            "convex",
+            "worktrees",
+            "terminal",
+            "files",
+        ]
+        .into_iter()
+        .filter(|p| !layout.contains(p))
+        .collect();
         // The dock fills the window, so the traffic lights sit in the top-left
         // panel's bar (DockOptions::traffic_lights); the demo's own buttons
         // live in a strip along the bottom.
@@ -281,15 +341,27 @@ impl Render for DemoRoot {
                     .text_color(cx.theme().muted_foreground)
                     .children(closed.into_iter().map(|p| {
                         let m = model.clone();
-                        div().id(p).cursor_pointer().child(format!("Open {p}")).on_click(move |_, _, cx| {
-                            m.update(cx, |m, cx| m.open(p, DockDrop::window(DockEdge::Right), cx));
-                        })
+                        div()
+                            .id(p)
+                            .cursor_pointer()
+                            .child(format!("Open {p}"))
+                            .on_click(move |_, _, cx| {
+                                m.update(cx, |m, cx| {
+                                    m.open(p, DockDrop::window(DockEdge::Right), cx)
+                                });
+                            })
                     }))
                     .child(div().flex_1())
-                    .child(div().id("reset").cursor_pointer().child("Reset layout").on_click({
-                        let m = model.clone();
-                        move |_, _, cx| m.update(cx, |m, cx| m.set_layout(starting(), cx))
-                    })),
+                    .child(
+                        div()
+                            .id("reset")
+                            .cursor_pointer()
+                            .child("Reset layout")
+                            .on_click({
+                                let m = model;
+                                move |_, _, cx| m.update(cx, |m, cx| m.set_layout(starting(), cx))
+                            }),
+                    ),
             )
     }
 }

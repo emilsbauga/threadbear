@@ -450,7 +450,7 @@ test('thread rules go to the CLI as allowedTools; messages carry the turn id', a
   state.close!();
 });
 
-// docs/protocol.md, "Pictures in a message".
+// docs/protocol/threads.md, "Pictures in a message".
 test('pictures go to the CLI where their [Picture N] markers are, the rest before the words', async () => {
   const { session, state } = start();
   const dir = tmpDir();

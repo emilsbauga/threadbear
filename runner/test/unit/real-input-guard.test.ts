@@ -188,7 +188,7 @@ test('realdrag looks again at the press, every step and the drop, and backs out 
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-realdrag-'));
   try {
     const main = path.join(folder, 'main.swift');
-    fs.writeFileSync(main, fs.readFileSync(path.join(root, 'app/Tools/realdrag.swift'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'runner/test/fixtures/realdrag.swift'), 'utf8'));
+    fs.writeFileSync(main, fs.readFileSync(path.join(root, 'features/tools/realdrag.swift'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'runner/test/fixtures/realdrag.swift'), 'utf8'));
     const binary = path.join(folder, 'realdrag-test');
     execFileSync('swiftc', ['-D', 'TESTING', main, '-o', binary], { timeout: 120_000 });
     assert.match(execFileSync(binary, { encoding: 'utf8', timeout: 10_000 }), /realdrag checks passed/);
@@ -198,7 +198,7 @@ test('realdrag looks again at the press, every step and the drop, and backs out 
 });
 
 test('post-gesture looks again before it touches and before every event', () => {
-  const gesture = fs.readFileSync(path.join(root, 'app/Tools/post-gesture.swift'), 'utf8');
+  const gesture = fs.readFileSync(path.join(root, 'features/tools/post-gesture.swift'), 'utf8');
   const look = gesture.indexOf('env["PG_GUARD"]'), touch = gesture.indexOf('post(0, 0, phase: 128)'), each = gesture.indexOf('if let want, covering()');
   const fn = gesture.indexOf('func post(');
   assert.ok(look > 0 && touch > 0 && each > 0 && fn > 0, 'the checks are all there');

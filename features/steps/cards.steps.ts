@@ -36,7 +36,7 @@ Then('the thread ends with a card of things for me to decide', async function (t
 });
 
 // Queued calls: "queued" in a message makes the mock runner stack them
-// (app/Tools/mock-runner/server.mjs).
+// (mock-runner/server.mjs).
 When('the agent queues up several edits', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'send', text: 'Please make the queued edits' });
   await this.until('a card with queued calls', (d) => d.transcript.rows.some((r) => r.kind === 'approval'));

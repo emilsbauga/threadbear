@@ -40,8 +40,8 @@ function checkout(webTest = 'true') {
   put('package.json', JSON.stringify({ scripts: { 'convex:typecheck': 'true', 'web:typecheck': 'true', 'web:test': webTest, lint: 'true', 'lint:files': 'true' } }));
   put('node_modules/.keep', '');
   put('app/Tools/ok.mjs', '');
-  put('app/Tools/mock-runner/ok.mjs', '');
-  put('app/Tools/mock-runner/node_modules/.keep', '');
+  put('mock-runner/ok.mjs', '');
+  put('mock-runner/node_modules/.keep', '');
   put('desktop/.keep', '');
   // swift and cargo that pass at once.
   put('bin/swift', '#!/bin/bash\n', 0o755);

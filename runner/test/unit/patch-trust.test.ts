@@ -216,7 +216,7 @@ test('runner: a thread in an untrusted folder gets no actions until patches.trus
   t = h.runner.get(thread.id);
   assert.equal(t.actions, undefined);
   assert.equal(t.patches?.[0].untrusted, 'changed');
-  assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && /isn't loaded: it changed since you trusted it/.test(e.text)));
+  assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && /isn't loaded: \.threadbear\/patches\/tools\.ts changed since you trusted it\./.test(e.text)));
 });
 
 // Plays a Claude Edit through the real normalizer, as the CLI sends it:

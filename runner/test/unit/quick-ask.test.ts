@@ -1,4 +1,4 @@
-// A quick ask from the phone (docs/protocol.md, Sync, "quickAsk"): the phone
+// A quick ask from the phone (docs/protocol/moves.md, Sync, "quickAsk"): the phone
 // already said the answer out loud, so the runner keeps the exchange as a
 // thread without running a turn, and the first message sent to it starts a
 // fresh session told how the thread began.

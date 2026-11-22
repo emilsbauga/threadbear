@@ -1,4 +1,4 @@
-// Secrets an agent asks Mike for (docs/protocol.md, "Secrets"): where an
+// Secrets an agent asks Mike for (docs/protocol/threads.md, "Secrets"): where an
 // answer is written, the askpass helper beside it, the 24-hour sweep, and
 // the key pair the phone seals its answers to. The value lives only in the
 // file: nothing here logs it, and errors never include it.
@@ -185,7 +185,7 @@ export function openSealed(privateKey: crypto.KeyObject, sealed: Sealed, approva
 }
 
 // Bytes sealed the same way, for what's too big for a Sealed's base64 (a
-// moving thread's bundle, docs/protocol.md "Moving a thread to another
+// moving thread's bundle, docs/protocol/moves.md "Moving a thread to another
 // runner"): the ephemeral key, the nonce, the ciphertext and its tag, one
 // after the other. `info` says what it's for, so it opens only as that.
 export function sealBytes(recipientRawB64: string, data: Buffer, info: string): Buffer {

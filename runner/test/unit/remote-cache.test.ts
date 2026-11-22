@@ -530,3 +530,73 @@ test("check-remote.sh's trim gives nothing back while a build or measurement hol
   assert.equal(h.trim('-').status, 0);
   assert.deepEqual(h.left(), ['target-aaa', 'target-ddd']);
 });
+
+// Cargo targets agents built into by hand in the check folder itself (one up
+// from gpui/), which nothing gave back: 13 GiB of them on the cloud box when
+// a group check ran it out of disk (20 Nov). Each is worth 5 GiB here.
+function withStrays(t: TestContext, freeGib: number, strays: Record<string, number>) {
+  const h = host(t, freeGib, WORK);
+  const check = path.dirname(h.base);
+  const now = Date.now();
+  const make = (dir: string, hoursAgo: number) => {
+    fs.mkdirSync(path.join(dir, 'debug'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55\n');
+    fs.writeFileSync(path.join(dir, 'debug', 'out'), 'x');
+    const when = new Date(now - hoursAgo * HOUR);
+    for (const p of [path.join(dir, 'debug', 'out'), path.join(dir, 'CACHEDIR.TAG'), path.join(dir, 'debug'), dir]) fs.utimesSync(p, when, when);
+  };
+  for (const [name, hoursAgo] of Object.entries(strays)) make(path.join(check, name), hoursAgo);
+  // The check's own target, a level down, idle as long as any: never a stray.
+  make(path.join(check, 'build', 'desktop-target'), 100);
+  const names = Object.keys(strays);
+  fs.writeFileSync(path.join(h.bin, 'df'), `#!/bin/bash
+n=$(ls -d target target-* 2>/dev/null | wc -l)
+s=0; for x in ${names.join(' ')}; do [ -d "../$x" ] && s=$((s + 1)); done
+echo "Filesystem 1024-blocks Used Available Capacity Mounted"
+echo "fake 0 0 $(( (${freeGib} + (4 - n) * 6 + (${names.length} - s) * 5) * 1048576 )) 0% /"
+`, { mode: 0o755 });
+  const strayLeft = () => names.filter((n) => fs.existsSync(path.join(check, n))).sort();
+  return { ...h, check, strayLeft };
+}
+
+test("low on disk, cargo targets left in the check folder by hand go first, longest unused first, before any checkout's", (t) => {
+  const h = withStrays(t, 8, { 'kit-target': 30, 'kx-target': 3, 'busy-target': 0.05 });
+  const r = h.trim('-');
+  assert.equal(r.status, 0, r.stderr);
+  // kit-target alone brings it to 13 GiB, past the 12 it trims to.
+  assert.deepEqual(h.strayLeft(), ['busy-target', 'kx-target']);
+  assert.match(r.stderr, /removing ~\/\.cache\/threadbear-check\/kit-target, a cargo build folder made by hand/);
+  assert.deepEqual(h.left(), ['target-aaa', 'target-bbb', 'target-ccc', 'target-ddd']);
+  assert.ok(fs.existsSync(path.join(h.check, 'build', 'desktop-target', 'debug', 'out')), "the check's own target stays");
+  // However low the disk, one in use stays, and so does the check's own.
+  const low = withStrays(t, 0, { 'kit-target': 30, 'busy-target': 0.05 });
+  assert.equal(low.trim('-').status, 0);
+  assert.deepEqual(low.strayLeft(), ['busy-target']);
+  assert.ok(fs.existsSync(path.join(low.check, 'build', 'desktop-target', 'debug', 'out')));
+});
+
+test('with room to spare, a hand-made cargo target goes only once nothing has touched it for three days', (t) => {
+  const h = withStrays(t, 40, { 'old-target': 80, 'kx-target': 30 });
+  const r = h.trim('aaa');
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(h.strayLeft(), ['kx-target']);
+  assert.match(r.stderr, /old-target, a cargo build folder made by hand that nothing has used for three days/);
+});
+
+test("a check that holds the host's check lock itself still gets room back (held)", (t) => {
+  const h = withStrays(t, 8, { 'kit-target': 30 });
+  const lock = path.join(h.check, 'lock');
+  fs.writeFileSync(lock, '');
+  const holder = path.join(h.root, 'hold.pl');
+  fs.writeFileSync(holder, `use Fcntl ":flock"; open(my $f, ">>", ${JSON.stringify(lock)}) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\\n"; sleep 4;`);
+  const run = (args: string) => spawnSync('/bin/bash', ['-c', `perl ${JSON.stringify(holder)} | { read -r _; bash ${JSON.stringify(TRIM)} ${args}; }`], { cwd: h.base, env: h.env, encoding: 'utf8', timeout: STUCK });
+  // Another check holds it: nothing goes.
+  const other = run('-');
+  assert.equal(other.status, 0, other.stderr);
+  assert.match(other.stderr, /no build folders are given back now/);
+  assert.deepEqual(h.strayLeft(), ['kit-target']);
+  // This check holds it.
+  const own = run('- held');
+  assert.equal(own.status, 0, own.stderr);
+  assert.deepEqual(h.strayLeft(), []);
+});

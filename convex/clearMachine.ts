@@ -65,7 +65,7 @@ export const clear = unlessStepping('clearState', () => defineMachine(
       moving: (_ctx, { state }) => state.moving,
     },
     effects: {
-      start: async (ctx, { event }) => {
+      start: async (_ctx, { event }) => {
         // Its first run. A machine's create has no id yet, so the run finds the row by the thread.
         return { kind: 'clearing' as const, moving: event.moving, retryAt: Date.now() + CLEAR_RETRY_MS };
       },

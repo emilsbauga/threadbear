@@ -4,7 +4,7 @@ import com.mikerosoft.threadbear.kit.InlinePictures.Piece
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** docs/protocol.md, "Pictures in a message", on the phone (InlinePicturesTests.swift). */
+/** docs/protocol/threads.md, "Pictures in a message", on the phone (InlinePicturesTests.swift). */
 class InlinePicturesTest {
     private val m = InlinePictures.MARK_STRING
 

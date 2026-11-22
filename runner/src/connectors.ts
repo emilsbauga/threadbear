@@ -1,7 +1,7 @@
 // The Connectors gateway (plugbear, optional; runner.json's gateway): which of its
 // services are signed in, for the app's Connectors panel, and the sign-in
 // problems an agent runs into, for end_turn to turn into an ask
-// (docs/protocol.md, "Connectors").
+// (docs/protocol/panels.md, "Connectors").
 //
 // The runner asks the gateway's open /health every few minutes and when
 // the panel opens; the app never calls the gateway itself. /health has changed

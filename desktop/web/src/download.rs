@@ -18,7 +18,13 @@ pub enum Progress {
 /// scripted control passes (the specs, so each run doesn't fetch 135 MB): it's
 /// held to the same pin as a download, so a copy that isn't the build is
 /// refused the same way.
-pub fn install(archive: &Archive, layout: &Layout, local: Option<&std::path::Path>, progress: &mut dyn FnMut(Progress), cancel: &AtomicBool) -> Result<(), InstallError> {
+pub fn install(
+    archive: &Archive,
+    layout: &Layout,
+    local: Option<&std::path::Path>,
+    progress: &mut dyn FnMut(Progress),
+    cancel: &AtomicBool,
+) -> Result<(), InstallError> {
     let pin = archive.pin();
     if let Some(local) = local {
         progress(Progress::Unpacking);
@@ -32,7 +38,10 @@ pub fn install(archive: &Archive, layout: &Layout, local: Option<&std::path::Pat
         .user_agent("Threadbear (web runtime)")
         .build()
         .into();
-    let response = agent.get(&archive.url()).call().map_err(|e| InstallError::Failed(format!("couldn't reach Spotify's CEF builds ({e})")))?;
+    let response = agent
+        .get(&archive.url())
+        .call()
+        .map_err(|e| InstallError::Failed(format!("couldn't reach Spotify's CEF builds ({e})")))?;
     let mut body = response.into_body().into_reader();
     let total = pin.bytes;
     let mut last = 0u64;

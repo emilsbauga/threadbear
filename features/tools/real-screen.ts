@@ -1,6 +1,6 @@
 // For the tools that use the real screen and pointer, which run only on a
 // machine nobody's using (Tinker Desk's desktop, AGENTS.md): where a window is
-// on screen, and the Swift helpers in app/Tools that post real events.
+// on screen, and the Swift helpers beside this file that post real events.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,10 +11,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 export const work = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tb-real-screen-'));
 process.on('exit', () => fs.rmSync(work, { recursive: true, force: true }));
 
-/** app/Tools/<name>.swift, compiled once into a temp folder. */
+/** features/tools/<name>.swift, compiled once into a temp folder. */
 export function swiftTool(name: string): string {
   const out = path.join(work, name);
-  if (!fs.existsSync(out)) execFileSync('swiftc', ['-O', path.join(root, 'app/Tools', `${name}.swift`), '-o', out]);
+  if (!fs.existsSync(out)) execFileSync('swiftc', ['-O', path.join(root, 'features/tools', `${name}.swift`), '-o', out]);
   return out;
 }
 

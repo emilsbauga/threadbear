@@ -17,4 +17,9 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }
 
-tasks.test { useJUnitPlatform() }
+// The kit's tests also run the cases every app shares (shared/cases), read from
+// the repo's top: an input, so a changed case file runs them again.
+tasks.test {
+    useJUnitPlatform()
+    inputs.dir(rootDir.resolve("../shared/cases"))
+}

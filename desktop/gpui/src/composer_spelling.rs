@@ -1,6 +1,7 @@
 // Spelling in the message box, as the Swift app's NSTextView had it: a wavy
 // line under a misspelled word once it's typed (green under grammar, when
-// that's on), the Mac's autocorrection and text replacements as a word ends,
+// that's on), the Mac's autocorrection (once it's switched on in the menu:
+// it starts off) and text replacements as a word ends,
 // and the right-click menu's guesses, Ignore Spelling and Learn Spelling, with
 // Spelling and Grammar, Substitutions, Transformations and Speech under them.
 // The Swift app's menu bar never had those four; its box's right-click menu
@@ -51,8 +52,19 @@ pub(crate) struct UseGuess {
 
 /// The red and green of AppKit's marks.
 fn mark_style(grammar: bool) -> HighlightStyle {
-    let color = if grammar { hsla(122. / 360., 0.55, 0.42, 1.) } else { hsla(0., 0.85, 0.55, 1.) };
-    HighlightStyle { underline: Some(UnderlineStyle { color: Some(color), thickness: gpui_kit::px(1.), wavy: true }), ..Default::default() }
+    let color = if grammar {
+        hsla(122. / 360., 0.55, 0.42, 1.)
+    } else {
+        hsla(0., 0.85, 0.55, 1.)
+    };
+    HighlightStyle {
+        underline: Some(UnderlineStyle {
+            color: Some(color),
+            thickness: gpui_kit::px(1.),
+            wavy: true,
+        }),
+        ..Default::default()
+    }
 }
 
 /// What the box's spelling knows between edits.
@@ -81,7 +93,10 @@ const CHECK_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl Composer {
     pub(crate) fn checks(&self, cx: &App) -> Checks {
-        self.app.upgrade().map(|a| a.read(cx).new_thread.prefs.text_checks).unwrap_or_default()
+        self.app
+            .upgrade()
+            .map(|a| a.read(cx).new_thread.prefs.text_checks)
+            .unwrap_or_default()
     }
 
     /// After every change to the box: corrections and substitutions for a
@@ -105,19 +120,35 @@ impl Composer {
         }
         let checks = self.checks(cx);
         let caret = selection.end;
-        if selection.is_empty() && checks.any_substitution() && text.len() <= text_services::MAX_CHECKED {
+        if selection.is_empty()
+            && checks.any_substitution()
+            && text.len() <= text_services::MAX_CHECKED
+        {
             if let Some(typed) = spelling::typed_boundary(&old, &text, caret) {
                 let paragraph = text[..caret].rfind('\n').map_or(0, |i| i + 1);
-                let found = self.spell.autocorrect.keep(&text, text_services::check(&text, paragraph..caret, &checks, true));
-                let chips: Vec<Range<usize>> = Self::chips_in(&input, cx).into_iter().map(|(r, _)| r).collect();
+                let found = self.spell.autocorrect.keep(
+                    &text,
+                    text_services::check(&text, paragraph..caret, &checks, true),
+                );
+                let chips: Vec<Range<usize>> = Self::chips_in(&input, cx)
+                    .into_iter()
+                    .map(|(r, _)| r)
+                    .collect();
                 let subs: Vec<_> = spelling::substitutions(&found, caret, typed)
                     .into_iter()
-                    .filter(|s| !chips.iter().any(|c| c.start < s.range.end && s.range.start < c.end))
+                    .filter(|s| {
+                        !chips
+                            .iter()
+                            .any(|c| c.start < s.range.end && s.range.start < c.end)
+                    })
                     .collect();
                 if !subs.is_empty() {
                     // Last first, so the ranges before stay right; each one
                     // Undo takes back, as AppKit's correction is.
-                    let shift: isize = subs.iter().map(|s| s.with.len() as isize - s.range.len() as isize).sum();
+                    let shift: isize = subs
+                        .iter()
+                        .map(|s| s.with.len() as isize - s.range.len() as isize)
+                        .sum();
                     let caret = (caret as isize + shift).max(0) as usize;
                     input.update(cx, |s, cx| {
                         for sub in &subs {
@@ -133,10 +164,20 @@ impl Composer {
                         text_services::record_response(&outcome);
                     }
                     let landed = spelling::ranges_after(&subs);
-                    if let Some((sub, at)) = subs.iter().zip(landed).find(|(s, _)| s.kind == spelling::Kind::Correction) {
+                    if let Some((sub, at)) = subs
+                        .iter()
+                        .zip(landed)
+                        .find(|(s, _)| s.kind == spelling::Kind::Correction)
+                    {
                         if self.spell.last.get(at.clone()) == Some(sub.with.as_str()) {
                             let original = text[sub.range.clone()].to_owned();
-                            if let Some(outcome) = self.spell.autocorrect.made(&self.spell.last, at, caret, &original, &sub.with) {
+                            if let Some(outcome) = self.spell.autocorrect.made(
+                                &self.spell.last,
+                                at,
+                                caret,
+                                &original,
+                                &sub.with,
+                            ) {
                                 text_services::record_response(&outcome);
                             }
                         }
@@ -181,7 +222,12 @@ impl Composer {
     }
 
     fn draw_spelling_marks(&mut self, cx: &mut Context<Self>) {
-        let drawn: Vec<TextDecoration> = self.spell.marks.iter().map(|(r, grammar)| TextDecoration::new(r.clone(), mark_style(*grammar))).collect();
+        let drawn: Vec<TextDecoration> = self
+            .spell
+            .marks
+            .iter()
+            .map(|(r, grammar)| TextDecoration::new(r.clone(), mark_style(*grammar)))
+            .collect();
         self.input.update(cx, |s, cx| s.set_text_marks(drawn, cx));
     }
 
@@ -190,17 +236,30 @@ impl Composer {
     /// `typing`: after an edit, when the word the caret's in is still being
     /// typed and waits; otherwise (leaving the box, a right-click) it's
     /// checked too.
-    pub(crate) fn refresh_spelling_marks(&mut self, now: bool, typing: bool, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_spelling_marks(
+        &mut self,
+        now: bool,
+        typing: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.new_value_check(cx);
         let checks = self.checks(cx);
         let input = self.input.clone();
         let (text, selection) = Self::text_and_selection(&input, cx);
-        let on = text_services::AVAILABLE && (now || checks.spelling || checks.grammar) && text.len() <= text_services::MAX_CHECKED;
+        let on = text_services::AVAILABLE
+            && (now || checks.spelling || checks.grammar)
+            && text.len() <= text_services::MAX_CHECKED;
         let marks = if on {
             let mut asked = checks;
             asked.spelling = checks.spelling || now;
-            let found = spelling::without_own_words(&text, text_services::check(&text, 0..text.len(), &asked, false));
-            let chips: Vec<Range<usize>> = Self::chips_in(&input, cx).into_iter().map(|(r, _)| r).collect();
+            let found = spelling::without_own_words(
+                &text,
+                text_services::check(&text, 0..text.len(), &asked, false),
+            );
+            let chips: Vec<Range<usize>> = Self::chips_in(&input, cx)
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect();
             // The word being typed waits until it's finished.
             let caret = (selection.is_empty() && typing && !now).then_some(selection.end);
             spelling::marks(&found, caret, &chips)
@@ -215,7 +274,9 @@ impl Composer {
     /// The misspelled word the caret or selection is in.
     fn misspelled_here(&self, cx: &App) -> Option<(Range<usize>, String)> {
         let (text, selection) = Self::text_and_selection(&self.input, cx);
-        let (range, _) = self.spell.marks.iter().find(|(r, grammar)| !grammar && r.start <= selection.start && selection.end <= r.end)?;
+        let (range, _) = self.spell.marks.iter().find(|(r, grammar)| {
+            !grammar && r.start <= selection.start && selection.end <= r.end
+        })?;
         Some((range.clone(), text.get(range.clone())?.to_owned()))
     }
 
@@ -224,8 +285,8 @@ impl Composer {
             app.update(cx, |app, _| {
                 let mut checks = app.new_thread.prefs.text_checks;
                 change(&mut checks);
-                // Correction and replacement follow the Mac's own settings
-                // until they're switched here; then they're this app's.
+                // Replacement follows the Mac's own setting until it's
+                // switched here; then it's this app's. Correction starts off.
                 app.new_thread.prefs.text_checks = checks;
                 crate::prefs::save(&app.new_thread.prefs);
             });
@@ -236,8 +297,14 @@ impl Composer {
     fn transform(&mut self, how: Transform, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.input.clone();
         let (text, selection) = Self::text_and_selection(&input, cx);
-        let range = if selection.is_empty() { spelling::word_at(&text, selection.start) } else { selection.clone() };
-        let Some(words) = text.get(range.clone()) else { return };
+        let range = if selection.is_empty() {
+            spelling::word_at(&text, selection.start)
+        } else {
+            selection
+        };
+        let Some(words) = text.get(range.clone()) else {
+            return;
+        };
         if range.is_empty() {
             return;
         }
@@ -278,35 +345,67 @@ impl Composer {
                     this.refresh_spelling_marks(false, false, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &CheckDocumentNow, _, cx| this.refresh_spelling_marks(true, false, cx)))
-            .on_action(cx.listener(|this, _: &ToggleSpellingWhileTyping, _, cx| this.change_checks(|c| c.spelling = !c.spelling, cx)))
-            .on_action(cx.listener(|this, _: &ToggleGrammar, _, cx| this.change_checks(|c| c.grammar = !c.grammar, cx)))
-            .on_action(cx.listener(|this, _: &ToggleCorrectSpelling, _, cx| this.change_checks(|c| c.correct = Some(!c.correct()), cx)))
-            .on_action(cx.listener(|this, _: &ToggleSmartQuotes, _, cx| this.change_checks(|c| c.quotes = !c.quotes, cx)))
-            .on_action(cx.listener(|this, _: &ToggleSmartDashes, _, cx| this.change_checks(|c| c.dashes = !c.dashes, cx)))
-            .on_action(cx.listener(|this, _: &ToggleTextReplacement, _, cx| this.change_checks(|c| c.replace = Some(!c.replace()), cx)))
-            .on_action(cx.listener(|this, _: &MakeUpperCase, window, cx| this.transform(Transform::Upper, window, cx)))
-            .on_action(cx.listener(|this, _: &MakeLowerCase, window, cx| this.transform(Transform::Lower, window, cx)))
-            .on_action(cx.listener(|this, _: &Capitalize, window, cx| this.transform(Transform::Capitalize, window, cx)))
+            .on_action(cx.listener(|this, _: &CheckDocumentNow, _, cx| {
+                this.refresh_spelling_marks(true, false, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSpellingWhileTyping, _, cx| {
+                this.change_checks(|c| c.spelling = !c.spelling, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleGrammar, _, cx| {
+                this.change_checks(|c| c.grammar = !c.grammar, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleCorrectSpelling, _, cx| {
+                this.change_checks(|c| c.correct = Some(!c.correct()), cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSmartQuotes, _, cx| {
+                this.change_checks(|c| c.quotes = !c.quotes, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSmartDashes, _, cx| {
+                this.change_checks(|c| c.dashes = !c.dashes, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTextReplacement, _, cx| {
+                this.change_checks(|c| c.replace = Some(!c.replace()), cx)
+            }))
+            .on_action(cx.listener(|this, _: &MakeUpperCase, window, cx| {
+                this.transform(Transform::Upper, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MakeLowerCase, window, cx| {
+                this.transform(Transform::Lower, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &Capitalize, window, cx| {
+                this.transform(Transform::Capitalize, window, cx)
+            }))
             // NSTextView reads the selection, or everything with none.
             .on_action(cx.listener(|this, _: &StartSpeaking, _, cx| {
                 let (text, selection) = Self::text_and_selection(&this.input, cx);
-                let words = if selection.is_empty() { text.as_str() } else { text.get(selection).unwrap_or_default() };
+                let words = if selection.is_empty() {
+                    text.as_str()
+                } else {
+                    text.get(selection).unwrap_or_default()
+                };
                 text_services::speak(words);
             }))
             .on_action(cx.listener(|_, _: &StopSpeaking, _, _| text_services::stop_speaking()))
             // Words only: a copied picture or file stays out (the Swift box is
             // plain text, so its Paste and Match Style was the same).
             .on_action(cx.listener(|this, _: &PasteAndMatchStyle, window, cx| {
-                let Some(words) = cx.read_from_clipboard().and_then(|item| item.text()) else { return };
-                this.input.update(cx, |s, cx| s.replace(words.to_string(), window, cx));
+                let Some(words) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+                    return;
+                };
+                this.input
+                    .update(cx, |s, cx| s.replace(words.to_string(), window, cx));
             }))
     }
 }
 
 /// The box's right-click menu, NSTextView's: the guesses for a misspelled
 /// word, then Cut, Copy and Paste, then the four submenus.
-pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<TextareaState>, window: &mut Window, cx: &mut App) -> NativeMenu {
+pub(crate) fn context_menu(
+    composer: &WeakEntity<Composer>,
+    input: &Entity<TextareaState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> NativeMenu {
     let mut menu = NativeMenu::new();
     let composer = composer.upgrade();
     // Checked now, the word clicked in included: the marks may be waiting for
@@ -316,9 +415,15 @@ pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<Texta
     }
     let (has_selection, editable) = {
         let state = input.read(cx);
-        (!state.selected_range().is_empty(), state.presentation().is_editable())
+        (
+            !state.selected_range().is_empty(),
+            state.presentation().is_editable(),
+        )
     };
-    if let Some(misspelled) = composer.as_ref().and_then(|c| c.read(cx).misspelled_here(cx)) {
+    if let Some(misspelled) = composer
+        .as_ref()
+        .and_then(|c| c.read(cx).misspelled_here(cx))
+    {
         let (range, was) = misspelled;
         let text = input.read(cx).value().to_string();
         let guesses = text_services::guesses(&text, range.clone());
@@ -326,9 +431,21 @@ pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<Texta
             menu = menu.menu_with_disabled("No Guesses Found", true, Box::new(IgnoreSpelling));
         }
         for word in guesses.into_iter().take(8) {
-            menu = menu.menu(word.clone(), Box::new(UseGuess { word, was: was.clone(), start: range.start, end: range.end }));
+            menu = menu.menu(
+                word.clone(),
+                Box::new(UseGuess {
+                    word,
+                    was: was.clone(),
+                    start: range.start,
+                    end: range.end,
+                }),
+            );
         }
-        menu = menu.separator().menu("Ignore Spelling", Box::new(IgnoreSpelling)).menu("Learn Spelling", Box::new(LearnSpelling)).separator();
+        menu = menu
+            .separator()
+            .menu("Ignore Spelling", Box::new(IgnoreSpelling))
+            .menu("Learn Spelling", Box::new(LearnSpelling))
+            .separator();
     }
     menu = menu
         .menu_with_disabled("Cut", !(editable && has_selection), Box::new(Cut))
@@ -339,35 +456,75 @@ pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<Texta
     if !text_services::AVAILABLE {
         return menu;
     }
-    menu = menu.separator()
-        .menu_with_disabled("Look Up", !crate::native_text::has_lookup(window, cx), Box::new(crate::native_text::LookUp))
-        .menu_with_disabled("Services…", !crate::native_text::has_selection(window, cx), Box::new(crate::native_text::Services));
+    menu = menu
+        .separator()
+        .menu_with_disabled(
+            "Look Up",
+            !crate::native_text::has_lookup(window, cx),
+            Box::new(crate::native_text::LookUp),
+        )
+        .menu_with_disabled(
+            "Services…",
+            !crate::native_text::has_selection(window, cx),
+            Box::new(crate::native_text::Services),
+        );
     if crate::native_text::translate_available() {
-        menu = menu.menu_with_disabled("Translate", !has_selection, Box::new(crate::native_text::Translate));
+        menu = menu.menu_with_disabled(
+            "Translate",
+            !has_selection,
+            Box::new(crate::native_text::Translate),
+        );
     }
     if crate::native_text::writing_tools_available() {
-        menu = menu.menu_with_disabled("Writing Tools", !has_selection, Box::new(crate::native_text::WritingTools));
+        menu = menu.menu_with_disabled(
+            "Writing Tools",
+            !has_selection,
+            Box::new(crate::native_text::WritingTools),
+        );
     }
-    let checks = composer.as_ref().map(|c| c.read(cx).checks(cx)).unwrap_or_default();
+    let checks = composer
+        .as_ref()
+        .map(|c| c.read(cx).checks(cx))
+        .unwrap_or_default();
     // "Show Spelling and Grammar" and "Show Substitutions" are AppKit's
     // panels, which only an NSTextView can answer; they're left out.
     let spelling = NativeMenu::new()
         .menu("Check Document Now", Box::new(CheckDocumentNow))
         .separator()
-        .menu_with_check("Check Spelling While Typing", checks.spelling, Box::new(ToggleSpellingWhileTyping))
-        .menu_with_check("Check Grammar With Spelling", checks.grammar, Box::new(ToggleGrammar))
-        .menu_with_check("Correct Spelling Automatically", checks.correct(), Box::new(ToggleCorrectSpelling));
+        .menu_with_check(
+            "Check Spelling While Typing",
+            checks.spelling,
+            Box::new(ToggleSpellingWhileTyping),
+        )
+        .menu_with_check(
+            "Check Grammar With Spelling",
+            checks.grammar,
+            Box::new(ToggleGrammar),
+        )
+        .menu_with_check(
+            "Correct Spelling Automatically",
+            checks.correct(),
+            Box::new(ToggleCorrectSpelling),
+        );
     let substitutions = NativeMenu::new()
         .menu_with_check("Smart Quotes", checks.quotes, Box::new(ToggleSmartQuotes))
         .menu_with_check("Smart Dashes", checks.dashes, Box::new(ToggleSmartDashes))
-        .menu_with_check("Text Replacement", checks.replace(), Box::new(ToggleTextReplacement));
+        .menu_with_check(
+            "Text Replacement",
+            checks.replace(),
+            Box::new(ToggleTextReplacement),
+        );
     let transformations = NativeMenu::new()
         .menu_with_disabled("Make Upper Case", !editable, Box::new(MakeUpperCase))
         .menu_with_disabled("Make Lower Case", !editable, Box::new(MakeLowerCase))
         .menu_with_disabled("Capitalize", !editable, Box::new(Capitalize));
     let speech = NativeMenu::new()
         .menu("Start Speaking", Box::new(StartSpeaking))
-        .menu_with_disabled("Stop Speaking", !text_services::speaking(), Box::new(StopSpeaking));
+        .menu_with_disabled(
+            "Stop Speaking",
+            !text_services::speaking(),
+            Box::new(StopSpeaking),
+        );
     menu.separator()
         .submenu("Spelling and Grammar", spelling)
         .submenu("Substitutions", substitutions)
@@ -381,27 +538,53 @@ pub(crate) fn context_menu(composer: &WeakEntity<Composer>, input: &Entity<Texta
 pub(crate) fn marks_command(composer: &Entity<Composer>, cx: &App) -> serde_json::Value {
     let c = composer.read(cx);
     let (text, _) = Composer::text_and_selection(&c.input, cx);
-    let marks: Vec<String> = c.spell.marks.iter().map(|(r, grammar)| format!("{} ({})", text.get(r.clone()).unwrap_or_default(), if *grammar { "grammar" } else { "spelling" })).collect();
-    serde_json::json!(format!("ok {}", serde_json::to_string(&marks).unwrap_or_default()))
+    let marks: Vec<String> = c
+        .spell
+        .marks
+        .iter()
+        .map(|(r, grammar)| {
+            format!(
+                "{} ({})",
+                text.get(r.clone()).unwrap_or_default(),
+                if *grammar { "grammar" } else { "spelling" }
+            )
+        })
+        .collect();
+    serde_json::json!(format!(
+        "ok {}",
+        serde_json::to_string(&marks).unwrap_or_default()
+    ))
 }
 
 /// `composer-right-click`: the box's right-click menu with the caret in the word
 /// `at` (its first time in the box), as titles (`NativeMenu::titles`); with
 /// `choose`, that item is chosen instead, as a click on it would.
 #[cfg(feature = "automation")]
-pub(crate) fn menu_command(composer: &Entity<Composer>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn menu_command(
+    composer: &Entity<Composer>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     let input = composer.read(cx).input.clone();
     if let Some(at) = cmd["at"].as_str() {
         let text = input.read(cx).value().to_string();
-        let Some(start) = text.find(at) else { return Err(format!("no {at:?} in the box")) };
+        let Some(start) = text.find(at) else {
+            return Err(format!("no {at:?} in the box"));
+        };
         let caret = start + at.char_indices().nth(1).map_or(at.len(), |(i, _)| i);
         input.update(cx, |s, cx| s.set_selected_range(caret..caret, cx));
     }
     let menu = context_menu(&composer.downgrade(), &input, window, cx);
     let Some(choose) = cmd["choose"].as_str() else {
-        return Ok(serde_json::json!(format!("ok {}", serde_json::to_string(&menu.titles()).unwrap_or_default())));
+        return Ok(serde_json::json!(format!(
+            "ok {}",
+            serde_json::to_string(&menu.titles()).unwrap_or_default()
+        )));
     };
-    let action = menu.action_for(choose).ok_or_else(|| format!("no item {choose:?} to choose"))?;
+    let action = menu
+        .action_for(choose)
+        .ok_or_else(|| format!("no item {choose:?} to choose"))?;
     let handle = input.read(cx).focus_handle(cx);
     window.focus(&handle, cx);
     crate::web_panels::keyboard_to_app(window);

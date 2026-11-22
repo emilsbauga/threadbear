@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpDir } from '../helpers/fakes.ts';
 import { loadPatchSet, panelItem, readPatchModule, renderListPanel, runCommand, toggleListPanel } from '../../src/patches.ts';
 
-// A list row's switch (docs/protocol.md, Patches, "Row toggles"): a PRs
+// A list row's switch (docs/protocol/patches.md, Patches, "Row toggles"): a PRs
 // panel's auto-fix wand on each PR, say. Ported from Ville
 // Lahdenvuo-Malta's fork.
 

@@ -117,10 +117,6 @@ export function failingPatches(patches: PatchInfo[], inRelease: (file: string) =
   return { patches: out, otherPatchesFailing: other };
 }
 
-function day(date?: string): string {
-  return date ? date.slice(0, 10) : '';
-}
-
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }

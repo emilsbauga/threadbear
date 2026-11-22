@@ -1053,7 +1053,7 @@ test("a resume that isn't taken (its key went meanwhile) goes on to a new box", 
 // 8. A move to or from a sleeping box never woke it.
 test('a move off a sleeping box wakes it, and runs to the end', async () => {
   const s = await setup();
-  const { runnerId } = await s.start('T2');
+  await s.start('T2');
   await s.run();
   const m = s.fly.live()[0]!;
   const got = await s.boot('T2', m.id);

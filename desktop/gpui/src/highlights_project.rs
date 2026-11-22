@@ -8,20 +8,32 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).
 use crate::style::px;
+use crate::tips::Tip as _;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use threadbear_core::highlights::{can_keep, project_why, ProjectInfo, ProjectRow};
 use threadbear_core::inbox::{Project, ThreadSummary};
-use crate::tips::Tip as _;
 
 /// The project's icon, as `ProjectIconView` draws it: a picture, else a
 /// symbol, else its letter on a tile.
 pub(crate) fn project_icon(project: &ProjectInfo, cx: &App) -> AnyElement {
-    let picture = project.icon.as_ref().and_then(|i| i.get("image")).and_then(|i| i.get("path")).and_then(Value::as_str).map(PathBuf::from);
+    let picture = project
+        .icon
+        .as_ref()
+        .and_then(|i| i.get("image"))
+        .and_then(|i| i.get("path"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from);
     if let Some(path) = picture {
         return img(path).size(px(14.)).rounded(px(3.)).into_any_element();
     }
-    if let Some(name) = project.icon.as_ref().and_then(|i| i.get("symbol")).and_then(Value::as_str).filter(|s| crate::icons::try_symbol(s).is_some()) {
+    if let Some(name) = project
+        .icon
+        .as_ref()
+        .and_then(|i| i.get("symbol"))
+        .and_then(Value::as_str)
+        .filter(|s| crate::icons::try_symbol(s).is_some())
+    {
         return icon(name, 11., style::secondary_text(cx)).into_any_element();
     }
     let letter = threadbear_core::sidebar::project_letter(&project.title);
@@ -49,19 +61,24 @@ impl SidePane {
 }
 
 /// The ⓘ at the end of the project's heading.
-pub(crate) fn why_button(row: &ProjectRow, p: Palette, cx: &mut Context<SidePane>) -> impl IntoElement {
+pub(crate) fn why_button(
+    row: &ProjectRow,
+    p: Palette,
+    cx: &mut Context<SidePane>,
+) -> impl IntoElement {
     let project_id = row.project.id.clone();
     let tip = format!("Why it's in {}", row.project.title);
     let open_id = project_id.clone();
     div()
-        .id(SharedString::from(format!("hl-why-{project_id}"))).role(Role::Button)
+        .id(SharedString::from(format!("hl-why-{project_id}")))
+        .role(Role::Button)
         .size(px(14.))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
         .child(icon("info.circle", 11., p.secondary))
-        .tip(tip.clone())
+        .tip(tip)
         .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
             let position = ev.position();
             this.project_why = match &this.project_why {
@@ -75,33 +92,66 @@ pub(crate) fn why_button(row: &ProjectRow, p: Palette, cx: &mut Context<SidePane
 impl SidePane {
     /// The ⓘ's popover, when one is open. Drawn over everything at the place
     /// it was asked for, as a menu is.
-    pub(crate) fn why_popover(&mut self, thread: &ThreadSummary, p: Palette, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn why_popover(
+        &mut self,
+        thread: &ThreadSummary,
+        p: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let (project_id, position) = self.project_why.clone()?;
-        let member = thread.projects.as_ref()?.iter().find(|m| m.id == project_id)?.clone();
+        let member = thread
+            .projects
+            .as_ref()?
+            .iter()
+            .find(|m| m.id == project_id)?
+            .clone();
         let project = self.projects.get(&project_id)?.clone();
         let (reason, who, keep) = self.why_lines(&member);
         let (bg, border) = (cx.theme().popover, p.card_border);
-        let title = project.title.clone();
+        let title = project.title;
         let mut buttons = h_flex().gap(px(8.)).items_center();
         if keep {
             let (id, t) = (project_id.clone(), thread.id.clone());
-            buttons = buttons.child(self.why_action("Keep", format!("Keep it in {title}, so the librarian never takes it out"), p, cx, move |this, cx| this.set_project_membership(t.clone(), vec![id.clone()], vec![], cx)));
+            buttons = buttons.child(self.why_action(
+                "Keep",
+                format!("Keep it in {title}, so the librarian never takes it out"),
+                p,
+                cx,
+                move |this, cx| {
+                    this.set_project_membership(t.clone(), vec![id.clone()], vec![], cx)
+                },
+            ));
         }
         let (id, t) = (project_id.clone(), thread.id.clone());
-        buttons = buttons.child(self.why_action("Take out", format!("Take it out of {title}; the librarian won't put it back"), p, cx, move |this, cx| this.set_project_membership(t.clone(), vec![], vec![id.clone()], cx)));
+        buttons = buttons.child(self.why_action(
+            "Take out",
+            format!("Take it out of {title}; the librarian won't put it back"),
+            p,
+            cx,
+            move |this, cx| this.set_project_membership(t.clone(), vec![], vec![id.clone()], cx),
+        ));
         buttons = buttons.child(div().flex_1());
         // A link to the project's page (project_page.rs), in the main panel.
-        let (open, link) = (project_id.clone(), style::link_text(cx));
+        let (open, link) = (project_id, style::link_text(cx));
         buttons = buttons.child(
-            crate::highlights::tipped(div().id("hl-why-open").cursor_pointer().text_size(px(style::size::DETAIL)).text_color(link).hover(|s| s.underline()), format!("Open {title}'s page"))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.project_why = None;
-                    if let Some(app) = this.app.upgrade() {
-                        app.update(cx, |app, cx| app.open_project_page(&open, cx));
-                    }
-                    cx.notify();
-                }))
-                .child("Open project"),
+            crate::highlights::tipped(
+                div()
+                    .id("hl-why-open")
+                    .cursor_pointer()
+                    .text_size(px(style::size::DETAIL))
+                    .text_color(link)
+                    .hover(|s| s.underline()),
+                format!("Open {title}'s page"),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.project_why = None;
+                if let Some(app) = this.app.upgrade() {
+                    app.update(cx, |app, cx| app.open_project_page(&open, cx));
+                }
+                cx.notify();
+            }))
+            .child("Open project"),
         );
         let card = v_flex()
             .w(px(280.))
@@ -113,8 +163,15 @@ impl SidePane {
             .rounded(px(8.))
             .shadow_md()
             .occlude()
-            .when_some(reason, |s, r| s.child(div().text_size(px(style::size::LABEL)).child(r)))
-            .child(div().text_size(px(style::size::DETAIL)).text_color(p.secondary).child(who))
+            .when_some(reason, |s, r| {
+                s.child(div().text_size(px(style::size::LABEL)).child(r))
+            })
+            .child(
+                div()
+                    .text_size(px(style::size::DETAIL))
+                    .text_color(p.secondary)
+                    .child(who),
+            )
             .child(buttons);
         // A click anywhere else closes it, as a popover does (a clear
         // backdrop over the window; the card sits on top of it).
@@ -124,17 +181,47 @@ impl SidePane {
             .w(size.width)
             .h(size.height)
             .occlude()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.project_why = None;
-                cx.notify();
-            }))
-            .child(anchored().position(position).snap_to_window_with_margin(px(8.)).child(card));
-        Some(deferred(anchored().position(point(px(0.), px(0.))).child(backdrop)).with_priority(1).into_any_element())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.project_why = None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                anchored()
+                    .position(position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(card),
+            );
+        Some(
+            deferred(anchored().position(point(px(0.), px(0.))).child(backdrop))
+                .with_priority(1)
+                .into_any_element(),
+        )
     }
 
-    fn why_action(&mut self, label: &'static str, tip: String, p: Palette, cx: &mut Context<Self>, action: impl Fn(&mut SidePane, &mut Context<SidePane>) + 'static) -> impl IntoElement {
+    fn why_action(
+        &mut self,
+        label: &'static str,
+        tip: String,
+        p: Palette,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut SidePane, &mut Context<SidePane>) + 'static,
+    ) -> impl IntoElement {
         crate::highlights::tipped(
-            div().id(SharedString::from(format!("hl-why-{label}"))).px(px(8.)).py(px(3.)).rounded(px(5.)).bg(style::button_fill(cx)).border_1().border_color(style::button_edge(cx)).cursor_pointer().text_size(px(style::size::DETAIL)).text_color(p.fg).child(label),
+            div()
+                .id(SharedString::from(format!("hl-why-{label}")))
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .bg(style::button_fill(cx))
+                .border_1()
+                .border_color(style::button_edge(cx))
+                .cursor_pointer()
+                .text_size(px(style::size::DETAIL))
+                .text_color(p.fg)
+                .child(label),
             tip,
         )
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
@@ -142,14 +229,24 @@ impl SidePane {
 
     /// `threads.setProjects`, changing the thread's list here first
     /// (`app.setProjects`): the popover goes and the runner's answer confirms.
-    fn set_project_membership(&mut self, thread_id: String, add: Vec<String>, remove: Vec<String>, cx: &mut Context<Self>) {
+    fn set_project_membership(
+        &mut self,
+        thread_id: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.project_why = None;
-        let before = self.app.upgrade().and_then(|app| app.read(cx).threads.get(&thread_id).and_then(|t| t.projects.clone()));
+        let before = self.app.upgrade().and_then(|app| {
+            app.read(cx)
+                .threads
+                .get(&thread_id)
+                .and_then(|t| t.projects.clone())
+        });
         if let Some(app) = self.app.upgrade() {
             let (add2, remove2) = (add.clone(), remove.clone());
-            let id2 = thread_id.clone();
             app.update(cx, |t, cx| {
-                if let Some(summary) = t.threads.get_mut(&id2).map(std::sync::Arc::make_mut) {
+                if let Some(summary) = t.threads.get_mut(&thread_id).map(std::sync::Arc::make_mut) {
                     let list = summary.projects.get_or_insert_with(Vec::new);
                     list.retain(|m| !remove2.contains(&m.id));
                     for id in &add2 {
@@ -164,13 +261,20 @@ impl SidePane {
         cx.notify();
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "threads.setProjects", json!({ "threadId": thread_id, "add": add, "remove": remove })).await;
+            let res = call(
+                client,
+                "threads.setProjects",
+                json!({ "threadId": thread_id, "add": add, "remove": remove }),
+            )
+            .await;
             this.update(cx, |t, cx| {
                 if let Err(e) = res {
                     if let Some(app) = t.app.upgrade() {
                         let id2 = thread_id.clone();
                         app.update(cx, |t, cx| {
-                            if let Some(summary) = t.threads.get_mut(&id2).map(std::sync::Arc::make_mut) {
+                            if let Some(summary) =
+                                t.threads.get_mut(&id2).map(std::sync::Arc::make_mut)
+                            {
                                 summary.projects = before;
                             }
                             cx.notify();
@@ -187,7 +291,12 @@ impl SidePane {
 
 /// `project-why`: opens or closes the popover and says what's in it.
 #[cfg(feature = "automation")]
-pub(crate) fn project_why_command(side: &Entity<SidePane>, thread: &ThreadSummary, id: Option<&str>, cx: &mut App) -> Result<String, String> {
+pub(crate) fn project_why_command(
+    side: &Entity<SidePane>,
+    thread: &ThreadSummary,
+    id: Option<&str>,
+    cx: &mut App,
+) -> Result<String, String> {
     let Some(id) = id else {
         side.update(cx, |pane, cx| {
             pane.project_why = None;
@@ -195,7 +304,12 @@ pub(crate) fn project_why_command(side: &Entity<SidePane>, thread: &ThreadSummar
         });
         return Ok("ok closed".into());
     };
-    let member = thread.projects.as_ref().and_then(|list| list.iter().find(|m| m.id.starts_with(id))).ok_or_else(|| format!("the open thread isn't in {id}"))?.clone();
+    let member = thread
+        .projects
+        .as_ref()
+        .and_then(|list| list.iter().find(|m| m.id.starts_with(id)))
+        .ok_or_else(|| format!("the open thread isn't in {id}"))?
+        .clone();
     let (reason, who, keep) = side.read(cx).why_lines(&member);
     side.update(cx, |pane, cx| {
         pane.project_why = Some((member.id.clone(), point(px(600.), px(200.))));
@@ -207,5 +321,8 @@ pub(crate) fn project_why_command(side: &Entity<SidePane>, thread: &ThreadSummar
     }
     words.push("Take out".to_owned());
     words.push("Open project".to_owned());
-    Ok(format!("ok {}", serde_json::to_string(&words).unwrap_or_default()))
+    Ok(format!(
+        "ok {}",
+        serde_json::to_string(&words).unwrap_or_default()
+    ))
 }

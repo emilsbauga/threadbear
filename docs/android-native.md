@@ -66,6 +66,7 @@ what the iPhone has.
 | ThreadSearch (Inbox.swift) | `Search.kt` | 5 |
 | NotifyMode, AppModel's runner order and offline line | `Settings.kt` | 5 |
 | AppModel's StartingThread (new threads on their way) | `Starting.kt` | 5 |
+| PendingCommand.swift, PendingCommands.swift (a command sent and waited on, and its one watcher; shared/cases/pending-commands.json) | `PendingCommand.kt`, `PendingCommands.kt` | 6 |
 
 Dictation uses Android's own SpeechRecognizer (on-device where the phone
 has it), not Whisper; there's one recognizer, so no "Dictate with" choice.
@@ -73,6 +74,14 @@ has it), not Whisper; there's one recognizer, so no "Dictate with" choice.
 Not ported: Quick Ask (Mike, 11 Nov: not needed), Whisper, the bear and pull-peek, the
 Pocket's "here" mark (it needs location and a map search), the rows flying
 between headings (RowFlight), the demo's sample data beyond what tests need.
+
+Behind the iPhone, and written down where a test keeps it true: the backend APIs
+74 (search everywhere, the librarian's keywords), 76 (lab review), 79 (login notes)
+and 86 (design reviews), with 73 (loose ends) and 89 (answers on a message), in
+`shared/cases/wire-rows.json` (its `differs`, which `WireRowsTest.kt` skips), and
+tool output, sharing and design reviews in docs/parity.md's Android column
+(`runner/src/parity.ts`, which checks each against what the kit calls). Port one
+and those tests say to take its note out.
 
 ## Flavours
 

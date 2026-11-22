@@ -1,6 +1,6 @@
 import Foundation
 
-/// A named, ordered list of logins a thread can run on (docs/pools-plan.md).
+/// A named, ordered list of logins a thread can run on (docs/archive/pools-plan.md).
 /// Mike picks a pool and a model; the runner picks the login for each turn
 /// and moves the thread when one runs dry. A pool can mix providers: the
 /// order of `accountIds` only decides which provider comes first.

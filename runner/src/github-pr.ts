@@ -1,6 +1,6 @@
 // A GitHub pull request read and acted on through the gh CLI, for the app's
 // PR view: a PR link clicked in a reply opens as a tab in the side pane
-// (the inlinePrs experiment; docs/protocol.md, "Pull requests"). Mike asked
+// (the inlinePrs experiment; docs/protocol/panels.md, "Pull requests"). Mike asked
 // for it on 18 Nov after trying Capy, which opens PRs beside the chat rather
 // than sending you to the browser.
 //

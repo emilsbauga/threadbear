@@ -1,7 +1,7 @@
 // The Browser pane: the pages a thread's agents are using through BrowserBear,
 // in the agents' own browser (Helium, in real windows behind Mike's) or in his
 // own Chrome profiles. A port of the Swift app's AgentBrowserPanel.swift,
-// BrowserBearPipe.swift and BrowserBear.swift (docs/protocol.md, "The Browser
+// BrowserBearPipe.swift and BrowserBear.swift (docs/protocol/panels.md, "The Browser
 // panel"). Each row has a still of the page and Show window, which brings the
 // real window forward. Nothing is streamed or drawn live here: Mike disliked
 // the page drawn inside Threadbear (6 Nov 2026), so since 8 Nov he uses a page
@@ -15,10 +15,10 @@
 // (the Qantas sign-in, 30 Oct). open_gate.rs calls it.
 use crate::highlights::{icon, palette, tipped_as, with_scroll_bar, SidePane};
 use crate::push_button::PushButton;
+use crate::spinner::Spinner;
 use crate::style::{self, px};
 use futures::channel::oneshot;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use crate::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -46,7 +46,11 @@ const STILL_WIDTH: f32 = 104.;
 /// app without `BROWSERBEAR_HOME`, so specs and dev-apps never reach the real one.
 static HOME: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
     let env = std::env::var("BROWSERBEAR_HOME").ok();
-    bear::home(env.as_deref(), Path::new(&crate::files::home_dir()), scripted())
+    bear::home(
+        env.as_deref(),
+        Path::new(&crate::files::home_dir()),
+        scripted(),
+    )
 });
 
 /// Started by a script (the specs, an agent's dev-app): whatever the build,
@@ -64,7 +68,10 @@ fn socket() -> Option<PathBuf> {
 /// tabs.json's bytes and what they say, when they differ from `last`. Only a
 /// plain file, opened so a pipe put there can't hold the read, and only its
 /// first `MAX_TABS_FILE` bytes: a bigger one is passed over.
-fn read_tabs(file: &Path, last: Option<Arc<Vec<u8>>>) -> Option<(Arc<Vec<u8>>, Option<bear::AgentState>)> {
+fn read_tabs(
+    file: &Path,
+    last: Option<Arc<Vec<u8>>>,
+) -> Option<(Arc<Vec<u8>>, Option<bear::AgentState>)> {
     use std::io::Read as _;
     let mut open = std::fs::OpenOptions::new();
     open.read(true);
@@ -75,7 +82,10 @@ fn read_tabs(file: &Path, last: Option<Arc<Vec<u8>>>) -> Option<(Arc<Vec<u8>>, O
         return None;
     }
     let mut bytes = vec![];
-    handle.take(bear::MAX_TABS_FILE + 1).read_to_end(&mut bytes).ok()?;
+    handle
+        .take(bear::MAX_TABS_FILE + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
     if bytes.len() as u64 > bear::MAX_TABS_FILE || last.as_deref() == Some(&bytes) {
         return None;
     }
@@ -114,15 +124,19 @@ pub(crate) fn handoff(url: &str) -> bool {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let deadline = Instant::now() + HANDOFF_WITHIN;
-    let started = std::thread::Builder::new().name("browserbear-handoff".into()).spawn(move || {
-        let _ = tx.send(one_request(&path, &line, deadline));
-        ASKING.fetch_sub(1, Ordering::SeqCst);
-    });
+    let started = std::thread::Builder::new()
+        .name("browserbear-handoff".into())
+        .spawn(move || {
+            let _ = tx.send(one_request(&path, &line, deadline));
+            ASKING.fetch_sub(1, Ordering::SeqCst);
+        });
     if started.is_err() {
         ASKING.fetch_sub(1, Ordering::SeqCst);
         return false;
     }
-    let Ok(Some(reply)) = rx.recv_timeout(HANDOFF_WITHIN) else { return false };
+    let Ok(Some(reply)) = rx.recv_timeout(HANDOFF_WITHIN) else {
+        return false;
+    };
     bear::handed_off(&reply, 1)
 }
 
@@ -135,7 +149,11 @@ pub(crate) fn may_hand_off(url: &str) -> bool {
 #[cfg(unix)]
 fn one_request(path: &Path, line: &[u8], deadline: Instant) -> Option<Vec<u8>> {
     use std::io::{Read as _, Write as _};
-    let left = || deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero());
+    let left = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+    };
     let mut stream = std::os::unix::net::UnixStream::connect(path).ok()?;
     stream.set_write_timeout(Some(left()?)).ok()?;
     stream.write_all(line).ok()?;
@@ -150,7 +168,12 @@ fn one_request(path: &Path, line: &[u8], deadline: Instant) -> Option<Vec<u8>> {
         }
         reply.extend_from_slice(&buffer[..n]);
     }
-    reply.truncate(reply.iter().position(|b| *b == b'\n').unwrap_or(reply.len()));
+    reply.truncate(
+        reply
+            .iter()
+            .position(|b| *b == b'\n')
+            .unwrap_or(reply.len()),
+    );
     Some(reply)
 }
 
@@ -221,7 +244,8 @@ impl Pipe {
         std::thread::Builder::new()
             .name("browserbear-write".into())
             .spawn(move || {
-                let connected = std::os::unix::net::UnixStream::connect(&path).and_then(|s| Ok((s.try_clone()?, s.try_clone()?, s)));
+                let connected = std::os::unix::net::UnixStream::connect(&path)
+                    .and_then(|s| Ok((s.try_clone()?, s.try_clone()?, s)));
                 still_connecting.store(false, std::sync::atomic::Ordering::SeqCst);
                 let (mut writing, mut reader, kept) = match connected {
                     Ok(c) => c,
@@ -236,34 +260,48 @@ impl Pipe {
                     }
                     slot.stream = Some(kept);
                 }
-                let read = std::thread::Builder::new().name("browserbear-read".into()).spawn(move || {
-                    let die = read_dead;
-                    let mut lines = bear::Lines::default();
-                    let mut buffer = vec![0u8; 1 << 20];
-                    loop {
-                        let n = match reader.read(&mut buffer) {
-                            Ok(0) => return die("BrowserBear disconnected. Reopen the panel to reconnect.".into()),
-                            Ok(n) => n,
-                            Err(e) => return die(e.to_string()),
-                        };
-                        let got = match lines.push(&buffer[..n]) {
-                            Ok(got) => got,
-                            Err(why) => return die(why),
-                        };
-                        for line in got {
-                            match bear::read_line(&line) {
-                                Some(bear::Line::Reply { id, answer }) => {
-                                    if let Some(reply) = answers.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
-                                        let _ = reply.send(answer);
+                let read = std::thread::Builder::new()
+                    .name("browserbear-read".into())
+                    .spawn(move || {
+                        let die = read_dead;
+                        let mut lines = bear::Lines::default();
+                        let mut buffer = vec![0u8; 1 << 20];
+                        loop {
+                            let n =
+                                match reader.read(&mut buffer) {
+                                    Ok(0) => return die(
+                                        "BrowserBear disconnected. Reopen the panel to reconnect."
+                                            .into(),
+                                    ),
+                                    Ok(n) => n,
+                                    Err(e) => return die(e.to_string()),
+                                };
+                            let got = match lines.push(&buffer[..n]) {
+                                Ok(got) => got,
+                                Err(why) => return die(why),
+                            };
+                            for line in got {
+                                match bear::read_line(&line) {
+                                    Some(bear::Line::Reply { id, answer }) => {
+                                        if let Some(reply) = answers
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .remove(&id)
+                                        {
+                                            let _ = reply.send(answer);
+                                        }
+                                    }
+                                    // Nothing the pane uses comes unasked.
+                                    Some(bear::Line::Event(_)) => {}
+                                    None => {
+                                        return die(
+                                            "BrowserBear sent an unreadable response.".into()
+                                        )
                                     }
                                 }
-                                // Nothing the pane uses comes unasked.
-                                Some(bear::Line::Event(_)) => {}
-                                None => return die("BrowserBear sent an unreadable response.".into()),
                             }
                         }
-                    }
-                });
+                    });
                 if read.is_err() {
                     return die("Couldn't start reading BrowserBear's answers.".into());
                 }
@@ -278,12 +316,24 @@ impl Pipe {
                     }
                 }
                 // The pipe's gone: end the reader too, if Drop didn't.
-                if let Some(stream) = shared.lock().unwrap_or_else(|e| e.into_inner()).stream.take() {
+                if let Some(stream) = shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .stream
+                    .take()
+                {
                     let _ = stream.shutdown(std::net::Shutdown::Both);
                 }
             })
             .ok()?;
-        Some(Pipe { writer, waiting, dead, next: 1, stream, connecting })
+        Some(Pipe {
+            writer,
+            waiting,
+            dead,
+            next: 1,
+            stream,
+            connecting,
+        })
     }
 
     #[cfg(not(unix))]
@@ -296,7 +346,12 @@ impl Pipe {
     }
 
     /// Sends one request; its answer comes on the receiver.
-    fn request(&mut self, cmd: &str, args: Value, thread: Option<&str>) -> (u64, oneshot::Receiver<Answer>) {
+    fn request(
+        &mut self,
+        cmd: &str,
+        args: Value,
+        thread: Option<&str>,
+    ) -> (u64, oneshot::Receiver<Answer>) {
         let (tx, rx) = oneshot::channel();
         let id = self.next;
         self.next += 1;
@@ -304,10 +359,24 @@ impl Pipe {
             let _ = tx.send(Err(why));
             return (id, rx);
         }
-        self.waiting.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
-        if self.writer.try_send(bear::request_line(id, cmd, args, thread)).is_err() {
-            if let Some(tx) = self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
-                let _ = tx.send(Err("BrowserBear isn't keeping up. Try again in a moment.".into()));
+        self.waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
+        if self
+            .writer
+            .try_send(bear::request_line(id, cmd, args, thread))
+            .is_err()
+        {
+            if let Some(tx) = self
+                .waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id)
+            {
+                let _ = tx.send(Err(
+                    "BrowserBear isn't keeping up. Try again in a moment.".into()
+                ));
             }
         }
         (id, rx)
@@ -336,7 +405,10 @@ async fn answer(rx: oneshot::Receiver<Answer>, cx: &AsyncApp) -> (Answer, bool) 
     let timer = cx.background_executor().timer(ANSWER_WITHIN);
     match select(rx, Box::pin(timer)).await {
         Either::Left((Ok(answer), _)) => (answer, false),
-        Either::Left((Err(_), _)) => (Err("BrowserBear disconnected. Reopen the panel to reconnect.".into()), false),
+        Either::Left((Err(_), _)) => (
+            Err("BrowserBear disconnected. Reopen the panel to reconnect.".into()),
+            false,
+        ),
         Either::Right(_) => (Err("BrowserBear didn't answer in time.".into()), true),
     }
 }
@@ -423,9 +495,15 @@ impl AgentBrowser {
             // tabs.json is read and parsed off the main thread, only when
             // its bytes changed.
             if let Some(home) = HOME.clone() {
-                let read = cx.background_executor().spawn(async move { read_tabs(&bear::tabs_file(&home), last) }).await;
+                let read = cx
+                    .background_executor()
+                    .spawn(async move { read_tabs(&bear::tabs_file(&home), last) })
+                    .await;
                 if let Some((bytes, state)) = read {
-                    if this.update(cx, |b, cx| b.took_tabs(bytes, state, cx)).is_err() {
+                    if this
+                        .update(cx, |b, cx| b.took_tabs(bytes, state, cx))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -487,7 +565,12 @@ impl AgentBrowser {
     }
 
     /// What `read_tabs` found new in tabs.json.
-    fn took_tabs(&mut self, bytes: Arc<Vec<u8>>, state: Option<bear::AgentState>, cx: &mut Context<Self>) {
+    fn took_tabs(
+        &mut self,
+        bytes: Arc<Vec<u8>>,
+        state: Option<bear::AgentState>,
+        cx: &mut Context<Self>,
+    ) {
         self.last = Some(bytes);
         let Some(state) = state else { return };
         self.agent_tabs = state.tabs;
@@ -524,7 +607,9 @@ impl AgentBrowser {
 
     /// A connection that closed is said, and the next request opens another.
     fn notice_closed(&mut self, cx: &mut Context<Self>) {
-        let Some(why) = self.pipe.as_ref().and_then(Pipe::dead) else { return };
+        let Some(why) = self.pipe.as_ref().and_then(Pipe::dead) else {
+            return;
+        };
         self.pipe = None;
         self.set_error(Some(why), cx);
         self.polling = false;
@@ -535,7 +620,11 @@ impl AgentBrowser {
     fn connection(&mut self) -> Option<&mut Pipe> {
         if self.pipe.is_none() {
             // One dropped while its connect was stuck: wait for that to return.
-            if self.stuck_connect.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+            if self
+                .stuck_connect
+                .as_ref()
+                .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+            {
                 return None;
             }
             let path = socket()?;
@@ -546,8 +635,17 @@ impl AgentBrowser {
     }
 
     /// Sends a request and hands its answer to `done` on the main thread.
-    fn send(&mut self, cmd: &str, args: Value, thread: Option<&str>, cx: &mut Context<Self>, done: impl FnOnce(&mut Self, Answer, &mut Context<Self>) + 'static) -> bool {
-        let Some(pipe) = self.connection() else { return false };
+    fn send(
+        &mut self,
+        cmd: &str,
+        args: Value,
+        thread: Option<&str>,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Answer, &mut Context<Self>) + 'static,
+    ) -> bool {
+        let Some(pipe) = self.connection() else {
+            return false;
+        };
         let (_, rx) = pipe.request(cmd, args, thread);
         let serial = self.pipe_serial;
         cx.spawn(async move |this, cx| {
@@ -580,10 +678,17 @@ impl AgentBrowser {
                 Ok(result) => match serde_json::from_value::<bear::PanelState>(result) {
                     Ok(state) => {
                         b.set_error(b.request_error.clone(), cx);
-                        b.profile_tabs = state.tabs.into_iter().filter(|t| t.bridge == Some(true)).collect();
+                        b.profile_tabs = state
+                            .tabs
+                            .into_iter()
+                            .filter(|t| t.bridge == Some(true))
+                            .collect();
                         b.merge(cx);
                     }
-                    Err(_) => b.set_error(Some("BrowserBear sent an unreadable list of pages.".into()), cx),
+                    Err(_) => b.set_error(
+                        Some("BrowserBear sent an unreadable list of pages.".into()),
+                        cx,
+                    ),
                 },
                 Err(why) => b.set_error(Some(why), cx),
             }
@@ -592,7 +697,14 @@ impl AgentBrowser {
 
     /// A button's request: `key` is what its spinner watches, in `pending`,
     /// until the answer comes.
-    fn action(&mut self, cmd: &str, args: Value, thread: Option<&str>, key: String, cx: &mut Context<Self>) {
+    fn action(
+        &mut self,
+        cmd: &str,
+        args: Value,
+        thread: Option<&str>,
+        key: String,
+        cx: &mut Context<Self>,
+    ) {
         self.request_error = None;
         self.error = None;
         self.next_request += 1;
@@ -610,7 +722,11 @@ impl AgentBrowser {
         });
         if !sent {
             self.error = Some("BrowserBear isn't running.".into());
-            let key = self.pending_requests.iter().find(|(_, r)| **r == request).map(|(k, _)| k.clone());
+            let key = self
+                .pending_requests
+                .iter()
+                .find(|(_, r)| **r == request)
+                .map(|(k, _)| k.clone());
             if let Some(key) = key {
                 self.answered(&key, request);
             }
@@ -627,17 +743,35 @@ impl AgentBrowser {
 
     /// Done: tells the agent waiting on `handoff --wait` that Mike's finished.
     pub(crate) fn done(&mut self, tab: &AgentTab, cx: &mut Context<Self>) {
-        self.action("markDone", json!({ "tab": tab.tab_id }), None, pending_key("markDone", tab), cx);
+        self.action(
+            "markDone",
+            json!({ "tab": tab.tab_id }),
+            None,
+            pending_key("markDone", tab),
+            cx,
+        );
     }
 
     /// Show window: brings the page's real window to the front.
     pub(crate) fn show(&mut self, tab: &AgentTab, thread: &str, cx: &mut Context<Self>) {
-        self.action("panelShow", json!({ "tab": tab.tab_id, "profile": tab.profile_id() }), Some(thread), pending_key("panelShow", tab), cx);
+        self.action(
+            "panelShow",
+            json!({ "tab": tab.tab_id, "profile": tab.profile_id() }),
+            Some(thread),
+            pending_key("panelShow", tab),
+            cx,
+        );
     }
 
     /// A new page in the agents' browser, behind Mike's windows.
     pub(crate) fn open(&mut self, url: &str, thread: &str, cx: &mut Context<Self>) {
-        self.action("open", json!({ "profile": "agent", "url": url }), Some(thread), OPENING_KEY.to_owned(), cx);
+        self.action(
+            "open",
+            json!({ "profile": "agent", "url": url }),
+            Some(thread),
+            OPENING_KEY.to_owned(),
+            cx,
+        );
     }
 
     /// Asks for the stills of a thread's pages that are due, while its pane
@@ -645,14 +779,28 @@ impl AgentBrowser {
     /// handed to Mike in his own Chrome, which BrowserBear leaves alone.
     fn want_stills(&mut self, thread: &str, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let due: Vec<AgentTab> = self.tabs_for(thread).into_iter().filter(|t| self.stills_asked.get(&t.id()).is_none_or(|at| now.duration_since(*at) >= STILL_EVERY)).collect();
+        let due: Vec<AgentTab> = self
+            .tabs_for(thread)
+            .into_iter()
+            .filter(|t| {
+                self.stills_asked
+                    .get(&t.id())
+                    .is_none_or(|at| now.duration_since(*at) >= STILL_EVERY)
+            })
+            .collect();
         for tab in due {
             let id = tab.id();
             self.stills_asked.insert(id.clone(), now);
             let args = json!({ "tab": tab.tab_id, "profile": tab.profile_id(), "width": (STILL_WIDTH * 2.) as i64 });
             self.send("panelStill", args, Some(thread), cx, move |b, got, cx| {
                 if let Some((bytes, at)) = got.ok().as_ref().and_then(bear::still) {
-                    b.stills.insert(id, Still { image: Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)), at });
+                    b.stills.insert(
+                        id,
+                        Still {
+                            image: Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)),
+                            at,
+                        },
+                    );
                     cx.notify();
                 }
             });
@@ -672,24 +820,41 @@ pub(crate) struct BrowserPaneState {
 }
 
 impl SidePane {
-    fn browser_address(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+    fn browser_address(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
         if let Some(input) = &self.browser.address {
             return input.clone();
         }
         let input = cx.new(|cx| InputState::new(window, cx));
-        let sub = cx.subscribe_in(&input, window, |this, input, ev: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = ev {
-                this.browser_go(input, window, cx);
-            }
-        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.browser_go(input, window, cx);
+                }
+            },
+        );
         self.browser.address = Some(input.clone());
         self.browser._subs.push(sub);
         input
     }
 
-    fn browser_go(&mut self, input: &Entity<InputState>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(url) = bear::address(&input.read(cx).value()) else { return };
-        let (Some(thread), Some(model)) = (self.thread(cx), model(cx)) else { return };
+    fn browser_go(
+        &mut self,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(url) = bear::address(&input.read(cx).value()) else {
+            return;
+        };
+        let (Some(thread), Some(model)) = (self.thread(cx), model(cx)) else {
+            return;
+        };
         model.update(cx, |b, cx| b.open(&url, &thread.id, cx));
         input.update(cx, |s, cx| s.set_value("", window, cx));
         window.blur(cx);
@@ -697,14 +862,28 @@ impl SidePane {
 
     /// The Browser pane (`AgentBrowserPanel`): the address bar, then the
     /// thread's pages, Mike's turn first.
-    pub(crate) fn render_browser_panel(&mut self, thread: &ThreadSummary, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_browser_panel(
+        &mut self,
+        thread: &ThreadSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
-        let Some(model) = model(cx) else { return crate::files::pane_note("BrowserBear isn't running.", p).into_any_element() };
+        let Some(model) = model(cx) else {
+            return crate::files::pane_note("BrowserBear isn't running.", p).into_any_element();
+        };
         let b = model.read(cx);
         let tabs = b.tabs_for(&thread.id);
-        let (available, opening, browser_name, error) = (b.available(), b.pending.contains(OPENING_KEY), b.browser_name.clone(), b.error.clone());
+        let (available, opening, browser_name, error) = (
+            b.available(),
+            b.pending.contains(OPENING_KEY),
+            b.browser_name.clone(),
+            b.error.clone(),
+        );
         let input = self.browser_address(window, cx);
-        input.update(cx, |s, cx| s.set_placeholder(format!("Open a page in {browser_name}"), window, cx));
+        input.update(cx, |s, cx| {
+            s.set_placeholder(format!("Open a page in {browser_name}"), window, cx)
+        });
         let field = div()
             .flex_1()
             .min_w_0()
@@ -712,82 +891,211 @@ impl SidePane {
             .py(px(2.))
             .rounded(px(6.))
             .bg(p.hover)
-            .child(Input::new(&input).appearance(false).small().disabled(!available || opening).text_size(px(style::size::LABEL)));
-        let bar = h_flex().flex_none().items_center().gap(px(6.)).px(px(10.)).py(px(6.)).child(field).when(opening, |s| s.child(Spinner::new().color(p.secondary).with_size(px(11.))));
+            .child(
+                Input::new(&input)
+                    .appearance(false)
+                    .small()
+                    .disabled(!available || opening)
+                    .text_size(px(style::size::LABEL)),
+            );
+        let bar = h_flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .px(px(10.))
+            .py(px(6.))
+            .child(field)
+            .when(opening, |s| {
+                s.child(Spinner::new().color(p.secondary).with_size(px(11.)))
+            });
         let mut pane = v_flex().size_full().child(bar);
         if tabs.is_empty() {
-            return pane.child(crate::files::pane_note(&bear::empty_note(error.as_deref(), available), p)).into_any_element();
+            return pane
+                .child(crate::files::pane_note(
+                    &bear::empty_note(error.as_deref(), available),
+                    p,
+                ))
+                .into_any_element();
         }
-        let rows: Vec<AnyElement> = tabs.iter().map(|tab| self.browser_row(tab, &thread.id, &browser_name, &model, cx)).collect();
-        let pages = div().id("browser-pages").overflow_y_scroll().child(v_flex().gap(px(8.)).p(px(10.)).children(rows));
-        pane = pane.child(with_scroll_bar(pages, &self.browser.scroll, "browser-pages-bar").flex_1().min_h_0());
+        let rows: Vec<AnyElement> = tabs
+            .iter()
+            .map(|tab| self.browser_row(tab, &thread.id, &browser_name, &model, cx))
+            .collect();
+        let pages = div()
+            .id("browser-pages")
+            .overflow_y_scroll()
+            .child(v_flex().gap(px(8.)).p(px(10.)).children(rows));
+        pane = pane.child(
+            with_scroll_bar(pages, &self.browser.scroll, "browser-pages-bar")
+                .flex_1()
+                .min_h_0(),
+        );
         if let Some(error) = error {
-            pane = pane.child(div().flex_none().p(px(6.)).text_size(px(style::size::LABEL)).text_color(p.secondary).child(error));
+            pane = pane.child(
+                div()
+                    .flex_none()
+                    .p(px(6.))
+                    .text_size(px(style::size::LABEL))
+                    .text_color(p.secondary)
+                    .child(error),
+            );
         }
         pane.into_any_element()
     }
 
     /// One page: its still, what it is, what the agent's doing in it, and the
     /// buttons under them, so a narrow pane never cuts a button's name short.
-    fn browser_row(&self, tab: &AgentTab, thread: &str, browser_name: &str, model: &Entity<AgentBrowser>, cx: &mut Context<Self>) -> AnyElement {
+    fn browser_row(
+        &self,
+        tab: &AgentTab,
+        thread: &str,
+        browser_name: &str,
+        model: &Entity<AgentBrowser>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let b = model.read(cx);
         let yours = tab.yours();
         let amber = style::needs_you(cx);
-        let dot = if yours { Some(amber) } else if tab.working() { Some(style::tick_green(cx)) } else { None };
+        let dot = if yours {
+            Some(amber)
+        } else if tab.working() {
+            Some(style::tick_green(cx))
+        } else {
+            None
+        };
         let still = b.stills.get(&tab.id()).cloned();
         let (w, h) = (STILL_WIDTH, STILL_WIDTH * 0.62);
-        let picture = div().flex_none().w(px(w)).h(px(h)).rounded(px(5.)).overflow_hidden().bg(style::primary_opacity(cx, 0.06)).flex().items_center().justify_center();
+        let picture = div()
+            .flex_none()
+            .w(px(w))
+            .h(px(h))
+            .rounded(px(5.))
+            .overflow_hidden()
+            .bg(style::primary_opacity(cx, 0.06))
+            .flex()
+            .items_center()
+            .justify_center();
         let picture = match still {
-            Some(still) => tipped_as(picture.id(SharedString::from(format!("browser-still-{}", tab.id()))).child(img(ImageSource::Image(still.image)).size_full().object_fit(ObjectFit::Cover)), still_tip(still.at), gpui_kit::Role::Image).into_any_element(),
-            None => picture.child(icon("globe", 16., p.faint)).into_any_element(),
+            Some(still) => tipped_as(
+                picture
+                    .id(SharedString::from(format!("browser-still-{}", tab.id())))
+                    .child(
+                        img(ImageSource::Image(still.image))
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    ),
+                still_tip(still.at),
+                gpui_kit::Role::Image,
+            )
+            .into_any_element(),
+            None => picture
+                .child(icon("globe", 16., p.faint))
+                .into_any_element(),
         };
         let mut words = v_flex().flex_1().min_w_0().gap(px(3.)).child(
             h_flex()
                 .items_center()
                 .gap(px(6.))
-                .when_some(dot, |s, c| s.child(div().flex_none().size(px(7.)).rounded_full().bg(c)))
-                .child(div().min_w_0().line_clamp(2).overflow_hidden().text_ellipsis().text_size(px(style::size::LABEL)).font_weight(FontWeight::MEDIUM).text_color(p.fg).child(tab.shown_title())),
+                .when_some(dot, |s, c| {
+                    s.child(div().flex_none().size(px(7.)).rounded_full().bg(c))
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .line_clamp(2)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(px(style::size::LABEL))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.fg)
+                        .child(tab.shown_title()),
+                ),
         );
-        words = words.child(div().truncate().text_size(px(style::size::LABEL)).text_color(p.secondary).child(tab.host()));
+        words = words.child(
+            div()
+                .truncate()
+                .text_size(px(style::size::LABEL))
+                .text_color(p.secondary)
+                .child(tab.host()),
+        );
         if let (true, Some(action)) = (tab.working(), &tab.action) {
-            words = words.child(div().truncate().text_size(px(style::size::LABEL)).text_color(p.secondary).child(action.clone()));
+            words = words.child(
+                div()
+                    .truncate()
+                    .text_size(px(style::size::LABEL))
+                    .text_color(p.secondary)
+                    .child(action.clone()),
+            );
         }
         let (show_tab, show_thread, show_model) = (tab.clone(), thread.to_owned(), model.clone());
-        let show = PushButton::new(SharedString::from(format!("browser-show-{}", tab.id())), "Show window", format!("Bring this page's window to the front, in {}", tab.place(browser_name)))
-            .small()
-            .busy(b.pending.contains(&pending_key("panelShow", tab)))
-            .render(cx, move |_, _, cx| show_model.update(cx, |b, cx| b.show(&show_tab, &show_thread, cx)));
+        let show = PushButton::new(
+            SharedString::from(format!("browser-show-{}", tab.id())),
+            "Show window",
+            format!(
+                "Bring this page's window to the front, in {}",
+                tab.place(browser_name)
+            ),
+        )
+        .small()
+        .busy(b.pending.contains(&pending_key("panelShow", tab)))
+        .render(cx, move |_, _, cx| {
+            show_model.update(cx, |b, cx| b.show(&show_tab, &show_thread, cx))
+        });
         let mut buttons = h_flex().gap(px(6.)).child(show);
         if yours {
             let (done_tab, done_model) = (tab.clone(), model.clone());
             buttons = buttons.child(
-                PushButton::new(SharedString::from(format!("browser-done-{}", tab.id())), "Done", "Tell the agent you've finished here")
-                    .small()
-                    .busy(b.pending.contains(&pending_key("markDone", tab)))
-                    .render(cx, move |_, _, cx| done_model.update(cx, |b, cx| b.done(&done_tab, cx))),
+                PushButton::new(
+                    SharedString::from(format!("browser-done-{}", tab.id())),
+                    "Done",
+                    "Tell the agent you've finished here",
+                )
+                .small()
+                .busy(b.pending.contains(&pending_key("markDone", tab)))
+                .render(cx, move |_, _, cx| {
+                    done_model.update(cx, |b, cx| b.done(&done_tab, cx))
+                }),
             );
         }
-        let edge = if yours { amber.opacity(0.6) } else { style::primary_opacity(cx, 0.08) };
+        let edge = if yours {
+            amber.opacity(0.6)
+        } else {
+            style::primary_opacity(cx, 0.08)
+        };
         v_flex()
             .gap(px(8.))
             .p(px(8.))
             .rounded(px(8.))
             .border_1()
             .border_color(edge)
-            .child(h_flex().items_start().gap(px(10.)).child(picture).child(words))
+            .child(
+                h_flex()
+                    .items_start()
+                    .gap(px(10.))
+                    .child(picture)
+                    .child(words),
+            )
             .child(buttons)
             .into_any_element()
     }
 
     /// What the dump says of the pane: each page as a line.
     #[cfg(feature = "automation")]
-    pub(crate) fn fill_browser_dump(&self, pane: &mut serde_json::Map<String, Value>, thread: &ThreadSummary, cx: &App) {
+    pub(crate) fn fill_browser_dump(
+        &self,
+        pane: &mut serde_json::Map<String, Value>,
+        thread: &ThreadSummary,
+        cx: &App,
+    ) {
         let Some(model) = model(cx) else { return };
         let b = model.read(cx);
         let tabs = b.tabs_for(&thread.id);
         if tabs.is_empty() {
-            pane.insert("empty".into(), json!(bear::empty_note(b.error.as_deref(), b.available())));
+            pane.insert(
+                "empty".into(),
+                json!(bear::empty_note(b.error.as_deref(), b.available())),
+            );
             return;
         }
         let rows: Vec<Value> = tabs
@@ -809,7 +1117,9 @@ impl SidePane {
 
 /// "As the page looked 2 minutes ago".
 fn still_tip(at: Option<f64>) -> String {
-    let Some(at) = at else { return "As the page looked lately".into() };
+    let Some(at) = at else {
+        return "As the page looked lately".into();
+    };
     let ago = ((crate::now_ms() as f64 - at) / 1000.).max(0.);
     let when = match ago as u64 {
         0..=9 => "just now".to_owned(),
@@ -847,7 +1157,9 @@ impl crate::app::Threadbear {
             self.browser_handoff_seen = None;
             return;
         }
-        let Some(thread) = self.pane_thread() else { return };
+        let Some(thread) = self.pane_thread() else {
+            return;
+        };
         let Some(model) = model(cx) else { return };
         let key = bear::handoff_key(&model.read(cx).tabs, &thread.id);
         if key == self.browser_handoff_seen {
@@ -855,7 +1167,7 @@ impl crate::app::Threadbear {
         }
         self.browser_handoff_seen = key.clone();
         if key.is_some() && !self.dock.read(cx).controller.is_showing(BROWSER) {
-            let (side, id) = (self.side.clone(), thread.id.clone());
+            let (side, id) = (self.side.clone(), thread.id);
             side.update(cx, |side, cx| side.choose_section(&id, BROWSER, cx));
             self.show_pane(BROWSER, cx);
         }

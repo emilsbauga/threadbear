@@ -1,4 +1,4 @@
-// Wake when… (docs/protocol.md, "Hibernate in words"): Mike says in his own
+// Wake when… (docs/protocol/settings.md, "Hibernate in words"): Mike says in his own
 // words when a hibernating thread should come back ("at the weekend", "in
 // a few weeks", "next time I talk about woodworking") and the strong model
 // turns that into a time, a topic to listen for, or both. A time is an

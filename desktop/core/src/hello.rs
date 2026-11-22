@@ -89,7 +89,16 @@ impl Card {
 /// The cards for this install: Phone only where pairing works (a backend,
 /// not this Mac only).
 pub fn cards(can_pair: bool) -> Vec<Card> {
-    [Card::Welcome, Card::Agents, Card::Folder, Card::Phone, Card::Extras].into_iter().filter(|c| *c != Card::Phone || can_pair).collect()
+    [
+        Card::Welcome,
+        Card::Agents,
+        Card::Folder,
+        Card::Phone,
+        Card::Extras,
+    ]
+    .into_iter()
+    .filter(|c| *c != Card::Phone || can_pair)
+    .collect()
 }
 
 /// The first launch shows the cards, as it showed the tour: never once the
@@ -133,21 +142,37 @@ pub fn agent_rows(accounts: &[Account]) -> Vec<AgentRow> {
             let provider = a.provider_id().to_owned();
             let state = if a.plan_ended {
                 AgentState::PlanEnded
-            } else if a.signed_out || (provider == "claude" && a.email.as_deref().unwrap_or("").is_empty()) {
+            } else if a.signed_out
+                || (provider == "claude" && a.email.as_deref().unwrap_or("").is_empty())
+            {
                 // A Claude login writes its address when it signs in, so a
                 // folder without one hasn't been signed in to yet.
                 AgentState::SignedOut
             } else {
                 AgentState::Ready
             };
-            let who = a.email.clone().filter(|e| !e.is_empty()).unwrap_or_else(|| a.name());
+            let who = a
+                .email
+                .clone()
+                .filter(|e| !e.is_empty())
+                .unwrap_or_else(|| a.name());
             let detail = match (state, a.plan.as_deref().filter(|p| !p.is_empty())) {
                 (AgentState::PlanEnded, _) => format!("{who}, plan ended"),
                 (AgentState::SignedOut, _) => "Not signed in yet".to_owned(),
                 (AgentState::Ready, Some(plan)) => format!("{who}, {plan} plan"),
                 (AgentState::Ready, None) => who,
             };
-            AgentRow { id: a.id.clone(), name: if provider == "codex" { "Codex".into() } else { "Claude Code".into() }, provider, detail, state }
+            AgentRow {
+                id: a.id.clone(),
+                name: if provider == "codex" {
+                    "Codex".into()
+                } else {
+                    "Claude Code".into()
+                },
+                provider,
+                detail,
+                state,
+            }
         })
         .collect()
 }
@@ -162,30 +187,51 @@ pub fn shown_rows(rows: Vec<AgentRow>) -> Vec<AgentRow> {
     }
     let mut out: Vec<AgentRow> = vec![];
     for provider in ["claude", "codex"] {
-        let ready: Vec<&AgentRow> = rows.iter().filter(|r| r.provider == provider && r.state == AgentState::Ready).collect();
+        let ready: Vec<&AgentRow> = rows
+            .iter()
+            .filter(|r| r.provider == provider && r.state == AgentState::Ready)
+            .collect();
         if let Some(first) = ready.first() {
-            let who = first.detail.split(", ").next().unwrap_or(&first.detail).to_owned();
+            let who = first
+                .detail
+                .split(", ")
+                .next()
+                .unwrap_or(&first.detail)
+                .to_owned();
             let detail = match ready.len() {
                 1 => first.detail.clone(),
                 n => format!("{who} and {} more", n - 1),
             };
-            out.push(AgentRow { detail, ..(*first).clone() });
+            out.push(AgentRow {
+                detail,
+                ..(*first).clone()
+            });
         }
-        out.extend(rows.iter().filter(|r| r.provider == provider && r.state == AgentState::SignedOut).cloned());
+        out.extend(
+            rows.iter()
+                .filter(|r| r.provider == provider && r.state == AgentState::SignedOut)
+                .cloned(),
+        );
     }
     out
 }
 
 /// Whether any Claude or Codex login can run a thread now.
 pub fn any_ready(accounts: &[Account]) -> bool {
-    agent_rows(accounts).iter().any(|r| r.state == AgentState::Ready)
+    agent_rows(accounts)
+        .iter()
+        .any(|r| r.state == AgentState::Ready)
 }
 
 /// The folder for another Claude login: the next `claude-N` after the ones
 /// there are, in the runner's `accounts` folder (how anyone adds a login,
 /// docs/guide.md, "Accounts, pools and Usage").
 pub fn next_login_id(accounts: &[Account]) -> String {
-    let top = accounts.iter().filter_map(|a| a.id.strip_prefix("claude-")?.parse::<u32>().ok()).max().unwrap_or(0);
+    let top = accounts
+        .iter()
+        .filter_map(|a| a.id.strip_prefix("claude-")?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0);
     format!("claude-{}", top + 1)
 }
 
@@ -194,15 +240,33 @@ pub fn next_login_id(accounts: &[Account]) -> String {
 /// one pool". The built-in pools gather every login of a provider by
 /// themselves, so there's nothing to switch on.
 pub fn pool_line(pools: &[Pool], accounts: &[Account]) -> Option<String> {
-    let pool = pools.iter().filter(|p| p.account_ids.iter().filter(|id| accounts.iter().any(|a| &a.id == *id)).count() >= 2).max_by_key(|p| p.account_ids.len())?;
-    let n = pool.account_ids.iter().filter(|id| accounts.iter().any(|a| &a.id == *id)).count();
-    Some(format!("{}: {n} logins in one pool, so a thread moves on when one runs low", pool.title))
+    let pool = pools
+        .iter()
+        .filter(|p| {
+            p.account_ids
+                .iter()
+                .filter(|id| accounts.iter().any(|a| &a.id == *id))
+                .count()
+                >= 2
+        })
+        .max_by_key(|p| p.account_ids.len())?;
+    let n = pool
+        .account_ids
+        .iter()
+        .filter(|id| accounts.iter().any(|a| &a.id == *id))
+        .count();
+    Some(format!(
+        "{}: {n} logins in one pool, so a thread moves on when one runs low",
+        pool.title
+    ))
 }
 
 /// A phone paired since the Phone card came up (`before`: the phone ids
 /// paired then), for the card's tick.
 pub fn newly_paired<'a>(devices: &'a [Device], before: &[String]) -> Option<&'a Device> {
-    devices.iter().find(|d| d.kind == Kind::Phone && !d.expired && !before.contains(&d.id))
+    devices
+        .iter()
+        .find(|d| d.kind == Kind::Phone && !d.expired && !before.contains(&d.id))
 }
 
 /// A phone paired already, before the card came up.
@@ -221,8 +285,14 @@ pub fn gh_account(output: &str) -> Option<String> {
     // "✓ Logged in to github.com as mikecann (...)".
     output.lines().find_map(|line| {
         let rest = line.split("Logged in to github.com").nth(1)?;
-        let rest = rest.trim_start().strip_prefix("account ").or_else(|| rest.trim_start().strip_prefix("as "))?;
-        let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+        let rest = rest
+            .trim_start()
+            .strip_prefix("account ")
+            .or_else(|| rest.trim_start().strip_prefix("as "))?;
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
         (!name.is_empty()).then_some(name)
     })
 }
@@ -233,7 +303,10 @@ mod tests {
     use serde_json::json;
 
     fn account(id: &str, provider: &str, email: Option<&str>) -> Account {
-        serde_json::from_value(json!({ "id": id, "provider": provider, "title": id, "email": email })).unwrap()
+        serde_json::from_value(
+            json!({ "id": id, "provider": provider, "title": id, "email": email }),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -243,8 +316,15 @@ mod tests {
                 let body = card.body(signed_in);
                 assert_eq!(body.matches(". ").count(), 0, "one sentence: {body}");
                 assert!(body.chars().count() <= 90, "short: {body}");
-                assert!(!body.contains('\u{2014}') && !card.title().contains('\u{2014}'), "no em dashes: {body}");
-                assert!(card.title().chars().count() <= 30, "short title: {}", card.title());
+                assert!(
+                    !body.contains('\u{2014}') && !card.title().contains('\u{2014}'),
+                    "no em dashes: {body}"
+                );
+                assert!(
+                    card.title().chars().count() <= 30,
+                    "short title: {}",
+                    card.title()
+                );
             }
         }
     }
@@ -267,24 +347,42 @@ mod tests {
 
     #[test]
     fn a_login_without_an_address_hasnt_been_signed_in_to() {
-        let rows = agent_rows(&[account("claude-main", "claude", Some("a@b.c")), account("claude-1", "claude", None), account("codex-main", "codex", None), account("grok", "grok", None)]);
+        let rows = agent_rows(&[
+            account("claude-main", "claude", Some("a@b.c")),
+            account("claude-1", "claude", None),
+            account("codex-main", "codex", None),
+            account("grok", "grok", None),
+        ]);
         assert_eq!(rows.len(), 3, "Grok and the others aren't on the card");
         assert_eq!(rows[0].state, AgentState::Ready);
         assert_eq!(rows[0].detail, "a@b.c");
         assert_eq!(rows[1].state, AgentState::SignedOut);
-        assert_eq!(rows[2].state, AgentState::Ready, "Codex is only listed once it has a sign-in");
+        assert_eq!(
+            rows[2].state,
+            AgentState::Ready,
+            "Codex is only listed once it has a sign-in"
+        );
         assert_eq!(rows[2].name, "Codex");
     }
 
     #[test]
     fn many_logins_fold_into_one_row_a_provider() {
-        let mut accounts: Vec<Account> = (1..=5).map(|i| account(&format!("claude-{i}"), "claude", Some(&format!("{i}@b.c")))).collect();
+        let mut accounts: Vec<Account> = (1..=5)
+            .map(|i| account(&format!("claude-{i}"), "claude", Some(&format!("{i}@b.c"))))
+            .collect();
         accounts.push(account("claude-9", "claude", None));
         accounts.push(account("codex-main", "codex", None));
         let rows = shown_rows(agent_rows(&accounts));
         let details: Vec<&str> = rows.iter().map(|r| r.detail.as_str()).collect();
-        assert_eq!(details, ["1@b.c and 4 more", "Not signed in yet", "codex-main"]);
-        assert_eq!(shown_rows(agent_rows(&accounts[..3])).len(), 3, "a few stay one each");
+        assert_eq!(
+            details,
+            ["1@b.c and 4 more", "Not signed in yet", "codex-main"]
+        );
+        assert_eq!(
+            shown_rows(agent_rows(&accounts[..3])).len(),
+            3,
+            "a few stay one each"
+        );
     }
 
     #[test]
@@ -304,32 +402,76 @@ mod tests {
     #[test]
     fn another_login_takes_the_next_number() {
         assert_eq!(next_login_id(&[]), "claude-1");
-        assert_eq!(next_login_id(&[account("claude-main", "claude", None)]), "claude-1");
-        assert_eq!(next_login_id(&[account("claude-1", "claude", None), account("claude-3", "claude", None), account("codex-7", "codex", None)]), "claude-4");
+        assert_eq!(
+            next_login_id(&[account("claude-main", "claude", None)]),
+            "claude-1"
+        );
+        assert_eq!(
+            next_login_id(&[
+                account("claude-1", "claude", None),
+                account("claude-3", "claude", None),
+                account("codex-7", "codex", None)
+            ]),
+            "claude-4"
+        );
     }
 
     #[test]
     fn the_pool_line_needs_two_logins_in_a_pool() {
-        let accounts = [account("claude-main", "claude", Some("a")), account("claude-1", "claude", Some("b"))];
-        let pool = |ids: &[&str]| -> Pool { serde_json::from_value(json!({ "id": "claude", "title": "Claude", "accountIds": ids })).unwrap() };
+        let accounts = [
+            account("claude-main", "claude", Some("a")),
+            account("claude-1", "claude", Some("b")),
+        ];
+        let pool = |ids: &[&str]| -> Pool {
+            serde_json::from_value(json!({ "id": "claude", "title": "Claude", "accountIds": ids }))
+                .unwrap()
+        };
         assert_eq!(pool_line(&[pool(&["claude-main"])], &accounts), None);
-        assert_eq!(pool_line(&[pool(&["claude-main", "claude-1"])], &accounts).as_deref(), Some("Claude: 2 logins in one pool, so a thread moves on when one runs low"));
-        assert_eq!(pool_line(&[pool(&["claude-main", "gone"])], &accounts), None, "only logins that are there count");
+        assert_eq!(
+            pool_line(&[pool(&["claude-main", "claude-1"])], &accounts).as_deref(),
+            Some("Claude: 2 logins in one pool, so a thread moves on when one runs low")
+        );
+        assert_eq!(
+            pool_line(&[pool(&["claude-main", "gone"])], &accounts),
+            None,
+            "only logins that are there count"
+        );
     }
 
     #[test]
     fn a_phone_paired_while_the_card_was_up() {
-        let phone = |id: &str, expired: bool| Device::decode(&json!({ "id": id, "kind": "phone", "name": "iPhone", "expired": expired })).unwrap();
+        let phone = |id: &str, expired: bool| {
+            Device::decode(
+                &json!({ "id": id, "kind": "phone", "name": "iPhone", "expired": expired }),
+            )
+            .unwrap()
+        };
         let devices = [phone("old", false), phone("new", false)];
-        assert_eq!(newly_paired(&devices, &["old".into()]).map(|d| d.id.as_str()), Some("new"));
+        assert_eq!(
+            newly_paired(&devices, &["old".into()]).map(|d| d.id.as_str()),
+            Some("new")
+        );
         assert!(newly_paired(&devices, &["old".into(), "new".into()]).is_none());
-        assert!(paired_phone(&[phone("x", true)]).is_none(), "an expired one isn't paired");
+        assert!(
+            paired_phone(&[phone("x", true)]).is_none(),
+            "an expired one isn't paired"
+        );
     }
 
     #[test]
     fn github_says_who_is_signed_in() {
-        assert_eq!(gh_account("github.com\n  ✓ Logged in to github.com account mikecann (keyring)\n").as_deref(), Some("mikecann"));
-        assert_eq!(gh_account("✓ Logged in to github.com as some-one (oauth_token)").as_deref(), Some("some-one"));
-        assert_eq!(gh_account("You are not logged into any GitHub hosts. To log in, run: gh auth login"), None);
+        assert_eq!(
+            gh_account("github.com\n  ✓ Logged in to github.com account mikecann (keyring)\n")
+                .as_deref(),
+            Some("mikecann")
+        );
+        assert_eq!(
+            gh_account("✓ Logged in to github.com as some-one (oauth_token)").as_deref(),
+            Some("some-one")
+        );
+        assert_eq!(
+            gh_account("You are not logged into any GitHub hosts. To log in, run: gh auth login"),
+            None
+        );
     }
 }

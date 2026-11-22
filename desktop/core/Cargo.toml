@@ -50,3 +50,6 @@ dunce = "1.0.5"
 # for private_file's appends.
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
+
+[lints]
+workspace = true

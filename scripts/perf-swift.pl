@@ -96,7 +96,7 @@ close $state;
 $ENV{THREADBEAR_PERF_CHILDREN} = $registry;
 $ENV{THREADBEAR_PERF_SWIFT_NODE} = $node;
 $ENV{THREADBEAR_PERF_SWIFT_INSTANCE} = $instance;
-$ENV{THREADBEAR_PERF_SWIFT_MOCK} = dirname($script) . '/mock-runner/server.mjs';
+$ENV{THREADBEAR_PERF_SWIFT_MOCK} = dirname($script) . '/../../mock-runner/server.mjs';
 $ENV{THREADBEAR_NODE} = "$bin/node";
 $ENV{PATH} = "$bin:$ENV{PATH}";
 setpgrp(0, 0) or die "perf-swift: process group: $!\n";

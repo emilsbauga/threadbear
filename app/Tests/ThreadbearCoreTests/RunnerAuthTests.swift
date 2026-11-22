@@ -81,12 +81,12 @@ final class RunnerAuthTests: XCTestCase {
 
     private static var mockDir: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Tools/mock-runner")
+            .appendingPathComponent("../mock-runner").standardizedFileURL
     }
 
     private func node() throws -> String {
         guard FileManager.default.fileExists(atPath: Self.mockDir.appendingPathComponent("node_modules/ws").path) else {
-            throw try missing("Tools/mock-runner has no node_modules; run npm install there")
+            throw try missing("mock-runner/ has no node_modules; run npm install there")
         }
         // check.sh's Node (THREADBEAR_NODE) first, then PATH and Homebrew's.
         let env = ProcessInfo.processInfo.environment

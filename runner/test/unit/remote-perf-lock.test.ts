@@ -42,7 +42,7 @@ for name in perf-lock.pl perf-children.pl hangup-guard.sh remote-guard-lib.sh bu
   [ ! -f "$src/scripts/$name" ] || cp "$src/scripts/$name" "$dest/scripts/"
 done
 cp "$src/runner/scripts/find-node.sh" "$dest/runner/scripts/"
-for dir in features app/Tools/mock-runner runner; do mkdir -p "$dest/$dir/node_modules"; done
+for dir in features mock-runner runner; do mkdir -p "$dest/$dir/node_modules"; done
 ${mode === 'busy-run' ? 'touch "$HOME/start-holder"\nwhile [ ! -f "$HOME/holder-ready" ]; do sleep 0.02; done' : ''}
 `, { mode: 0o755 });
   // df is called during heavy cache trimming and again after the command.

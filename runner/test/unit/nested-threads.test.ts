@@ -1,5 +1,5 @@
 // Nested threads, the runner's half (experiment nestedThreads,
-// runner/nested.ts; docs/protocol.md, "Nested threads"): which threads
+// runner/nested.ts; docs/protocol/threads.md, "Nested threads"): which threads
 // nest, and a starter hearing from its threads once, at the end.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

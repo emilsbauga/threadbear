@@ -1,0 +1,7 @@
+# Settings for the lints in Cargo.toml's [workspace.lints.clippy].
+# Tests may unwrap and expect: a panic there is a failed test, with its line.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# Functions longer than this warn (too_many_lines). Picked from the code as it
+# was on 20 Nov 2026, with the longer ones marked to come down.
+too-many-lines-threshold = 200

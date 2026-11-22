@@ -495,7 +495,7 @@ async function loadPatchFile(file: string, source: 'home' | 'project', cache: Pa
     // One trust can't check is an error, not a question: there's no
     // version of it to say yes to (patch-trust.ts).
     if (!verdict.trusted && verdict.reason === 'unchecked') return { info: { id, source, file, error: `Not run: ${verdict.problem}` }, panels: [], actions: [], hooks: [] };
-    if (!verdict.trusted) return { info: { id, source, file, untrusted: verdict.reason, hash: verdict.hash, ...(verdict.helpers ? { helpers: verdict.helpers } : {}) }, panels: [], actions: [], hooks: [] };
+    if (!verdict.trusted) return { info: { id, source, file, untrusted: verdict.reason, hash: verdict.hash, ...(verdict.helpers ? { helpers: verdict.helpers } : {}), ...(verdict.changes ? { changes: verdict.changes } : {}) }, panels: [], actions: [], hooks: [] };
     files = verdict.files;
     blocked = verdict.blocked;
     if (verdict.hash && verdict.root && verdict.code && verdict.edges) verified = { hash: verdict.hash, root: verdict.root, code: verdict.code, edges: verdict.edges };
@@ -945,7 +945,7 @@ export function convexProjectOf(dir: string, dirs: FolderCache = new FolderCache
 }
 
 // What the Mac app needs to show Convex's embedded dashboard, which takes a
-// deploy key instead of a login (docs/protocol.md, "The Convex panel"). Only
+// deploy key instead of a login (docs/protocol/patches.md, "The Convex panel"). Only
 // a cloud deployment: the embedded dashboard is https, and a local one's
 // http://127.0.0.1 address would be blocked there as mixed content.
 export function convexEmbed(deployment: string | undefined, deploymentUrl: string | undefined): Panel['convex'] {

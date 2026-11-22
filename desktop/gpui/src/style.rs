@@ -1,7 +1,7 @@
 // The Swift app's sizes and colours (Transcript/Theme.swift, TypeScale), so the
 // two apps look alike and there's one place to change them. Colours take the
 // light or dark value from the window's theme.
-#![allow(dead_code)] // Filled in ahead of the views that use each value.
+#![allow(dead_code, reason = "filled in ahead of the views that use each value")]
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -89,7 +89,17 @@ pub enum Accent {
 static ACCENT: AtomicU32 = AtomicU32::new(0);
 
 impl Accent {
-    pub const ALL: [Accent; 9] = [Accent::System, Accent::Fur, Accent::Honey, Accent::Berry, Accent::Rose, Accent::Plum, Accent::Sky, Accent::Moss, Accent::Slate];
+    pub const ALL: [Accent; 9] = [
+        Accent::System,
+        Accent::Fur,
+        Accent::Honey,
+        Accent::Berry,
+        Accent::Rose,
+        Accent::Plum,
+        Accent::Sky,
+        Accent::Moss,
+        Accent::Slate,
+    ];
 
     /// What the settings file keeps.
     pub fn name(self) -> &'static str {
@@ -107,7 +117,10 @@ impl Accent {
     }
 
     pub fn from_name(name: &str) -> Accent {
-        Accent::ALL.into_iter().find(|a| a.name() == name).unwrap_or(Accent::System)
+        Accent::ALL
+            .into_iter()
+            .find(|a| a.name() == name)
+            .unwrap_or(Accent::System)
     }
 
     pub fn title(self) -> &'static str {
@@ -142,13 +155,19 @@ impl Accent {
 }
 
 pub fn accent_choice() -> Accent {
-    Accent::ALL.get(ACCENT.load(Ordering::Relaxed) as usize).copied().unwrap_or(Accent::System)
+    Accent::ALL
+        .get(ACCENT.load(Ordering::Relaxed) as usize)
+        .copied()
+        .unwrap_or(Accent::System)
 }
 
 /// Puts the accent on every window. The theme's kit colours follow too
 /// (`refresh_system_accent`), so buttons and focus rings change with it.
 pub fn set_accent_choice(accent: Accent, cx: &mut App) {
-    ACCENT.store(Accent::ALL.iter().position(|a| *a == accent).unwrap_or(0) as u32, Ordering::Relaxed);
+    ACCENT.store(
+        Accent::ALL.iter().position(|a| *a == accent).unwrap_or(0) as u32,
+        Ordering::Relaxed,
+    );
     refresh_system_accent(cx);
     bump_look();
 }
@@ -201,7 +220,10 @@ impl Font {
     }
 
     pub fn from_name(name: &str) -> Font {
-        Font::ALL.into_iter().find(|f| f.name() == name).unwrap_or(Font::DEFAULT)
+        Font::ALL
+            .into_iter()
+            .find(|f| f.name() == name)
+            .unwrap_or(Font::DEFAULT)
     }
 
     pub fn title(self) -> &'static str {
@@ -229,7 +251,10 @@ impl Font {
 }
 
 pub fn font_choice() -> Font {
-    Font::ALL.get(FONT.load(Ordering::Relaxed) as usize).copied().unwrap_or(Font::DEFAULT)
+    Font::ALL
+        .get(FONT.load(Ordering::Relaxed) as usize)
+        .copied()
+        .unwrap_or(Font::DEFAULT)
 }
 
 /// Names the family in both looks' theme configs as well as on the theme,
@@ -237,7 +262,10 @@ pub fn font_choice() -> Font {
 pub fn set_font_choice(choice: Font, cx: &mut App) {
     use gpui_kit::component::Theme;
     use std::rc::Rc;
-    FONT.store(Font::ALL.iter().position(|f| *f == choice).unwrap_or(0) as u32, Ordering::Relaxed);
+    FONT.store(
+        Font::ALL.iter().position(|f| *f == choice).unwrap_or(0) as u32,
+        Ordering::Relaxed,
+    );
     // System is named too, not left out: a config with no family keeps
     // whatever the theme had, so going back from Monospaced stayed
     // Monospaced (Mike, 17 Nov). `.SystemUIFont` is GPUI's name for the
@@ -380,10 +408,26 @@ pub(crate) fn install_window_colours(cx: &mut App) {
     use gpui_kit::component::Theme;
     use std::rc::Rc;
     let (light, dark) = window_backgrounds();
-    let hex = |c: Rgba| -> SharedString { format!("#{:02x}{:02x}{:02x}", (c.r * 255.).round() as u8, (c.g * 255.).round() as u8, (c.b * 255.).round() as u8).into() };
-    let lift = |c: Rgba, by: f32| Rgba { r: c.r + (1. - c.r) * by, g: c.g + (1. - c.g) * by, b: c.b + (1. - c.b) * by, a: 1. };
+    let hex = |c: Rgba| -> SharedString {
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            (c.r * 255.).round() as u8,
+            (c.g * 255.).round() as u8,
+            (c.b * 255.).round() as u8
+        )
+        .into()
+    };
+    let lift = |c: Rgba, by: f32| Rgba {
+        r: c.r + (1. - c.r) * by,
+        g: c.g + (1. - c.g) * by,
+        b: c.b + (1. - c.b) * by,
+        a: 1.,
+    };
     let theme = Theme::global_mut(cx);
-    for (config, background, popover) in [(&mut theme.light_theme, light, light), (&mut theme.dark_theme, dark, lift(dark, 0.06))] {
+    for (config, background, popover) in [
+        (&mut theme.light_theme, light, light),
+        (&mut theme.dark_theme, dark, lift(dark, 0.06)),
+    ] {
         let mut changed = (**config).clone();
         changed.colors.background = Some(hex(background));
         changed.colors.sidebar = Some(hex(background));
@@ -420,8 +464,15 @@ pub(crate) fn refresh_system_clock() {
     #[cfg(target_os = "macos")]
     {
         use objc2_foundation::{NSDateFormatter, NSLocale, NSString};
-        let pattern = NSDateFormatter::dateFormatFromTemplate_options_locale(&NSString::from_str("j"), 0, Some(&NSLocale::currentLocale()));
-        CLOCK_24H.store(pattern.is_some_and(|p| p.to_string().contains(['H', 'k'])), Ordering::Relaxed);
+        let pattern = NSDateFormatter::dateFormatFromTemplate_options_locale(
+            &NSString::from_str("j"),
+            0,
+            Some(&NSLocale::currentLocale()),
+        );
+        CLOCK_24H.store(
+            pattern.is_some_and(|p| p.to_string().contains(['H', 'k'])),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -430,7 +481,12 @@ pub(crate) type ReadingStyleKey = (bool, u64, u32, u32);
 /// A system appearance can replace the contrast colours without changing
 /// the app's fixed light/dark look or the Increase Contrast switch.
 pub(crate) fn reading_style_key(cx: &App) -> ReadingStyleKey {
-    (cx.theme().is_dark(), cx.try_global::<SystemContrast>().map_or(0, |s| s.revision), zoom_percent(), look_revision())
+    (
+        cx.theme().is_dark(),
+        cx.try_global::<SystemContrast>().map_or(0, |s| s.revision),
+        zoom_percent(),
+        look_revision(),
+    )
 }
 
 pub(crate) fn increase_contrast(cx: &App) -> bool {
@@ -441,19 +497,48 @@ pub(crate) fn refresh_system_contrast(cx: &mut App) {
     #[cfg(target_os = "macos")]
     {
         let enabled = system_increase_contrast();
-        let Some((light, dark)) = system_contrast_colours(false, enabled).zip(system_contrast_colours(true, enabled)) else { return };
-        if cx.try_global::<SystemContrast>().is_some_and(|s| s.enabled == enabled && s.light == light && s.dark == dark) { return; }
-        let normal_kit = cx.try_global::<SystemContrast>().map(|s| s.normal_kit.clone()).unwrap_or_else(|| {
-            let theme = gpui_kit::component::Theme::global(cx);
-            [&theme.light_theme, &theme.dark_theme].map(|t| {
-                let c = &t.colors;
-                [c.foreground.clone(), c.sidebar_foreground.clone(), c.muted_foreground.clone(), c.border.clone(), c.input.clone(), c.sidebar_border.clone()]
-            })
-        });
+        let Some((light, dark)) =
+            system_contrast_colours(false, enabled).zip(system_contrast_colours(true, enabled))
+        else {
+            return;
+        };
+        if cx
+            .try_global::<SystemContrast>()
+            .is_some_and(|s| s.enabled == enabled && s.light == light && s.dark == dark)
+        {
+            return;
+        }
+        let normal_kit = cx
+            .try_global::<SystemContrast>()
+            .map(|s| s.normal_kit.clone())
+            .unwrap_or_else(|| {
+                let theme = gpui_kit::component::Theme::global(cx);
+                [&theme.light_theme, &theme.dark_theme].map(|t| {
+                    let c = &t.colors;
+                    [
+                        c.foreground.clone(),
+                        c.sidebar_foreground.clone(),
+                        c.muted_foreground.clone(),
+                        c.border.clone(),
+                        c.input.clone(),
+                        c.sidebar_border.clone(),
+                    ]
+                })
+            });
         let first = cx.try_global::<SystemContrast>().is_none();
-        let revision = cx.try_global::<SystemContrast>().map_or(1, |s| s.revision.wrapping_add(1));
-        cx.set_global(SystemContrast { enabled, revision, light, dark, normal_kit: normal_kit.clone() });
-        if first && !enabled { return; }
+        let revision = cx
+            .try_global::<SystemContrast>()
+            .map_or(1, |s| s.revision.wrapping_add(1));
+        cx.set_global(SystemContrast {
+            enabled,
+            revision,
+            light,
+            dark,
+            normal_kit: normal_kit.clone(),
+        });
+        if first && !enabled {
+            return;
+        }
         // Kit controls (inputs, calendars and menus) use these tokens rather
         // than the transcript's style functions. Resolve both from AppKit.
         use gpui_kit::component::Theme;
@@ -462,13 +547,29 @@ pub(crate) fn refresh_system_contrast(cx: &mut App) {
         let mode = theme.mode;
         let hex = |c: Hsla| -> SharedString {
             let c = Rgba::from(c);
-            format!("#{:02x}{:02x}{:02x}{:02x}", (c.r * 255.).round() as u8, (c.g * 255.).round() as u8, (c.b * 255.).round() as u8, (c.a * 255.).round() as u8).into()
+            format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                (c.r * 255.).round() as u8,
+                (c.g * 255.).round() as u8,
+                (c.b * 255.).round() as u8,
+                (c.a * 255.).round() as u8
+            )
+            .into()
         };
-        for ((config, colours), normal) in [(&mut theme.light_theme, light), (&mut theme.dark_theme, dark)].into_iter().zip(normal_kit) {
+        for ((config, colours), normal) in [
+            (&mut theme.light_theme, light),
+            (&mut theme.dark_theme, dark),
+        ]
+        .into_iter()
+        .zip(normal_kit)
+        {
             let mut changed = (**config).clone();
-            let [foreground, sidebar_foreground, muted_foreground, border, input, sidebar_border] = if enabled {
-                [0, 0, 1, 3, 3, 3].map(|i| Some(hex(colours[i])))
-            } else { normal };
+            let [foreground, sidebar_foreground, muted_foreground, border, input, sidebar_border] =
+                if enabled {
+                    [0, 0, 1, 3, 3, 3].map(|i| Some(hex(colours[i])))
+                } else {
+                    normal
+                };
             changed.colors.foreground = foreground;
             changed.colors.sidebar_foreground = sidebar_foreground;
             changed.colors.muted_foreground = muted_foreground;
@@ -496,32 +597,72 @@ fn system_increase_contrast() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated)]
+#[allow(
+    deprecated,
+    reason = "NSAppearance's current-appearance calls, which AppKit still honours and has no per-thread replacement for"
+)]
 fn system_contrast_colours(dark: bool, contrast: bool) -> Option<[Hsla; 4]> {
-    use objc2_app_kit::{NSApplication, NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSAppearanceNameAccessibilityHighContrastAqua, NSAppearanceNameAccessibilityHighContrastDarkAqua, NSColor, NSColorSpace};
     use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceNameAccessibilityHighContrastAqua,
+        NSAppearanceNameAccessibilityHighContrastDarkAqua, NSAppearanceNameAqua,
+        NSAppearanceNameDarkAqua, NSApplication, NSColor, NSColorSpace,
+    };
     use objc2_foundation::NSArray;
+    // SAFETY: the unsafe parts are reads of AppKit's appearance name
+    // constants, which are immutable extern statics. The current appearance
+    // is per thread and is put back before the block ends.
     unsafe {
-        let name = if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua };
+        let name = if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        };
         let mut appearance = NSAppearance::appearanceNamed(name)?;
         // High-contrast names are for matching only. Apple's SDK explicitly
         // forbids passing them to appearanceNamed (older macOS returns nil).
-        let native = contrast && MainThreadMarker::new().is_some_and(|mtm| {
-            let effective = NSApplication::sharedApplication(mtm).effectiveAppearance();
-            let names = NSArray::from_slice(&[NSAppearanceNameAccessibilityHighContrastDarkAqua, NSAppearanceNameAccessibilityHighContrastAqua, NSAppearanceNameDarkAqua, NSAppearanceNameAqua]);
-            let wanted = if dark { NSAppearanceNameAccessibilityHighContrastDarkAqua } else { NSAppearanceNameAccessibilityHighContrastAqua };
-            if effective.bestMatchFromAppearancesWithNames(&names).is_some_and(|n| &*n == wanted) {
-                appearance = effective;
-                true
-            } else { false }
-        });
+        let native = contrast
+            && MainThreadMarker::new().is_some_and(|mtm| {
+                let effective = NSApplication::sharedApplication(mtm).effectiveAppearance();
+                let names = NSArray::from_slice(&[
+                    NSAppearanceNameAccessibilityHighContrastDarkAqua,
+                    NSAppearanceNameAccessibilityHighContrastAqua,
+                    NSAppearanceNameDarkAqua,
+                    NSAppearanceNameAqua,
+                ]);
+                let wanted = if dark {
+                    NSAppearanceNameAccessibilityHighContrastDarkAqua
+                } else {
+                    NSAppearanceNameAccessibilityHighContrastAqua
+                };
+                if effective
+                    .bestMatchFromAppearancesWithNames(&names)
+                    .is_some_and(|n| &*n == wanted)
+                {
+                    appearance = effective;
+                    true
+                } else {
+                    false
+                }
+            });
         let previous = NSAppearance::currentAppearance();
         NSAppearance::setCurrentAppearance(Some(&appearance));
         let resolve = |color: objc2::rc::Retained<NSColor>| -> Option<Hsla> {
             let c = color.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
-            Some(srgb(c.redComponent() as f32, c.greenComponent() as f32, c.blueComponent() as f32, c.alphaComponent() as f32))
+            Some(srgb(
+                c.redComponent() as f32,
+                c.greenComponent() as f32,
+                c.blueComponent() as f32,
+                c.alphaComponent() as f32,
+            ))
         };
-        let colours = [NSColor::labelColor(), NSColor::secondaryLabelColor(), NSColor::tertiaryLabelColor(), NSColor::separatorColor()].map(resolve);
+        let colours = [
+            NSColor::labelColor(),
+            NSColor::secondaryLabelColor(),
+            NSColor::tertiaryLabelColor(),
+            NSColor::separatorColor(),
+        ]
+        .map(resolve);
         NSAppearance::setCurrentAppearance(previous.as_deref());
         let mut colours = [colours[0]?, colours[1]?, colours[2]?, colours[3]?];
         if contrast && !native {
@@ -538,13 +679,22 @@ fn system_contrast_colours(dark: bool, contrast: bool) -> Option<[Hsla; 4]> {
 
 fn contrast_colour(cx: &App, index: usize, fallback: Hsla) -> Hsla {
     match cx.try_global::<SystemContrast>().filter(|s| s.enabled) {
-        Some(s) => if cx.theme().is_dark() { s.dark[index] } else { s.light[index] },
+        Some(s) => {
+            if cx.theme().is_dark() {
+                s.dark[index]
+            } else {
+                s.light[index]
+            }
+        }
         None => fallback,
     }
 }
 
 #[derive(Clone, Copy, PartialEq)]
-struct SystemAccent { light: Rgba, dark: Rgba }
+struct SystemAccent {
+    light: Rgba,
+    dark: Rgba,
+}
 impl Global for SystemAccent {}
 
 /// The kit's own accent colours, as they were before any accent was put on
@@ -561,7 +711,7 @@ pub(crate) fn refresh_system_accent(cx: &mut App) {
     use gpui_kit::component::Theme;
     use std::rc::Rc;
     let chosen = accent_choice().rgb().map(|hex| {
-        let c = Rgba::from(rgb(hex));
+        let c = rgb(hex);
         (c, c)
     });
     #[cfg(target_os = "macos")]
@@ -572,7 +722,12 @@ pub(crate) fn refresh_system_accent(cx: &mut App) {
         let theme = Theme::global(cx);
         let saved = [&theme.light_theme, &theme.dark_theme].map(|t| {
             let c = &t.colors;
-            [c.primary.clone(), c.ring.clone(), c.primary_hover.clone(), c.primary_active.clone()]
+            [
+                c.primary.clone(),
+                c.ring.clone(),
+                c.primary_hover.clone(),
+                c.primary_active.clone(),
+            ]
         });
         cx.set_global(KitAccent(saved));
     }
@@ -583,7 +738,11 @@ pub(crate) fn refresh_system_accent(cx: &mut App) {
             let saved = cx.global::<KitAccent>().0.clone();
             let theme = Theme::global_mut(cx);
             let mode = theme.mode;
-            for (config, [primary, ring, hover, active]) in [&mut theme.light_theme, &mut theme.dark_theme].into_iter().zip(saved) {
+            for (config, [primary, ring, hover, active]) in
+                [&mut theme.light_theme, &mut theme.dark_theme]
+                    .into_iter()
+                    .zip(saved)
+            {
                 let mut changed = (**config).clone();
                 changed.colors.primary = primary;
                 changed.colors.ring = ring;
@@ -596,18 +755,35 @@ pub(crate) fn refresh_system_accent(cx: &mut App) {
         return;
     };
     let accent = SystemAccent { light, dark };
-    if cx.try_global::<SystemAccent>() == Some(&accent) { return; }
+    if cx.try_global::<SystemAccent>() == Some(&accent) {
+        return;
+    }
     cx.set_global(accent);
     let theme = Theme::global_mut(cx);
     let mode = theme.mode;
-    for (config, color) in [(&mut theme.light_theme, light), (&mut theme.dark_theme, dark)] {
-        let hex: SharedString = format!("#{:02x}{:02x}{:02x}", (color.r * 255.).round() as u8, (color.g * 255.).round() as u8, (color.b * 255.).round() as u8).into();
+    for (config, color) in [
+        (&mut theme.light_theme, light),
+        (&mut theme.dark_theme, dark),
+    ] {
+        let hex: SharedString = format!(
+            "#{:02x}{:02x}{:02x}",
+            (color.r * 255.).round() as u8,
+            (color.g * 255.).round() as u8,
+            (color.b * 255.).round() as u8
+        )
+        .into();
         let mut changed = (**config).clone();
         changed.colors.primary = Some(hex.clone());
         changed.colors.ring = Some(hex);
         let shade = |toward: f32| -> SharedString {
             let mix = |c: f32| ((c * 0.9 + toward * 0.1) * 255.).round() as u8;
-            format!("#{:02x}{:02x}{:02x}", mix(color.r), mix(color.g), mix(color.b)).into()
+            format!(
+                "#{:02x}{:02x}{:02x}",
+                mix(color.r),
+                mix(color.g),
+                mix(color.b)
+            )
+            .into()
         };
         changed.colors.primary_hover = Some(shade(1.));
         changed.colors.primary_active = Some(shade(0.));
@@ -617,18 +793,35 @@ pub(crate) fn refresh_system_accent(cx: &mut App) {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated)]
+#[allow(
+    deprecated,
+    reason = "NSAppearance's current-appearance calls, which AppKit still honours and has no per-thread replacement for"
+)]
 fn system_control_accent(dark: bool) -> Option<Rgba> {
-    use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace};
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace,
+    };
+    // SAFETY: the unsafe parts are reads of AppKit's appearance name
+    // constants, which are immutable extern statics. The current appearance
+    // is per thread and is put back before the colour is used.
     unsafe {
-        let name = if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua };
+        let name = if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        };
         let appearance = NSAppearance::appearanceNamed(name)?;
         let previous = NSAppearance::currentAppearance();
         NSAppearance::setCurrentAppearance(Some(&appearance));
-        let color = NSColor::controlAccentColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace());
+        let color =
+            NSColor::controlAccentColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace());
         NSAppearance::setCurrentAppearance(previous.as_deref());
         let color = color?;
-        Some(srgb_rgba(color.redComponent() as f32, color.greenComponent() as f32, color.blueComponent() as f32))
+        Some(srgb_rgba(
+            color.redComponent() as f32,
+            color.greenComponent() as f32,
+            color.blueComponent() as f32,
+        ))
     }
 }
 
@@ -636,7 +829,10 @@ fn system_control_accent(dark: bool) -> Option<Rgba> {
 /// read from AppKit, so it follows whatever this macOS draws; elsewhere it's
 /// what macOS 26 and 27 give, so the app looks the same everywhere.
 fn window_backgrounds() -> (Rgba, Rgba) {
-    let fallback = (srgb_rgba(1., 1., 1.), srgb_rgba(30. / 255., 30. / 255., 30. / 255.));
+    let fallback = (
+        srgb_rgba(1., 1., 1.),
+        srgb_rgba(30. / 255., 30. / 255., 30. / 255.),
+    );
     #[cfg(target_os = "macos")]
     {
         let light = system_window_background(false).unwrap_or(fallback.0);
@@ -655,18 +851,34 @@ fn srgb_rgba(r: f32, g: f32, b: f32) -> Rgba {
 // (performAsCurrentDrawingAppearance) needs block2; setting it is deprecated
 // but does the same for a moment on the main thread.
 #[cfg(target_os = "macos")]
-#[allow(deprecated)]
+#[allow(
+    deprecated,
+    reason = "NSAppearance's current-appearance calls, which AppKit still honours and has no per-thread replacement for"
+)]
 fn system_window_background(dark: bool) -> Option<Rgba> {
-    use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace};
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace,
+    };
+    // SAFETY: as in `system_control_accent`: immutable extern appearance name
+    // constants, and a per-thread current appearance that's put back.
     unsafe {
-        let name = if dark { NSAppearanceNameDarkAqua } else { NSAppearanceNameAqua };
+        let name = if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        };
         let appearance = NSAppearance::appearanceNamed(name)?;
         let previous = NSAppearance::currentAppearance();
         NSAppearance::setCurrentAppearance(Some(&appearance));
-        let color = NSColor::windowBackgroundColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace());
+        let color =
+            NSColor::windowBackgroundColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace());
         NSAppearance::setCurrentAppearance(previous.as_deref());
         let c = color?;
-        Some(srgb_rgba(c.redComponent() as f32, c.greenComponent() as f32, c.blueComponent() as f32))
+        Some(srgb_rgba(
+            c.redComponent() as f32,
+            c.greenComponent() as f32,
+            c.blueComponent() as f32,
+        ))
     }
 }
 
@@ -782,7 +994,12 @@ fn rgb_hsla(hex: u32) -> Hsla {
 /// (every transcript colour here) would come out as the default colour.
 pub fn over_background(color: Hsla, cx: &App) -> Hsla {
     let (bg, c) = (Rgba::from(cx.theme().background), Rgba::from(color));
-    Hsla::from(Rgba { r: bg.r * (1. - c.a) + c.r * c.a, g: bg.g * (1. - c.a) + c.g * c.a, b: bg.b * (1. - c.a) + c.b * c.a, a: 1. })
+    Hsla::from(Rgba {
+        r: bg.r * (1. - c.a) + c.r * c.a,
+        g: bg.g * (1. - c.a) + c.g * c.a,
+        b: bg.b * (1. - c.a) + c.b * c.a,
+        a: 1.,
+    })
 }
 
 /// NSColor.labelColor: body text.
@@ -830,7 +1047,11 @@ fn srgb(r: f32, g: f32, b: f32, a: f32) -> Hsla {
 /// NSColor.controlAccentColor on a Mac, the existing blue elsewhere.
 pub fn control_accent(cx: &App) -> Hsla {
     if let Some(accent) = cx.try_global::<SystemAccent>() {
-        return Hsla::from(if cx.theme().is_dark() { accent.dark } else { accent.light });
+        return Hsla::from(if cx.theme().is_dark() {
+            accent.dark
+        } else {
+            accent.light
+        });
     }
     pick(cx, srgb(0.04, 0.52, 1.0, 1.0), srgb(0.0, 0.48, 1.0, 1.0))
 }
@@ -840,14 +1061,22 @@ pub fn control_accent(cx: &App) -> Hsla {
 /// own colour, 12 Nov; this was the accent's blue before and read deeper than
 /// the Swift app's links).
 pub fn link_text(cx: &App) -> Hsla {
-    pick(cx, srgb(0.255, 0.612, 1.0, 1.0), srgb(0.0, 0.408, 0.855, 1.0))
+    pick(
+        cx,
+        srgb(0.255, 0.612, 1.0, 1.0),
+        srgb(0.0, 0.408, 0.855, 1.0),
+    )
 }
 
 /// A little of the accent over the faint fill behind Mike's own messages.
 pub fn bubble_background(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
     let accent = Rgba::from(control_accent(cx));
-    let (base, base_alpha, accent_alpha): (f32, f32, f32) = if dark { (1., 0.06, 0.09) } else { (0., 0.035, 0.09) };
+    let (base, base_alpha, accent_alpha): (f32, f32, f32) = if dark {
+        (1., 0.06, 0.09)
+    } else {
+        (0., 0.035, 0.09)
+    };
     let alpha = accent_alpha + base_alpha * (1. - accent_alpha);
     let mix = |c: f32| (c * accent_alpha + base * base_alpha * (1. - accent_alpha)) / alpha;
     srgb(mix(accent.r), mix(accent.g), mix(accent.b), alpha)
@@ -980,7 +1209,17 @@ pub mod menu {
             .relative()
             // The light line just inside the edge, over the rows and not in
             // the way of the pointer (it has no handlers).
-            .child(div().absolute().top_0().left_0().right_0().bottom_0().rounded(mac_look::RADIUS - px(1.)).border_1().border_color(look.rim))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .rounded(mac_look::RADIUS - px(1.))
+                    .border_1()
+                    .border_color(look.rim),
+            )
     }
 
     /// The left edge of a row's icon and of its title, from the row's left, as
@@ -1006,22 +1245,36 @@ pub mod menu {
             .font_weight(FontWeight::NORMAL)
             .cursor_pointer()
             .hover(move |s| s.bg(look.highlight).text_color(look.highlight_label))
-            .when_some(icon, |s, icon| s.child(icon.with_size(mac_look::ICON_SIZE).text_color(look.icon)))
+            .when_some(icon, |s, icon| {
+                s.child(icon.with_size(mac_look::ICON_SIZE).text_color(look.icon))
+            })
     }
 
     /// The tick at a row's right end, for the current choice.
     pub fn tick(cx: &App) -> Icon {
-        Icon::from(gpui_kit::assets::IconName::Check).with_size(px(13.)).text_color(colors(cx).label)
+        Icon::from(gpui_kit::assets::IconName::Check)
+            .with_size(px(13.))
+            .text_color(colors(cx).label)
     }
 
     /// A line between groups of rows, as the menus' separator.
     pub fn separator(cx: &App) -> Div {
-        div().py(px(5.)).px(mac_look::SEPARATOR_INSET).child(div().h(px(1.)).bg(colors(cx).separator))
+        div()
+            .py(px(5.))
+            .px(mac_look::SEPARATOR_INSET)
+            .child(div().h(px(1.)).bg(colors(cx).separator))
     }
 
     /// A group's heading, in line with the titles under it.
     pub fn heading(title: &'static str, cx: &App) -> Div {
-        div().pl(px(TITLE_X)).pt(px(6.)).pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(colors(cx).icon).child(title)
+        div()
+            .pl(px(TITLE_X))
+            .pt(px(6.))
+            .pb(px(2.))
+            .text_size(px(11.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(colors(cx).icon)
+            .child(title)
     }
 }
 
@@ -1036,7 +1289,11 @@ pub mod menu {
 /// state to keep the hover in: it hears the pointer arrive, then lays out
 /// again with it. Hence `StatefulInteractiveElement`, which only an element
 /// with an id is.
-pub fn group_hover_text<E: StatefulInteractiveElement>(el: E, group: impl Into<SharedString>, color: Hsla) -> E {
+pub fn group_hover_text<E: StatefulInteractiveElement>(
+    el: E,
+    group: impl Into<SharedString>,
+    color: Hsla,
+) -> E {
     el.group_hover(group, move |s| s.text_color(color))
 }
 
@@ -1047,7 +1304,11 @@ mod group_hover_text_tests {
     use super::group_hover_text;
     use gpui_kit::prelude::*;
     use gpui_kit::test::TestEventExt as _;
-    use gpui_kit::{div, point, px, size, AnyElement, App, Bounds, ElementId, GlobalElementId, Hsla, InspectorElementId, LayoutId, Pixels, Point, TestAppContext, Window, WindowBounds, WindowOptions};
+    use gpui_kit::{
+        div, point, px, size, AnyElement, App, Bounds, ElementId, GlobalElementId, Hsla,
+        InspectorElementId, LayoutId, Pixels, Point, TestAppContext, Window, WindowBounds,
+        WindowOptions,
+    };
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -1071,24 +1332,74 @@ mod group_hover_text_tests {
         fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
             None
         }
-        fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+        fn request_layout(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, ()) {
             self.0.set(Some(window.text_style().color));
-            (window.request_layout(gpui_kit::Style { size: size(px(40.).into(), px(12.).into()), ..Default::default() }, [], cx), ())
+            (
+                window.request_layout(
+                    gpui_kit::Style {
+                        size: size(px(40.).into(), px(12.).into()),
+                        ..Default::default()
+                    },
+                    [],
+                    cx,
+                ),
+                (),
+            )
         }
-        fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut Window, _: &mut App) {}
-        fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), _: &mut Window, _: &mut App) {}
+        fn prepaint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut Window,
+            _: &mut App,
+        ) {
+        }
+        fn paint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut (),
+            _: &mut Window,
+            _: &mut App,
+        ) {
+        }
     }
 
-    const QUIET: Hsla = Hsla { h: 0., s: 0., l: 0.5, a: 1. };
-    const BRIGHT: Hsla = Hsla { h: 0., s: 0., l: 1., a: 1. };
+    const QUIET: Hsla = Hsla {
+        h: 0.,
+        s: 0.,
+        l: 0.5,
+        a: 1.,
+    };
+    const BRIGHT: Hsla = Hsla {
+        h: 0.,
+        s: 0.,
+        l: 1.,
+        a: 1.,
+    };
 
     /// A heading as the sidebar draws one: a group with the title in it.
     struct Heading(Rc<Cell<Option<Hsla>>>);
 
     impl Render for Heading {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let title: AnyElement = group_hover_text(div().id("title").text_color(QUIET), "heading", BRIGHT).child(LayoutColour(self.0.clone())).into_any_element();
-            div().size_full().child(div().group("heading").w(px(200.)).h(px(30.)).child(title))
+            let title: AnyElement =
+                group_hover_text(div().id("title").text_color(QUIET), "heading", BRIGHT)
+                    .child(LayoutColour(self.0.clone()))
+                    .into_any_element();
+            div()
+                .size_full()
+                .child(div().group("heading").w(px(200.)).h(px(30.)).child(title))
         }
     }
 
@@ -1098,9 +1409,17 @@ mod group_hover_text_tests {
         let seen = Rc::new(Cell::new(None));
         let in_view = seen.clone();
         let window = cx.update(|cx| {
-            let bounds = Bounds { origin: Point::default(), size: size(px(300.), px(100.)) };
-            let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
-            gpui_kit::open_window(options, cx, move |_, cx| cx.new(|_| Heading(in_view))).expect("a test window").0
+            let bounds = Bounds {
+                origin: Point::default(),
+                size: size(px(300.), px(100.)),
+            };
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            };
+            gpui_kit::open_window(options, cx, move |_, cx| cx.new(|_| Heading(in_view)))
+                .expect("a test window")
+                .0
         });
         cx.update_window(window, |_, window, cx| {
             use gpui_kit::test::TestWindowExt as _;
@@ -1109,14 +1428,17 @@ mod group_hover_text_tests {
             // On the group's edge, not over the title.
             window.pointer_move(point(px(180.), px(15.)), None, cx);
             window.render_frame(cx);
-            assert_eq!(seen.get(), Some(BRIGHT), "under the pointer, as the text is laid out");
+            assert_eq!(
+                seen.get(),
+                Some(BRIGHT),
+                "under the pointer, as the text is laid out"
+            );
             window.pointer_move(point(px(250.), px(80.)), None, cx);
             window.render_frame(cx);
             assert_eq!(seen.get(), Some(QUIET), "and back once it's gone");
         })
         .expect("the test window");
     }
-
 }
 
 #[cfg(test)]
@@ -1148,11 +1470,34 @@ mod group_hover_text_source_tests {
                 let path = entry.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("style.rs") {
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("style.rs")
+                {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    for (n, line) in text.lines().enumerate() {
+                    let lines: Vec<&str> = text.lines().collect();
+                    for (n, line) in lines.iter().enumerate() {
                         if let Some(at) = line.find(".group_hover(") {
-                            if line[at..].contains("text_color") {
+                            // The call's own brackets, which rustfmt may
+                            // spread over the lines after.
+                            let rest = std::iter::once(&line[at + ".group_hover".len()..])
+                                .chain(lines[n + 1..].iter().take(20).copied())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let mut depth = 0;
+                            let mut end = rest.len();
+                            for (i, c) in rest.char_indices() {
+                                match c {
+                                    '(' => depth += 1,
+                                    ')' => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            end = i;
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if rest[..end].contains("text_color") {
                                 bad.push(format!("{}:{}", path.display(), n + 1));
                             }
                         }
@@ -1160,13 +1505,19 @@ mod group_hover_text_source_tests {
                 }
             }
         }
-        assert!(bad.is_empty(), "use style::group_hover_text, so the colour reaches the text:\n{}", bad.join("\n"));
+        assert!(
+            bad.is_empty(),
+            "use style::group_hover_text, so the colour reaches the text:\n{}",
+            bad.join("\n")
+        );
     }
 }
 
 #[cfg(all(test, feature = "automation"))]
 mod contrast_tests {
-    use super::{label_text, quiet_text, faint_text, hairline, sidebar_selection, SystemContrast, black};
+    use super::{
+        black, faint_text, hairline, label_text, quiet_text, sidebar_selection, SystemContrast,
+    };
     use gpui_kit::TestAppContext;
 
     #[gpui_kit::test]
@@ -1175,16 +1526,29 @@ mod contrast_tests {
         cx.update(|cx| {
             let regular = (label_text(cx), quiet_text(cx), faint_text(cx), hairline(cx));
             let colours = [black(1.), black(0.85), black(0.65), black(0.6)];
-            cx.set_global(SystemContrast { enabled: true, revision: 1, light: colours, dark: colours, normal_kit: Default::default() });
+            cx.set_global(SystemContrast {
+                enabled: true,
+                revision: 1,
+                light: colours,
+                dark: colours,
+                normal_kit: Default::default(),
+            });
             assert_eq!(label_text(cx), colours[0]);
             assert_eq!(quiet_text(cx), colours[1]);
             assert_eq!(faint_text(cx), colours[1]);
             assert_eq!(hairline(cx), colours[3]);
             let key = super::reading_style_key(cx);
             cx.global_mut::<SystemContrast>().revision += 1;
-            assert_ne!(super::reading_style_key(cx), key, "a new palette invalidates cached text even with the same look and contrast flag");
+            assert_ne!(
+                super::reading_style_key(cx),
+                key,
+                "a new palette invalidates cached text even with the same look and contrast flag"
+            );
             cx.global_mut::<SystemContrast>().enabled = false;
-            assert_eq!((label_text(cx), quiet_text(cx), faint_text(cx), hairline(cx)), regular);
+            assert_eq!(
+                (label_text(cx), quiet_text(cx), faint_text(cx), hairline(cx)),
+                regular
+            );
             assert_eq!(sidebar_selection(cx, true).a, 0.08);
             assert_eq!(sidebar_selection(cx, false).a, 0.06);
         });
@@ -1196,7 +1560,8 @@ mod native_contrast_tests {
     #[test]
     fn native_palette_resolves_both_looks_with_contrast_requested() {
         for dark in [false, true] {
-            let colours = super::system_contrast_colours(dark, true).expect("supported AppKit appearance and semantic colours");
+            let colours = super::system_contrast_colours(dark, true)
+                .expect("supported AppKit appearance and semantic colours");
             assert!(colours.iter().all(|c| c.a > 0.));
         }
     }

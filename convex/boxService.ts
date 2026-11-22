@@ -26,14 +26,14 @@ import { v, type Infer } from 'convex/values';
 import { internalAction, internalMutation, internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { box as boxMachine, machines, queued } from './machines';
+import { box as boxMachine, machines } from './machines';
 import { newestAttempt } from './boxMachine';
 import { SAVE_MS, WAKE_GRACE_MS } from './boxStates';
 import { activeMove, archive, askToSave, BOOT_PREFIX, BOX_LIMITS, isKeyMachine, mayMintAttempt, newAttempt, overHours, randomHex, usedTodayMs } from './boxes';
 import { sha256 } from './lib';
-import { deleteIfUnused } from './sync';
+import { deleteIfUnused, purgeRunnerRows } from './sync';
 import { FLY_SUSPEND_MAX_MB, flyFromEnv } from './boxProviders/fly';
-import { notFound, ProviderError, transient } from './boxProviders/types';
+import { notFound, transient } from './boxProviders/types';
 import type { BoxProvider, ListedBox } from './boxProviders/types';
 
 export const RETRY_MS = [300, 1500];
@@ -1741,6 +1741,114 @@ export const pruneSaves = machines.internalMutation({
     else if (kind === 'gone') await ctx.scheduler.runAfter(0, internal.boxService.pruneSaves, { kind: 'shelved' });
     else if (kind === 'shelved') await ctx.scheduler.runAfter(0, internal.boxService.pruneSaves, { kind: 'asleep' });
     return pruned;
+  },
+});
+
+/**
+ * An expired box's last trace (decision 12): its row, and its runner's rows
+ * (its thread, the thread's sidebar row, the `runners` row and the runner's
+ * figures), which nothing removed before, so every virtual-runner thread
+ * left a `runners` row for good that every full read of runners (the
+ * held-push cron, each keyed heartbeat's name check, the runners lists)
+ * went on reading. Expired means its save went after deleteAfterDays (or it
+ * never had one): it can't come back, and a message to it fails saying so
+ * (boxes.ts failExpired). That stays true for another deleteAfterDays, the
+ * retention Mike set for the virtual runner, so the archived thread still
+ * shows, and says why it can't come back, for as long again as its save
+ * was kept; then it goes from every list with its runner. Not while the
+ * provider may still have a box of it (providerBoxId: destroyBox is asked
+ * again first, and its DESTROYED clears it; or seen running in the last day:
+ * the reaper deletes it), an action holds its op lease, or the id is now a
+ * keyed runner's. The cron, every 6 hours, pages the expired boxes and
+ * hands each one due to purgeBox, in runs of its own.
+ */
+export const purgeExpiredBoxes = internalMutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())) },
+  returns: v.null(),
+  handler: async (ctx, { cursor }) => {
+    const now = Date.now();
+    const page = await ctx.db.query('boxes').withIndex('by_box_state', (q) => q.eq('boxState.kind', 'expired')).paginate({ numItems: PRUNE_BATCH, cursor: cursor ?? null });
+    for (const row of page.page) {
+      const next = await purgeStep(ctx, row, now);
+      // A box the provider may still have: destroyBox deletes it and says so
+      // (DESTROYED), and a later run purges the row. A delete that failed
+      // before (only retried for destroying rows) is tried again this way,
+      // once a run.
+      if (next === 'destroy') await ctx.scheduler.runAfter(0, internal.boxService.destroyBox, { boxId: row._id });
+      // Each box in runs of its own: one that fails holds up no other.
+      else if (next === 'purge') await ctx.scheduler.runAfter(0, internal.boxService.purgeBox, { boxId: row._id });
+    }
+    if (!page.isDone) await ctx.scheduler.runAfter(0, internal.boxService.purgeExpiredBoxes, { cursor: page.continueCursor });
+    return null;
+  },
+});
+
+// What becomes of an expired box now: nothing yet, its provider box deleted
+// first, or purged.
+async function purgeStep(ctx: MutationCtx, row: Doc<'boxes'>, now: number): Promise<'wait' | 'destroy' | 'purge'> {
+  if (row.boxState.kind !== 'expired' || (row.op && row.op.until > now)) return 'wait';
+  const days = (await ctx.db.get('runnerServices', row.serviceId))?.limits.deleteAfterDays ?? BOX_LIMITS.deleteAfterDays;
+  if (row.boxState.at > now - days * DAY_MS) return 'wait';
+  if (row.providerBoxId !== undefined) return 'destroy';
+  // Seen running lately (an unadopted machine): the reaper deletes it first.
+  if (row.seenRunningAt !== undefined && row.seenRunningAt > now - DAY_MS) return 'wait';
+  // Only the box's own runner: never one a runner key or the main key has
+  // taken the id for since (its rows would be that runner's).
+  const runner = await ctx.db.query('runners').withIndex('by_runnerId', (q) => q.eq('runnerId', row.runnerId)).unique();
+  if (runner && !runner.box) return 'wait';
+  if (await ctx.db.query('runnerKeys').withIndex('by_runnerId', (q) => q.eq('runnerId', row.runnerId)).first()) return 'wait';
+  if (await ctx.db.query('ownerRunnerIds').withIndex('by_runnerId', (q) => q.eq('runnerId', row.runnerId)).first()) return 'wait';
+  return 'purge';
+}
+
+/**
+ * One expired box's runner rows, a batch a run (sync.ts purgeRunnerRows),
+ * checked again each run; then forgetBox. Built with Convex's own builder:
+ * the runner's rows include rows of other machines (runner requests),
+ * which go as purgeRunner deletes them.
+ */
+export const purgeBox = internalMutation({
+  args: { boxId: v.id('boxes') },
+  returns: v.null(),
+  handler: async (ctx, { boxId }) => {
+    const row = await ctx.db.get('boxes', boxId);
+    if (!row || (await purgeStep(ctx, row, Date.now())) !== 'purge') return null;
+    if (await purgeRunnerRows(ctx, row.runnerId)) await ctx.scheduler.runAfter(0, internal.boxService.forgetBox, { boxId });
+    else await ctx.scheduler.runAfter(0, internal.boxService.purgeBox, { boxId });
+    return null;
+  },
+});
+
+/** The box's own row last, once its runner's rows are gone: PURGE, to purged, and deleted. */
+export const forgetBox = machines.internalMutation({
+  args: { boxId: v.id('boxes') },
+  returns: v.null(),
+  handler: async (machineCtx, { boxId }) => {
+    const ctx = machineCtx as unknown as MutationCtx;
+    const row = await ctx.db.get('boxes', boxId);
+    if (!row || (await purgeStep(ctx, row, Date.now())) !== 'purge') return null;
+    // Anything of its runner written since (it can't be: no key works for it): back to purgeBox.
+    if (await ctx.db.query('runners').withIndex('by_runnerId', (q) => q.eq('runnerId', row.runnerId)).first()) {
+      await ctx.scheduler.runAfter(0, internal.boxService.purgeBox, { boxId });
+      return null;
+    }
+    const condemned = await ctx.db.query('boxCondemned').withIndex('by_box_attempt', (q) => q.eq('boxId', boxId)).take(PRUNE_BATCH);
+    for (const c of condemned) await ctx.db.delete('boxCondemned', c._id);
+    if (condemned.length === PRUNE_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.boxService.forgetBox, { boxId });
+      return null;
+    }
+    if ((await boxMachine.send(machineCtx, boxId, { type: 'PURGE' })).status !== 'done') return null;
+    await boxMachine.purge(machineCtx, boxId);
+    // Its storage count too: a box's runner id is never anyone else's
+    // (purgeStep), so nothing goes on from it (purgeRunnerRows keeps it for
+    // a runner key's).
+    const usage = await ctx.db.query('runnerStorage').withIndex('by_runnerId', (q) => q.eq('runnerId', row.runnerId)).first();
+    if (usage) await ctx.db.delete('runnerStorage', usage._id);
+    // A message sent to it while its rows went fails, saying it can't come
+    // back, rather than wait two weeks for a runner that's gone.
+    await ctx.scheduler.runAfter(0, internal.boxes.failExpired, { runnerId: row.runnerId });
+    return null;
   },
 });
 

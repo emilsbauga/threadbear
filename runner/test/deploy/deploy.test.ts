@@ -977,7 +977,7 @@ test('pruning keeps the release of a runner still finishing turns after a handov
   // The oldest release outside the newest 5: the next deploy would remove it.
   const doomed = releases().filter((id) => id !== state().lastGood && id !== died)[0];
   // A runner still finishing a turn on it, as a live process with the drain
-  // file a real one writes (docs/protocol.md, "Handovers").
+  // file a real one writes (docs/protocol/updates.md, "Handovers").
   const draining = spawn(NODE, ['-e', 'setTimeout(() => {}, 120_000)'], { stdio: 'ignore' });
   const drain = path.join(home, 'run', `drain-${draining.pid}.json`);
   fs.mkdirSync(path.dirname(drain), { recursive: true });

@@ -14,7 +14,7 @@ use crate::app::Threadbear;
 use crate::shell::{SidebarMode, MAIN, THREADS};
 use crate::style::{self, px};
 use crate::thread::ThreadPane;
-use gpui_kit::component::{v_flex, h_flex};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::collections::{HashMap, HashSet};
@@ -93,7 +93,9 @@ impl Threadbear {
     pub(crate) fn toggle_threads_collapsed(&mut self, cx: &mut Context<Self>) {
         if !self.dock.read(cx).layout().contains(THREADS) {
             self.set_threads_collapsed(false, cx);
-            self.dock.update(cx, |m, cx| m.open(THREADS, DockDrop::window(DockEdge::Left), cx));
+            self.dock.update(cx, |m, cx| {
+                m.open(THREADS, DockDrop::window(DockEdge::Left), cx)
+            });
             return;
         }
         let collapsed = !self.threads_collapsed();
@@ -127,7 +129,9 @@ impl Threadbear {
     pub(crate) fn open_thread_in_panel(&mut self, id: String, cx: &mut Context<Self>) {
         let panel = thread_panel(&id);
         if self.has_thread_panel(&id, cx) {
-            self.dock.update(cx, |m, cx| m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx));
+            self.dock.update(cx, |m, cx| {
+                m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx)
+            });
             return;
         }
         if !self.threads.contains_key(&id) {
@@ -137,10 +141,14 @@ impl Threadbear {
             self.close_subagent(cx);
             // Its transcript goes with it, still reading the thread, rather
             // than the thread being read again from the start.
-            if self.pane.as_ref().is_some_and(|p| p.read(cx).summary.id == id) {
+            if self
+                .pane
+                .as_ref()
+                .is_some_and(|p| p.read(cx).summary.id == id)
+            {
                 if let Some(pane) = self.pane.take() {
                     self.pane_events = None;
-                    self.keep_panel_pane(id.clone(), pane, cx);
+                    self.keep_panel_pane(id, pane, cx);
                 }
             }
             self.new_thread(cx);
@@ -155,9 +163,15 @@ impl Threadbear {
 
     /// Move to Main Panel, and the note's Show it here: the panel closes and
     /// the thread shows in the main panel, its transcript carried over.
-    pub(crate) fn move_to_main_panel(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn move_to_main_panel(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let moved = self.thread_panels.panes.remove(&id).map(|p| p.pane);
-        self.dock.update(cx, |m, cx| m.close(&thread_panel(&id), cx));
+        self.dock
+            .update(cx, |m, cx| m.close(&thread_panel(&id), cx));
         // Selected behind the note (Back went to it): not open there yet.
         if self.selected.as_deref() == Some(id.as_str()) && self.pane.is_none() {
             self.selected = None;
@@ -175,7 +189,9 @@ impl Threadbear {
             return false;
         }
         let panel = thread_panel(id);
-        self.dock.update(cx, |m, cx| m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx));
+        self.dock.update(cx, |m, cx| {
+            m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx)
+        });
         // Seen now, if its tab was behind another.
         self.mark_thread_panels_seen(cx);
         true
@@ -188,21 +204,41 @@ impl Threadbear {
     /// transcript is never drawn in two places.
     pub(crate) fn open_elsewhere(&self, cx: &App) -> Option<String> {
         let id = self.selected.clone()?;
-        (self.pane.is_none() && self.home_page().is_none() && self.projects.open.is_none() && self.has_thread_panel(&id, cx)).then_some(id)
+        (self.pane.is_none()
+            && self.home_page().is_none()
+            && self.projects.open.is_none()
+            && self.has_thread_panel(&id, cx))
+        .then_some(id)
     }
 
     /// Takes a pane on as a thread's panel's, opening a thread: link in it
     /// in the main panel.
     fn keep_panel_pane(&mut self, id: String, pane: Entity<ThreadPane>, cx: &mut Context<Self>) {
-        let events = cx.subscribe(&pane, |this, _, event: &crate::rows::OpenThreadRequest, cx| this.open_linked_from_panel(event.0.clone(), cx));
-        self.thread_panels.panes.insert(id, PanelPane { pane, _events: events });
+        let events = cx.subscribe(
+            &pane,
+            |this, _, event: &crate::rows::OpenThreadRequest, cx| {
+                this.open_linked_from_panel(event.0.clone(), cx)
+            },
+        );
+        self.thread_panels.panes.insert(
+            id,
+            PanelPane {
+                pane,
+                _events: events,
+            },
+        );
     }
 
     /// A thread: link clicked in a panel's transcript (its id or a unique
     /// start of one). The panel can be in a window of its own, so the main
     /// window does the opening, once this update's over.
     fn open_linked_from_panel(&mut self, start: String, cx: &mut Context<Self>) {
-        let matches: Vec<String> = self.threads.keys().filter(|k| **k == start || k.starts_with(&start)).cloned().collect();
+        let matches: Vec<String> = self
+            .threads
+            .keys()
+            .filter(|k| **k == start || k.starts_with(&start))
+            .cloned()
+            .collect();
         let [only] = matches.as_slice() else { return };
         let (id, me, window) = (only.clone(), cx.entity().downgrade(), self.main_window);
         cx.defer(move |cx| {
@@ -217,31 +253,73 @@ impl Threadbear {
     /// The panel's title: the thread's, as in the main panel.
     pub(crate) fn thread_panel_title(&self, panel: &str) -> Option<String> {
         let id = pinned_thread(panel)?;
-        let title = self.threads.get(id).map(|t| t.title.clone()).unwrap_or_default();
-        Some(if title.is_empty() { "Untitled".into() } else { title })
+        let title = self
+            .threads
+            .get(id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        Some(if title.is_empty() {
+            "Untitled".into()
+        } else {
+            title
+        })
     }
 
     /// The panel's bar: the thread's title line (`HeaderTitle`).
-    pub(crate) fn thread_panel_header(&mut self, panel: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let thread = self.threads.get(pinned_thread(panel)?).map(|t| (**t).clone())?;
+    pub(crate) fn thread_panel_header(
+        &mut self,
+        panel: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let thread = self
+            .threads
+            .get(pinned_thread(panel)?)
+            .map(|t| (**t).clone())?;
         Some(self.render_thread_title(thread, cx))
     }
 
     /// The end of its bar: Share and the ... menu, but no back and forward,
     /// which are the main panel's (`ShareButton(pinned:)`, `ThreadMenuButton(pinned:)`).
-    pub(crate) fn thread_panel_buttons(&mut self, panel: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let thread = self.threads.get(pinned_thread(panel)?).map(|t| (**t).clone())?;
-        let share = self.website_url.is_some().then(|| self.render_share_button(&thread, cx));
+    pub(crate) fn thread_panel_buttons(
+        &mut self,
+        panel: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let thread = self
+            .threads
+            .get(pinned_thread(panel)?)
+            .map(|t| (**t).clone())?;
+        let share = self
+            .website_url
+            .is_some()
+            .then(|| self.render_share_button(&thread, cx));
         let more = self.render_more_button(&thread, cx);
-        Some(h_flex().flex_none().items_center().children(share).child(more).into_any_element())
+        Some(
+            h_flex()
+                .flex_none()
+                .items_center()
+                .children(share)
+                .child(more)
+                .into_any_element(),
+        )
     }
 
     /// What a thread's own panel shows (`PinnedThreadView`): its sign-in
     /// line and its reviews waiting over its transcript and box, as in the
     /// main panel.
-    pub(crate) fn thread_panel_view(&mut self, panel: &str, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn thread_panel_view(
+        &mut self,
+        panel: &str,
+        ghost: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // A drag's ghost is the empty panel: a transcript is drawn in one place.
-        let Some(thread) = pinned_thread(panel).and_then(|id| self.threads.get(id)).cloned().filter(|_| !ghost) else {
+        let Some(thread) = pinned_thread(panel)
+            .and_then(|id| self.threads.get(id))
+            .cloned()
+            .filter(|_| !ghost)
+        else {
             return div().size_full().into_any_element();
         };
         let pane = match self.thread_panel_pane(&thread.id) {
@@ -273,39 +351,70 @@ impl Threadbear {
             }
         };
         let mut column = v_flex().size_full();
-        let (account, remote) = (self.sign_in_account(&thread, cx), self.remote_sign_in_runner(&thread, cx));
+        let (account, remote) = (
+            self.sign_in_account(&thread, cx),
+            self.remote_sign_in_runner(&thread, cx),
+        );
         if self.sign_in_needed(&thread, cx) {
             column = column.child(self.render_signin_banner(&thread, account, remote, cx));
         }
         if let Some(bar) = self.pending_reviews_bar(&thread, cx) {
             column = column.child(bar);
         }
-        column.child(div().flex_1().min_h_0().child(pane)).into_any_element()
+        column
+            .child(div().flex_1().min_h_0().child(pane))
+            .into_any_element()
     }
 
     /// In the main panel, for a thread that's open in a panel of its own
     /// (reached by Back, say): it can only show in one place at a time
     /// (`OpenElsewhereNote`).
-    pub(crate) fn render_open_elsewhere(&mut self, id: String, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_open_elsewhere(
+        &mut self,
+        id: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let me = cx.entity().downgrade();
-        let (go_id, here_id, here_me) = (id.clone(), id.clone(), me.clone());
-        let go = crate::push_button::PushButton::new("elsewhere-go", "Go to it", "Bring its panel to the front").render(cx, move |_, _, cx| {
+        let (go_id, here_id, here_me) = (id.clone(), id, me.clone());
+        let go = crate::push_button::PushButton::new(
+            "elsewhere-go",
+            "Go to it",
+            "Bring its panel to the front",
+        )
+        .render(cx, move |_, _, cx| {
             let panel = thread_panel(&go_id);
             me.update(cx, |this, cx| {
-                this.dock.update(cx, |m, cx| m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx));
+                this.dock.update(cx, |m, cx| {
+                    m.show(&panel, &[], DockDrop::window(DockEdge::Right), cx)
+                });
                 this.mark_thread_panels_seen(cx);
             })
             .ok();
         });
-        let here = crate::push_button::PushButton::new("elsewhere-here", "Show it here", "Close its panel and show the thread in the main panel").render(cx, move |_, window, cx| {
-            here_me.update(cx, |this, cx| this.move_to_main_panel(here_id.clone(), window, cx)).ok();
+        let here = crate::push_button::PushButton::new(
+            "elsewhere-here",
+            "Show it here",
+            "Close its panel and show the thread in the main panel",
+        )
+        .render(cx, move |_, window, cx| {
+            here_me
+                .update(cx, |this, cx| {
+                    this.move_to_main_panel(here_id.clone(), window, cx)
+                })
+                .ok();
         });
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap(px(10.))
-            .child(div().text_size(px(style::size::LABEL)).line_height(px(style::natural_line(style::size::LABEL))).text_color(style::secondary_text(cx)).child("This thread is open in its own panel."))
+            .child(
+                div()
+                    .text_size(px(style::size::LABEL))
+                    .line_height(px(style::natural_line(style::size::LABEL)))
+                    .text_color(style::secondary_text(cx))
+                    .child("This thread is open in its own panel."),
+            )
             .child(h_flex().gap(px(8.)).child(go).child(here))
             .into_any_element()
     }
@@ -342,13 +451,27 @@ impl Threadbear {
     /// their threads, and each thread's panel knows whether it's in front.
     /// A thread whose panel closed while the main panel had it selected
     /// behind the note shows there again, still reading.
-    pub(crate) fn thread_panels_layout_changed(&mut self, layout: &DockLayout, cx: &mut Context<Self>) {
+    pub(crate) fn thread_panels_layout_changed(
+        &mut self,
+        layout: &DockLayout,
+        cx: &mut Context<Self>,
+    ) {
         let main = layout.group_containing(MAIN);
-        self.thread_panels.main_tabs.retain(|p| main.as_ref().is_some_and(|g| g.panels.contains(p)));
-        let gone: Vec<String> = self.thread_panels.panes.keys().filter(|id| !layout.contains(&thread_panel(id))).cloned().collect();
+        self.thread_panels
+            .main_tabs
+            .retain(|p| main.as_ref().is_some_and(|g| g.panels.contains(p)));
+        let gone: Vec<String> = self
+            .thread_panels
+            .panes
+            .keys()
+            .filter(|id| !layout.contains(&thread_panel(id)))
+            .cloned()
+            .collect();
         let main_thread = self.pane.as_ref().map(|p| p.read(cx).summary.id.clone());
         for id in gone {
-            let Some(left) = self.thread_panels.panes.remove(&id) else { continue };
+            let Some(left) = self.thread_panels.panes.remove(&id) else {
+                continue;
+            };
             if self.selected.as_deref() == Some(id.as_str()) && self.pane.is_none() {
                 let (me, window) = (cx.entity().downgrade(), self.main_window);
                 cx.defer(move |cx| {
@@ -384,11 +507,14 @@ impl Threadbear {
     /// dragged out of the main panel's group first.
     pub(crate) fn open_main_tab(&mut self, panel: &str, cx: &mut Context<Self>) {
         let Some(main) = self.dock.read(cx).layout().group_containing(MAIN) else {
-            self.dock.update(cx, |m, cx| m.open(panel, DockDrop::window(DockEdge::Right), cx));
+            self.dock.update(cx, |m, cx| {
+                m.open(panel, DockDrop::window(DockEdge::Right), cx)
+            });
             return;
         };
         self.thread_panels.main_tabs.insert(panel.to_owned());
-        self.dock.update(cx, |m, cx| m.open(panel, DockDrop::tab(main.id), cx));
+        self.dock
+            .update(cx, |m, cx| m.open(panel, DockDrop::tab(main.id), cx));
     }
 
     /// The main panel moved to another thread, a new thread, a page or a
@@ -396,14 +522,23 @@ impl Threadbear {
     /// before go, and its own tab comes to the front. Run whenever the app
     /// changes, as that's every way the main panel can move on.
     pub(crate) fn main_context_maybe_changed(&mut self, cx: &mut Context<Self>) {
-        let now = MainContext { thread: self.selected.clone(), project: self.projects.open.clone(), page: self.home_page() };
+        let now = MainContext {
+            thread: self.selected.clone(),
+            project: self.projects.open.clone(),
+            page: self.home_page(),
+        };
         let before = self.thread_panels.context.replace(now.clone());
         if before.is_none() || before == Some(now) {
             return;
         }
         let layout = self.dock.read(cx).layout().clone();
         let main = layout.group_containing(MAIN);
-        let stale: Vec<String> = self.thread_panels.main_tabs.drain().filter(|p| main.as_ref().is_some_and(|g| g.panels.contains(p))).collect();
+        let stale: Vec<String> = self
+            .thread_panels
+            .main_tabs
+            .drain()
+            .filter(|p| main.as_ref().is_some_and(|g| g.panels.contains(p)))
+            .collect();
         if stale.is_empty() && main.as_ref().is_none_or(|g| g.selected == MAIN) {
             return;
         }
@@ -443,12 +578,21 @@ impl Threadbear {
 /// The automation's `open-panel`: a thread in a panel of its own, as the
 /// row's Open in New Panel, and `move-to-main`, as Move to Main Panel.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::TestWindowExt as _;
-    let start = cmd["id"].as_str().ok_or("id is the thread's id, or its start")?;
+    let start = cmd["id"]
+        .as_str()
+        .ok_or("id is the thread's id, or its start")?;
     let id = app.read(cx).thread_id_from(start)?;
     match cmd["cmd"].as_str() {
-        Some("move-to-main") => app.update(cx, |t, cx| t.move_to_main_panel(id.clone(), window, cx)),
+        Some("move-to-main") => {
+            app.update(cx, |t, cx| t.move_to_main_panel(id.clone(), window, cx))
+        }
         // `keepSelected`: the state the main panel's note is there for, which
         // no click reaches: the thread selected in the main panel as its own
         // panel opens (the Swift command does the same).
@@ -468,7 +612,8 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &serde_json::Value, wind
                 Some(main) => DockDrop::edge(main.id, DockEdge::Right),
                 None => DockDrop::window(DockEdge::Right),
             };
-            t.dock.update(cx, |m, cx| m.open(&thread_panel(&id), drop, cx));
+            t.dock
+                .update(cx, |m, cx| m.open(&thread_panel(&id), drop, cx));
             cx.notify();
             Ok(())
         })?,
@@ -478,4 +623,3 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &serde_json::Value, wind
     window.render_frame(cx);
     Ok(serde_json::json!(format!("ok {id}")))
 }
-

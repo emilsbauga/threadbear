@@ -6,11 +6,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation } from 'convex/react';
 import { api } from '../../convex/_generated/api';
-import type { Id } from '../../convex/_generated/dataModel';
 import { useLiveQuery, usePageAway } from './live';
 import { useInbox } from './inbox';
 import { MessageText } from './messages';
-import { CommandState } from './command-state';
+import { CommandNote, useCommand } from './command-state';
 import { go, projectPath, threadPath, type RailView, viewPath } from './route';
 import { ago, day, folderName } from './format';
 import { readTheme, setTheme, type Theme } from './theme';
@@ -226,25 +225,28 @@ export function SchedulePage({ token, id }: { token: string; id: string }) {
   const rows = useLiveQuery(api.phone.schedules, { token }) as Schedule[] | undefined;
   const runners = useLiveQuery(api.phone.runners, { token });
   const command = useMutation(api.phone.schedule);
-  const [pending, setPending] = useState<Id<'commands'> | null>(null);
+  // Pause, Resume and Run now: one at a time, the pressed one spinning.
+  const cmd = useCommand<'pause' | 'resume' | 'run'>(token);
   const now = useClock();
   if (!rows) return <div className="pad muted">Loading…</div>;
   const s = rows.find((x) => x.id === id);
   if (!s) return <PageGone view="scheduled" what="That schedule has gone." />;
   const runner = runners?.find((r) => r.runnerId === s.runnerId);
-  const act = async (action: 'pause' | 'resume' | 'run') => setPending(await command({ token, scheduleId: s.id, action }));
+  const act = (action: 'pause' | 'resume' | 'run') => void cmd.run(() => command({ token, scheduleId: s.id, action }), action);
+  const spins = (action: 'pause' | 'resume' | 'run') => (cmd.state.kind === 'sending' || cmd.state.kind === 'waiting') && cmd.state.payload === action;
+  const toggle = s.paused ? 'resume' : 'pause';
   const state = s.finishedAt ? `Finished ${day(s.finishedAt)}` : s.paused ? 'Paused' : s.nextRunAt ? `${new Date(s.nextRunAt).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}, ${untilWords(s.nextRunAt, now)}` : '';
   return (
     <div className="page">
       <PageHead view="scheduled" title={s.title}>
         {s.finishedAt ? null : (
           <>
-            <button className="btn" title={s.paused ? 'Let it run again' : 'Stop it running until you resume it'} onClick={() => void act(s.paused ? 'resume' : 'pause')}>
-              {s.paused ? <Icon.Play /> : <Icon.Pause />}
+            <button className="btn" title={s.paused ? 'Let it run again' : 'Stop it running until you resume it'} disabled={cmd.busy} onClick={() => act(toggle)}>
+              {spins(toggle) ? <span className="spinner" /> : s.paused ? <Icon.Play /> : <Icon.Pause />}
               {s.paused ? 'Resume' : 'Pause'}
             </button>
-            <button className="btn" title="Run it once now, whatever its next time is" onClick={() => void act('run')}>
-              <Icon.Play />
+            <button className="btn" title="Run it once now, whatever its next time is" disabled={cmd.busy} onClick={() => act('run')}>
+              {spins('run') ? <span className="spinner" /> : <Icon.Play />}
               Run now
             </button>
           </>
@@ -252,7 +254,7 @@ export function SchedulePage({ token, id }: { token: string; id: string }) {
       </PageHead>
       <div className="page-body">
         <div className="page-col">
-          {pending ? <CommandState token={token} commandId={pending} onDone={() => setPending(null)} /> : null}
+          <CommandNote command={cmd} />
           <dl className="facts">
             <dt>When</dt>
             <dd>{s.whenText}</dd>
@@ -702,18 +704,19 @@ export function NewThread({ token }: { token: string }) {
   const runners = useLiveQuery(api.phone.runners, { token });
   const [text, setText] = useState('');
   const [runnerId, setRunnerId] = useState('');
-  const [pending, setPending] = useState<Id<'commands'> | null>(null);
-  const command = useLiveQuery(api.phone.command, pending ? { token, commandId: pending } : 'skip');
+  // The text stays until the runner has made the thread, so a failure keeps it.
+  const cmd = useCommand(token);
   // The runner makes the thread, so it has an id once it's taken the command.
+  const made = cmd.state.kind === 'waiting' || cmd.state.kind === 'slow' || cmd.state.kind === 'done' ? cmd.state.threadId : undefined;
   useEffect(() => {
-    if (command?.threadId) go(threadPath(command.threadId));
-  }, [command?.threadId]);
+    if (made) go(threadPath(made));
+  }, [made]);
   const now = Date.now();
   const online = runnersShown(runners ?? [], now).filter((r) => isOnline(r, now));
   const submit = async () => {
     const body = text.trim();
-    if (!body || pending) return;
-    setPending(await create({ token, text: body, ...(runnerId ? { runnerId } : {}) }));
+    if (!body) return;
+    await cmd.run(() => create({ token, text: body, ...(runnerId ? { runnerId } : {}) }), undefined);
   };
   return (
     <div className="page">
@@ -726,7 +729,7 @@ export function NewThread({ token }: { token: string }) {
         </div>
       </header>
       <div className="new-thread">
-        {pending ? <CommandState token={token} commandId={pending} onDone={() => setPending(null)} /> : null}
+        <CommandNote command={cmd} />
         <div className="box">
           <form
             className="composer"
@@ -738,6 +741,7 @@ export function NewThread({ token }: { token: string }) {
             <textarea
               autoFocus
               value={text}
+              readOnly={cmd.busy}
               rows={Math.min(10, Math.max(2, text.split('\n').length))}
               placeholder="What should it do?"
               aria-label="What should it do?"
@@ -751,7 +755,7 @@ export function NewThread({ token }: { token: string }) {
             />
             <div className="tools-row">
               {online.length > 1 ? (
-                <select value={runnerId} onChange={(e) => setRunnerId(e.target.value)} aria-label="Runner" title="Which runner it starts on">
+                <select value={runnerId} disabled={cmd.busy} onChange={(e) => setRunnerId(e.target.value)} aria-label="Runner" title="Which runner it starts on">
                   <option value="">Main runner</option>
                   {online.map((r) => (
                     <option key={r.runnerId} value={r.runnerId}>
@@ -761,8 +765,8 @@ export function NewThread({ token }: { token: string }) {
                 </select>
               ) : null}
               <span className="grow" />
-              <button className="send" disabled={!text.trim() || !!pending} aria-label="Start the thread" title="Start the thread">
-                <Icon.Up />
+              <button className="send" disabled={!text.trim() || cmd.busy} aria-label="Start the thread" title="Start the thread">
+                {cmd.spinning ? <span className="spinner" /> : <Icon.Up />}
               </button>
             </div>
           </form>

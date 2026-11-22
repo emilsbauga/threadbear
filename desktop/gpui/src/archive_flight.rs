@@ -25,8 +25,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 pub(crate) use threadbear_core::archive_flight::Destination;
 use threadbear_core::archive_flight::{self as flight, Path};
@@ -70,7 +70,11 @@ pub(crate) fn mark(kind: Mark) -> impl IntoElement {
         move |bounds, window, _| {
             let visible = window.content_mask().bounds;
             if bounds.intersects(&visible) {
-                let shown = if kind == Mark::List { bounds.intersect(&visible) } else { bounds };
+                let shown = if kind == Mark::List {
+                    bounds.intersect(&visible)
+                } else {
+                    bounds
+                };
                 MARKS.with(|m| m.borrow_mut().sidebar.insert(kind, shown));
             }
         },
@@ -109,7 +113,10 @@ fn marked(kind: Mark) -> Option<Bounds<Pixels>> {
 }
 
 fn centre(b: Bounds<Pixels>) -> (f32, f32) {
-    (f32::from(b.origin.x) + f32::from(b.size.width) / 2., f32::from(b.origin.y) + f32::from(b.size.height) / 2.)
+    (
+        f32::from(b.origin.x) + f32::from(b.size.width) / 2.,
+        f32::from(b.origin.y) + f32::from(b.size.height) / 2.,
+    )
 }
 
 fn rect_json(b: Bounds<Pixels>) -> Value {
@@ -144,7 +151,9 @@ impl Flights {
     /// A page's on its way to its heading (the last flight hasn't landed).
     #[cfg(feature = "automation")]
     pub(crate) fn in_flight(&self) -> bool {
-        self.last.as_ref().is_some_and(|l| l["landed"] == json!(false))
+        self.last
+            .as_ref()
+            .is_some_and(|l| l["landed"] == json!(false))
     }
 
     pub(crate) fn dump(&self) -> Value {
@@ -152,7 +161,11 @@ impl Flights {
         // A heading that only turns up as the page lands (the first thread
         // to hibernate) is measured the first time it's drawn after.
         if last["landed"] == json!(true) && last["landedBox"].is_null() {
-            let kind = if last["to"] == json!("archive") { Mark::ArchiveBox } else { Mark::HibernateBox };
+            let kind = if last["to"] == json!("archive") {
+                Mark::ArchiveBox
+            } else {
+                Mark::HibernateBox
+            };
             last["landedBox"] = marked(kind).map(rect_json).unwrap_or(Value::Null);
         }
         last
@@ -160,16 +173,33 @@ impl Flights {
 
     /// The flights, over the whole window. Drawn by the shell.
     pub(crate) fn overlay(&mut self, cx: &mut App) -> AnyElement {
-        let view = self.view.get_or_insert_with(|| cx.new(|_| FlightView::default())).clone();
-        deferred(div().absolute().top_0().left_0().size_full().child(view)).with_priority(1).into_any_element()
+        let view = self
+            .view
+            .get_or_insert_with(|| cx.new(|_| FlightView::default()))
+            .clone();
+        deferred(div().absolute().top_0().left_0().size_full().child(view))
+            .with_priority(1)
+            .into_any_element()
     }
 
     /// A heading's box or moon, bouncing for a moment when a page lands in
     /// it: the box hops (`.symbolEffect(.bounce)`), the moon dips and lifts
     /// a shade (`.bounce.down` with a brightness phase).
-    pub(crate) fn landing_icon(&self, key: &str, icon: gpui_kit::component::Icon, base: Hsla, lit: Hsla, reduce: bool) -> AnyElement {
+    pub(crate) fn landing_icon(
+        &self,
+        key: &str,
+        icon: gpui_kit::component::Icon,
+        base: Hsla,
+        lit: Hsla,
+        reduce: bool,
+    ) -> AnyElement {
         const BOUNCE: Duration = Duration::from_millis(500);
-        let Some((count, at)) = self.landings.get(key).copied().filter(|(_, at)| at.elapsed() < BOUNCE * 2) else {
+        let Some((count, at)) = self
+            .landings
+            .get(key)
+            .copied()
+            .filter(|(_, at)| at.elapsed() < BOUNCE * 2)
+        else {
             return icon.into_any_element();
         };
         if reduce {
@@ -178,15 +208,26 @@ impl Flights {
         let moon = key == "hibernating";
         // Keyed by the landing, so each one plays it once; and only soon
         // after it, so a heading scrolled away and back doesn't play it again.
-        icon.with_animation(SharedString::from(format!("landing-{key}-{count}-{at:?}")), Animation::new(BOUNCE), move |icon, t| {
-            // Up and back with a little settle, as the symbol's bounce does.
-            let lift = (std::f32::consts::PI * t).sin() * (1. - 0.5 * t);
-            if moon {
-                icon.transform(Transformation::translate(point(gpui_kit::px(0.), gpui_kit::px(style::zoomed(2.5) * lift)))).text_color(base.blend(lit.opacity(0.7 * lift)))
-            } else {
-                icon.transform(Transformation::scale(size(1. + 0.3 * lift, 1. + 0.3 * lift)))
-            }
-        })
+        icon.with_animation(
+            SharedString::from(format!("landing-{key}-{count}-{at:?}")),
+            Animation::new(BOUNCE),
+            move |icon, t| {
+                // Up and back with a little settle, as the symbol's bounce does.
+                let lift = (std::f32::consts::PI * t).sin() * (1. - 0.5 * t);
+                if moon {
+                    icon.transform(Transformation::translate(point(
+                        gpui_kit::px(0.),
+                        gpui_kit::px(style::zoomed(2.5) * lift),
+                    )))
+                    .text_color(base.blend(lit.opacity(0.7 * lift)))
+                } else {
+                    icon.transform(Transformation::scale(size(
+                        1. + 0.3 * lift,
+                        1. + 0.3 * lift,
+                    )))
+                }
+            },
+        )
         .into_any_element()
     }
 }
@@ -197,18 +238,33 @@ impl Threadbear {
     /// page or a thread in a panel of its own). Call it before the thread
     /// changes and the next one opens, as it reads where things are drawn
     /// now. False when it didn't start.
-    pub(crate) fn launch_flight(&mut self, id: &str, to: Destination, cx: &mut Context<Self>) -> bool {
-        if self.selected.as_deref() != Some(id) || self.subagent_pane.is_some() || self.open_project().is_some() || self.home_page().is_some() {
+    pub(crate) fn launch_flight(
+        &mut self,
+        id: &str,
+        to: Destination,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.selected.as_deref() != Some(id)
+            || self.subagent_pane.is_some()
+            || self.open_project().is_some()
+            || self.home_page().is_some()
+        {
             return false;
         }
         // The pane's entity, not the pane: an Archive on the done card is a
         // click in the pane, which is being updated while this runs.
-        let Some(pane) = self.pane.as_ref().map(|p| p.entity_id()) else { return false };
-        let Some(rect) = MARKS.with(|m| m.borrow().transcripts.get(&pane).copied()) else { return false };
+        let Some(pane) = self.pane.as_ref().map(|p| p.entity_id()) else {
+            return false;
+        };
+        let Some(rect) = MARKS.with(|m| m.borrow().transcripts.get(&pane).copied()) else {
+            return false;
+        };
         if f32::from(rect.size.width) <= 1. || f32::from(rect.size.height) <= 1. {
             return false;
         }
-        let Some(thread) = self.threads.get(id) else { return false };
+        let Some(thread) = self.threads.get(id) else {
+            return false;
+        };
         // A starred thread stays in Starred however long it sleeps: nowhere to fly to.
         if to == Destination::Hibernate && (thread.is_starred() || thread.is_archived()) {
             return false;
@@ -223,7 +279,15 @@ impl Threadbear {
             // heading scrolled away isn't marked at all.
             Destination::Hibernate => {
                 let now = crate::now_ms();
-                let there = self.flight.flying.values().any(|d| *d == Destination::Hibernate) || self.shown_sections(cx, now).iter().any(|s| s.key == "hibernating" && s.rows.iter().any(|t| t.id != id));
+                let there = self
+                    .flight
+                    .flying
+                    .values()
+                    .any(|d| *d == Destination::Hibernate)
+                    || self
+                        .shown_sections(cx, now)
+                        .iter()
+                        .any(|s| s.key == "hibernating" && s.rows.iter().any(|t| t.id != id));
                 if there {
                     marked(Mark::HibernateBox)
                 } else {
@@ -231,14 +295,43 @@ impl Threadbear {
                 }
             }
         };
-        let open_row = marked(Mark::OpenRow).map(|b| (f32::from(b.origin.y), f32::from(b.size.height)));
-        let list = marked(Mark::List).map(|b| (f32::from(b.origin.x), f32::from(b.origin.y) + f32::from(b.size.height)));
-        let target = if reduced { None } else { flight::target(box_mark.map(centre), open_row, list, style::zoomed(OUTER_INSET + LEADING + 7.)) };
-        let path = target.map(|(end, on_heading)| Path { start: centre(rect), end, swing: style::zoomed(to.swing()), on_heading, to });
+        let open_row =
+            marked(Mark::OpenRow).map(|b| (f32::from(b.origin.y), f32::from(b.size.height)));
+        let list = marked(Mark::List).map(|b| {
+            (
+                f32::from(b.origin.x),
+                f32::from(b.origin.y) + f32::from(b.size.height),
+            )
+        });
+        let target = if reduced {
+            None
+        } else {
+            flight::target(
+                box_mark.map(centre),
+                open_row,
+                list,
+                style::zoomed(OUTER_INSET + LEADING + 7.),
+            )
+        };
+        let path = target.map(|(end, on_heading)| Path {
+            start: centre(rect),
+            end,
+            swing: style::zoomed(to.swing()),
+            on_heading,
+            to,
+        });
         self.flight.serial += 1;
         let serial = self.flight.serial;
         let started = Rc::new(Cell::new(None));
-        let card = Card { to, rect, path, started: started.clone(), seed: id.bytes().fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)) };
+        let card = Card {
+            to,
+            rect,
+            path,
+            started: started.clone(),
+            seed: id
+                .bytes()
+                .fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)),
+        };
         let lands_in = card.flight_time();
         self.flight.last = Some(json!({
             "to": to.name(),
@@ -249,7 +342,11 @@ impl Threadbear {
             "landed": false,
             "landedBox": Value::Null,
         }));
-        let view = self.flight.view.get_or_insert_with(|| cx.new(|_| FlightView::default())).clone();
+        let view = self
+            .flight
+            .view
+            .get_or_insert_with(|| cx.new(|_| FlightView::default()))
+            .clone();
         view.update(cx, |v, cx| {
             v.cards.push(card);
             cx.notify();
@@ -264,12 +361,17 @@ impl Threadbear {
             loop {
                 let from = started.get().unwrap_or(launched);
                 let left = lands_in.saturating_sub(from.elapsed());
-                if left.is_zero() && (started.get().is_some() || launched.elapsed() > Duration::from_secs(1)) {
+                if left.is_zero()
+                    && (started.get().is_some() || launched.elapsed() > Duration::from_secs(1))
+                {
                     break;
                 }
-                cx.background_executor().timer(left.max(Duration::from_millis(16))).await;
+                cx.background_executor()
+                    .timer(left.max(Duration::from_millis(16)))
+                    .await;
             }
-            this.update(cx, |this, cx| this.flight_landed(&id, to, serial, cx)).ok();
+            this.update(cx, |this, cx| this.flight_landed(&id, to, serial, cx))
+                .ok();
         })
         .detach();
         true
@@ -281,11 +383,23 @@ impl Threadbear {
         if self.flight.flying.get(id) == Some(&to) {
             self.flight.flying.remove(id);
         }
-        let key = if to == Destination::Archive { "archived" } else { "hibernating" };
-        let entry = self.flight.landings.entry(key).or_insert((0, Instant::now()));
+        let key = if to == Destination::Archive {
+            "archived"
+        } else {
+            "hibernating"
+        };
+        let entry = self
+            .flight
+            .landings
+            .entry(key)
+            .or_insert((0, Instant::now()));
         *entry = (entry.0 + 1, Instant::now());
         if serial == self.flight.serial {
-            let landed_box = marked(if to == Destination::Archive { Mark::ArchiveBox } else { Mark::HibernateBox });
+            let landed_box = marked(if to == Destination::Archive {
+                Mark::ArchiveBox
+            } else {
+                Mark::HibernateBox
+            });
             if let Some(last) = self.flight.last.as_mut() {
                 last["landed"] = json!(true);
                 last["landedBox"] = landed_box.map(rect_json).unwrap_or(Value::Null);
@@ -321,7 +435,8 @@ impl Card {
 
     /// Until the page has gone and the next thread is all there.
     fn done(&self, elapsed: Duration) -> bool {
-        elapsed >= self.flight_time() && flight::next_thread_shown(elapsed, self.to, self.path.is_none()) >= 1.
+        elapsed >= self.flight_time()
+            && flight::next_thread_shown(elapsed, self.to, self.path.is_none()) >= 1.
     }
 }
 
@@ -338,9 +453,15 @@ impl Render for FlightView {
                 c.started.set(Some(now));
             }
         }
-        self.cards.retain(|c| !c.done(now.duration_since(c.started.get().unwrap_or(now))));
+        self.cards
+            .retain(|c| !c.done(now.duration_since(c.started.get().unwrap_or(now))));
         let theme = cx.theme();
-        let (page, line, bubble, border) = (theme.background, theme.muted_foreground.opacity(0.22), theme.muted_foreground.opacity(0.12), theme.border.opacity(0.6));
+        let (page, line, bubble, border) = (
+            theme.background,
+            theme.muted_foreground.opacity(0.22),
+            theme.muted_foreground.opacity(0.12),
+            theme.border.opacity(0.6),
+        );
         let mut layer = div().absolute().top_0().left_0().size_full();
         if !self.cards.is_empty() {
             window.request_animation_frame();
@@ -366,17 +487,49 @@ impl Render for FlightView {
                 // A quick ease-in fade where it is.
                 None => {
                     let (x, y) = centre(card.rect);
-                    (flight::Frame { x, y, scale: 1., tilt: 0., corner_radius: 6., opacity: 1. - t * t, dimming: 0. }, 0.)
+                    (
+                        flight::Frame {
+                            x,
+                            y,
+                            scale: 1.,
+                            tilt: 0.,
+                            corner_radius: 6.,
+                            opacity: 1. - t * t,
+                            dimming: 0.,
+                        },
+                        0.,
+                    )
                 }
             };
-            let (w, h) = (f32::from(card.rect.size.width) * frame.scale, f32::from(card.rect.size.height) * frame.scale);
-            let bounds = Bounds { origin: point(gpui_kit::px(frame.x - w / 2.), gpui_kit::px(frame.y - h / 2.)), size: size(gpui_kit::px(w), gpui_kit::px(h)) };
+            let (w, h) = (
+                f32::from(card.rect.size.width) * frame.scale,
+                f32::from(card.rect.size.height) * frame.scale,
+            );
+            let bounds = Bounds {
+                origin: point(
+                    gpui_kit::px(frame.x - w / 2.),
+                    gpui_kit::px(frame.y - h / 2.),
+                ),
+                size: size(gpui_kit::px(w), gpui_kit::px(h)),
+            };
             let radius = frame.corner_radius * frame.scale;
-            let mut el = placed(bounds, radius).bg(page).border_1().border_color(border).overflow_hidden().opacity(frame.opacity);
+            let mut el = placed(bounds, radius)
+                .bg(page)
+                .border_1()
+                .border_color(border)
+                .overflow_hidden()
+                .opacity(frame.opacity);
             el = el.child(transcript_shape(card, frame.scale, line, bubble));
             if dimming > 0. {
                 // Dark rather than see-through: only black reads as the lights going down.
-                el = el.child(div().absolute().top_0().left_0().size_full().bg(gpui_kit::black().opacity(dimming)));
+                el = el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(gpui_kit::black().opacity(dimming)),
+                );
             }
             layer = layer.child(el);
         }
@@ -386,7 +539,13 @@ impl Render for FlightView {
 
 /// A box at `bounds` in the window.
 fn placed(bounds: Bounds<Pixels>, radius: f32) -> Div {
-    div().absolute().left(bounds.origin.x).top(bounds.origin.y).w(bounds.size.width).h(bounds.size.height).rounded(gpui_kit::px(radius))
+    div()
+        .absolute()
+        .left(bounds.origin.x)
+        .top(bounds.origin.y)
+        .w(bounds.size.width)
+        .h(bounds.size.height)
+        .rounded(gpui_kit::px(radius))
 }
 
 /// What the page has on it, at its scale: the shape of a transcript (his
@@ -395,21 +554,50 @@ fn placed(bounds: Bounds<Pixels>, radius: f32) -> Div {
 fn transcript_shape(card: &Card, scale: f32, line: Hsla, bubble: Hsla) -> impl IntoElement {
     let z = |v: f32| gpui_kit::px(style::zoomed(v) * scale);
     let height = f32::from(card.rect.size.height) / style::zoomed(1.).max(0.01);
-    let mut col = div().absolute().top_0().left_0().size_full().flex().flex_col().px(z(36.)).pt(z(24.));
+    let mut col = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .flex_col()
+        .px(z(36.))
+        .pt(z(24.));
     let mut seed = card.seed;
     let mut next = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((seed >> 33) % 1000) as f32 / 1000.
     };
     let mut used = 24.;
     while used < height {
         let width = 0.35 + 0.25 * next();
-        col = col.child(div().w_full().flex().flex_row().justify_end().child(div().w(relative(width)).h(z(30.)).rounded(z(12.)).bg(bubble)));
+        col = col.child(
+            div().w_full().flex().flex_row().justify_end().child(
+                div()
+                    .w(relative(width))
+                    .h(z(30.))
+                    .rounded(z(12.))
+                    .bg(bubble),
+            ),
+        );
         used += 30. + 20.;
         let lines = 2 + (next() * 4.) as usize;
         for i in 0..lines {
-            let width = if i + 1 == lines { 0.3 + 0.4 * next() } else { 0.85 + 0.15 * next() };
-            col = col.child(div().mt(z(if i == 0 { 20. } else { 9. })).w(relative(width)).h(z(7.)).rounded(z(3.5)).bg(line));
+            let width = if i + 1 == lines {
+                0.3 + 0.4 * next()
+            } else {
+                0.85 + 0.15 * next()
+            };
+            col = col.child(
+                div()
+                    .mt(z(if i == 0 { 20. } else { 9. }))
+                    .w(relative(width))
+                    .h(z(7.))
+                    .rounded(z(3.5))
+                    .bg(line),
+            );
             used += 16.;
         }
         col = col.child(div().h(z(26.)));

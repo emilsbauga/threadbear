@@ -1,6 +1,6 @@
 import Foundation
 
-/// Another lab's review of a turn's change (docs/protocol.md, "Review by
+/// Another lab's review of a turn's change (docs/protocol/needs-you.md, "Review by
 /// another lab"): the thread row's `review` (backend API 76), for the turn
 /// its `cardTurn` names. Decoded leniently, field by field, so a ledger in a
 /// shape this phone doesn't know never stops the thread loading.

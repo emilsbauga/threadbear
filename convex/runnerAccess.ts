@@ -1,4 +1,4 @@
-// Who a runner key is, and what it may do (docs/protocol.md, "Runner keys").
+// Who a runner key is, and what it may do (docs/protocol/keys.md, "Runner keys").
 // Plain TypeScript with no Convex imports, so the runner's unit tests can
 // check every rule without a deployment; lib.ts runnerAuth looks the key up
 // and the functions in sync.ts ask these.
@@ -501,7 +501,7 @@ export function badRunnerStats(stats: Record<string, unknown>): string | undefin
 // so none can carry text a terminal would run when an audit lists it.
 export const SCHEDULE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-// ---- shared usage readings (sync:sharedUsage, docs/protocol.md "Runner keys")
+// ---- shared usage readings (sync:sharedUsage, docs/protocol/keys.md "Runner keys")
 
 // A login as two runners compare it: the same subscription wherever it's
 // signed in.

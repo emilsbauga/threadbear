@@ -54,11 +54,13 @@ struct PairView: View {
                 model.askToPair(raw, from: .pasted)
             }
             .font(.subheadline)
+            .disabled(model.isPairing)
             // Made-up threads on the phone only, for a look before there's
             // a Mac to pair with (and for App Review).
             Button("Look around with sample threads") { model.startDemo() }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .disabled(model.isPairing)
         }
         .padding(32)
         .fullScreenCover(isPresented: $scanning, onDismiss: {

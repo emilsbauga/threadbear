@@ -16,13 +16,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // Shadows gpui's px, so sizes here follow the app's zoom (style.rs).
 use crate::style::px;
+use crate::tips::Tip as _;
 use serde_json::{json, Value};
-use threadbear_client::runner::{RpcError, Status};
+use threadbear_client::runner::RpcError;
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::logins::RunnerLogins;
 use threadbear_core::new_thread::{self as draft_rules, Draft, NewThreadPicks, RoomCard, RoomLook};
 use threadbear_core::reducer::ImageRef;
-use crate::tips::Tip as _;
 
 /// Everything about the new thread being written; the app holds one.
 pub(crate) struct NewThreadState {
@@ -39,7 +39,7 @@ pub(crate) struct NewThreadState {
     /// The box should take the cursor at the next render (⌘N, or the button).
     pub(crate) focus_pending: bool,
     /// The settings last sent to `threads.warm`, and the id the runner gave
-    /// for them (docs/protocol.md, "Warm start"): sent back with
+    /// for them (docs/protocol/connection.md, "Warm start"): sent back with
     /// `threads.create` while the box still has those settings.
     pub(crate) warm_asked: Option<Value>,
     pub(crate) warm: Option<(Value, String)>,
@@ -47,7 +47,17 @@ pub(crate) struct NewThreadState {
 
 impl NewThreadState {
     pub(crate) fn new() -> Self {
-        NewThreadState { composer: None, picks: NewThreadPicks::default(), prefs: prefs::load(), creating: false, error: None, runner_problem: None, focus_pending: false, warm_asked: None, warm: None }
+        NewThreadState {
+            composer: None,
+            picks: NewThreadPicks::default(),
+            prefs: prefs::load(),
+            creating: false,
+            error: None,
+            runner_problem: None,
+            focus_pending: false,
+            warm_asked: None,
+            warm: None,
+        }
     }
 
     /// Saved when something that sticks changes (a model, a login used, the
@@ -76,9 +86,19 @@ impl Threadbear {
         self.new_thread_logins().cloned().unwrap_or_default()
     }
 
-    pub(crate) fn with_draft<R>(&self, logins: &RunnerLogins, f: impl FnOnce(&Draft<'_>) -> R) -> R {
+    pub(crate) fn with_draft<R>(
+        &self,
+        logins: &RunnerLogins,
+        f: impl FnOnce(&Draft<'_>) -> R,
+    ) -> R {
         let home = home_dir();
-        let draft = Draft { logins, picks: &self.new_thread.picks, mem: &self.new_thread.prefs.remembered, home: &home, now_ms: now_ms() };
+        let draft = Draft {
+            logins,
+            picks: &self.new_thread.picks,
+            mem: &self.new_thread.prefs.remembered,
+            home: &home,
+            now_ms: now_ms(),
+        };
         f(&draft)
     }
 
@@ -86,7 +106,10 @@ impl Threadbear {
     /// `threads.create` would send them, without the words. None for a thread
     /// that starts on another runner or a virtual one, or while disconnected.
     fn warm_params(&self) -> Option<Value> {
-        if self.new_thread.picks.runner.is_some() || self.new_thread.picks.service.is_some() || !matches!(self.status, Status::Connected { .. }) {
+        if self.new_thread.picks.runner.is_some()
+            || self.new_thread.picks.service.is_some()
+            || !self.connected()
+        {
             return None;
         }
         let logins = self.draft_logins();
@@ -102,11 +125,13 @@ impl Threadbear {
     }
 
     /// Asks the runner to start the new thread's CLI now, while its first
-    /// message is written (docs/protocol.md, "Warm start"), unless it was
+    /// message is written (docs/protocol/connection.md, "Warm start"), unless it was
     /// already asked for these settings. On ⌘N or the button, and as the box
     /// changes, so a folder or model picked after opening gets its own.
     pub(crate) fn warm_new_thread(&mut self, cx: &mut Context<Self>) {
-        let Some(params) = self.warm_params() else { return };
+        let Some(params) = self.warm_params() else {
+            return;
+        };
         if self.new_thread.warm_asked.as_ref() == Some(&params) {
             return;
         }
@@ -115,7 +140,9 @@ impl Threadbear {
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let res = call(client, "threads.warm", params.clone()).await;
-            let id = res.ok().and_then(|v| v["warmId"].as_str().map(str::to_owned));
+            let id = res
+                .ok()
+                .and_then(|v| v["warmId"].as_str().map(str::to_owned));
             this.update(cx, |this, _| {
                 // Only for the settings still asked for.
                 if this.new_thread.warm_asked.as_ref() == Some(&params) {
@@ -137,8 +164,20 @@ impl Threadbear {
                 account_id: d.account_id(),
                 provider: provider.clone(),
                 pool_id: d.pool_id(),
-                model: self.new_thread.prefs.remembered.last_models.get(&provider).cloned(),
-                effort: self.new_thread.prefs.remembered.last_efforts.get(&provider).cloned(),
+                model: self
+                    .new_thread
+                    .prefs
+                    .remembered
+                    .last_models
+                    .get(&provider)
+                    .cloned(),
+                effort: self
+                    .new_thread
+                    .prefs
+                    .remembered
+                    .last_efforts
+                    .get(&provider)
+                    .cloned(),
                 permission_mode: d.permission(),
                 cwd: d.cwd(),
                 ..Default::default()
@@ -146,7 +185,11 @@ impl Threadbear {
         })
     }
 
-    pub(crate) fn ensure_new_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
+    pub(crate) fn ensure_new_composer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Composer> {
         if let Some(composer) = &self.new_thread.composer {
             return composer.clone();
         }
@@ -164,31 +207,57 @@ impl Threadbear {
     /// another runner is chosen): the words stay in the box, greyed, with a
     /// spinner for Send until the runner has made the thread; then it opens.
     /// While disconnected nothing is touched at all.
-    pub(crate) fn send_new_thread(&mut self, text: String, images: Vec<ImageRef>, stored: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn send_new_thread(
+        &mut self,
+        text: String,
+        images: Vec<ImageRef>,
+        stored: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.new_thread.creating {
             return;
         }
-        if !matches!(self.status, Status::Connected { .. }) {
-            self.new_thread.error = Some("Not connected to the runner, so that wasn't sent. It's still in the box.".to_owned());
+        if !self.connected() {
+            self.new_thread.error = Some(
+                "Not connected to the runner, so that wasn't sent. It's still in the box."
+                    .to_owned(),
+            );
             cx.notify();
             return;
         }
         let logins = self.draft_logins();
         let runner = self.new_thread.picks.runner.clone();
-        let logins_known = runner.is_none() || self.remote.logins.contains_key(runner.as_deref().unwrap_or(""));
+        let logins_known = runner.is_none()
+            || self
+                .remote
+                .logins
+                .contains_key(runner.as_deref().unwrap_or(""));
         let image_json: Vec<Value> = images.iter().map(crate::composer::image_ref_json).collect();
-        let mut params = self.with_draft(&logins, |d| d.create_params(&text, image_json, !logins_known));
+        let mut params = self.with_draft(&logins, |d| {
+            d.create_params(&text, image_json, !logins_known)
+        });
         if let Some(runner) = &runner {
             params["runnerId"] = json!(runner);
         }
         // A virtual runner: the folder and login are this Mac's, and the
         // runner here starts the thread there (Virtual runners, "Starting
         // from the Mac"); the box's runner comes back as the thread's.
-        let service = self.new_thread.picks.service.clone().filter(|_| runner.is_none());
+        let service = self
+            .new_thread
+            .picks
+            .service
+            .clone()
+            .filter(|_| runner.is_none());
         if let Some(service) = &service {
             params["serviceId"] = json!(service);
         }
-        let project = self.new_thread.picks.project.clone().filter(|p| self.sidebar.projects.iter().any(|known| &known.id == p));
+        let project = self
+            .new_thread
+            .picks
+            .project
+            .clone()
+            .filter(|p| self.sidebar.projects.iter().any(|known| &known.id == p));
         if let Some(project) = &project {
             params["projectIds"] = json!([project]);
         }
@@ -208,21 +277,59 @@ impl Threadbear {
         crate::activity::sent(None, images.len(), 0, false);
         cx.notify();
         let client = self.client.clone();
-        let runner_name = runner.as_deref().map(|id| self.runner_name_of(id)).or_else(|| service.as_deref().map(|id| self.service_name_of(id)));
+        let runner_name = runner
+            .as_deref()
+            .map(|id| self.runner_name_of(id))
+            .or_else(|| service.as_deref().map(|id| self.service_name_of(id)));
         cx.spawn_in(window, async move |this, cx| {
             let res = call(client, "threads.create", params).await;
             // On a virtual runner, the thread is its box's runner's.
-            let runner = runner.or_else(|| service.and_then(|_| res.as_ref().ok().and_then(|v| v["thread"]["runnerId"].as_str()).filter(|id| !id.is_empty()).map(str::to_owned)));
-            this.update_in(cx, |this, window, cx| this.finish_new_thread(res, stored, runner, runner_name, account, used_pool, window, cx)).ok();
+            let runner = runner.or_else(|| {
+                service.and_then(|_| {
+                    res.as_ref()
+                        .ok()
+                        .and_then(|v| v["thread"]["runnerId"].as_str())
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                })
+            });
+            this.update_in(cx, |this, window, cx| {
+                this.finish_new_thread(
+                    res,
+                    stored,
+                    runner,
+                    runner_name,
+                    account,
+                    used_pool,
+                    window,
+                    cx,
+                )
+            })
+            .ok();
         })
         .detach();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn finish_new_thread(&mut self, res: Result<Value, RpcError>, stored: String, runner: Option<String>, runner_name: Option<String>, account: String, used_pool: bool, window: &mut Window, cx: &mut Context<Self>) {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+    )]
+    pub(crate) fn finish_new_thread(
+        &mut self,
+        res: Result<Value, RpcError>,
+        stored: String,
+        runner: Option<String>,
+        runner_name: Option<String>,
+        account: String,
+        used_pool: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.new_thread.creating = false;
         let thread = match res {
-            Ok(value) => serde_json::from_value::<ThreadSummary>(value["thread"].clone()).ok().filter(|t| !t.id.is_empty()),
+            Ok(value) => serde_json::from_value::<ThreadSummary>(value["thread"].clone())
+                .ok()
+                .filter(|t| !t.id.is_empty()),
             Err(e) => {
                 // The draft never left the box.
                 self.new_thread.error = Some(match &runner_name {
@@ -246,16 +353,31 @@ impl Threadbear {
         // as used. A thread started on another runner doesn't move this
         // Mac's last login (`sendNewThread` doesn't remember one).
         if runner.is_none() {
-            let used = if used_pool { thread.account_id.clone() } else { account };
-            let provider = self.logins.account(&used).map_or("claude", |a| a.provider_id()).to_owned();
-            self.new_thread.prefs.remembered.used_account(&used, &provider);
+            let used: &str = if used_pool {
+                &thread.account_id
+            } else {
+                &account
+            };
+            let provider = self
+                .logins
+                .account(used)
+                .map_or("claude", |a| a.provider_id())
+                .to_owned();
+            self.new_thread
+                .prefs
+                .remembered
+                .used_account(used, &provider);
             self.new_thread.save();
         }
         // The folder and a picked login or pool were for this thread; the
         // next one starts from the defaults again. The model, effort and mode
         // stick (Remembered).
         let picks = &mut self.new_thread.picks;
-        *picks = NewThreadPicks { runner: None, runner_picked: false, ..Default::default() };
+        *picks = NewThreadPicks {
+            runner: None,
+            runner_picked: false,
+            ..Default::default()
+        };
         self.new_thread.runner_problem = None;
         thread.runner_id = runner.clone();
         if runner.is_some() {
@@ -275,7 +397,9 @@ impl Threadbear {
         // started): the thread takes the page's place in back/forward, so the
         // mouse's back button goes to where Mike was before ⌘N, not to the
         // emptied box (`showStartedThread`; missed in the port, 18 Nov).
-        let page = (self.selected.is_none() && self.home_page().is_none() && self.projects.open.is_none()).then(|| self.place());
+        let page =
+            (self.selected.is_none() && self.home_page().is_none() && self.projects.open.is_none())
+                .then(|| self.place());
         self.open(id, window, cx);
         if let Some(page) = page {
             self.history.drop_previous_if(&page);
@@ -305,14 +429,23 @@ impl Threadbear {
             self.new_thread.picks.account = None;
             self.new_thread.picks.pool = Some(pool.to_owned());
             self.new_thread.picks.provider = provider.clone();
-            self.new_thread.prefs.remembered.used_pool(pool, provider.as_deref());
+            self.new_thread
+                .prefs
+                .remembered
+                .used_pool(pool, provider.as_deref());
         }
         let provider = self.with_draft(&logins, |d| d.provider());
         if let Some(model) = params.get("model") {
-            self.new_thread.prefs.remembered.set_model(&provider, model.as_str());
+            self.new_thread
+                .prefs
+                .remembered
+                .set_model(&provider, model.as_str());
         }
         if let Some(effort) = params.get("effort") {
-            self.new_thread.prefs.remembered.set_effort(&provider, effort.as_str());
+            self.new_thread
+                .prefs
+                .remembered
+                .set_effort(&provider, effort.as_str());
         }
         self.new_thread.save();
         cx.notify();
@@ -323,7 +456,12 @@ impl Threadbear {
     /// `chooseNewThreadRunner`: this Mac (nil), or another runner: what was
     /// picked so far was for this Mac, so it goes back to that runner's
     /// defaults, and its logins are fetched for the pickers.
-    pub(crate) fn choose_new_thread_runner(&mut self, runner: Option<String>, by_mike: bool, cx: &mut Context<Self>) {
+    pub(crate) fn choose_new_thread_runner(
+        &mut self,
+        runner: Option<String>,
+        by_mike: bool,
+        cx: &mut Context<Self>,
+    ) {
         if by_mike {
             self.new_thread.picks.runner_picked = true;
         }
@@ -355,7 +493,12 @@ impl Threadbear {
     /// A virtual runner for the new thread (Runs on's entries after the
     /// machines): the draft goes back to this Mac's folder and logins, as
     /// the runner here reads the repo and the login's email for it.
-    pub(crate) fn choose_new_thread_service(&mut self, service: String, by_mike: bool, cx: &mut Context<Self>) {
+    pub(crate) fn choose_new_thread_service(
+        &mut self,
+        service: String,
+        by_mike: bool,
+        cx: &mut Context<Self>,
+    ) {
         if by_mike {
             self.new_thread.picks.runner_picked = true;
         }
@@ -372,7 +515,11 @@ impl Threadbear {
 
     /// A virtual runner's name, or "the cloud" for one no longer listed.
     pub(crate) fn service_name_of(&self, id: &str) -> String {
-        self.remote.services().iter().find(|s| s.id == id).map_or_else(|| "the cloud".to_owned(), |s| s.name.clone())
+        self.remote
+            .services()
+            .iter()
+            .find(|s| s.id == id)
+            .map_or_else(|| "the cloud".to_owned(), |s| s.name.clone())
     }
 
     /// Default ▸ a virtual runner: new threads start there.
@@ -404,10 +551,28 @@ impl Threadbear {
             return;
         }
         // A virtual runner's always there while it's listed.
-        if let Some(service) = self.new_thread.prefs.remembered.default_service.clone().filter(|id| self.remote.services().iter().any(|s| &s.id == id)) {
+        if let Some(service) = self
+            .new_thread
+            .prefs
+            .remembered
+            .default_service
+            .clone()
+            .filter(|id| self.remote.services().iter().any(|s| &s.id == id))
+        {
             return self.choose_new_thread_service(service, false, cx);
         }
-        let ready = self.new_thread.prefs.remembered.default_runner.clone().filter(|id| self.remote.machines().iter().any(|r| &r.id == id && r.online));
+        let ready = self
+            .new_thread
+            .prefs
+            .remembered
+            .default_runner
+            .clone()
+            .filter(|id| {
+                self.remote
+                    .machines()
+                    .iter()
+                    .any(|r| &r.id == id && r.online)
+            });
         self.choose_new_thread_runner(ready, false, cx);
     }
 
@@ -419,9 +584,32 @@ impl Threadbear {
         let service = self.new_thread.picks.service.clone();
         let default = self.new_thread.prefs.remembered.default_runner.clone();
         let default_service = self.new_thread.prefs.remembered.default_service.clone();
-        let mut lines = vec![format!("{}This Mac{}", if chosen.is_none() && service.is_none() { "[x] " } else { "[ ] " }, if default.is_none() && default_service.is_none() { " *" } else { "" }), "---".to_owned()];
+        let mut lines = vec![
+            format!(
+                "{}This Mac{}",
+                if chosen.is_none() && service.is_none() {
+                    "[x] "
+                } else {
+                    "[ ] "
+                },
+                if default.is_none() && default_service.is_none() {
+                    " *"
+                } else {
+                    ""
+                }
+            ),
+            "---".to_owned(),
+        ];
         for runner in &self.remote.machines() {
-            let mut line = format!("{}{}", if chosen.as_deref() == Some(runner.id.as_str()) { "[x] " } else { "[ ] " }, runner.name);
+            let mut line = format!(
+                "{}{}",
+                if chosen.as_deref() == Some(runner.id.as_str()) {
+                    "[x] "
+                } else {
+                    "[ ] "
+                },
+                runner.name
+            );
             if default.as_deref() == Some(runner.id.as_str()) {
                 line.push_str(" *");
             }
@@ -433,23 +621,54 @@ impl Threadbear {
         // The virtual runners: always there, so no offline word.
         for s in self.remote.services() {
             let on = |id: &Option<String>| id.as_deref() == Some(s.id.as_str());
-            lines.push(format!("{}{}{}", if on(&service) { "[x] " } else { "[ ] " }, s.name, if on(&default_service) { " *" } else { "" }));
+            lines.push(format!(
+                "{}{}{}",
+                if on(&service) { "[x] " } else { "[ ] " },
+                s.name,
+                if on(&default_service) { " *" } else { "" }
+            ));
         }
         lines.push("---".to_owned());
         lines.push("[ ] Default".to_owned());
-        lines.push(format!("    {}This Mac", if default.is_none() && default_service.is_none() { "[x] " } else { "[ ] " }));
+        lines.push(format!(
+            "    {}This Mac",
+            if default.is_none() && default_service.is_none() {
+                "[x] "
+            } else {
+                "[ ] "
+            }
+        ));
         for runner in &self.remote.machines() {
-            lines.push(format!("    {}{}", if default.as_deref() == Some(runner.id.as_str()) { "[x] " } else { "[ ] " }, runner.name));
+            lines.push(format!(
+                "    {}{}",
+                if default.as_deref() == Some(runner.id.as_str()) {
+                    "[x] "
+                } else {
+                    "[ ] "
+                },
+                runner.name
+            ));
         }
         for s in self.remote.services() {
-            lines.push(format!("    {}{}", if default_service.as_deref() == Some(s.id.as_str()) { "[x] " } else { "[ ] " }, s.name));
+            lines.push(format!(
+                "    {}{}",
+                if default_service.as_deref() == Some(s.id.as_str()) {
+                    "[x] "
+                } else {
+                    "[ ] "
+                },
+                s.name
+            ));
         }
         if let Some(runner) = chosen.as_deref() {
             let current = self.draft_summary().cwd;
             lines.push("---".to_owned());
             lines.push("[ ] Folder".to_owned());
             for folder in self.listed_remote_folders(runner, &current) {
-                lines.push(format!("    {}{folder}", if folder == current { "[x] " } else { "[ ] " }));
+                lines.push(format!(
+                    "    {}{folder}",
+                    if folder == current { "[x] " } else { "[ ] " }
+                ));
             }
             lines.push("    [ ] Other…".to_owned());
         }
@@ -460,11 +679,22 @@ impl Threadbear {
     /// in: its default and the folders of its threads this Mac lists, newest
     /// first. Paths on that Mac, so nothing here is checked.
     fn remote_folders(&self, runner: &str) -> Vec<String> {
-        let default_folder = self.remote.logins.get(runner).map_or_else(String::new, |l| l.defaults.cwd.clone());
-        let mut threads: Vec<&ThreadSummary> = self.threads.values().map(|t| &**t).filter(|t| t.runner_id.as_deref() == Some(runner)).collect();
+        let default_folder = self
+            .remote
+            .logins
+            .get(runner)
+            .map_or_else(String::new, |l| l.defaults.cwd.clone());
+        let mut threads: Vec<&ThreadSummary> = self
+            .threads
+            .values()
+            .map(|t| &**t)
+            .filter(|t| t.runner_id.as_deref() == Some(runner))
+            .collect();
         threads.sort_by_cached_key(|t| std::cmp::Reverse(t.activity_ms()));
         let mut out = Vec::new();
-        for folder in std::iter::once(default_folder).chain(threads.into_iter().map(|t| t.cwd.clone())) {
+        for folder in
+            std::iter::once(default_folder).chain(threads.into_iter().map(|t| t.cwd.clone()))
+        {
             if !folder.is_empty() && !out.contains(&folder) {
                 out.push(folder);
             }
@@ -476,32 +706,80 @@ impl Threadbear {
     /// The "Runs on" menu (`runnerMenu`): this Mac, then each other runner
     /// (the offline ones saying so), a star on the default, then "Default"
     /// to set it here; on another runner, its folders after that.
-    pub(crate) fn open_runner_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_runner_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::sidebar::{MenuAction, MenuRow};
         let chosen = self.new_thread.picks.runner.clone();
         let service = self.new_thread.picks.service.clone();
         let default = self.new_thread.prefs.remembered.default_runner.clone();
         let default_service = self.new_thread.prefs.remembered.default_service.clone();
         let own = self.self_runner_symbol();
-        let mut rows = vec![MenuRow::runner("This Mac", own, chosen.is_none() && service.is_none(), default.is_none() && default_service.is_none(), MenuAction::Runner(None)), MenuRow::separator()];
+        let mut rows = vec![
+            MenuRow::runner(
+                "This Mac",
+                own,
+                chosen.is_none() && service.is_none(),
+                default.is_none() && default_service.is_none(),
+                MenuAction::Runner(None),
+            ),
+            MenuRow::separator(),
+        ];
         for runner in &self.remote.machines() {
-            let name = if runner.online { runner.name.clone() } else { format!("{} (offline)", runner.name) };
+            let name = if runner.online {
+                runner.name.clone()
+            } else {
+                format!("{} (offline)", runner.name)
+            };
             let symbol = crate::icons::runner_symbol(runner.icon.as_deref());
-            rows.push(MenuRow::runner(name, symbol, chosen.as_deref() == Some(runner.id.as_str()), default.as_deref() == Some(runner.id.as_str()), MenuAction::Runner(Some(runner.id.clone()))));
+            rows.push(MenuRow::runner(
+                name,
+                symbol,
+                chosen.as_deref() == Some(runner.id.as_str()),
+                default.as_deref() == Some(runner.id.as_str()),
+                MenuAction::Runner(Some(runner.id.clone())),
+            ));
         }
         // After the machines, one line per virtual runner: its own icon, and
         // no online word, as it's always there (docs/virtual-runners.md).
         for s in self.remote.services() {
             let on = |id: &Option<String>| id.as_deref() == Some(s.id.as_str());
-            rows.push(MenuRow::runner(s.name.clone(), crate::icons::VIRTUAL_RUNNER, on(&service), on(&default_service), MenuAction::Service(s.id.clone())));
+            rows.push(MenuRow::runner(
+                s.name.clone(),
+                crate::icons::VIRTUAL_RUNNER,
+                on(&service),
+                on(&default_service),
+                MenuAction::Service(s.id.clone()),
+            ));
         }
         rows.push(MenuRow::separator());
-        let mut defaults = vec![MenuRow::runner("This Mac", own, default.is_none() && default_service.is_none(), false, MenuAction::DefaultRunner(None))];
+        let mut defaults = vec![MenuRow::runner(
+            "This Mac",
+            own,
+            default.is_none() && default_service.is_none(),
+            false,
+            MenuAction::DefaultRunner(None),
+        )];
         for runner in &self.remote.machines() {
-            defaults.push(MenuRow::runner(runner.name.clone(), crate::icons::runner_symbol(runner.icon.as_deref()), default.as_deref() == Some(runner.id.as_str()), false, MenuAction::DefaultRunner(Some(runner.id.clone()))));
+            defaults.push(MenuRow::runner(
+                runner.name.clone(),
+                crate::icons::runner_symbol(runner.icon.as_deref()),
+                default.as_deref() == Some(runner.id.as_str()),
+                false,
+                MenuAction::DefaultRunner(Some(runner.id.clone())),
+            ));
         }
         for s in self.remote.services() {
-            defaults.push(MenuRow::runner(s.name.clone(), crate::icons::VIRTUAL_RUNNER, default_service.as_deref() == Some(s.id.as_str()), false, MenuAction::DefaultService(s.id.clone())));
+            defaults.push(MenuRow::runner(
+                s.name.clone(),
+                crate::icons::VIRTUAL_RUNNER,
+                default_service.as_deref() == Some(s.id.as_str()),
+                false,
+                MenuAction::DefaultService(s.id.clone()),
+            ));
         }
         rows.push(MenuRow::submenu("Default", "star", defaults));
         // On another runner there's no "+": its folders are here, always with
@@ -509,7 +787,14 @@ impl Threadbear {
         // its folder (`remoteFolderMenu`).
         if let Some(runner) = chosen.as_deref() {
             let current = self.draft_summary().cwd;
-            let mut folders: Vec<MenuRow> = self.listed_remote_folders(runner, &current).into_iter().map(|f| { let on = f == current; MenuRow::runner_folder(f, on) }).collect();
+            let mut folders: Vec<MenuRow> = self
+                .listed_remote_folders(runner, &current)
+                .into_iter()
+                .map(|f| {
+                    let on = f == current;
+                    MenuRow::runner_folder(f, on)
+                })
+                .collect();
             if !folders.is_empty() {
                 folders.push(MenuRow::separator());
             }
@@ -535,37 +820,69 @@ impl Threadbear {
     /// picker for it (`typeRemoteFolder`). Nothing is checked here; that
     /// runner says if it isn't there when the thread starts. Return in the
     /// field is Use. Hands back the field, for scripts.
-    pub(crate) fn type_remote_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<gpui_kit::component::input::InputState> {
+    pub(crate) fn type_remote_folder(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<gpui_kit::component::input::InputState> {
         use gpui_kit::component::dialog::DialogButtonProps;
         use gpui_kit::component::input::{Input, InputEvent, InputState};
         use gpui_kit::component::WindowExt as _;
-        let name = self.new_thread.picks.runner.as_deref().map_or_else(|| "that Mac".to_owned(), |id| self.runner_name_of(id));
+        let name = self
+            .new_thread
+            .picks
+            .runner
+            .as_deref()
+            .map_or_else(|| "that Mac".to_owned(), |id| self.runner_name_of(id));
         let current = self.draft_summary().cwd;
         let field = cx.new(|cx| {
             let mut field = InputState::new(window, cx).placeholder(format!("/Users/{name}/dev"));
             field.set_value(current, window, cx);
             field
         });
-        let typed_folder = |field: &Entity<InputState>, cx: &App| Some(field.read(cx).value().trim().to_owned()).filter(|f| !f.is_empty());
-        cx.subscribe_in(&field, window, move |this, field, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                if let Some(folder) = typed_folder(field, cx) {
-                    this.change_new_draft(&json!({ "cwd": folder }), cx);
+        let typed_folder = |field: &Entity<InputState>, cx: &App| {
+            Some(field.read(cx).value().trim().to_owned()).filter(|f| !f.is_empty())
+        };
+        cx.subscribe_in(
+            &field,
+            window,
+            move |this, field, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    if let Some(folder) = typed_folder(field, cx) {
+                        this.change_new_draft(&json!({ "cwd": folder }), cx);
+                    }
+                    window.close_dialog(cx);
                 }
-                window.close_dialog(cx);
-            }
-        })
+            },
+        )
         .detach();
         let app = cx.entity().downgrade();
-        let (typed, title, about) = (field.clone(), format!("A folder on {name}"), format!("Its full path, like /Users/{name}/dev."));
+        let (typed, title, about) = (
+            field.clone(),
+            format!("A folder on {name}"),
+            format!("Its full path, like /Users/{name}/dev."),
+        );
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let (field, app) = (typed.clone(), app.clone());
-            dialog.title(title.clone()).description(about.clone()).width(px(380.)).child(Input::new(&typed)).button_props(DialogButtonProps::default().ok_text("Use").show_cancel(true)).on_ok(move |_, _, cx| {
-                if let Some(folder) = typed_folder(&field, cx) {
-                    app.update(cx, |this, cx| this.change_new_draft(&json!({ "cwd": folder }), cx)).ok();
-                }
-                true
-            })
+            dialog
+                .title(title.clone())
+                .description(about.clone())
+                .width(px(380.))
+                .child(Input::new(&typed))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Use")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(folder) = typed_folder(&field, cx) {
+                        app.update(cx, |this, cx| {
+                            this.change_new_draft(&json!({ "cwd": folder }), cx)
+                        })
+                        .ok();
+                    }
+                    true
+                })
         });
         let handle = field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -581,7 +898,11 @@ impl Threadbear {
     /// Mike types instead of creeping up the pane. Unlike ComposerPlacement
     /// it doesn't measure the heading and note to stop them being cut off in a
     /// very short window; the window's minimum height keeps them on screen.
-    pub(crate) fn render_new_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_new_page(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let composer = self.ensure_new_composer(window, cx);
         if std::mem::take(&mut self.new_thread.focus_pending) {
             // After the frame: focusing is for the next render, not this one.
@@ -594,14 +915,40 @@ impl Threadbear {
         let logins = self.new_thread_logins().cloned();
         let logins_known = logins.is_some();
         let logins = logins.unwrap_or_default();
-        let runner_name = self.new_thread.picks.runner.as_deref().map(|id| self.runner_name_of(id));
+        let runner_name = self
+            .new_thread
+            .picks
+            .runner
+            .as_deref()
+            .map(|id| self.runner_name_of(id));
         let now = threadbear_core::sidebar::local_now();
-        let (note, note_tip, rooms) = self.with_draft(&logins, |d| (d.note(runner_name.as_deref(), logins_known), d.note_tip(runner_name.as_deref()), d.room_cards(&now)));
-        let project = self.new_thread.picks.project.clone().and_then(|id| self.sidebar.projects.iter().find(|p| p.id == id).cloned());
+        let (note, note_tip, rooms) = self.with_draft(&logins, |d| {
+            (
+                d.note(runner_name.as_deref(), logins_known),
+                d.note_tip(runner_name.as_deref()),
+                d.room_cards(&now),
+            )
+        });
+        let project = self
+            .new_thread
+            .picks
+            .project
+            .clone()
+            .and_then(|id| self.sidebar.projects.iter().find(|p| p.id == id).cloned());
         let heading = div().w_full().flex().justify_center().px(px(24.)).child(
-            div().text_size(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(cx.theme().foreground).text_center().child(draft_rules::HEADING),
+            div()
+                .text_size(px(24.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(cx.theme().foreground)
+                .text_center()
+                .child(draft_rules::HEADING),
         );
-        let note_text = div().id("new-thread-note").text_size(px(size::LABEL)).text_color(style::faint_text(cx)).child(note).tip(note_tip.clone());
+        let note_text = div()
+            .id("new-thread-note")
+            .text_size(px(size::LABEL))
+            .text_color(style::faint_text(cx))
+            .child(note)
+            .tip(note_tip);
         let error = self.new_thread.error.clone();
         let danger = cx.theme().danger;
         let notes = v_flex()
@@ -609,34 +956,66 @@ impl Threadbear {
             .items_center()
             .gap(px(14.))
             .mt(px(-2.))
-            .when_some(project, |s, project| s.child(self.render_project_chip(project, cx)))
-            .when_some(error, |s, e| s.child(div().text_size(px(size::LABEL)).text_color(danger).child(e)))
+            .when_some(project, |s, project| {
+                s.child(self.render_project_chip(project, cx))
+            })
+            .when_some(error, |s, e| {
+                s.child(div().text_size(px(size::LABEL)).text_color(danger).child(e))
+            })
             .child(note_text)
-            .when(!rooms.is_empty(), |s| s.child(self.render_room_cards(rooms, cx)));
+            .when(!rooms.is_empty(), |s| {
+                s.child(self.render_room_cards(rooms, cx))
+            });
         // The composer's place: the box's top at 40% of the pane, less half
         // an empty box (ComposerPlacementMath.composerTop). The heading sits
         // 18 pt above the box and the note 2 pt below the box's frame.
         // Coming up: a quick fade from a few points below (open_motion.rs).
         // The box takes typing from the first frame.
-        let (opacity, rise) = self.opening.page(cx.reduce_motion(), window).unwrap_or((1., 0.));
+        let (opacity, rise) = self
+            .opening
+            .page(cx.reduce_motion(), window)
+            .unwrap_or((1., 0.));
         let box_marker = self.opening.box_marker();
-        div().relative().size_full().overflow_hidden().child(
-            v_flex()
-                .absolute()
-                .left_0()
-                .right_0()
-                .top(relative(0.4))
-                .mt(px(-56. + rise))
-                .opacity(opacity)
-                .child(div().relative().w_full().child(div().absolute().left_0().right_0().bottom_full().pb(px(18.)).child(heading)).child(composer).child(box_marker))
-                .child(notes),
-        )
-        .into_any_element()
+        div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .child(
+                v_flex()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(relative(0.4))
+                    .mt(px(-56. + rise))
+                    .opacity(opacity)
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_full()
+                                    .pb(px(18.))
+                                    .child(heading),
+                            )
+                            .child(composer)
+                            .child(box_marker),
+                    )
+                    .child(notes),
+            )
+            .into_any_element()
     }
 
     /// `NewThreadProjectChip`: "In builder-skills" with an x to start it
     /// outside the project instead.
-    fn render_project_chip(&mut self, project: crate::sidebar::ProjectBrief, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_project_chip(
+        &mut self,
+        project: crate::sidebar::ProjectBrief,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let title = project.title.clone();
         h_flex()
             .id("new-thread-project")
@@ -664,23 +1043,81 @@ impl Threadbear {
     }
 
     /// `ProjectIconView` at a small size: its picture or symbol, or its letter.
-    fn project_glyph(&self, project: &crate::sidebar::ProjectBrief, side: f32, cx: &App) -> AnyElement {
+    fn project_glyph(
+        &self,
+        project: &crate::sidebar::ProjectBrief,
+        side: f32,
+        cx: &App,
+    ) -> AnyElement {
         let icon = self.sidebar.project_icons.get(&project.id);
-        let letter = project.title.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-        let tile = |content: AnyElement| div().flex().items_center().justify_center().size(px(side)).rounded(px(4.)).bg(style::primary_opacity(cx, 0.08)).child(content).into_any_element();
+        let letter = project
+            .title
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        let tile = |content: AnyElement| {
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(side))
+                .rounded(px(4.))
+                .bg(style::primary_opacity(cx, 0.08))
+                .child(content)
+                .into_any_element()
+        };
         match icon {
-            Some(icon) if icon.image_path.is_some() => img(std::path::PathBuf::from(icon.image_path.clone().unwrap_or_default())).size(px(side)).rounded(px(4.)).object_fit(ObjectFit::Contain).into_any_element(),
-            Some(icon) if icon.symbol.as_deref().is_some_and(|s| crate::icons::try_symbol(s).is_some()) => {
-                tile(crate::icons::symbol(icon.symbol.as_deref().unwrap_or("")).with_size(px(side * 0.7)).text_color(style::secondary_text(cx)).into_any_element())
+            Some(icon) if icon.image_path.is_some() => img(std::path::PathBuf::from(
+                icon.image_path.clone().unwrap_or_default(),
+            ))
+            .size(px(side))
+            .rounded(px(4.))
+            .object_fit(ObjectFit::Contain)
+            .into_any_element(),
+            Some(icon)
+                if icon
+                    .symbol
+                    .as_deref()
+                    .is_some_and(|s| crate::icons::try_symbol(s).is_some()) =>
+            {
+                tile(
+                    crate::icons::symbol(icon.symbol.as_deref().unwrap_or(""))
+                        .with_size(px(side * 0.7))
+                        .text_color(style::secondary_text(cx))
+                        .into_any_element(),
+                )
             }
-            _ => tile(div().text_size(px(side * 0.6)).font_weight(FontWeight::SEMIBOLD).text_color(style::secondary_text(cx)).child(letter).into_any_element()),
+            _ => tile(
+                div()
+                    .text_size(px(side * 0.6))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(style::secondary_text(cx))
+                    .child(letter)
+                    .into_any_element(),
+            ),
         }
     }
 
     /// The logins' cards (`NewThreadNote`'s grid), adaptive like its
     /// LazyVGrid: 140 wide at least, 200 at most, filling the row.
-    fn render_room_cards(&mut self, rooms: Vec<RoomCard>, cx: &mut Context<Self>) -> impl IntoElement {
-        div().w_full().max_w(px(style::MAX_CONTENT_WIDTH)).px(px(24.)).flex().flex_wrap().gap(px(8.)).children(rooms.into_iter().map(|room| self.render_room_card(room, cx)))
+    fn render_room_cards(
+        &mut self,
+        rooms: Vec<RoomCard>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .w_full()
+            .max_w(px(style::MAX_CONTENT_WIDTH))
+            .px(px(24.))
+            .flex()
+            .flex_wrap()
+            .gap(px(8.))
+            .children(
+                rooms
+                    .into_iter()
+                    .map(|room| self.render_room_card(room, cx)),
+            )
     }
 
     /// `AccountRoomCard`: its name, a bar of the tighter window, and
@@ -694,12 +1131,30 @@ impl Threadbear {
             RoomLook::Low => style::needs_you(cx),
             RoomLook::Ample => style::primary_opacity(cx, 0.4),
         };
-        let line_color = if look == RoomLook::Blocked { style::failed(cx) } else { style::secondary_text(cx) };
-        let (hover, background, edge) = (style::primary_opacity(cx, 0.05), style::primary_opacity(cx, if selected { 0.07 } else { 0.025 }), if selected { style::accent(cx).opacity(0.7) } else { style::primary_opacity(cx, 0.06) });
+        let line_color = if look == RoomLook::Blocked {
+            style::failed(cx)
+        } else {
+            style::secondary_text(cx)
+        };
+        let (hover, background, edge) = (
+            style::primary_opacity(cx, 0.05),
+            style::primary_opacity(cx, if selected { 0.07 } else { 0.025 }),
+            if selected {
+                style::accent(cx).opacity(0.7)
+            } else {
+                style::primary_opacity(cx, 0.06)
+            },
+        );
         v_flex()
             .id(ElementId::Name(format!("room-card-{id}").into()))
             .test_support()
-            .role(Role::RadioButton).aria_toggled(if selected { Toggled::True } else { Toggled::False }).aria_label(tip.clone())
+            .role(Role::RadioButton)
+            .aria_toggled(if selected {
+                Toggled::True
+            } else {
+                Toggled::False
+            })
+            .aria_label(tip.clone())
             .flex_1()
             .flex_basis(px(140.))
             .max_w(px(200.))
@@ -712,7 +1167,7 @@ impl Threadbear {
             .border_1()
             .border_color(edge)
             .cursor_pointer()
-            .tip(tip.clone())
+            .tip(tip)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 // Pins the draft to that login, like the picker's "Pin to a login".
                 this.new_thread.picks.pool = None;
@@ -724,22 +1179,63 @@ impl Threadbear {
                 h_flex()
                     .items_baseline()
                     .gap(px(6.))
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(cx.theme().foreground).truncate().child(room.label))
-                    .when_some(room.note, |s, note| s.child(div().text_size(px(11.)).text_color(style::tertiary_label(cx)).truncate().child(note))),
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(cx.theme().foreground)
+                            .truncate()
+                            .child(room.label),
+                    )
+                    .when_some(room.note, |s, note| {
+                        s.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(style::tertiary_label(cx))
+                                .truncate()
+                                .child(note),
+                        )
+                    }),
             )
             .child(
-                div().relative().w_full().h(px(3.)).rounded_full().bg(style::primary_opacity(cx, 0.08)).when_some(fraction, |s, fraction| {
-                    s.child(div().absolute().top_0().left_0().bottom_0().w(relative(fraction as f32)).rounded_full().bg(fill))
-                }),
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(3.))
+                    .rounded_full()
+                    .bg(style::primary_opacity(cx, 0.08))
+                    .when_some(fraction, |s, fraction| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .bottom_0()
+                                .w(relative(fraction as f32))
+                                .rounded_full()
+                                .bg(fill),
+                        )
+                    }),
             )
-            .child(div().text_size(px(11.)).text_color(line_color).truncate().child(room.line))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(line_color)
+                    .truncate()
+                    .child(room.line),
+            )
     }
 }
 
 /// Scripted commands for the page: `new` (optionally for a project, as the
 /// project page's New Thread is) and `options`, the Swift names and shapes.
 #[cfg(feature = "automation")]
-pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Window, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn automation(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Value, String> {
     let name = cmd["cmd"].as_str().unwrap_or("");
     match name {
         "new" => {
@@ -751,7 +1247,13 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
                     // New Thread on a project's page: back to this Mac, in
                     // the project's first folder, joining the project.
                     t.choose_new_thread_runner(None, true, cx);
-                    if let Some(known) = t.sidebar.projects.iter().find(|p| &p.id == project).cloned() {
+                    if let Some(known) = t
+                        .sidebar
+                        .projects
+                        .iter()
+                        .find(|p| &p.id == project)
+                        .cloned()
+                    {
                         t.new_thread.picks.project = Some(known.id.clone());
                         t.new_thread.picks.cwd = known.folders.first().cloned();
                     }
@@ -764,9 +1266,26 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
             Ok(json!("ok"))
         }
         "options" => {
-            let unknown: Vec<&str> = cmd.as_object().map(|o| o.keys().map(String::as_str).filter(|k| !["cmd", "rid", "token", "cwd", "account", "model", "effort", "ask", "pool", "provider"].contains(k)).collect()).unwrap_or_default();
+            let unknown: Vec<&str> = cmd
+                .as_object()
+                .map(|o| {
+                    o.keys()
+                        .map(String::as_str)
+                        .filter(|k| {
+                            ![
+                                "cmd", "rid", "token", "cwd", "account", "model", "effort", "ask",
+                                "pool", "provider",
+                            ]
+                            .contains(k)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             if !unknown.is_empty() {
-                return Err(format!("options takes cwd, account, pool, provider, model, effort and ask, not {}", unknown.join(", ")));
+                return Err(format!(
+                    "options takes cwd, account, pool, provider, model, effort and ask, not {}",
+                    unknown.join(", ")
+                ));
             }
             if let Some(account) = cmd["account"].as_str() {
                 let known = app.read(cx).logins.accounts.iter().any(|a| a.id == account);
@@ -792,15 +1311,22 @@ pub(crate) fn automation(app: &Entity<Threadbear>, cmd: &Value, window: &mut Win
                     t.new_thread.picks.provider = provider.as_str().map(str::to_owned);
                 }
                 if let Some(ask) = cmd["ask"].as_bool() {
-                    t.new_thread.picks.permission = Some(if ask { "ask" } else { "full" }.to_owned());
+                    t.new_thread.picks.permission =
+                        Some(if ask { "ask" } else { "full" }.to_owned());
                 }
                 let logins = t.draft_logins();
                 let provider = t.with_draft(&logins, |d| d.provider());
                 if let Some(model) = cmd.get("model") {
-                    t.new_thread.prefs.remembered.set_model(&provider, model.as_str());
+                    t.new_thread
+                        .prefs
+                        .remembered
+                        .set_model(&provider, model.as_str());
                 }
                 if let Some(effort) = cmd.get("effort") {
-                    t.new_thread.prefs.remembered.set_effort(&provider, effort.as_str());
+                    t.new_thread
+                        .prefs
+                        .remembered
+                        .set_effort(&provider, effort.as_str());
                 }
                 cx.notify();
             });
@@ -817,27 +1343,71 @@ fn new_thread_dump_line(app: &Entity<Threadbear>, cx: &App) -> String {
     let logins = t.draft_logins();
     t.with_draft(&logins, |d| {
         let provider = d.provider();
-        let model = t.new_thread.prefs.remembered.last_models.get(&provider).cloned().unwrap_or_else(|| "default".to_owned());
-        let effort = t.new_thread.prefs.remembered.last_efforts.get(&provider).cloned().unwrap_or_else(|| "default".to_owned());
+        let model = t
+            .new_thread
+            .prefs
+            .remembered
+            .last_models
+            .get(&provider)
+            .cloned()
+            .unwrap_or_else(|| "default".to_owned());
+        let effort = t
+            .new_thread
+            .prefs
+            .remembered
+            .last_efforts
+            .get(&provider)
+            .cloned()
+            .unwrap_or_else(|| "default".to_owned());
         let ask = d.permission() == "ask";
-        format!("ok cwd={} account={}{} model={model} effort={effort} ask={ask}", d.cwd(), d.account_id(), d.pool_id().map(|p| format!(" pool={p}")).unwrap_or_default())
+        format!(
+            "ok cwd={} account={}{} model={model} effort={effort} ask={ask}",
+            d.cwd(),
+            d.account_id(),
+            d.pool_id()
+                .map(|p| format!(" pool={p}"))
+                .unwrap_or_default()
+        )
     })
 }
 
 /// The Runs on menu for scripts (`composer-menu` with `runner`): its lines,
 /// or `click` picks one, or `setDefault` sets the star.
 #[cfg(feature = "automation")]
-pub(crate) fn runner_menu_command(app: &Entity<Threadbear>, cmd: &Value, cx: &mut App) -> Result<Value, String> {
+pub(crate) fn runner_menu_command(
+    app: &Entity<Threadbear>,
+    cmd: &Value,
+    cx: &mut App,
+) -> Result<Value, String> {
     if app.read(cx).selected.is_some() {
         return Err("runner is for a new thread".to_owned());
     }
-    let service = |name: &str, cx: &App| app.read(cx).remote.services().iter().find(|s| s.name == name).map(|s| s.id.clone());
+    let service = |name: &str, cx: &App| {
+        app.read(cx)
+            .remote
+            .services()
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.id.clone())
+    };
     if let Some(name) = cmd["setDefault"].as_str() {
         if let Some(id) = service(name, cx) {
             app.update(cx, |t, cx| t.set_default_service(id, cx));
             return Ok(json!("ok"));
         }
-        let runner = if name == "This Mac" { None } else { Some(app.read(cx).remote.machines().into_iter().find(|r| r.name == name).ok_or_else(|| format!("no runner {name}"))?.id) };
+        let runner = if name == "This Mac" {
+            None
+        } else {
+            Some(
+                app.read(cx)
+                    .remote
+                    .machines()
+                    .into_iter()
+                    .find(|r| r.name == name)
+                    .ok_or_else(|| format!("no runner {name}"))?
+                    .id,
+            )
+        };
         app.update(cx, |t, cx| t.set_default_runner(runner, cx));
         return Ok(json!("ok"));
     }
@@ -846,7 +1416,19 @@ pub(crate) fn runner_menu_command(app: &Entity<Threadbear>, cmd: &Value, cx: &mu
             app.update(cx, |t, cx| t.choose_new_thread_service(id, true, cx));
             return Ok(json!("ok"));
         }
-        let runner = if title == "This Mac" { None } else { Some(app.read(cx).remote.machines().into_iter().find(|r| r.name == title).ok_or_else(|| format!("no item {title}"))?.id) };
+        let runner = if title == "This Mac" {
+            None
+        } else {
+            Some(
+                app.read(cx)
+                    .remote
+                    .machines()
+                    .into_iter()
+                    .find(|r| r.name == title)
+                    .ok_or_else(|| format!("no item {title}"))?
+                    .id,
+            )
+        };
         app.update(cx, |t, cx| t.choose_new_thread_runner(runner, true, cx));
         return Ok(json!("ok"));
     }
@@ -863,10 +1445,23 @@ pub(crate) fn page_dump(t: &Threadbear, _cx: &App) -> Value {
     let logins = t.new_thread_logins().cloned();
     let known = logins.is_some();
     let logins = logins.unwrap_or_default();
-    let runner_name = t.new_thread.picks.runner.as_deref().map(|id| t.runner_name_of(id));
+    let runner_name = t
+        .new_thread
+        .picks
+        .runner
+        .as_deref()
+        .map(|id| t.runner_name_of(id));
     let now = threadbear_core::sidebar::local_now();
-    let (note, rooms) = t.with_draft(&logins, |d| (d.note(runner_name.as_deref(), known), d.room_cards(&now)));
-    let project = t.new_thread.picks.project.as_ref().and_then(|id| t.sidebar.projects.iter().find(|p| &p.id == id)).map(|p| format!("In {}", p.title));
+    let (note, rooms) = t.with_draft(&logins, |d| {
+        (d.note(runner_name.as_deref(), known), d.room_cards(&now))
+    });
+    let project = t
+        .new_thread
+        .picks
+        .project
+        .as_ref()
+        .and_then(|id| t.sidebar.projects.iter().find(|p| &p.id == id))
+        .map(|p| format!("In {}", p.title));
     json!({
         "heading": draft_rules::HEADING,
         "note": note,

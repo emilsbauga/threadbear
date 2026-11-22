@@ -3,7 +3,8 @@
 // src/icons as plain SVGs, from any @phosphor-icons/react install on this Mac. Only needed when
 // adding an icon: the SVGs are committed. `node scripts/icons.mjs <path to @phosphor-icons/react>`
 // The agent-*.svg logos (the hero line) are not Phosphor's and not written here: they are LobeHub's
-// icons (MIT), copied from the desktop app's desktop/gpui/src/icons.rs.
+// icons (MIT), copied from the desktop app's desktop/gpui/src/icons.rs (agent-gemini.svg from
+// @lobehub/icons-static-svg, as the desktop app has no Gemini logo yet).
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 

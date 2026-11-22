@@ -77,12 +77,18 @@ pub fn with_marks<'a>(text: &'a str, resolve: &dyn Fn(&str) -> Option<String>) -
     if !text.contains("](thread:") {
         return Cow::Borrowed(text);
     }
-    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else { return Cow::Borrowed(text) };
+    let Ok(tree) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) else {
+        return Cow::Borrowed(text);
+    };
     let mut at: Vec<(usize, String)> = Vec::new();
     collect(&tree, &mut |link| {
-        let Some(id) = link.url.strip_prefix("thread:") else { return };
+        let Some(id) = link.url.strip_prefix("thread:") else {
+            return;
+        };
         let id = crate::open_policy::percent_decode(id);
-        let Some(start) = link.position.as_ref().map(|p| p.start.offset) else { return };
+        let Some(start) = link.position.as_ref().map(|p| p.start.offset) else {
+            return;
+        };
         if !crate::thread_link::is_thread_id(&id) || !text.is_char_boundary(start) {
             return;
         }
@@ -126,7 +132,10 @@ pub fn resolve_in<'a>(id: &str, ids: impl IntoIterator<Item = &'a String>) -> Op
     found.cloned()
 }
 
-pub(crate) fn collect(node: &markdown::mdast::Node, found: &mut impl FnMut(&markdown::mdast::Link)) {
+pub(crate) fn collect(
+    node: &markdown::mdast::Node,
+    found: &mut impl FnMut(&markdown::mdast::Link),
+) {
     if let markdown::mdast::Node::Link(link) = node {
         found(link);
     }
@@ -142,23 +151,43 @@ mod tests {
 
     fn thread(over: serde_json::Value) -> ThreadSummary {
         let mut v = json!({ "id": "t", "title": "A thread", "cwd": "/Users/alex/dev/misc", "status": "idle", "lastActivityAt": "2026-11-09T08:00:00Z", "preview": "", "lastSeq": 5, "lastSeenSeq": 5 });
-        v.as_object_mut().unwrap().extend(over.as_object().unwrap().clone());
+        v.as_object_mut()
+            .unwrap()
+            .extend(over.as_object().unwrap().clone());
         serde_json::from_value(v).unwrap()
     }
 
     #[test]
     fn a_threads_mark_follows_its_row() {
-        assert_eq!(LinkMark::of(&thread(json!({ "status": "running" }))), LinkMark::Working);
-        assert_eq!(LinkMark::of(&thread(json!({ "status": "waiting" }))), LinkMark::NeedsYou);
-        assert_eq!(LinkMark::of(&thread(json!({ "status": "error" }))), LinkMark::Failed);
-        assert_eq!(LinkMark::of(&thread(json!({ "needs": "nothing" }))), LinkMark::Done);
-        assert_eq!(LinkMark::of(&thread(json!({ "needs": "you", "needsYou": true }))), LinkMark::NeedsYou);
+        assert_eq!(
+            LinkMark::of(&thread(json!({ "status": "running" }))),
+            LinkMark::Working
+        );
+        assert_eq!(
+            LinkMark::of(&thread(json!({ "status": "waiting" }))),
+            LinkMark::NeedsYou
+        );
+        assert_eq!(
+            LinkMark::of(&thread(json!({ "status": "error" }))),
+            LinkMark::Failed
+        );
+        assert_eq!(
+            LinkMark::of(&thread(json!({ "needs": "nothing" }))),
+            LinkMark::Done
+        );
+        assert_eq!(
+            LinkMark::of(&thread(json!({ "needs": "you", "needsYou": true }))),
+            LinkMark::NeedsYou
+        );
     }
 
     #[test]
     fn an_idle_thread_that_never_said_it_was_done_claims_nothing() {
         assert_eq!(LinkMark::of(&thread(json!({}))), LinkMark::Idle);
-        assert_eq!(LinkMark::of(&thread(json!({ "status": "stopped" }))), LinkMark::Idle);
+        assert_eq!(
+            LinkMark::of(&thread(json!({ "status": "stopped" }))),
+            LinkMark::Idle
+        );
     }
 
     #[test]
@@ -171,20 +200,37 @@ mod tests {
     #[test]
     fn unknown_threads_code_and_other_links_are_left_alone() {
         let known = |id: &str| (id == "abc-1").then(|| id.to_owned());
-        for text in ["[Gone](thread:zzz-9)", "`[Triage](thread:abc-1)`", "```\n[Triage](thread:abc-1)\n```", "[A page](https://example.com)", "no links at all"] {
-            assert!(matches!(with_marks(text, &known), Cow::Borrowed(_)), "{text}");
+        for text in [
+            "[Gone](thread:zzz-9)",
+            "`[Triage](thread:abc-1)`",
+            "```\n[Triage](thread:abc-1)\n```",
+            "[A page](https://example.com)",
+            "no links at all",
+        ] {
+            assert!(
+                matches!(with_marks(text, &known), Cow::Borrowed(_)),
+                "{text}"
+            );
         }
     }
 
     #[test]
     fn a_link_after_non_ascii_words_still_gets_its_mark() {
         let known = |id: &str| (id == "abc-1").then(|| id.to_owned());
-        assert_eq!(with_marks("Café ✓ [Triage](thread:abc-1)", &known), "Café ✓ [\u{2060}](tbmark:abc-1)[Triage](thread:abc-1)");
+        assert_eq!(
+            with_marks("Café ✓ [Triage](thread:abc-1)", &known),
+            "Café ✓ [\u{2060}](tbmark:abc-1)[Triage](thread:abc-1)"
+        );
     }
 
     #[test]
     fn a_link_by_the_start_of_an_id_gets_the_full_threads_mark() {
-        let ids: Vec<String> = ["d0cf502c-2fb5-417f-a1b5-38a1b453d0ea", "2f9ef0e7-69f8-4691-bd42-599bc71a087a"].map(String::from).to_vec();
+        let ids: Vec<String> = [
+            "d0cf502c-2fb5-417f-a1b5-38a1b453d0ea",
+            "2f9ef0e7-69f8-4691-bd42-599bc71a087a",
+        ]
+        .map(String::from)
+        .to_vec();
         let resolve = |id: &str| resolve_in(id, &ids);
         assert_eq!(
             with_marks("See [sign-ins](thread:d0cf502c).", &resolve),

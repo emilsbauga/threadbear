@@ -100,4 +100,96 @@ import Testing
         let draft = DraftBlock(kind: .email, source: "    • nested\nA    B")
         #expect(draft.html == "<meta charset=\"utf-8\"><div>&nbsp;&nbsp;&nbsp;&nbsp;• nested<br>A &nbsp;&nbsp;&nbsp;B</div>")
     }
+
+    /// The cases every app runs (shared/cases/draft-blocks.json): the desktop
+    /// app, Android, the website and here. A case whose `differs` names ios
+    /// is a known difference, skipped. `closed` is answered by parsing the
+    /// text as the phone draws it, a draft anywhere in it, quotes included.
+    @Test func theSharedCases() throws {
+        struct Case: Decodable {
+            var name: String
+            var input: [String: JSONValue]
+            var expect: JSONValue
+            var differs: [String: String]?
+        }
+        struct File: Decodable { var cases: [Case] }
+        func neutral(_ spans: [DraftBlock.Span]) -> JSONValue {
+            .array(spans.map { s in
+                var o: [String: JSONValue] = ["text": .string(s.text)]
+                if s.bold { o["bold"] = .bool(true) }
+                if s.italic { o["italic"] = .bool(true) }
+                if s.strike { o["strike"] = .bool(true) }
+                if s.code { o["code"] = .bool(true) }
+                if let link = s.link { o["link"] = .string(link.absoluteString) }
+                return .object(o)
+            })
+        }
+        func hasDraft(_ blocks: [MarkdownBlock]) -> Bool {
+            blocks.contains { block in
+                switch block {
+                case .draft: return true
+                case let .quote(inner): return hasDraft(inner)
+                default: return false
+                }
+            }
+        }
+        // ios/ThreadbearKit/Tests/ThreadbearKitTests/ -> the repo.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let url = repo.appendingPathComponent("shared/cases/draft-blocks.json")
+        let cases = try JSONDecoder().decode(File.self, from: Data(contentsOf: url)).cases
+        #expect(cases.count >= 50)
+        for c in cases where c.differs?["ios"] == nil {
+            func text(_ key: String) -> String {
+                if case let .string(s) = c.input[key] { return s }
+                return ""
+            }
+            func draft() throws -> DraftBlock {
+                DraftBlock(kind: try #require(DraftBlock.Kind(rawValue: text("kind")), "\(c.name)"), source: text("source"))
+            }
+            let got: JSONValue
+            switch text("op") {
+            case "from":
+                var language: String?
+                if case let .string(s) = c.input["language"] { language = s }
+                if let d = DraftBlock.from(language: language, code: text("code")) {
+                    got = .object(["kind": .string(d.kind.rawValue), "source": .string(d.source), "label": .string(d.label)])
+                } else {
+                    got = .null
+                }
+            case "lines":
+                got = .array(try draft().lines.map { .object(["quote": .bool($0.quote), "spans": neutral($0.spans)]) })
+            case "plainText": got = .string(try draft().plainText)
+            case "html": got = .string(try draft().html)
+            case "spans": got = neutral(DraftBlock.slackSpans(text("line")))
+            case "closed": got = .bool(hasDraft(MarkdownBlock.parse(text("text"))))
+            default:
+                Issue.record("\(c.name): no \(text("op")) on the phone")
+                continue
+            }
+            #expect(got == c.expect, "\(c.name)")
+        }
+    }
+
+    @Test func aSentMessageGivesBackItsEditedDrafts() {
+        let intro = "I edited your draft. Use my version below exactly as it is, not yours:"
+        let one = "Send it\n\n\(intro)\n\n```email\nHi Geoff,\n\nCheers\n```"
+        let split = DraftBlock.splitEdited(one)
+        #expect(split?.words == "Send it")
+        #expect(split?.drafts == [DraftBlock(kind: .email, source: "Hi Geoff,\n\nCheers")])
+        #expect(DraftBlock.splitEdited("\(intro)\n\n```slack\nhey\n```")?.words == "")
+        let many = "I edited your drafts. Use my versions below exactly as they are, not yours:"
+        let two = "ok\n\n\(many)\n\n```draft\nrun `x`\n```\n\n````email\na\n```\nb\n```\n\nc\n````"
+        #expect(DraftBlock.splitEdited(two)?.drafts.map(\.source) == ["run `x`", "a\n```\nb\n```\n\nc"])
+        #expect(DraftBlock.splitEdited("Send it") == nil)
+        #expect(DraftBlock.splitEdited("\(one)\n\nand another thing") == nil)
+        #expect(DraftBlock.splitEdited("He said \(intro)\n\n```email\nx\n```") == nil)
+        #expect(DraftBlock.splitEdited("\(intro)\n\n```python\nx\n```") == nil)
+        // A draft that quotes the line itself still comes apart at the real one.
+        #expect(DraftBlock.splitEdited("ok\n\n\(intro)\n\n```email\nThe app said:\n\n\(intro)\n```")?.words == "ok")
+        // A long one is shown too, and Windows line ends are plain ones.
+        let long = String(repeating: "x", count: DraftBlock.maxSource + 1)
+        #expect(DraftBlock.splitEdited("\(intro)\n\n```draft\n\(long)\n```")?.drafts.first?.source == long)
+        #expect(DraftBlock.splitEdited("\(intro)\n\n```email\na\r\nb\n```")?.drafts.first?.source == "a\nb")
+    }
 }

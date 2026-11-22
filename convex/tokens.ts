@@ -28,7 +28,7 @@ export const tokenKind = v.union(...tokenKinds.map((k) => v.literal(k)));
 export const DEFAULT_DAYS = 90;
 export const MAX_DAYS = 365;
 
-// A token's row as the Mac app lists it (docs/protocol.md, "Devices").
+// A token's row as the Mac app lists it (docs/protocol/moves.md, "Devices").
 export const tokenInfo = v.object({
   id: v.string(),
   kind: tokenKind,

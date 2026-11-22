@@ -10,9 +10,6 @@
 #                              Write (.claude/settings.json): the tool call
 #                              on stdin, so an agent hears it before it
 #                              writes the code, not after
-#   swift-freeze.sh --gpui-shared
-#                              prints which of app/ the GPUI app uses, as a
-#                              regex, for check.sh
 #   swift-freeze.sh --mock-tests
 #                              prints the paths that need the Swift tests
 #                              of the mock runner, and their filter
@@ -37,33 +34,30 @@ set -uo pipefail
 # would otherwise match app (Codex's review, 12 Nov).
 set -f
 
-# What in app/ the GPUI app still uses, so it isn't frozen: the mock runner
-# its CI and the features/ specs run against, the Swift test tools its
-# pointer, drag and menu specs compile (swiftTool in
-# features/tools/real-screen.ts), the golden transcripts and fixtures its
-# tests share, and the art and rich-block scripts it builds in (check.sh's
-# DESKTOP_NEEDS). check.sh reads this too (--gpui-shared), so a change to
-# only these doesn't build and test the Swift app. They move out of app/
-# before it goes at the cutover.
-GPUI_SHARED='^app/Tools/mock-runner/|^app/Tools/(droptarget|post-gesture|realdrag)\.swift$|^app/Tests/Fixtures/|^app/Sources/Threadbear/Resources/(Art|Rich)/'
-# The Swift tests of what's shared above: the mock runner's own tests, the
-# login check that starts it, and the golden transcripts of its fixtures. A
-# change to the mock (its demo data renamed, 15 Nov) has to update them, so
-# they're open too. They aren't in GPUI_SHARED: changing one still builds
-# and tests the Swift app in check.sh's full run. --mock-tests prints what
-# check.sh needs to run just these, --quick included, when the mock or they
-# change (the mock's renamed demo data broke them on main unseen, 15 Nov):
-# the paths, as a regex, then the swift test --filter.
+# What in app/ the GPUI app still used (the mock runner, the real-screen
+# test tools, the art, Pele, the icon, Sentry's package and the three Swift
+# files the iPhone kit builds) moved out on 21 Nov 2026, to mock-runner/,
+# shared/, features/tools and ios/. The Swift app's tests and tools point
+# at mock-runner/ directly, and app/ links to the rest. An edit
+# through one of those links counts as the real file's (inside() follows
+# them), so it isn't frozen; the links themselves are. Nothing new that
+# another app uses goes in app/: runner/test/unit/swift-app-paths.test.ts
+# fails when something outside app/ and dock/ points into them.
+#
+# What stays open in app/ is the Swift tests of the mock runner: its own
+# tests, the login check that starts it, and the golden transcripts of its
+# fixtures. A change to the mock (its demo data renamed, 15 Nov) has to
+# update them. A change to them still builds and tests the Swift app in
+# check.sh's full run. --mock-tests prints what check.sh needs to run just
+# these, --quick included, when the mock or they change (the mock's renamed
+# demo data broke them on main unseen, 15 Nov): the paths, as a regex, then
+# the swift test --filter.
 SHARED_TESTS_FILTER='MockRunnerTests|RunnerAuthTests|GoldenTranscriptTests'
 SHARED_TESTS="^app/Tests/ThreadbearCoreTests/(${SHARED_TESTS_FILTER})\\.swift\$"
 
 mode="${1:-}"
-if [ "$mode" = --gpui-shared ]; then
-  printf '%s\n' "$GPUI_SHARED"
-  exit 0
-fi
 if [ "$mode" = --mock-tests ]; then
-  printf '%s\n' "^app/Tools/mock-runner/|$SHARED_TESTS" "$SHARED_TESTS_FILTER"
+  printf '%s\n' "^mock-runner/|$SHARED_TESTS" "$SHARED_TESTS_FILTER"
   exit 0
 fi
 # The checkout: for a commit, git's own, never CLAUDE_PROJECT_DIR, which can
@@ -75,10 +69,6 @@ else
 fi
 [ -n "$top" ] || exit 0
 
-# And what the iPhone app (which stays Swift) builds from app/: the files
-# ThreadbearKit links to (SlashCommands.swift and the like, found from its
-# links as check.sh's IOS_NEEDS does) and Sentry's framework.
-IPHONE_SHARED=(app/SentryBinary/)
 top_real="$(cd "$top" && pwd -P)"
 # macOS's other name for the same disk, which pwd -P keeps: both sides drop
 # it, so /Users/... and /System/Volumes/Data/Users/... compare as one.
@@ -94,36 +84,31 @@ undata() {
   printf '%s\n' "$1"
 }
 top_real="$(undata "$top_real")"
-while IFS= read -r link; do
-  to="$(readlink "$link")"
-  dir="$(cd "$(dirname "$link")" && cd "$(dirname "$to")" 2>/dev/null && pwd -P)" || continue
-  case "$dir" in "$top_real"/app/*) IPHONE_SHARED+=("${dir#"$top_real"/}/$(basename "$to")") ;; esac
-done < <(find "$top_real/ios" -type l -not -path '*/.build/*' 2>/dev/null)
-
 shared() {
-  [[ "$1" =~ $GPUI_SHARED ]] && return 0
-  [[ "$1" =~ $SHARED_TESTS ]] && return 0
-  local s
-  for s in "${IPHONE_SHARED[@]}"; do
-    case "$s" in
-      */) [[ "$1" == "$s"* ]] && return 0 ;;
-      *) [ "$1" = "$s" ] && return 0 ;;
-    esac
-  done
-  return 1
+  [[ "$1" =~ $SHARED_TESTS ]]
 }
 # inside <path>: the path from the checkout's top, with links, . and ..
 # resolved as far as the folders exist (a file being written may not yet),
 # so ./app/x, desktop/../app/x and /System/Volumes/Data/... all count as
-# app/x; fails for a path outside the checkout.
+# app/x, and app/'s links to what moved out count as where they lead;
+# fails for a path outside the checkout.
 inside() {
-  local p="$1" rest=""
+  local p="$1" rest="" depth="${2:-0}"
+  [ "$depth" -lt 8 ] || return 1
   case "$p" in /*) ;; *) p="$top/$p" ;; esac
   while [ ! -d "$p" ]; do
     rest="/$(basename "$p")$rest"
     p="$(dirname "$p")"
   done
   p="$(cd "$p" && pwd -P)$rest"
+  # A link to a file (app/'s to the iPhone kit's Swift files): where it leads.
+  if [ -L "$p" ]; then
+    local to
+    to="$(readlink "$p")"
+    case "$to" in /*) ;; *) to="$(dirname "$p")/$to" ;; esac
+    inside "$to" $((depth + 1))
+    return
+  fi
   p="$(undata "$p")"
   # The part below the last real folder can still say . or ..
   local out=() part
@@ -186,7 +171,7 @@ case "$mode" in
     frozen "$f" && hits+=("$f")
     ;;
   *)
-    echo "usage: swift-freeze.sh --commit | --tool | --gpui-shared | --mock-tests" >&2
+    echo "usage: swift-freeze.sh --commit | --tool | --mock-tests" >&2
     exit 64
     ;;
 esac

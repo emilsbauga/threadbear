@@ -18,14 +18,13 @@ import {
   gatewayBase,
   parseHealth,
   serviceState,
-  signInNudge,
   signInSignal,
   turnSignIns,
   uncovered,
 } from '../../src/connectors.ts';
 import type { PersistedEvent } from '../../src/protocol.ts';
 
-// docs/protocol.md, "Connectors".
+// docs/protocol/panels.md, "Connectors".
 
 const BASE = 'https://mac-mini.example.ts.net:8443';
 

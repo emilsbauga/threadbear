@@ -10,12 +10,12 @@
 // threadbear_core::slash's (PaletteLayout, PaletteEdge).
 use crate::composer::Composer;
 use crate::style;
+use crate::tips::Tip as _;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::cell::{Cell, RefCell};
 use threadbear_core::slash::{PaletteEdge, PaletteLayout};
-use crate::tips::Tip as _;
 
 /// The bands' width (PaletteFrame.band) and the palette's corners.
 const BAND: f32 = 10.;
@@ -34,13 +34,26 @@ const EDGE_NAMES: [(PaletteEdge, &str); 5] = [
 ];
 pub(crate) const COLUMN_NAMES: [&str; 2] = ["The categories' edge", "The list's edge"];
 const EDGE_TIP: &str = "Drag to resize the palette; right-click for its default size";
-const COLUMN_TIPS: [&str; 2] = ["Drag to size the categories; double-click for their own width", "Drag to size the list; double-click for its own width"];
+const COLUMN_TIPS: [&str; 2] = [
+    "Drag to size the categories; double-click for their own width",
+    "Drag to size the list; double-click for its own width",
+];
 
 /// A drag under way: an edge from the size it had, or a column from its width.
 #[derive(Clone, Copy)]
 enum Drag {
-    Edge { edge: PaletteEdge, from: Point<Pixels>, start: (f64, f64) },
-    Column { which: usize, from: Point<Pixels>, start: f64, others: f64, total: f64 },
+    Edge {
+        edge: PaletteEdge,
+        from: Point<Pixels>,
+        start: (f64, f64),
+    },
+    Column {
+        which: usize,
+        from: Point<Pixels>,
+        start: f64,
+        others: f64,
+        total: f64,
+    },
 }
 
 thread_local! {
@@ -82,7 +95,9 @@ pub(crate) fn drawn() -> Option<[f64; 4]> {
 pub(crate) fn drawn_frame() -> Option<([f64; 4], [f64; 2], f64)> {
     let points = |v: f32| f64::from(v / style::zoom_scale());
     let (w, h) = VIEWPORT.get();
-    FRAME.get().map(|f| (f.map(points), [points(w), points(h)], points(DETAIL.get())))
+    FRAME
+        .get()
+        .map(|f| (f.map(points), [points(w), points(h)], points(DETAIL.get())))
 }
 
 /// A canvas that keeps where the palette itself is drawn, in the window it's
@@ -90,7 +105,12 @@ pub(crate) fn drawn_frame() -> Option<([f64; 4], [f64; 2], f64)> {
 pub(crate) fn measure_palette() -> impl IntoElement {
     canvas(
         |bounds, window, _| {
-            FRAME.set(Some([f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)]));
+            FRAME.set(Some([
+                f32::from(bounds.origin.x),
+                f32::from(bounds.origin.y),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            ]));
             let viewport = window.viewport_size();
             VIEWPORT.set((f32::from(viewport.width), f32::from(viewport.height)));
         },
@@ -103,12 +123,22 @@ pub(crate) fn measure_palette() -> impl IntoElement {
 
 /// A canvas that keeps how wide the detail column came out, for the dump.
 pub(crate) fn measure_detail() -> impl IntoElement {
-    canvas(|bounds, _, _| DETAIL.set(f32::from(bounds.size.width)), |_, _, _, _| {}).absolute().inset_0().size_full()
+    canvas(
+        |bounds, _, _| DETAIL.set(f32::from(bounds.size.width)),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .size_full()
 }
 
 /// What's kept, from the app's prefs.
 pub(crate) fn kept(composer: &Composer, cx: &App) -> PaletteLayout {
-    composer.app.upgrade().map(|a| a.read(cx).new_thread.prefs.slash_layout).unwrap_or_default()
+    composer
+        .app
+        .upgrade()
+        .map(|a| a.read(cx).new_thread.prefs.slash_layout)
+        .unwrap_or_default()
 }
 
 fn keep(composer: &Composer, layout: PaletteLayout, save: bool, cx: &mut App) {
@@ -126,13 +156,26 @@ fn keep(composer: &Composer, layout: PaletteLayout, save: bool, cx: &mut App) {
 /// what's kept within the window, else as wide as the box (or a dragged one's
 /// least, where the box is narrower) and about half the window tall
 /// (SlashPaletteCoordinator.place).
-pub(crate) fn size(layout: PaletteLayout, box_width: f64, window: Size<Pixels>, auto_height: f64) -> (f64, f64) {
+pub(crate) fn size(
+    layout: PaletteLayout,
+    box_width: f64,
+    window: Size<Pixels>,
+    auto_height: f64,
+) -> (f64, f64) {
     if let Some(live) = LIVE.get() {
         let (w, h) = live;
-        return (PaletteLayout::width_in(w, f64::from(window.width)), PaletteLayout::height_in(h, f64::from(window.height)));
+        return (
+            PaletteLayout::width_in(w, f64::from(window.width)),
+            PaletteLayout::height_in(h, f64::from(window.height)),
+        );
     }
-    let width = layout.width.map_or_else(|| PaletteLayout::auto_width(box_width, f64::from(window.width)), |w| PaletteLayout::width_in(w, f64::from(window.width)));
-    let height = layout.height.map_or(auto_height, |h| PaletteLayout::height_in(h, f64::from(window.height)));
+    let width = layout.width.map_or_else(
+        || PaletteLayout::auto_width(box_width, f64::from(window.width)),
+        |w| PaletteLayout::width_in(w, f64::from(window.width)),
+    );
+    let height = layout.height.map_or(auto_height, |h| {
+        PaletteLayout::height_in(h, f64::from(window.height))
+    });
     (width, height)
 }
 
@@ -152,7 +195,10 @@ pub(crate) fn left_offset(width: f32, window_width: f32) -> f32 {
 
 /// A canvas that keeps where the box is across the window.
 pub(crate) fn measure_box() -> impl IntoElement {
-    canvas(|bounds, _, _| BOX.set((f32::from(bounds.origin.x), f32::from(bounds.size.width))), |_, _, _, _| {})
+    canvas(
+        |bounds, _, _| BOX.set((f32::from(bounds.origin.x), f32::from(bounds.size.width))),
+        |_, _, _, _| {},
+    )
     // Pinned, not left where the flow would put it (the box's canvas in
     // composer.rs).
     .absolute()
@@ -180,7 +226,7 @@ pub(crate) fn drag_watch(composer: WeakEntity<Composer>) -> Option<AnyElement> {
                         });
                     }
                 });
-                let up = up.clone();
+                let up = up;
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                     if !phase.bubble() {
                         return;
@@ -201,15 +247,26 @@ pub(crate) fn drag_watch(composer: WeakEntity<Composer>) -> Option<AnyElement> {
 }
 
 fn dragged_to(composer: &Composer, at: Point<Pixels>, cx: &mut App) {
-    let Some(drag) = DRAG.with_borrow(|d| *d) else { return };
+    let Some(drag) = DRAG.with_borrow(|d| *d) else {
+        return;
+    };
     // Points, as the sizes are kept at 100%.
     let scale = f64::from(style::zoom_scale());
     match drag {
         Drag::Edge { edge, from, start } => {
-            let (dx, dy) = (f64::from(at.x - from.x) / scale, f64::from(at.y - from.y) / scale);
+            let (dx, dy) = (
+                f64::from(at.x - from.x) / scale,
+                f64::from(at.y - from.y) / scale,
+            );
             LIVE.set(Some(edge.resized(start, dx, dy)));
         }
-        Drag::Column { which, from, start, others, total } => {
+        Drag::Column {
+            which,
+            from,
+            start,
+            others,
+            total,
+        } => {
             let dx = f64::from(at.x - from.x) / scale;
             let mut layout = kept(composer, cx);
             if which == 0 {
@@ -223,7 +280,9 @@ fn dragged_to(composer: &Composer, at: Point<Pixels>, cx: &mut App) {
 }
 
 fn let_go(composer: &Composer, cx: &mut App) {
-    let Some(drag) = DRAG.with_borrow_mut(|d| d.take()) else { return };
+    let Some(drag) = DRAG.with_borrow_mut(|d| d.take()) else {
+        return;
+    };
     let layout = kept(composer, cx);
     let layout = match (drag, LIVE.take()) {
         (Drag::Edge { edge, .. }, Some(size)) => edge.kept(layout, size),
@@ -239,20 +298,52 @@ pub(crate) fn edges(size: (f64, f64), cx: &mut Context<Composer>) -> Vec<AnyElem
     let accent = style::accent(cx);
     let mut out: Vec<AnyElement> = Vec::new();
     if lit {
-        out.push(div().absolute().inset_0().rounded(style::px(RADIUS)).border_2().border_color(accent).into_any_element());
+        out.push(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(style::px(RADIUS))
+                .border_2()
+                .border_color(accent)
+                .into_any_element(),
+        );
     }
     for (edge, name) in EDGE_NAMES {
         let band = div()
             .id(SharedString::from(format!("palette-edge-{name}")))
             .test_support()
-            .role(Role::Splitter).aria_label(name)
+            .role(Role::Splitter)
+            .aria_label(name)
             .absolute()
             .map(|d| match edge {
-                PaletteEdge::Top => d.top_0().left(style::px(BAND)).right(style::px(BAND)).h(style::px(BAND)).cursor(CursorStyle::ResizeUpDown),
-                PaletteEdge::Leading => d.left_0().top(style::px(BAND)).bottom_0().w(style::px(BAND)).cursor(CursorStyle::ResizeLeftRight),
-                PaletteEdge::Trailing => d.right_0().top(style::px(BAND)).bottom_0().w(style::px(BAND)).cursor(CursorStyle::ResizeLeftRight),
-                PaletteEdge::TopLeading => d.top_0().left_0().size(style::px(BAND)).cursor(CursorStyle::ResizeUpLeftDownRight),
-                PaletteEdge::TopTrailing => d.top_0().right_0().size(style::px(BAND)).cursor(CursorStyle::ResizeUpRightDownLeft),
+                PaletteEdge::Top => d
+                    .top_0()
+                    .left(style::px(BAND))
+                    .right(style::px(BAND))
+                    .h(style::px(BAND))
+                    .cursor(CursorStyle::ResizeUpDown),
+                PaletteEdge::Leading => d
+                    .left_0()
+                    .top(style::px(BAND))
+                    .bottom_0()
+                    .w(style::px(BAND))
+                    .cursor(CursorStyle::ResizeLeftRight),
+                PaletteEdge::Trailing => d
+                    .right_0()
+                    .top(style::px(BAND))
+                    .bottom_0()
+                    .w(style::px(BAND))
+                    .cursor(CursorStyle::ResizeLeftRight),
+                PaletteEdge::TopLeading => d
+                    .top_0()
+                    .left_0()
+                    .size(style::px(BAND))
+                    .cursor(CursorStyle::ResizeUpLeftDownRight),
+                PaletteEdge::TopTrailing => d
+                    .top_0()
+                    .right_0()
+                    .size(style::px(BAND))
+                    .cursor(CursorStyle::ResizeUpRightDownLeft),
             })
             .on_hover(|on, window, _| {
                 LIT.set(*on);
@@ -262,7 +353,13 @@ pub(crate) fn edges(size: (f64, f64), cx: &mut Context<Composer>) -> Vec<AnyElem
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, event: &MouseDownEvent, _, cx| {
-                    DRAG.with_borrow_mut(|d| *d = Some(Drag::Edge { edge, from: event.position, start: size }));
+                    DRAG.with_borrow_mut(|d| {
+                        *d = Some(Drag::Edge {
+                            edge,
+                            from: event.position,
+                            start: size,
+                        })
+                    });
                     LIVE.set(Some(size));
                     cx.stop_propagation();
                     cx.notify();
@@ -277,15 +374,27 @@ pub(crate) fn edges(size: (f64, f64), cx: &mut Context<Composer>) -> Vec<AnyElem
 /// the column on its left; a double-click puts it back to its own width.
 /// `which` 0 is the categories', 1 the list's; `width` the column's now,
 /// `others` what the other columns need, `total` the palette's width.
-pub(crate) fn column_rule(which: usize, width: f64, others: f64, total: f64, cx: &mut Context<Composer>) -> AnyElement {
-    let dragging = DRAG.with_borrow(|d| matches!(d, Some(Drag::Column { which: w, .. }) if *w == which));
-    let line = if dragging { style::accent(cx) } else { style::hairline(cx) };
+pub(crate) fn column_rule(
+    which: usize,
+    width: f64,
+    others: f64,
+    total: f64,
+    cx: &mut Context<Composer>,
+) -> AnyElement {
+    let dragging =
+        DRAG.with_borrow(|d| matches!(d, Some(Drag::Column { which: w, .. }) if *w == which));
+    let line = if dragging {
+        style::accent(cx)
+    } else {
+        style::hairline(cx)
+    };
     let accent = style::accent(cx);
     let group: SharedString = format!("palette-column-{which}").into();
     div()
         .id(SharedString::from(format!("palette-column-{which}")))
         .test_support()
-        .role(Role::Splitter).aria_label(COLUMN_NAMES[which])
+        .role(Role::Splitter)
+        .aria_label(COLUMN_NAMES[which])
         .group(group.clone())
         .flex_none()
         .relative()
@@ -295,7 +404,13 @@ pub(crate) fn column_rule(which: usize, width: f64, others: f64, total: f64, cx:
         .flex()
         .justify_center()
         .cursor(CursorStyle::ResizeLeftRight)
-        .child(div().w(gpui_kit::px(1.)).h_full().bg(line).group_hover(group, move |s| s.bg(accent)))
+        .child(
+            div()
+                .w(gpui_kit::px(1.))
+                .h_full()
+                .bg(line)
+                .group_hover(group, move |s| s.bg(accent)),
+        )
         .tip(COLUMN_TIPS[which])
         .on_mouse_down(
             MouseButton::Left,
@@ -311,7 +426,15 @@ pub(crate) fn column_rule(which: usize, width: f64, others: f64, total: f64, cx:
                     }
                     keep(this, layout, true, cx);
                 } else {
-                    DRAG.with_borrow_mut(|d| *d = Some(Drag::Column { which, from: event.position, start: width, others, total }));
+                    DRAG.with_borrow_mut(|d| {
+                        *d = Some(Drag::Column {
+                            which,
+                            from: event.position,
+                            start: width,
+                            others,
+                            total,
+                        })
+                    });
                 }
                 cx.notify();
             }),
@@ -321,31 +444,46 @@ pub(crate) fn column_rule(which: usize, width: f64, others: f64, total: f64, cx:
 
 /// The palette's right-click menu (its `iconContextMenu`): the default size,
 /// or the columns' own widths.
-pub(crate) fn menu(composer: WeakEntity<Composer>, menu: gpui_kit::component::menu::PopupMenu) -> gpui_kit::component::menu::PopupMenu {
+pub(crate) fn menu(
+    composer: WeakEntity<Composer>,
+    menu: gpui_kit::component::menu::PopupMenu,
+) -> gpui_kit::component::menu::PopupMenu {
     use gpui_kit::component::menu::PopupMenuItem;
     let (size, columns) = (composer.clone(), composer);
-    menu.item(PopupMenuItem::new("Default Size").icon(gpui_kit::component::Icon::from(gpui_kit::assets::IconName::Shrink)).on_click(move |_, _, cx| {
-        if let Some(c) = size.upgrade() {
-            c.update(cx, |c, cx| {
-                let mut layout = kept(c, cx);
-                layout.width = None;
-                layout.height = None;
-                keep(c, layout, true, cx);
-                cx.notify();
-            });
-        }
-    }))
-    .item(PopupMenuItem::new("Default Column Widths").icon(gpui_kit::component::Icon::from(gpui_kit::assets::IconName::Columns3)).on_click(move |_, _, cx| {
-        if let Some(c) = columns.upgrade() {
-            c.update(cx, |c, cx| {
-                let mut layout = kept(c, cx);
-                layout.categories = None;
-                layout.list = None;
-                keep(c, layout, true, cx);
-                cx.notify();
-            });
-        }
-    }))
+    menu.item(
+        PopupMenuItem::new("Default Size")
+            .icon(gpui_kit::component::Icon::from(
+                gpui_kit::assets::IconName::Shrink,
+            ))
+            .on_click(move |_, _, cx| {
+                if let Some(c) = size.upgrade() {
+                    c.update(cx, |c, cx| {
+                        let mut layout = kept(c, cx);
+                        layout.width = None;
+                        layout.height = None;
+                        keep(c, layout, true, cx);
+                        cx.notify();
+                    });
+                }
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Default Column Widths")
+            .icon(gpui_kit::component::Icon::from(
+                gpui_kit::assets::IconName::Columns3,
+            ))
+            .on_click(move |_, _, cx| {
+                if let Some(c) = columns.upgrade() {
+                    c.update(cx, |c, cx| {
+                        let mut layout = kept(c, cx);
+                        layout.categories = None;
+                        layout.list = None;
+                        keep(c, layout, true, cx);
+                        cx.notify();
+                    });
+                }
+            }),
+    )
 }
 
 /// The automation's `palette-drag` (GPUI only: the Swift palette's edges
@@ -353,7 +491,11 @@ pub(crate) fn menu(composer: WeakEntity<Composer>, menu: gpui_kit::component::me
 /// `dx` and `dy` points with the button held, and the release, through real
 /// events and hit testing.
 #[cfg(feature = "automation")]
-pub(crate) fn drag_command(cmd: &serde_json::Value, window: &mut Window, cx: &mut App) -> Result<serde_json::Value, String> {
+pub(crate) fn drag_command(
+    cmd: &serde_json::Value,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     let name = match cmd["edge"].as_str().unwrap_or("") {
         "top" => EDGE_NAMES[0].1,
@@ -366,17 +508,30 @@ pub(crate) fn drag_command(cmd: &serde_json::Value, window: &mut Window, cx: &mu
         other => return Err(format!("palette-drag takes top, left, right, topLeft, topRight, categories or list, not {other:?}")),
     };
     window.render_frame(cx);
-    let Some(handle) = window.find_all_by_label(name).into_iter().find(|e| e.visible()) else { return Err("the palette isn't open".into()) };
+    let Some(handle) = window
+        .find_all_by_label(name)
+        .into_iter()
+        .find(|e| e.visible())
+    else {
+        return Err("the palette isn't open".into());
+    };
     let from = handle.visible_bounds().center();
     let scale = style::zoom_scale();
-    let to = point(from.x + gpui_kit::px(cmd["dx"].as_f64().unwrap_or(0.) as f32 * scale), from.y + gpui_kit::px(cmd["dy"].as_f64().unwrap_or(0.) as f32 * scale));
+    let to = point(
+        from.x + gpui_kit::px(cmd["dx"].as_f64().unwrap_or(0.) as f32 * scale),
+        from.y + gpui_kit::px(cmd["dy"].as_f64().unwrap_or(0.) as f32 * scale),
+    );
     window.pointer_move(from, None, cx);
     window.pointer_down(from, MouseButton::Left, cx);
     window.render_frame(cx);
     // In a few steps, as a hand moves.
     for step in 1..=4 {
         let t = step as f32 / 4.;
-        window.pointer_move(point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t), Some(MouseButton::Left), cx);
+        window.pointer_move(
+            point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t),
+            Some(MouseButton::Left),
+            cx,
+        );
         window.render_frame(cx);
     }
     window.pointer_up(to, MouseButton::Left, cx);
@@ -387,14 +542,27 @@ pub(crate) fn drag_command(cmd: &serde_json::Value, window: &mut Window, cx: &mu
 /// The automation's `palette-menu`: a right-click on the palette through
 /// real events, then its menu read back, or `click` one of its items.
 #[cfg(feature = "automation")]
-pub(crate) async fn menu_command(window: AnyWindowHandle, cmd: &serde_json::Value, cx: &mut AsyncApp) -> Result<serde_json::Value, String> {
+pub(crate) async fn menu_command(
+    window: AnyWindowHandle,
+    cmd: &serde_json::Value,
+    cx: &mut AsyncApp,
+) -> Result<serde_json::Value, String> {
     use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
     cx.update_window(window, |_, window, cx| {
         crate::thread::scripted_input(|| {
             window.render_frame(cx);
-            let Some(top) = window.find_all_by_label(EDGE_NAMES[0].1).into_iter().find(|e| e.visible()) else { return Err("the palette isn't open".to_owned()) };
+            let Some(top) = window
+                .find_all_by_label(EDGE_NAMES[0].1)
+                .into_iter()
+                .find(|e| e.visible())
+            else {
+                return Err("the palette isn't open".to_owned());
+            };
             // Inside the palette, under its top edge.
-            let at = point(top.bounds().center().x, top.bounds().bottom() + gpui_kit::px(30.));
+            let at = point(
+                top.bounds().center().x,
+                top.bounds().bottom() + gpui_kit::px(30.),
+            );
             window.pointer_move(at, None, cx);
             window.pointer_down(at, MouseButton::Right, cx);
             window.pointer_up(at, MouseButton::Right, cx);
@@ -402,7 +570,9 @@ pub(crate) async fn menu_command(window: AnyWindowHandle, cmd: &serde_json::Valu
         })
     })
     .map_err(|e| e.to_string())??;
-    cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
+    cx.background_executor()
+        .timer(std::time::Duration::from_millis(150))
+        .await;
     let items = cx
         .update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -410,7 +580,9 @@ pub(crate) async fn menu_command(window: AnyWindowHandle, cmd: &serde_json::Valu
         })
         .map_err(|e| e.to_string())?;
     if let Some(title) = cmd["click"].as_str() {
-        let Some((_, item)) = items.iter().find(|(t, _)| t == title) else { return Err(format!("no item {title} in {items:?}")) };
+        let Some((_, item)) = items.iter().find(|(t, _)| t == title) else {
+            return Err(format!("no item {title} in {items:?}"));
+        };
         let at = item.center();
         cx.update_window(window, |_, window, cx| {
             crate::thread::scripted_input(|| {
@@ -424,7 +596,11 @@ pub(crate) async fn menu_command(window: AnyWindowHandle, cmd: &serde_json::Valu
     }
     let titles: Vec<&str> = items.iter().map(|(t, _)| t.as_str()).collect();
     if !titles.is_empty() {
-        cx.update_window(window, |_, window, cx| window.press("escape", cx)).map_err(|e| e.to_string())?;
+        cx.update_window(window, |_, window, cx| window.press("escape", cx))
+            .map_err(|e| e.to_string())?;
     }
-    Ok(serde_json::json!(format!("ok {}", serde_json::to_string(&titles).unwrap_or_default())))
+    Ok(serde_json::json!(format!(
+        "ok {}",
+        serde_json::to_string(&titles).unwrap_or_default()
+    )))
 }

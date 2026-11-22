@@ -1,4 +1,4 @@
-// Inbox guess (experiment `inboxGuess`; docs/protocol.md, "Inbox guess"):
+// Inbox guess (experiment `inboxGuess`; docs/protocol/threads.md, "Inbox guess"):
 // finding out which finished threads Mike didn't need to see, before
 // anything is allowed to keep one out of his inbox.
 //

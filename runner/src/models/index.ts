@@ -1,4 +1,4 @@
-// The runner's own small-model calls (docs/protocol.md, "Settings and
+// The runner's own small-model calls (docs/protocol/settings.md, "Settings and
 // models"): classify, extract, summarize and generate, on one of the Claude
 // logins in a pool, through the official CLI. Features ask for a job, not
 // a model; ROUTES says which model answers it. A call never throws: a

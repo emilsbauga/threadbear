@@ -6,6 +6,7 @@
 // where its own block actions go.
 use crate::style::{self, px};
 use crate::terminal::PutOutcome;
+use crate::tips::Tip as _;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::{h_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -13,7 +14,6 @@ use gpui_kit::*;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use threadbear_core::terminal::{self as rules, ShellBlock};
-use crate::tips::Tip as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Icon {
@@ -54,23 +54,36 @@ fn mark(icon: Icon, command: &str) {
 }
 
 fn unmark(icon: Icon, command: &str) {
-    PRESSED.lock().unwrap_or_else(|e| e.into_inner()).retain(|(i, c, _)| !(*i == icon && c == command));
+    PRESSED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(i, c, _)| !(*i == icon && c == command));
 }
 
 fn ticked(icon: Icon, command: &str) -> bool {
-    PRESSED.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(i, c, at)| *i == icon && c == command && at.elapsed() < TICK_FOR)
+    PRESSED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(i, c, at)| *i == icon && c == command && at.elapsed() < TICK_FOR)
 }
 
 /// Why `command` was just copied rather than typed, while that's shown.
 fn copied_because(command: &str) -> Option<&'static str> {
-    BUSY.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(c, at, _)| c == command && at.elapsed() < NOTE_FOR).map(|(_, _, why)| *why)
+    BUSY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|(c, at, _)| c == command && at.elapsed() < NOTE_FOR)
+        .map(|(_, _, why)| *why)
 }
 
 /// Everything drawn again once a tick or a note is due to go.
 fn redraw_after(wait: Duration, cx: &mut App) {
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(wait + Duration::from_millis(50)).await;
-        let _ = cx.update(|cx| cx.refresh_windows());
+        cx.background_executor()
+            .timer(wait + Duration::from_millis(50))
+            .await;
+        cx.update(|cx| cx.refresh_windows());
     })
     .detach();
 }
@@ -79,14 +92,22 @@ fn redraw_after(wait: Duration, cx: &mut App) {
 /// replies are left as they are. `source` is the markdown the text was made
 /// from, for telling a block still streaming in (no icons: half a command
 /// mustn't be something you can press); `thread` is the transcript's.
-pub(crate) fn with_icons(text: gpui_kit::base::TextView, source: &str, thread: &str) -> gpui_kit::base::TextView {
+pub(crate) fn with_icons(
+    text: gpui_kit::base::TextView,
+    source: &str,
+    thread: &str,
+) -> gpui_kit::base::TextView {
     if !ShellBlock::may_hold(source) {
         return text;
     }
     let source: Arc<str> = source.into();
     let thread = thread.to_owned();
     text.code_block_actions(move |block, _window, cx| {
-        let shell = ShellBlock::from(block.lang().as_deref(), &block.code()).filter(|_| block.span.is_some_and(|span| rules::fence_closed(&source, span.start, span.end)));
+        let shell = ShellBlock::from(block.lang().as_deref(), &block.code()).filter(|_| {
+            block
+                .span
+                .is_some_and(|span| rules::fence_closed(&source, span.start, span.end))
+        });
         match shell {
             Some(shell) => icons(&shell.command, &thread, cx).into_any_element(),
             None => div().into_any_element(),
@@ -128,10 +149,22 @@ fn icons(command: &str, thread: &str, cx: &App) -> impl IntoElement {
 
 fn icon(which: Icon, command: &str, thread: &str, cx: &App) -> impl IntoElement {
     let ticked = ticked(which, command);
-    let colour = if ticked { style::tick_green(cx) } else { style::secondary_text(cx) };
-    let glyph = if ticked { crate::icons::symbol("checkmark") } else { crate::icons::symbol(which.symbol()) };
+    let colour = if ticked {
+        style::tick_green(cx)
+    } else {
+        style::secondary_text(cx)
+    };
+    let glyph = if ticked {
+        crate::icons::symbol("checkmark")
+    } else {
+        crate::icons::symbol(which.symbol())
+    };
     let (command, thread) = (command.to_owned(), thread.to_owned());
-    let id = SharedString::from(format!("shell-{}-{}", if which == Icon::Put { "put" } else { "copy" }, hash(&command)));
+    let id = SharedString::from(format!(
+        "shell-{}-{}",
+        if which == Icon::Put { "put" } else { "copy" },
+        hash(&command)
+    ));
     div()
         .id(ElementId::Name(id))
         .flex_none()
@@ -142,7 +175,10 @@ fn icon(which: Icon, command: &str, thread: &str, cx: &App) -> impl IntoElement 
         .rounded(px(5.))
         .cursor_pointer()
         .text_color(colour)
-        .hover(|s| s.bg(style::primary_opacity(cx, 0.1)).text_color(style::label_text(cx)))
+        .hover(|s| {
+            s.bg(style::primary_opacity(cx, 0.1))
+                .text_color(style::label_text(cx))
+        })
         .role(Role::Button)
         .aria_label(SharedString::from(which.tip()))
         .tip(which.tip())
@@ -182,9 +218,17 @@ pub(crate) fn put(command: &str, thread: &str, window: &mut Window, cx: &mut App
     mark(Icon::Put, command);
     window.refresh();
     redraw_after(TICK_FOR, cx);
-    let Some(app) = crate::terminal::app(cx) else { return };
-    let block = ShellBlock { command: command.to_owned() };
-    let Some(task) = app.update(cx, |a, cx| crate::terminal::put_in_terminal(a, block, thread, window, cx)) else { return };
+    let Some(app) = crate::terminal::app(cx) else {
+        return;
+    };
+    let block = ShellBlock {
+        command: command.to_owned(),
+    };
+    let Some(task) = app.update(cx, |a, cx| {
+        crate::terminal::put_in_terminal(a, block, thread, window, cx)
+    }) else {
+        return;
+    };
     let command = command.to_owned();
     cx.spawn(async move |cx| {
         let why = match task.await {
@@ -192,10 +236,11 @@ pub(crate) fn put(command: &str, thread: &str, window: &mut Window, cx: &mut App
             Some(PutOutcome::Occupied) => "Another command's waiting for Return, so it's copied",
             _ => return,
         };
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             unmark(Icon::Put, &command);
             cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
-            *BUSY.lock().unwrap_or_else(|e| e.into_inner()) = Some((command.clone(), Instant::now(), why));
+            *BUSY.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((command.clone(), Instant::now(), why));
             cx.refresh_windows();
             redraw_after(NOTE_FOR, cx);
         });
@@ -212,6 +257,15 @@ pub(crate) fn dump_lines(text: &str, thread: &str, cx: &App) -> Option<Vec<Strin
     if blocks.is_empty() {
         return None;
     }
-    let icons = if crate::terminal::shows_put(thread, cx) { "[put, copy]" } else { "[copy]" };
-    Some(blocks.into_iter().map(|b| format!("{icons} {}", b.command)).collect())
+    let icons = if crate::terminal::shows_put(thread, cx) {
+        "[put, copy]"
+    } else {
+        "[copy]"
+    };
+    Some(
+        blocks
+            .into_iter()
+            .map(|b| format!("{icons} {}", b.command))
+            .collect(),
+    )
 }

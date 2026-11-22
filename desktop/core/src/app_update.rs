@@ -40,7 +40,9 @@ impl BuildInfo {
 
     /// github.com/mikecann/threadbear, however the URL was written.
     pub fn is_mikes_repo(&self) -> bool {
-        self.origin.as_deref().is_some_and(|o| repo_key(o) == "github.com/mikecann/threadbear")
+        self.origin
+            .as_deref()
+            .is_some_and(|o| repo_key(o) == "github.com/mikecann/threadbear")
     }
 }
 
@@ -76,11 +78,18 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
 /// runner.json's `updateBuildHosts`: the only Macs trusted to build what this
 /// one runs (desktop/scripts/stage-update.sh). Check hosts never are.
 pub fn update_build_hosts(runner_json: &Path) -> Vec<String> {
-    let Ok(data) = std::fs::read(runner_json) else { return Vec::new() };
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&data) else { return Vec::new() };
+    let Ok(data) = std::fs::read(runner_json) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&data) else {
+        return Vec::new();
+    };
     match &json["updateBuildHosts"] {
         serde_json::Value::String(h) => vec![h.clone()],
-        serde_json::Value::Array(a) => a.iter().filter_map(|h| h.as_str().map(str::to_owned)).collect(),
+        serde_json::Value::Array(a) => a
+            .iter()
+            .filter_map(|h| h.as_str().map(str::to_owned))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -104,18 +113,28 @@ pub fn builder_trusted(staged: &BuildInfo, update_build_hosts: &[String]) -> boo
 /// which is the same: it was going. Err when one that isn't trusted is
 /// still there (it couldn't be deleted): then nothing may be swapped in.
 pub fn drop_untrusted_staged(next: &Path, runner_json: &Path) -> Result<Option<String>, String> {
-    let Some(staged) = BuildInfo::read(next) else { return Ok(None) };
+    let Some(staged) = BuildInfo::read(next) else {
+        return Ok(None);
+    };
     if builder_trusted(&staged, &update_build_hosts(runner_json)) {
         return Ok(None);
     }
     let why = match &staged.built_on {
-        Some(host) => format!("the staged build {}: {host} isn't in updateBuildHosts", staged.short),
-        None => format!("the staged build {}: it doesn't say which Mac built it", staged.short),
+        Some(host) => format!(
+            "the staged build {}: {host} isn't in updateBuildHosts",
+            staged.short
+        ),
+        None => format!(
+            "the staged build {}: it doesn't say which Mac built it",
+            staged.short
+        ),
     };
     match std::fs::remove_dir_all(next) {
         _ if !next.exists() => Ok(Some(format!("dropped {why}"))),
         Ok(()) => Err(format!("couldn't drop {why}; not swapping anything in")),
-        Err(e) => Err(format!("couldn't drop {why} ({e}); not swapping anything in")),
+        Err(e) => Err(format!(
+            "couldn't drop {why} ({e}); not swapping anything in"
+        )),
     }
 }
 
@@ -128,12 +147,19 @@ pub fn drop_untrusted_staged(next: &Path, runner_json: &Path) -> Result<Option<S
 /// comes in with the next change under desktop/, rather than every change to
 /// the Swift app's resources making a build.
 pub fn rev_parse_arguments(checkout: &str) -> Vec<String> {
-    ["-C", checkout, "rev-parse", "refs/heads/main:desktop"].map(String::from).to_vec()
+    ["-C", checkout, "rev-parse", "refs/heads/main:desktop"]
+        .map(String::from)
+        .to_vec()
 }
 
 /// The tree from `git rev-parse`'s output.
 pub fn tree_from_rev_parse(output: &str) -> String {
-    output.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("+")
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -147,12 +173,23 @@ pub enum Action {
     DropStaged,
 }
 
-pub fn decide(main_tree: &str, running: &BuildInfo, staged: Option<&BuildInfo>, building: Option<&str>, failed: Option<&str>, restarting: bool) -> Action {
+pub fn decide(
+    main_tree: &str,
+    running: &BuildInfo,
+    staged: Option<&BuildInfo>,
+    building: Option<&str>,
+    failed: Option<&str>,
+    restarting: bool,
+) -> Action {
     if restarting || building.is_some() {
         return Action::Nothing;
     }
     if main_tree == running.app_tree {
-        return if staged.is_some() { Action::DropStaged } else { Action::Nothing };
+        return if staged.is_some() {
+            Action::DropStaged
+        } else {
+            Action::Nothing
+        };
     }
     // Let a staged build go in before starting another. Otherwise an idle
     // restart can cut off the new build just after it starts.
@@ -189,7 +226,13 @@ impl BuildDebounce {
 /// happens: killed after the exchange, the old bundle is left at `next`, and
 /// the note says it isn't the one to put in (`apply_staged`). Not the build
 /// times, which a wrong clock gets wrong (Codex's second look).
-pub fn swap(install: &Path, next: &Path, old: &Path, swapping: &Path, incoming: &str) -> std::io::Result<()> {
+pub fn swap(
+    install: &Path,
+    next: &Path,
+    old: &Path,
+    swapping: &Path,
+    incoming: &str,
+) -> std::io::Result<()> {
     if old.exists() {
         std::fs::remove_dir_all(old)?;
     }
@@ -222,7 +265,16 @@ fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     let a = std::ffi::CString::new(a.as_os_str().as_bytes())?;
     let b = std::ffi::CString::new(b.as_os_str().as_bytes())?;
     // SAFETY: two NUL-terminated paths that live until the call returns.
-    if unsafe { libc::renameat2(libc::AT_FDCWD, a.as_ptr(), libc::AT_FDCWD, b.as_ptr(), libc::RENAME_EXCHANGE) } == 0 {
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    } == 0
+    {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
@@ -246,7 +298,13 @@ fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
 /// swapped in. A staged bundle that matches what's running (a build that
 /// finished after the same tree went in another way), or that has no
 /// build.json, is dropped. Leftovers of an earlier swap go first.
-pub fn apply_staged(install: &Path, next: &Path, old: &Path, swapping: &Path, running: Option<&BuildInfo>) -> Result<Option<BuildInfo>, String> {
+pub fn apply_staged(
+    install: &Path,
+    next: &Path,
+    old: &Path,
+    swapping: &Path,
+    running: Option<&BuildInfo>,
+) -> Result<Option<BuildInfo>, String> {
     if old.exists() {
         let _ = std::fs::remove_dir_all(old);
     }
@@ -259,9 +317,14 @@ pub fn apply_staged(install: &Path, next: &Path, old: &Path, swapping: &Path, ru
         Ok(incoming) => {
             let at_next = BuildInfo::read(next).map(|b| b.app_tree);
             if next.exists() && at_next.as_deref() != Some(incoming.trim()) {
-                std::fs::rename(next, old).map_err(|e| format!("couldn't move the old bundle left by a swap cut short out of the way: {e}"))?;
+                std::fs::rename(next, old).map_err(|e| {
+                    format!(
+                        "couldn't move the old bundle left by a swap cut short out of the way: {e}"
+                    )
+                })?;
             }
-            std::fs::remove_file(swapping).map_err(|e| format!("couldn't clear the note of a swap cut short: {e}"))?;
+            std::fs::remove_file(swapping)
+                .map_err(|e| format!("couldn't clear the note of a swap cut short: {e}"))?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("couldn't read the note of a swap cut short: {e}")),
@@ -269,11 +332,14 @@ pub fn apply_staged(install: &Path, next: &Path, old: &Path, swapping: &Path, ru
     if !next.exists() {
         return Ok(None);
     }
-    let Some(staged) = BuildInfo::read(next).filter(|s| running.is_none_or(|r| r.app_tree != s.app_tree)) else {
+    let Some(staged) =
+        BuildInfo::read(next).filter(|s| running.is_none_or(|r| r.app_tree != s.app_tree))
+    else {
         let _ = std::fs::remove_dir_all(next);
         return Ok(None);
     };
-    swap(install, next, old, swapping, &staged.app_tree).map_err(|e| format!("couldn't put {} in place: {e}", next.display()))?;
+    swap(install, next, old, swapping, &staged.app_tree)
+        .map_err(|e| format!("couldn't put {} in place: {e}", next.display()))?;
     Ok(Some(staged))
 }
 
@@ -374,7 +440,11 @@ pub fn restart_wait(m: &RestartMoment, why_held: impl FnOnce() -> String) -> Opt
         return None;
     }
     // Rounded up, so it reads 5 while he's using the app and 1 last.
-    Some(RestartWait::Countdown((AUTO_RESTART_IDLE_SECONDS - m.idle_for.max(0.)).ceil().max(1.) as u32))
+    Some(RestartWait::Countdown(
+        (AUTO_RESTART_IDLE_SECONDS - m.idle_for.max(0.))
+            .ceil()
+            .max(1.) as u32,
+    ))
 }
 
 /// The update script's arguments, run at background priority (`taskpolicy
@@ -382,7 +452,12 @@ pub fn restart_wait(m: &RestartMoment, why_held: impl FnOnce() -> String) -> Opt
 /// the cores he's using, inherited by everything it starts, the copy to a
 /// build host and back included.
 pub fn build_command(script: &str, checkout: &str, next: &str) -> (String, Vec<String>) {
-    ("/usr/sbin/taskpolicy".into(), ["-b", "/bin/bash", script, checkout, "--next", next].map(String::from).to_vec())
+    (
+        "/usr/sbin/taskpolicy".into(),
+        ["-b", "/bin/bash", script, checkout, "--next", next]
+            .map(String::from)
+            .to_vec(),
+    )
 }
 
 #[cfg(test)]
@@ -390,11 +465,20 @@ mod tests {
     use super::*;
 
     fn info(origin: Option<&str>) -> BuildInfo {
-        BuildInfo { origin: origin.map(str::to_owned), ..Default::default() }
+        BuildInfo {
+            origin: origin.map(str::to_owned),
+            ..Default::default()
+        }
     }
 
     fn build(short: &str, tree: &str) -> BuildInfo {
-        BuildInfo { commit: format!("{short}000"), short: short.into(), app_tree: tree.into(), configuration: "release".into(), ..Default::default() }
+        BuildInfo {
+            commit: format!("{short}000"),
+            short: short.into(),
+            app_tree: tree.into(),
+            configuration: "release".into(),
+            ..Default::default()
+        }
     }
 
     /// A bundle folder with a build.json and a marker file naming it.
@@ -413,19 +497,37 @@ mod tests {
         let next = dir.join("next.app");
         let staged = |built_on: Option<&str>| {
             let _ = std::fs::remove_dir_all(&next);
-            bundle(&dir, "next.app", &BuildInfo { built_on: built_on.map(str::to_owned), ..build("new", "t2") });
+            bundle(
+                &dir,
+                "next.app",
+                &BuildInfo {
+                    built_on: built_on.map(str::to_owned),
+                    ..build("new", "t2")
+                },
+            );
         };
         // Check hosts never count, and a bundle that doesn't say goes.
-        std::fs::write(&json, r#"{"checkHosts":["build-box"],"checkHost":"build-box"}"#).unwrap();
+        std::fs::write(
+            &json,
+            r#"{"checkHosts":["build-box"],"checkHost":"build-box"}"#,
+        )
+        .unwrap();
         for who in [Some("build-box"), None] {
             staged(who);
-            assert!(drop_untrusted_staged(&next, &json).unwrap().is_some(), "{who:?}");
+            assert!(
+                drop_untrusted_staged(&next, &json).unwrap().is_some(),
+                "{who:?}"
+            );
             assert!(!next.exists(), "{who:?}");
         }
         staged(Some(""));
         assert_eq!(drop_untrusted_staged(&next, &json), Ok(None));
         assert!(next.exists());
-        std::fs::write(&json, r#"{"checkHosts":["build-box"],"updateBuildHosts":["builder"]}"#).unwrap();
+        std::fs::write(
+            &json,
+            r#"{"checkHosts":["build-box"],"updateBuildHosts":["builder"]}"#,
+        )
+        .unwrap();
         staged(Some("builder"));
         assert_eq!(drop_untrusted_staged(&next, &json), Ok(None));
         staged(Some("build-box"));
@@ -464,29 +566,76 @@ mod tests {
     fn the_build_runs_at_background_priority() {
         let (program, args) = build_command("/b/stage-update.sh", "/repo", "/next");
         assert_eq!(program, "/usr/sbin/taskpolicy");
-        assert_eq!(args, ["-b", "/bin/bash", "/b/stage-update.sh", "/repo", "--next", "/next"]);
+        assert_eq!(
+            args,
+            [
+                "-b",
+                "/bin/bash",
+                "/b/stage-update.sh",
+                "/repo",
+                "--next",
+                "/next"
+            ]
+        );
     }
 
     #[test]
     fn decides_whether_to_build() {
         let running = build("aaa", "t1");
-        assert_eq!(decide("t1", &running, None, None, None, false), Action::Nothing);
-        assert_eq!(decide("t2", &running, None, None, None, false), Action::Build("t2".into()));
+        assert_eq!(
+            decide("t1", &running, None, None, None, false),
+            Action::Nothing
+        );
+        assert_eq!(
+            decide("t2", &running, None, None, None, false),
+            Action::Build("t2".into())
+        );
         // Already staged, being built or known to fail: leave it.
-        assert_eq!(decide("t2", &running, Some(&build("bbb", "t2")), None, None, false), Action::Nothing);
-        assert_eq!(decide("t2", &running, None, Some("t2"), None, false), Action::Nothing);
+        assert_eq!(
+            decide("t2", &running, Some(&build("bbb", "t2")), None, None, false),
+            Action::Nothing
+        );
+        assert_eq!(
+            decide("t2", &running, None, Some("t2"), None, false),
+            Action::Nothing
+        );
         // A look that finishes after a newer main was read must not start
         // another build alongside the one already running.
-        assert_eq!(decide("t3", &running, None, Some("t2"), None, false), Action::Nothing);
-        assert_eq!(decide("t2", &running, None, None, Some("t2"), false), Action::Nothing);
+        assert_eq!(
+            decide("t3", &running, None, Some("t2"), None, false),
+            Action::Nothing
+        );
+        assert_eq!(
+            decide("t2", &running, None, None, Some("t2"), false),
+            Action::Nothing
+        );
         // A staged build goes in first; the new app considers the latest main.
-        assert_eq!(decide("t3", &running, Some(&build("bbb", "t2")), None, Some("t2"), false), Action::Nothing);
-        assert_eq!(decide("t3", &running, None, None, Some("t2"), false), Action::Build("t3".into()));
+        assert_eq!(
+            decide(
+                "t3",
+                &running,
+                Some(&build("bbb", "t2")),
+                None,
+                Some("t2"),
+                false
+            ),
+            Action::Nothing
+        );
+        assert_eq!(
+            decide("t3", &running, None, None, Some("t2"), false),
+            Action::Build("t3".into())
+        );
         // Main is back to what's running while something else is staged.
-        assert_eq!(decide("t1", &running, Some(&build("bbb", "t2")), None, None, false), Action::DropStaged);
+        assert_eq!(
+            decide("t1", &running, Some(&build("bbb", "t2")), None, None, false),
+            Action::DropStaged
+        );
         // During handover next has already moved into place, but the old
         // app is still alive. Its pending git read mustn't rebuild t2.
-        assert_eq!(decide("t2", &running, None, None, None, true), Action::Nothing);
+        assert_eq!(
+            decide("t2", &running, None, None, None, true),
+            Action::Nothing
+        );
     }
 
     #[test]
@@ -509,17 +658,32 @@ mod tests {
     /// A moment that would restart: staged, loaded, nothing typed or under
     /// way, the app in front and untouched for the idle time.
     fn quiet() -> RestartMoment {
-        RestartMoment { staged: true, loaded: true, active: true, idle_for: AUTO_RESTART_IDLE_SECONDS, ..Default::default() }
+        RestartMoment {
+            staged: true,
+            loaded: true,
+            active: true,
+            idle_for: AUTO_RESTART_IDLE_SECONDS,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn restarts_in_front_once_untouched_for_five_seconds() {
         assert_eq!(AUTO_RESTART_IDLE_SECONDS, 5.);
         assert!(should_auto_restart(&quiet()));
-        assert!(should_auto_restart(&RestartMoment { idle_for: 600., ..quiet() }));
+        assert!(should_auto_restart(&RestartMoment {
+            idle_for: 600.,
+            ..quiet()
+        }));
         // Touched within the last five seconds: not yet.
-        assert!(!should_auto_restart(&RestartMoment { idle_for: 4.9, ..quiet() }));
-        assert!(!should_auto_restart(&RestartMoment { idle_for: 0., ..quiet() }));
+        assert!(!should_auto_restart(&RestartMoment {
+            idle_for: 4.9,
+            ..quiet()
+        }));
+        assert!(!should_auto_restart(&RestartMoment {
+            idle_for: 0.,
+            ..quiet()
+        }));
     }
 
     #[test]
@@ -527,20 +691,94 @@ mod tests {
         let held = || "the message box in “Fix it” is sent or cleared".to_owned();
         let wait = |m: RestartMoment| restart_wait(&m, held);
         // In use: the full five. Then down to 1, and none once it's going.
-        assert_eq!(wait(RestartMoment { idle_for: 0., ..quiet() }), Some(RestartWait::Countdown(5)));
-        assert_eq!(wait(RestartMoment { idle_for: 0.4, ..quiet() }), Some(RestartWait::Countdown(5)));
-        assert_eq!(wait(RestartMoment { idle_for: 2.5, ..quiet() }), Some(RestartWait::Countdown(3)));
-        assert_eq!(wait(RestartMoment { idle_for: 4.9, ..quiet() }), Some(RestartWait::Countdown(1)));
+        assert_eq!(
+            wait(RestartMoment {
+                idle_for: 0.,
+                ..quiet()
+            }),
+            Some(RestartWait::Countdown(5))
+        );
+        assert_eq!(
+            wait(RestartMoment {
+                idle_for: 0.4,
+                ..quiet()
+            }),
+            Some(RestartWait::Countdown(5))
+        );
+        assert_eq!(
+            wait(RestartMoment {
+                idle_for: 2.5,
+                ..quiet()
+            }),
+            Some(RestartWait::Countdown(3))
+        );
+        assert_eq!(
+            wait(RestartMoment {
+                idle_for: 4.9,
+                ..quiet()
+            }),
+            Some(RestartWait::Countdown(1))
+        );
         assert_eq!(wait(quiet()), None);
-        assert_eq!(wait(RestartMoment { active: false, idle_for: 0., ..quiet() }), None);
+        assert_eq!(
+            wait(RestartMoment {
+                active: false,
+                idle_for: 0.,
+                ..quiet()
+            }),
+            None
+        );
         // Whatever holds it is said instead, in front or behind.
-        for moment in [RestartMoment { has_drafts: true, ..quiet() }, RestartMoment { held: true, active: false, ..quiet() }, RestartMoment { other_window_input: true, idle_for: 0., ..quiet() }] {
+        for moment in [
+            RestartMoment {
+                has_drafts: true,
+                ..quiet()
+            },
+            RestartMoment {
+                held: true,
+                active: false,
+                ..quiet()
+            },
+            RestartMoment {
+                other_window_input: true,
+                idle_for: 0.,
+                ..quiet()
+            },
+        ] {
             assert_eq!(wait(moment), Some(RestartWait::Held(held())));
         }
-        assert_eq!(wait(RestartMoment { loaded: false, has_drafts: true, ..quiet() }), Some(RestartWait::Held("the threads have loaded".into())));
-        assert_eq!(wait(RestartMoment { staged: false, idle_for: 0., ..quiet() }), None);
+        assert_eq!(
+            wait(RestartMoment {
+                loaded: false,
+                has_drafts: true,
+                ..quiet()
+            }),
+            Some(RestartWait::Held("the threads have loaded".into()))
+        );
+        assert_eq!(
+            wait(RestartMoment {
+                staged: false,
+                idle_for: 0.,
+                ..quiet()
+            }),
+            None
+        );
         // It says a wait exactly when it isn't restarting.
-        for m in [quiet(), RestartMoment { idle_for: 1., ..quiet() }, RestartMoment { held: true, ..quiet() }, RestartMoment { active: false, ..quiet() }] {
+        for m in [
+            quiet(),
+            RestartMoment {
+                idle_for: 1.,
+                ..quiet()
+            },
+            RestartMoment {
+                held: true,
+                ..quiet()
+            },
+            RestartMoment {
+                active: false,
+                ..quiet()
+            },
+        ] {
             assert_eq!(wait(m).is_none(), should_auto_restart(&m), "{m:?}");
         }
     }
@@ -565,27 +803,71 @@ mod tests {
 
     #[test]
     fn restarts_straight_away_with_another_app_in_front() {
-        assert!(should_auto_restart(&RestartMoment { active: false, idle_for: 0., ..quiet() }));
+        assert!(should_auto_restart(&RestartMoment {
+            active: false,
+            idle_for: 0.,
+            ..quiet()
+        }));
     }
 
     #[test]
     fn never_restarts_over_something_typed_or_under_way() {
         for (why, moment) in [
-            ("unsent words", RestartMoment { has_drafts: true, ..quiet() }),
-            ("a drag, a gesture, a menu, a sheet or a dialog", RestartMoment { held: true, ..quiet() }),
-            ("typing in another window", RestartMoment { other_window_input: true, ..quiet() }),
-            ("no build staged", RestartMoment { staged: false, ..quiet() }),
-            ("the threads not in yet", RestartMoment { loaded: false, ..quiet() }),
+            (
+                "unsent words",
+                RestartMoment {
+                    has_drafts: true,
+                    ..quiet()
+                },
+            ),
+            (
+                "a drag, a gesture, a menu, a sheet or a dialog",
+                RestartMoment {
+                    held: true,
+                    ..quiet()
+                },
+            ),
+            (
+                "typing in another window",
+                RestartMoment {
+                    other_window_input: true,
+                    ..quiet()
+                },
+            ),
+            (
+                "no build staged",
+                RestartMoment {
+                    staged: false,
+                    ..quiet()
+                },
+            ),
+            (
+                "the threads not in yet",
+                RestartMoment {
+                    loaded: false,
+                    ..quiet()
+                },
+            ),
         ] {
             assert!(!should_auto_restart(&moment), "in front: {why}");
             // Nor with another app in front: what's typed or open would still go.
-            assert!(!should_auto_restart(&RestartMoment { active: false, idle_for: 0., ..moment }), "behind: {why}");
+            assert!(
+                !should_auto_restart(&RestartMoment {
+                    active: false,
+                    idle_for: 0.,
+                    ..moment
+                }),
+                "behind: {why}"
+            );
         }
     }
 
     #[test]
     fn the_tree_is_desktops_from_rev_parse() {
-        assert_eq!(rev_parse_arguments("/repo"), ["-C", "/repo", "rev-parse", "refs/heads/main:desktop"]);
+        assert_eq!(
+            rev_parse_arguments("/repo"),
+            ["-C", "/repo", "rev-parse", "refs/heads/main:desktop"]
+        );
         assert_eq!(tree_from_rev_parse("aaa111\n"), "aaa111");
     }
 
@@ -616,20 +898,34 @@ mod tests {
         let swapping = dir.join(".Threadbear GPUI.app.swapping");
         // The same tree as what's running: dropped, nothing swapped.
         let next = bundle(&dir, ".Threadbear GPUI.app.next", &build("aab", "t1"));
-        assert_eq!(apply_staged(&install, &next, &old, &swapping, Some(&build("aaa", "t1"))), Ok(None));
+        assert_eq!(
+            apply_staged(&install, &next, &old, &swapping, Some(&build("aaa", "t1"))),
+            Ok(None)
+        );
         assert!(!next.exists());
         assert_eq!(marker(&install).as_deref(), Some("aaa"));
         // A leftover from an earlier swap is cleared, and a new build goes in.
         bundle(&dir, ".Threadbear GPUI.app.old", &build("zzz", "t0"));
         let next = bundle(&dir, ".Threadbear GPUI.app.next", &build("bbb", "t2"));
-        assert_eq!(apply_staged(&install, &next, &old, &swapping, Some(&build("aaa", "t1"))).unwrap().map(|b| b.short), Some("bbb".to_owned()));
+        assert_eq!(
+            apply_staged(&install, &next, &old, &swapping, Some(&build("aaa", "t1")))
+                .unwrap()
+                .map(|b| b.short),
+            Some("bbb".to_owned())
+        );
         assert_eq!(marker(&install).as_deref(), Some("bbb"));
         assert_eq!(marker(&old).as_deref(), Some("aaa"));
         // Nothing staged: nothing happens.
-        assert_eq!(apply_staged(&install, &next, &old, &swapping, Some(&build("bbb", "t2"))), Ok(None));
+        assert_eq!(
+            apply_staged(&install, &next, &old, &swapping, Some(&build("bbb", "t2"))),
+            Ok(None)
+        );
         // A staged folder with no build.json is dropped.
         std::fs::create_dir_all(&next).unwrap();
-        assert_eq!(apply_staged(&install, &next, &old, &swapping, Some(&build("bbb", "t2"))), Ok(None));
+        assert_eq!(
+            apply_staged(&install, &next, &old, &swapping, Some(&build("bbb", "t2"))),
+            Ok(None)
+        );
         assert!(!next.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -645,7 +941,10 @@ mod tests {
         let install = bundle(&dir, "Threadbear GPUI.app", &build("bbb", "t2"));
         let next = bundle(&dir, ".Threadbear GPUI.app.next", &build("aaa", "t1"));
         std::fs::write(&swapping, "t2").unwrap();
-        assert_eq!(apply_staged(&install, &next, &old, &swapping, Some(&build("bbb", "t2"))), Ok(None));
+        assert_eq!(
+            apply_staged(&install, &next, &old, &swapping, Some(&build("bbb", "t2"))),
+            Ok(None)
+        );
         assert_eq!(marker(&install).as_deref(), Some("bbb"));
         assert!(!next.exists() && !swapping.exists());
         // Killed before it: the note and the staged one agree, so it goes in.
@@ -653,7 +952,12 @@ mod tests {
         let install = bundle(&dir, "Threadbear GPUI.app", &build("aaa", "t1"));
         let next = bundle(&dir, ".Threadbear GPUI.app.next", &build("bbb", "t2"));
         std::fs::write(&swapping, "t2").unwrap();
-        assert_eq!(apply_staged(&install, &next, &old, &swapping, Some(&build("aaa", "t1"))).unwrap().map(|b| b.short), Some("bbb".to_owned()));
+        assert_eq!(
+            apply_staged(&install, &next, &old, &swapping, Some(&build("aaa", "t1")))
+                .unwrap()
+                .map(|b| b.short),
+            Some("bbb".to_owned())
+        );
         assert_eq!(marker(&install).as_deref(), Some("bbb"));
         assert!(!swapping.exists());
         // Cut short after the exchange, and the old one can't be moved out of
@@ -668,7 +972,9 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o500)).unwrap();
             std::fs::write(&swapping, "t4").unwrap();
-            assert!(apply_staged(&install, &next, &old, &swapping, Some(&build("ddd", "t4"))).is_err());
+            assert!(
+                apply_staged(&install, &next, &old, &swapping, Some(&build("ddd", "t4"))).is_err()
+            );
             assert!(swapping.exists(), "the note stays until it's sorted");
             assert_eq!(marker(&install).as_deref(), Some("ddd"));
             std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -679,12 +985,21 @@ mod tests {
     // Only a build of Mike's own repo reports to his Sentry.
     #[test]
     fn only_mikes_repo_counts_as_mikes() {
-        for url in ["https://github.com/mikecann/threadbear.git", "https://github.com/MikeCann/threadbear", "git@github.com:mikecann/threadbear.git", "ssh://git@github.com/mikecann/threadbear", "https://x-access-token@github.com/mikecann/threadbear/"] {
+        for url in [
+            "https://github.com/mikecann/threadbear.git",
+            "https://github.com/MikeCann/threadbear",
+            "git@github.com:mikecann/threadbear.git",
+            "ssh://git@github.com/mikecann/threadbear",
+            "https://x-access-token@github.com/mikecann/threadbear/",
+        ] {
             assert!(info(Some(url)).is_mikes_repo(), "{url}");
         }
         assert!(!info(Some("https://github.com/someone/threadbear.git")).is_mikes_repo());
         assert!(!info(Some("")).is_mikes_repo());
-        assert!(!info(None).is_mikes_repo(), "built before origin was recorded, or no origin");
+        assert!(
+            !info(None).is_mikes_repo(),
+            "built before origin was recorded, or no origin"
+        );
     }
 
     #[test]
@@ -698,7 +1013,10 @@ mod tests {
         )
         .unwrap();
         let read = BuildInfo::read(&bundle).unwrap();
-        assert_eq!((read.short.as_str(), read.app_tree.as_str()), ("abc1234", "t9"));
+        assert_eq!(
+            (read.short.as_str(), read.app_tree.as_str()),
+            ("abc1234", "t9")
+        );
         assert!(read.is_mikes_repo());
         assert_eq!(BuildInfo::read(&dir.join("missing.app")), None);
         let _ = std::fs::remove_dir_all(&dir);
@@ -706,8 +1024,15 @@ mod tests {
 
     #[test]
     fn the_bundle_is_found_from_its_executable() {
-        let exe = Path::new("/Users/me/Applications/Threadbear GPUI.app/Contents/MacOS/threadbear-gpui");
-        assert_eq!(bundle_of(exe).as_deref(), Some(Path::new("/Users/me/Applications/Threadbear GPUI.app")));
-        assert_eq!(bundle_of(Path::new("/repo/desktop/target/debug/threadbear-gpui")), None);
+        let exe =
+            Path::new("/Users/me/Applications/Threadbear GPUI.app/Contents/MacOS/threadbear-gpui");
+        assert_eq!(
+            bundle_of(exe).as_deref(),
+            Some(Path::new("/Users/me/Applications/Threadbear GPUI.app"))
+        );
+        assert_eq!(
+            bundle_of(Path::new("/repo/desktop/target/debug/threadbear-gpui")),
+            None
+        );
     }
 }

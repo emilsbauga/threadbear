@@ -58,7 +58,12 @@ pub struct TextFileDocument {
 
 impl TextFileDocument {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), saved: String::new(), truncated: false, lossy: false }
+        Self {
+            path: path.into(),
+            saved: String::new(),
+            truncated: false,
+            lossy: false,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -88,8 +93,16 @@ impl TextFileDocument {
         file.take(LIMIT as u64).read_to_end(&mut data)?;
         let truncated = data.len() == LIMIT;
         Ok(match String::from_utf8(data) {
-            Ok(text) => ReadText { text, truncated, lossy: false },
-            Err(bad) => ReadText { text: String::from_utf8_lossy(bad.as_bytes()).into_owned(), truncated, lossy: true },
+            Ok(text) => ReadText {
+                text,
+                truncated,
+                lossy: false,
+            },
+            Err(bad) => ReadText {
+                text: String::from_utf8_lossy(bad.as_bytes()).into_owned(),
+                truncated,
+                lossy: true,
+            },
         })
     }
 
@@ -157,7 +170,9 @@ impl TextFileDocument {
     /// Reads the file after the watch saw it change, and says what that means
     /// for `shown`, what the view holds now (`check`).
     pub fn check(&mut self, shown: &str) -> Change {
-        let Ok(read) = self.read() else { return Change::Gone };
+        let Ok(read) = self.read() else {
+            return Change::Gone;
+        };
         // Whether it can be written changed, even with the same text (a binary
         // file put back as UTF-8).
         let flags_changed = read.truncated != self.truncated || read.lossy != self.lossy;
@@ -200,7 +215,8 @@ impl TextFileDocument {
 pub mod words {
     pub const UNREADABLE: &str = "This file couldn't be read.";
     pub const CUT: &str = "Only the start of this file is shown.";
-    pub const CUT_NO_EDIT: &str = "Only the start of this file is shown, so it can't be edited here.";
+    pub const CUT_NO_EDIT: &str =
+        "Only the start of this file is shown, so it can't be edited here.";
     pub const NOT_UTF8: &str = "This file isn't UTF-8 text, so it can't be edited here.";
     pub const GONE: &str = "This file isn't there any more.";
     /// A file opened while the runner was away (restarting onto a new
@@ -208,7 +224,8 @@ pub mod words {
     pub const WAITING: &str = "Waiting for the runner. This opens once it's back.";
     pub const CONFLICT: &str = "Changed on disk while you were editing.";
     pub const TAKE_FILES: &str = "Take the file's";
-    pub const TAKE_FILES_TIP: &str = "Show what's in the file now. What you typed since your last save goes.";
+    pub const TAKE_FILES_TIP: &str =
+        "Show what's in the file now. What you typed since your last save goes.";
     pub const KEEP_MINE: &str = "Keep mine";
     pub const KEEP_MINE_TIP: &str = "Save what's here over the file.";
     pub const EDIT_TIP: &str = "Edit the file here. It's saved as you type.";
@@ -219,7 +236,11 @@ pub mod words {
     pub fn cant_save(truncated: bool) -> String {
         format!(
             "{}, so what you typed can't be saved into it. Copy it out, or go Back to leave it.",
-            if truncated { "The file is now too big to edit here" } else { "The file is no longer UTF-8 text" }
+            if truncated {
+                "The file is now too big to edit here"
+            } else {
+                "The file is no longer UTF-8 text"
+            }
         )
     }
 }
@@ -263,7 +284,13 @@ impl EditSession {
             true if document.truncated() => Some(words::CUT.to_owned()),
             true => None,
         };
-        let mut session = Self { document, editing: false, conflict: None, note, drafted: false };
+        let mut session = Self {
+            document,
+            editing: false,
+            conflict: None,
+            note,
+            drafted: false,
+        };
         if editing {
             session.editing = true;
             session.apply_editing();
@@ -308,7 +335,14 @@ impl EditSession {
     /// can't (`applyEditing`).
     fn apply_editing(&mut self) {
         if self.editing && !self.document.is_editable() {
-            self.note = Some(if self.document.truncated() { words::CUT_NO_EDIT } else { words::NOT_UTF8 }.to_owned());
+            self.note = Some(
+                if self.document.truncated() {
+                    words::CUT_NO_EDIT
+                } else {
+                    words::NOT_UTF8
+                }
+                .to_owned(),
+            );
         }
     }
 
@@ -367,7 +401,9 @@ impl EditSession {
         }
         match self.document.changed_on_disk() {
             Err(error) => {
-                self.note = Some(format!("Couldn't read the file to check it before saving: {error}"));
+                self.note = Some(format!(
+                    "Couldn't read the file to check it before saving: {error}"
+                ));
                 return Saved::Kept;
             }
             // It turned too big or not UTF-8: never written back. What's typed
@@ -495,7 +531,9 @@ impl MarkdownView {
     pub fn tip(self) -> &'static str {
         match self {
             MarkdownView::Preview => "Showing it drawn as a page. Pick Markdown to edit the text.",
-            MarkdownView::Markdown => "Showing the Markdown text, ready to type in. Pick Preview to read it as a page.",
+            MarkdownView::Markdown => {
+                "Showing the Markdown text, ready to type in. Pick Preview to read it as a page."
+            }
         }
     }
 
@@ -521,7 +559,11 @@ mod tests {
 
     impl Folder {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("tb-textfile-{name}-{}-{:?}", std::process::id(), std::thread::current().id()));
+            let path = std::env::temp_dir().join(format!(
+                "tb-textfile-{name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).unwrap();
             Folder(path)
@@ -546,11 +588,20 @@ mod tests {
         assert_eq!(TextFileDocument::change("a", "a", "a"), Change::Same);
         assert_eq!(TextFileDocument::change("a", "a", "a typed"), Change::Same);
         // Nothing unsaved: take the file's.
-        assert_eq!(TextFileDocument::change("b", "a", "a"), Change::Reload("b".into()));
+        assert_eq!(
+            TextFileDocument::change("b", "a", "a"),
+            Change::Reload("b".into())
+        );
         // The file now says what's typed (the view's save, seen late).
-        assert_eq!(TextFileDocument::change("a typed", "a", "a typed"), Change::Reload("a typed".into()));
+        assert_eq!(
+            TextFileDocument::change("a typed", "a", "a typed"),
+            Change::Reload("a typed".into())
+        );
         // Both changed: Mike picks.
-        assert_eq!(TextFileDocument::change("b", "a", "a typed"), Change::Conflict("b".into()));
+        assert_eq!(
+            TextFileDocument::change("b", "a", "a typed"),
+            Change::Conflict("b".into())
+        );
     }
 
     #[test]
@@ -571,7 +622,11 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o755, "the file keeps its mode");
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "the file keeps its mode"
+            );
         }
         // Shorter text doesn't leave the old tail behind.
         doc.save("x").unwrap();
@@ -607,7 +662,10 @@ mod tests {
         assert!(doc.changed_on_disk().unwrap().is_some());
         assert!(!doc.is_editable());
         doc.adopt("whatever");
-        assert!(!doc.is_editable(), "taking the file's text doesn't make it editable");
+        assert!(
+            !doc.is_editable(),
+            "taking the file's text doesn't make it editable"
+        );
         // Can't be read at all: nobody can say a save is safe.
         fs::remove_file(&path).unwrap();
         assert!(doc.changed_on_disk().is_err());
@@ -636,7 +694,11 @@ mod tests {
         assert!(doc.lossy());
         assert!(!doc.is_editable());
         doc.save("changed").unwrap();
-        assert_eq!(fs::read(&path).unwrap(), [0x68, 0x69, 0xFF, 0xFE], "a read-only file isn't written");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            [0x68, 0x69, 0xFF, 0xFE],
+            "a read-only file isn't written"
+        );
 
         let big = folder.file("big.txt", &vec![b'a'; LIMIT + 10]);
         let mut doc = TextFileDocument::new(&big);
@@ -686,7 +748,10 @@ mod tests {
         // Someone else writes while there are unsaved edits: a conflict, and
         // nothing adopted until Mike picks.
         fs::write(&path, "# Three\n").unwrap();
-        assert_eq!(doc.check("# Two\nmore\ntyping"), Change::Conflict("# Three\n".into()));
+        assert_eq!(
+            doc.check("# Two\nmore\ntyping"),
+            Change::Conflict("# Three\n".into())
+        );
         assert_eq!(doc.saved(), "# Two\nmore\n");
 
         fs::remove_file(&path).unwrap();
@@ -699,7 +764,11 @@ mod tests {
         let path = folder.file("notes.md", b"# Notes\n");
         let mut session = EditSession::open(&path, true);
         assert!(session.takes_typing());
-        assert_eq!(session.save_now("# Notes\n"), Saved::Done, "nothing typed, nothing to write");
+        assert_eq!(
+            session.save_now("# Notes\n"),
+            Saved::Done,
+            "nothing typed, nothing to write"
+        );
 
         session.typed();
         assert_eq!(session.save_now("# Notes\nmore\n"), Saved::Done);
@@ -738,7 +807,11 @@ mod tests {
         assert_eq!(session.use_file("theirs".into()), "theirs");
         assert_eq!(session.conflict, None);
         assert!(!session.drafted());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs", "taking the file's writes nothing");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "theirs",
+            "taking the file's writes nothing"
+        );
     }
 
     /// Undone back to what was saved while a conflict waits: nothing of Mike's
@@ -766,7 +839,9 @@ mod tests {
         let big = folder.file("big.md", &vec![b'a'; LIMIT + 1]);
         let session = EditSession::open(&big, false);
         assert_eq!(session.note.as_deref(), Some(words::CUT));
-        assert!(session.view_text("aaa").ends_with("Open it in its app to see it all."));
+        assert!(session
+            .view_text("aaa")
+            .ends_with("Open it in its app to see it all."));
         let session = EditSession::open(&big, true);
         assert_eq!(session.note.as_deref(), Some(words::CUT_NO_EDIT));
 
@@ -792,15 +867,42 @@ mod tests {
     #[test]
     fn markdown_opens_as_a_page_until_markdown_is_picked() {
         assert_eq!(MarkdownView::default(), MarkdownView::Preview);
-        assert!(!MarkdownView::opens_raw("/tmp/README.md", MarkdownView::Preview));
-        assert!(!MarkdownView::opens_raw("/tmp/notes.MDX", MarkdownView::Preview));
-        assert!(MarkdownView::opens_raw("/tmp/README.markdown", MarkdownView::Markdown), "the pick is remembered");
-        assert!(MarkdownView::opens_raw("/tmp/hello.ts", MarkdownView::Preview), "code opens to type in");
-        assert!(MarkdownView::opens_raw("/tmp/notes.txt", MarkdownView::Preview), "so does plain text");
-        assert!(MarkdownView::opens_raw("/tmp/put-1.json", MarkdownView::Preview), "and data");
-        assert!(!MarkdownView::opens_raw("/tmp/a.png", MarkdownView::Markdown), "a picture is to look at");
-        assert!(!MarkdownView::opens_raw("/tmp/a.html", MarkdownView::Markdown), "so is a page");
-        assert_eq!(MarkdownView::from_name("markdown"), Some(MarkdownView::Markdown));
+        assert!(!MarkdownView::opens_raw(
+            "/tmp/README.md",
+            MarkdownView::Preview
+        ));
+        assert!(!MarkdownView::opens_raw(
+            "/tmp/notes.MDX",
+            MarkdownView::Preview
+        ));
+        assert!(
+            MarkdownView::opens_raw("/tmp/README.markdown", MarkdownView::Markdown),
+            "the pick is remembered"
+        );
+        assert!(
+            MarkdownView::opens_raw("/tmp/hello.ts", MarkdownView::Preview),
+            "code opens to type in"
+        );
+        assert!(
+            MarkdownView::opens_raw("/tmp/notes.txt", MarkdownView::Preview),
+            "so does plain text"
+        );
+        assert!(
+            MarkdownView::opens_raw("/tmp/put-1.json", MarkdownView::Preview),
+            "and data"
+        );
+        assert!(
+            !MarkdownView::opens_raw("/tmp/a.png", MarkdownView::Markdown),
+            "a picture is to look at"
+        );
+        assert!(
+            !MarkdownView::opens_raw("/tmp/a.html", MarkdownView::Markdown),
+            "so is a page"
+        );
+        assert_eq!(
+            MarkdownView::from_name("markdown"),
+            Some(MarkdownView::Markdown)
+        );
         assert_eq!(MarkdownView::from_name("raw"), None);
     }
 }

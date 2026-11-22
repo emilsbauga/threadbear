@@ -3,7 +3,7 @@ import Testing
 @testable import ThreadbearKit
 
 /// The phone's inbox order and badge against the cases the Mac and website
-/// run too (app/Tests/Fixtures/inbox-urgency-cases.json). An unread thread
+/// run too (shared/cases/inbox-urgency.json). An unread thread
 /// whose turn said it needs nothing is done, as on the Mac (Mike, 9 Nov).
 @Suite struct InboxUrgencyTests {
     struct Cases: Decodable {
@@ -26,7 +26,7 @@ import Testing
         // ios/ThreadbearKit/Tests/ThreadbearKitTests/ -> the repo.
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let url = repo.appendingPathComponent("app/Tests/Fixtures/inbox-urgency-cases.json")
+        let url = repo.appendingPathComponent("shared/cases/inbox-urgency.json")
         let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: url)).cases
         #expect(cases.count >= 9)
         let now = Date()

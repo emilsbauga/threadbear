@@ -28,6 +28,17 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     public var answerDelay: Duration = .zero
     /// And then it refuses them, to see a card coming back.
     public var answersFail = false
+    /// Changes (star, wake, archive, rename...), reply buttons and Stop wait
+    /// this long for the "runner", to see them on their way.
+    public var changeDelay: Duration = .zero
+    /// And then it refuses them, to see one put back with why.
+    public var changesFail = false
+    /// The "runner" never takes changes, reply buttons or Stop, as with the
+    /// Mac asleep, to see them time out.
+    public var holdsCommands = false
+    private var updates = 0
+    /// How many changes have been sent, for tests that a second tap sends none.
+    public var updateCount: Int { lock.withLock { updates } }
     /// How long the thread lists take to answer the first time, to see the
     /// app's loading rows (`-ThreadbearSlowLoad`). Zero normally.
     private let listDelay: Duration
@@ -626,27 +637,28 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     /// Marks the button pressed on its message, as the runner's row would
     /// come back, with the first other thread as the one it started.
     public func press(threadId: String, buttonId: String) async throws -> String {
-        var started: String?
-        mutate { s in
-            started = s.threadsById.keys.sorted().first { $0 != threadId }
-            guard var list = s.messagesById[threadId] else { return }
-            for i in list.indices {
-                guard let b = list[i].buttons?.firstIndex(where: { $0.id == buttonId }) else { continue }
-                list[i].buttons![b].pressedThreadId = started
-                list[i].buttons![b].failed = nil
+        let started = lock.withLock { threadsById.keys.sorted().first { $0 != threadId } }
+        return runnerDoes(threadId: started) { fake in
+            fake.mutate { s in
+                guard var list = s.messagesById[threadId] else { return }
+                for i in list.indices {
+                    guard let b = list[i].buttons?.firstIndex(where: { $0.id == buttonId }) else { continue }
+                    list[i].buttons![b].pressedThreadId = started
+                    list[i].buttons![b].failed = nil
+                }
+                s.messagesById[threadId] = list
             }
-            s.messagesById[threadId] = list
         }
-        return newCommand(threadId: started)
     }
 
     /// Stops the turn as a runner would: the thread goes idle, its working line gone.
     public func interrupt(threadId: String) async throws -> String {
-        mutate { s in
-            s.threadsById[threadId]?.status = .idle
-            s.threadsById[threadId]?.working = nil
+        runnerDoes { fake in
+            fake.mutate { s in
+                s.threadsById[threadId]?.status = .idle
+                s.threadsById[threadId]?.working = nil
+            }
         }
-        return newCommand()
     }
 
     // Synthetic review data for the simulator, never a real conversation.
@@ -756,7 +768,39 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         return newCommand()
     }
 
+    /// A command's row as the backend would have it, nil for gone, for tests.
+    public func setCommand(_ id: String, _ status: CommandStatus?) {
+        mutate { s in s.commands[id] = status }
+    }
+
+    /// Runs `land` as the runner would: now, or after `changeDelay`, or
+    /// refuses it, or never takes it (`holdsCommands`).
+    private func runnerDoes(threadId: String? = nil, _ land: @escaping @Sendable (FakeBackend) -> Void) -> String {
+        guard holdsCommands || changesFail || changeDelay > .zero else {
+            land(self)
+            return newCommand(threadId: threadId)
+        }
+        let id = "cmd_" + UUID().uuidString.prefix(8)
+        lock.withLock { commands[id] = CommandStatus(state: .pending) }
+        guard !holdsCommands else { return id }
+        let (delay, fails) = (changeDelay, changesFail)
+        Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self else { return }
+            if !fails { land(self) }
+            self.mutate { s in
+                s.commands[id] = fails ? CommandStatus(state: .failed, note: "The Mac couldn't do that just now.") : CommandStatus(state: .done, threadId: threadId)
+            }
+        }
+        return id
+    }
+
     public func update(threadId: String, change: ThreadChange) async throws -> String {
+        lock.withLock { updates += 1 }
+        return runnerDoes { fake in fake.apply(threadId, change) }
+    }
+
+    private func apply(_ threadId: String, _ change: ThreadChange) {
         mutate { s in
             switch change {
             case let .snooze(until): s.threadsById[threadId]?.snoozedUntil = until
@@ -775,7 +819,6 @@ public final class FakeBackend: Backend, @unchecked Sendable {
                 s.threadsById[threadId]?.starredAt = on ? (starredAt ?? .now) : nil
             }
         }
-        return newCommand()
     }
 
     public func accounts() -> AsyncThrowingStream<[PhoneAccount], Error> {
@@ -958,7 +1001,9 @@ public final class FakeBackend: Backend, @unchecked Sendable {
                 PhoneMessage(seq: 4, role: .assistant, text: "Removed six flags. The full test run takes a while, so I've left it going and will look when it's done.", turn: "f1", at: ago(197)),
                 // A wake-up as the test run finished: the divider marks the wait.
                 PhoneMessage(seq: 5, role: .tool, text: "Read the test output", toolKind: "read", turn: "f2", wokeBy: [WokeTask(kind: "shell", description: "Run the full test suite")], at: ago(190)),
-                PhoneMessage(seq: 6, role: .assistant, text: "All 214 tests pass with the flags gone.", turn: "f2", at: ago(190)),
+                // A reply button, to see one pressed (-ThreadbearDo "press a4 prbtn001").
+                PhoneMessage(seq: 6, role: .assistant, text: "All 214 tests pass with the flags gone. [Open a pull request](button:prbtn001)", turn: "f2",
+                             buttons: [MessageButton(id: "prbtn001", title: "Open a pull request", kind: .start, target: "api")], at: ago(190)),
             ],
             "a5": [
                 PhoneMessage(seq: 1, role: .user, text: "Okay, let's go with it.", at: ago(8)),

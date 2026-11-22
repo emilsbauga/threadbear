@@ -45,8 +45,16 @@ impl Window {
     fn decode(v: &Value) -> Option<Window> {
         let remaining = v["remainingPercent"].as_f64()?.clamp(0., 100.);
         let kind = v["kind"].as_str().unwrap_or("other").to_owned();
-        let title = v["title"].as_str().map_or_else(|| kind.clone(), str::to_owned);
-        Some(Window { kind, title, remaining, resets_at: v["resetsAt"].as_str().and_then(parse_ms), detail: v["detail"].as_str().map(str::to_owned) })
+        let title = v["title"]
+            .as_str()
+            .map_or_else(|| kind.clone(), str::to_owned);
+        Some(Window {
+            kind,
+            title,
+            remaining,
+            resets_at: v["resetsAt"].as_str().and_then(parse_ms),
+            detail: v["detail"].as_str().map(str::to_owned),
+        })
     }
 
     /// The weekly windows get a chart of the week; the 5-hour one a bar.
@@ -78,7 +86,10 @@ impl Usage {
     pub fn decode(v: &Value) -> Option<Usage> {
         v.as_object()?;
         Some(Usage {
-            windows: v["windows"].as_array().map(|list| list.iter().filter_map(Window::decode).collect()).unwrap_or_default(),
+            windows: v["windows"]
+                .as_array()
+                .map(|list| list.iter().filter_map(Window::decode).collect())
+                .unwrap_or_default(),
             read_at: v["readAt"].as_str().and_then(parse_ms),
             source: v["source"].as_str().unwrap_or("tokenStats").to_owned(),
             stale: v["stale"].as_bool().unwrap_or(false),
@@ -113,7 +124,10 @@ impl Hour {
     /// quarter of a million of them not (the Swift app's cross-lab review,
     /// 7 Nov).
     pub fn total(&self) -> i64 {
-        self.input.saturating_add(self.output).saturating_add(self.cache_read).saturating_add(self.cache_write)
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
     }
 
     fn plus(self, other: &Hour) -> Hour {
@@ -151,7 +165,7 @@ pub struct LimitHistory {
     pub samples: Vec<Sample>,
 }
 
-/// `UsageStats` (docs/protocol.md, "Usage history"): what the runner has
+/// `UsageStats` (docs/protocol/settings.md, "Usage history"): what the runner has
 /// kept about each login's spending, for the panel's numbers and charts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stats {
@@ -171,7 +185,12 @@ impl Stats {
             .flatten()
             .filter_map(|t| {
                 let account_id = t["accountId"].as_str()?.to_owned();
-                let mut hours: Vec<Hour> = t["hours"].as_array().into_iter().flatten().filter_map(hour_row).collect();
+                let mut hours: Vec<Hour> = t["hours"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(hour_row)
+                    .collect();
                 hours.sort_by_key(|h| h.start);
                 Some(AccountTokens { account_id, hours })
             })
@@ -190,24 +209,46 @@ impl Stats {
                     .filter_map(|row| {
                         let row = row.as_array()?;
                         let (at, left) = (row.first()?.as_f64()?, row.get(1)?.as_f64()?);
-                        (at.is_finite() && left.is_finite()).then(|| Sample { at: at as i64, remaining: left.clamp(0., 100.) })
+                        (at.is_finite() && left.is_finite()).then(|| Sample {
+                            at: at as i64,
+                            remaining: left.clamp(0., 100.),
+                        })
                     })
                     .collect();
                 samples.sort_by_key(|s| s.at);
-                Some(LimitHistory { account_id, kind, title: l["title"].as_str().map(str::to_owned), samples })
+                Some(LimitHistory {
+                    account_id,
+                    kind,
+                    title: l["title"].as_str().map(str::to_owned),
+                    samples,
+                })
             })
             .collect();
-        Stats { ready: v["ready"].as_bool().unwrap_or(true), tokens, limits }
+        Stats {
+            ready: v["ready"].as_bool().unwrap_or(true),
+            tokens,
+            limits,
+        }
     }
 
     pub fn hours(&self, account: &str) -> &[Hour] {
-        self.tokens.iter().find(|t| t.account_id == account).map_or(&[], |t| &t.hours)
+        self.tokens
+            .iter()
+            .find(|t| t.account_id == account)
+            .map_or(&[], |t| &t.hours)
     }
 
     /// A window's readings. A model's own week ("Weekly Fable") is told
     /// apart from the others by its title.
     pub fn samples(&self, account: &str, kind: &str, title: Option<&str>) -> &[Sample] {
-        self.limits.iter().find(|l| l.account_id == account && l.kind == kind && (kind != "weekly_model" || l.title.as_deref() == title)).map_or(&[], |l| &l.samples)
+        self.limits
+            .iter()
+            .find(|l| {
+                l.account_id == account
+                    && l.kind == kind
+                    && (kind != "weekly_model" || l.title.as_deref() == title)
+            })
+            .map_or(&[], |l| &l.samples)
     }
 }
 
@@ -225,9 +266,15 @@ fn hour_row(row: &Value) -> Option<Hour> {
     }
     let count = |i: usize| -> Option<i64> {
         let x = row[i].as_f64()?;
-        (x.is_finite() && x >= 0. && x <= 1e13 && x.trunc() == x).then_some(x as i64)
+        (x.is_finite() && (0. ..=1e13).contains(&x) && x.trunc() == x).then_some(x as i64)
     };
-    Some(Hour { start: start as i64, input: count(1)?, output: count(2)?, cache_read: count(3)?, cache_write: count(4)? })
+    Some(Hour {
+        start: start as i64,
+        input: count(1)?,
+        output: count(2)?,
+        cache_read: count(3)?,
+        cache_write: count(4)?,
+    })
 }
 
 // ---- Days and hours in the app's time zone ----
@@ -240,19 +287,29 @@ fn local<Tz: TimeZone>(ms: i64, zone: &Tz) -> Option<DateTime<Tz>> {
 /// day starts once the clocks have moved on (`Calendar.startOfDay`).
 fn first_moment<Tz: TimeZone>(date: NaiveDate, zone: &Tz) -> Option<i64> {
     let midnight = date.and_time(NaiveTime::MIN);
-    (0..=12).find_map(|step| zone.from_local_datetime(&(midnight + Duration::minutes(15 * step))).earliest()).map(|d| d.timestamp_millis())
+    (0..=12)
+        .find_map(|step| {
+            zone.from_local_datetime(&(midnight + Duration::minutes(15 * step)))
+                .earliest()
+        })
+        .map(|d| d.timestamp_millis())
 }
 
 /// `Calendar.startOfDay(for:)`.
 pub fn start_of_day<Tz: TimeZone>(ms: i64, zone: &Tz) -> i64 {
-    local(ms, zone).and_then(|d| first_moment(d.date_naive(), zone)).unwrap_or(ms)
+    local(ms, zone)
+        .and_then(|d| first_moment(d.date_naive(), zone))
+        .unwrap_or(ms)
 }
 
 /// The start of the day `days` days after the one `ms` is in (negative for
 /// before): `Calendar.date(byAdding: .day, ...)` on a day's start, which keeps
 /// to midnight across a clock change, where adding 24 hours wouldn't.
 pub fn day_start_after<Tz: TimeZone>(ms: i64, days: i64, zone: &Tz) -> i64 {
-    local(ms, zone).and_then(|d| d.date_naive().checked_add_signed(Duration::days(days))).and_then(|date| first_moment(date, zone)).unwrap_or(start_of_day(ms, zone) + days * DAY)
+    local(ms, zone)
+        .and_then(|d| d.date_naive().checked_add_signed(Duration::days(days)))
+        .and_then(|date| first_moment(date, zone))
+        .unwrap_or(start_of_day(ms, zone) + days * DAY)
 }
 
 /// The start of the hour `ms` is in, on the local clock
@@ -260,7 +317,11 @@ pub fn day_start_after<Tz: TimeZone>(ms: i64, days: i64, zone: &Tz) -> i64 {
 /// UTC puts on the half hour.
 pub fn hour_start<Tz: TimeZone>(ms: i64, zone: &Tz) -> i64 {
     match local(ms, zone) {
-        Some(d) => ms - (i64::from(d.minute()) * 60_000 + i64::from(d.second()) * 1000 + i64::from(d.timestamp_subsec_millis())),
+        Some(d) => {
+            ms - (i64::from(d.minute()) * 60_000
+                + i64::from(d.second()) * 1000
+                + i64::from(d.timestamp_subsec_millis()))
+        }
         None => ms - ms.rem_euclid(HOUR),
     }
 }
@@ -295,7 +356,9 @@ pub fn when<Tz: TimeZone>(at: i64, now: i64, zone: &Tz) -> String {
 }
 
 fn weekday<Tz: TimeZone>(at: i64, zone: &Tz) -> &'static str {
-    local(at, zone).map_or("", |d| WEEKDAYS[d.weekday().num_days_from_sunday() as usize])
+    local(at, zone).map_or("", |d| {
+        WEEKDAYS[d.weekday().num_days_from_sunday() as usize]
+    })
 }
 
 // ---- Sums (UsageStatsMath) ----
@@ -303,7 +366,10 @@ fn weekday<Tz: TimeZone>(at: i64, zone: &Tz) -> &'static str {
 /// Tokens the logins spent in [from, to), by whole hours: an hour counts if
 /// it starts in the range.
 pub fn total(stats: &Stats, accounts: &[impl AsRef<str>], from: i64, to: i64) -> Hour {
-    let mut sum = Hour { start: from, ..Default::default() };
+    let mut sum = Hour {
+        start: from,
+        ..Default::default()
+    };
     for id in accounts {
         for hour in stats.hours(id.as_ref()) {
             if hour.start >= from && hour.start < to {
@@ -315,13 +381,23 @@ pub fn total(stats: &Stats, accounts: &[impl AsRef<str>], from: i64, to: i64) ->
 }
 
 /// Today so far.
-pub fn today<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], now: i64, zone: &Tz) -> Hour {
+pub fn today<Tz: TimeZone>(
+    stats: &Stats,
+    accounts: &[impl AsRef<str>],
+    now: i64,
+    zone: &Tz,
+) -> Hour {
     total(stats, accounts, start_of_day(now, zone), now + 1000)
 }
 
 /// The last 60 minutes, as near as hourly buckets allow: this hour so far,
 /// plus the part of the last hour that's still inside the 60.
-pub fn last_hour<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], now: i64, zone: &Tz) -> i64 {
+pub fn last_hour<Tz: TimeZone>(
+    stats: &Stats,
+    accounts: &[impl AsRef<str>],
+    now: i64,
+    zone: &Tz,
+) -> i64 {
     let this_hour = hour_start(now, zone);
     let elapsed = (now - this_hour) as f64 / HOUR as f64;
     let current = total(stats, accounts, this_hour, this_hour + HOUR).total();
@@ -332,8 +408,17 @@ pub fn last_hour<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], now:
 /// What a usual day had spent by this time of day: the average of the
 /// previous `days` days from midnight to the same clock time. None when the
 /// stats don't go back that far.
-pub fn usual_by_now<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], now: i64, days: i64, zone: &Tz) -> Option<i64> {
-    let earliest = accounts.iter().filter_map(|id| stats.hours(id.as_ref()).first().map(|h| h.start)).min()?;
+pub fn usual_by_now<Tz: TimeZone>(
+    stats: &Stats,
+    accounts: &[impl AsRef<str>],
+    now: i64,
+    days: i64,
+    zone: &Tz,
+) -> Option<i64> {
+    let earliest = accounts
+        .iter()
+        .filter_map(|id| stats.hours(id.as_ref()).first().map(|h| h.start))
+        .min()?;
     let today = start_of_day(now, zone);
     if earliest >= day_start_after(today, -(days - 1), zone) {
         return None;
@@ -357,13 +442,22 @@ pub struct Bar {
 
 /// Today's hours from midnight to now, one bar per login per hour, zeros
 /// left out.
-pub fn today_by_hour<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], now: i64, zone: &Tz) -> Vec<Bar> {
+pub fn today_by_hour<Tz: TimeZone>(
+    stats: &Stats,
+    accounts: &[impl AsRef<str>],
+    now: i64,
+    zone: &Tz,
+) -> Vec<Bar> {
     let start = start_of_day(now, zone);
     let mut bars = Vec::new();
     for id in accounts {
         for hour in stats.hours(id.as_ref()) {
             if hour.start >= start && hour.start <= now && hour.total() > 0 {
-                bars.push(Bar { start: hour_start(hour.start, zone), account_id: id.as_ref().to_owned(), tokens: hour.total() });
+                bars.push(Bar {
+                    start: hour_start(hour.start, zone),
+                    account_id: id.as_ref().to_owned(),
+                    tokens: hour.total(),
+                });
             }
         }
     }
@@ -371,13 +465,23 @@ pub fn today_by_hour<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], 
 }
 
 /// The last `days` days, today included, one bar per login per day.
-pub fn by_day<Tz: TimeZone>(stats: &Stats, accounts: &[impl AsRef<str>], days: i64, now: i64, zone: &Tz) -> Vec<Bar> {
+pub fn by_day<Tz: TimeZone>(
+    stats: &Stats,
+    accounts: &[impl AsRef<str>],
+    days: i64,
+    now: i64,
+    zone: &Tz,
+) -> Vec<Bar> {
     let first = day_start_after(now, -(days - 1), zone);
     let mut bars = Vec::new();
     for id in accounts {
         for hour in stats.hours(id.as_ref()) {
             if hour.start >= first && hour.total() > 0 {
-                bars.push(Bar { start: start_of_day(hour.start, zone), account_id: id.as_ref().to_owned(), tokens: hour.total() });
+                bars.push(Bar {
+                    start: start_of_day(hour.start, zone),
+                    account_id: id.as_ref().to_owned(),
+                    tokens: hour.total(),
+                });
             }
         }
     }
@@ -408,7 +512,11 @@ fn merge(bars: Vec<Bar>) -> Vec<Bar> {
 pub fn tokens(n: i64) -> String {
     let value = n as f64;
     let short = |v: f64, suffix: &str| {
-        let text = if v < 10. { format!("{v:.1}") } else { format!("{}", v.round() as i64) };
+        let text = if v < 10. {
+            format!("{v:.1}")
+        } else {
+            format!("{}", v.round() as i64)
+        };
         format!("{}{suffix}", text.strip_suffix(".0").unwrap_or(&text))
     };
     if value >= 1e9 {
@@ -425,11 +533,16 @@ pub fn tokens(n: i64) -> String {
 /// The tooltip's breakdown: "4.2M tokens: 3.9M cache reads, 210k cache
 /// writes, 40k input, 52k output".
 pub fn breakdown(sum: &Hour) -> String {
-    let parts: Vec<String> = [(sum.cache_read, "cache reads"), (sum.cache_write, "cache writes"), (sum.input, "input"), (sum.output, "output")]
-        .into_iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, name)| format!("{} {name}", tokens(n)))
-        .collect();
+    let parts: Vec<String> = [
+        (sum.cache_read, "cache reads"),
+        (sum.cache_write, "cache writes"),
+        (sum.input, "input"),
+        (sum.output, "output"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, name)| format!("{} {name}", tokens(n)))
+    .collect();
     let head = format!("{} tokens", tokens(sum.total()));
     if parts.is_empty() {
         head
@@ -489,7 +602,11 @@ impl Pace {
                 (100. - left).max(0.) / elapsed
             }
         };
-        let mut pace = Pace { rate: per_hour * if week { 24. } else { 1. }, runs_out_at: None, left_at_reset: None };
+        let mut pace = Pace {
+            rate: per_hour * if week { 24. } else { 1. },
+            runs_out_at: None,
+            left_at_reset: None,
+        };
         let to_reset = hours(reset - now);
         if per_hour > 0. && left / per_hour < to_reset {
             pace.runs_out_at = Some(now + (left / per_hour * HOUR as f64) as i64);
@@ -501,8 +618,19 @@ impl Pace {
 
     /// "9% a day", "12% an hour".
     pub fn rate_text(&self, kind: &str) -> String {
-        let value = if self.rate < 1. { format!("{:.1}", self.rate) } else { format!("{}", self.rate.round() as i64) };
-        format!("{value}{}", if kind == "five_hour" { "% an hour" } else { "% a day" })
+        let value = if self.rate < 1. {
+            format!("{:.1}", self.rate)
+        } else {
+            format!("{}", self.rate.round() as i64)
+        };
+        format!(
+            "{value}{}",
+            if kind == "five_hour" {
+                "% an hour"
+            } else {
+                "% a day"
+            }
+        )
     }
 }
 
@@ -533,11 +661,20 @@ pub struct Verdict {
 
 /// `LimitPace.verdict`: used up, runs out early, will go unused, on track, or
 /// when it resets.
-pub fn verdict<Tz: TimeZone>(window: &Window, pace: Option<&Pace>, stale: bool, now: i64, zone: &Tz) -> Option<Verdict> {
+pub fn verdict<Tz: TimeZone>(
+    window: &Window,
+    pace: Option<&Pace>,
+    stale: bool,
+    now: i64,
+    zone: &Tz,
+) -> Option<Verdict> {
     let reset = window.resets_at.map(|at| reset_words(at, now, zone));
     if window.remaining < 1. {
         if let Some(reset) = &reset {
-            return Some(Verdict { text: format!("Used up, back {reset}"), tone: Tone::Out });
+            return Some(Verdict {
+                text: format!("Used up, back {reset}"),
+                tone: Tone::Out,
+            });
         }
     }
     // Old numbers can't say how fast it's going now.
@@ -545,20 +682,37 @@ pub fn verdict<Tz: TimeZone>(window: &Window, pace: Option<&Pace>, stale: bool, 
         if let Some(runs_out) = pace.runs_out_at {
             let mut text = format!("Runs out {}", reset_words(runs_out, now, zone));
             if let Some(resets_at) = window.resets_at {
-                text.push_str(&format!(", {} before it resets", gap((resets_at - runs_out) as f64 / 1000.)));
+                text.push_str(&format!(
+                    ", {} before it resets",
+                    gap((resets_at - runs_out) as f64 / 1000.)
+                ));
             }
-            return Some(Verdict { text, tone: Tone::Short });
+            return Some(Verdict {
+                text,
+                tone: Tone::Short,
+            });
         }
         // Only the week: a 5-hour window nearly always has room left over,
         // so saying so would be on every row and mean nothing.
-        if let (true, Some(left), Some(reset)) = (window.kind == "weekly", pace.left_at_reset, &reset) {
+        if let (true, Some(left), Some(reset)) =
+            (window.kind == "weekly", pace.left_at_reset, &reset)
+        {
             if left >= SPARE_WORTH_SAYING {
-                return Some(Verdict { text: format!("About {} will go unused, resets {reset}", percent(left)), tone: Tone::Spare });
+                return Some(Verdict {
+                    text: format!("About {} will go unused, resets {reset}", percent(left)),
+                    tone: Tone::Spare,
+                });
             }
-            return Some(Verdict { text: format!("On track, lasts till {reset}"), tone: Tone::Fine });
+            return Some(Verdict {
+                text: format!("On track, lasts till {reset}"),
+                tone: Tone::Fine,
+            });
         }
     }
-    reset.map(|reset| Verdict { text: format!("Resets {reset}"), tone: Tone::Fine })
+    reset.map(|reset| Verdict {
+        text: format!("Resets {reset}"),
+        tone: Tone::Fine,
+    })
 }
 
 /// "2 days", "1 day", "5 hours", "1 hour", "40 min": roughly how long, as
@@ -592,22 +746,47 @@ pub const RESET_RISE: f64 = 5.;
 /// began (its reset less a week), if known: the line is full there by
 /// definition, whatever the readings around it say. A week that hasn't
 /// started since its reset still shows the week before (Mike, 11 Nov).
-pub fn runs(samples: &[Sample], current: f64, window_start: Option<i64>, now: i64) -> Vec<Vec<Sample>> {
+pub fn runs(
+    samples: &[Sample],
+    current: f64,
+    window_start: Option<i64>,
+    now: i64,
+) -> Vec<Vec<Sample>> {
     let from = now - WEEK;
-    let mut points: Vec<Sample> = samples.iter().filter(|s| s.at >= from && s.at < now).copied().collect();
+    let mut points: Vec<Sample> = samples
+        .iter()
+        .filter(|s| s.at >= from && s.at < now)
+        .copied()
+        .collect();
     points.sort_by_key(|s| s.at);
     let mut break_at = None;
     if let Some(start) = window_start.filter(|s| *s > from && *s < now) {
         let before = points.iter().filter(|s| s.at < start).copied();
         let after = points.iter().filter(|s| s.at > start).copied();
-        points = before.chain(std::iter::once(Sample { at: start, remaining: 100. })).chain(after).collect();
+        points = before
+            .chain(std::iter::once(Sample {
+                at: start,
+                remaining: 100.,
+            }))
+            .chain(after)
+            .collect();
         break_at = Some(start);
     }
-    points.push(Sample { at: now, remaining: current });
+    points.push(Sample {
+        at: now,
+        remaining: current,
+    });
     let mut out: Vec<Vec<Sample>> = Vec::new();
     for point in points {
         match out.last_mut() {
-            Some(run) if Some(point.at) != break_at && run.last().is_some_and(|last| point.remaining - last.remaining < RESET_RISE) => run.push(point),
+            Some(run)
+                if Some(point.at) != break_at
+                    && run
+                        .last()
+                        .is_some_and(|last| point.remaining - last.remaining < RESET_RISE) =>
+            {
+                run.push(point)
+            }
             _ => out.push(vec![point]),
         }
     }
@@ -638,19 +817,27 @@ pub fn midnights<Tz: TimeZone>(from: i64, to: i64, zone: &Tz) -> Vec<i64> {
 /// Codex Pro Lite and Claude Max (since the end of Oct 2026) have only the
 /// weekly one.
 pub fn main_windows(usage: &Usage) -> Vec<&Window> {
-    ["five_hour", "weekly"].iter().filter_map(|kind| usage.windows.iter().find(|w| w.kind == *kind)).collect()
+    ["five_hour", "weekly"]
+        .iter()
+        .filter_map(|kind| usage.windows.iter().find(|w| w.kind == *kind))
+        .collect()
 }
 
 /// Everything else (a model's own weekly limit, an allowance, Codex's other
 /// buckets), each once.
 pub fn extra_windows(usage: &Usage) -> Vec<&Window> {
-    let main: Vec<&str> = main_windows(usage).iter().map(|w| w.kind.as_str()).collect();
+    let main: Vec<&str> = main_windows(usage)
+        .iter()
+        .map(|w| w.kind.as_str())
+        .collect();
     let mut seen: Vec<(String, String)> = Vec::new();
     usage
         .windows
         .iter()
         .filter(|w| {
-            if main.contains(&w.kind.as_str()) || seen.iter().any(|(k, t)| *k == w.kind && *t == w.title) {
+            if main.contains(&w.kind.as_str())
+                || seen.iter().any(|(k, t)| *k == w.kind && *t == w.title)
+            {
                 return false;
             }
             seen.push((w.kind.clone(), w.title.clone()));
@@ -664,12 +851,19 @@ pub fn extra_windows(usage: &Usage) -> Vec<&Window> {
 /// (Ayush, 6 Nov). They never decide the room: a login out of Fable can still
 /// run other models.
 pub fn model_weeks(usage: &Usage) -> Vec<&Window> {
-    extra_windows(usage).into_iter().filter(|w| w.kind == "weekly_model").collect()
+    extra_windows(usage)
+        .into_iter()
+        .filter(|w| w.kind == "weekly_model")
+        .collect()
 }
 
 /// The tighter of the main windows, the one that runs out first.
 pub fn tightest(usage: &Usage) -> Option<&Window> {
-    main_windows(usage).into_iter().min_by(|a, b| a.remaining.partial_cmp(&b.remaining).unwrap_or(std::cmp::Ordering::Equal))
+    main_windows(usage).into_iter().min_by(|a, b| {
+        a.remaining
+            .partial_cmp(&b.remaining)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 /// The room left: the tighter of the 5-hour and weekly windows.
@@ -679,9 +873,18 @@ pub fn room(usage: &Usage) -> Option<f64> {
 
 /// One window in words: "89% left, resets 3:40 pm". The window's detail
 /// ("64,390 credits") is left out when `notice` already says it.
-pub fn window_line<Tz: TimeZone>(window: &Window, now: i64, zone: &Tz, notice: Option<&str>) -> String {
+pub fn window_line<Tz: TimeZone>(
+    window: &Window,
+    now: i64,
+    zone: &Tz,
+    notice: Option<&str>,
+) -> String {
     let mut line = format!("{} left", percent(window.remaining));
-    if let Some(detail) = window.detail.as_deref().filter(|d| !d.is_empty() && !notice.unwrap_or("").contains(*d)) {
+    if let Some(detail) = window
+        .detail
+        .as_deref()
+        .filter(|d| !d.is_empty() && !notice.unwrap_or("").contains(*d))
+    {
         line.push_str(&format!(" ({detail})"));
     }
     if let Some(reset) = window.resets_at {
@@ -694,7 +897,11 @@ pub fn window_line<Tz: TimeZone>(window: &Window, now: i64, zone: &Tz, notice: O
 /// "Token Stats hasn't updated since 6:02 am" when every reading from it is
 /// stale. None when no login has a reading from Token Stats.
 pub fn source_line<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) -> Option<String> {
-    let from_token_stats: Vec<Usage> = accounts.iter().filter_map(usage).filter(|u| u.source == "tokenStats").collect();
+    let from_token_stats: Vec<Usage> = accounts
+        .iter()
+        .filter_map(usage)
+        .filter(|u| u.source == "tokenStats")
+        .collect();
     let newest = from_token_stats.iter().filter_map(|u| u.read_at).max()?;
     let day = when(newest, now, zone);
     if from_token_stats.iter().all(|u| u.stale) {
@@ -709,20 +916,34 @@ pub fn source_line<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) -> O
 /// since otherwise it never decides anything; any other window by its detail
 /// ("$250 allowance: $132.79 left"); then the login's own part of Token
 /// Stats' notice. A model's own week has a meter of its own.
-pub fn extra_lines<Tz: TimeZone>(usage: &Usage, notice: Option<&str>, now: i64, zone: &Tz) -> Vec<String> {
+pub fn extra_lines<Tz: TimeZone>(
+    usage: &Usage,
+    notice: Option<&str>,
+    now: i64,
+    zone: &Tz,
+) -> Vec<String> {
     let room = room(usage).unwrap_or(100.);
     // The panel shows the main windows' resets just above these lines.
-    let main_resets: Vec<i64> = main_windows(usage).iter().filter_map(|w| w.resets_at).collect();
+    let main_resets: Vec<i64> = main_windows(usage)
+        .iter()
+        .filter_map(|w| w.resets_at)
+        .collect();
     let mut lines = Vec::new();
     let mut money = Vec::new();
-    for window in extra_windows(usage).into_iter().filter(|w| w.kind != "weekly_model") {
+    for window in extra_windows(usage)
+        .into_iter()
+        .filter(|w| w.kind != "weekly_model")
+    {
         let detail = window.detail.as_deref().unwrap_or("");
         if detail.is_empty() && window.kind != "allowance" {
             if window.remaining >= room {
                 continue;
             }
             let mut line = format!("{} {} left", window.title, percent(window.remaining));
-            if let Some(reset) = window.resets_at.filter(|r| !main_resets.iter().any(|m| (m - r).abs() < 60_000)) {
+            if let Some(reset) = window
+                .resets_at
+                .filter(|r| !main_resets.iter().any(|m| (m - r).abs() < 60_000))
+            {
                 line.push_str(&format!(", resets {}", reset_words(reset, now, zone)));
             }
             lines.push(line);
@@ -731,7 +952,11 @@ pub fn extra_lines<Tz: TimeZone>(usage: &Usage, notice: Option<&str>, now: i64, 
                 money.push(format!("{}: {detail}", window.title));
             }
         } else {
-            money.push(format!("{}: {} left", window.title, percent(window.remaining)));
+            money.push(format!(
+                "{}: {} left",
+                window.title,
+                percent(window.remaining)
+            ));
         }
     }
     if let Some(notice) = notice.filter(|n| !n.is_empty()) {
@@ -749,23 +974,44 @@ pub fn extra_lines<Tz: TimeZone>(usage: &Usage, notice: Option<&str>, now: i64, 
 /// more logins have goes in the first, in the order it first comes, and the
 /// map keeps each login's other parts ("$48.85 extra usage spent").
 pub fn notices(accounts: &[Account]) -> (Option<String>, HashMap<String, String>) {
-    let trim = |s: &str| s.trim_matches(|c: char| c.is_whitespace() && c != '\n' && c != '\r').to_owned();
+    let trim = |s: &str| {
+        s.trim_matches(|c: char| c.is_whitespace() && c != '\n' && c != '\r')
+            .to_owned()
+    };
     let mut parts: Vec<(String, Vec<String>)> = Vec::new();
     for account in accounts {
-        let Some(notice) = usage(account).and_then(|u| u.notice).map(|n| trim(&n)).filter(|n| !n.is_empty()) else { continue };
-        parts.push((account.id.clone(), notice.split(" · ").map(trim).filter(|p| !p.is_empty()).collect()));
+        let Some(notice) = usage(account)
+            .and_then(|u| u.notice)
+            .map(|n| trim(&n))
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+        parts.push((
+            account.id.clone(),
+            notice
+                .split(" · ")
+                .map(trim)
+                .filter(|p| !p.is_empty())
+                .collect(),
+        ));
     }
     let mut common: Vec<String> = Vec::new();
     for (_, own) in &parts {
         for part in own {
-            if !common.contains(part) && parts.iter().filter(|(_, p)| p.contains(part)).count() > 1 {
+            if !common.contains(part) && parts.iter().filter(|(_, p)| p.contains(part)).count() > 1
+            {
                 common.push(part.clone());
             }
         }
     }
     let mut own = HashMap::new();
     for (id, list) in &parts {
-        let rest: Vec<&str> = list.iter().filter(|p| !common.contains(p)).map(String::as_str).collect();
+        let rest: Vec<&str> = list
+            .iter()
+            .filter(|p| !common.contains(p))
+            .map(String::as_str)
+            .collect();
         if !rest.is_empty() {
             own.insert(id.clone(), rest.join(" · "));
         }
@@ -791,7 +1037,10 @@ pub struct Group<'a> {
 
 impl Group<'_> {
     pub fn accounts(&self) -> Vec<&Account> {
-        self.providers.iter().flat_map(|p| p.accounts.iter().copied()).collect()
+        self.providers
+            .iter()
+            .flat_map(|p| p.accounts.iter().copied())
+            .collect()
     }
 }
 
@@ -809,19 +1058,44 @@ pub struct ProviderLogins<'a> {
 /// pools gets one card per provider.
 pub fn groups<'a>(pools: &'a [Pool], accounts: &'a [Account]) -> Vec<Group<'a>> {
     if pools.is_empty() {
-        return by_provider(accounts.iter().collect(), false).into_iter().map(|p| Group { id: p.provider.clone(), title: provider_title(&p.provider), pool: None, providers: vec![p] }).collect();
+        return by_provider(accounts.iter().collect(), false)
+            .into_iter()
+            .map(|p| Group {
+                id: p.provider.clone(),
+                title: provider_title(&p.provider),
+                pool: None,
+                providers: vec![p],
+            })
+            .collect();
     }
     let mut out: Vec<Group<'a>> = pools
         .iter()
         .filter_map(|pool| {
             // In the pool's order: it decides which provider comes first.
-            let members: Vec<&Account> = pool.account_ids.iter().filter_map(|id| accounts.iter().find(|a| a.id == *id)).collect();
-            (!members.is_empty()).then(|| Group { id: pool.id.clone(), title: pool.title.clone(), pool: Some(pool), providers: by_provider(members, true) })
+            let members: Vec<&Account> = pool
+                .account_ids
+                .iter()
+                .filter_map(|id| accounts.iter().find(|a| a.id == *id))
+                .collect();
+            (!members.is_empty()).then(|| Group {
+                id: pool.id.clone(),
+                title: pool.title.clone(),
+                pool: Some(pool),
+                providers: by_provider(members, true),
+            })
         })
         .collect();
-    let rest: Vec<&Account> = accounts.iter().filter(|a| !pools.iter().any(|p| p.account_ids.contains(&a.id))).collect();
+    let rest: Vec<&Account> = accounts
+        .iter()
+        .filter(|a| !pools.iter().any(|p| p.account_ids.contains(&a.id)))
+        .collect();
     if !rest.is_empty() {
-        out.push(Group { id: UNPOOLED.to_owned(), title: "Not in a pool".to_owned(), pool: None, providers: by_provider(rest, false) });
+        out.push(Group {
+            id: UNPOOLED.to_owned(),
+            title: "Not in a pool".to_owned(),
+            pool: None,
+            providers: by_provider(rest, false),
+        });
     }
     out
 }
@@ -845,7 +1119,17 @@ pub fn by_provider(accounts: Vec<&Account>, keep_order: bool) -> Vec<ProviderLog
         indexed.sort_by_key(|(i, p)| (rank(p), *i));
         order = indexed.into_iter().map(|(_, p)| p).collect();
     }
-    order.into_iter().map(|provider| ProviderLogins { accounts: accounts.iter().copied().filter(|a| a.provider_id() == provider).collect(), provider }).collect()
+    order
+        .into_iter()
+        .map(|provider| ProviderLogins {
+            accounts: accounts
+                .iter()
+                .copied()
+                .filter(|a| a.provider_id() == provider)
+                .collect(),
+            provider,
+        })
+        .collect()
 }
 
 /// `Pools.symbol`: the pool's icon, the one Mike picked, else its first
@@ -866,11 +1150,19 @@ pub fn pool_symbol(pool: &Pool, accounts: &[Account]) -> String {
 /// logins has (what its next thread would get), or when it's back if every
 /// login is at its limit. The panel has the rest (Mike, 28 Oct).
 pub fn icon_tooltip<Tz: TimeZone>(groups: &[Group], now: i64, zone: &Tz) -> String {
-    std::iter::once("Usage".to_owned()).chain(groups.iter().filter_map(|g| tooltip_line(g, now, zone))).collect::<Vec<_>>().join("\n")
+    std::iter::once("Usage".to_owned())
+        .chain(groups.iter().filter_map(|g| tooltip_line(g, now, zone)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The tooltip with any sign-ins that need Mike under the pools' lines.
-pub fn icon_tooltip_with_sign_ins<Tz: TimeZone>(groups: &[Group], accounts: &[Account], now: i64, zone: &Tz) -> String {
+pub fn icon_tooltip_with_sign_ins<Tz: TimeZone>(
+    groups: &[Group],
+    accounts: &[Account],
+    now: i64,
+    zone: &Tz,
+) -> String {
     let mut tip = icon_tooltip(groups, now, zone);
     for line in sign_in_lines(accounts, now, zone) {
         tip.push('\n');
@@ -881,19 +1173,38 @@ pub fn icon_tooltip_with_sign_ins<Tz: TimeZone>(groups: &[Group], accounts: &[Ac
 
 fn tooltip_line<Tz: TimeZone>(group: &Group, now: i64, zone: &Tz) -> Option<String> {
     // A signed-out login's room is no use to anyone.
-    let known: Vec<Usage> = group.accounts().into_iter().filter(|a| !a.signed_out).filter_map(usage).filter(|u| room(u).is_some() || u.blocked).collect();
+    let known: Vec<Usage> = group
+        .accounts()
+        .into_iter()
+        .filter(|a| !a.signed_out)
+        .filter_map(usage)
+        .filter(|u| room(u).is_some() || u.blocked)
+        .collect();
     if known.is_empty() {
         return None;
     }
-    let best = known.iter().filter(|u| !u.blocked).filter_map(room).fold(None, |m: Option<f64>, r| Some(m.map_or(r, |m| m.max(r))));
+    let best = known
+        .iter()
+        .filter(|u| !u.blocked)
+        .filter_map(room)
+        .fold(None, |m: Option<f64>, r| Some(m.map_or(r, |m| m.max(r))));
     if let Some(best) = best {
         return Some(format!("{}: {} left", group.title, percent(best)));
     }
     // All at their limit: the soonest any of them comes back.
-    let back = known.iter().filter_map(|u| tightest(u).and_then(|w| w.resets_at)).filter(|at| *at > now).min();
+    let back = known
+        .iter()
+        .filter_map(|u| tightest(u).and_then(|w| w.resets_at))
+        .filter(|at| *at > now)
+        .min();
     Some(match back {
         None => format!("{}: at its limit", group.title),
-        Some(back) => format!("{}: at its limit, back {}{}", group.title, if same_day(back, now, zone) { "at " } else { "" }, reset_words(back, now, zone)),
+        Some(back) => format!(
+            "{}: at its limit, back {}{}",
+            group.title,
+            if same_day(back, now, zone) { "at " } else { "" },
+            reset_words(back, now, zone)
+        ),
     })
 }
 
@@ -920,8 +1231,12 @@ pub fn refilled(old: f64, new: f64, same_login: bool) -> bool {
 // ---- Colours (LoginColours) ----
 
 /// The reference categorical palette, light and dark, as 0xRRGGBB.
-const LIGHT: [u32; 8] = [0x2A78D6, 0xEB6834, 0x1BAF7A, 0xEDA100, 0xE87BA4, 0x008300, 0x6250D6, 0xE34948];
-const DARK: [u32; 8] = [0x3987E5, 0xD95926, 0x199E70, 0xC98500, 0xD55181, 0x008300, 0x9085E9, 0xE66767];
+const LIGHT: [u32; 8] = [
+    0x2A78D6, 0xEB6834, 0x1BAF7A, 0xEDA100, 0xE87BA4, 0x008300, 0x6250D6, 0xE34948,
+];
+const DARK: [u32; 8] = [
+    0x3987E5, 0xD95926, 0x199E70, 0xC98500, 0xD55181, 0x008300, 0x9085E9, 0xE66767,
+];
 
 /// A login's colour in the charts: the palette's slots in the logins' own
 /// order, so a login keeps its colour whichever card or chart it's in. A
@@ -1029,7 +1344,10 @@ pub struct Chart {
 impl Chart {
     /// The slot a moment is in, for the pointer's hover.
     pub fn slot_at(&self, at: i64) -> Option<i64> {
-        self.slots.iter().find(|(start, length)| at >= *start && at < start + length).map(|(start, _)| *start)
+        self.slots
+            .iter()
+            .find(|(start, length)| at >= *start && at < start + length)
+            .map(|(start, _)| *start)
     }
 
     /// The bars in one slot.
@@ -1065,12 +1383,28 @@ pub fn day_label<Tz: TimeZone>(at: i64, now: i64, zone: &Tz) -> String {
     }
 }
 
-pub fn chart<Tz: TimeZone>(stats: &Stats, accounts: &[Account], range: Range, now: i64, zone: &Tz) -> Chart {
+pub fn chart<Tz: TimeZone>(
+    stats: &Stats,
+    accounts: &[Account],
+    range: Range,
+    now: i64,
+    zone: &Tz,
+) -> Chart {
     let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
     let midnight = start_of_day(now, zone);
     let (title, bars, start, end) = match range {
-        Range::Today => ("Tokens by hour", today_by_hour(stats, &ids, now, zone), midnight, day_start_after(midnight, 1, zone)),
-        Range::Week => ("Tokens by day", by_day(stats, &ids, 7, now, zone), day_start_after(midnight, -6, zone), day_start_after(midnight, 1, zone)),
+        Range::Today => (
+            "Tokens by hour",
+            today_by_hour(stats, &ids, now, zone),
+            midnight,
+            day_start_after(midnight, 1, zone),
+        ),
+        Range::Week => (
+            "Tokens by day",
+            by_day(stats, &ids, 7, now, zone),
+            day_start_after(midnight, -6, zone),
+            day_start_after(midnight, 1, zone),
+        ),
     };
     let slots: Vec<(i64, i64)> = match range {
         Range::Today => (0..)
@@ -1086,16 +1420,47 @@ pub fn chart<Tz: TimeZone>(stats: &Stats, accounts: &[Account], range: Range, no
             .into_iter()
             .map(|s| (s, HOUR))
             .collect(),
-        Range::Week => (0..7).map(|d| day_start_after(start, d, zone)).map(|s| (s, day_start_after(s, 1, zone) - s)).collect(),
+        Range::Week => (0..7)
+            .map(|d| day_start_after(start, d, zone))
+            .map(|s| (s, day_start_after(s, 1, zone) - s))
+            .collect(),
     };
     let ticks = match range {
         // Every 6 hours on the clock, as `.stride(by: .hour, count: 6)`.
-        Range::Today => slots.iter().map(|(s, _)| *s).filter(|s| local(*s, zone).is_some_and(|d| d.hour() % 6 == 0 && d.minute() == 0)).map(|s| (s, clock_words(s, zone))).collect(),
-        Range::Week => slots.iter().map(|(s, _)| (*s, day_label(*s, now, zone))).collect(),
+        Range::Today => slots
+            .iter()
+            .map(|(s, _)| *s)
+            .filter(|s| local(*s, zone).is_some_and(|d| d.hour() % 6 == 0 && d.minute() == 0))
+            .map(|s| (s, clock_words(s, zone)))
+            .collect(),
+        Range::Week => slots
+            .iter()
+            .map(|(s, _)| (*s, day_label(*s, now, zone)))
+            .collect(),
     };
-    let spending: Vec<String> = ids.iter().filter(|id| bars.iter().any(|b| b.account_id == **id)).map(|id| (*id).to_owned()).collect();
-    let empty = bars.is_empty().then_some(if stats.ready { "Nothing spent yet" } else { "Reading the transcripts…" });
-    let mut chart = Chart { range, title, bars, start, end, slots, ticks, now: (range == Range::Today).then_some(now), spending, value_ticks: Vec::new(), empty };
+    let spending: Vec<String> = ids
+        .iter()
+        .filter(|id| bars.iter().any(|b| b.account_id == **id))
+        .map(|id| (*id).to_owned())
+        .collect();
+    let empty = bars.is_empty().then_some(if stats.ready {
+        "Nothing spent yet"
+    } else {
+        "Reading the transcripts…"
+    });
+    let mut chart = Chart {
+        range,
+        title,
+        bars,
+        start,
+        end,
+        slots,
+        ticks,
+        now: (range == Range::Today).then_some(now),
+        spending,
+        value_ticks: Vec::new(),
+        empty,
+    };
     chart.value_ticks = value_ticks(chart.tallest(), 3);
     chart
 }
@@ -1109,7 +1474,12 @@ pub fn value_ticks(max: i64, count: usize) -> Vec<i64> {
     }
     let raw = max as f64 / (count - 1) as f64;
     let power = 10f64.powf(raw.log10().floor());
-    let step = [1., 2., 5., 10.].iter().map(|m| m * power).find(|s| *s >= raw).unwrap_or(10. * power).max(1.);
+    let step = [1., 2., 5., 10.]
+        .iter()
+        .map(|m| m * power)
+        .find(|s| *s >= raw)
+        .unwrap_or(10. * power)
+        .max(1.);
     let top = (max as f64 / step).ceil() * step;
     let mut out = Vec::new();
     let mut at = 0.;
@@ -1142,7 +1512,13 @@ pub struct Meter {
 }
 
 impl Meter {
-    pub fn new<Tz: TimeZone>(window: &Window, samples: &[Sample], stale: bool, now: i64, zone: &Tz) -> Meter {
+    pub fn new<Tz: TimeZone>(
+        window: &Window,
+        samples: &[Sample],
+        stale: bool,
+        now: i64,
+        zone: &Tz,
+    ) -> Meter {
         let pace = Pace::of(window, samples, now);
         // The tooltip says how fast it's going even from old numbers, as the
         // Swift meter's does; only the chart and the line under it don't.
@@ -1152,7 +1528,10 @@ impl Meter {
             if let Some(at) = pace.runs_out_at {
                 line.push_str(&format!(", so it runs out {}", reset_words(at, now, zone)));
             } else if let Some(left) = pace.left_at_reset {
-                line.push_str(&format!(", so about {} is left when it resets", percent(left)));
+                line.push_str(&format!(
+                    ", so about {} is left when it resets",
+                    percent(left)
+                ));
             }
             tip.push(line);
         }
@@ -1182,10 +1561,44 @@ impl Meter {
         let runs = runs(&self.samples, self.remaining, reset.map(|r| r - WEEK), now);
         // Each day's name under the middle of its day, where that's on the
         // chart.
-        let noons = midnights(start_of_day(from, zone), to, zone).into_iter().map(|m| m + 12 * HOUR).filter(|n| *n > from && *n < to).map(|n| (n, weekday(n, zone).to_owned())).collect();
+        let noons = midnights(start_of_day(from, zone), to, zone)
+            .into_iter()
+            .map(|m| m + 12 * HOUR)
+            .filter(|n| *n > from && *n < to)
+            .map(|n| (n, weekday(n, zone).to_owned()))
+            .collect();
         let pace = self.pace.filter(|_| reset.is_some());
-        let ahead = pace.map(|p| vec![Sample { at: now, remaining: self.remaining }, p.runs_out_at.map_or(Sample { at: to, remaining: p.left_at_reset.unwrap_or(self.remaining) }, |at| Sample { at, remaining: 0. })]).unwrap_or_default();
-        WeekChart { from, to, runs, ahead, short: self.pace.is_some_and(|p| p.runs_out_at.is_some()), now: Sample { at: now, remaining: self.remaining }, runs_out: pace.and_then(|p| p.runs_out_at), midnights: midnights(from, to, zone), noons }
+        let ahead = pace
+            .map(|p| {
+                vec![
+                    Sample {
+                        at: now,
+                        remaining: self.remaining,
+                    },
+                    p.runs_out_at.map_or(
+                        Sample {
+                            at: to,
+                            remaining: p.left_at_reset.unwrap_or(self.remaining),
+                        },
+                        |at| Sample { at, remaining: 0. },
+                    ),
+                ]
+            })
+            .unwrap_or_default();
+        WeekChart {
+            from,
+            to,
+            runs,
+            ahead,
+            short: self.pace.is_some_and(|p| p.runs_out_at.is_some()),
+            now: Sample {
+                at: now,
+                remaining: self.remaining,
+            },
+            runs_out: pace.and_then(|p| p.runs_out_at),
+            midnights: midnights(from, to, zone),
+            noons,
+        }
     }
 }
 
@@ -1290,26 +1703,56 @@ pub fn unknown_reason(provider: &str, provider_name: &str) -> Unknown {
 /// reset to name, then the week's verdict (or the only window's).
 fn headline(status: Option<LoginStatus>, meters: &[Meter]) -> Option<Verdict> {
     match status {
-        Some(LoginStatus::PlanEnded) => return Some(Verdict { text: LoginStatus::PlanEnded.words().to_owned(), tone: Tone::Fine }),
-        Some(LoginStatus::SignedOut) => return Some(Verdict { text: LoginStatus::SignedOut.words().to_owned(), tone: Tone::Out }),
+        Some(LoginStatus::PlanEnded) => {
+            return Some(Verdict {
+                text: LoginStatus::PlanEnded.words().to_owned(),
+                tone: Tone::Fine,
+            })
+        }
+        Some(LoginStatus::SignedOut) => {
+            return Some(Verdict {
+                text: LoginStatus::SignedOut.words().to_owned(),
+                tone: Tone::Out,
+            })
+        }
         Some(LoginStatus::NothingKnown) => return None,
         _ => {}
     }
-    let main: Vec<&Meter> = meters.iter().filter(|m| m.kind == "five_hour" || m.kind == "weekly").collect();
+    let main: Vec<&Meter> = meters
+        .iter()
+        .filter(|m| m.kind == "five_hour" || m.kind == "weekly")
+        .collect();
     for tone in [Tone::Out, Tone::Short] {
-        if let Some(v) = main.iter().filter_map(|m| m.verdict.as_ref()).find(|v| v.tone == tone) {
+        if let Some(v) = main
+            .iter()
+            .filter_map(|m| m.verdict.as_ref())
+            .find(|v| v.tone == tone)
+        {
             return Some(v.clone());
         }
     }
     if status == Some(LoginStatus::LimitReached) {
-        return Some(Verdict { text: LoginStatus::LimitReached.words().to_owned(), tone: Tone::Out });
+        return Some(Verdict {
+            text: LoginStatus::LimitReached.words().to_owned(),
+            tone: Tone::Out,
+        });
     }
-    main.iter().find(|m| m.kind == "weekly").or(main.first()).and_then(|m| m.verdict.clone())
+    main.iter()
+        .find(|m| m.kind == "weekly")
+        .or(main.first())
+        .and_then(|m| m.verdict.clone())
 }
 
 fn ring(meters: &[Meter]) -> Option<f64> {
-    let main = || meters.iter().filter(|m| m.kind == "five_hour" || m.kind == "weekly");
-    main().find(|m| m.kind == "weekly").or_else(|| main().min_by(|a, b| a.remaining.total_cmp(&b.remaining))).map(|m| m.remaining)
+    let main = || {
+        meters
+            .iter()
+            .filter(|m| m.kind == "five_hour" || m.kind == "weekly")
+    };
+    main()
+        .find(|m| m.kind == "weekly")
+        .or_else(|| main().min_by(|a, b| a.remaining.total_cmp(&b.remaining)))
+        .map(|m| m.remaining)
 }
 
 fn five_hour_chip(meters: &[Meter]) -> Option<Chip> {
@@ -1321,7 +1764,11 @@ fn five_hour_chip(meters: &[Meter]) -> Option<Chip> {
     } else {
         Tone::Fine
     };
-    Some(Chip { text: format!("{} {}", m.title, percent(m.remaining)), tone, tip: m.tip.clone() })
+    Some(Chip {
+        text: format!("{} {}", m.title, percent(m.remaining)),
+        tone,
+        tip: m.tip.clone(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1352,7 +1799,7 @@ impl LoginStatus {
     }
 }
 
-// ---- Sign-ins that end (docs/protocol.md, Pools, "Signed out") ----
+// ---- Sign-ins that end (docs/protocol/settings.md, Pools, "Signed out") ----
 
 /// How long before a Claude sign-in ends its row and the Usage button say
 /// so: from Claude Code 2.1.325 a sign-in lasts 28 days and can't be
@@ -1367,13 +1814,24 @@ pub const YEAR_MS: i64 = 365 * DAY;
 /// "Year-long token until 17 Nov 2027" for a login on one, None otherwise:
 /// its Usage row and, for another runner's, the Runners panel.
 pub fn year_token_words<Tz: TimeZone>(account: &Account, zone: &Tz) -> Option<String> {
-    account.year_token.as_ref().map(|t| match t.made_at.as_deref().and_then(parse_ms) {
-        Some(made) => match local(made + YEAR_MS, zone) {
-            Some(d) => format!("Year-long token until {} {} {}", d.day(), ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.month0() as usize], d.year()),
+    account
+        .year_token
+        .as_ref()
+        .map(|t| match t.made_at.as_deref().and_then(parse_ms) {
+            Some(made) => match local(made + YEAR_MS, zone) {
+                Some(d) => format!(
+                    "Year-long token until {} {} {}",
+                    d.day(),
+                    [
+                        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+                        "Nov", "Dec"
+                    ][d.month0() as usize],
+                    d.year()
+                ),
+                None => "Year-long token".to_owned(),
+            },
             None => "Year-long token".to_owned(),
-        },
-        None => "Year-long token".to_owned(),
-    })
+        })
 }
 
 /// When a login's sign-in ends, while that's within SIGN_IN_WARN_MS and it
@@ -1389,7 +1847,9 @@ pub fn sign_in_ends(account: &Account, now: i64) -> Option<i64> {
 
 /// Whether any login is signed out or ending soon: the Usage button's dot.
 pub fn sign_in_needed(accounts: &[Account], now: i64) -> bool {
-    accounts.iter().any(|a| (a.signed_out && !a.plan_ended) || sign_in_ends(a, now).is_some())
+    accounts
+        .iter()
+        .any(|a| (a.signed_out && !a.plan_ended) || sign_in_ends(a, now).is_some())
 }
 
 /// "Sign-in ends Tue 6 pm", "Sign-in ends 3:40 pm" today.
@@ -1412,7 +1872,8 @@ pub fn sign_in_lines<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) ->
             } else if a.signed_out {
                 Some(format!("{who} is signed out"))
             } else {
-                sign_in_ends(a, now).map(|at| format!("{who}: sign-in ends {}", reset_words(at, now, zone)))
+                sign_in_ends(a, now)
+                    .map(|at| format!("{who}: sign-in ends {}", reset_words(at, now, zone)))
             }
         })
         .collect()
@@ -1448,18 +1909,46 @@ pub struct Card {
     pub sections: Vec<CardSection>,
 }
 
-fn spent_today<Tz: TimeZone>(stats: Option<&Stats>, ids: &[&str], now: i64, zone: &Tz) -> Option<(String, String)> {
+fn spent_today<Tz: TimeZone>(
+    stats: Option<&Stats>,
+    ids: &[&str],
+    now: i64,
+    zone: &Tz,
+) -> Option<(String, String)> {
     let sum = today(stats?, ids, now, zone);
     (sum.total() > 0).then(|| (format!("{} today", tokens(sum.total())), breakdown(&sum)))
 }
 
 /// `show_model_weeks` is the panel's own switch (`usage.showModelWeeks`): off,
 /// the logins leave out a model's own week ("Weekly Fable").
-pub fn cards<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Option<&Stats>, show_model_weeks: bool, now: i64, zone: &Tz) -> Vec<Card> {
-    cards_named(pools, accounts, stats, show_model_weeks, now, zone, provider_title)
+pub fn cards<Tz: TimeZone>(
+    pools: &[Pool],
+    accounts: &[Account],
+    stats: Option<&Stats>,
+    show_model_weeks: bool,
+    now: i64,
+    zone: &Tz,
+) -> Vec<Card> {
+    cards_named(
+        pools,
+        accounts,
+        stats,
+        show_model_weeks,
+        now,
+        zone,
+        provider_title,
+    )
 }
 
-pub fn cards_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Option<&Stats>, show_model_weeks: bool, now: i64, zone: &Tz, name: impl Fn(&str) -> String) -> Vec<Card> {
+pub fn cards_named<Tz: TimeZone>(
+    pools: &[Pool],
+    accounts: &[Account],
+    stats: Option<&Stats>,
+    show_model_weeks: bool,
+    now: i64,
+    zone: &Tz,
+    name: impl Fn(&str) -> String,
+) -> Vec<Card> {
     let (_, own) = notices(accounts);
     groups(pools, accounts)
         .iter()
@@ -1468,15 +1957,36 @@ pub fn cards_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
             let mixed = group.providers.len() > 1;
             Card {
                 id: group.id.clone(),
-                title: if group.pool.is_none() && group.providers.len() == 1 && group.id != UNPOOLED { name(&group.providers[0].provider) } else { group.title.clone() },
-                symbol: group.pool.map_or_else(|| "tray".to_owned(), |p| pool_symbol(p, accounts)),
+                title: if group.pool.is_none() && group.providers.len() == 1 && group.id != UNPOOLED
+                {
+                    name(&group.providers[0].provider)
+                } else {
+                    group.title.clone()
+                },
+                symbol: group
+                    .pool
+                    .map_or_else(|| "tray".to_owned(), |p| pool_symbol(p, accounts)),
                 today: spent_today(stats, &ids, now, zone),
                 sections: group
                     .providers
                     .iter()
                     .map(|section| CardSection {
                         title: mixed.then(|| name(&section.provider)),
-                        logins: section.accounts.iter().map(|a| login_row(a, &name(&section.provider), own.get(&a.id).map(String::as_str), stats, show_model_weeks, now, zone)).collect(),
+                        logins: section
+                            .accounts
+                            .iter()
+                            .map(|a| {
+                                login_row(
+                                    a,
+                                    &name(&section.provider),
+                                    own.get(&a.id).map(String::as_str),
+                                    stats,
+                                    show_model_weeks,
+                                    now,
+                                    zone,
+                                )
+                            })
+                            .collect(),
                     })
                     .collect(),
             }
@@ -1484,7 +1994,15 @@ pub fn cards_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
         .collect()
 }
 
-fn login_row<Tz: TimeZone>(account: &Account, provider_name: &str, notice: Option<&str>, stats: Option<&Stats>, show_model_weeks: bool, now: i64, zone: &Tz) -> LoginRow {
+fn login_row<Tz: TimeZone>(
+    account: &Account,
+    provider_name: &str,
+    notice: Option<&str>,
+    stats: Option<&Stats>,
+    show_model_weeks: bool,
+    now: i64,
+    zone: &Tz,
+) -> LoginRow {
     let usage = usage(account);
     let status = match &usage {
         _ if account.plan_ended => Some(LoginStatus::PlanEnded),
@@ -1497,9 +2015,15 @@ fn login_row<Tz: TimeZone>(account: &Account, provider_name: &str, notice: Optio
     let mut meters = Vec::new();
     let mut more = Vec::new();
     if let Some(u) = &usage {
-        let model_weeks = if show_model_weeks { model_weeks(u) } else { Vec::new() };
+        let model_weeks = if show_model_weeks {
+            model_weeks(u)
+        } else {
+            Vec::new()
+        };
         for window in main_windows(u).into_iter().chain(model_weeks) {
-            let samples = stats.map_or(&[][..], |s| s.samples(&account.id, &window.kind, Some(&window.title)));
+            let samples = stats.map_or(&[][..], |s| {
+                s.samples(&account.id, &window.kind, Some(&window.title))
+            });
             meters.push(Meter::new(window, samples, u.stale, now, zone));
         }
         // When the numbers are old, since when.
@@ -1511,20 +2035,36 @@ fn login_row<Tz: TimeZone>(account: &Account, provider_name: &str, notice: Optio
     let name = account.name();
     LoginRow {
         id: account.id.clone(),
-        tip: [Some(name.clone()), account.plan.clone().filter(|_| !account.plan_ended)].into_iter().flatten().collect::<Vec<_>>().join(", "),
+        tip: [
+            Some(name.clone()),
+            account.plan.clone().filter(|_| !account.plan_ended),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", "),
         name,
         note: account.note.clone().filter(|n| !n.is_empty()),
         today: spent_today(stats, &[account.id.as_str()], now, zone),
         dot: stats.is_some(),
         status,
-        sign_in_ends: sign_in_ends(account, now).map(|at| if account.year_token.is_some() { sign_in_ends_words(at, now, zone).replacen("Sign-in", "Token", 1) } else { sign_in_ends_words(at, now, zone) }),
-        can_token: account.provider_id() == "claude" && !account.plan_ended && (account.id == "claude-main" || !account.config_dir.trim().is_empty()),
+        sign_in_ends: sign_in_ends(account, now).map(|at| {
+            if account.year_token.is_some() {
+                sign_in_ends_words(at, now, zone).replacen("Sign-in", "Token", 1)
+            } else {
+                sign_in_ends_words(at, now, zone)
+            }
+        }),
+        can_token: account.provider_id() == "claude"
+            && !account.plan_ended
+            && (account.id == "claude-main" || !account.config_dir.trim().is_empty()),
         year_token: year_token_words(account, zone),
         provider: account.provider.clone(),
         ring: ring(&meters),
         headline: headline(status, &meters),
         five_hour: five_hour_chip(&meters),
-        unknown: (status == Some(LoginStatus::NothingKnown)).then(|| unknown_reason(&account.provider, provider_name)),
+        unknown: (status == Some(LoginStatus::NothingKnown))
+            .then(|| unknown_reason(&account.provider, provider_name)),
         meters,
         more,
     }
@@ -1533,7 +2073,10 @@ fn login_row<Tz: TimeZone>(account: &Account, provider_name: &str, notice: Optio
 /// The line at the foot of the panel: where the numbers came from, and what
 /// Token Stats says about all of them, once.
 pub fn footer<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) -> Option<String> {
-    let parts: Vec<String> = [source_line(accounts, now, zone), notices(accounts).0].into_iter().flatten().collect();
+    let parts: Vec<String> = [source_line(accounts, now, zone), notices(accounts).0]
+        .into_iter()
+        .flatten()
+        .collect();
     (!parts.is_empty()).then(|| parts.join(". "))
 }
 
@@ -1561,7 +2104,14 @@ pub fn model_weeks_switch(titles: &[String]) -> String {
 /// its week will go partly unused (the green line), and it can run a turn.
 /// Mike, 18 Nov: the action next to the number that prompts it.
 pub fn can_find_work(login: &LoginRow) -> bool {
-    login.headline.as_ref().is_some_and(|v| v.tone == Tone::Spare) && !matches!(login.status, Some(LoginStatus::SignedOut) | Some(LoginStatus::PlanEnded))
+    login
+        .headline
+        .as_ref()
+        .is_some_and(|v| v.tone == Tone::Spare)
+        && !matches!(
+            login.status,
+            Some(LoginStatus::SignedOut) | Some(LoginStatus::PlanEnded)
+        )
 }
 
 pub const FIND_WORK: &str = "Find work for it";
@@ -1569,11 +2119,14 @@ pub const FINDING_WORK: &str = "Finding work…";
 pub const FIND_WORK_TIP: &str = "Start a thread on this login that suggests work to spend the rest of its week on, and asks before starting any";
 
 /// Its tooltip, for someone who never runs that model.
-pub const MODEL_WEEKS_TIP: &str = "A login's own limit on one model. Hide it if you don't use that model";
+pub const MODEL_WEEKS_TIP: &str =
+    "A login's own limit on one model. Hide it if you don't use that model";
 
 /// A runner from before usage sends none: the panel says so over the cards.
 pub fn needs_newer_runner(accounts: &[Account]) -> bool {
-    !accounts.iter().any(|a| a.usage.as_ref().is_some_and(|u| !u.is_null()))
+    !accounts
+        .iter()
+        .any(|a| a.usage.as_ref().is_some_and(|u| !u.is_null()))
 }
 
 pub const NEWER_RUNNER: &str = "The usage numbers need a newer runner.";
@@ -1582,15 +2135,32 @@ pub const PARTIAL: &str = "Still reading the transcripts, so these are partial."
 /// The panel as text, for the automation (the Swift app's `usageLines`, less
 /// the CLIs, which are the Updates panel's): the spend, then each login's
 /// room by pool (`#`) and provider (`##`), then where the numbers came from.
-pub fn lines<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Option<&Stats>, now: i64, zone: &Tz) -> Vec<String> {
+pub fn lines<Tz: TimeZone>(
+    pools: &[Pool],
+    accounts: &[Account],
+    stats: Option<&Stats>,
+    now: i64,
+    zone: &Tz,
+) -> Vec<String> {
     lines_named(pools, accounts, stats, now, zone, provider_title)
 }
 
-pub fn lines_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Option<&Stats>, now: i64, zone: &Tz, name: impl Fn(&str) -> String) -> Vec<String> {
+pub fn lines_named<Tz: TimeZone>(
+    pools: &[Pool],
+    accounts: &[Account],
+    stats: Option<&Stats>,
+    now: i64,
+    zone: &Tz,
+    name: impl Fn(&str) -> String,
+) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(stats) = stats {
         let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
-        let mut spend = format!("Today {}, last hour {}", tokens(today(stats, &ids, now, zone).total()), tokens(last_hour(stats, &ids, now, zone)));
+        let mut spend = format!(
+            "Today {}, last hour {}",
+            tokens(today(stats, &ids, now, zone).total()),
+            tokens(last_hour(stats, &ids, now, zone))
+        );
         if !stats.ready {
             spend.push_str(" (still reading)");
         }
@@ -1603,7 +2173,11 @@ pub fn lines_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
             out.push(format!("# {}", group.title));
         }
         for section in &group.providers {
-            out.push(format!("{}{}", if pooled { "## " } else { "# " }, name(&section.provider)));
+            out.push(format!(
+                "{}{}",
+                if pooled { "## " } else { "# " },
+                name(&section.provider)
+            ));
             for account in &section.accounts {
                 let mut line = account.name();
                 if let Some(plan) = account.plan.as_ref().filter(|_| !account.plan_ended) {
@@ -1620,7 +2194,11 @@ pub fn lines_named<Tz: TimeZone>(pools: &[Pool], accounts: &[Account], stats: Op
                         if u.stale {
                             line.push_str(", stale");
                         }
-                        let windows: Vec<String> = u.windows.iter().map(|w| format!("{} {}", w.title, percent(w.remaining))).collect();
+                        let windows: Vec<String> = u
+                            .windows
+                            .iter()
+                            .map(|w| format!("{} {}", w.title, percent(w.remaining)))
+                            .collect();
                         if !windows.is_empty() {
                             line.push_str(&format!(": {}", windows.join(", ")));
                         }
@@ -1646,7 +2224,6 @@ pub fn login_label(account: &str, accounts: &[Account]) -> String {
     login_name(account, accounts)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1662,7 +2239,10 @@ mod tests {
 
     /// A moment in October 2026, Perth time. The 29th is a Thursday.
     fn at_on(day: u32, hour: u32, minute: u32) -> i64 {
-        zone().with_ymd_and_hms(2026, 10, day, hour, minute, 0).unwrap().timestamp_millis()
+        zone()
+            .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
+            .unwrap()
+            .timestamp_millis()
     }
 
     fn at(hour: u32, minute: u32) -> i64 {
@@ -1670,15 +2250,36 @@ mod tests {
     }
 
     fn hour_of(start: i64, tokens: i64) -> Hour {
-        Hour { start, output: tokens / 10, cache_read: tokens - tokens / 10, ..Default::default() }
+        Hour {
+            start,
+            output: tokens / 10,
+            cache_read: tokens - tokens / 10,
+            ..Default::default()
+        }
     }
 
     fn stats(tokens: Vec<(&str, Vec<Hour>)>) -> Stats {
-        Stats { ready: true, tokens: tokens.into_iter().map(|(id, hours)| AccountTokens { account_id: id.into(), hours }).collect(), limits: vec![] }
+        Stats {
+            ready: true,
+            tokens: tokens
+                .into_iter()
+                .map(|(id, hours)| AccountTokens {
+                    account_id: id.into(),
+                    hours,
+                })
+                .collect(),
+            limits: vec![],
+        }
     }
 
     fn window(kind: &str, title: &str, left: f64, resets_at: Option<i64>) -> Window {
-        Window { kind: kind.into(), title: title.into(), remaining: left, resets_at, detail: None }
+        Window {
+            kind: kind.into(),
+            title: title.into(),
+            remaining: left,
+            resets_at,
+            detail: None,
+        }
     }
 
     fn weekly(left: f64, resets_at: i64) -> Window {
@@ -1686,17 +2287,35 @@ mod tests {
     }
 
     /// A login with a 5-hour window (if any) and a weekly one.
-    fn login(id: &str, provider: &str, five: Option<f64>, week: f64, blocked: bool, reset: Option<i64>) -> Account {
+    fn login(
+        id: &str,
+        provider: &str,
+        five: Option<f64>,
+        week: f64,
+        blocked: bool,
+        reset: Option<i64>,
+    ) -> Account {
         let mut windows = vec![];
         if let Some(five) = five {
             windows.push(json!({ "kind": "five_hour", "title": "5-hour", "remainingPercent": five, "resetsAt": reset.map(iso_time) }));
         }
         windows.push(json!({ "kind": "weekly", "title": "Weekly", "remainingPercent": week }));
-        Account { id: id.into(), provider: provider.into(), title: id.into(), usage: Some(json!({ "windows": windows, "blocked": blocked })), ..Default::default() }
+        Account {
+            id: id.into(),
+            provider: provider.into(),
+            title: id.into(),
+            usage: Some(json!({ "windows": windows, "blocked": blocked })),
+            ..Default::default()
+        }
     }
 
     fn pool(id: &str, title: &str, logins: &[&str]) -> Pool {
-        Pool { id: id.into(), title: title.into(), account_ids: logins.iter().map(|l| l.to_string()).collect(), ..Default::default() }
+        Pool {
+            id: id.into(),
+            title: title.into(),
+            account_ids: logins.iter().map(|l| l.to_string()).collect(),
+            ..Default::default()
+        }
     }
 
     // ---- Ported from the Swift app's UsageStatsTests ----
@@ -1715,21 +2334,46 @@ mod tests {
         assert_eq!(hours.len(), 2);
         assert_eq!(hours[0].total(), 10, "oldest first");
         assert_eq!(hours[1].total(), 334);
-        assert_eq!(s.samples("c1", "weekly", None).iter().map(|s| s.remaining).collect::<Vec<_>>(), vec![100., 40.5], "sorted, and clamped to 100");
+        assert_eq!(
+            s.samples("c1", "weekly", None)
+                .iter()
+                .map(|s| s.remaining)
+                .collect::<Vec<_>>(),
+            vec![100., 40.5],
+            "sorted, and clamped to 100"
+        );
         assert!(s.samples("c1", "five_hour", None).is_empty());
     }
 
     #[test]
     fn odd_rows_are_left_out_rather_than_failing_the_lot() {
-        let s = Stats::decode(&json!({ "tokens": [{ "accountId": "a", "hours": [[0, -1, 0, 0, 0], [0, 1.5, 0, 0, 0], [1e20, 1, 1, 1, 1], [3600000, 10, 0, 0, 0]] }] }));
+        let s = Stats::decode(
+            &json!({ "tokens": [{ "accountId": "a", "hours": [[0, -1, 0, 0, 0], [0, 1.5, 0, 0, 0], [1e20, 1, 1, 1, 1], [3600000, 10, 0, 0, 0]] }] }),
+        );
         assert!(s.ready, "a runner that doesn't say is taken to be ready");
-        assert_eq!(s.hours("a").iter().map(|h| (h.start, h.total())).collect::<Vec<_>>(), vec![(3_600_000, 10)]);
+        assert_eq!(
+            s.hours("a")
+                .iter()
+                .map(|h| (h.start, h.total()))
+                .collect::<Vec<_>>(),
+            vec![(3_600_000, 10)]
+        );
     }
 
     #[test]
     fn today_counts_from_local_midnight() {
         let z = zone();
-        let s = stats(vec![("a", vec![hour_of(at_on(28, 23, 0), 500), hour_of(at(0, 0), 1_000), hour_of(at(9, 0), 2_000)]), ("b", vec![hour_of(at(9, 0), 300)])]);
+        let s = stats(vec![
+            (
+                "a",
+                vec![
+                    hour_of(at_on(28, 23, 0), 500),
+                    hour_of(at(0, 0), 1_000),
+                    hour_of(at(9, 0), 2_000),
+                ],
+            ),
+            ("b", vec![hour_of(at(9, 0), 300)]),
+        ]);
         let now = at(9, 30);
         assert_eq!(today(&s, &["a", "b"], now, &z).total(), 3_300);
         assert_eq!(today(&s, &["b"], now, &z).total(), 300);
@@ -1737,7 +2381,10 @@ mod tests {
 
     #[test]
     fn the_last_hour_takes_the_tail_of_the_previous_hour() {
-        let s = stats(vec![("a", vec![hour_of(at(8, 0), 1_000), hour_of(at(9, 0), 400)])]);
+        let s = stats(vec![(
+            "a",
+            vec![hour_of(at(8, 0), 1_000), hour_of(at(9, 0), 400)],
+        )]);
         // At 9:15, three quarters of 8 o'clock's hour is still inside the 60.
         assert_eq!(last_hour(&s, &["a"], at(9, 15), &zone()), 400 + 750);
     }
@@ -1761,15 +2408,38 @@ mod tests {
     fn bars_by_hour_and_by_day() {
         let z = zone();
         let s = stats(vec![
-            ("a", vec![hour_of(at_on(27, 10, 0), 100), hour_of(at_on(28, 9, 0), 50), hour_of(at_on(28, 10, 0), 50), hour_of(at(8, 0), 10), hour_of(at(9, 0), 0)]),
+            (
+                "a",
+                vec![
+                    hour_of(at_on(27, 10, 0), 100),
+                    hour_of(at_on(28, 9, 0), 50),
+                    hour_of(at_on(28, 10, 0), 50),
+                    hour_of(at(8, 0), 10),
+                    hour_of(at(9, 0), 0),
+                ],
+            ),
             ("b", vec![hour_of(at(8, 0), 5)]),
         ]);
         let now = at(9, 30);
         let today = today_by_hour(&s, &["a", "b"], now, &z);
-        assert_eq!(today.iter().map(|b| b.account_id.as_str()).collect::<Vec<_>>(), vec!["a", "b"], "zeros left out");
-        assert_eq!(today.iter().map(|b| b.tokens).collect::<Vec<_>>(), vec![10, 5]);
+        assert_eq!(
+            today
+                .iter()
+                .map(|b| b.account_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "zeros left out"
+        );
+        assert_eq!(
+            today.iter().map(|b| b.tokens).collect::<Vec<_>>(),
+            vec![10, 5]
+        );
         let days = by_day(&s, &["a", "b"], 2, now, &z);
-        assert_eq!(days.iter().map(|b| b.tokens).collect::<Vec<_>>(), vec![100, 10, 5], "the 27th is outside two days; the 28th's hours add up");
+        assert_eq!(
+            days.iter().map(|b| b.tokens).collect::<Vec<_>>(),
+            vec![100, 10, 5],
+            "the 27th is outside two days; the 28th's hours add up"
+        );
         assert_eq!(days[0].start, at_on(28, 0, 0));
     }
 
@@ -1783,7 +2453,15 @@ mod tests {
         assert_eq!(tokens(4_210_000), "4.2M");
         assert_eq!(tokens(1_500_000_000), "1.5B");
         assert_eq!(tokens(9_960_000), "10M", "9.96 rounds up to a whole one");
-        assert_eq!(breakdown(&Hour { input: 40_000, output: 52_000, cache_read: 3_900_000, ..Default::default() }), "4M tokens: 3.9M cache reads, 40k input, 52k output");
+        assert_eq!(
+            breakdown(&Hour {
+                input: 40_000,
+                output: 52_000,
+                cache_read: 3_900_000,
+                ..Default::default()
+            }),
+            "4M tokens: 3.9M cache reads, 40k input, 52k output"
+        );
         assert_eq!(breakdown(&Hour::default()), "0 tokens");
     }
 
@@ -1814,10 +2492,26 @@ mod tests {
         // last 20 hours is 24% a day, not the week's 15%.
         let now = at(12, 0);
         let w = weekly(40., now + 3 * DAY);
-        let samples = [Sample { at: now - 30 * HOUR, remaining: 62. }, Sample { at: now - 20 * HOUR, remaining: 60. }, Sample { at: now - HOUR, remaining: 41. }];
+        let samples = [
+            Sample {
+                at: now - 30 * HOUR,
+                remaining: 62.,
+            },
+            Sample {
+                at: now - 20 * HOUR,
+                remaining: 60.,
+            },
+            Sample {
+                at: now - HOUR,
+                remaining: 41.,
+            },
+        ];
         assert!((Pace::of(&w, &samples, now).unwrap().rate - 24.).abs() < 0.01);
         // Under half a day of readings: the week's average instead.
-        let recent = [Sample { at: now - 6 * HOUR, remaining: 45. }];
+        let recent = [Sample {
+            at: now - 6 * HOUR,
+            remaining: 45.,
+        }];
         assert!((Pace::of(&w, &recent, now).unwrap().rate - 15.).abs() < 0.01);
     }
 
@@ -1829,11 +2523,21 @@ mod tests {
         let pace = Pace::of(&fable, &[], now).unwrap();
         assert!((pace.rate - 20.).abs() < 0.01);
         assert_eq!(pace.rate_text("weekly_model"), "20% a day");
-        assert_eq!(verdict(&fable, Some(&pace), false, now, &z).map(|v| v.tone), Some(Tone::Short));
+        assert_eq!(
+            verdict(&fable, Some(&pace), false, now, &z).map(|v| v.tone),
+            Some(Tone::Short)
+        );
         // Untouched: most logins never run out of Fable, so "100% will go
         // unused" on each would be noise. Just when it resets.
         let untouched = window("weekly_model", "Weekly Fable", 100., Some(now + 5 * DAY));
-        let v = verdict(&untouched, Pace::of(&untouched, &[], now).as_ref(), false, now, &z).unwrap();
+        let v = verdict(
+            &untouched,
+            Pace::of(&untouched, &[], now).as_ref(),
+            false,
+            now,
+            &z,
+        )
+        .unwrap();
         assert_eq!((v.tone, v.text.as_str()), (Tone::Fine, "Resets Tue 12 pm"));
     }
 
@@ -1845,19 +2549,41 @@ mod tests {
             { "accountId": "a", "kind": "weekly_model", "title": "Weekly Fable", "samples": [[1793000000000u64, 70]] }
         ]}));
         assert_eq!(s.samples("a", "weekly", None)[0].remaining, 50.);
-        assert_eq!(s.samples("a", "weekly_model", Some("Weekly Fable"))[0].remaining, 70.);
-        assert!(s.samples("a", "weekly_model", Some("Weekly Sonnet")).is_empty());
+        assert_eq!(
+            s.samples("a", "weekly_model", Some("Weekly Fable"))[0].remaining,
+            70.
+        );
+        assert!(s
+            .samples("a", "weekly_model", Some("Weekly Sonnet"))
+            .is_empty());
     }
 
     #[test]
     fn a_five_hour_pace_is_per_hour_and_needs_some_time() {
         let now = at(12, 0);
-        let pace = Pace::of(&window("five_hour", "5-hour", 40., Some(now + 3 * HOUR)), &[], now).unwrap();
+        let pace = Pace::of(
+            &window("five_hour", "5-hour", 40., Some(now + 3 * HOUR)),
+            &[],
+            now,
+        )
+        .unwrap();
         assert!((pace.rate - 30.).abs() < 0.01);
         assert!((pace.runs_out_at.unwrap() - (now + 80 * 60_000)).abs() < 1000);
         assert_eq!(pace.rate_text("five_hour"), "30% an hour");
-        assert_eq!(Pace::of(&window("five_hour", "5-hour", 99., Some(now + 5 * HOUR - 60_000)), &[], now), None, "a minute in is too early to say");
-        assert_eq!(Pace::of(&window("weekly", "Weekly", 50., None), &[], now), None, "no reset, no pace");
+        assert_eq!(
+            Pace::of(
+                &window("five_hour", "5-hour", 99., Some(now + 5 * HOUR - 60_000)),
+                &[],
+                now
+            ),
+            None,
+            "a minute in is too early to say"
+        );
+        assert_eq!(
+            Pace::of(&window("weekly", "Weekly", 50., None), &[], now),
+            None,
+            "no reset, no pace"
+        );
     }
 
     #[test]
@@ -1866,7 +2592,10 @@ mod tests {
         let now = at(12, 0);
         let w = weekly(30., now + 84 * HOUR);
         let v = verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &zone()).unwrap();
-        assert_eq!((v.tone, v.text.as_str()), (Tone::Short, "Runs out Sat 12 am, 2 days before it resets"));
+        assert_eq!(
+            (v.tone, v.text.as_str()),
+            (Tone::Short, "Runs out Sat 12 am, 2 days before it resets")
+        );
     }
 
     #[test]
@@ -1874,7 +2603,10 @@ mod tests {
         let now = at(12, 0);
         let w = weekly(80., now + 5 * DAY);
         let v = verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &zone()).unwrap();
-        assert_eq!((v.tone, v.text.as_str()), (Tone::Spare, "About 30% will go unused, resets Tue 12 pm"));
+        assert_eq!(
+            (v.tone, v.text.as_str()),
+            (Tone::Spare, "About 30% will go unused, resets Tue 12 pm")
+        );
     }
 
     #[test]
@@ -1883,7 +2615,10 @@ mod tests {
         let now = at(12, 0);
         let w = weekly(35., now + 2 * DAY);
         let v = verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &zone()).unwrap();
-        assert_eq!((v.tone, v.text.as_str()), (Tone::Fine, "On track, lasts till Sat 12 pm"));
+        assert_eq!(
+            (v.tone, v.text.as_str()),
+            (Tone::Fine, "On track, lasts till Sat 12 pm")
+        );
     }
 
     #[test]
@@ -1891,16 +2626,34 @@ mod tests {
         let z = zone();
         let now = at(12, 0);
         let w = window("five_hour", "5-hour", 90., Some(now + 2 * HOUR));
-        assert_eq!(verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &z), Some(Verdict { text: "Resets 2 pm".into(), tone: Tone::Fine }));
+        assert_eq!(
+            verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &z),
+            Some(Verdict {
+                text: "Resets 2 pm".into(),
+                tone: Tone::Fine
+            })
+        );
         let used = window("five_hour", "5-hour", 0., Some(now + 2 * HOUR));
-        assert_eq!(verdict(&used, None, false, now, &z), Some(Verdict { text: "Used up, back 2 pm".into(), tone: Tone::Out }));
+        assert_eq!(
+            verdict(&used, None, false, now, &z),
+            Some(Verdict {
+                text: "Used up, back 2 pm".into(),
+                tone: Tone::Out
+            })
+        );
     }
 
     #[test]
     fn old_numbers_dont_guess_at_the_pace() {
         let now = at(12, 0);
         let w = weekly(30., now + 84 * HOUR);
-        assert_eq!(verdict(&w, Pace::of(&w, &[], now).as_ref(), true, now, &zone()), Some(Verdict { text: "Resets Mon 12 am".into(), tone: Tone::Fine }));
+        assert_eq!(
+            verdict(&w, Pace::of(&w, &[], now).as_ref(), true, now, &zone()),
+            Some(Verdict {
+                text: "Resets Mon 12 am".into(),
+                tone: Tone::Fine
+            })
+        );
     }
 
     #[test]
@@ -1919,14 +2672,34 @@ mod tests {
         let now = at(12, 0);
         let h = |n: i64| now + n * HOUR;
         let samples = [
-            Sample { at: h(-200), remaining: 90. }, // over a week ago
-            Sample { at: h(-150), remaining: 60. },
-            Sample { at: h(-30), remaining: 5. },
-            Sample { at: h(-19), remaining: 100. },
-            Sample { at: h(-2), remaining: 100. },
+            Sample {
+                at: h(-200),
+                remaining: 90.,
+            }, // over a week ago
+            Sample {
+                at: h(-150),
+                remaining: 60.,
+            },
+            Sample {
+                at: h(-30),
+                remaining: 5.,
+            },
+            Sample {
+                at: h(-19),
+                remaining: 100.,
+            },
+            Sample {
+                at: h(-2),
+                remaining: 100.,
+            },
         ];
         let r = runs(&samples, 100., None, now);
-        assert_eq!(r.iter().map(|run| run.iter().map(|s| s.remaining).collect::<Vec<_>>()).collect::<Vec<_>>(), vec![vec![60., 5.], vec![100., 100., 100.]]);
+        assert_eq!(
+            r.iter()
+                .map(|run| run.iter().map(|s| s.remaining).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec![60., 5.], vec![100., 100., 100.]]
+        );
         assert_eq!(r.last().and_then(|run| run.last()).map(|s| s.at), Some(now));
     }
 
@@ -1936,9 +2709,27 @@ mod tests {
         // around it, and a small rise in it (a revised reading) stays joined.
         let now = at(12, 0);
         let h = |n: i64| now + n * HOUR;
-        let samples = [Sample { at: h(-40), remaining: 97. }, Sample { at: h(-20), remaining: 90. }, Sample { at: h(-10), remaining: 92. }];
+        let samples = [
+            Sample {
+                at: h(-40),
+                remaining: 97.,
+            },
+            Sample {
+                at: h(-20),
+                remaining: 90.,
+            },
+            Sample {
+                at: h(-10),
+                remaining: 92.,
+            },
+        ];
         let r = runs(&samples, 85., Some(h(-30)), now);
-        assert_eq!(r.iter().map(|run| run.iter().map(|s| s.remaining).collect::<Vec<_>>()).collect::<Vec<_>>(), vec![vec![97.], vec![100., 90., 92., 85.]]);
+        assert_eq!(
+            r.iter()
+                .map(|run| run.iter().map(|s| s.remaining).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec![97.], vec![100., 90., 92., 85.]]
+        );
         assert_eq!(r[1][0].at, h(-30));
     }
 
@@ -1947,88 +2738,229 @@ mod tests {
         let now = at(12, 0);
         let lines = midnights(now - 7 * DAY, now, &zone());
         assert_eq!(lines.len(), 7);
-        assert!(lines.iter().all(|m| zone().timestamp_millis_opt(*m).unwrap().format("%H:%M").to_string() == "00:00"));
+        assert!(lines.iter().all(|m| zone()
+            .timestamp_millis_opt(*m)
+            .unwrap()
+            .format("%H:%M")
+            .to_string()
+            == "00:00"));
     }
 
     // ---- Ported from the Swift app's UsageGroupsTests and AccountUsageTests ----
 
     #[test]
     fn groups_by_pool_then_provider_in_the_pools_order() {
-        let accounts = [login("c1", "claude", Some(90.), 80., false, None), login("c2", "claude", Some(50.), 40., false, None), login("x1", "codex", None, 70., false, None), login("c3", "claude", None, 10., false, None)];
-        let pools = [pool("mixed", "Mixed", &["x1", "c2"]), pool("claude", "Claude", &["c1", "c2"])];
+        let accounts = [
+            login("c1", "claude", Some(90.), 80., false, None),
+            login("c2", "claude", Some(50.), 40., false, None),
+            login("x1", "codex", None, 70., false, None),
+            login("c3", "claude", None, 10., false, None),
+        ];
+        let pools = [
+            pool("mixed", "Mixed", &["x1", "c2"]),
+            pool("claude", "Claude", &["c1", "c2"]),
+        ];
         let g = groups(&pools, &accounts);
-        assert_eq!(g.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["Mixed", "Claude", "Not in a pool"]);
+        assert_eq!(
+            g.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(),
+            vec!["Mixed", "Claude", "Not in a pool"]
+        );
         // The pool's order decides which provider comes first.
-        assert_eq!(g[0].providers.iter().map(|p| p.provider.as_str()).collect::<Vec<_>>(), vec!["codex", "claude"]);
-        assert_eq!(g[1].accounts().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["c1", "c2"]);
-        assert_eq!(g[2].accounts().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["c3"]);
+        assert_eq!(
+            g[0].providers
+                .iter()
+                .map(|p| p.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex", "claude"]
+        );
+        assert_eq!(
+            g[1].accounts()
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c1", "c2"]
+        );
+        assert_eq!(
+            g[2].accounts()
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c3"]
+        );
     }
 
     #[test]
     fn without_pools_each_provider_is_a_group_claude_first() {
-        let accounts = [login("x1", "codex", None, 70., false, None), login("c1", "claude", None, 80., false, None)];
+        let accounts = [
+            login("x1", "codex", None, 70., false, None),
+            login("c1", "claude", None, 80., false, None),
+        ];
         let g = groups(&[], &accounts);
-        assert_eq!(g.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["Claude", "Codex"]);
+        assert_eq!(
+            g.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(),
+            vec!["Claude", "Codex"]
+        );
         assert!(g[0].pool.is_none());
         let gone = [pool("gone", "Gone", &["nobody"])];
-        assert_eq!(groups(&gone, &accounts[1..]).iter().map(|g| g.title.as_str()).collect::<Vec<_>>(), vec!["Not in a pool"], "a pool with no logins here is left out");
+        assert_eq!(
+            groups(&gone, &accounts[1..])
+                .iter()
+                .map(|g| g.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Not in a pool"],
+            "a pool with no logins here is left out"
+        );
     }
 
     #[test]
     fn the_usage_tooltip_says_each_pools_best_room() {
-        let accounts = [login("c1", "claude", Some(94.), 93., false, None), login("c2", "claude", Some(100.), 16., false, None), login("x1", "codex", None, 79., false, None)];
-        let pools = [pool("claude", "Claude", &["c1", "c2"]), pool("codex", "Codex", &["x1"])];
-        assert_eq!(icon_tooltip(&groups(&pools, &accounts), at_on(28, 10, 0), &zone()), "Usage\nClaude: 93% left\nCodex: 79% left");
+        let accounts = [
+            login("c1", "claude", Some(94.), 93., false, None),
+            login("c2", "claude", Some(100.), 16., false, None),
+            login("x1", "codex", None, 79., false, None),
+        ];
+        let pools = [
+            pool("claude", "Claude", &["c1", "c2"]),
+            pool("codex", "Codex", &["x1"]),
+        ];
+        assert_eq!(
+            icon_tooltip(&groups(&pools, &accounts), at_on(28, 10, 0), &zone()),
+            "Usage\nClaude: 93% left\nCodex: 79% left"
+        );
     }
 
     #[test]
     fn the_usage_tooltip_says_when_a_pool_at_its_limit_comes_back() {
-        let accounts = [login("c1", "claude", Some(0.), 50., true, Some(at_on(28, 13, 26))), login("c2", "claude", Some(0.), 40., true, Some(at_on(28, 12, 56)))];
+        let accounts = [
+            login("c1", "claude", Some(0.), 50., true, Some(at_on(28, 13, 26))),
+            login("c2", "claude", Some(0.), 40., true, Some(at_on(28, 12, 56))),
+        ];
         let pools = [pool("claude", "Claude", &["c1", "c2"])];
-        assert_eq!(icon_tooltip(&groups(&pools, &accounts), at_on(28, 10, 0), &zone()), "Usage\nClaude: at its limit, back at 12:56 pm");
+        assert_eq!(
+            icon_tooltip(&groups(&pools, &accounts), at_on(28, 10, 0), &zone()),
+            "Usage\nClaude: at its limit, back at 12:56 pm"
+        );
     }
 
     fn reading(read_at: i64, stale: bool, source: &str) -> Account {
-        Account { id: format!("a{read_at}{stale}"), usage: Some(json!({ "windows": [], "readAt": iso_time(read_at), "source": source, "stale": stale })), ..Default::default() }
+        Account {
+            id: format!("a{read_at}{stale}"),
+            usage: Some(
+                json!({ "windows": [], "readAt": iso_time(read_at), "source": source, "stale": stale }),
+            ),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn the_source_line_says_where_the_numbers_came_from() {
         let z = zone();
         let now = at_on(27, 10, 0);
-        assert_eq!(source_line(&[reading(at_on(27, 7, 15), false, "tokenStats"), reading(at_on(27, 6, 2), false, "tokenStats")], now, &z).as_deref(), Some("Usage from Token Stats at 7:15 am"));
-        assert_eq!(source_line(&[reading(at_on(27, 6, 2), true, "tokenStats")], now, &z).as_deref(), Some("Token Stats hasn't updated since 6:02 am"));
+        assert_eq!(
+            source_line(
+                &[
+                    reading(at_on(27, 7, 15), false, "tokenStats"),
+                    reading(at_on(27, 6, 2), false, "tokenStats")
+                ],
+                now,
+                &z
+            )
+            .as_deref(),
+            Some("Usage from Token Stats at 7:15 am")
+        );
+        assert_eq!(
+            source_line(&[reading(at_on(27, 6, 2), true, "tokenStats")], now, &z).as_deref(),
+            Some("Token Stats hasn't updated since 6:02 am")
+        );
         // One fresh reading is enough for "from Token Stats".
-        assert_eq!(source_line(&[reading(at_on(27, 6, 2), true, "tokenStats"), reading(at_on(27, 7, 15), false, "tokenStats")], now, &z).as_deref(), Some("Usage from Token Stats at 7:15 am"));
-        assert_eq!(source_line(&[reading(at_on(27, 9, 0), false, "live")], now, &z), None);
+        assert_eq!(
+            source_line(
+                &[
+                    reading(at_on(27, 6, 2), true, "tokenStats"),
+                    reading(at_on(27, 7, 15), false, "tokenStats")
+                ],
+                now,
+                &z
+            )
+            .as_deref(),
+            Some("Usage from Token Stats at 7:15 am")
+        );
+        assert_eq!(
+            source_line(&[reading(at_on(27, 9, 0), false, "live")], now, &z),
+            None
+        );
         assert_eq!(source_line(&[], now, &z), None);
     }
 
     #[test]
     fn extra_windows_leave_out_the_main_ones() {
-        let u = Usage { windows: vec![window("five_hour", "5-hour", 89., None), window("weekly_model", "Weekly Fable", 71., None), window("weekly", "Weekly", 78., None)], ..Default::default() };
-        assert_eq!(main_windows(&u).iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), vec!["five_hour", "weekly"]);
-        assert_eq!(extra_windows(&u).iter().map(|w| w.title.as_str()).collect::<Vec<_>>(), vec!["Weekly Fable"]);
+        let u = Usage {
+            windows: vec![
+                window("five_hour", "5-hour", 89., None),
+                window("weekly_model", "Weekly Fable", 71., None),
+                window("weekly", "Weekly", 78., None),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            main_windows(&u)
+                .iter()
+                .map(|w| w.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["five_hour", "weekly"]
+        );
+        assert_eq!(
+            extra_windows(&u)
+                .iter()
+                .map(|w| w.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Weekly Fable"]
+        );
         assert_eq!(room(&u), Some(78.));
     }
 
     #[test]
     fn a_notice_several_logins_share_is_said_once() {
-        let with = |id: &str, notice: Option<&str>| Account { id: id.into(), usage: Some(json!({ "windows": [], "notice": notice })), ..Default::default() };
+        let with = |id: &str, notice: Option<&str>| Account {
+            id: id.into(),
+            usage: Some(json!({ "windows": [], "notice": notice })),
+            ..Default::default()
+        };
         let couldnt = "Couldn't check usage just now, so these are from 1:19 pm.";
         let accounts = [
             with("claude-main", Some(couldnt)),
-            with("claude-1", Some(&format!("{couldnt} · $48.85 extra usage spent"))),
+            with(
+                "claude-1",
+                Some(&format!("{couldnt} · $48.85 extra usage spent")),
+            ),
             with("claude-3", Some(couldnt)),
-            with("codex-main", Some("64,390 credits · 2 limit resets available")),
+            with(
+                "codex-main",
+                Some("64,390 credits · 2 limit resets available"),
+            ),
             with("claude-4", None),
         ];
         let (shared, own) = notices(&accounts);
         assert_eq!(shared.as_deref(), Some(couldnt));
-        assert_eq!(own, HashMap::from([("claude-1".to_string(), "$48.85 extra usage spent".to_string()), ("codex-main".to_string(), "64,390 credits · 2 limit resets available".to_string())]));
+        assert_eq!(
+            own,
+            HashMap::from([
+                (
+                    "claude-1".to_string(),
+                    "$48.85 extra usage spent".to_string()
+                ),
+                (
+                    "codex-main".to_string(),
+                    "64,390 credits · 2 limit resets available".to_string()
+                )
+            ])
+        );
         // One login's notice stays its own.
         let (shared, own) = notices(&[with("codex-main", Some("64,390 credits"))]);
-        assert_eq!((shared, own.get("codex-main").map(String::as_str)), (None, Some("64,390 credits")));
+        assert_eq!(
+            (shared, own.get("codex-main").map(String::as_str)),
+            (None, Some("64,390 credits"))
+        );
     }
 
     #[test]
@@ -2036,8 +2968,19 @@ mod tests {
         let z = zone();
         let mut w = window("weekly", "Weekly", 93., None);
         w.detail = Some("64,390 credits".into());
-        assert_eq!(window_line(&w, at(10, 0), &z, Some("64,390 credits · 2 limit resets available")), "93% left");
-        assert_eq!(window_line(&w, at(10, 0), &z, None), "93% left (64,390 credits)");
+        assert_eq!(
+            window_line(
+                &w,
+                at(10, 0),
+                &z,
+                Some("64,390 credits · 2 limit resets available")
+            ),
+            "93% left"
+        );
+        assert_eq!(
+            window_line(&w, at(10, 0), &z, None),
+            "93% left (64,390 credits)"
+        );
     }
 
     #[test]
@@ -2050,29 +2993,75 @@ mod tests {
                 windows.push(window("five_hour", "5-hour", five, None));
             }
             windows.push(window("weekly", "Weekly", week, weekly_reset));
-            Usage { windows, ..Default::default() }
+            Usage {
+                windows,
+                ..Default::default()
+            }
         };
         // Alex's main login: Fable's own week has a meter, not a line; the
         // allowance and the spend are one line.
         let mut gmail = usage_of(Some(90.), 16., Some(at_on(30, 1, 0)));
-        gmail.windows.push(window("weekly_model", "Weekly Fable", 96., Some(at_on(30, 1, 0))));
-        gmail.windows.push(Window { detail: Some("$132.79 left".into()), ..window("allowance", "$250 allowance", 53.1, Some(at_on(30, 8, 0) + 5 * DAY)) });
-        assert_eq!(extra_lines(&gmail, Some("$48.85 extra usage spent"), now, &z), vec!["$48.85 extra usage spent · $250 allowance: $132.79 left"]);
+        gmail.windows.push(window(
+            "weekly_model",
+            "Weekly Fable",
+            96.,
+            Some(at_on(30, 1, 0)),
+        ));
+        gmail.windows.push(Window {
+            detail: Some("$132.79 left".into()),
+            ..window(
+                "allowance",
+                "$250 allowance",
+                53.1,
+                Some(at_on(30, 8, 0) + 5 * DAY),
+            )
+        });
+        assert_eq!(
+            extra_lines(&gmail, Some("$48.85 extra usage spent"), now, &z),
+            vec!["$48.85 extra usage spent · $250 allowance: $132.79 left"]
+        );
         // A model's own week has its own meter, so it's never a line here,
         // however tight.
         let mut tight = usage_of(Some(90.), 60., None);
-        tight.windows.push(window("weekly_model", "Weekly Fable", 5., Some(at_on(29, 13, 0))));
+        tight.windows.push(window(
+            "weekly_model",
+            "Weekly Fable",
+            5.,
+            Some(at_on(29, 13, 0)),
+        ));
         assert!(extra_lines(&tight, None, now, &z).is_empty());
-        assert_eq!(model_weeks(&tight).iter().map(|w| w.title.as_str()).collect::<Vec<_>>(), vec!["Weekly Fable"]);
+        assert_eq!(
+            model_weeks(&tight)
+                .iter()
+                .map(|w| w.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Weekly Fable"]
+        );
         // A bare bucket tighter than the main windows still is.
         let mut codex_tight = usage_of(None, 60., None);
-        codex_tight.windows.push(window("other", "GPT-6.1-Sol", 5., None));
-        assert_eq!(extra_lines(&codex_tight, None, now, &z), vec!["GPT-6.1-Sol 5% left"]);
+        codex_tight
+            .windows
+            .push(window("other", "GPT-6.1-Sol", 5., None));
+        assert_eq!(
+            extra_lines(&codex_tight, None, now, &z),
+            vec!["GPT-6.1-Sol 5% left"]
+        );
         // Codex's credits come in the notice; a window repeating them doesn't
         // say them again.
         let mut codex = usage_of(None, 89., None);
-        codex.windows.push(Window { detail: Some("64,390 credits".into()), ..window("other", "Credits", 100., None) });
-        assert_eq!(extra_lines(&codex, Some("64,390 credits · 2 limit resets available"), now, &z), vec!["64,390 credits · 2 limit resets available"]);
+        codex.windows.push(Window {
+            detail: Some("64,390 credits".into()),
+            ..window("other", "Credits", 100., None)
+        });
+        assert_eq!(
+            extra_lines(
+                &codex,
+                Some("64,390 credits · 2 limit resets available"),
+                now,
+                &z
+            ),
+            vec!["64,390 credits · 2 limit resets available"]
+        );
     }
 
     // ---- The panel's own pieces ----
@@ -2083,10 +3072,18 @@ mod tests {
             { "kind": "weekly", "title": "Weekly", "remainingPercent": 130 },
             { "kind": "five_hour", "remainingPercent": 50, "resetsAt": "2026-11-11T05:00:00.000Z" },
             { "kind": "other", "title": "No number" }
-        ], "stale": true })).unwrap();
-        assert_eq!(u.windows.len(), 2, "a window with no percentage is left out");
+        ], "stale": true }))
+        .unwrap();
+        assert_eq!(
+            u.windows.len(),
+            2,
+            "a window with no percentage is left out"
+        );
         assert_eq!(u.windows[0].remaining, 100.);
-        assert_eq!(u.windows[1].title, "five_hour", "the kind stands in for a missing title");
+        assert_eq!(
+            u.windows[1].title, "five_hour",
+            "the kind stands in for a missing title"
+        );
         assert_eq!(u.source, "tokenStats");
         assert!(u.stale && !u.blocked);
         assert_eq!(Usage::decode(&json!("nonsense")), None);
@@ -2132,17 +3129,30 @@ mod tests {
     fn the_pot_fills_to_the_room_and_refills_only_on_a_reset() {
         let l = logins();
         assert_eq!(honey_level(usage(&l.accounts[0]).as_ref()), 0.78);
-        assert_eq!(honey_level(usage(&l.accounts[2]).as_ref()), 0., "at its limit");
+        assert_eq!(
+            honey_level(usage(&l.accounts[2]).as_ref()),
+            0.,
+            "at its limit"
+        );
         assert_eq!(honey_level(None), 0.);
         assert!(refilled(0.4, 1., true));
-        assert!(!refilled(0.4, 1., false), "a change of login isn't a refill");
-        assert!(!refilled(0.9, 0.95, true), "nor is a little room coming back");
+        assert!(
+            !refilled(0.4, 1., false),
+            "a change of login isn't a refill"
+        );
+        assert!(
+            !refilled(0.9, 0.95, true),
+            "nor is a little room coming back"
+        );
     }
 
     #[test]
     fn each_login_keeps_its_colour() {
         let l = logins();
-        assert_eq!(login_colour("claude-main", &l.accounts, true), Some(0x3987E5));
+        assert_eq!(
+            login_colour("claude-main", &l.accounts, true),
+            Some(0x3987E5)
+        );
         assert_eq!(login_colour("claude-2", &l.accounts, false), Some(0xEB6834));
         assert_eq!(login_colour("nobody", &l.accounts, false), None);
         assert_eq!(login_label("claude-main", &l.accounts), "alex");
@@ -2155,25 +3165,61 @@ mod tests {
         let z = zone();
         let now = at(13, 0);
         let c = cards(&l.pools, &l.accounts, None, true, now, &z);
-        assert_eq!(c.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), vec!["Claude", "Personal", "Weekends", "Not in a pool"]);
+        assert_eq!(
+            c.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(),
+            vec!["Claude", "Personal", "Weekends", "Not in a pool"]
+        );
         let main = &c[0].sections[0].logins[0];
         assert_eq!(main.name, "alex@example.com");
         assert_eq!(main.tip, "alex@example.com, Max");
-        assert_eq!(main.meters.iter().map(|m| format!("{} {}", m.title, m.left)).collect::<Vec<_>>(), vec!["Weekly 78% left", "Weekly Fable 71% left"], "the model's own week under the main one");
-        assert_eq!(main.more, vec!["$48.85 extra usage spent"], "the shared part of the notice goes to the foot");
+        assert_eq!(
+            main.meters
+                .iter()
+                .map(|m| format!("{} {}", m.title, m.left))
+                .collect::<Vec<_>>(),
+            vec!["Weekly 78% left", "Weekly Fable 71% left"],
+            "the model's own week under the main one"
+        );
+        assert_eq!(
+            main.more,
+            vec!["$48.85 extra usage spent"],
+            "the shared part of the notice goes to the foot"
+        );
         assert!(!main.dot, "no colours before the stats");
         let blocked = &c[0].sections[0].logins[1];
         assert_eq!(blocked.status, Some(LoginStatus::LimitReached));
-        assert_eq!(blocked.meters[0].verdict.as_ref().map(|v| v.text.as_str()), Some("Used up, back 3:40 pm"));
+        assert_eq!(
+            blocked.meters[0].verdict.as_ref().map(|v| v.text.as_str()),
+            Some("Used up, back 3:40 pm")
+        );
         assert!(blocked.meters[0].short);
         // The mixed pool names its providers.
-        assert_eq!(c[1].sections.iter().map(|s| s.title.clone()).collect::<Vec<_>>(), vec![Some("Codex".to_string()), Some("Claude".to_string())]);
+        assert_eq!(
+            c[1].sections
+                .iter()
+                .map(|s| s.title.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("Codex".to_string()), Some("Claude".to_string())]
+        );
         assert_eq!(c[0].sections[0].title, None);
         let codex = &c[1].sections[0].logins[0];
-        assert_eq!(codex.more, vec!["64,390 credits · 2 limit resets available"], "the credits once, and the roomier bucket not at all");
-        assert_eq!(c[3].sections[0].logins[1].status, Some(LoginStatus::NothingKnown));
-        assert_eq!((c[0].symbol.as_str(), c[3].symbol.as_str()), ("sparkle", "tray"));
-        assert_eq!(footer(&l.accounts, now, &z).as_deref(), Some("Usage from Token Stats at 11:15 am. Couldn't check usage just now."));
+        assert_eq!(
+            codex.more,
+            vec!["64,390 credits · 2 limit resets available"],
+            "the credits once, and the roomier bucket not at all"
+        );
+        assert_eq!(
+            c[3].sections[0].logins[1].status,
+            Some(LoginStatus::NothingKnown)
+        );
+        assert_eq!(
+            (c[0].symbol.as_str(), c[3].symbol.as_str()),
+            ("sparkle", "tray")
+        );
+        assert_eq!(
+            footer(&l.accounts, now, &z).as_deref(),
+            Some("Usage from Token Stats at 11:15 am. Couldn't check usage just now.")
+        );
         assert!(!needs_newer_runner(&l.accounts));
         assert!(needs_newer_runner(&l.accounts[4..]));
     }
@@ -2186,36 +3232,81 @@ mod tests {
             provider: "claude".into(),
             title: format!("{id}@example.com"),
             config_dir: format!("/tmp/{id}"),
-            year_token: made.map(|m| crate::logins::YearToken { made_at: Some(m.into()) }),
+            year_token: made.map(|m| crate::logins::YearToken {
+                made_at: Some(m.into()),
+            }),
             login_ends_at: ends.map(str::to_owned),
             ..Account::default()
         };
         let plain = row_for(account("claude-1", None, None), now);
         assert_eq!((plain.can_token, plain.year_token.as_deref()), (true, None));
-        let token = row_for(account("claude-4", Some("2026-11-17T00:00:00Z"), Some("2027-11-17T00:00:00Z")), now);
-        assert_eq!(token.year_token.as_deref(), Some("Year-long token until 17 Nov 2027"));
+        let token = row_for(
+            account(
+                "claude-4",
+                Some("2026-11-17T00:00:00Z"),
+                Some("2027-11-17T00:00:00Z"),
+            ),
+            now,
+        );
+        assert_eq!(
+            token.year_token.as_deref(),
+            Some("Year-long token until 17 Nov 2027")
+        );
         assert_eq!(token.sign_in_ends, None);
-        let late = row_for(account("claude-4", Some("2025-11-18T00:00:00Z"), Some("2026-11-18T00:00:00Z")), now);
-        assert!(late.sign_in_ends.as_deref().is_some_and(|w| w.starts_with("Token ends")), "{:?}", late.sign_in_ends);
-        let codex = row_for(Account { provider: "codex".into(), ..account("codex-1", None, None) }, now);
+        let late = row_for(
+            account(
+                "claude-4",
+                Some("2025-11-18T00:00:00Z"),
+                Some("2026-11-18T00:00:00Z"),
+            ),
+            now,
+        );
+        assert!(
+            late.sign_in_ends
+                .as_deref()
+                .is_some_and(|w| w.starts_with("Token ends")),
+            "{:?}",
+            late.sign_in_ends
+        );
+        let codex = row_for(
+            Account {
+                provider: "codex".into(),
+                ..account("codex-1", None, None)
+            },
+            now,
+        );
         assert!(!codex.can_token);
     }
 
     fn row_for(account: Account, now: i64) -> LoginRow {
         let accounts = [account];
-        cards(&[], &accounts, None, true, now, &zone()).remove(0).sections.remove(0).logins.remove(0)
+        cards(&[], &accounts, None, true, now, &zone())
+            .remove(0)
+            .sections
+            .remove(0)
+            .logins
+            .remove(0)
     }
 
     #[test]
     fn find_work_is_on_a_card_whose_week_will_go_unused() {
         let now = at(13, 0);
-        let mut row = row_for(login("c1", "claude", Some(91.), 39., false, Some(at(15, 40))), now);
-        row.headline = Some(Verdict { text: "About 46% will go unused, resets Mon 11:07 am".into(), tone: Tone::Spare });
+        let mut row = row_for(
+            login("c1", "claude", Some(91.), 39., false, Some(at(15, 40))),
+            now,
+        );
+        row.headline = Some(Verdict {
+            text: "About 46% will go unused, resets Mon 11:07 am".into(),
+            tone: Tone::Spare,
+        });
         assert!(can_find_work(&row));
         row.status = Some(LoginStatus::SignedOut);
         assert!(!can_find_work(&row), "nothing can run on it");
         row.status = None;
-        row.headline = Some(Verdict { text: "On track, lasts till Mon".into(), tone: Tone::Fine });
+        row.headline = Some(Verdict {
+            text: "On track, lasts till Mon".into(),
+            tone: Tone::Fine,
+        });
         assert!(!can_find_work(&row));
     }
 
@@ -2224,40 +3315,80 @@ mod tests {
         let now = at(13, 0);
         let back = at(15, 40);
         // Room in both: the week's number in the ring, the 5-hour as a chip.
-        let fine = row_for(login("c1", "claude", Some(91.), 39., false, Some(back)), now);
+        let fine = row_for(
+            login("c1", "claude", Some(91.), 39., false, Some(back)),
+            now,
+        );
         assert_eq!(fine.provider, "claude");
         assert_eq!(fine.ring, Some(39.));
-        assert_eq!(fine.five_hour.as_ref().map(|c| (c.text.as_str(), c.tone)), Some(("5-hour 91%", Tone::Fine)));
+        assert_eq!(
+            fine.five_hour.as_ref().map(|c| (c.text.as_str(), c.tone)),
+            Some(("5-hour 91%", Tone::Fine))
+        );
         assert!(fine.unknown.is_none());
         // At its limit on the 5-hour: one red line saying when it's back, not
         // "Limit reached" over "Used up".
         let out = row_for(login("c2", "claude", Some(0.), 50., true, Some(back)), now);
-        assert_eq!(out.headline, Some(Verdict { text: "Used up, back 3:40 pm".into(), tone: Tone::Out }));
+        assert_eq!(
+            out.headline,
+            Some(Verdict {
+                text: "Used up, back 3:40 pm".into(),
+                tone: Tone::Out
+            })
+        );
         assert_eq!(out.ring, Some(50.), "the ring stays the week's");
         assert_eq!(out.five_hour.as_ref().map(|c| c.tone), Some(Tone::Out));
         // Blocked with nothing saying when it's back.
         let blocked = row_for(login("c3", "claude", Some(30.), 50., true, None), now);
-        assert_eq!(blocked.headline, Some(Verdict { text: "Limit reached".into(), tone: Tone::Out }));
+        assert_eq!(
+            blocked.headline,
+            Some(Verdict {
+                text: "Limit reached".into(),
+                tone: Tone::Out
+            })
+        );
         // A week used up rings red at 0.
         let mut week_out = login("c4", "codex", None, 0., true, None);
-        week_out.usage = Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0, "resetsAt": iso_time(back) }], "blocked": true }));
+        week_out.usage = Some(
+            json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0, "resetsAt": iso_time(back) }], "blocked": true }),
+        );
         let week_out = row_for(week_out, now);
         assert_eq!(week_out.ring, Some(0.));
-        assert_eq!(week_out.headline.as_ref().map(|v| v.text.as_str()), Some("Used up, back 3:40 pm"));
+        assert_eq!(
+            week_out.headline.as_ref().map(|v| v.text.as_str()),
+            Some("Used up, back 3:40 pm")
+        );
         assert!(week_out.five_hour.is_none());
     }
 
     #[test]
     fn a_login_with_no_reading_says_why() {
         let now = at(13, 0);
-        let bare = |id: &str, provider: &str| Account { id: id.into(), provider: provider.into(), title: id.into(), ..Default::default() };
+        let bare = |id: &str, provider: &str| Account {
+            id: id.into(),
+            provider: provider.into(),
+            title: id.into(),
+            ..Default::default()
+        };
         let grok = row_for(bare("grok-main", "grok"), now);
         assert_eq!(grok.ring, None);
         assert_eq!(grok.headline, None);
-        assert_eq!(grok.unknown.as_ref().map(|u| u.text.as_str()), Some("Grok reports its limit only from its background service"));
-        assert_eq!(row_for(bare("oc", "opencode"), now).unknown.map(|u| u.text), Some("Pay as you go, no weekly limit".into()));
-        assert_eq!(row_for(bare("c9", "claude"), now).unknown.map(|u| u.text), Some("No turn has run on it yet".into()));
-        assert_eq!(row_for(bare("x9", "codex"), now).unknown.map(|u| u.text), Some("No turn has run on it yet".into()));
+        assert_eq!(
+            grok.unknown.as_ref().map(|u| u.text.as_str()),
+            Some("Grok reports its limit only from its background service")
+        );
+        assert_eq!(
+            row_for(bare("oc", "opencode"), now).unknown.map(|u| u.text),
+            Some("Pay as you go, no weekly limit".into())
+        );
+        assert_eq!(
+            row_for(bare("c9", "claude"), now).unknown.map(|u| u.text),
+            Some("No turn has run on it yet".into())
+        );
+        assert_eq!(
+            row_for(bare("x9", "codex"), now).unknown.map(|u| u.text),
+            Some("No turn has run on it yet".into())
+        );
         // A login that's signed out or ended says that instead.
         let mut gone = bare("c8", "claude");
         gone.signed_out = true;
@@ -2269,9 +3400,14 @@ mod tests {
     #[test]
     fn a_stale_login_says_since_when() {
         let mut l = logins();
-        l.accounts[0].usage = Some(json!({ "stale": true, "readAt": iso_time(at(11, 55)), "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 40 }] }));
+        l.accounts[0].usage = Some(
+            json!({ "stale": true, "readAt": iso_time(at(11, 55)), "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 40 }] }),
+        );
         let c = cards(&l.pools, &l.accounts, None, true, at(13, 0), &zone());
-        assert_eq!(c[0].sections[0].logins[0].more, vec!["Numbers from 11:55 am"]);
+        assert_eq!(
+            c[0].sections[0].logins[0].more,
+            vec!["Numbers from 11:55 am"]
+        );
     }
 
     #[test]
@@ -2279,7 +3415,9 @@ mod tests {
         let mut l = logins();
         assert_eq!(model_week_titles(&l.accounts), vec!["Weekly Fable"]);
         // A second login with the same model's week names it once.
-        l.accounts[1].usage = Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 90 }, { "kind": "weekly_model", "title": "Weekly Fable", "remainingPercent": 97 }] }));
+        l.accounts[1].usage = Some(
+            json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 90 }, { "kind": "weekly_model", "title": "Weekly Fable", "remainingPercent": 97 }] }),
+        );
         let titles = model_week_titles(&l.accounts);
         assert_eq!(titles, vec!["Weekly Fable"]);
         assert_eq!(model_weeks_switch(&titles), "Show Weekly Fable");
@@ -2287,8 +3425,18 @@ mod tests {
         let off = cards(&l.pools, &l.accounts, None, false, at(13, 0), &zone());
         let main = &off[0].sections[0].logins[0];
         assert_eq!(on[0].sections[0].logins[0].meters.len(), 2);
-        assert_eq!(main.meters.iter().map(|m| m.title.as_str()).collect::<Vec<_>>(), vec!["Weekly"], "only the main windows");
-        assert_eq!(main.more, on[0].sections[0].logins[0].more, "and nothing else changes");
+        assert_eq!(
+            main.meters
+                .iter()
+                .map(|m| m.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Weekly"],
+            "only the main windows"
+        );
+        assert_eq!(
+            main.more, on[0].sections[0].logins[0].more,
+            "and nothing else changes"
+        );
         // No login with a model's own week: no switch to show.
         assert!(model_week_titles(&l.accounts[2..]).is_empty());
     }
@@ -2298,13 +3446,28 @@ mod tests {
         let z = zone();
         let l = logins();
         let now = at(14, 30);
-        let s = stats(vec![("claude-main", vec![hour_of(at_on(26, 0, 0), 7_000_000), hour_of(at(9, 0), 2_000_000), hour_of(at(14, 0), 500_000)])]);
+        let s = stats(vec![(
+            "claude-main",
+            vec![
+                hour_of(at_on(26, 0, 0), 7_000_000),
+                hour_of(at(9, 0), 2_000_000),
+                hour_of(at(14, 0), 500_000),
+            ],
+        )]);
         let t = tiles(&s, &l.accounts, now, &z);
-        assert_eq!(t.iter().map(|t| (t.title, t.value.as_str())).collect::<Vec<_>>(), vec![("Today", "2.5M"), ("Last hour", "500k"), ("7 days", "9.5M")]);
+        assert_eq!(
+            t.iter()
+                .map(|t| (t.title, t.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Today", "2.5M"), ("Last hour", "500k"), ("7 days", "9.5M")]
+        );
         assert_eq!(t[0].detail, None, "no usual day without a week of stats");
         assert_eq!(t[1].detail.as_deref(), Some("172k/h today"));
         assert_eq!(t[2].detail.as_deref(), Some("1.4M a day"));
-        assert_eq!(t[1].tip, "Tokens in the last 60 minutes, across every login. Today has averaged 172k an hour.");
+        assert_eq!(
+            t[1].tip,
+            "Tokens in the last 60 minutes, across every login. Today has averaged 172k an hour."
+        );
     }
 
     #[test]
@@ -2312,21 +3475,47 @@ mod tests {
         let z = zone();
         let now = at(14, 30);
         let l = logins();
-        let s = stats(vec![("claude-main", vec![hour_of(at(9, 0), 72_000_000)]), ("claude-2", vec![hour_of(at_on(26, 0, 0), 10)])]);
+        let s = stats(vec![
+            ("claude-main", vec![hour_of(at(9, 0), 72_000_000)]),
+            ("claude-2", vec![hour_of(at_on(26, 0, 0), 10)]),
+        ]);
         let today_chart = chart(&s, &l.accounts, Range::Today, now, &z);
         assert_eq!(today_chart.title, "Tokens by hour");
-        assert_eq!(today_chart.ticks.iter().map(|(_, w)| w.as_str()).collect::<Vec<_>>(), vec!["12 am", "6 am", "12 pm", "6 pm"]);
+        assert_eq!(
+            today_chart
+                .ticks
+                .iter()
+                .map(|(_, w)| w.as_str())
+                .collect::<Vec<_>>(),
+            vec!["12 am", "6 am", "12 pm", "6 pm"]
+        );
         assert_eq!(today_chart.slots.len(), 24);
-        assert_eq!(today_chart.spending, vec!["claude-main".to_string()], "claude-2 spent nothing today");
-        assert_eq!(today_chart.value_ticks, vec![0, 50_000_000, 100_000_000], "a 72M bar under a 100M top, as the Swift chart has it");
+        assert_eq!(
+            today_chart.spending,
+            vec!["claude-main".to_string()],
+            "claude-2 spent nothing today"
+        );
+        assert_eq!(
+            today_chart.value_ticks,
+            vec![0, 50_000_000, 100_000_000],
+            "a 72M bar under a 100M top, as the Swift chart has it"
+        );
         assert_eq!(today_chart.slot_at(at(9, 40)), Some(at(9, 0)));
         assert_eq!(today_chart.now, Some(now));
         assert_eq!(today_chart.slot_words(at(13, 0), now, &z), "1 pm");
         let week = chart(&s, &l.accounts, Range::Week, now, &z);
         assert_eq!(week.title, "Tokens by day");
-        assert_eq!(week.ticks.first().map(|(_, w)| w.as_str()), Some("Fri"), "six days before a Thursday");
+        assert_eq!(
+            week.ticks.first().map(|(_, w)| w.as_str()),
+            Some("Fri"),
+            "six days before a Thursday"
+        );
         assert_eq!(week.ticks.last().map(|(_, w)| w.as_str()), Some("Today"));
-        assert_eq!(week.spending, vec!["claude-main".to_string(), "claude-2".to_string()], "in the logins' own order");
+        assert_eq!(
+            week.spending,
+            vec!["claude-main".to_string(), "claude-2".to_string()],
+            "in the logins' own order"
+        );
         assert_eq!(week.now, None);
         let empty = chart(&Stats::default(), &l.accounts, Range::Today, now, &z);
         assert_eq!(empty.empty, Some("Reading the transcripts…"));
@@ -2341,16 +3530,35 @@ mod tests {
         let now = at(12, 0);
         // Half gone three days in: runs out a day before the reset.
         let w = weekly(50., now + 4 * DAY);
-        let last_week = [Sample { at: now - 6 * DAY, remaining: 70. }, Sample { at: now - 4 * DAY, remaining: 30. }];
+        let last_week = [
+            Sample {
+                at: now - 6 * DAY,
+                remaining: 70.,
+            },
+            Sample {
+                at: now - 4 * DAY,
+                remaining: 30.,
+            },
+        ];
         let meter = Meter::new(&w, &last_week, false, now, &z);
-        assert_eq!(meter.verdict.as_ref().map(|v| v.text.as_str()), Some("Runs out Sun 12 pm, 1 day before it resets"));
-        assert_eq!(meter.tip, "50% left, resets Mon 12 pm. Going at about 17% a day, so it runs out Sun 12 pm");
+        assert_eq!(
+            meter.verdict.as_ref().map(|v| v.text.as_str()),
+            Some("Runs out Sun 12 pm, 1 day before it resets")
+        );
+        assert_eq!(
+            meter.tip,
+            "50% left, resets Mon 12 pm. Going at about 17% a day, so it runs out Sun 12 pm"
+        );
         let c = meter.week_chart(now, &z);
         assert_eq!((c.from, c.to), (now - WEEK, now + 4 * DAY));
         assert!(c.short, "the dashed line is orange");
         let end = c.ahead.last().unwrap();
         assert!((end.at - (now + 3 * DAY)).abs() < 1000 && end.remaining == 0.);
-        assert_eq!(c.runs.iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 2], "last week, then this one from full");
+        assert_eq!(
+            c.runs.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 2],
+            "last week, then this one from full"
+        );
         assert_eq!(c.noons.first().map(|(_, d)| d.as_str()), Some("Fri"));
         assert_eq!(c.noons.len(), 10);
         // Old numbers draw no pace.
@@ -2365,11 +3573,20 @@ mod tests {
         // 80 left three days in is a quiet week, but 20 points in the last
         // 15 hours runs it out before the reset.
         let w = weekly(80., now + 4 * DAY);
-        assert_eq!(verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &z).map(|v| v.tone), Some(Tone::Spare));
-        let busy = [Sample { at: now - 15 * HOUR, remaining: 100. }];
+        assert_eq!(
+            verdict(&w, Pace::of(&w, &[], now).as_ref(), false, now, &z).map(|v| v.tone),
+            Some(Tone::Spare)
+        );
+        let busy = [Sample {
+            at: now - 15 * HOUR,
+            remaining: 100.,
+        }];
         let pace = Pace::of(&w, &busy, now).unwrap();
         assert_eq!(pace.rate_text("weekly"), "32% a day");
-        assert_eq!(verdict(&w, Some(&pace), false, now, &z).map(|v| v.tone), Some(Tone::Short));
+        assert_eq!(
+            verdict(&w, Some(&pace), false, now, &z).map(|v| v.tone),
+            Some(Tone::Short)
+        );
     }
 
     #[test]
@@ -2378,8 +3595,13 @@ mod tests {
         let lines = lines(&l.pools, &l.accounts, None, at(13, 0), &zone());
         assert_eq!(&lines[..3], &["# Claude", "## Claude", "alex@example.com (Max): Weekly 78%, Weekly Fable 71% [Couldn't check usage just now. · $48.85 extra usage spent]"]);
         assert!(lines.contains(&"new@example.com: nothing known".to_string()));
-        assert!(lines.contains(&"alex+4@example.com, limit reached: 5-hour 0%, Weekly 31%".to_string()));
-        assert_eq!(lines.last().map(String::as_str), Some("Usage from Token Stats at 11:15 am"));
+        assert!(
+            lines.contains(&"alex+4@example.com, limit reached: 5-hour 0%, Weekly 31%".to_string())
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("Usage from Token Stats at 11:15 am")
+        );
     }
 
     // From Claude Code 2.1.325 a sign-in ends 28 days after it was made, and
@@ -2395,7 +3617,9 @@ mod tests {
             email: Some(format!("{id}@example.com")),
             signed_out: out,
             login_ends_at: ends.map(iso_time),
-            usage: Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 71.0 }] })),
+            usage: Some(
+                json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 71.0 }] }),
+            ),
             ..Default::default()
         };
         let fine = login("claude-4", Some(now + 20 * DAY), false);
@@ -2403,21 +3627,45 @@ mod tests {
         let out = login("claude-1", None, true);
         assert_eq!(sign_in_ends(&fine, now), None);
         assert_eq!(sign_in_ends(&ending, now), Some(at_on(31, 18, 0)));
-        assert_eq!(sign_in_ends(&out, now), None, "already out says signed out instead");
-        assert!(!sign_in_needed(&[fine.clone()], now));
+        assert_eq!(
+            sign_in_ends(&out, now),
+            None,
+            "already out says signed out instead"
+        );
+        assert!(!sign_in_needed(std::slice::from_ref(&fine), now));
         assert!(sign_in_needed(&[fine.clone(), ending.clone()], now));
-        assert!(sign_in_needed(&[out.clone()], now));
-        let pools = vec![Pool { id: "claude".into(), title: "Claude".into(), account_ids: vec!["claude-4".into(), "claude-3".into(), "claude-1".into()], ..Default::default() }];
+        assert!(sign_in_needed(std::slice::from_ref(&out), now));
+        let pools = vec![Pool {
+            id: "claude".into(),
+            title: "Claude".into(),
+            account_ids: vec!["claude-4".into(), "claude-3".into(), "claude-1".into()],
+            ..Default::default()
+        }];
         let accounts = vec![fine, ending, out];
         let cards = cards(&pools, &accounts, None, false, now, &zone());
         let rows = &cards[0].sections[0].logins;
-        assert_eq!((rows[0].status, rows[0].sign_in_ends.as_deref()), (None, None));
-        assert_eq!((rows[1].status, rows[1].sign_in_ends.as_deref()), (None, Some("Sign-in ends Sat 6 pm")));
-        assert_eq!((rows[2].status, rows[2].sign_in_ends.as_deref()), (Some(LoginStatus::SignedOut), None));
+        assert_eq!(
+            (rows[0].status, rows[0].sign_in_ends.as_deref()),
+            (None, None)
+        );
+        assert_eq!(
+            (rows[1].status, rows[1].sign_in_ends.as_deref()),
+            (None, Some("Sign-in ends Sat 6 pm"))
+        );
+        assert_eq!(
+            (rows[2].status, rows[2].sign_in_ends.as_deref()),
+            (Some(LoginStatus::SignedOut), None)
+        );
         assert_eq!(rows[2].meters.len(), 1, "its numbers stay");
         let tip = icon_tooltip_with_sign_ins(&groups(&pools, &accounts), &accounts, now, &zone());
         assert!(tip.ends_with("claude-3 (claude-3@example.com): sign-in ends Sat 6 pm\nclaude-1 (claude-1@example.com) is signed out"), "{tip}");
-        assert_eq!(sign_in_label(&Account { id: "claude-main".into(), ..Default::default() }), "claude-main");
+        assert_eq!(
+            sign_in_label(&Account {
+                id: "claude-main".into(),
+                ..Default::default()
+            }),
+            "claude-main"
+        );
     }
 
     /// claude-main, 16 Nov: its Max lapsed to the free plan, and its row
@@ -2432,18 +3680,35 @@ mod tests {
             plan: Some("Max".into()),
             plan_ended: true,
             login_ends_at: Some(iso_time(now + DAY)),
-            usage: Some(json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0.0, "resetsAt": iso_time(now + DAY) }], "blocked": true })),
+            usage: Some(
+                json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0.0, "resetsAt": iso_time(now + DAY) }], "blocked": true }),
+            ),
             ..Default::default()
         };
         assert_eq!(sign_in_ends(&ended, now), None);
-        assert!(!sign_in_needed(&[ended.clone()], now));
-        assert!(!sign_in_needed(&[Account { signed_out: true, ..ended.clone() }], now), "signing in wouldn't help");
-        assert!(sign_in_lines(&[ended.clone()], now, &zone()).is_empty());
+        assert!(!sign_in_needed(std::slice::from_ref(&ended), now));
+        assert!(
+            !sign_in_needed(
+                &[Account {
+                    signed_out: true,
+                    ..ended.clone()
+                }],
+                now
+            ),
+            "signing in wouldn't help"
+        );
+        assert!(sign_in_lines(std::slice::from_ref(&ended), now, &zone()).is_empty());
         let accounts = vec![ended];
         let cards = cards(&[], &accounts, None, false, now, &zone());
         let row = &cards[0].sections[0].logins[0];
-        assert_eq!((row.status, row.sign_in_ends.as_deref()), (Some(LoginStatus::PlanEnded), None));
-        assert!(row.meters.is_empty() && row.more.is_empty(), "no reset promised");
+        assert_eq!(
+            (row.status, row.sign_in_ends.as_deref()),
+            (Some(LoginStatus::PlanEnded), None)
+        );
+        assert!(
+            row.meters.is_empty() && row.more.is_empty(),
+            "no reset promised"
+        );
         assert_eq!(row.tip, "a@example.com", "not still called Max");
         assert_eq!(LoginStatus::PlanEnded.words(), "Plan ended");
         assert!(!LoginStatus::PlanEnded.is_stop());

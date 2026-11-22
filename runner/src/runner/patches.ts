@@ -12,12 +12,12 @@ import { Projects } from '../projects.ts';
 import { threadEnv } from '../restart.ts';
 import { paths } from '../config.ts';
 import { isDirectory } from '../fsutil.ts';
-import { checkReach, commandFiles, commandFilesOutside, isPatchFile, namedPaths, patchHash, scanModule, type ClaudeVerdict, type PatchHash } from '../patch-trust.ts';
+import { checkReach, commandFiles, isPatchFile, type ClaudeVerdict } from '../patch-trust.ts';
 import type { AgentWrite } from '../adapters/types.ts';
 import { CLAUDE_PATCH_ID, claudeCommands, claudeOptions, settingsCommands, settingsNamedPaths, type ClaudeOptions } from '../claude-trust.ts';
 import { canonicalPath, runsAsCodeByName, type CodeWrite } from '../code-writes.ts';
-import { patchCommands, sayValue } from '../patch-commands.ts';
 import type { PatchInfo } from '../protocol.ts';
+import { plainLine, waitingWhy } from '../patch-changes.ts';
 import { actionRunProblem, automaticTrust, isInside, EMPTY_PATCH_SET, PATCH_EXTENSIONS, patchDirs, projectRoots, hookApplies, loadPatchSet, applyLive, hasLive, projectPanels, renderListPanel, renderPanel, toggleListPanel, NoSwitches, runCommand, PATCH_SH_MAX_BYTES, type CommandOutcome, type PanelRender, type PatchSet, type PatchThread, type ProjectFolder, projectPatchFiles } from '../patches.ts';
 import { liveCommandEnv } from '../shell-allowlist.ts';
 import { codeOfUnhashedPatch, commandShown, shellWords, type CodeScan, type UnsureWhy } from '../unhashed-scan.ts';
@@ -181,7 +181,7 @@ export const patchesPart = {
     if (entry.live) this.armLivePoll();
   },
 
-  // Panel buttons' panels (docs/protocol.md, "Reply buttons"): each pressed
+  // Panel buttons' panels (docs/protocol/events.md, "Reply buttons"): each pressed
   // one's panel as a thread in its folder has it, its badge and summary run
   // there (a patch's server starts from them), under an id of its own and
   // with `{threadId}` left empty: the thread beside it isn't one of that
@@ -311,8 +311,7 @@ export const patchesPart = {
       }
       if (p.untrusted) {
         if (old?.untrusted !== p.untrusted || old?.hash !== p.hash) {
-          const why = p.untrusted === 'changed' ? 'it changed since you trusted it' : 'nothing from its folder is trusted yet';
-          this.emit(st, { type: 'system.note', text: `Patch ${p.id} isn't loaded: ${why}. Trust it in Patches to load it.` });
+          this.emit(st, { type: 'system.note', text: `Patch ${plainLine(p.id, 80)} isn't loaded: ${waitingWhy(p)}. Trust it in Patches to load it.` });
         }
         continue;
       }
@@ -732,7 +731,7 @@ export const patchesPart = {
   // it stops every runner at once, and shutting down doesn't wait for a
   // teardown. Each has its own time limit.
   threadsRunningActions(this: Runner): string[] {
-    return [...this.threads.values()].filter((st) => (st.rt.runningActions?.size && !st.rt.deleted) || st.rt.cleaning).map((st) => st.rec.id);
+    return [...this.threads.values()].filter((st) => (st.rt.runningActions?.size && !st.rt.deleted) || st.rt.cleaning !== undefined).map((st) => st.rec.id);
   },
 
   // The threads a restart waits for between turns: one going back to an

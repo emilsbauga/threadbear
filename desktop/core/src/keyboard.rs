@@ -28,7 +28,10 @@ impl Group {
 
     /// Its commands, in the order the Swift list has them.
     pub fn commands(self) -> Vec<ShortcutCommand> {
-        ShortcutCommand::ALL.into_iter().filter(|c| group(*c) == self).collect()
+        ShortcutCommand::ALL
+            .into_iter()
+            .filter(|c| group(*c) == self)
+            .collect()
     }
 
     /// What it is, behind its ⓘ.
@@ -51,8 +54,11 @@ pub fn group(command: ShortcutCommand) -> Group {
     use ShortcutCommand::*;
     match command {
         NewThread | Archive | Hibernate | Stop | CopyTranscript => Group::Threads,
-        Back | Forward | NextInboxThread | OpenAnything | OpenAnythingAlso | ShowInbox | ShowScheduled | ShowProjects | ShowLibrarian | ShowHibernating | ShowArchived | PreviousTab | NextTab | Settings => Group::Go,
-        ZoomIn | ZoomOut | ActualSize | ToggleThreads | TogglePanels | ToggleTerminal | ResetPanelLayout | CollapseThreads => Group::View,
+        Back | Forward | NextInboxThread | OpenAnything | OpenAnythingAlso | ShowInbox
+        | ShowScheduled | ShowProjects | ShowLibrarian | ShowHibernating | ShowArchived
+        | PreviousTab | NextTab | Settings => Group::Go,
+        ZoomIn | ZoomOut | ActualSize | ToggleThreads | TogglePanels | ToggleTerminal
+        | ResetPanelLayout | CollapseThreads => Group::View,
     }
 }
 
@@ -90,7 +96,9 @@ pub fn any_changed(bindings: &ShortcutBindings) -> bool {
 /// Another command on this one's key, which only comes from editing the file
 /// by hand.
 pub fn twin(bindings: &ShortcutBindings, command: ShortcutCommand) -> Option<ShortcutCommand> {
-    bindings.key(command).and_then(|key| bindings.command_using(&key, Some(command)))
+    bindings
+        .key(command)
+        .and_then(|key| bindings.command_using(&key, Some(command)))
 }
 
 /// What a key already does in every text box, which a shortcut would take over
@@ -100,7 +108,11 @@ pub fn taken_by_typing(key: &ShortcutKey) -> Option<&'static str> {
         return None;
     }
     match key.key.as_str() {
-        "left" | "right" | "up" | "down" => Some(if key.shift { "Selecting Text" } else { "Moving the Cursor" }),
+        "left" | "right" | "up" | "down" => Some(if key.shift {
+            "Selecting Text"
+        } else {
+            "Moving the Cursor"
+        }),
         "delete" if !key.shift => Some("Deleting to the Start of the Line"),
         "return" if !key.shift => Some("Save"),
         _ => None,
@@ -116,10 +128,26 @@ pub fn taken_outside(key: &ShortcutKey, macos: bool) -> Option<&'static str> {
     if let Some(typing) = taken_by_typing(key) {
         return Some(typing);
     }
-    const EVERYWHERE: [(&str, &str); 7] = [("cmd+q", "Quit Threadbear"), ("cmd+z", "Undo"), ("cmd+shift+z", "Redo"), ("cmd+x", "Cut"), ("cmd+c", "Copy"), ("cmd+v", "Paste"), ("cmd+a", "Select All")];
-    const MAC: [(&str, &str); 3] = [("cmd+h", "Hide Threadbear"), ("cmd+opt+h", "Hide Others"), ("cmd+m", "Minimize")];
+    const EVERYWHERE: [(&str, &str); 7] = [
+        ("cmd+q", "Quit Threadbear"),
+        ("cmd+z", "Undo"),
+        ("cmd+shift+z", "Redo"),
+        ("cmd+x", "Cut"),
+        ("cmd+c", "Copy"),
+        ("cmd+v", "Paste"),
+        ("cmd+a", "Select All"),
+    ];
+    const MAC: [(&str, &str); 3] = [
+        ("cmd+h", "Hide Threadbear"),
+        ("cmd+opt+h", "Hide Others"),
+        ("cmd+m", "Minimize"),
+    ];
     let name = key.string();
-    EVERYWHERE.iter().chain(if macos { MAC.iter() } else { [].iter() }).find(|(k, _)| *k == name).map(|(_, what)| *what)
+    EVERYWHERE
+        .iter()
+        .chain(if macos { MAC.iter() } else { [].iter() })
+        .find(|(k, _)| *k == name)
+        .map(|(_, what)| *what)
 }
 
 /// A key press as GPUI names it, as shortcuts.json writes it
@@ -128,13 +156,25 @@ pub fn taken_outside(key: &ShortcutKey, macos: bool) -> Option<&'static str> {
 /// Shift ("cmd+shift+["), so a US keyboard's shifted symbols go back to their
 /// keys. Elsewhere ⌘'s place is Control's, as `chord` has it. None for a key
 /// with nothing to call it (a modifier on its own).
-pub fn key_from_press(key: &str, platform: bool, alt: bool, control: bool, shift: bool, macos: bool) -> Option<ShortcutKey> {
-    let (command, control) = if macos { (platform, control) } else { (control || platform, false) };
+pub fn key_from_press(
+    key: &str,
+    platform: bool,
+    alt: bool,
+    control: bool,
+    shift: bool,
+    macos: bool,
+) -> Option<ShortcutKey> {
+    let (command, control) = if macos {
+        (platform, control)
+    } else {
+        (control || platform, false)
+    };
     let named = match key {
         "enter" => Some("return"),
         "backspace" => Some("delete"),
         "delete" => Some("forwarddelete"),
-        "escape" | "space" | "tab" | "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown" => Some(key),
+        "escape" | "space" | "tab" | "up" | "down" | "left" | "right" | "home" | "end"
+        | "pageup" | "pagedown" => Some(key),
         _ => None,
     };
     let (name, shift) = if let Some(named) = named {
@@ -147,7 +187,9 @@ pub fn key_from_press(key: &str, platform: bool, alt: bool, control: bool, shift
         (key.to_owned(), shift)
     } else {
         let mut chars = key.chars();
-        let (Some(c), None) = (chars.next(), chars.next()) else { return None };
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return None;
+        };
         if c.is_whitespace() || c.is_control() {
             return None;
         }
@@ -157,16 +199,44 @@ pub fn key_from_press(key: &str, platform: bool, alt: bool, control: bool, shift
             None => (c.to_string(), shift),
         }
     };
-    Some(ShortcutKey { key: name, command, option: alt, control, shift })
+    Some(ShortcutKey {
+        key: name,
+        command,
+        option: alt,
+        control,
+        shift,
+    })
 }
 
 /// The key a US keyboard types a shifted symbol on.
 fn unshifted(c: char) -> Option<char> {
     const PAIRS: [(char, char); 21] = [
-        ('!', '1'), ('@', '2'), ('#', '3'), ('$', '4'), ('%', '5'), ('^', '6'), ('&', '7'), ('*', '8'), ('(', '9'), (')', '0'),
-        ('_', '-'), ('+', '='), ('{', '['), ('}', ']'), ('|', '\\'), (':', ';'), ('"', '\''), ('<', ','), ('>', '.'), ('?', '/'), ('~', '`'),
+        ('!', '1'),
+        ('@', '2'),
+        ('#', '3'),
+        ('$', '4'),
+        ('%', '5'),
+        ('^', '6'),
+        ('&', '7'),
+        ('*', '8'),
+        ('(', '9'),
+        (')', '0'),
+        ('_', '-'),
+        ('+', '='),
+        ('{', '['),
+        ('}', ']'),
+        ('|', '\\'),
+        (':', ';'),
+        ('"', '\''),
+        ('<', ','),
+        ('>', '.'),
+        ('?', '/'),
+        ('~', '`'),
     ];
-    PAIRS.iter().find(|(shifted, _)| *shifted == c).map(|(_, base)| *base)
+    PAIRS
+        .iter()
+        .find(|(shifted, _)| *shifted == c)
+        .map(|(_, base)| *base)
 }
 
 // ---------------------------------------------------------------- listening
@@ -216,7 +286,12 @@ impl Recorder {
     }
 
     /// A key while listening (`press`). Its own key again is no change.
-    pub fn press(&mut self, key: ShortcutKey, bindings: &ShortcutBindings, macos: bool) -> Option<ShortcutBindings> {
+    pub fn press(
+        &mut self,
+        key: ShortcutKey,
+        bindings: &ShortcutBindings,
+        macos: bool,
+    ) -> Option<ShortcutBindings> {
         let command = self.command?;
         if bindings.key(command).as_ref() == Some(&key) {
             self.cancel();
@@ -249,7 +324,10 @@ impl Recorder {
 
     /// Yes to giving the key to this command instead (`useTakenKey`).
     pub fn use_taken_key(&mut self, bindings: &ShortcutBindings) -> Option<ShortcutBindings> {
-        let (Some(command), Outcome::TakenByCommand(key, _)) = (self.command, self.outcome.clone()) else { return None };
+        let (Some(command), Outcome::TakenByCommand(key, _)) = (self.command, self.outcome.clone())
+        else {
+            return None;
+        };
         let mut next = bindings.clone();
         take(&mut next, &key, command);
         self.cancel();
@@ -259,7 +337,20 @@ impl Recorder {
     /// A key press as GPUI gives it while listening (`swallows`): Esc with
     /// nothing held stops, Delete with nothing held removes the key, anything
     /// else is a go at a new one. None when the bindings stay as they are.
-    pub fn key_down(&mut self, key: &str, platform: bool, alt: bool, control: bool, shift: bool, bindings: &ShortcutBindings, macos: bool) -> Option<ShortcutBindings> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
+    )]
+    pub fn key_down(
+        &mut self,
+        key: &str,
+        platform: bool,
+        alt: bool,
+        control: bool,
+        shift: bool,
+        bindings: &ShortcutBindings,
+        macos: bool,
+    ) -> Option<ShortcutBindings> {
         self.command?;
         if !platform && !alt && !control && !shift {
             match key {
@@ -287,9 +378,21 @@ pub struct Question {
 pub fn question(outcome: &Outcome) -> Option<Question> {
     match outcome {
         Outcome::Waiting => None,
-        Outcome::TypesInstead => Some(Question { text: "Include ⌘ or ⌃, otherwise that key would type instead.".to_owned(), can_take: false }),
-        Outcome::TakenByCommand(key, other) => Some(Question { text: format!("{} is already {}.", key.display(), other.title()), can_take: true }),
-        Outcome::TakenOutside(key, what) => Some(Question { text: format!("{} is taken by {what}, which can't be changed.", key.display()), can_take: false }),
+        Outcome::TypesInstead => Some(Question {
+            text: "Include ⌘ or ⌃, otherwise that key would type instead.".to_owned(),
+            can_take: false,
+        }),
+        Outcome::TakenByCommand(key, other) => Some(Question {
+            text: format!("{} is already {}.", key.display(), other.title()),
+            can_take: true,
+        }),
+        Outcome::TakenOutside(key, what) => Some(Question {
+            text: format!(
+                "{} is taken by {what}, which can't be changed.",
+                key.display()
+            ),
+            can_take: false,
+        }),
     }
 }
 
@@ -320,7 +423,9 @@ pub fn look(recorder: &Recorder, command: ShortcutCommand, bindings: &ShortcutBi
     if recorder.listening(command) {
         return match &recorder.outcome {
             Outcome::Waiting | Outcome::TypesInstead => Look::Listening,
-            Outcome::TakenByCommand(pressed, _) | Outcome::TakenOutside(pressed, _) => Look::Taken(pressed.display()),
+            Outcome::TakenByCommand(pressed, _) | Outcome::TakenOutside(pressed, _) => {
+                Look::Taken(pressed.display())
+            }
         };
     }
     match bindings.key(command) {
@@ -340,12 +445,21 @@ pub fn cap_tip(command: ShortcutCommand, bindings: &ShortcutBindings) -> String 
 
 /// The cap's name for VoiceOver and the specs: "Archive, ⌘E".
 pub fn cap_label(command: ShortcutCommand, bindings: &ShortcutBindings) -> String {
-    format!("{}, {}", command.title(), bindings.key(command).map_or_else(|| "no key".to_owned(), |k| k.display()))
+    format!(
+        "{}, {}",
+        command.title(),
+        bindings
+            .key(command)
+            .map_or_else(|| "no key".to_owned(), |k| k.display())
+    )
 }
 
 /// The row's Reset's tooltip.
 pub fn reset_tip(command: ShortcutCommand) -> String {
-    command.default_key().map_or_else(|| "Back to no key".to_owned(), |k| format!("Back to {}", k.display()))
+    command.default_key().map_or_else(
+        || "Back to no key".to_owned(),
+        |k| format!("Back to {}", k.display()),
+    )
 }
 
 /// The search: a command shows if its name, its heading or its key has the
@@ -355,12 +469,18 @@ pub fn matches(command: ShortcutCommand, search: &str, bindings: &ShortcutBindin
     if words.is_empty() {
         return true;
     }
-    command.title().to_lowercase().contains(&words) || group(command).title().to_lowercase().contains(&words) || bindings.key(command).is_some_and(|k| k.display().to_lowercase().contains(&words))
+    command.title().to_lowercase().contains(&words)
+        || group(command).title().to_lowercase().contains(&words)
+        || bindings
+            .key(command)
+            .is_some_and(|k| k.display().to_lowercase().contains(&words))
 }
 
 /// A command in the dump: "Archive: ⌘K (changed)", "Hibernate: none".
 pub fn line(command: ShortcutCommand, bindings: &ShortcutBindings) -> String {
-    let key = bindings.key(command).map_or_else(|| "none".to_owned(), |k| k.display());
+    let key = bindings
+        .key(command)
+        .map_or_else(|| "none".to_owned(), |k| k.display());
     let mut out = format!("{}: {key}", command.title());
     if bindings.is_changed(command) {
         out.push_str(" (changed)");
@@ -375,8 +495,13 @@ pub fn line(command: ShortcutCommand, bindings: &ShortcutBindings) -> String {
 pub fn file_problem(text: Option<&str>) -> Option<String> {
     let text = text?;
     match ShortcutBindings::parse(text) {
-        Err(_) => Some("shortcuts.json isn't valid JSON, so these are the last keys that worked.".to_owned()),
-        Ok(read) if !read.problems.is_empty() => Some(format!("shortcuts.json has lines that couldn't be used: {}", read.problems.join(", "))),
+        Err(_) => Some(
+            "shortcuts.json isn't valid JSON, so these are the last keys that worked.".to_owned(),
+        ),
+        Ok(read) if !read.problems.is_empty() => Some(format!(
+            "shortcuts.json has lines that couldn't be used: {}",
+            read.problems.join(", ")
+        )),
         Ok(_) => None,
     }
 }
@@ -392,15 +517,38 @@ mod tests {
 
     #[test]
     fn the_groups_are_the_swift_pages() {
-        let titles = |g: Group| g.commands().into_iter().map(ShortcutCommand::title).collect::<Vec<_>>();
-        assert_eq!(titles(Group::Threads), ["New Thread", "Archive", "Hibernate", "Stop", "Copy Transcript as Markdown"]);
-        assert_eq!(titles(Group::Go)[..3], ["Back", "Forward", "Next Inbox Thread"]);
+        let titles = |g: Group| {
+            g.commands()
+                .into_iter()
+                .map(ShortcutCommand::title)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            titles(Group::Threads),
+            [
+                "New Thread",
+                "Archive",
+                "Hibernate",
+                "Stop",
+                "Copy Transcript as Markdown"
+            ]
+        );
+        assert_eq!(
+            titles(Group::Go)[..3],
+            ["Back", "Forward", "Next Inbox Thread"]
+        );
         assert_eq!(titles(Group::Go).last(), Some(&"Settings…"));
         assert_eq!(titles(Group::View).first(), Some(&"Zoom In"));
         assert_eq!(titles(Group::View).last(), Some(&"Collapse Threads"));
         let all: usize = Group::ALL.iter().map(|g| g.commands().len()).sum();
-        assert_eq!(all, ShortcutCommand::ALL.len(), "every command is under a heading");
-        assert!(Group::View.about().starts_with("The keys for what's in the View menu."));
+        assert_eq!(
+            all,
+            ShortcutCommand::ALL.len(),
+            "every command is under a heading"
+        );
+        assert!(Group::View
+            .about()
+            .starts_with("The keys for what's in the View menu."));
     }
 
     #[test]
@@ -421,7 +569,10 @@ mod tests {
     fn its_own_key_again_changes_nothing() {
         let mut r = Recorder::default();
         r.start(Archive);
-        assert_eq!(r.press(key("cmd+e"), &ShortcutBindings::default(), true), None);
+        assert_eq!(
+            r.press(key("cmd+e"), &ShortcutBindings::default(), true),
+            None
+        );
         assert_eq!(r.command, None);
     }
 
@@ -433,9 +584,15 @@ mod tests {
         let typed = key_from_press("k", false, true, false, false, true).unwrap();
         assert_eq!(r.press(typed, &b, true), None);
         assert_eq!(r.outcome, Outcome::TypesInstead);
-        assert_eq!(question(&r.outcome).unwrap().text, "Include ⌘ or ⌃, otherwise that key would type instead.");
+        assert_eq!(
+            question(&r.outcome).unwrap().text,
+            "Include ⌘ or ⌃, otherwise that key would type instead."
+        );
         assert_eq!(look(&r, Archive, &b), Look::Listening);
-        assert!(!r.waiting(), "a click elsewhere doesn't cancel with a question up");
+        assert!(
+            !r.waiting(),
+            "a click elsewhere doesn't cancel with a question up"
+        );
         // Another go.
         assert!(r.press(key("cmd+u"), &b, true).is_some());
     }
@@ -448,7 +605,10 @@ mod tests {
         assert_eq!(r.press(key("cmd+n"), &b, true), None);
         assert_eq!(r.outcome, Outcome::TakenByCommand(key("cmd+n"), NewThread));
         let q = question(&r.outcome).unwrap();
-        assert_eq!((q.text.as_str(), q.can_take), ("⌘N is already New Thread.", true));
+        assert_eq!(
+            (q.text.as_str(), q.can_take),
+            ("⌘N is already New Thread.", true)
+        );
         assert_eq!(look(&r, Archive, &b), Look::Taken("⌘N".into()));
         let next = r.use_taken_key(&b).unwrap();
         assert_eq!(next.key(Archive), Some(key("cmd+n")));
@@ -463,16 +623,33 @@ mod tests {
         r.start(Archive);
         r.press(key("cmd+c"), &b, true);
         let q = question(&r.outcome).unwrap();
-        assert_eq!((q.text.as_str(), q.can_take), ("⌘C is taken by Copy, which can't be changed.", false));
+        assert_eq!(
+            (q.text.as_str(), q.can_take),
+            ("⌘C is taken by Copy, which can't be changed.", false)
+        );
         assert_eq!(r.use_taken_key(&b), None);
         r.press(key("cmd+left"), &b, true);
-        assert_eq!(question(&r.outcome).unwrap().text, "⌘← is taken by Moving the Cursor, which can't be changed.");
+        assert_eq!(
+            question(&r.outcome).unwrap().text,
+            "⌘← is taken by Moving the Cursor, which can't be changed."
+        );
         r.press(key("cmd+shift+down"), &b, true);
-        assert_eq!(question(&r.outcome).unwrap().text, "⇧⌘↓ is taken by Selecting Text, which can't be changed.");
+        assert_eq!(
+            question(&r.outcome).unwrap().text,
+            "⇧⌘↓ is taken by Selecting Text, which can't be changed."
+        );
         r.press(key("cmd+m"), &b, true);
         assert_eq!(r.outcome, Outcome::TakenOutside(key("cmd+m"), "Minimize"));
-        assert_eq!(taken_outside(&key("cmd+m"), false), None, "Minimize's key is the Mac's own");
-        assert_eq!(taken_outside(&key("ctrl+cmd+left"), true), None, "typing only takes ⌘ alone");
+        assert_eq!(
+            taken_outside(&key("cmd+m"), false),
+            None,
+            "Minimize's key is the Mac's own"
+        );
+        assert_eq!(
+            taken_outside(&key("ctrl+cmd+left"), true),
+            None,
+            "typing only takes ⌘ alone"
+        );
     }
 
     #[test]
@@ -480,39 +657,93 @@ mod tests {
         let mut r = Recorder::default();
         let b = ShortcutBindings::default();
         r.start(Stop);
-        assert_eq!(r.key_down("escape", false, false, false, false, &b, true), None);
+        assert_eq!(
+            r.key_down("escape", false, false, false, false, &b, true),
+            None
+        );
         assert_eq!(r.command, None);
         r.start(Stop);
-        let next = r.key_down("backspace", false, false, false, false, &b, true).unwrap();
+        let next = r
+            .key_down("backspace", false, false, false, false, &b, true)
+            .unwrap();
         assert_eq!(next.key(Stop), None);
         assert_eq!(r.command, None);
         // Held with something, they're keys like any other.
         r.start(Stop);
-        assert_eq!(r.key_down("escape", false, false, false, true, &b, true), None);
+        assert_eq!(
+            r.key_down("escape", false, false, false, true, &b, true),
+            None
+        );
         assert_eq!(r.outcome, Outcome::TypesInstead);
-        let next = r.key_down("backspace", true, true, false, false, &b, true).unwrap();
+        let next = r
+            .key_down("backspace", true, true, false, false, &b, true)
+            .unwrap();
         assert_eq!(next.key(Stop), Some(key("cmd+opt+delete")));
         // A modifier on its own is nothing.
         r.start(Stop);
-        assert_eq!(r.key_down("shift", false, false, false, false, &b, true), None);
+        assert_eq!(
+            r.key_down("shift", false, false, false, false, &b, true),
+            None
+        );
         assert!(r.waiting());
     }
 
     #[test]
     fn a_press_reads_as_the_file_writes_it() {
-        assert_eq!(key_from_press("k", true, false, false, false, true), Some(key("cmd+k")));
-        assert_eq!(key_from_press("{", true, false, false, false, true), Some(key("cmd+shift+[")), "GPUI gives ⇧⌘[ as cmd-{{");
-        assert_eq!(key_from_press("c", true, false, false, true, true), Some(key("cmd+shift+c")));
-        assert_eq!(key_from_press("down", true, true, false, false, true), Some(key("cmd+opt+down")));
-        assert_eq!(key_from_press("enter", true, false, false, false, true), Some(key("cmd+return")));
-        assert_eq!(key_from_press("backspace", true, false, false, false, true), Some(key("cmd+delete")));
-        assert_eq!(key_from_press("delete", true, false, false, false, true), Some(key("cmd+forwarddelete")));
-        assert_eq!(key_from_press("f5", false, false, false, false, true), Some(key("f5")));
-        assert_eq!(key_from_press("f21", false, false, false, false, true), None);
-        assert_eq!(key_from_press("s", false, false, true, false, true), Some(key("ctrl+s")));
-        assert_eq!(key_from_press("k", false, false, true, false, false), Some(key("cmd+k")), "Control is ⌘'s place off the Mac");
-        assert_eq!(key_from_press("platform", false, false, false, false, true), None);
-        assert_eq!(key_from_press("=", true, false, false, false, true).map(|k| k.display()), Some("⌘=".to_owned()));
+        assert_eq!(
+            key_from_press("k", true, false, false, false, true),
+            Some(key("cmd+k"))
+        );
+        assert_eq!(
+            key_from_press("{", true, false, false, false, true),
+            Some(key("cmd+shift+[")),
+            "GPUI gives ⇧⌘[ as cmd-{{"
+        );
+        assert_eq!(
+            key_from_press("c", true, false, false, true, true),
+            Some(key("cmd+shift+c"))
+        );
+        assert_eq!(
+            key_from_press("down", true, true, false, false, true),
+            Some(key("cmd+opt+down"))
+        );
+        assert_eq!(
+            key_from_press("enter", true, false, false, false, true),
+            Some(key("cmd+return"))
+        );
+        assert_eq!(
+            key_from_press("backspace", true, false, false, false, true),
+            Some(key("cmd+delete"))
+        );
+        assert_eq!(
+            key_from_press("delete", true, false, false, false, true),
+            Some(key("cmd+forwarddelete"))
+        );
+        assert_eq!(
+            key_from_press("f5", false, false, false, false, true),
+            Some(key("f5"))
+        );
+        assert_eq!(
+            key_from_press("f21", false, false, false, false, true),
+            None
+        );
+        assert_eq!(
+            key_from_press("s", false, false, true, false, true),
+            Some(key("ctrl+s"))
+        );
+        assert_eq!(
+            key_from_press("k", false, false, true, false, false),
+            Some(key("cmd+k")),
+            "Control is ⌘'s place off the Mac"
+        );
+        assert_eq!(
+            key_from_press("platform", false, false, false, false, true),
+            None
+        );
+        assert_eq!(
+            key_from_press("=", true, false, false, false, true).map(|k| k.display()),
+            Some("⌘=".to_owned())
+        );
     }
 
     #[test]
@@ -524,7 +755,11 @@ mod tests {
         reset(&mut b, Archive);
         assert_eq!(b.key(Archive), Some(key("cmd+e")));
         assert!(!b.is_changed(Archive));
-        assert_eq!(b.key(NewThread), None, "New Thread had ⌘E, so it gives it back");
+        assert_eq!(
+            b.key(NewThread),
+            None,
+            "New Thread had ⌘E, so it gives it back"
+        );
         reset(&mut b, Hibernate);
         assert_eq!(b.key(Hibernate), None);
         reset_all(&mut b);
@@ -542,7 +777,10 @@ mod tests {
     fn two_commands_on_one_key_show_it() {
         let b = ShortcutBindings::parse(r#"{"archive": "cmd+n"}"#).unwrap();
         assert_eq!(twin(&b, Archive), Some(NewThread));
-        assert_eq!(look(&Recorder::default(), Archive, &b), Look::Taken("⌘N".into()));
+        assert_eq!(
+            look(&Recorder::default(), Archive, &b),
+            Look::Taken("⌘N".into())
+        );
         assert_eq!(cap_tip(Archive, &b), "⌘N is also New Thread");
         assert_eq!(cap_tip(Stop, &b), "Click, then press the new keys");
         assert_eq!(line(NewThread, &b), "New Thread: ⌘N (also Archive)");
@@ -568,7 +806,13 @@ mod tests {
     fn a_bad_file_says_so() {
         assert_eq!(file_problem(None), None);
         assert_eq!(file_problem(Some("{}")), None);
-        assert_eq!(file_problem(Some("{ nope")).as_deref(), Some("shortcuts.json isn't valid JSON, so these are the last keys that worked."));
-        assert_eq!(file_problem(Some(r#"{"archive": "banana"}"#)).as_deref(), Some("shortcuts.json has lines that couldn't be used: archive: banana"));
+        assert_eq!(
+            file_problem(Some("{ nope")).as_deref(),
+            Some("shortcuts.json isn't valid JSON, so these are the last keys that worked.")
+        );
+        assert_eq!(
+            file_problem(Some(r#"{"archive": "banana"}"#)).as_deref(),
+            Some("shortcuts.json has lines that couldn't be used: archive: banana")
+        );
     }
 }

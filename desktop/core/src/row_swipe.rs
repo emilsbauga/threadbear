@@ -61,7 +61,16 @@ impl Default for RowSwipe {
 
 impl RowSwipe {
     pub fn new(width: f64) -> Self {
-        Self { phase: Phase::Idle, travel: 0., width, sum_x: 0., sum_y: 0., last_dx: 0., last_speed: None, right_taken: false }
+        Self {
+            phase: Phase::Idle,
+            travel: 0.,
+            width,
+            sum_x: 0.,
+            sum_y: 0.,
+            last_dx: 0.,
+            last_speed: None,
+            right_taken: false,
+        }
     }
 
     /// How far along a let-go archives: a third of the row, and never less
@@ -124,7 +133,9 @@ impl RowSwipe {
                 if self.sum_x.abs().max(self.sum_y.abs()) < DECIDE_AFTER {
                     return false;
                 }
-                if self.sum_x.abs() >= self.sum_y.abs() * ACROSS && !(self.right_taken && self.sum_x > 0.) {
+                if self.sum_x.abs() >= self.sum_y.abs() * ACROSS
+                    && !(self.right_taken && self.sum_x > 0.)
+                {
                     self.phase = Phase::Tracking;
                     self.travel = self.sum_x;
                     self.last_dx = dx;
@@ -237,10 +248,17 @@ mod tests {
         assert!(RowSwipe::drags_out(8., 1.), "right, towards the thread");
         assert!(RowSwipe::drags_out(0., -8.));
         assert!(RowSwipe::drags_out(1., 8.));
-        assert!(RowSwipe::drags_out(-6., -5.), "a diagonal isn't a swipe either");
+        assert!(
+            RowSwipe::drags_out(-6., -5.),
+            "a diagonal isn't a swipe either"
+        );
         // Whichever the swipe would have tracked, it isn't a drag out.
         for (dx, dy) in [(-6., 0.), (-7., 4.), (-30., -12.)] {
-            assert_eq!(RowSwipe::drags_out(dx, dy), !swiped(&[(dx, dy)], 300.).is_swiping(), "{dx}, {dy}");
+            assert_eq!(
+                RowSwipe::drags_out(dx, dy),
+                !swiped(&[(dx, dy)], 300.).is_swiping(),
+                "{dx}, {dy}"
+            );
         }
     }
 
@@ -272,10 +290,26 @@ mod tests {
         };
         // Short and slow, sent as a busy app gets it: two sixtieths at once,
         // or a few let through together.
-        assert!(!timed(&[(-10., 1. / 30.), (-10., 1. / 30.), (-15., 1. / 30.), (-5., 1. / 30.)]));
-        assert!(!timed(&[(-5., 1. / 60.), (-5., 0.001), (-5., 0.001), (-10., 0.001), (-10., 0.001), (-5., 0.001)]));
+        assert!(!timed(&[
+            (-10., 1. / 30.),
+            (-10., 1. / 30.),
+            (-15., 1. / 30.),
+            (-5., 1. / 30.)
+        ]));
+        assert!(!timed(&[
+            (-5., 1. / 60.),
+            (-5., 0.001),
+            (-5., 0.001),
+            (-10., 0.001),
+            (-10., 0.001),
+            (-5., 0.001)
+        ]));
         // The same short way, fast at the end.
-        assert!(timed(&[(-10., 1. / 60.), (-10., 1. / 60.), (-20., 1. / 60.)]));
+        assert!(timed(&[
+            (-10., 1. / 60.),
+            (-10., 1. / 60.),
+            (-20., 1. / 60.)
+        ]));
         // Fast, but not far enough along yet.
         assert!(!timed(&[(-8., 1. / 60.), (-20., 1. / 60.)]));
     }
@@ -306,7 +340,11 @@ mod tests {
     #[test]
     fn a_flick_archives_and_a_slow_drag_doesnt() {
         assert!(swiped(&[(-10., 0.), (-10., 0.), (-20., 0.)], 300.).end());
-        assert!(!swiped(&[(-10., 0.), (-10., 0.), (-5., 0.), (-5., 0.), (-5., 0.)], 300.).end());
+        assert!(!swiped(
+            &[(-10., 0.), (-10., 0.), (-5., 0.), (-5., 0.), (-5., 0.)],
+            300.
+        )
+        .end());
     }
 
     #[test]

@@ -76,8 +76,8 @@ test("Mike's copy refuses BearDock too, and an ssh origin counts as his", () => 
 test('the GPUI app, the shared test tools and deletions go through', () => {
   const dir = repo(MIKE);
   stage(dir, 'desktop/gpui/src/new.rs');
-  stage(dir, 'app/Tools/mock-runner/server.ts');
-  stage(dir, 'app/Tools/post-gesture.swift');
+  stage(dir, 'mock-runner/server.ts');
+  stage(dir, 'features/tools/post-gesture.swift');
   assert.equal(commit(dir).status, 0);
   spawnSync('git', ['commit', '-qm', 'x', '--no-verify'], { cwd: dir, env: env({ GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }) });
   const old = repo(MIKE);
@@ -102,7 +102,7 @@ test("Mike's copy refuses an agent's edit to the Swift app before it's written",
   assert.equal(r.status, 2);
   assert.match(r.stderr, /desktop\//);
   assert.equal(edit(dir, 'desktop/gpui/src/thread_view.rs').status, 0);
-  assert.equal(edit(dir, 'app/Tools/mock-runner/server.ts').status, 0);
+  assert.equal(edit(dir, 'mock-runner/server.ts').status, 0);
 });
 
 test("someone else's copy says nothing while WARN_FORKS is off", () => {
@@ -142,60 +142,62 @@ test('finishing a merge brings in commits already made, so it passes', () => {
   assert.equal(commit(dir).status, 0);
 });
 
-test('what the GPUI app uses from app/ stays open: fixtures, art, rich scripts', () => {
+// What other apps use moved out of app/ on 21 Nov 2026 (the mock runner,
+// the art, Pele, the iPhone kit's Swift files), and app/ links to it. An
+// edit through a link is to the file it leads to, so it isn't frozen; the
+// links themselves, and what's beside them, are.
+test("what moved out of app/ is open through app/'s links, and the links stay frozen", () => {
   const dir = repo(MIKE);
-  stage(dir, 'app/Tests/Fixtures/inbox-urgency-cases.json');
-  stage(dir, 'app/Sources/Threadbear/Resources/Art/librarian.png');
-  stage(dir, 'app/Sources/Threadbear/Resources/Rich/pele.js');
-  assert.equal(commit(dir).status, 0);
+  const put = (file: string) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), 'x\n');
+  };
+  const link = (to: string, at: string) => {
+    fs.mkdirSync(path.dirname(path.join(dir, at)), { recursive: true });
+    fs.symlinkSync(to, path.join(dir, at));
+  };
+  put('mock-runner/server.mjs');
+  put('shared/art/librarian.png');
+  put('ios/ThreadbearKit/Sources/ThreadbearKit/SlashCommands.swift');
+  link('../../mock-runner', 'app/Tools/mock-runner');
+  link('../../../../shared/art', 'app/Sources/Threadbear/Resources/Art');
+  link('../../../../ios/ThreadbearKit/Sources/ThreadbearKit/SlashCommands.swift', 'app/Sources/ThreadbearCore/Threads/SlashCommands.swift');
+  assert.equal(edit(dir, 'app/Tools/mock-runner/server.mjs').status, 0, 'through a folder link');
+  assert.equal(edit(dir, 'app/Tools/mock-runner/fixtures/new/thread.json').status, 0, 'a new file through it');
+  assert.equal(edit(dir, 'app/Sources/Threadbear/Resources/Art/librarian.png').status, 0);
+  assert.equal(edit(dir, 'app/Sources/ThreadbearCore/Threads/SlashCommands.swift').status, 0, 'through a file link');
+  assert.equal(edit(dir, 'app/Sources/ThreadbearCore/Threads/ThreadSections.swift').status, 2, 'beside it');
+  spawnSync('git', ['add', 'app/Tools/mock-runner', 'app/Sources/ThreadbearCore/Threads/SlashCommands.swift'], { cwd: dir });
+  assert.equal(commit(dir).status, 2, 'the links are part of the Swift app');
 });
 
 // The Swift tests of the shared mock runner and its fixtures stay open: a
 // change to the mock's demo data (15 Nov, runners and pools renamed) has to
-// be able to update them. They stay out of --gpui-shared, so check.sh still
-// runs the Swift tests when they change.
-test("the Swift tests of the shared mock runner stay open, and still count as Swift for check.sh", () => {
+// be able to update them, and check.sh runs them when it or they change.
+test("the Swift tests of the shared mock runner stay open, and run when it changes", () => {
   const dir = repo(MIKE);
+  const [paths, filter] = spawnSync(script, ['--mock-tests'], { encoding: 'utf8' }).stdout.trim().split('\n');
   for (const f of ['MockRunnerTests', 'RunnerAuthTests', 'GoldenTranscriptTests']) {
     const file = `app/Tests/ThreadbearCoreTests/${f}.swift`;
     stage(dir, file);
     assert.equal(edit(dir, file).status, 0, file);
-    const shared = new RegExp(spawnSync(script, ['--gpui-shared'], { encoding: 'utf8' }).stdout.trim());
-    assert.doesNotMatch(file, shared, file);
+    assert.match(file, new RegExp(paths), file);
+    assert.match(f, new RegExp(`^(${filter})$`), f);
   }
+  assert.match('mock-runner/server.mjs', new RegExp(paths));
   assert.equal(commit(dir).status, 0);
   stage(dir, 'app/Tests/ThreadbearCoreTests/ThreadSectionsTests.swift');
   assert.equal(commit(dir).status, 2, 'the Swift app\'s other tests are still frozen');
 });
 
-test("what the iPhone app builds from app/ stays open, found from ThreadbearKit's links", () => {
-  const dir = repo(MIKE);
-  stage(dir, 'app/Sources/ThreadbearCore/Threads/SlashCommands.swift');
-  stage(dir, 'app/SentryBinary/Sentry.xcframework/Info.plist');
-  const kit = path.join(dir, 'ios/ThreadbearKit/Sources/ThreadbearKit');
-  fs.mkdirSync(kit, { recursive: true });
-  fs.symlinkSync('../../../../app/Sources/ThreadbearCore/Threads/SlashCommands.swift', path.join(kit, 'SlashCommands.swift'));
-  assert.equal(commit(dir).status, 0);
-  assert.equal(edit(dir, 'app/Sources/ThreadbearCore/Threads/SlashCommands.swift').status, 0);
-  stage(dir, 'app/Sources/ThreadbearCore/Threads/ThreadSections.swift');
-  assert.equal(commit(dir).status, 2, 'a file next to it the kit has no link to is still frozen');
-});
-
-// check.sh's DESKTOP_NEEDS is what the GPUI app's checks read from app/. Each
-// of those has to be open in the freeze, or the GPUI app couldn't change it,
-// and has to not count as a Swift change, or it would build the Swift app.
-test("everything the GPUI app's checks read from app/ is shared, not frozen", () => {
+// check.sh's DESKTOP_NEEDS is what the GPUI app's checks read from outside
+// desktop/. None of it is in the frozen app's folders any more.
+test("nothing the GPUI app's checks read is in app/ or dock/", () => {
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../..');
   const check = fs.readFileSync(path.join(root, 'check.sh'), 'utf8');
   const needs = check.match(/^DESKTOP_NEEDS='([^']*)'/m)?.[1];
   assert.ok(needs, 'DESKTOP_NEEDS in check.sh');
-  const shared = new RegExp(spawnSync(script, ['--gpui-shared'], { encoding: 'utf8' }).stdout.trim());
-  const fromApp = needs.split('|').filter((p) => p.startsWith('^app/'));
-  assert.ok(fromApp.length >= 3);
-  for (const p of fromApp) {
-    const example = p.slice(1).replace(/\\\./g, '.') + 'example';
-    assert.match(example, shared, p);
-  }
+  assert.deepEqual(needs.split('|').filter((p) => /^\^(app|dock)\//.test(p)), []);
 });
 
 // Codex's review, 12 Nov: each of these got past the first version.
@@ -225,7 +227,6 @@ test("an edit's path counts however it's written", () => {
   assert.equal(run(`${dir}/desktop/../app/Sources/New.swift`), 2, 'through ..');
   assert.equal(run(`${fs.realpathSync(dir)}/app/Sources/New.swift`), 2, 'through the real path');
   assert.equal(run(`${dir}/app/../desktop/new.rs`), 0, 'out of app/ through ..');
-  assert.equal(run(`${dir}/app/Tools/realdrag.swift`), 0, 'a test tool the GPUI specs compile');
   assert.equal(run('/tmp/elsewhere/app/x.swift'), 0, 'another folder');
 });
 

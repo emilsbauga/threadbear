@@ -1,6 +1,6 @@
 #!/bin/sh
 # The box image's entrypoint (runner/box/Dockerfile): the runner in box mode
-# for one thread of a virtual runner (docs/virtual-runners.md; docs/protocol.md,
+# for one thread of a virtual runner (docs/virtual-runners.md; docs/protocol/boxes.md,
 # "Box mode"). The backend's service starts the machine with only
 # THREADBEAR_SYNC_URL, THREADBEAR_BOX_BOOT and THREADBEAR_MACHINE_ID_ENV set,
 # and no command, so this is what runs.

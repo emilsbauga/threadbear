@@ -7,7 +7,7 @@
 // the thread-less ones its process gets, and its subagents' traffic marked
 // with `from.childThreadId`; and it says which Codex turn answers which of
 // the runner's messages (startingTurn, turnAccepted). See "B. Codex events
-// and images" in docs/step4-plan.md.
+// and images" in docs/archive/step4-plan.md.
 import path from 'node:path';
 import type { EventBody, Hunk, ImageRef, PlanEntry, ToolKind, UsageResets, UsageWindow } from '../../protocol.ts';
 import { isEffortLevel } from '../../protocol.ts';

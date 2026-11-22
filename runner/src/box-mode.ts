@@ -1,4 +1,4 @@
-// Box mode (docs/virtual-runners.md, decision 1; docs/protocol.md, "Box
+// Box mode (docs/virtual-runners.md, decision 1; docs/protocol/boxes.md, "Box
 // mode"): the whole runner, inside one provider machine (a Fly Machine) for
 // one thread on a virtual runner. The provider starts it with only
 // THREADBEAR_SYNC_URL and THREADBEAR_BOX_BOOT (a boot token, single use, 10

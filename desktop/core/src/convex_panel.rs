@@ -1,4 +1,4 @@
-// The Convex panel's data and rules, with nothing drawn (docs/protocol.md,
+// The Convex panel's data and rules, with nothing drawn (docs/protocol/patches.md,
 // "The Convex panel"): what the runner answers, the one sign-in page the app
 // will open, and the script that hands Convex's embedded dashboard its deploy
 // key. A port of the Swift app's ConvexDeployment, ConvexDeploymentChoice,
@@ -78,14 +78,24 @@ pub struct Choices {
 /// its lookup failed), so the menu always has the panel's own.
 pub fn with_configured(mut listed: Vec<Choice>, configured: &Deployment) -> Vec<Choice> {
     if !listed.iter().any(|c| c.deployment == configured.deployment) {
-        listed.insert(0, Choice { deployment: configured.deployment.clone(), deployment_url: configured.deployment_url.clone(), label: "Configured".into() });
+        listed.insert(
+            0,
+            Choice {
+                deployment: configured.deployment.clone(),
+                deployment_url: configured.deployment_url.clone(),
+                label: "Configured".into(),
+            },
+        );
     }
     listed
 }
 
 /// The menu's label for the deployment shown.
 pub fn label<'a>(choices: &'a [Choice], selected: &str) -> &'a str {
-    choices.iter().find(|c| c.deployment == selected).map_or("Configured", |c| c.label.as_str())
+    choices
+        .iter()
+        .find(|c| c.deployment == selected)
+        .map_or("Configured", |c| c.label.as_str())
 }
 
 /// `panels.convexKey`'s answer. The key is admin of its deployment, so it's
@@ -173,7 +183,11 @@ pub fn sign_in_page(url: &str) -> Option<String> {
         Some(&"") => &tail[..tail.len() - 1],
         _ => &tail[..],
     };
-    if !names.iter().all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')) {
+    if !names.iter().all(|s| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }) {
         return None;
     }
     match crate::open_policy::link_kind(url) {
@@ -185,7 +199,10 @@ pub fn sign_in_page(url: &str) -> Option<String> {
 /// The selected deployment's full dashboard, for Open in browser. None for a
 /// name that isn't one (the runner sends it).
 pub fn browser_url(deployment: &str) -> Option<String> {
-    let fine = !deployment.is_empty() && deployment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let fine = !deployment.is_empty()
+        && deployment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     fine.then(|| format!("https://dashboard.convex.dev/d/{deployment}"))
 }
 
@@ -210,7 +227,10 @@ pub fn credentials_script(key: &Key, origin: &str) -> String {
 /// without the path (`https://dashboard-embedded.convex.dev`).
 pub fn origin_of(url: &str) -> String {
     match url.split_once("://") {
-        Some((scheme, rest)) => format!("{scheme}://{}", &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]),
+        Some((scheme, rest)) => format!(
+            "{scheme}://{}",
+            &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]
+        ),
         None => url.to_owned(),
     }
 }
@@ -221,7 +241,13 @@ mod tests {
 
     #[test]
     fn opens_only_convexs_own_sign_in_page() {
-        for good in ["https://auth.convex.dev/device", "https://auth.convex.dev/device/", "https://auth.convex.dev/device/ABCD-1234", "https://auth.convex.dev:443/device?user_code=AB12", "https://auth.convex.dev/device#x"] {
+        for good in [
+            "https://auth.convex.dev/device",
+            "https://auth.convex.dev/device/",
+            "https://auth.convex.dev/device/ABCD-1234",
+            "https://auth.convex.dev:443/device?user_code=AB12",
+            "https://auth.convex.dev/device#x",
+        ] {
             assert_eq!(sign_in_page(good).as_deref(), Some(good), "{good}");
         }
         for bad in [
@@ -242,55 +268,118 @@ mod tests {
         ] {
             assert_eq!(sign_in_page(bad), None, "{bad}");
         }
-        assert_eq!(sign_in_page(&format!("https://auth.convex.dev/device/{}", "a".repeat(2_100))), None);
+        assert_eq!(
+            sign_in_page(&format!(
+                "https://auth.convex.dev/device/{}",
+                "a".repeat(2_100)
+            )),
+            None
+        );
     }
 
     #[test]
     fn a_login_with_another_page_stops_saying_so() {
-        let fine = Login { state: "waiting".into(), url: Some("https://auth.convex.dev/device".into()), code: Some("AB-12".into()), message: None };
-        assert_eq!(fine.page().as_deref(), Some("https://auth.convex.dev/device"));
+        let fine = Login {
+            state: "waiting".into(),
+            url: Some("https://auth.convex.dev/device".into()),
+            code: Some("AB-12".into()),
+            message: None,
+        };
+        assert_eq!(
+            fine.page().as_deref(),
+            Some("https://auth.convex.dev/device")
+        );
         assert_eq!(fine.refused_page(), None);
-        let other = Login { url: Some("https://example.com/device".into()), ..fine.clone() };
+        let other = Login {
+            url: Some("https://example.com/device".into()),
+            ..fine.clone()
+        };
         assert_eq!(other.page(), None);
-        assert!(other.refused_page().unwrap().contains("isn't Convex's (auth.convex.dev)"));
+        assert!(other
+            .refused_page()
+            .unwrap()
+            .contains("isn't Convex's (auth.convex.dev)"));
         let none = Login { url: None, ..fine };
         assert_eq!(none.refused_page(), None);
     }
 
     #[test]
     fn the_menu_always_has_the_configured_deployment() {
-        let configured = Deployment { deployment: "happy-otter-123".into(), deployment_url: "https://happy-otter-123.convex.cloud".into(), ..Default::default() };
-        let listed = vec![Choice { deployment: "busy-bear-456".into(), deployment_url: "https://busy-bear-456.convex.cloud".into(), label: "Production".into() }];
-        let choices = with_configured(listed.clone(), &configured);
+        let configured = Deployment {
+            deployment: "happy-otter-123".into(),
+            deployment_url: "https://happy-otter-123.convex.cloud".into(),
+            ..Default::default()
+        };
+        let listed = vec![Choice {
+            deployment: "busy-bear-456".into(),
+            deployment_url: "https://busy-bear-456.convex.cloud".into(),
+            label: "Production".into(),
+        }];
+        let choices = with_configured(listed, &configured);
         assert_eq!(choices.len(), 2);
         assert_eq!(choices[0].label, "Configured");
         assert_eq!(label(&choices, "busy-bear-456"), "Production");
         assert_eq!(label(&choices, "gone-away-1"), "Configured");
-        let both = with_configured(vec![Choice { deployment: "happy-otter-123".into(), deployment_url: String::new(), label: "Development".into() }], &configured);
+        let both = with_configured(
+            vec![Choice {
+                deployment: "happy-otter-123".into(),
+                deployment_url: String::new(),
+                label: "Development".into(),
+            }],
+            &configured,
+        );
         assert_eq!(both.len(), 1);
         assert_eq!(label(&both, "happy-otter-123"), "Development");
     }
 
     #[test]
     fn the_key_stays_out_of_debug_and_in_the_script() {
-        let key = Key { deployment: "happy-otter-123".into(), deployment_url: "https://happy-otter-123.convex.cloud".into(), admin_key: "prod:secret|abc".into() };
+        let key = Key {
+            deployment: "happy-otter-123".into(),
+            deployment_url: "https://happy-otter-123.convex.cloud".into(),
+            admin_key: "prod:secret|abc".into(),
+        };
         assert_eq!(format!("{key:?}"), "Key(happy-otter-123)");
         let script = credentials_script(&key, &origin_of(EMBEDDED));
-        assert!(script.contains("if (location.origin !== \"https://dashboard-embedded.convex.dev\") return;"), "{script}");
-        assert!(script.contains("\"adminKey\":\"prod:secret|abc\""), "{script}");
+        assert!(
+            script.contains(
+                "if (location.origin !== \"https://dashboard-embedded.convex.dev\") return;"
+            ),
+            "{script}"
+        );
+        assert!(
+            script.contains("\"adminKey\":\"prod:secret|abc\""),
+            "{script}"
+        );
         assert!(script.contains("e.source === window"), "{script}");
         // A quote in what the runner sent can't end the string early.
-        let odd = Key { admin_key: "a'b\"c</script>".into(), ..key };
+        let odd = Key {
+            admin_key: "a'b\"c</script>".into(),
+            ..key
+        };
         assert!(credentials_script(&odd, "https://x").contains(r#""adminKey":"a'b\"c</script>""#));
     }
 
     #[test]
     fn the_browser_gets_only_a_deployments_dashboard() {
-        assert_eq!(browser_url("happy-otter-123").as_deref(), Some("https://dashboard.convex.dev/d/happy-otter-123"));
+        assert_eq!(
+            browser_url("happy-otter-123").as_deref(),
+            Some("https://dashboard.convex.dev/d/happy-otter-123")
+        );
         assert_eq!(browser_url("../../evil"), None);
         assert_eq!(browser_url(""), None);
-        assert_eq!(origin_of("http://127.0.0.1:4000/dash?x=1"), "http://127.0.0.1:4000");
-        let deployment = Deployment { project: Some("walkies".into()), team: Some("alex".into()), ..Default::default() };
-        assert_eq!(deployment.project_tip().as_deref(), Some("Convex project walkies, team alex"));
+        assert_eq!(
+            origin_of("http://127.0.0.1:4000/dash?x=1"),
+            "http://127.0.0.1:4000"
+        );
+        let deployment = Deployment {
+            project: Some("walkies".into()),
+            team: Some("alex".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            deployment.project_tip().as_deref(),
+            Some("Convex project walkies, team alex")
+        );
     }
 }

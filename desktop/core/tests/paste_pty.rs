@@ -69,7 +69,10 @@ except OSError:
 fn run(bytes: &[u8]) -> Option<String> {
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let started = Instant::now();
-    let out = Command::new("python3").args(["-I", "-c", HARNESS, &hex]).output().ok()?;
+    let out = Command::new("python3")
+        .args(["-I", "-c", HARNESS, &hex])
+        .output()
+        .ok()?;
     assert!(started.elapsed() < Duration::from_secs(30));
     Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
@@ -77,8 +80,16 @@ fn run(bytes: &[u8]) -> Option<String> {
 /// What the Terminal sent before the fix: only ESC and CSI taken out.
 fn old_bytes(text: &str) -> Vec<u8> {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
-    let inner: String = text.chars().filter(|c| *c != '\u{1b}' && *c != '\u{9b}').collect();
-    [b"\x1b[200~".as_slice(), inner.as_bytes(), b"\x1b[201~".as_slice()].concat()
+    let inner: String = text
+        .chars()
+        .filter(|c| *c != '\u{1b}' && *c != '\u{9b}')
+        .collect();
+    [
+        b"\x1b[200~".as_slice(),
+        inner.as_bytes(),
+        b"\x1b[201~".as_slice(),
+    ]
+    .concat()
 }
 
 #[test]
@@ -91,18 +102,27 @@ fn a_pasted_signal_character_cant_run_the_paste() {
         match run(&old_bytes(&text)).as_deref() {
             Some("RAN") => {}
             other => {
-                eprintln!("skipping {:?}: the old bytes didn't run here ({other:?})", signal);
+                eprintln!(
+                    "skipping {:?}: the old bytes didn't run here ({other:?})",
+                    signal
+                );
                 continue;
             }
         }
         tried += 1;
-        assert_eq!(run(&paste_bytes(&text, true)).as_deref(), Some("HELD"), "{signal:?} then a line break ran the paste");
+        assert_eq!(
+            run(&paste_bytes(&text, true)).as_deref(),
+            Some("HELD"),
+            "{signal:?} then a line break ran the paste"
+        );
     }
     // Linux check hosts have bash 5 and Python, so there a run that tried
     // nothing is a broken harness, not a pass. macOS's own bash (3.2) has no
     // bracketed paste, so a Mac without a newer one skips.
     if tried == 0 {
-        assert!(!cfg!(target_os = "linux"), "no case could be played here, so nothing was checked");
+        if cfg!(target_os = "linux") {
+            panic!("no case could be played here, so nothing was checked");
+        }
         eprintln!("skipped: no bash with bracketed paste and a pty that runs the old bytes here");
     }
 }

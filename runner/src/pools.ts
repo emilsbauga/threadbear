@@ -1,4 +1,4 @@
-// Pools (docs/protocol.md, "Pools"): a named, ordered list of logins of any
+// Pools (docs/protocol/settings.md, "Pools"): a named, ordered list of logins of any
 // provider. A thread in a pool runs each turn on whichever of its logins
 // has room, and moves when the one it's on runs dry. Everything here is
 // pure, so the rules can be tested without a runner; runner.ts calls it.
@@ -314,7 +314,7 @@ export function findPool(pools: Pool[], q: string): Pool | undefined {
 
 // ---------------------------------------------------------- shared pools
 
-// Pools shared between runners through the backend (docs/protocol.md,
+// Pools shared between runners through the backend (docs/protocol/settings.md,
 // "Pools", "Shared between runners"). Login ids are each runner's own
 // (claude-main is a different login on each machine), so a shared pool
 // names its logins by provider and email; one with no email known is

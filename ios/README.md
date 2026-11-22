@@ -42,11 +42,23 @@ directly, so it works with the Mac asleep: whatever you send waits in
   `-ThreadbearCompose <text>`, `-ThreadbearSearch <text>`, `-ThreadbearLong` for a very long thread, "long", `-ThreadbearSecret` for one waiting on a secret card, "secret", `-ThreadbearShortInbox` for one row in the inbox and one of each put away, `-ThreadbearEmptyInbox` for none, `-ThreadbearFinishSoon` for the running thread's turn to end after 14 s, `-ThreadbearManyThreads` for a long inbox with more starred and running too, `-ThreadbearScrollTo <threadId>` to start with the inbox scrolled to that row (with `-foldedSections "(hibernating,archived)"` for Running open: the headings sticking), `-ThreadbearSlowAnswers` for answers to cards to take 3 s to land, `-ThreadbearRefuseAnswers` for them then to be refused), on a 6.9" iPhone, so they're App Store sized.
 - `scripts/sim.sh [boot|stop]`: this worktree's own simulator, for
   `sim-shots.sh` and any repro of your own. It prints the id; use that
-  rather than picking a simulator from `simctl list`, and `stop` it when
-  you're done. It refuses to boot a third.
+  rather than picking a simulator from `simctl list`, which may be another
+  thread's (on 1 Nov one thread installed over another's repro and shut it
+  down, and nothing said so), and `stop` it when you're done. It refuses to
+  boot a third.
 - `appstore/` and `scripts/appstore-*`: the App Store listing and release,
   in `appstore/RELEASE.md`.
-- `scripts/install-phone.sh`: build, install over wifi, launch.
+- `scripts/install-phone.sh`: build, install over wifi, launch. After
+  landing an `ios/` change, an agent in Mike's copy installs it on his phone
+  itself, without asking, so he always has the latest to look at:
+  `taskpolicy -b ios/scripts/install-phone.sh` from the landed commit. It
+  takes ten minutes or more, so run it in the background, and don't
+  `tb land` or rebase while it builds: files changing under the compile
+  broke the first try. Say in the reply that it's installed, or why it
+  couldn't be (the phone off the wifi, asleep, or needing a restart for
+  "cryptexd"). "Unable to launch ... could not be unlocked" at the end is
+  fine: it's installed, just not opened. That's his own phone only:
+  uploading to App Store Connect still needs him to ask.
 - `scripts/make-icon.swift`: the icon, from the same mascot as the Mac's.
 
 ## The demo
@@ -67,9 +79,9 @@ the pairing QR code, which holds no token (Daybreak finding 127, 15 Nov
 `url=<https://….convex.cloud>&code=<tbp_…>&key=<runnerId>:<key>`: not a
 link, so no app can claim it, with a code that works once for ten minutes.
 Scan the code (`PairView`) reads it and trades the code for a token with
-`tokens:claim` (docs/protocol.md "Devices"). The `key` is the runner's
+`tokens:claim` (docs/protocol/moves.md "Devices"). The `key` is the runner's
 secret-box key, without which the phone pairs but won't answer secret
-cards (docs/protocol.md, "Trusting the key"). The same tab lists paired
+cards (docs/protocol/threads.md, "Trusting the key"). The same tab lists paired
 phones with Revoke.
 
 By hand, `swift ios/scripts/pair-qr.swift` makes a code with `npx convex

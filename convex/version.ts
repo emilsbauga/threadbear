@@ -22,7 +22,7 @@
 //    the url a picture in file storage the runner uploads (sync:iconUploadUrl,
 //    sync:setProjectIcon); a runner before 5 sends projects without icons.
 // 6: sync:issueToken, sync:listTokens and sync:revokeToken, so the Mac app
-//    pairs phones and signs browsers in through the runner (docs/protocol.md,
+//    pairs phones and signs browsers in through the runner (docs/protocol/moves.md,
 //    "Devices") with no Convex CLI; tokens carry a kind.
 // 7: sharing (docs/website.md, "Sharing"). Thread rows carry `share`
 //    ({ access, slug, people? }), and share:view, share:sendCode and
@@ -34,7 +34,7 @@
 //    thread's pictures go to file storage (sync:addShareImage), shown by
 //    share:view. A runner sends `share` only to a backend of 8 or later.
 // 9: schedules can live here rather than in each runner's schedules.json
-//    (step 6; docs/protocol.md, Schedules, "Runners"): sync:schedules,
+//    (step 6; docs/protocol/projects.md, Schedules, "Runners"): sync:schedules,
 //    sync:saveSchedule, sync:deleteSchedule, sync:adoptSchedules,
 //    sync:claimSchedule, sync:releaseSchedule, sync:scheduleRan and
 //    sync:requestScheduleRun. A runner moves its schedules here only from 9.
@@ -132,7 +132,7 @@
 //    can, so the phone's row says "Waiting for connection", not Failed. A
 //    runner sends it only to a backend of 34 or later; an older phone
 //    ignores it and shows Failed.
-// 35: secrets (docs/protocol.md, "Secrets"). A thread row's
+// 35: secrets (docs/protocol/threads.md, "Secrets"). A thread row's
 //    pendingApproval can be `kind: "secret"` with the card's label, reason
 //    and the runner's public key; phone:secret queues the phone's sealed
 //    answer (or a decline) as a respond command, and finishCommand drops
@@ -150,20 +150,20 @@
 //    a thread's pictures, with phone:messages' noImages. A runner uses
 //    upsertAccounts only with a backend of 37 or later and ignores firstSeen
 //    from none; an older phone goes on using phone:thread.
-// 38: pools shared between runners (docs/protocol.md, "Pools"): the
+// 38: pools shared between runners (docs/protocol/settings.md, "Pools"): the
 //    `pools` table, sync:pools, sync:savePools and sync:adoptPools. A runner
 //    follows it only with a backend of 38 or later; before, each keeps its
 //    own runner.json pools.
 // 39: sync:sharedUsage, every runner's latest usage reading of each login
 //    with an email, so a login signed in on several machines shows the
-//    newest reading on each (docs/protocol.md, Accounts, "Shared
+//    newest reading on each (docs/protocol/settings.md, Accounts, "Shared
 //    readings"). A runner subscribes only with a backend of 39 or later.
 // 40: projectThreads, a row per thread per project kept by the thread
 //    writes, and phone:projectThreads, a project's threads newest first,
 //    archived ones included, so the website's project page can list all of
 //    them. The backend links the threads it already has by itself
 //    (sync:linkProjects); nothing changes on the runner.
-// 41: runner keys (docs/protocol.md, "Runner keys"). Besides the owner
+// 41: runner keys (docs/protocol/keys.md, "Runner keys"). Besides the owner
 //    key (RUNNER_KEY), a key per runner (runnerKeys, sync:addRunnerKey),
 //    which acts as that runnerId alone: its own heartbeat, threads,
 //    messages, schedules, commands and Pocket cards, and none of the
@@ -178,14 +178,14 @@
 //    ignore.
 // 42: phone:update's archive takes a verdict ("worked", "didntWork" or
 //    "notNeeded"), the pick from the done card's Archive menu, which the
-//    runner keeps as the thread's archiveVerdict (docs/protocol.md, "Who
+//    runner keeps as the thread's archiveVerdict (docs/protocol/threads.md, "Who
 //    archived a thread"). A phone sends it only to a backend of 42 or
 //    later; an older runner ignores it and just archives.
 // 43: phone:threadsAt and phone:threadsSince, a list read once and then only
 //    the rows written since. Thread rows carry updatedMs. An older phone goes
 //    on using phone:threads, and an older runner's writes go through the same
 //    upsertThreads, which stamps them.
-// 44: other runners' threads through the backend (docs/protocol.md, "Other
+// 44: other runners' threads through the backend (docs/protocol/runners.md, "Other
 //    runners' threads through the backend"): relay.ts, owner only, for the
 //    main Mac's runner to read another runner's thread (remoteTail,
 //    remoteMessages, remoteThread) and ask it to act (queueCommand,
@@ -227,7 +227,7 @@
 //    before. phone:project still returns them whole.
 // 51: an owned schedule can carry `check`, a shell command its runner runs
 //    before each run. An older runner sends none.
-// 52: full sync (docs/full-convex.md step 4). eventBodies, sync:appendBodies,
+// 52: full sync (docs/archive/full-convex.md step 4). eventBodies, sync:appendBodies,
 //    sync:remoteBody and phone:eventBody: a tool's output, input and diffs under
 //    the seq of its row, only from a runner with sync.full on. heldPictures,
 //    phone:requestPicture, phone:heldPicture and a `picture` command: one tool
@@ -244,7 +244,7 @@
 // 54: a runner key's archived threads stay in threadIndex (within its cap,
 //    archived rows giving way first), so the main Mac's Archived list has
 //    other machines' archived threads and can open and unarchive them
-//    (docs/protocol.md, "Other runners' threads"). A runner sends the
+//    (docs/protocol/runners.md, "Other runners' threads"). A runner sends the
 //    archived rows an older backend dropped once, on first hearing 54.
 // 55: an owned schedule can carry `checkTimeoutSecs`, how long its check may
 //    take (60 s without). An older runner sends none.
@@ -260,7 +260,7 @@
 //    the same runner order the phone sets (API 56), for the Mac's Settings >
 //    Runners. An older runner sends the Mac no order, and its Settings list
 //    the runners as before.
-// 59: reply buttons (docs/protocol.md, "Reply buttons"). A message row can
+// 59: reply buttons (docs/protocol/events.md, "Reply buttons"). A message row can
 //    carry `buttons`, the state of the buttons its text links ([title](button:<id>)),
 //    which the runner sends again when one is pressed (appendMessages patches
 //    just them); phone:messages returns them, and phone:press queues a `press`
@@ -289,7 +289,7 @@
 //    weren't queued, and sync:pruneFiles any left after a day. A runner
 //    sends pictures to another runner only from 63: an older backend would
 //    drop them and send the words alone.
-// 64: moving a thread to another runner (docs/protocol.md, "Moving a thread
+// 64: moving a thread to another runner (docs/protocol/moves.md, "Moving a thread
 //    to another runner"; convex/moves.ts). The threadMoves table, startMove
 //    and cancelMove for the main Mac, moves and each step for the move's
 //    own runners, and move chunks through /runner/upload outside a runner
@@ -343,7 +343,7 @@
 //    for another runner's. A runner sends the ids only from 75, as an
 //    older backend hides the member from the other runners' keys.
 // 76: threads rows carry `review`, another lab's review ledger from the
-//    last turn's turn.completed (docs/protocol.md, "Review by another
+//    last turn's turn.completed (docs/protocol/needs-you.md, "Review by another
 //    lab"), and `cardTurn`, the turn it and `looseEnds` are from, so
 //    another Mac draws them as this runner's own Mac does. A plan's message
 //    row can carry `planDecision` (go or revise), sent again once it's
@@ -469,4 +469,13 @@
 //    only to a backend of 95 or later.
 // 96: combined fork capabilities: Backlog, recap, durable external intake and files,
 //    alongside upstream APIs through 95. Earlier upstream versions do not imply these.
-export const API_VERSION = 96;
+// 96: a threadIndex row (sync:setThreadIndex) takes `request`, Mike's first
+//    message to the thread as one line (docs/protocol/threads.md, "What Mike first
+//    asked"), for the Mac's Feed of another runner's threads. A runner sends
+//    it only to a backend of 96 or later.
+// 97: an owned schedule can carry `provider`, with poolId: the kind of
+//    login a pool of several kinds starts its threads on, as the Mac's
+//    picker had it. A runner sends it only to a backend of 97 or later; an
+//    older runner starts the thread on the model's kind.
+// 98: combined fork API with the request field and schedule provider.
+export const API_VERSION = 98;

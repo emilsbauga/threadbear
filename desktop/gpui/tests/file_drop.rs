@@ -2,9 +2,9 @@
 
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AppContext as _, Context, ExternalPaths, FileDropEvent, InputEvent as _,
-    InteractiveElement as _, IntoElement, Keystroke, Render, Styled, TestAppContext,
-    TouchEvent, Window, div, point, px,
+    div, point, px, AppContext as _, Context, ExternalPaths, FileDropEvent, InputEvent as _,
+    InteractiveElement as _, IntoElement, Keystroke, Render, Styled, TestAppContext, TouchEvent,
+    Window,
 };
 use std::{cell::Cell, path::PathBuf, rc::Rc};
 
@@ -13,7 +13,9 @@ struct FileDropTarget(Rc<Cell<usize>>);
 impl Render for FileDropTarget {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let drops = self.0.clone();
-        div().size_full().on_drop(move |_: &ExternalPaths, _, _| drops.set(drops.get() + 1))
+        div()
+            .size_full()
+            .on_drop(move |_: &ExternalPaths, _, _| drops.set(drops.get() + 1))
     }
 }
 
@@ -50,7 +52,8 @@ fn file_drop_after_keyboard_input_reaches_its_target() {
             window.dispatch_event(event.to_platform_input(), cx);
             assert!(window.last_input_was_keyboard());
         }
-    }).unwrap();
+    })
+    .unwrap();
 }
 
 #[test]
@@ -77,5 +80,6 @@ fn file_drop_preserves_touch_input_mode() {
             assert!(window.last_input_was_touch());
         }
         assert_eq!(drops.get(), 1);
-    }).unwrap();
+    })
+    .unwrap();
 }

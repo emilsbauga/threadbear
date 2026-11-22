@@ -1,4 +1,4 @@
-// One small-model call on a Claude login (docs/protocol.md, "Settings and
+// One small-model call on a Claude login (docs/protocol/settings.md, "Settings and
 // models"): the official CLI in print mode, stripped down to the model
 // alone. Nothing of Mike's setup loads (no tools, MCP servers, settings,
 // hooks, CLAUDE.md or skills), so a title costs a few hundred tokens of

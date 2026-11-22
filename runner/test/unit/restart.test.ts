@@ -504,7 +504,7 @@ test('background shells and subagents hold an idle restart until they finish', a
 test('when background work ends, the restart also waits for the turn the CLI starts to read the result', async () => {
   const h = makeHarness();
   const { r, state } = withRestarter(h);
-  const { thread } = create(h);
+  create(h);
   const s = h.adapter.last;
   s.init();
   s.out({ kind: 'tasks', tasks: TASKS });
@@ -798,7 +798,7 @@ test('a snooze that ends while the runner is down still sends the queued message
 test('a thread someone has written in since it asked is not resumed over them', async () => {
   const h = makeHarness();
   const { r } = withRestarter(h);
-  const other = create(h).thread;
+  create(h);
   const so = h.adapter.last;
   so.init();
   const { thread } = create(h);
@@ -983,7 +983,7 @@ test('every CLI gets THREADBEAR_THREAD_ID, THREADBEAR_HOME and THREADBEAR_RUNNER
   assert.equal(env.THREADBEAR_THREAD_ID, thread.id);
   assert.equal(env.THREADBEAR_HOME, h.home);
   assert.equal(env.THREADBEAR_RUNNER_HOME, h.home);
-  // Where a picture goes to be on the thread's shared page (docs/protocol.md, "Sharing").
+  // Where a picture goes to be on the thread's shared page (docs/protocol/runners.md, "Sharing").
   assert.equal(env.THREADBEAR_MEDIA_DIR, path.join(h.home, 'threads', thread.id, 'media'));
   assert.match(env.THREADBEAR_RUNNER_VERSION, /^\d+\.\d+\.\d+\+/);
   // The Node it runs on, for the repo's scripts (scripts/find-node.sh).
@@ -1087,4 +1087,21 @@ test('runner.status names the release launch.mjs went back from, while this one 
   assert.equal(withRestarter(h, '0.1.0+A', { release: 'A' }).r.status().rolledBack, undefined);
   // From source, there are no releases.
   assert.equal(withRestarter(h, '0.1.0+source', { release: undefined }).r.status().rolledBack, undefined);
+});
+
+// main.ts asks for this restart itself after an uncaught error, with no
+// release: the handover's notice mustn't promise a new one.
+for (const release of [undefined, '20261121T000000Z-abc1234']) test(`a handover's notice says "onto a new release" only when the request named one (${release ? 'named' : 'none'})`, async () => {
+  const h = makeHarness();
+  const kept: string[][] = [];
+  const r = new Restarter({ runner: h.runner, home: h.home, clock: h.clock, log: nullLogger, version: '0.1.0+old', release: 'old', restart: () => assert.fail('a busy thread hands over rather than restarting'), canHandOver: () => true, handOver: (keeps) => kept.push(keeps) });
+  const { thread } = create(h);
+  h.adapter.last.init();
+  const res = r.request({ when: 'idle', reason: 'An unexpected error (see the runner log)', ...(release ? { release } : {}) });
+  assert.deepEqual(res.handover, { keeps: [thread.id] });
+  await tick();
+  assert.deepEqual(kept, [[thread.id]]);
+  const n = notices(h).at(-1)!;
+  assert.ok(n.startsWith('The runner is restarting'), 'the apps read this prefix as a restart under way');
+  assert.equal(n.includes('onto a new release'), Boolean(release), n);
 });

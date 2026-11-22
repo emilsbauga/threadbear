@@ -31,14 +31,20 @@ pub fn drop_first(s: &str, n: usize) -> &str {
 /// a "\r\n" pair is one Swift character and two of these, and the empty
 /// piece between them is dropped by the callers just as Swift drops empties.
 pub fn is_newline(c: char) -> bool {
-    matches!(c, '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}')
+    matches!(
+        c,
+        '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 /// `CharacterSet.whitespaces`, as Core Foundation defines it: tab, the
 /// Unicode space separators and, oddly, U+200B ZERO WIDTH SPACE (a separator
 /// when the set was written, and still in Foundation's table).
 pub fn is_cf_whitespace(c: char) -> bool {
-    matches!(c as u32, 0x20 | 0x09 | 0xA0 | 0x1680 | 0x2000..=0x200B | 0x202F | 0x205F | 0x3000)
+    matches!(
+        c as u32,
+        0x20 | 0x09 | 0xA0 | 0x1680 | 0x2000..=0x200B | 0x202F | 0x205F | 0x3000
+    )
 }
 
 /// `CharacterSet.newlines`.
@@ -98,7 +104,11 @@ pub fn last_path_component(path: &str) -> &str {
 pub fn deleting_last_path_component(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
-        return if path.is_empty() { String::new() } else { "/".to_string() };
+        return if path.is_empty() {
+            String::new()
+        } else {
+            "/".to_string()
+        };
     }
     match trimmed.rfind('/') {
         Some(0) => "/".to_string(),
@@ -127,7 +137,9 @@ pub fn home_directory() -> String {
 
 fn home_directory_as_reported() -> String {
     // Windows sets USERPROFILE; HOME only exists there under Git Bash.
-    std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default()
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default()
 }
 
 /// A Windows path (`C:\\x\\y`, `\\\\server\\share`) with `/` between its
@@ -146,7 +158,11 @@ pub fn forward_slashes(path: &str) -> String {
 /// Whether a path is a Windows one: it starts with a drive or a server share.
 pub fn is_windows_path(path: &str) -> bool {
     let bytes = path.as_bytes();
-    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/')) || path.starts_with("\\\\")
+    (bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/'))
+        || path.starts_with("\\\\")
 }
 
 #[cfg(test)]
@@ -155,9 +171,18 @@ mod windows_path_tests {
 
     #[test]
     fn windows_paths_get_forward_slashes_and_others_stay_as_they_are() {
-        assert_eq!(forward_slashes(r"C:\work\site\docs\a.md"), "C:/work/site/docs/a.md");
-        assert_eq!(forward_slashes(r"\\server\share\a.md"), "//server/share/a.md");
-        assert_eq!(forward_slashes(r"/Users/alex/odd\name.txt"), r"/Users/alex/odd\name.txt");
+        assert_eq!(
+            forward_slashes(r"C:\work\site\docs\a.md"),
+            "C:/work/site/docs/a.md"
+        );
+        assert_eq!(
+            forward_slashes(r"\\server\share\a.md"),
+            "//server/share/a.md"
+        );
+        assert_eq!(
+            forward_slashes(r"/Users/alex/odd\name.txt"),
+            r"/Users/alex/odd\name.txt"
+        );
         assert_eq!(forward_slashes(r"notes\today.md"), r"notes\today.md");
     }
 }

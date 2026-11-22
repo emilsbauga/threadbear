@@ -464,6 +464,13 @@ Its box and its save are gone: the
 thread can't come back, and what's sent
 to it fails saying so.
   end note
+  state "purged" as purged
+  purged : at
+  note right of purged
+Gone for good, with its thread and its
+runner: the row is deleted in the step
+that put it here.
+  end note
   state "failed" as failed
   failed : at, error
   note right of failed
@@ -558,10 +565,12 @@ kept, and no key works for it.
   gone --> waking : WAKE (server) / wake
   gone --> expired : EXPIRE (server) / expire
   expired --> expired : DESTROYED (server) / forgetProvider
+  expired --> purged : PURGE (server) / purged
   failed --> waking : WAKE (server) / wake
   failed --> failed : CREATED(providerBoxId, attempt?) (server) [notStale] / noteBox
   failed --> shelved : ARCHIVE (owner) [1. holdsWork] / shelve
   failed --> destroying : ARCHIVE (owner) [else] / archive
+  purged --> [*]
 ```
 
 How a row is born:
@@ -703,6 +712,7 @@ From `gone`:
 From `expired`:
 
 - `DESTROYED (server)` stays put. A kept box it had is deleted too.
+- `PURGE (server)` → `purged`. Its virtual runner's deleteAfterDays more have passed, and the provider has no box of it left: its thread and runner rows have gone (boxService.ts purgeExpiredBoxes), and this row goes in the same step.
 
 From `failed`:
 
@@ -751,3 +761,62 @@ From `dead`:
 
 - `SET (owner)` → `valid`. Mike sets a new token: the boxes waiting on the login start, and boxes waiting after a refusal fetch it and carry on.
 - `REFUSED(setAt) (boxRunner)` stays put. Another box says the same: it stays dead.
+
+## relayInstall
+
+This deployment's install with the push relay, which sends its Android phones' notifications, and its iPhones' when it has no Apple key of its own: registered by one send at a time, as each registration replaces the install's key, and again when the relay refuses the key.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  state "registering" as registering
+  registering : attempt, giveUpAt
+  note right of registering
+A send is registering with the relay.
+Other sends wait for its key rather than
+register too, which would replace it.
+  end note
+  state "registered" as registered
+  registered : attempt, installId, installKey, at
+  note right of registered
+Every send uses this install's id and
+key.
+  end note
+  state "unregistered" as unregistered
+  unregistered : at, retryAt
+  note right of unregistered
+No usable key: the next send registers,
+after a while if the relay turned the
+last registration down or refused a new
+key.
+  end note
+  [*] --> registering : REGISTER(attempt) (backend) / register
+  [*] --> registered : ADOPT(attempt, installId, installKey) (backend) / adopted
+  registering --> registered : REGISTERED(attempt, installId, installKey) (backend) [sameAttempt] / registered
+  registering --> unregistered : FAILED(attempt) (backend) [sameAttempt] / failed
+  registering --> registering : REGISTER(attempt) (backend) [lapsed] / register
+  registering --> unregistered : LAPSED at giveUpAt / unregistered
+  registered --> unregistered : REFUSED(attempt) (backend) [sameAttempt] / refused
+  unregistered --> registering : REGISTER(attempt) (backend) / register
+```
+
+How a row is born:
+
+- `REGISTER(attempt) (backend)` → `registering`. The first send through the relay registers this deployment with it.
+- `ADOPT(attempt, installId, installKey) (backend)` → `registered`. An install registered before this machine (the relayInstall table) is taken over as it is, without registering again.
+
+From `registering`:
+
+- The clock sends `LAPSED` at giveUpAt. Forty seconds and the registering send hasn't answered: its action died, or the relay hung.
+- `REGISTERED(attempt, installId, installKey) (backend)` [sameAttempt] → `registered`. The relay gave the install its id and a new key: every send uses them from now on.
+- `FAILED(attempt) (backend)` [sameAttempt] → `unregistered`. The relay turned the registration down: sends fail at once for a minute, then the next tries again.
+- `REGISTER(attempt) (backend)` [lapsed] stays put. The registering send ran out of time before the timer said so: this send registers instead, and the other's answer is dropped.
+- `LAPSED at giveUpAt` → `unregistered`. Nothing came of the registration: the next send registers.
+
+From `registered`:
+
+- `REFUSED(attempt) (backend)` [sameAttempt] → `unregistered`. The relay refused this key (it forgot the install after 90 days unused, or a registration replaced it): the send that saw it registers again and sends once more. A key refused within two minutes of being given waits five minutes.
+
+From `unregistered`:
+
+- `REGISTER(attempt) (backend)` → `registering`. A send registers again.

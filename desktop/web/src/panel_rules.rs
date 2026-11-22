@@ -11,6 +11,10 @@ pub enum Event {
     /// Loading started or stopped, going back became possible or not, or the
     /// title or address changed.
     Changed,
+    /// A link Mike clicked on a page the app made itself (a design review's:
+    /// preview_rules::asked): what follows the app's own prefix, for the app
+    /// to read. The page stays where it is.
+    Asked(String),
 }
 
 /// Whose page it is, which decides where its links may go.
@@ -19,7 +23,7 @@ pub enum Kind {
     /// A patch's url panel: its own site stays, other sites leave.
     Patch,
     /// The Convex embedded dashboard: only its own site stays, and the page
-    /// answers its credentials request (docs/protocol.md, "The Convex panel")
+    /// answers its credentials request (docs/protocol/patches.md, "The Convex panel")
     /// with this script, run in it before its own.
     Convex { credentials_script: String },
     /// A local page previewed in the app (preview_rules.rs): its own page
@@ -37,7 +41,11 @@ pub fn site(url: &str) -> Option<String> {
         return None;
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit('@').next().unwrap_or(authority).to_ascii_lowercase();
+    let authority = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .to_ascii_lowercase();
     let default = if scheme == "https" { "443" } else { "80" };
     let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
         // An IPv6 address, its colons inside the brackets.
@@ -89,9 +97,20 @@ pub enum Browse {
 ///   app. In the Convex dashboard it's cancelled: the dashboard's own
 ///   scripts and redirects never reach the browser, or a compromised script
 ///   could open a browser tab a second (Codex review, 11 Nov).
-pub fn browse(url: &str, home: &str, own: &str, convex: bool, gesture: bool, redirect: bool) -> Browse {
+pub fn browse(
+    url: &str,
+    home: &str,
+    own: &str,
+    convex: bool,
+    gesture: bool,
+    redirect: bool,
+) -> Browse {
     if site(url).is_none() {
-        return if url == own || url == "about:blank" { Browse::Stay } else { Browse::Drop };
+        return if url == own || url == "about:blank" {
+            Browse::Stay
+        } else {
+            Browse::Drop
+        };
     }
     if !leaves(url, home) {
         return Browse::Stay;
@@ -155,7 +174,9 @@ impl LeaveGate {
     /// Whether one may go now, `inputs` being the person's clicks and keys
     /// in the page so far; if so, the next has to wait.
     pub fn allow(&mut self, now: std::time::Instant, inputs: u64) -> bool {
-        if self.last.is_some_and(|last| now.saturating_duration_since(last) < LEAVE_EVERY || inputs <= self.inputs_then) {
+        if self.last.is_some_and(|last| {
+            now.saturating_duration_since(last) < LEAVE_EVERY || inputs <= self.inputs_then
+        }) {
             return false;
         }
         self.last = Some(now);
@@ -170,19 +191,46 @@ mod tests {
 
     #[test]
     fn what_counts_as_the_same_site() {
-        assert_eq!(site("https://Dash.Example.com/a?b").as_deref(), Some("https://dash.example.com:443"));
-        assert_eq!(site("http://localhost:3000/x").as_deref(), Some("http://localhost:3000"));
-        assert_eq!(site("http://localhost/x").as_deref(), Some("http://localhost:80"));
-        assert_eq!(site("https://user@example.com/").as_deref(), Some("https://example.com:443"));
-        assert_eq!(site("http://[::1]:8080/").as_deref(), Some("http://[::1]:8080"));
+        assert_eq!(
+            site("https://Dash.Example.com/a?b").as_deref(),
+            Some("https://dash.example.com:443")
+        );
+        assert_eq!(
+            site("http://localhost:3000/x").as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(
+            site("http://localhost/x").as_deref(),
+            Some("http://localhost:80")
+        );
+        assert_eq!(
+            site("https://user@example.com/").as_deref(),
+            Some("https://example.com:443")
+        );
+        assert_eq!(
+            site("http://[::1]:8080/").as_deref(),
+            Some("http://[::1]:8080")
+        );
         assert_eq!(site("about:blank"), None);
         assert_eq!(site("file:///tmp/a.html"), None);
         assert_eq!(site("data:text/html,hi"), None);
         let home = site("http://localhost:3000/").unwrap();
-        assert!(!leaves("http://localhost:3000/settings", &home), "same site stays");
-        assert!(leaves("https://youtube.com/watch", &home), "another site leaves");
-        assert!(leaves("http://localhost:3001/", &home), "another port is another site");
-        assert!(leaves("https://localhost:3000/", &home), "another scheme is another site");
+        assert!(
+            !leaves("http://localhost:3000/settings", &home),
+            "same site stays"
+        );
+        assert!(
+            leaves("https://youtube.com/watch", &home),
+            "another site leaves"
+        );
+        assert!(
+            leaves("http://localhost:3001/", &home),
+            "another port is another site"
+        );
+        assert!(
+            leaves("https://localhost:3000/", &home),
+            "another scheme is another site"
+        );
         assert!(!leaves("about:blank", &home));
         // A data: page has no site of its own, so every web link leaves it.
         assert!(leaves("https://example.com/", ""));
@@ -195,8 +243,20 @@ mod tests {
         let other = "https://attacker.example/1";
         // (url, convex, gesture, redirect) -> what happens
         let cases = [
-            ("http://localhost:3000/settings", false, false, false, Browse::Stay),
-            ("http://localhost:3000/settings", true, true, false, Browse::Stay),
+            (
+                "http://localhost:3000/settings",
+                false,
+                false,
+                false,
+                Browse::Stay,
+            ),
+            (
+                "http://localhost:3000/settings",
+                true,
+                true,
+                false,
+                Browse::Stay,
+            ),
             (other, false, true, false, Browse::Leave),
             (other, true, true, false, Browse::Leave),
             // A patch's page going through another site by itself (a sign-in).
@@ -207,32 +267,78 @@ mod tests {
             (other, true, true, true, Browse::Drop),
         ];
         for (url, convex, gesture, redirect, want) in cases {
-            assert_eq!(browse(url, &home, own, convex, gesture, redirect), want, "{url} convex {convex} gesture {gesture} redirect {redirect}");
+            assert_eq!(
+                browse(url, &home, own, convex, gesture, redirect),
+                want,
+                "{url} convex {convex} gesture {gesture} redirect {redirect}"
+            );
         }
     }
 
     #[test]
     fn only_a_web_page_loads_in_a_panel() {
         let home = site("http://localhost:3000/").unwrap();
-        for url in ["file:///etc/hosts", "data:text/html,<title>x</title>", "blob:http://localhost:3000/abc", "chrome://version", "mailto:a@b.c"] {
-            assert_eq!(browse(url, &home, "http://localhost:3000/", false, true, false), Browse::Drop, "{url}");
-            assert_eq!(popup(url, &home, false, true), Popup::Drop, "{url} in a new window");
+        for url in [
+            "file:///etc/hosts",
+            "data:text/html,<title>x</title>",
+            "blob:http://localhost:3000/abc",
+            "chrome://version",
+            "mailto:a@b.c",
+        ] {
+            assert_eq!(
+                browse(url, &home, "http://localhost:3000/", false, true, false),
+                Browse::Drop,
+                "{url}"
+            );
+            assert_eq!(
+                popup(url, &home, false, true),
+                Popup::Drop,
+                "{url} in a new window"
+            );
         }
         // The panel's own data: page (the mock runner's stand-ins), and the
         // blank start of the Convex view, do load.
         let own = "data:text/html,<title>stand-in</title>";
         assert_eq!(browse(own, "", own, false, false, false), Browse::Stay);
-        assert_eq!(browse("about:blank", &home, "http://localhost:3000/", true, false, false), Browse::Stay);
+        assert_eq!(
+            browse(
+                "about:blank",
+                &home,
+                "http://localhost:3000/",
+                true,
+                false,
+                false
+            ),
+            Browse::Stay
+        );
     }
 
     #[test]
     fn a_new_window_needs_a_click() {
         let home = site("http://localhost:3000/").unwrap();
-        assert_eq!(popup("https://attacker.example/", &home, false, false), Popup::Drop, "a script's window.open");
-        assert_eq!(popup("http://localhost:3000/two", &home, false, false), Popup::Drop, "even on its own site");
-        assert_eq!(popup("https://example.com/", &home, false, true), Popup::Leave);
-        assert_eq!(popup("http://localhost:3000/two", &home, false, true), Popup::LoadHere);
-        assert_eq!(popup("http://localhost:3000/two", &home, true, true), Popup::Leave, "the dashboard's all go out");
+        assert_eq!(
+            popup("https://attacker.example/", &home, false, false),
+            Popup::Drop,
+            "a script's window.open"
+        );
+        assert_eq!(
+            popup("http://localhost:3000/two", &home, false, false),
+            Popup::Drop,
+            "even on its own site"
+        );
+        assert_eq!(
+            popup("https://example.com/", &home, false, true),
+            Popup::Leave
+        );
+        assert_eq!(
+            popup("http://localhost:3000/two", &home, false, true),
+            Popup::LoadHere
+        );
+        assert_eq!(
+            popup("http://localhost:3000/two", &home, true, true),
+            Popup::Leave,
+            "the dashboard's all go out"
+        );
     }
 
     #[test]

@@ -45,3 +45,66 @@ if [ "$status" -eq 1 ]; then echo "It clashes in the files above."; elif [ "$sta
 echo
 echo "What it changes against main:"
 clean --attr-source="$empty" diff --no-ext-diff --no-textconv --stat "$base_id" "$tree"
+
+# A format commit in the release (.git-blame-ignore-revs, "# format-subject:"
+# lines; runner/src/format-replay.ts) that main doesn't have clashes with
+# every change main made to the files it formatted, though only formatting
+# differs. Nothing formats here (that would run the release's toolchain), so
+# say so, and show the real clashes: merging the commit before the oldest.
+# Found as format-replay.ts finds them: the id written under its block, or
+# else the one commit with its subject (none when two have it).
+list=$(clean show "$commit_id:.git-blame-ignore-revs" 2>/dev/null | tr -d '\r' || true)
+[ -n "$list" ] || exit 0
+printf '%s\n' "$list" | awk '
+  function out(id) { if (s != "") print s "\037" id "\037" p "\037" c; s = ""; p = ""; c = "" }
+  /^#[[:space:]]*format-subject:/ { out(""); sub(/^#[[:space:]]*format-subject:[[:space:]]*/, ""); s = $0; next }
+  /^#[[:space:]]*format-paths:/ { sub(/^#[[:space:]]*format-paths:[[:space:]]*/, ""); p = $0; next }
+  /^#[[:space:]]*format-config:/ { sub(/^#[[:space:]]*format-config:[[:space:]]*/, ""); c = $0; next }
+  # (Lengths, not {40}: mawk, the awk on Debian and Android, panics on an interval.)
+  /^[0-9a-f]+$/ && (length($0) == 40 || length($0) == 64) { out($0); next }
+  /^[^#]/ && NF { out("") }
+  END { out("") }
+' > "$tmp/entries"
+clean log --no-merges --format='%H%x09%s' "$commit_id" > "$tmp/subjects"
+: > "$tmp/new"
+# (A separator that isn't whitespace, so an empty field stays a field.)
+while IFS="$(printf '\037')" read -r subject id paths config; do
+  f=""
+  if [ -n "$id" ] && clean merge-base --is-ancestor "$id" "$commit_id" 2>/dev/null; then
+    f=$id
+  else
+    # ENVIRON, not -v: awk would read backslashes in -v as escapes.
+    n=$(S=$subject awk -F '\t' 'substr($0, index($0, "\t") + 1) == ENVIRON["S"]' "$tmp/subjects" | wc -l | tr -d ' ')
+    [ "$n" = 1 ] && f=$(S=$subject awk -F '\t' 'substr($0, index($0, "\t") + 1) == ENVIRON["S"] { print $1 }' "$tmp/subjects")
+  fi
+  [ -n "$f" ] || continue
+  if clean merge-base --is-ancestor "$f" "$base_id"; then continue; fi
+  # Only what it formats, none of its config, one parent: else the replay
+  # won't take it as a format commit, so neither does this.
+  [ "$(clean rev-list --parents -n 1 "$f" | wc -w | tr -d ' ')" = 2 ] || continue
+  ok=1
+  clean diff --name-only "$f^" "$f" > "$tmp/changed"
+  while IFS= read -r file; do
+    inside=0
+    for d in $paths; do d=${d%/}; case "$file" in "$d"|"$d"/*) inside=1 ;; esac; done
+    for c in $config; do [ "$file" = "$c" ] && inside=0; done
+    [ "$inside" = 1 ] || { ok=0; break; }
+  done < "$tmp/changed"
+  [ "$ok" = 1 ] || continue
+  printf '%s\t%s\t%s\n' "$(clean rev-list --count "$f")" "$f" "$subject" >> "$tmp/new"
+done < "$tmp/entries"
+[ -s "$tmp/new" ] || exit 0
+sort -n "$tmp/new" > "$tmp/sorted"
+echo
+while IFS="$(printf '\t')" read -r _ f subject; do
+  echo "The release has a format commit main doesn't: $f ($subject)."
+done < "$tmp/sorted"
+oldest=$(head -n 1 "$tmp/sorted" | cut -f 2)
+echo "Clashes in the files they formatted are formatting only: after they say go, merge with"
+echo "scripts/replay-over-format.sh --merge $commit_id (docs/bringing-in-updates.md, section 4),"
+echo "which settles those by itself. The real clashes up to it, merging the commit before it:"
+st=0
+clean --attr-source="$empty" merge-tree --write-tree --name-only "$base_id" "$oldest^" > "$tmp/before" 2>&1 || st=$?
+if [ "$st" -eq 0 ]; then echo "  none"
+elif [ "$st" -eq 1 ]; then sed -n '2,/^$/p' "$tmp/before" | sed '/^$/d; s/^/  /'
+else echo "  (git merge-tree failed, $st: $(head -n 1 "$tmp/before"))"; fi

@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 // Copied beside this file (as src/main.ts) by deploy.test.ts, so releases
-// have it too: the real runner's auth challenge (docs/protocol.md, "Auth").
+// have it too: the real runner's auth challenge (docs/protocol/connection.md, "Auth").
 import { authProof, isNonce, newNonce } from './rpc-auth.ts';
 
 const here = import.meta.dirname;

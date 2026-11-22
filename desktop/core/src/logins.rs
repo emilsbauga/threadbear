@@ -27,7 +27,9 @@ pub struct PiProfile {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub struct PiCapabilities { pub threads: bool }
+pub struct PiCapabilities {
+    pub threads: bool,
+}
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -83,7 +85,7 @@ pub struct Account {
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub config_dir: String,
     /// Claude: no turn can run on it until someone signs it in again
-    /// (docs/protocol.md, Pools, "Signed out"). Pools skip it.
+    /// (docs/protocol/settings.md, Pools, "Signed out"). Pools skip it.
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub signed_out: bool,
     /// Claude: when this sign-in ends and can't be renewed (28 days after
@@ -173,7 +175,14 @@ pub struct RunnerDefaults {
 impl RunnerDefaults {
     /// The model a new thread on `provider` gets when it names none.
     pub fn model_for(&self, provider: &str) -> Option<&str> {
-        self.models.get(provider).map(String::as_str).or(if provider == "claude" { self.model.as_deref() } else { None })
+        self.models
+            .get(provider)
+            .map(String::as_str)
+            .or(if provider == "claude" {
+                self.model.as_deref()
+            } else {
+                None
+            })
     }
 }
 
@@ -210,15 +219,34 @@ pub struct RunnerLogins {
 
 impl RunnerLogins {
     pub fn login_command(&self, provider: &str) -> &str {
-        self.login_commands.get(provider).map(String::as_str).unwrap_or_else(|| crate::sign_in::login_command(provider))
+        self.login_commands
+            .get(provider)
+            .map(String::as_str)
+            .unwrap_or_else(|| crate::sign_in::login_command(provider))
     }
     pub fn from_hello(hello: &Value) -> RunnerLogins {
-        let login_commands = hello["providers"].as_array().into_iter().flatten().filter_map(|p| {
-            let id = p["id"].as_str().filter(|s| !s.is_empty())?;
-            let command = p["loginCommand"].as_str()?;
-            Some((id.to_owned(), command.trim().to_owned()))
-        }).collect();
-        RunnerLogins { pi_profiles: lossy(&hello["piProfiles"]), accounts: accounts_from(&hello["accounts"]), providers: lossy(&hello["providers"]), pools: pools_from(&hello["pools"]), defaults: hello.get("defaults").cloned().and_then(crate::wire::read).unwrap_or_default(), login_commands }
+        let login_commands = hello["providers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                let id = p["id"].as_str().filter(|s| !s.is_empty())?;
+                let command = p["loginCommand"].as_str()?;
+                Some((id.to_owned(), command.trim().to_owned()))
+            })
+            .collect();
+        RunnerLogins {
+            pi_profiles: lossy(&hello["piProfiles"]),
+            accounts: accounts_from(&hello["accounts"]),
+            providers: lossy(&hello["providers"]),
+            pools: pools_from(&hello["pools"]),
+            defaults: hello
+                .get("defaults")
+                .cloned()
+                .and_then(crate::wire::read)
+                .unwrap_or_default(),
+            login_commands,
+        }
     }
 
     pub fn provider(&self, id: &str) -> Option<&ProviderInfo> {
@@ -227,11 +255,17 @@ impl RunnerLogins {
     }
 
     pub fn provider_title(&self, id: &str) -> String {
-        self.provider(id).and_then(|p| p.name.as_deref()).filter(|n| !n.trim().is_empty()).map_or_else(|| provider_title(id), str::to_owned)
+        self.provider(id)
+            .and_then(|p| p.name.as_deref())
+            .filter(|n| !n.trim().is_empty())
+            .map_or_else(|| provider_title(id), str::to_owned)
     }
 
     pub fn cli_name(&self, id: &str) -> String {
-        self.provider(id).and_then(|p| p.cli_name.as_deref()).filter(|n| !n.trim().is_empty()).map_or_else(|| crate::slash::cli_name(id), str::to_owned)
+        self.provider(id)
+            .and_then(|p| p.cli_name.as_deref())
+            .filter(|n| !n.trim().is_empty())
+            .map_or_else(|| crate::slash::cli_name(id), str::to_owned)
     }
 
     pub fn has_auto_mode(&self, id: &str) -> bool {
@@ -243,16 +277,26 @@ impl RunnerLogins {
     }
 
     pub fn can_rewind(&self, id: &str) -> bool {
-        self.provider(id).and_then(|p| p.rewind).unwrap_or_else(|| crate::composer::can_rewind(id))
+        self.provider(id)
+            .and_then(|p| p.rewind)
+            .unwrap_or_else(|| crate::composer::can_rewind(id))
     }
 
-    pub fn effort_levels(&self, model: Option<&str>, choices: &[ModelChoice], provider: &str) -> Vec<String> {
+    pub fn effort_levels(
+        &self,
+        model: Option<&str>,
+        choices: &[ModelChoice],
+        provider: &str,
+    ) -> Vec<String> {
         // No effort support is authoritative, even if a cached model still
         // lists levels. Otherwise the model can narrow the provider's list.
         if self.provider(provider).and_then(|p| p.effort.as_deref()) == Some("none") {
             return Vec::new();
         }
-        if let Some(choice) = model.and_then(|m| choice_for(m, choices)).filter(|c| !c.effort_levels.is_empty()) {
+        if let Some(choice) = model
+            .and_then(|m| choice_for(m, choices))
+            .filter(|c| !c.effort_levels.is_empty())
+        {
             return choice.effort_levels.clone();
         }
         match self.provider(provider).and_then(|p| p.effort.as_deref()) {
@@ -276,7 +320,11 @@ impl RunnerLogins {
         self.accounts
             .iter()
             .filter(|a| a.year_token.is_some())
-            .filter(|a| before.iter().any(|b| b.id == a.id && b.year_token != a.year_token))
+            .filter(|a| {
+                before
+                    .iter()
+                    .any(|b| b.id == a.id && b.year_token != a.year_token)
+            })
             .map(|a| a.id.clone())
             .collect()
     }
@@ -284,7 +332,12 @@ impl RunnerLogins {
     /// The logins signed back in since `before`: signed out then, not now.
     /// The app throws confetti for them too.
     pub fn signed_back_in(&self, before: &[Account]) -> Vec<String> {
-        self.accounts.iter().filter(|a| !a.signed_out).filter(|a| before.iter().any(|b| b.id == a.id && b.signed_out)).map(|a| a.id.clone()).collect()
+        self.accounts
+            .iter()
+            .filter(|a| !a.signed_out)
+            .filter(|a| before.iter().any(|b| b.id == a.id && b.signed_out))
+            .map(|a| a.id.clone())
+            .collect()
     }
 
     /// One login as the runner has it now (`accounts.useReset`'s answer),
@@ -344,7 +397,14 @@ fn pools_from(v: &Value) -> Vec<Pool> {
 }
 
 fn lossy<T: serde::de::DeserializeOwned>(v: &Value) -> Vec<T> {
-    v.as_array().map(|items| items.iter().filter_map(|item| crate::wire::read(item.clone())).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| crate::wire::read(item.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// How a provider id reads (Providers.info).
@@ -355,7 +415,10 @@ pub fn provider_title(id: &str) -> String {
         "opencode" => "OpenCode".to_owned(),
         other => {
             let mut chars = other.chars();
-            chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+            chars
+                .next()
+                .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
         }
     }
 }
@@ -377,9 +440,21 @@ pub struct PickerRow {
     pub is_older: bool,
 }
 
+/// One provider's models in a picker column (ModelPicker.Section), with
+/// its name over them when the column has more than one provider.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickerSection {
+    pub provider: String,
+    pub title: Option<String>,
+    pub rows: Vec<PickerRow>,
+}
+
 /// ComposerChips.choice: the picker row an id belongs to.
 pub fn choice_for<'a>(id: &str, choices: &'a [ModelChoice]) -> Option<&'a ModelChoice> {
-    choices.iter().find(|c| c.id == id).or_else(|| choices.iter().find(|c| c.model == id))
+    choices
+        .iter()
+        .find(|c| c.id == id)
+        .or_else(|| choices.iter().find(|c| c.model == id))
 }
 
 /// ComposerChips.resolvedModel: the first id that's set.
@@ -392,7 +467,9 @@ pub fn resolved_model<'a>(ids: &[Option<&'a str>]) -> Option<&'a str> {
 pub fn model_title_with(id: Option<&str>, choices: &[ModelChoice]) -> String {
     match id.filter(|s| !s.is_empty()) {
         None => "Default".to_owned(),
-        Some(id) => choice_for(id, choices).map_or_else(|| model_title(Some(id)), |c| c.title.clone()),
+        Some(id) => {
+            choice_for(id, choices).map_or_else(|| model_title(Some(id)), |c| c.title.clone())
+        }
     }
 }
 
@@ -408,21 +485,64 @@ pub fn chip_title(model: Option<&str>, effort: Option<&str>, choices: &[ModelCho
 /// ModelPicker.rows: one account's list. For Claude the main rows are the
 /// aliases plus whatever the default and the chosen model are; dated and old
 /// full ids are older. Codex ids are all dashed, so every model is a main row.
-pub fn picker_rows(choices: &[ModelChoice], default_id: Option<&str>, selected: Option<&str>, query: &str, provider: &str) -> Vec<PickerRow> {
+pub fn picker_rows(
+    choices: &[ModelChoice],
+    default_id: Option<&str>,
+    selected: Option<&str>,
+    query: &str,
+    provider: &str,
+) -> Vec<PickerRow> {
     let codex = provider != "claude" && !provider.is_empty();
     let fallback: Vec<ModelChoice> = if codex {
-        default_id.filter(|d| !d.is_empty()).map(|d| vec![ModelChoice { id: d.into(), model: d.into(), title: model_title(Some(d)), ..Default::default() }]).unwrap_or_default()
+        default_id
+            .filter(|d| !d.is_empty())
+            .map(|d| {
+                vec![ModelChoice {
+                    id: d.into(),
+                    model: d.into(),
+                    title: model_title(Some(d)),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default()
     } else {
-        ["opus", "sonnet", "haiku"].iter().map(|a| ModelChoice { id: (*a).into(), model: (*a).into(), title: model_title(Some(a)), ..Default::default() }).collect()
+        ["opus", "sonnet", "haiku"]
+            .iter()
+            .map(|a| ModelChoice {
+                id: (*a).into(),
+                model: (*a).into(),
+                title: model_title(Some(a)),
+                ..Default::default()
+            })
+            .collect()
     };
-    let known: &[ModelChoice] = if choices.is_empty() { &fallback } else { choices };
-    let matches = |c: &ModelChoice, id: Option<&str>| id.filter(|s| !s.is_empty()).is_some_and(|id| c.id == id || c.model == id);
-    let is_main = |c: &ModelChoice| codex || c.id.chars().all(char::is_alphabetic) || matches(c, default_id) || matches(c, selected);
+    let known: &[ModelChoice] = if choices.is_empty() {
+        &fallback
+    } else {
+        choices
+    };
+    let matches = |c: &ModelChoice, id: Option<&str>| {
+        id.filter(|s| !s.is_empty())
+            .is_some_and(|id| c.id == id || c.model == id)
+    };
+    let is_main = |c: &ModelChoice| {
+        codex
+            || c.id.chars().all(char::is_alphabetic)
+            || matches(c, default_id)
+            || matches(c, selected)
+    };
     let mut rows: Vec<PickerRow> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut add = |c: &ModelChoice, older: bool, rows: &mut Vec<PickerRow>| {
         if seen.insert(c.model.clone()) {
-            rows.push(PickerRow { id: c.id.clone(), title: c.title.clone(), subtitle: c.description.clone(), is_default: matches(c, default_id), is_selected: matches(c, selected), is_older: older });
+            rows.push(PickerRow {
+                id: c.id.clone(),
+                title: c.title.clone(),
+                subtitle: c.description.clone(),
+                is_default: matches(c, default_id),
+                is_selected: matches(c, selected),
+                is_older: older,
+            });
         }
     };
     for c in known.iter().filter(|c| is_main(c)) {
@@ -430,7 +550,14 @@ pub fn picker_rows(choices: &[ModelChoice], default_id: Option<&str>, selected: 
     }
     if let Some(selected) = selected.filter(|s| !s.is_empty()) {
         if !known.iter().any(|c| matches(c, Some(selected))) {
-            rows.push(PickerRow { id: selected.to_owned(), title: model_title(Some(selected)), subtitle: None, is_default: false, is_selected: true, is_older: false });
+            rows.push(PickerRow {
+                id: selected.to_owned(),
+                title: model_title(Some(selected)),
+                subtitle: None,
+                is_default: false,
+                is_selected: true,
+                is_older: false,
+            });
         }
     }
     for c in known.iter().filter(|c| !is_main(c)) {
@@ -441,7 +568,13 @@ pub fn picker_rows(choices: &[ModelChoice], default_id: Option<&str>, selected: 
         return rows;
     }
     rows.into_iter()
-        .filter(|r| r.title.to_lowercase().contains(&needle) || r.id.to_lowercase().contains(&needle) || r.subtitle.as_deref().is_some_and(|s| s.to_lowercase().contains(&needle)))
+        .filter(|r| {
+            r.title.to_lowercase().contains(&needle)
+                || r.id.to_lowercase().contains(&needle)
+                || r.subtitle
+                    .as_deref()
+                    .is_some_and(|s| s.to_lowercase().contains(&needle))
+        })
         .map(|mut r| {
             r.is_older = false;
             r
@@ -465,14 +598,24 @@ pub fn effort_levels(model: Option<&str>, choices: &[ModelChoice], provider: &st
 }
 
 /// ModelPicker.impliedEffort: the level a thread with none chosen runs at.
-pub fn implied_effort(model: Option<&str>, choices: &[ModelChoice], account: Option<&Account>, runner_default: Option<&str>) -> Option<String> {
+pub fn implied_effort(
+    model: Option<&str>,
+    choices: &[ModelChoice],
+    account: Option<&Account>,
+    runner_default: Option<&str>,
+) -> Option<String> {
     if let Some(d) = runner_default.filter(|d| !d.is_empty()) {
         return Some(d.to_owned());
     }
-    if let Some(own) = account.and_then(|a| a.default_effort.as_deref()).filter(|d| !d.is_empty()) {
+    if let Some(own) = account
+        .and_then(|a| a.default_effort.as_deref())
+        .filter(|d| !d.is_empty())
+    {
         return Some(own.to_owned());
     }
-    model.and_then(|m| choice_for(m, choices)).and_then(|c| c.default_effort.clone())
+    model
+        .and_then(|m| choice_for(m, choices))
+        .and_then(|c| c.default_effort.clone())
 }
 
 /// What the composer's chips say about a thread, or the settings a new thread
@@ -497,12 +640,24 @@ pub struct ChipSettings<'a> {
 
 impl<'a> ChipSettings<'a> {
     pub fn choices(&self) -> &'a [ModelChoice] {
-        self.logins.account(&self.account).map_or(&[], |a| a.models.as_slice())
+        self.logins
+            .account(&self.account)
+            .map_or(&[], |a| a.models.as_slice())
     }
 
     pub fn default_model(&self) -> Option<String> {
-        let runner_default = if self.is_new { self.logins.defaults.model_for(&self.provider) } else { self.model_in_use.as_deref() };
-        resolved_model(&[runner_default, self.logins.account(&self.account).and_then(|a| a.default_model.as_deref())]).map(str::to_owned)
+        let runner_default = if self.is_new {
+            self.logins.defaults.model_for(&self.provider)
+        } else {
+            self.model_in_use.as_deref()
+        };
+        resolved_model(&[
+            runner_default,
+            self.logins
+                .account(&self.account)
+                .and_then(|a| a.default_model.as_deref()),
+        ])
+        .map(str::to_owned)
     }
 
     pub fn effective_model(&self) -> Option<String> {
@@ -510,8 +665,26 @@ impl<'a> ChipSettings<'a> {
     }
 
     pub fn effective_effort(&self) -> Option<String> {
-        let runner_default = if self.is_new { self.logins.defaults.efforts.get(&self.provider).map(String::as_str) } else { None };
-        self.effort.clone().or_else(|| self.effort_in_use.clone()).or_else(|| implied_effort(self.effective_model().as_deref(), self.choices(), self.logins.account(&self.account), runner_default))
+        let runner_default = if self.is_new {
+            self.logins
+                .defaults
+                .efforts
+                .get(&self.provider)
+                .map(String::as_str)
+        } else {
+            None
+        };
+        self.effort
+            .clone()
+            .or_else(|| self.effort_in_use.clone())
+            .or_else(|| {
+                implied_effort(
+                    self.effective_model().as_deref(),
+                    self.choices(),
+                    self.logins.account(&self.account),
+                    runner_default,
+                )
+            })
     }
 
     pub fn uses_pools(&self) -> bool {
@@ -534,7 +707,10 @@ impl<'a> ChipSettings<'a> {
         }
         match self.pool() {
             Some(pool) => Some(pool.title.clone()),
-            None => self.logins.account(&self.account).map(|_| crate::new_thread::login_name(&self.account, &self.logins.accounts)),
+            None => self
+                .logins
+                .account(&self.account)
+                .map(|_| crate::new_thread::login_name(&self.account, &self.logins.accounts)),
         }
     }
 
@@ -557,7 +733,11 @@ impl<'a> ChipSettings<'a> {
     }
 
     pub fn model_chip_title(&self) -> String {
-        let rest = chip_title(self.effective_model().as_deref(), self.effective_effort().as_deref(), self.choices());
+        let rest = chip_title(
+            self.effective_model().as_deref(),
+            self.effective_effort().as_deref(),
+            self.choices(),
+        );
         match self.owner().filter(|o| !o.is_empty()) {
             Some(owner) => format!("{owner} · {rest}"),
             None => rest,
@@ -570,7 +750,12 @@ impl<'a> ChipSettings<'a> {
         if let Some(pool) = self.pool() {
             parts.push(format!("{} pool", pool.title));
         } else if self.uses_pools() {
-            parts.push(format!("Pinned to {}", self.logins.account(&self.account).map_or_else(|| self.account.clone(), |a| a.name())));
+            parts.push(format!(
+                "Pinned to {}",
+                self.logins
+                    .account(&self.account)
+                    .map_or_else(|| self.account.clone(), |a| a.name())
+            ));
         }
         if let Some(model) = &self.model {
             parts.push(model.clone());
@@ -584,7 +769,10 @@ impl<'a> ChipSettings<'a> {
         } else if let Some(level) = &self.effort_in_use {
             parts.push(format!("{level} effort, the model's own level"));
         } else if let Some(level) = self.effective_effort() {
-            parts.push(format!("{} effort, the default", effort_title(&level).to_lowercase()));
+            parts.push(format!(
+                "{} effort, the default",
+                effort_title(&level).to_lowercase()
+            ));
         } else {
             parts.push("the model's own effort level".to_owned());
         }
@@ -596,10 +784,13 @@ impl<'a> ChipSettings<'a> {
     }
 
     pub fn account_chip_help(&self) -> String {
-        self.logins.account(&self.account).map_or_else(|| self.account.clone(), |a| match &a.note {
-            Some(note) if !note.is_empty() => format!("{} ({note})", a.name()),
-            _ => a.name(),
-        })
+        self.logins.account(&self.account).map_or_else(
+            || self.account.clone(),
+            |a| match &a.note {
+                Some(note) if !note.is_empty() => format!("{} ({note})", a.name()),
+                _ => a.name(),
+            },
+        )
     }
 
     pub fn permission_title(&self) -> &'static str {
@@ -623,16 +814,130 @@ impl<'a> ChipSettings<'a> {
     /// The model rows of a provider's column (ThreadSettings.rows).
     pub fn rows(&self, provider: &str, query: &str) -> Vec<PickerRow> {
         let own = provider == self.provider;
-        let listed = if own { Some(self.account.as_str()) } else { self.logins.accounts.iter().find(|a| a.provider_id() == provider).map(|a| a.id.as_str()) };
-        let Some(listed) = listed else { return picker_rows(&[], None, None, query, provider) };
+        let listed = if own {
+            Some(self.account.as_str())
+        } else {
+            self.logins
+                .accounts
+                .iter()
+                .find(|a| a.provider_id() == provider)
+                .map(|a| a.id.as_str())
+        };
+        let Some(listed) = listed else {
+            return picker_rows(&[], None, None, query, provider);
+        };
         let account = self.logins.account(listed);
         let choices = account.map_or(&[][..], |a| a.models.as_slice());
-        let default = if own { self.default_model() } else { self.logins.defaults.model_for(provider).map(str::to_owned).or_else(|| account.and_then(|a| a.default_model.clone())) };
-        picker_rows(choices, default.as_deref(), if own { self.effective_model() } else { None }.as_deref(), query, provider)
+        let default = if own {
+            self.default_model()
+        } else {
+            self.logins
+                .defaults
+                .model_for(provider)
+                .map(str::to_owned)
+                .or_else(|| account.and_then(|a| a.default_model.clone()))
+        };
+        picker_rows(
+            choices,
+            default.as_deref(),
+            if own { self.effective_model() } else { None }.as_deref(),
+            query,
+            provider,
+        )
+    }
+
+    /// A column's models (ThreadSettings.sections). Without pools a column
+    /// is one provider. A pool lists each of its providers' models, under
+    /// the provider's name when it has more than one: a pool of Claude,
+    /// Codex and OpenCode logins showed only Claude's until 20 Nov, so
+    /// OpenCode's Gemini models were nowhere. The default and the tick are
+    /// only for the thread's own pool and provider. Any other column (the
+    /// pinned one) is the thread's own login's list.
+    pub fn sections(&self, column: &str, query: &str) -> Vec<PickerSection> {
+        if !self.uses_pools() {
+            return vec![PickerSection {
+                provider: column.to_owned(),
+                title: None,
+                rows: self.rows(column, query),
+            }];
+        }
+        let Some(shown) = self.logins.pool(column) else {
+            return vec![PickerSection {
+                provider: self.provider.clone(),
+                title: None,
+                rows: self.rows(&self.provider, query),
+            }];
+        };
+        let providers = crate::new_thread::pool_providers(shown, &self.logins.accounts);
+        let many = providers.len() > 1;
+        providers
+            .into_iter()
+            .filter_map(|provider| {
+                let own =
+                    self.pool().is_some_and(|p| p.id == shown.id) && provider == self.provider;
+                // The login whose list it shows: the thread's own, else (or
+                // when its own lists none, signed out or not yet asked) the
+                // first of the pool's that lists models.
+                let logins =
+                    crate::new_thread::pool_logins(shown, &self.logins.accounts, Some(&provider));
+                let listing = logins
+                    .iter()
+                    .find(|a| !a.models.is_empty())
+                    .or(logins.first())
+                    .copied();
+                let rows = if own {
+                    let choices = if self.choices().is_empty() {
+                        listing.map_or(&[][..], |a| a.models.as_slice())
+                    } else {
+                        self.choices()
+                    };
+                    let default = self
+                        .default_model()
+                        .or_else(|| listing.and_then(|a| a.default_model.clone()));
+                    let chosen = resolved_model(&[self.model.as_deref(), default.as_deref()])
+                        .map(str::to_owned);
+                    picker_rows(
+                        choices,
+                        default.as_deref(),
+                        chosen.as_deref(),
+                        query,
+                        &provider,
+                    )
+                } else {
+                    let default = self
+                        .logins
+                        .defaults
+                        .model_for(&provider)
+                        .map(str::to_owned)
+                        .or_else(|| listing.and_then(|a| a.default_model.clone()));
+                    picker_rows(
+                        listing.map_or(&[][..], |a| a.models.as_slice()),
+                        default.as_deref(),
+                        None,
+                        query,
+                        &provider,
+                    )
+                };
+                // Nothing to list (no match, or none known yet): no section,
+                // so no heading with nothing under it.
+                if rows.is_empty() {
+                    return None;
+                }
+                Some(PickerSection {
+                    title: many.then(|| self.logins.provider_title(&provider)),
+                    provider,
+                    rows,
+                })
+            })
+            .collect()
     }
 
     pub fn effort_levels(&self) -> Vec<String> {
-        self.logins.effort_levels(self.effective_model().as_deref(), self.choices(), &self.provider)
+        self.logins.effort_levels(
+            self.effective_model().as_deref(),
+            self.choices(),
+            &self.provider,
+        )
     }
 }
 
@@ -663,9 +968,28 @@ pub fn permission_help(mode: &str) -> &'static str {
 /// email (two config folders signed in to one account, issue 18): its
 /// note, else its id. None when its email is its own.
 pub fn twin_label(account: &Account, accounts: &[Account]) -> Option<String> {
-    let email = account.email.as_deref().map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty())?;
-    let twin = accounts.iter().any(|a| a.id != account.id && a.provider_id() == account.provider_id() && a.email.as_deref().map(|e| e.trim().to_lowercase()).as_deref() == Some(email.as_str()));
-    twin.then(|| account.note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map_or_else(|| account.id.clone(), str::to_owned))
+    let email = account
+        .email
+        .as_deref()
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty())?;
+    let twin = accounts.iter().any(|a| {
+        a.id != account.id
+            && a.provider_id() == account.provider_id()
+            && a.email
+                .as_deref()
+                .map(|e| e.trim().to_lowercase())
+                .as_deref()
+                == Some(email.as_str())
+    });
+    twin.then(|| {
+        account
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| account.id.clone(), str::to_owned)
+    })
 }
 
 /// AccountName.short: the part of a Claude email before the @, unless
@@ -673,15 +997,24 @@ pub fn twin_label(account: &Account, accounts: &[Account]) -> Option<String> {
 /// are several. A login whose whole email another shares goes by its note
 /// or id (twin_label).
 pub fn short_account_name(id: &str, accounts: &[Account]) -> String {
-    let Some(account) = accounts.iter().find(|a| a.id == id) else { return id.to_owned() };
+    let Some(account) = accounts.iter().find(|a| a.id == id) else {
+        return id.to_owned();
+    };
     if let Some(label) = twin_label(account, accounts) {
         return label;
     }
     let full = account.name();
     let local = |s: &str| s.split('@').next().unwrap_or(s).to_owned();
-    let siblings: Vec<&Account> = accounts.iter().filter(|a| a.id != id && a.provider_id() == account.provider_id()).collect();
+    let siblings: Vec<&Account> = accounts
+        .iter()
+        .filter(|a| a.id != id && a.provider_id() == account.provider_id())
+        .collect();
     if account.provider_id() == "codex" {
-        return if siblings.is_empty() { "Codex".to_owned() } else { format!("Codex {}", local(&full)) };
+        return if siblings.is_empty() {
+            "Codex".to_owned()
+        } else {
+            format!("Codex {}", local(&full))
+        };
     }
     if !full.contains('@') {
         return full;
@@ -698,9 +1031,21 @@ pub fn short_account_name(id: &str, accounts: &[Account]) -> String {
 mod tests {
     #[test]
     fn a_login_signed_back_in_is_one_that_was_signed_out() {
-        let list = |logins: &[(&str, bool)]| -> Vec<Account> { logins.iter().map(|(id, out)| Account { id: (*id).into(), signed_out: *out, ..Default::default() }).collect() };
+        let list = |logins: &[(&str, bool)]| -> Vec<Account> {
+            logins
+                .iter()
+                .map(|(id, out)| Account {
+                    id: (*id).into(),
+                    signed_out: *out,
+                    ..Default::default()
+                })
+                .collect()
+        };
         let before = list(&[("a", true), ("b", false), ("c", true)]);
-        let logins = RunnerLogins { accounts: list(&[("a", false), ("b", false), ("c", true), ("d", false)]), ..Default::default() };
+        let logins = RunnerLogins {
+            accounts: list(&[("a", false), ("b", false), ("c", true), ("d", false)]),
+            ..Default::default()
+        };
         assert_eq!(logins.signed_back_in(&before), vec!["a".to_string()]);
         assert!(logins.signed_back_in(&logins.accounts.clone()).is_empty());
     }
@@ -708,12 +1053,36 @@ mod tests {
     #[test]
     fn a_login_given_a_year_long_token_is_new_once() {
         let list = |tokens: &[(&str, Option<&str>)]| -> Vec<Account> {
-            tokens.iter().map(|(id, made)| Account { id: (*id).into(), year_token: made.map(|m| YearToken { made_at: Some(m.into()) }), ..Default::default() }).collect()
+            tokens
+                .iter()
+                .map(|(id, made)| Account {
+                    id: (*id).into(),
+                    year_token: made.map(|m| YearToken {
+                        made_at: Some(m.into()),
+                    }),
+                    ..Default::default()
+                })
+                .collect()
         };
-        let before = list(&[("a", None), ("b", Some("2026-01-01")), ("c", Some("2026-02-01"))]);
-        let mut logins = RunnerLogins { accounts: list(&[("a", Some("2026-11-18")), ("b", Some("2026-01-01")), ("c", Some("2026-11-18")), ("d", Some("2026-11-18"))]), ..Default::default() };
+        let before = list(&[
+            ("a", None),
+            ("b", Some("2026-01-01")),
+            ("c", Some("2026-02-01")),
+        ]);
+        let mut logins = RunnerLogins {
+            accounts: list(&[
+                ("a", Some("2026-11-18")),
+                ("b", Some("2026-01-01")),
+                ("c", Some("2026-11-18")),
+                ("d", Some("2026-11-18")),
+            ]),
+            ..Default::default()
+        };
         // a got its first, c a new one; b is as it was and d is new to the list.
-        assert_eq!(logins.new_year_tokens(&before), vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(
+            logins.new_year_tokens(&before),
+            vec!["a".to_string(), "c".to_string()]
+        );
         let now = logins.accounts.clone();
         assert!(logins.new_year_tokens(&now).is_empty());
         logins.accounts = list(&[("a", None)]);
@@ -771,8 +1140,18 @@ mod tests {
     fn rows_keep_older_ids_under_older() {
         let l = logins();
         let rows = settings(&l).rows("claude", "");
-        let titles: Vec<(&str, bool, bool, bool)> = rows.iter().map(|r| (r.title.as_str(), r.is_default, r.is_selected, r.is_older)).collect();
-        assert_eq!(titles, vec![("Opus 5.5", false, false, false), ("Fable 5.1", true, true, false), ("Sonnet 4.5", false, false, true)]);
+        let titles: Vec<(&str, bool, bool, bool)> = rows
+            .iter()
+            .map(|r| (r.title.as_str(), r.is_default, r.is_selected, r.is_older))
+            .collect();
+        assert_eq!(
+            titles,
+            vec![
+                ("Opus 5.5", false, false, false),
+                ("Fable 5.1", true, true, false),
+                ("Sonnet 4.5", false, false, true)
+            ]
+        );
     }
 
     #[test]
@@ -792,9 +1171,95 @@ mod tests {
     }
 
     #[test]
+    fn a_pool_of_several_providers_lists_each_ones_models() {
+        let mut l = logins();
+        l.accounts.push(Account {
+            id: "opencode-main".into(),
+            provider: "opencode".into(),
+            models: vec![ModelChoice {
+                id: "google/gemini-4-neon".into(),
+                model: "google/gemini-4-neon".into(),
+                title: "Gemini 4 Neon".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        l.pools[0].account_ids = vec![
+            "claude-main".into(),
+            "opencode-main".into(),
+            "codex-main".into(),
+        ];
+        let sections = settings(&l).sections("claude", "");
+        let heads: Vec<(&str, Option<&str>)> = sections
+            .iter()
+            .map(|s| (s.provider.as_str(), s.title.as_deref()))
+            .collect();
+        assert_eq!(
+            heads,
+            vec![
+                ("claude", Some("Claude")),
+                ("opencode", Some("OpenCode")),
+                ("codex", Some("Codex"))
+            ]
+        );
+        assert!(
+            sections[0].rows.iter().any(|r| r.is_selected),
+            "the thread's own provider has its tick"
+        );
+        assert_eq!(
+            sections[1]
+                .rows
+                .iter()
+                .map(|r| r.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Gemini 4 Neon"]
+        );
+        assert!(
+            sections[1..]
+                .iter()
+                .flat_map(|s| &s.rows)
+                .all(|r| !r.is_selected),
+            "no tick on another provider"
+        );
+        l.accounts.push(Account {
+            id: "grok-main".into(),
+            provider: "grok".into(),
+            ..Default::default()
+        });
+        l.pools[0].account_ids.push("grok-main".into());
+        assert!(
+            settings(&l)
+                .sections("claude", "")
+                .iter()
+                .all(|s| s.provider != "grok"),
+            "a provider with no models known has no heading"
+        );
+        let found = settings(&l).sections("claude", "gemini");
+        assert_eq!(
+            found
+                .iter()
+                .map(|s| s.provider.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode"],
+            "a search drops providers with no match"
+        );
+    }
+
+    #[test]
+    fn a_pool_of_one_provider_has_no_heading() {
+        let l = logins();
+        let sections = settings(&l).sections("claude", "");
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].title, None);
+    }
+
+    #[test]
     fn permission_modes_offer_auto_only_where_it_exists() {
         let l = logins();
-        assert_eq!(settings(&l).permission_modes(), vec!["full", "auto", "ask", "plan"]);
+        assert_eq!(
+            settings(&l).permission_modes(),
+            vec!["full", "auto", "ask", "plan"]
+        );
         let mut s = settings(&l);
         s.provider = "codex".into();
         assert_eq!(s.permission_modes(), vec!["full", "ask", "plan"]);
@@ -811,10 +1276,26 @@ mod tests {
 
     #[test]
     fn two_logins_with_one_email_go_by_note_or_id() {
-        let a = |id: &str, email: &str, note: Option<&str>| Account { id: id.into(), provider: "claude".into(), email: Some(email.into()), note: note.map(Into::into), ..Default::default() };
-        let accounts = vec![a("claude-main", "alex@example.com", None), a("claude-2", "Alex@Example.com", Some("Hooks")), a("claude-3", "sam@example.com", None)];
-        assert_eq!(twin_label(&accounts[0], &accounts).as_deref(), Some("claude-main"));
-        assert_eq!(twin_label(&accounts[1], &accounts).as_deref(), Some("Hooks"));
+        let a = |id: &str, email: &str, note: Option<&str>| Account {
+            id: id.into(),
+            provider: "claude".into(),
+            email: Some(email.into()),
+            note: note.map(Into::into),
+            ..Default::default()
+        };
+        let accounts = vec![
+            a("claude-main", "alex@example.com", None),
+            a("claude-2", "Alex@Example.com", Some("Hooks")),
+            a("claude-3", "sam@example.com", None),
+        ];
+        assert_eq!(
+            twin_label(&accounts[0], &accounts).as_deref(),
+            Some("claude-main")
+        );
+        assert_eq!(
+            twin_label(&accounts[1], &accounts).as_deref(),
+            Some("Hooks")
+        );
         assert_eq!(twin_label(&accounts[2], &accounts), None);
         assert_eq!(short_account_name("claude-2", &accounts), "Hooks");
         assert_eq!(short_account_name("claude-3", &accounts), "sam");

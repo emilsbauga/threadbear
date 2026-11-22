@@ -32,14 +32,27 @@ unsafe extern "C" {
     pub(crate) fn tb_view_note_input(view: *mut c_void);
     pub(crate) fn tb_view_has_keyboard(view: *mut c_void) -> bool;
     // The layer Chromium shows a page's picture in, which should be the view's size (panel.rs).
-    pub(crate) fn tb_view_picture_size(view: *mut c_void, width: *mut f64, height: *mut f64) -> bool;
+    pub(crate) fn tb_view_picture_size(
+        view: *mut c_void,
+        width: *mut f64,
+        height: *mut f64,
+    ) -> bool;
     // Who has a window's keyboard, and giving it back to GPUI's view.
     fn tb_view_keyboard_holder(view: *mut c_void) -> i32;
     fn tb_view_take_keyboard(view: *mut c_void) -> bool;
     fn tb_view_send_keys(view: *mut c_void, text: *const c_char);
     fn tb_view_send_click(view: *mut c_void, x: f64, y: f64) -> *mut c_char;
     fn free(ptr: *mut c_void);
-    fn tb_popup_menu(view: *mut c_void, x: f64, y: f64, titles: *const *const c_char, symbols: *const *const c_char, tips: *const *const c_char, checked: *const bool, count: i32) -> i32;
+    fn tb_popup_menu(
+        view: *mut c_void,
+        x: f64,
+        y: f64,
+        titles: *const *const c_char,
+        symbols: *const *const c_char,
+        tips: *const *const c_char,
+        checked: *const bool,
+        count: i32,
+    ) -> i32;
     fn tb_main_bundle_identifier() -> *const c_char;
 }
 
@@ -57,7 +70,13 @@ pub struct MenuItem {
 /// menu over a web page's view, which GPUI's own would draw under. Blocks
 /// while it's open, so call it from a task, outside any update (as the app's
 /// alerts are); returns the index of the item chosen.
-pub fn popup_menu(view: *mut c_void, x: f32, y: f32, items: &[MenuItem]) -> Option<usize> {
+///
+/// # Safety
+///
+/// `view` must be null or an `NSView` that stays alive through the call (a
+/// window's content view, as `native_view` gives it), and this must run on
+/// the main thread, as AppKit needs.
+pub unsafe fn popup_menu(view: *mut c_void, x: f32, y: f32, items: &[MenuItem]) -> Option<usize> {
     if view.is_null() || items.is_empty() {
         return None;
     }
@@ -68,16 +87,39 @@ pub fn popup_menu(view: *mut c_void, x: f32, y: f32, items: &[MenuItem]) -> Opti
     let pointers = |v: &[CString]| v.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
     let (t, s, p) = (pointers(&titles), pointers(&symbols), pointers(&tips));
     let checked: Vec<bool> = items.iter().map(|i| i.checked).collect();
-    let chosen = unsafe { tb_popup_menu(view, f64::from(x), f64::from(y), t.as_ptr(), s.as_ptr(), p.as_ptr(), checked.as_ptr(), items.len() as i32) };
+    // SAFETY: the caller guarantees `view` is a live NSView (null returned
+    // above) and that we're on the main thread. Each of the four arrays has
+    // items.len() entries, every string pointer comes from a CString held in
+    // titles/symbols/tips, and all of them outlive this blocking call.
+    let chosen = unsafe {
+        tb_popup_menu(
+            view,
+            f64::from(x),
+            f64::from(y),
+            t.as_ptr(),
+            s.as_ptr(),
+            p.as_ptr(),
+            checked.as_ptr(),
+            items.len() as i32,
+        )
+    };
     usize::try_from(chosen).ok().filter(|i| *i < items.len())
 }
 
 /// Who has the keyboard in the window GPUI's view `view` fills.
-pub fn keyboard_holder(view: *mut c_void) -> crate::KeyboardHolder {
+///
+/// # Safety
+///
+/// `view` must be null or an `NSView` that stays alive through the call (a
+/// window's content view, as `native_view` gives it), and this must run on
+/// the main thread, as AppKit needs.
+pub unsafe fn keyboard_holder(view: *mut c_void) -> crate::KeyboardHolder {
     use crate::KeyboardHolder;
     if view.is_null() {
         return KeyboardHolder::Window;
     }
+    // SAFETY: the caller guarantees `view` is a live NSView (null returned
+    // above) and that we're on the main thread.
     match unsafe { tb_view_keyboard_holder(view) } {
         0 => KeyboardHolder::App,
         1 => KeyboardHolder::Page,
@@ -88,15 +130,32 @@ pub fn keyboard_holder(view: *mut c_void) -> crate::KeyboardHolder {
 }
 
 /// Gives GPUI's view `view` its window's keyboard; true if it moved.
-pub fn take_keyboard(view: *mut c_void) -> bool {
+///
+/// # Safety
+///
+/// `view` must be null or an `NSView` that stays alive through the call (a
+/// window's content view, as `native_view` gives it), and this must run on
+/// the main thread, as AppKit needs.
+pub unsafe fn take_keyboard(view: *mut c_void) -> bool {
+    // SAFETY: only reached when `view` isn't null, and the caller guarantees
+    // it's then a live NSView and that we're on the main thread.
     !view.is_null() && unsafe { tb_view_take_keyboard(view) }
 }
 
 /// A scripted app's typing: `text`'s keys handed to the window GPUI's view
 /// `view` is in, which gives them to whoever has its keyboard.
-pub fn send_keys(view: *mut c_void, text: &str) {
+///
+/// # Safety
+///
+/// `view` must be null or an `NSView` that stays alive through the call (a
+/// window's content view, as `native_view` gives it), and this must run on
+/// the main thread, as AppKit needs.
+pub unsafe fn send_keys(view: *mut c_void, text: &str) {
     let Ok(text) = CString::new(text) else { return };
     if !view.is_null() {
+        // SAFETY: the caller guarantees the non-null `view` is a live NSView
+        // and that we're on the main thread; `text` is a NUL-terminated
+        // CString that outlives the call.
         unsafe { tb_view_send_keys(view, text.as_ptr()) };
     }
 }
@@ -105,10 +164,19 @@ pub fn send_keys(view: *mut c_void, text: &str) {
 /// fills (GPUI's coordinates), through AppKit as a person's click goes, so a
 /// page's view under it gets it the way it gets a real one.
 /// Says what AppKit hit there and where each page view is in the window.
-pub fn send_click(view: *mut c_void, x: f32, y: f32) -> String {
+///
+/// # Safety
+///
+/// `view` must be null or an `NSView` that stays alive through the call (a
+/// window's content view, as `native_view` gives it), and this must run on
+/// the main thread, as AppKit needs.
+pub unsafe fn send_click(view: *mut c_void, x: f32, y: f32) -> String {
     if view.is_null() {
         return String::new();
     }
+    // SAFETY: the caller guarantees `view` is a live NSView (null returned
+    // above) and that we're on the main thread. The shim returns null or a
+    // strdup'd C string, which is read once and then freed exactly once.
     unsafe {
         let said = tb_view_send_click(view, f64::from(x), f64::from(y));
         if said.is_null() {
@@ -138,7 +206,10 @@ pub(crate) fn set_status(status: Status) {
 }
 
 pub fn status() -> Status {
-    STATUS.lock().map(|s| s.clone()).unwrap_or(Status::Failed("the web runtime's state was lost".into()))
+    STATUS
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or(Status::Failed("the web runtime's state was lost".into()))
 }
 
 /// cef::initialize has been called in this process. After that a failed
@@ -170,7 +241,9 @@ pub fn retry() -> bool {
 fn log_line(log_file: &std::path::Path, line: &str) {
     use std::io::Write as _;
     eprintln!("threadbear-web: {line}");
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     if let Ok(mut f) = threadbear_core::private_file::append(log_file) {
         let _ = writeln!(f, "[{secs} threadbear] {line}");
     }
@@ -180,7 +253,8 @@ fn log_line(log_file: &std::path::Path, line: &str) {
 fn initialize_failure(profile: &std::path::Path) -> String {
     let code = get_exit_code();
     let holder = threadbear_core::web_runtime::profile_lock_pid(profile);
-    let in_use = code == sys::cef_resultcode_t::CEF_RESULT_CODE_PROFILE_IN_USE as i32 || code == sys::cef_resultcode_t::CEF_RESULT_CODE_NORMAL_EXIT_PROCESS_NOTIFIED as i32;
+    let in_use = code == sys::cef_resultcode_t::CEF_RESULT_CODE_PROFILE_IN_USE as i32
+        || code == sys::cef_resultcode_t::CEF_RESULT_CODE_NORMAL_EXIT_PROCESS_NOTIFIED as i32;
     match (in_use, holder) {
         (true, Some(pid)) if pid != std::process::id() => format!("its profile was in use by another process (pid {pid}, another copy of Threadbear?), exit code {code}"),
         (true, _) => format!("its profile was in use, exit code {code}"),
@@ -202,7 +276,12 @@ pub struct Launch {
 /// The app's bundle id, for the helpers', or None outside a bundle (a cargo
 /// build the specs start).
 pub fn bundle_identifier() -> Option<String> {
+    // SAFETY: the shim takes no arguments and only reads NSBundle's main
+    // bundle, which is safe from any thread.
     let id = unsafe { tb_main_bundle_identifier() };
+    // SAFETY: a non-null result is the UTF8String of the main bundle's
+    // identifier, NUL-terminated, and copied out at once. It relies on that
+    // NSString (held by the main bundle) staying alive until then.
     (!id.is_null()).then(|| unsafe { CStr::from_ptr(id) }.to_string_lossy().into_owned())
 }
 
@@ -224,9 +303,16 @@ pub fn start(launch: Launch) -> Result<(), String> {
         Status::Starting | Status::Ready => return Ok(()),
     }
     let binary = launch.framework.join("Chromium Embedded Framework");
-    let path = CString::new(binary.to_string_lossy().into_owned()).map_err(|_| "the runtime's path has a NUL in it".to_owned())?;
+    let path = CString::new(binary.to_string_lossy().into_owned())
+        .map_err(|_| "the runtime's path has a NUL in it".to_owned())?;
+    // SAFETY: `path` is a NUL-terminated CString that outlives the call,
+    // which is all cef_load_library needs.
     if unsafe { super::loader_support::cef_load_library(path.as_ptr()) } != 1 {
-        let why = format!("the web runtime couldn't be loaded from {}: {}", binary.display(), super::loader_support::last_load_error().unwrap_or_else(|| "no reason given".into()));
+        let why = format!(
+            "the web runtime couldn't be loaded from {}: {}",
+            binary.display(),
+            super::loader_support::last_load_error().unwrap_or_else(|| "no reason given".into())
+        );
         log_line(&launch.log_file, &why);
         set_status(Status::Failed(why.clone()));
         return Err(why);
@@ -235,11 +321,18 @@ pub fn start(launch: Launch) -> Result<(), String> {
     // built against (the versioned API CEF has had since 133).
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     // Before Chromium's pump exists (Ghostex: 2026-06-14 notes).
+    // SAFETY: the shim takes no arguments and swizzles NSApplication once
+    // (dispatch_once); start runs on the main thread like everything here.
     unsafe { tb_cef_install_app_hooks() };
 
     let args = Args::new();
     let mut app = BrowserApp::new();
-    if execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut()) >= 0 {
+    if execute_process(
+        Some(args.as_main_args()),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    ) >= 0
+    {
         // CEF took this for one of its own helpers: it never is, as they
         // have their own binary (threadbear-web-helper).
         let why = "the web runtime thought the app was one of its helpers".to_owned();
@@ -291,7 +384,13 @@ pub fn start(launch: Launch) -> Result<(), String> {
         *p.borrow_mut() = Some(Box::new(move || {
             let mut app = app;
             INITIALIZE_CALLED.store(true, Ordering::Release);
-            if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
+            if initialize(
+                Some(args.as_main_args()),
+                Some(&settings),
+                Some(&mut app),
+                std::ptr::null_mut(),
+            ) != 1
+            {
                 let why = initialize_failure(&profile);
                 log_line(&log_file, &format!("Chromium didn't start: {why}"));
                 set_status(Status::Failed(why));
@@ -302,6 +401,8 @@ pub fn start(launch: Launch) -> Result<(), String> {
             eprintln!("threadbear-web: Chromium's message loop returned");
         }))
     });
+    // SAFETY: the shim takes no arguments and only schedules a main run-loop
+    // timer, guarding against a second start; we're on the main thread.
     unsafe { tb_cef_start_message_loop() };
     Ok(())
 }
@@ -323,7 +424,12 @@ fn browser_switches(command_line: &mut CommandLine) {
     // its own (docs/on-your-mac.md).
     // No background requests of Chromium's own (updates of its components,
     // variations, and so on): it goes online for the pages it shows.
-    for switch in ["use-mock-keychain", "disable-background-networking", "disable-component-update", "no-pings"] {
+    for switch in [
+        "use-mock-keychain",
+        "disable-background-networking",
+        "disable-component-update",
+        "no-pings",
+    ] {
         command_line.append_switch(Some(&CefString::from(switch)));
     }
 }
@@ -333,7 +439,7 @@ wrap_app! {
 
     impl App {
         fn on_before_command_line_processing(&self, process_type: Option<&CefString>, command_line: Option<&mut CommandLine>) {
-            let browser = process_type.map_or(true, |t| t.to_string().is_empty());
+            let browser = process_type.is_none_or(|t| t.to_string().is_empty());
             if let (true, Some(command_line)) = (browser, command_line) {
                 browser_switches(command_line);
             }

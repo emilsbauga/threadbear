@@ -12,24 +12,28 @@
 // its reason written down.
 //
 // The relay half is what another runner's thread can do from the Mac, which
-// opens it through its own runner and Convex. docs/parity.md is made from this
-// (npm run parity-docs).
+// opens it through its own runner and Convex. `android` is where the Android
+// app (android-native/, a port of the iPhone's kit) lags the phone column: a
+// phone `via` it doesn't call says why here, and parity.test.ts checks every
+// other `via` is called by its kit, so a port that lands flips the test. The
+// rows the API sends it are checked field by field in shared/cases/wire-rows.json.
+// docs/parity.md is made from this (npm run parity-docs).
 
 export type Where = 'yes' | { no: string };
 export type PhoneWhere = { via: string } | { no: string };
-export type Row = { what: string; relay: Where; phone: PhoneWhere };
+export type Row = { what: string; relay: Where; phone: PhoneWhere; android?: { no: string } };
 
 export const THREAD_REQUESTS: Record<string, Row> = {
   'threads.saveDraft': { what: 'Saving a Backlog prompt', relay: { no: 'Draft files are saved on their own Mac.' }, phone: { no: 'The phone starts a saved prompt but does not edit it.' } },
   'threads.events': { what: 'Reading the transcript', relay: 'yes', phone: { via: 'messages' } },
   'threads.subscribe': { what: 'Following it live (relaySeen skips relay events this reader has)', relay: 'yes', phone: { via: 'messages' } },
-  'threads.heldBody': { what: "Opening a tool's output", relay: 'yes', phone: { via: 'eventBody' } },
+  'threads.heldBody': { what: "Opening a tool's output", relay: 'yes', phone: { via: 'eventBody' }, android: { no: 'Android shows a tool line, not its output.' } },
   'threads.send': { what: 'Sending a message, pictures too', relay: 'yes', phone: { via: 'send' } },
   'threads.interrupt': { what: 'Stop', relay: 'yes', phone: { via: 'interrupt' } },
   'threads.update': { what: 'Rename, archive, star, hibernate, and from the Mac its login or model', relay: 'yes', phone: { via: 'update' } },
   'threads.markSeen': { what: 'Marking it read', relay: 'yes', phone: { via: 'update' } },
   'threads.hibernateWhen': { what: 'Hibernate until something happens', relay: 'yes', phone: { no: 'The phone hibernates until a time only.' } },
-  'threads.share': { what: 'Sharing by link', relay: 'yes', phone: { via: 'share' } },
+  'threads.share': { what: 'Sharing by link', relay: 'yes', phone: { via: 'share' }, android: { no: 'Not on Android yet.' } },
   'approvals.respond': { what: 'Answering an approval or a question', relay: 'yes', phone: { via: 'respond' } },
   'secrets.answer': { what: 'Answering a secret card', relay: 'yes', phone: { via: 'secret' } },
   'buttons.press': { what: 'Pressing a reply button', relay: 'yes', phone: { via: 'press' } },
@@ -53,17 +57,18 @@ export const THREAD_REQUESTS: Record<string, Row> = {
   'actions.run': { what: 'An action chip', relay: { no: 'Patches run on that Mac.' }, phone: { no: 'No action chips on the phone.' } },
   'patches.trust': { what: "Trusting a folder's patches", relay: { no: 'Trust is given on that Mac.' }, phone: { no: 'Not on the phone.' } },
   'plans.approve': { what: 'Approving a plan', relay: { no: 'Not sent through Convex from the Mac yet.' }, phone: { no: 'Not on the phone yet.' } },
-  'reviews.list': { what: 'Design reviews', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' } },
+  'reviews.list': { what: 'Design reviews', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' }, android: { no: 'Design reviews (backend API 86) are not on Android yet.' } },
   'reviews.create': { what: 'Starting a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { no: 'Not on the phone.' } },
-  'reviews.get': { what: 'Reading a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' } },
+  'reviews.get': { what: 'Reading a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'designReviews' }, android: { no: 'Design reviews (backend API 86) are not on Android yet.' } },
   'reviews.save': { what: 'Saving a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { no: 'Not on the phone.' } },
-  'reviews.respond': { what: 'Answering a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'respondReview' } },
+  'reviews.respond': { what: 'Answering a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { via: 'respondReview' }, android: { no: 'Design reviews (backend API 86) are not on Android yet.' } },
   'reviews.cancel': { what: 'Cancelling a design review', relay: { no: 'Reviews open in the Mac app from that Mac.' }, phone: { no: 'Not on the phone.' } },
 };
 
 /** docs/parity.md: the table, works first, then the gaps. */
 export function parityDoc(): string {
   const cell = (w: Where | PhoneWhere) => (w === 'yes' || 'via' in w ? 'Yes' : `No: ${w.no}`);
+  const android = (r: Row) => (r.android ? `No: ${r.android.no}` : cell(r.phone));
   const rows = Object.entries(THREAD_REQUESTS).sort(([, a], [, b]) => score(b) - score(a));
   return [
     '# Where each thread action works',
@@ -74,11 +79,12 @@ export function parityDoc(): string {
     'without someone deciding it should.',
     '',
     '"Another Mac" is a thread on another runner opened in the Mac app through Convex. "Phone',
-    'and web" is the iPhone app and the website, which read every thread through Convex.',
+    'and web" is the iPhone app and the website, which read every thread through Convex. "Android"',
+    "is the Android app, which reads the same way through its kit, a port of the iPhone's.",
     '',
-    '| What | Request | Another Mac | Phone and web |',
-    '|---|---|---|---|',
-    ...rows.map(([method, r]) => `| ${r.what} | \`${method}\` | ${cell(r.relay)} | ${cell(r.phone)} |`),
+    '| What | Request | Another Mac | Phone and web | Android |',
+    '|---|---|---|---|---|',
+    ...rows.map(([method, r]) => `| ${r.what} | \`${method}\` | ${cell(r.relay)} | ${cell(r.phone)} | ${android(r)} |`),
     '',
   ].join('\n');
 }

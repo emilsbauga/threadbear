@@ -74,8 +74,15 @@ impl TranscriptList {
     pub fn scroll_to_row(&mut self, index: usize, offset: Pixels, cx: &mut Context<Self>) {
         // A positive offset puts the row below the top of the view: the list
         // can't start a row part way down, so it starts a little earlier.
-        let (index, offset_in_item) = if offset >= px(0.) { (index, px(0.)) } else { (index, -offset) };
-        self.list.scroll_to(ListOffset { item_ix: index, offset_in_item });
+        let (index, offset_in_item) = if offset >= px(0.) {
+            (index, px(0.))
+        } else {
+            (index, -offset)
+        };
+        self.list.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item,
+        });
         cx.notify();
     }
 
@@ -134,7 +141,9 @@ impl TranscriptList {
     /// Whether the row is in the viewport right now, for `dump`.
     #[cfg(feature = "automation")]
     pub fn row_on_screen(&self, index: usize) -> bool {
-        let Some(bounds) = self.list.bounds_for_item(index) else { return false };
+        let Some(bounds) = self.list.bounds_for_item(index) else {
+            return false;
+        };
         let viewport = self.list.viewport_bounds();
         bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom()
     }
@@ -183,15 +192,29 @@ pub fn transcript_list(
         .min_w_0()
         .overflow_hidden()
         .child(
-            div().id("transcript-viewport").size_full().min_h_0().min_w_0().child(base::ScrollBounce::new("transcript-bounce", &list_state, rows).on_scroll(move |_, cx| {
-                let _ = weak.update(cx, |_, cx| cx.notify());
-            })),
+            div()
+                .id("transcript-viewport")
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .child(
+                    base::ScrollBounce::new("transcript-bounce", &list_state, rows).on_scroll(
+                        move |_, cx| {
+                            let _ = weak.update(cx, |_, cx| cx.notify());
+                        },
+                    ),
+                ),
         )
         // Rows slide under the fades instead of being cut off, and the scroll
         // bar's strip on the right stays whole.
         .child(fade(background, FadeEdge::Top))
         .child(fade(background, FadeEdge::Bottom))
-        .child(div().absolute().inset_0().child(div().size_full().vertical_scrollbar(&list_state)))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(div().size_full().vertical_scrollbar(&list_state)),
+        )
 }
 
 enum FadeEdge {
@@ -206,7 +229,17 @@ fn fade(background: Hsla, edge: FadeEdge) -> Div {
     let solid = background;
     let clear = background.opacity(0.);
     match edge {
-        FadeEdge::Top => div().absolute().top_0().left_0().right(px(16.)).h(px(TOP_FADE_HEIGHT)).bg(linear_gradient(180., linear_color_stop(solid, 0.), linear_color_stop(clear, 1.))),
+        FadeEdge::Top => div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right(px(16.))
+            .h(px(TOP_FADE_HEIGHT))
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(solid, 0.),
+                linear_color_stop(clear, 1.),
+            )),
         FadeEdge::Bottom => {
             let heavy = FADE_HEIGHT * 0.65;
             div()
@@ -217,8 +250,16 @@ fn fade(background: Hsla, edge: FadeEdge) -> Div {
                 .h(px(FADE_HEIGHT))
                 .flex()
                 .flex_col()
-                .child(div().w_full().h(px(heavy)).bg(linear_gradient(180., linear_color_stop(clear, 0.), linear_color_stop(background.opacity(0.65), 1.))))
-                .child(div().w_full().flex_1().bg(linear_gradient(180., linear_color_stop(background.opacity(0.65), 0.), linear_color_stop(solid, 1.))))
+                .child(div().w_full().h(px(heavy)).bg(linear_gradient(
+                    180.,
+                    linear_color_stop(clear, 0.),
+                    linear_color_stop(background.opacity(0.65), 1.),
+                )))
+                .child(div().w_full().flex_1().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(background.opacity(0.65), 0.),
+                    linear_color_stop(solid, 1.),
+                )))
         }
     }
 }

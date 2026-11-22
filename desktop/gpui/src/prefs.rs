@@ -32,7 +32,11 @@ fn path() -> PathBuf {
 
 /// Field by field, so one of the wrong type loses only itself (settings.rs).
 pub fn load() -> Prefs {
-    std::fs::read(path()).ok().and_then(|data| crate::settings::tolerant(&data, "gpui-prefs.json")).map(|(prefs, _)| prefs).unwrap_or_default()
+    std::fs::read(path())
+        .ok()
+        .and_then(|data| crate::settings::tolerant(&data, "gpui-prefs.json"))
+        .map(|(prefs, _)| prefs)
+        .unwrap_or_default()
 }
 
 /// Written whole, and only this user's: the recent slash commands say what

@@ -1,4 +1,4 @@
-// End to end for editing an earlier message (docs/protocol.md, "Editing a
+// End to end for editing an earlier message (docs/protocol/threads.md, "Editing a
 // message") with the real Claude CLI: the agent writes files and is told a
 // secret word, then the message that did it is edited. The files go back
 // (the CLI's own checkpoints) and the agent no longer knows the word. A

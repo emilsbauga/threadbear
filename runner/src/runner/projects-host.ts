@@ -72,7 +72,7 @@ export const projectsHostPart = {
     return { first: first ? cut(first) : undefined, ...(opening.images ? { firstImages: opening.images } : {}), recent };
   },
 
-  // The seq ranges edits cut out of the thread (docs/protocol.md, "Editing
+  // The seq ranges edits cut out of the thread (docs/protocol/threads.md, "Editing
   // a message").
   cuts(this: Runner, threadId: string): { from: number; to: number }[] {
     return [...(this.mustGet(threadId).rec.rewinds ?? [])];

@@ -1,7 +1,7 @@
 import SwiftUI
 import ThreadbearKit
 
-/// A secret the agent asked for (`ask_secret`, docs/protocol.md "Secrets"):
+/// A secret the agent asked for (`ask_secret`, docs/protocol/threads.md "Secrets"):
 /// typed here, sealed to the runner's key before it leaves the phone, so the
 /// Convex mirror only carries ciphertext. The value lives in this view's
 /// state until Save, which clears it at once; it's never logged, put in a
@@ -19,8 +19,8 @@ struct SecretCard: View {
     @State private var value = ""
     /// Save or Decline has been tapped: spinning until the card goes
     /// (AppModel.answerCard), there still if he leaves and comes back.
-    private var busy: Bool { model.cardAnswers[approvalId] != nil }
-    private var declining: Bool { model.cardAnswers[approvalId]?.choice == "decline" }
+    private var busy: Bool { model.cardAnswer(approvalId) != nil }
+    private var declining: Bool { model.cardAnswer(approvalId) == "decline" }
     @State private var problem: String?
     /// Checked against the key kept for this runner (from pairing), and the
     /// runner kept for this thread, once the card shows and again on Save.
@@ -102,7 +102,7 @@ struct SecretCard: View {
     /// Our own words, not the server's: nothing that came back with the request
     /// ends up on screen. The value's gone, so it's typed afresh.
     private var refusal: String? {
-        guard !busy, let choice = model.refusedSecrets[approvalId] else { return nil }
+        guard !busy, let choice = model.refusedSecret(approvalId) else { return nil }
         return choice == "decline" ? "Couldn't decline it. Try again." : "Couldn't send it. Type it again to retry."
     }
 

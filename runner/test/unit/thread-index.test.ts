@@ -7,7 +7,7 @@ import { ThreadIndex, toIndexRow, type RemoteThreads } from '../../src/thread-in
 import { nullLogger } from '../../src/log.ts';
 import type { Notification } from '../../src/runner.ts';
 
-function setup(takesStartedBy?: () => boolean, appConnected?: () => boolean, takesAsked?: () => boolean) {
+function setup(takesStartedBy?: () => boolean, appConnected?: () => boolean, takesAsked?: () => boolean, takesRequest?: () => boolean) {
   const h = makeHarness();
   const writes: { rows: { threadId: string; title: string; preview: string; status: string }[]; removed: string[]; keep?: string[] }[] = [];
   let onRemote: ((v: unknown) => void) | undefined;
@@ -37,6 +37,7 @@ function setup(takesStartedBy?: () => boolean, appConnected?: () => boolean, tak
     ...(takesStartedBy ? { takesStartedBy } : {}),
     ...(appConnected ? { appConnected } : {}),
     ...(takesAsked ? { takesAsked } : {}),
+    ...(takesRequest ? { takesRequest } : {}),
   });
   const flush = async () => {
     h.clock.advance(1500);
@@ -148,6 +149,22 @@ test('a row carries what Alex last said, once the backend takes it', async () =>
   index.refresh();
   await flush();
   assert.equal(row().asked, 'Try the GPU route');
+  index.stop();
+});
+
+test('a row carries what Alex first asked, once the backend takes it (API 96)', async () => {
+  let takes = false;
+  const { h, index, writes, flush } = setup(undefined, undefined, undefined, () => takes);
+  const { thread } = h.runner.create({ text: 'Try the GPU route', accountId: 'claude-3' });
+  index.start();
+  await flush();
+  const row = () => writes.flatMap((w) => w.rows).filter((r) => r.threadId === thread.id).at(-1) as unknown as { asked?: string; request?: string };
+  assert.equal(row().request, undefined, 'an older backend would turn the batch down');
+  assert.equal(row().asked, 'Try the GPU route');
+  takes = true;
+  index.refresh();
+  await flush();
+  assert.equal(row().request, 'Try the GPU route');
   index.stop();
 });
 

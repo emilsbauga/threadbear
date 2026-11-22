@@ -36,13 +36,21 @@ fn tag_srgb(window: &Window) {
     use objc2_quartz_core::CAMetalLayer;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return };
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
     // SAFETY: the window's own NSView, alive as long as the window is, asked
     // for its backing layer on the main thread.
     let view: &AnyObject = unsafe { handle.ns_view.cast::<AnyObject>().as_ref() };
+    // SAFETY: `layer` takes no arguments and returns a retained CALayer or
+    // nil, which the Option return type matches; `view` is live as above.
     let layer: Option<Retained<AnyObject>> = unsafe { objc2::msg_send![view, layer] };
-    let Some(Ok(layer)) = layer.map(|l| l.downcast::<CAMetalLayer>()) else { return };
+    let Some(Ok(layer)) = layer.map(|l| l.downcast::<CAMetalLayer>()) else {
+        return;
+    };
     // One the window chose itself (GPUI's Display P3 option) stays.
     if layer.colorspace().is_some() {
         return;
@@ -65,15 +73,24 @@ pub(crate) fn describe(window: &Window) -> String {
     use objc2_quartz_core::CAMetalLayer;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    let Ok(handle) = HasWindowHandle::window_handle(window) else { return "unknown".into() };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return "unknown".into() };
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return "unknown".into();
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return "unknown".into();
+    };
     // SAFETY: as in `tag_srgb`.
     let view: &AnyObject = unsafe { handle.ns_view.cast::<AnyObject>().as_ref() };
+    // SAFETY: as in `tag_srgb`, `layer` returns a retained CALayer or nil.
     let layer: Option<Retained<AnyObject>> = unsafe { objc2::msg_send![view, layer] };
-    let Some(Ok(layer)) = layer.map(|l| l.downcast::<CAMetalLayer>()) else { return "no metal layer".into() };
+    let Some(Ok(layer)) = layer.map(|l| l.downcast::<CAMetalLayer>()) else {
+        return "no metal layer".into();
+    };
     match layer.colorspace() {
         None => "none".into(),
-        Some(space) => CGColorSpace::name(Some(&*space)).map_or_else(|| "unnamed".into(), |n| n.to_string()),
+        Some(space) => {
+            CGColorSpace::name(Some(&*space)).map_or_else(|| "unnamed".into(), |n| n.to_string())
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 // What setup does about this Mac's backend key (scripts/setup.mjs, step 5;
-// docs/protocol.md, "Runner keys"), worked out apart from doing it so a
+// docs/protocol/keys.md, "Runner keys"), worked out apart from doing it so a
 // unit test can check it (runner/test/unit/runner-keys.test.ts). Node
 // built-ins only, like setup.
 //

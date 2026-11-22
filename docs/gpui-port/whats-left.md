@@ -3,7 +3,7 @@
 The GPUI app's gaps against the Swift app, in plain words, for going through
 one by one. It comes from a read of both apps' code on 11 Nov 2026 (the
 catalogue's rows are in `features.md`, with the ids in brackets here), less
-what's landed since; `PARITY.md` has what's been done, slice by slice, with
+what's landed since; `LOG.md` has what's been done, slice by slice, with
 how each was checked. Tick a line off, or strike it if it doesn't matter, as
 you go.
 

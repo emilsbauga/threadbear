@@ -1,5 +1,5 @@
 // What a script a patch names runs in turn, so patch trust can hash it
-// (docs/protocol.md, "Trusting a folder's patches").
+// (docs/protocol/trust.md, "Trusting a folder's patches").
 //
 // Hashing only the script a patch names left a hole: a trusted
 // `./setup.sh` that runs `./helper.sh` ran a changed helper with nobody

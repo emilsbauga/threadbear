@@ -1,4 +1,4 @@
-// usage.stats (docs/protocol.md, "Usage history"): each login's tokens by
+// usage.stats (docs/protocol/settings.md, "Usage history"): each login's tokens by
 // the hour and its limit readings over time, for the Usage panel's charts.
 import type { Clock } from './clock.ts';
 import { ErrorCode, RpcError } from './protocol.ts';

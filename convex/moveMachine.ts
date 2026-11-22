@@ -1,5 +1,5 @@
 // A thread's move to another runner as a state machine (docs/lifecycles.md,
-// docs/protocol.md "Moving a thread to another runner"). The main Mac's
+// docs/protocol/moves.md "Moving a thread to another runner"). The main Mac's
 // runner starts and cancels it; the runner that has the thread (S) and the
 // runner taking it (T) each take their own steps. Runners authenticate with
 // keys in their args, not ctx.auth, so each function in moves.ts checks who's

@@ -30,7 +30,10 @@ mod tests {
         assert_eq!(id, "threadbear.pin:abc-123:convex");
         assert_eq!(pinned(&id), Some(("abc-123", "convex")));
         // A panel's id can have colons of its own.
-        assert_eq!(pinned(&panel("t", "web.localhost:3000")), Some(("t", "web.localhost:3000")));
+        assert_eq!(
+            pinned(&panel("t", "web.localhost:3000")),
+            Some(("t", "web.localhost:3000"))
+        );
         assert_eq!(pinned("threadbear.pin:"), None);
         assert_eq!(pinned("threadbear.pin:t:"), None);
         assert_eq!(pinned("threadbear.pin::convex"), None);

@@ -95,7 +95,7 @@ someone whose work keeps them on its own tailnet: no phone and no second Mac the
    runner's key and sets `RUNNER_KEY`, deploys the functions and the website, and writes
    `runner.json`. A second Mac (`--existing`) gets no Convex login, deploy key or
    `RUNNER_KEY`: the first Mac gives it a runner key of its own with `tb runner add`
-   (docs/protocol.md, "Runner keys"). No `.env.local` and no env vars set by hand. With the self-hosted
+   (docs/protocol/keys.md, "Runner keys"). No `.env.local` and no env vars set by hand. With the self-hosted
    option it starts the local backend instead.
 3. Builds and installs the runner and the Mac app (today's two scripts, folded together).
    The runner's typecheck and unit tests (up to an hour on a busy Mac) only run when
@@ -271,17 +271,17 @@ it public is Mike's call, once he's happy for others to use it.
    end in a sandbox against a new project except the install step. Mike's defaults
    (default folder, account notes, pool folders) moved from the code into his
    runner.json. The pairing QR code and the browser sign-in moved into the Mac app on
-   28 Oct (Settings › Phone & browser, docs/protocol.md "Devices"), so setup now points
+   28 Oct (Settings › Phone & browser, docs/protocol/moves.md "Devices"), so setup now points
    there and the terminal scripts are the fallback.
 5. Done 29 Oct: Mike's releases. His runner tags a signed `release/<date>` once a
    day (runner.json `releases`); a fork's runner fetches and checks them
-   (runner/src/upstream.ts, docs/protocol.md "Mike's releases"); the Updates panel's
+   (runner/src/upstream.ts, docs/protocol/updates.md "Mike's releases"); the Updates panel's
    From Mike section and `tb updates` show what's new; Bring Them In starts the merge
    thread (docs/bringing-in-updates.md); `tb land` never rebases a merge; setup forks
    and pins the key.
 6. The heavy bits over Tailscale for the phone and the website.
 7. Done 29 Oct: a second runner on the same backend, on Bruce rather than Tinker Desk.
-   Each one has its own key since 5 Nov (docs/protocol.md, "Runner keys"). Any number of
+   Each one has its own key since 5 Nov (docs/protocol/keys.md, "Runner keys"). Any number of
    Macs or Linux servers can join: INSTALL.md sets them up.
 8. Done 7 Nov: self-hosted backend as a setup option (`setup --self-hosted`,
    docs/self-hosting.md). Docker on the same Mac, served with `tailscale serve`,
@@ -303,7 +303,7 @@ other app using that drive until someone answers. That
 goes for a fork and an own-deployment install as much as Mike's.
 `install-runner.sh` says this at the end of an install and opens the pane on a
 Mac without the app, `tb status` says while it's missing, and a Mac without the
-app gets a thread about it (docs/protocol.md, "A dialog on a Mac's screen").
+app gets a thread about it (docs/protocol/updates.md, "A dialog on a Mac's screen").
 
 ## Research notes
 
@@ -326,5 +326,5 @@ How things work today, from a read of the repo on 28 Oct:
 - Phone: `ios/ThreadbearKit/Sources/ThreadbearKit/Pairing.swift` (only `*.convex.cloud`
   and `*.convex.site`), `ios/scripts/pair-qr.swift`, `ios/scripts/install-phone.sh`
   (Mike's phone and App Store Connect key).
-- Network: `runner/src/config.ts` binds `127.0.0.1`; docs/convex-backend.md section 2
+- Network: `runner/src/config.ts` binds `127.0.0.1`; docs/archive/convex-backend-research.md section 2
   ruled out the phone talking to the runner directly because the Mac sleeps.

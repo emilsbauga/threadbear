@@ -31,3 +31,15 @@ Feature: Driving a private preview of the app
     When I select the production deployment through the script
     Then the script reports the production Convex dashboard
     And the script refuses an unknown deployment
+
+  # A covered window draws only when asked, so a shot straight after a panel
+  # moved caught the move's first frame: the Usage panel's column missing or
+  # empty (20 Nov). Linux's windows can't render to an image yet
+  # (render_to_image isn't there in gpui's Linux platform); the frozen Swift
+  # app shoots the screen instead.
+  @system.testharness @linux-pending @swift-pending
+  Scenario: A screenshot straight after a panel moves shows the panel drawn
+    When I click the honey pot in the activity bar
+    And I move the "usage" panel to the "right" edge
+    And I take a screenshot straight away
+    Then the screenshot shows the Usage tile "Tokens in the last 60 minutes" drawn where the panel has it

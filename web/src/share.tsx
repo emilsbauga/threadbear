@@ -9,9 +9,9 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useConvex, useMutation, useQuery } from 'convex/react';
 import { useLiveQuery } from './live';
 import { api } from '../../convex/_generated/api';
-import type { Id } from '../../convex/_generated/dataModel';
-import { MessageText, Pictures, picturesByRow, ToolRun, Worked, type PageMessage, type Picture } from './messages';
-import { CommandState } from './command-state';
+import { EditedDrafts, MessageText, Pictures, picturesByRow, ToolRun, Worked, type PageMessage, type Picture } from './messages';
+import { editedLabel, splitEdited } from './draft';
+import { CommandNote, useCommand } from './command-state';
 import { empty, hasMore, nextBefore, pictures, rows, takeLive, takeOlder, type History } from './share-history';
 import { fold, splitTurns, duration, roughly, type Item, type Turn } from './turns';
 import { day, modelLabel, plain, sender, sentences } from './format';
@@ -31,28 +31,30 @@ export function SharePage({ slug, token }: { slug: string; token: string | null 
   // The rows as far back as the reader has gone: the live answer, then older
   // chunks (share-history.ts).
   const [history, setHistory] = useState<History<Row, Pic>>(empty);
-  const historyRef = useRef(history);
   const [loadingChunk, setLoadingChunk] = useState(false);
-  useEffect(() => {
-    if (!data) return;
-    setShown(data);
-    if (data.state !== 'ok') return;
-    historyRef.current = takeLive(historyRef.current, data);
-    setHistory(historyRef.current);
-  }, [data]);
+  // A new live answer is taken in while rendering, not in an effect after:
+  // an effect drew the whole write-up (up to 400 rows) with the old answer
+  // first, then again with the new one, on every update.
+  const [took, setTook] = useState<typeof data>(undefined);
+  if (data !== took) {
+    setTook(data);
+    if (data) {
+      setShown(data);
+      if (data.state === 'ok') setHistory((h) => takeLive(h, data));
+    }
+  }
 
   const more = () => {
-    const before = nextBefore(historyRef.current);
+    const before = nextBefore(history);
     if (before === undefined || loadingChunk) return;
     setLoadingChunk(true);
     convex
       .query(api.share.view, { slug, limit: MORE, beforeSeq: before, ...(token ? { token } : {}) })
       .then((chunk) => {
         if (chunk.state !== 'ok') return;
-        const took = takeOlder(historyRef.current, chunk, before);
-        if (!took) return;
-        historyRef.current = took;
-        setHistory(took);
+        // Against the history as it is when the chunk comes: a live update
+        // may have moved it meanwhile, and takeOlder then turns it down.
+        setHistory((h) => takeOlder(h, chunk, before) ?? h);
       })
       // What's shown stays; the button can try again.
       .catch((e) => console.warn('could not load earlier messages', e))
@@ -207,7 +209,18 @@ function TurnSection({ id, turn, busy, after, inText, rows }: { id: string; turn
     item.kind === 'message' || item.kind === 'note' ? [item.m.seq] : item.kind === 'tools' ? item.items.map((m) => m.seq) : item.items.flatMap(seqsOf);
   for (const item of items) if (item.kind === 'worked') fromWork.push(...seqsOf(item).flatMap((s) => after.get(s) ?? []));
 
-  const text = (m: PageMessage) => <MessageText text={m.text} pictures={inText} seq={m.seq} rows={rows} />;
+  const text = (m: PageMessage) => {
+    // Drafts he changed, sent on the end of his words: chips, as in the app.
+    const edited = m.role === 'user' ? splitEdited(m.text) : undefined;
+    return edited ? (
+      <>
+        <MessageText text={edited.words} pictures={inText} seq={m.seq} rows={rows} />
+        <EditedDrafts drafts={edited.drafts} />
+      </>
+    ) : (
+      <MessageText text={m.text} pictures={inText} seq={m.seq} rows={rows} />
+    );
+  };
   return (
     <section className="turn" id={id} data-turn={turn.messages[0]!.seq}>
       {items.map((item) => {
@@ -264,7 +277,10 @@ function TurnSection({ id, turn, busy, after, inText, rows }: { id: string; turn
 // or another thread's agent starts it with.
 function askText(m: PageMessage): string {
   const from = sender(m);
-  return plain(from ? `${from.who}: ${from.body}` : m.text);
+  if (from) return plain(`${from.who}: ${from.body}`);
+  // His words without the drafts he changed, or what the chip calls one.
+  const edited = m.role === 'user' ? splitEdited(m.text) : undefined;
+  return plain(edited ? edited.words || editedLabel(edited.drafts[0]!.kind) : m.text);
 }
 
 // The outline on a narrow screen: "3 turns" in the bar, opening to the asks.
@@ -366,10 +382,10 @@ export function previewOf(title: string, messages: PageMessage[], images: Pictur
 // stop working under him.
 export function ShareControl({ token, threadId, share, onSharePage, preview }: { token: string; threadId: string; share?: { access: string; slug: string }; onSharePage?: boolean; preview?: Unfurl }) {
   const send = useMutation(api.phone.share);
-  const [pending, setPending] = useState<Id<'commands'> | null>(null);
+  const cmd = useCommand<'switch' | 'new'>(token);
   const shared = share?.access === 'link';
   const link = share ? `${location.origin}/s/${share.slug}` : undefined;
-  const run = async (access: 'off' | 'link', newLink?: boolean) => setPending(await send({ token, threadId, access, ...(newLink ? { newLink: true } : {}) }));
+  const run = (access: 'off' | 'link', newLink?: boolean) => void cmd.run(() => send({ token, threadId, access, ...(newLink ? { newLink: true } : {}) }), newLink ? 'new' : 'switch');
   return (
     <details className="pop">
       <summary className={`share-btn ${shared ? 'on' : ''}`} title={shared ? 'Anyone with the link can read this thread' : 'Share this thread'}>
@@ -388,7 +404,7 @@ export function ShareControl({ token, threadId, share, onSharePage, preview }: {
       <div className="pop-panel share-panel">
         <div className="row-line">
           <h3>Share with a link</h3>
-          <button className={`switch ${shared ? 'on' : ''}`} role="switch" aria-checked={shared} aria-label="Share with a link" disabled={pending !== null} onClick={() => run(shared ? 'off' : 'link')} />
+          <button className={`switch ${shared ? 'on' : ''}`} role="switch" aria-checked={shared} aria-label="Share with a link" aria-busy={cmd.spinning} disabled={cmd.busy} onClick={() => run(shared ? 'off' : 'link')} />
         </div>
         <p>{shared ? 'Anyone with the link can read this thread, and new replies show up as they come in. No sign-in.' : 'Only you can see this thread.'}</p>
         {shared && link ? (
@@ -413,12 +429,13 @@ export function ShareControl({ token, threadId, share, onSharePage, preview }: {
         ) : null}
         {shared && !onSharePage ? (
           <div className="buttons">
-            <button className="btn" disabled={pending !== null} onClick={() => run('link', true)} title="The old link stops working">
+            <button className="btn" disabled={cmd.busy} onClick={() => run('link', true)} title="The old link stops working">
+              {(cmd.state.kind === 'sending' || cmd.state.kind === 'waiting') && cmd.state.payload === 'new' ? <span className="spinner" /> : null}
               New link
             </button>
           </div>
         ) : null}
-        {pending ? <CommandState token={token} commandId={pending} onDone={() => setPending(null)} /> : null}
+        <CommandNote command={cmd} sending />
       </div>
     </details>
   );

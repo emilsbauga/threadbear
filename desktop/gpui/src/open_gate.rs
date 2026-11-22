@@ -23,7 +23,9 @@ pub(crate) fn install(app: WeakEntity<Threadbear>, cx: &mut App) {
 }
 
 fn refuse(message: String, cx: &mut App) {
-    let Some(app) = cx.try_global::<GateNotices>().and_then(|n| n.0.upgrade()) else { return };
+    let Some(app) = cx.try_global::<GateNotices>().and_then(|n| n.0.upgrade()) else {
+        return;
+    };
     // Said once the click's update is over: the gate is opened from inside
     // the app's own updates too (the row's Open on Web, the Connectors
     // panel, a project page's links), and updating the app from inside one
@@ -48,7 +50,10 @@ fn scripted_opens(what: &str) -> bool {
     if std::env::var_os("THREADBEAR_AUTOMATION").is_none() {
         return false;
     }
-    SCRIPTED_OPENS.lock().unwrap_or_else(|e| e.into_inner()).push(what.to_owned());
+    SCRIPTED_OPENS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(what.to_owned());
     true
 }
 
@@ -87,7 +92,13 @@ pub(crate) fn open_web(url: &str, cx: &mut App) -> bool {
             true
         }
         _ => {
-            refuse(format!("That isn't a web address, so Threadbear didn't open it: {}", policy::shown(url, 300)), cx);
+            refuse(
+                format!(
+                    "That isn't a web address, so Threadbear didn't open it: {}",
+                    policy::shown(url, 300)
+                ),
+                cx,
+            );
             false
         }
     }
@@ -110,7 +121,10 @@ pub(crate) fn open_web_page(url: &str, cx: &mut App) {
     cx.spawn(async move |cx| {
         let asked = web.clone();
         // Up to 4 s on BrowserBear's socket, off the main thread.
-        let handed = cx.background_executor().spawn(async move { crate::agent_browser::handoff(&asked) }).await;
+        let handed = cx
+            .background_executor()
+            .spawn(async move { crate::agent_browser::handoff(&asked) })
+            .await;
         if !handed {
             cx.update(|cx| system_open(&web, cx));
         }
@@ -126,10 +140,22 @@ pub(crate) fn open_link(url: &str, origin: Origin, cwd: &str, cx: &mut App) {
         LinkKind::Web(web) => open_web_page(&web, cx),
         LinkKind::File(path) => match policy::absolute(&path, cwd, &crate::files::home_dir()) {
             Some(path) => open_file(&path, origin, cx),
-            None => refuse(format!("Threadbear couldn't tell where {} is.", threadbear_core::highlights::last_component(&path)), cx),
+            None => refuse(
+                format!(
+                    "Threadbear couldn't tell where {} is.",
+                    threadbear_core::highlights::last_component(&path)
+                ),
+                cx,
+            ),
         },
         LinkKind::Ask(other) => open_other(&other, cx),
-        LinkKind::Refuse => refuse(format!("Threadbear couldn't open that link: {}", policy::shown(url, 300)), cx),
+        LinkKind::Refuse => refuse(
+            format!(
+                "Threadbear couldn't open that link: {}",
+                policy::shown(url, 300)
+            ),
+            cx,
+        ),
     }
 }
 
@@ -157,24 +183,37 @@ pub(crate) fn open_in_chrome_profile(url: &str, directory: &str, cx: &mut App) {
         // bundle it's given (Daybreak 112, 13 Nov 2026). Its signature is
         // checked off the main thread (a quarter of a second), with a note
         // up meanwhile, and anything but Google's own Chrome isn't started.
-        let Some(chrome) = running_chrome().filter(|p| policy::real_path(Path::new(p)).is_ok_and(|r| installed_where_apps_are(&r))) else {
+        let Some(chrome) = running_chrome().filter(|p| {
+            policy::real_path(Path::new(p)).is_ok_and(|r| installed_where_apps_are(&r))
+        }) else {
             system_open(&web, cx);
             return;
         };
-        let Some(app) = cx.try_global::<GateNotices>().and_then(|n| n.0.upgrade()) else { return };
+        let Some(app) = cx.try_global::<GateNotices>().and_then(|n| n.0.upgrade()) else {
+            return;
+        };
         let directory = directory.to_owned();
         cx.defer(move |cx| {
-            if !app.update(cx, |app, cx| app.begin_note("opening-chrome", "Opening Chrome…", cx)) { return; }
+            if !app.update(cx, |app, cx| {
+                app.begin_note("opening-chrome", "Opening Chrome…", cx)
+            }) {
+                return;
+            }
             cx.spawn(async move |cx| {
                 let page = web.clone();
-                let result = cx.background_executor().spawn(async move { start_chrome_profile(&chrome, &page, &directory) }).await;
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { start_chrome_profile(&chrome, &page, &directory) })
+                    .await;
                 cx.update(|cx| {
                     app.update(cx, |app, cx| app.end_note("opening-chrome", cx));
-                    if let Err(why) = result { refuse(why, cx) }
+                    if let Err(why) = result {
+                        refuse(why, cx)
+                    }
                 });
-            }).detach();
+            })
+            .detach();
         });
-        return;
     }
     #[cfg(not(target_os = "macos"))]
     system_open(&web, cx);
@@ -185,8 +224,16 @@ pub(crate) fn open_in_chrome_profile(url: &str, directory: &str, cx: &mut App) {
 fn running_chrome() -> Option<String> {
     use objc2_app_kit::NSRunningApplication;
     use objc2_foundation::NSString;
-    let running = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(threadbear_core::reply_links::CHROME_BUNDLE_ID));
-    (0..running.count()).find_map(|i| running.objectAtIndex(i).bundleURL().and_then(|u| u.path()).map(|p| p.to_string()))
+    let running = NSRunningApplication::runningApplicationsWithBundleIdentifier(
+        &NSString::from_str(threadbear_core::reply_links::CHROME_BUNDLE_ID),
+    );
+    (0..running.count()).find_map(|i| {
+        running
+            .objectAtIndex(i)
+            .bundleURL()
+            .and_then(|u| u.path())
+            .map(|p| p.to_string())
+    })
 }
 
 /// What Google's Chrome is signed as: Apple's anchor for a Developer ID,
@@ -196,7 +243,11 @@ fn running_chrome() -> Option<String> {
 /// for apps, which an agent confined to a project can't write. Chrome in
 /// ~/Applications goes to the default browser without its profile.
 #[cfg(target_os = "macos")]
-const INSTALLED_APPS: &[&str] = &["/Applications/", "/System/Applications/", "/Library/Developer/"];
+const INSTALLED_APPS: &[&str] = &[
+    "/Applications/",
+    "/System/Applications/",
+    "/Library/Developer/",
+];
 
 /// Whether a real (symlinks followed) path is under `INSTALLED_APPS`.
 #[cfg(target_os = "macos")]
@@ -210,7 +261,13 @@ const GOOGLE_CHROME: &str = "anchor apple generic and identifier \"com.google.Ch
 #[cfg(target_os = "macos")]
 fn start_chrome_profile(path: &str, web: &str, directory: &str) -> Result<(), String> {
     let real = signed_as(path, GOOGLE_CHROME).map_err(|_| "The Chrome that's running isn't Google's Chrome, so Threadbear didn't open the page in it.".to_owned())?;
-    std::process::Command::new("/usr/bin/open").arg("-na").arg(&real).args(["--args", &format!("--profile-directory={directory}"), web]).spawn().map(|_| ()).map_err(|e| format!("Chrome didn't open: {e}"))
+    std::process::Command::new("/usr/bin/open")
+        .arg("-na")
+        .arg(&real)
+        .args(["--args", &format!("--profile-directory={directory}"), web])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Chrome didn't open: {e}"))
 }
 
 /// The application at `path`, symlinks followed, if it's installed where
@@ -223,32 +280,58 @@ fn start_chrome_profile(path: &str, web: &str, directory: &str) -> Result<(), St
 #[cfg(target_os = "macos")]
 fn signed_as(path: &str, requirement: &str) -> Result<std::path::PathBuf, ()> {
     let real = policy::real_path(Path::new(path)).map_err(|_| ())?;
-    if !installed_where_apps_are(&real) { return Err(()); }
+    if !installed_where_apps_are(&real) {
+        return Err(());
+    }
     let signed = std::process::Command::new("/usr/bin/codesign")
         // Not --strict: that also refuses extended attributes on the bundle
         // ("detritus"), which a real Chrome on a real Mac can have (Tinker
         // Desk's did), and says nothing about who made the code. The
         // signature, the sealed resources and the requirement are checked.
         .args(["--verify", &format!("-R={requirement}")])
-        .arg(&real).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-    if signed.is_ok_and(|s| s.success()) { Ok(real) } else { Err(()) }
+        .arg(&real)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if signed.is_ok_and(|s| s.success()) {
+        Ok(real)
+    } else {
+        Err(())
+    }
 }
 
 /// The picture panel's fixed destination, as in Swift's ImagePanel. Nothing
 /// from a patch can choose a program or supply arguments here.
 pub(crate) fn open_simulator(cx: &mut App) {
-    if scripted_opens("application com.apple.iphonesimulator") { return; }
+    if scripted_opens("application com.apple.iphonesimulator") {
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::NSWorkspace;
         use objc2_foundation::NSString;
-        let url = NSWorkspace::sharedWorkspace().URLForApplicationWithBundleIdentifier(&NSString::from_str("com.apple.iphonesimulator"));
-        let Some(path) = url.and_then(|u| u.path()).map(|p| p.to_string()) else { refuse("Simulator isn't installed on this Mac.".into(), cx); return };
-        let Some(app) = cx.try_global::<GateNotices>().and_then(|n| n.0.upgrade()) else { return };
+        let url = NSWorkspace::sharedWorkspace().URLForApplicationWithBundleIdentifier(
+            &NSString::from_str("com.apple.iphonesimulator"),
+        );
+        let Some(path) = url.and_then(|u| u.path()).map(|p| p.to_string()) else {
+            refuse("Simulator isn't installed on this Mac.".into(), cx);
+            return;
+        };
+        let Some(app) = cx.try_global::<GateNotices>().and_then(|n| n.0.upgrade()) else {
+            return;
+        };
         cx.defer(move |cx| {
-            if !app.update(cx, |app, cx| app.begin_note("opening-simulator", "Opening Simulator…", cx)) { return; }
+            if !app.update(cx, |app, cx| {
+                app.begin_note("opening-simulator", "Opening Simulator…", cx)
+            }) {
+                return;
+            }
             cx.spawn(async move |cx| {
-                let result = cx.background_executor().spawn(async move { apple_simulator(&path) }).await;
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { apple_simulator(&path) })
+                    .await;
                 cx.update(|cx| {
                     app.update(cx, |app, cx| app.end_note("opening-simulator", cx));
                     match result {
@@ -256,9 +339,9 @@ pub(crate) fn open_simulator(cx: &mut App) {
                         Err(why) => refuse(why, cx),
                     }
                 });
-            }).detach();
+            })
+            .detach();
         });
-        return;
     }
     #[cfg(not(target_os = "macos"))]
     refuse("Simulator is only available on macOS.".to_owned(), cx);
@@ -266,12 +349,20 @@ pub(crate) fn open_simulator(cx: &mut App) {
 
 #[cfg(target_os = "macos")]
 fn apple_simulator(path: &str) -> Result<String, String> {
-    if policy::real_path(Path::new(path)).is_err() { return Err("Simulator isn't there any more.".to_owned()); }
+    if policy::real_path(Path::new(path)).is_err() {
+        return Err("Simulator isn't there any more.".to_owned());
+    }
     // Any .app on this Mac can be registered with Launch Services (Finder
     // and Spotlight do it on sight). A copied bundle id must never turn this
     // fixed button into a way to run that application without the gate's
     // usual question.
-    let real = signed_as(path, "anchor apple and identifier \"com.apple.iphonesimulator\"").map_err(|_| "The registered Simulator isn't Apple's Simulator, so Threadbear didn't open it.".to_owned())?;
+    let real = signed_as(
+        path,
+        "anchor apple and identifier \"com.apple.iphonesimulator\"",
+    )
+    .map_err(|_| {
+        "The registered Simulator isn't Apple's Simulator, so Threadbear didn't open it.".to_owned()
+    })?;
     Ok(real.to_string_lossy().into_owned())
 }
 
@@ -279,24 +370,36 @@ fn apple_simulator(path: &str) -> Result<String, String> {
 mod simulator_tests {
     #[test]
     fn the_selected_xcodes_simulator_passes_the_apple_signature_check() {
-        let selected = std::process::Command::new("/usr/bin/xcode-select").arg("-p").output().unwrap();
+        let selected = std::process::Command::new("/usr/bin/xcode-select")
+            .arg("-p")
+            .output()
+            .unwrap();
         let developer = String::from_utf8_lossy(&selected.stdout);
         let simulator = std::path::Path::new(developer.trim()).join("Applications/Simulator.app");
         // The command-line-tools-only Mac has no Simulator. GitHub's Mac
         // check has Xcode and exercises its real nested app signature.
-        if !simulator.exists() { return; }
-        assert!(super::apple_simulator(&simulator.to_string_lossy()).is_ok(), "Apple's installed Simulator was refused");
+        if !simulator.exists() {
+            return;
+        }
+        assert!(
+            super::apple_simulator(&simulator.to_string_lossy()).is_ok(),
+            "Apple's installed Simulator was refused"
+        );
     }
 
     #[test]
     fn a_copied_simulator_bundle_id_does_not_allow_an_unsigned_application() {
-        let folder = std::env::temp_dir().join(format!("tb-unsigned-simulator-{}.app", std::process::id()));
+        let folder =
+            std::env::temp_dir().join(format!("tb-unsigned-simulator-{}.app", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         threadbear_core::private_file::dir(&folder.join("Contents")).unwrap();
         threadbear_core::private_file::write(&folder.join("Contents/Info.plist"), br#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.apple.iphonesimulator</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>"#).unwrap();
         let result = super::apple_simulator(&folder.to_string_lossy());
         let _ = std::fs::remove_dir_all(folder);
-        assert!(result.is_err(), "An unsigned app with Simulator's id passed: {result:?}");
+        assert!(
+            result.is_err(),
+            "An unsigned app with Simulator's id passed: {result:?}"
+        );
     }
 }
 
@@ -330,7 +433,9 @@ pub(crate) fn opening_app(path: &str) -> Option<OpeningApp> {
 pub(crate) fn is_running(bundle_id: &str) -> bool {
     use objc2_app_kit::NSRunningApplication;
     use objc2_foundation::NSString;
-    NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle_id)).count() > 0
+    NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(bundle_id))
+        .count()
+        > 0
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -342,16 +447,24 @@ pub(crate) fn is_running(_bundle_id: &str) -> bool {
 /// and the rest ask, naming the app.
 fn open_other(url: &str, cx: &mut App) {
     if policy::is_own_scheme(url) {
-        refuse("Threadbear's own links only open threads from inside a thread.".to_owned(), cx);
+        refuse(
+            "Threadbear's own links only open threads from inside a thread.".to_owned(),
+            cx,
+        );
         return;
     }
     let scheme = url.split(':').next().unwrap_or("");
     let Some(app) = app_for_link(url) else {
-        refuse(format!("Nothing on this computer opens {scheme}: links."), cx);
+        refuse(
+            format!("Nothing on this computer opens {scheme}: links."),
+            cx,
+        );
         return;
     };
     let url = url.to_owned();
-    ask(policy::link_question(&url, &app), cx, move |cx, _| system_open(&url, cx));
+    ask(policy::link_question(&url, &app), cx, move |cx, _| {
+        system_open(&url, cx)
+    });
 }
 
 // ---------------------------------------------------------------- rich text
@@ -363,17 +476,34 @@ fn open_other(url: &str, cx: &mut App) {
 /// it), so a view made anywhere else would be a way round the gate. A caller
 /// with somewhere better for its links (the transcript's `link_clicked`)
 /// sets its own `on_link_click` after, which replaces this one.
-pub(crate) fn text_view(state: &Entity<gpui_kit::base::TextViewState>, origin: Origin, base: &str) -> gpui_kit::base::TextView {
+pub(crate) fn text_view(
+    state: &Entity<gpui_kit::base::TextViewState>,
+    origin: Origin,
+    base: &str,
+) -> gpui_kit::base::TextView {
     let base = base.to_owned();
-    gpui_kit::base::TextView::new(state).on_link_click(move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| clicked(url, event, origin, &base, cx))
+    gpui_kit::base::TextView::new(state).on_link_click(
+        move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| {
+            clicked(url, event, origin, &base, cx)
+        },
+    )
 }
 
 /// The base kit's markdown text made from a string, for text that takes the
 /// reading column's style (`rows::reading_style`), as the asks card's
 /// paragraphs do.
-pub(crate) fn reading_markdown_view(id: impl Into<ElementId>, text: impl Into<SharedString>, origin: Origin, base: &str) -> gpui_kit::base::TextView {
+pub(crate) fn reading_markdown_view(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    origin: Origin,
+    base: &str,
+) -> gpui_kit::base::TextView {
     let base = base.to_owned();
-    gpui_kit::base::TextView::markdown(id, text).on_link_click(move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| clicked(url, event, origin, &base, cx))
+    gpui_kit::base::TextView::markdown(id, text).on_link_click(
+        move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| {
+            clicked(url, event, origin, &base, cx)
+        },
+    )
 }
 
 /// A link in one of those clicked. The kit hands over a release of any
@@ -394,18 +524,25 @@ fn clicked(url: &str, event: &ClickEvent, origin: Origin, base: &str, cx: &mut A
 /// kind in that app. `path` is absolute.
 pub(crate) fn open_file(path: &str, origin: Origin, cx: &mut App) {
     match policy::decide_file(path, origin, &app_for) {
-        FileVerdict::Open { url, look, with, .. } => {
+        FileVerdict::Open {
+            url, look, with, ..
+        } => {
             open_checked(path, &look, &with, &url, cx);
         }
         FileVerdict::Refuse(why) => refuse(why, cx),
-        FileVerdict::Ask { mut question, url, look, with } => {
+        FileVerdict::Ask {
+            mut question,
+            url,
+            look,
+            with,
+        } => {
             // Always, and a remembered kind, only for the Mac's own app for
             // that kind, so a file a thread pointed at another app with its
             // own "open with" never matches one (Codex and Gemini, second
             // round). Looked up only for a kind that could be remembered.
             let default = look.trustable.as_ref().is_some_and(is_default_opener);
             if default && policy::remembered(&look, &crate::reply_links::trusted_openers()) {
-                open_checked(&path, &look, &with, &url, cx);
+                open_checked(path, &look, &with, &url, cx);
                 return;
             }
             if !default {
@@ -433,11 +570,18 @@ pub(crate) fn open_file(path: &str, origin: Origin, cx: &mut App) {
 fn is_default_opener(kind: &policy::TrustedOpener) -> bool {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::{NSString, NSURL};
-    if kind.extension.is_empty() || !kind.extension.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if kind.extension.is_empty()
+        || !kind
+            .extension
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return false;
     }
     static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let Some(folder) = opened_folder().map(|f| f.join("kinds")) else { return false };
+    let Some(folder) = opened_folder().map(|f| f.join("kinds")) else {
+        return false;
+    };
     if threadbear_core::private_file::dir(&folder).is_err() {
         return false;
     }
@@ -445,14 +589,20 @@ fn is_default_opener(kind: &policy::TrustedOpener) -> bool {
     // no "open with" left on an old one counts and two apps (a handover)
     // never share one. Nothing to sync: it's only ever asked about.
     let n = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let probe = folder.join(format!("probe-{}-{n}.{}", std::process::id(), kind.extension));
+    let probe = folder.join(format!(
+        "probe-{}-{n}.{}",
+        std::process::id(),
+        kind.extension
+    ));
     if std::fs::File::create_new(&probe).is_err() {
         return false;
     }
     let url = NSURL::fileURLWithPath(&NSString::from_str(&probe.to_string_lossy()));
     let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url);
     let _ = std::fs::remove_file(&probe);
-    app.and_then(|a| a.path()).and_then(|p| policy::real_path(Path::new(&p.to_string())).ok()).is_some_and(|real| real == kind.app)
+    app.and_then(|a| a.path())
+        .and_then(|p| policy::real_path(Path::new(&p.to_string())).ok())
+        .is_some_and(|real| real == kind.app)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -468,33 +618,66 @@ fn is_default_opener(_kind: &policy::TrustedOpener) -> bool {
 /// Tinker Desk, an app or script moved into the path after the reference was
 /// made never ran, and the one asked about did. Elsewhere a file opens from
 /// a private copy of the checked file.
-fn open_checked(path: &str, look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut App) -> bool {
+fn open_checked(
+    path: &str,
+    look: &policy::Look,
+    with: &policy::Opener,
+    url: &str,
+    cx: &mut App,
+) -> bool {
     if !policy::still_same(path, look, &app_for) {
-        refuse(format!("{} changed while Threadbear was opening it, so it didn't open it.", threadbear_core::highlights::last_component(path)), cx);
+        refuse(
+            format!(
+                "{} changed while Threadbear was opening it, so it didn't open it.",
+                threadbear_core::highlights::last_component(path)
+            ),
+            cx,
+        );
         return false;
     }
     if let Err(why) = open_the_file(look, with, url, cx) {
-        refuse(format!("{} {why}", threadbear_core::highlights::last_component(path)), cx);
+        refuse(
+            format!(
+                "{} {why}",
+                threadbear_core::highlights::last_component(path)
+            ),
+            cx,
+        );
         return false;
     }
     true
 }
 
 #[cfg(target_os = "macos")]
-fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut App) -> Result<(), String> {
+fn open_the_file(
+    look: &policy::Look,
+    with: &policy::Opener,
+    url: &str,
+    cx: &mut App,
+) -> Result<(), String> {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceOpenConfiguration};
     use objc2_foundation::{NSArray, NSString, NSURL};
     let changed = "changed while Threadbear was opening it, so it didn't open it.".to_owned();
     // The reference names the inode at the path now; it must be the one
     // looked at, or a swap got in between the look and here.
-    let Some(file) = NSURL::fileURLWithPath(&NSString::from_str(&look.resolved.to_string_lossy())).fileReferenceURL() else {
+    let Some(file) = NSURL::fileURLWithPath(&NSString::from_str(&look.resolved.to_string_lossy()))
+        .fileReferenceURL()
+    else {
         // A disk with no file references (ExFAT, a network share): a file
         // opens from a private copy of the one held since the look, as off
         // a Mac; a folder there isn't opened.
         if look.is_dir {
-            return Err("is on a disk Threadbear can't open folders on safely. Open it from Finder.".to_owned());
+            return Err(
+                "is on a disk Threadbear can't open folders on safely. Open it from Finder."
+                    .to_owned(),
+            );
         }
-        let copy = policy::checked_copy(look, &opened_folder().ok_or_else(|| changed.clone())?, COPY_LIMIT).map_err(|e| copy_error(&e))?;
+        let copy = policy::checked_copy(
+            look,
+            &opened_folder().ok_or_else(|| changed.clone())?,
+            COPY_LIMIT,
+        )
+        .map_err(|e| copy_error(&e))?;
         let copy_url = policy::file_url(&copy.to_string_lossy());
         if scripted_opens(url) {
             return Ok(());
@@ -504,18 +687,36 @@ fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut
         let ws = NSWorkspace::sharedWorkspace();
         match with {
             policy::Opener::App(app) => {
-                let app = NSURL::fileURLWithPath(&NSString::from_str(&app.to_string_lossy())).fileReferenceURL().ok_or_else(|| changed.clone())?;
-                ws.openURLs_withApplicationAtURL_configuration_completionHandler(&files, &app, &NSWorkspaceOpenConfiguration::configuration(), None);
+                let app = NSURL::fileURLWithPath(&NSString::from_str(&app.to_string_lossy()))
+                    .fileReferenceURL()
+                    .ok_or_else(|| changed.clone())?;
+                ws.openURLs_withApplicationAtURL_configuration_completionHandler(
+                    &files,
+                    &app,
+                    &NSWorkspaceOpenConfiguration::configuration(),
+                    None,
+                );
             }
             _ => system_open(&copy_url, cx),
         }
         return Ok(());
     };
-    let reference = |url: &NSURL| url.absoluteString().map(|s| policy::reference_id(&s.to_string())).unwrap_or_default();
+    let reference = |url: &NSURL| {
+        url.absoluteString()
+            .map(|s| policy::reference_id(&s.to_string()))
+            .unwrap_or_default()
+    };
     // An inode number names a file only on its own volume, so the volume
     // too (verify-fix's read of the Daybreak 125 fix): the one a reference
     // to the mount point found at the look carries.
-    let volume = look.volume.as_ref().and_then(|v| NSURL::fileURLWithPath(&NSString::from_str(&v.to_string_lossy())).fileReferenceURL()).and_then(|v| reference(&v)).map(|(volume, _)| volume);
+    let volume = look
+        .volume
+        .as_ref()
+        .and_then(|v| {
+            NSURL::fileURLWithPath(&NSString::from_str(&v.to_string_lossy())).fileReferenceURL()
+        })
+        .and_then(|v| reference(&v))
+        .map(|(volume, _)| volume);
     match (reference(&file), look.id, volume) {
         (Some((v, inode)), Some(id), Some(want)) if v == want && inode == id.inode => {}
         _ => return Err(changed),
@@ -531,8 +732,15 @@ fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut
         // The app by a reference too: the real app that was checked, not
         // whatever a path to it names by the time it launches.
         policy::Opener::App(app) => {
-            let app = NSURL::fileURLWithPath(&NSString::from_str(&app.to_string_lossy())).fileReferenceURL().ok_or_else(|| changed.clone())?;
-            ws.openURLs_withApplicationAtURL_configuration_completionHandler(&files, &app, &NSWorkspaceOpenConfiguration::configuration(), None);
+            let app = NSURL::fileURLWithPath(&NSString::from_str(&app.to_string_lossy()))
+                .fileReferenceURL()
+                .ok_or_else(|| changed.clone())?;
+            ws.openURLs_withApplicationAtURL_configuration_completionHandler(
+                &files,
+                &app,
+                &NSWorkspaceOpenConfiguration::configuration(),
+                None,
+            );
         }
         // Shown selected in Finder: a window rooted at it, or Finder asked
         // to open it, launched an app swapped in there; revealing didn't.
@@ -543,7 +751,9 @@ fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut
         // held aborted Threadbear (crash report, 18 Nov 2026). GPUI's own
         // reveal_path is never called from inside the click for the same
         // reason.
-        policy::Opener::FileViewer => cx.spawn(async move |_| ws.activateFileViewerSelectingURLs(&files)).detach(),
+        policy::Opener::FileViewer => cx
+            .spawn(async move |_| ws.activateFileViewerSelectingURLs(&files))
+            .detach(),
         // What was said yes to (an app opening as itself), by its reference.
         policy::Opener::System => {
             ws.openURL(&files.objectAtIndex(0));
@@ -557,7 +767,12 @@ fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut
 const COPY_LIMIT: u64 = 512 * 1024 * 1024;
 
 #[cfg(not(target_os = "macos"))]
-fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut App) -> Result<(), String> {
+fn open_the_file(
+    look: &policy::Look,
+    with: &policy::Opener,
+    url: &str,
+    cx: &mut App,
+) -> Result<(), String> {
     let _ = with;
     // A plain folder goes to the file browser by its path, after the look:
     // nothing here can hold one through the system's opener.
@@ -581,7 +796,9 @@ fn open_the_file(look: &policy::Look, with: &policy::Opener, url: &str, cx: &mut
 /// What's said when a checked file couldn't be copied to open it.
 fn copy_error(e: &std::io::Error) -> String {
     match e.kind() {
-        std::io::ErrorKind::FileTooLarge => "is too big to open from Threadbear. Open it from your file manager.".to_owned(),
+        std::io::ErrorKind::FileTooLarge => {
+            "is too big to open from Threadbear. Open it from your file manager.".to_owned()
+        }
         _ => "changed while Threadbear was opening it, so it didn't open it.".to_owned(),
     }
 }
@@ -596,41 +813,91 @@ fn opened_folder() -> Option<std::path::PathBuf> {
     }
     if cfg!(windows) {
         let local = std::env::var_os("LOCALAPPDATA").filter(|d| !d.is_empty())?;
-        return Some(std::path::PathBuf::from(local).join("Threadbear").join("opened"));
+        return Some(
+            std::path::PathBuf::from(local)
+                .join("Threadbear")
+                .join("opened"),
+        );
     }
     let home = std::env::var_os("HOME").filter(|d| !d.is_empty())?;
-    Some(std::path::PathBuf::from(home).join(".cache").join("threadbear").join("opened"))
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".cache")
+            .join("threadbear")
+            .join("opened"),
+    )
 }
 
 /// A small, read-only raster for a local PDF or video hover card. Called on
 /// the background executor; the asset loader serializes decoders. Failure keeps the kind icon.
 #[cfg(target_os = "macos")]
-pub(crate) fn media_thumbnail(path: &str, origin: Origin, expected: Option<policy::MediaVersion>) -> Option<Vec<u8>> {
+pub(crate) fn media_thumbnail(
+    path: &str,
+    origin: Origin,
+    expected: Option<policy::MediaVersion>,
+) -> Option<Vec<u8>> {
     use std::os::fd::IntoRawFd as _;
     use std::os::unix::ffi::OsStrExt as _;
     let expected = expected?;
     let kind = policy::media_kind(path)?;
-    if !matches!(kind, policy::Media::Pdf | policy::Media::Video) { return None }
+    if !matches!(kind, policy::Media::Pdf | policy::Media::Video) {
+        return None;
+    }
     let pdf = kind == policy::Media::Pdf;
-    let policy::MediaVerdict::Show(checked) = policy::decide_media(path, origin) else { return None };
-    if policy::media_version(&checked.file.metadata().ok()?) != Some(expected) { return None }
-    if pdf && checked.len > 16 * 1024 * 1024 { return None }
+    let policy::MediaVerdict::Show(checked) = policy::decide_media(path, origin) else {
+        return None;
+    };
+    if policy::media_version(&checked.file.metadata().ok()?) != Some(expected) {
+        return None;
+    }
+    if pdf && checked.len > 16 * 1024 * 1024 {
+        return None;
+    }
     let name = std::ffi::CString::new(checked.real.as_os_str().as_bytes()).ok()?;
     let length = i64::try_from(checked.len).ok()?;
     extern "C" {
-        fn tb_media_thumbnail(file: i32, length: i64, name: *const std::ffi::c_char, pdf: bool, expected: *const policy::MediaVersion, out: *mut u8, capacity: usize) -> usize;
+        fn tb_media_thumbnail(
+            file: i32,
+            length: i64,
+            name: *const std::ffi::c_char,
+            pdf: bool,
+            expected: *const policy::MediaVersion,
+            out: *mut u8,
+            capacity: usize,
+        ) -> usize;
     }
     let mut png = vec![0; 2 * 1024 * 1024];
     // The native function owns the descriptor on every path, reopens no original path,
     // caps its raster at 552×340 and its system thumbnail request at five seconds.
-    let count = unsafe { tb_media_thumbnail(checked.file.into_raw_fd(), length, name.as_ptr(), pdf, &expected, png.as_mut_ptr(), png.len()) };
-    if count == 0 || count > png.len() { return None }
+    // SAFETY: the fd is ours to give away (into_raw_fd), `name` is a live
+    // CString, `expected` is a repr(C) MediaVersion matching TBMediaVersion,
+    // and the native side writes at most `png.len()` bytes into `png`.
+    let count = unsafe {
+        tb_media_thumbnail(
+            checked.file.into_raw_fd(),
+            length,
+            name.as_ptr(),
+            pdf,
+            &expected,
+            png.as_mut_ptr(),
+            png.len(),
+        )
+    };
+    if count == 0 || count > png.len() {
+        return None;
+    }
     png.truncate(count);
     Some(png)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn media_thumbnail(_path: &str, _origin: Origin, _expected: Option<policy::MediaVersion>) -> Option<Vec<u8>> { None }
+pub(crate) fn media_thumbnail(
+    _path: &str,
+    _origin: Origin,
+    _expected: Option<policy::MediaVersion>,
+) -> Option<Vec<u8>> {
+    None
+}
 
 // ---------------------------------------------------------------- shown in the app
 
@@ -647,14 +914,20 @@ pub(crate) fn read_icon(path: &Path, origin: Origin) -> Result<CheckedIcon, std:
     if origin == Origin::OtherMac || !path.is_absolute() {
         return Err(std::io::Error::other("That icon isn't on this Mac"));
     }
-    let ext = |p: &Path| p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let ext = |p: &Path| {
+        p.extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
     let wanted = ext(path);
     let real = policy::real_path(path)?;
     if ext(&real) != wanted || !matches!(wanted.as_str(), "app" | "pdf" | "icns") {
         return Err(std::io::Error::other("That isn't a Mac icon"));
     }
     if wanted == "app" {
-        if !real.is_dir() { return Err(std::io::Error::other("That isn't an application bundle")); }
+        if !real.is_dir() {
+            return Err(std::io::Error::other("That isn't an application bundle"));
+        }
         return application_icon(&real);
     }
     checked_icon_file(&real, &wanted)
@@ -669,23 +942,52 @@ pub(crate) fn read_icon(path: &Path, origin: Origin) -> Result<CheckedIcon, std:
 #[cfg(target_os = "macos")]
 fn application_icon(bundle: &Path) -> Result<CheckedIcon, std::io::Error> {
     extern "C" {
-        fn tb_bundle_icon_file(plist: *const u8, length: usize, output: *mut u8, capacity: usize) -> isize;
+        fn tb_bundle_icon_file(
+            plist: *const u8,
+            length: usize,
+            output: *mut u8,
+            capacity: usize,
+        ) -> isize;
     }
     let inside = |p: &Path| -> Result<std::path::PathBuf, std::io::Error> {
         let real = policy::real_path(p)?;
-        if real.starts_with(bundle) && real != bundle { Ok(real) } else { Err(std::io::Error::other("That application's icon is outside it")) }
+        if real.starts_with(bundle) && real != bundle {
+            Ok(real)
+        } else {
+            Err(std::io::Error::other(
+                "That application's icon is outside it",
+            ))
+        }
     };
     const PLIST_BYTES: usize = 1024 * 1024;
-    let plist = policy::local_read(&inside(&bundle.join("Contents/Info.plist"))?, PLIST_BYTES + 1)?;
-    if plist.len() > PLIST_BYTES { return Err(std::io::Error::other("That application's Info.plist is too big")); }
+    let plist = policy::local_read(
+        &inside(&bundle.join("Contents/Info.plist"))?,
+        PLIST_BYTES + 1,
+    )?;
+    if plist.len() > PLIST_BYTES {
+        return Err(std::io::Error::other(
+            "That application's Info.plist is too big",
+        ));
+    }
     let mut name = [0u8; 256];
-    let length = unsafe { tb_bundle_icon_file(plist.as_ptr(), plist.len(), name.as_mut_ptr(), name.len()) };
-    let name = usize::try_from(length).ok().and_then(|n| std::str::from_utf8(&name[..n]).ok()).unwrap_or_default();
+    // SAFETY: `plist` is `plist.len()` readable bytes, borrowed (no copy, not
+    // freed) for the call; the native side writes fewer than `name.len()`
+    // bytes into `name` and returns how many, or -1.
+    let length =
+        unsafe { tb_bundle_icon_file(plist.as_ptr(), plist.len(), name.as_mut_ptr(), name.len()) };
+    let name = usize::try_from(length)
+        .ok()
+        .and_then(|n| std::str::from_utf8(&name[..n]).ok())
+        .unwrap_or_default();
     // A file name in Resources, nothing that climbs or names a folder.
     if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\', '\0']) {
         return Err(std::io::Error::other("That application names no icon file"));
     }
-    let file = if name.to_ascii_lowercase().ends_with(".icns") { name.to_owned() } else { format!("{name}.icns") };
+    let file = if name.to_ascii_lowercase().ends_with(".icns") {
+        name.to_owned()
+    } else {
+        format!("{name}.icns")
+    };
     let real = inside(&bundle.join("Contents/Resources").join(file))?;
     checked_icon_file(&real, "icns")
 }
@@ -697,16 +999,22 @@ fn checked_icon_file(real: &Path, wanted: &str) -> Result<CheckedIcon, std::io::
     let file = policy::local_open(real)?;
     let meta = file.metadata()?;
     if !meta.is_file() || meta.len() > 32 * 1024 * 1024 {
-        return Err(std::io::Error::other("That icon isn't a small regular file"));
+        return Err(std::io::Error::other(
+            "That icon isn't a small regular file",
+        ));
     }
     let mut head = [0u8; 8];
     let got = std::os::unix::fs::FileExt::read_at(&file, &mut head, 0)?;
     let matches = if wanted == "pdf" {
         policy::looks_like(policy::Media::Pdf, &head[..got], meta.len())
     } else {
-        got == 8 && head.starts_with(b"icns") && u32::from_be_bytes(head[4..8].try_into().unwrap()) as u64 == meta.len()
+        got == 8
+            && head.starts_with(b"icns")
+            && u32::from_be_bytes([head[4], head[5], head[6], head[7]]) as u64 == meta.len()
     };
-    if !matches { return Err(std::io::Error::other("That file isn't the icon it names")); }
+    if !matches {
+        return Err(std::io::Error::other("That file isn't the icon it names"));
+    }
     Ok(CheckedIcon(file, meta.len()))
 }
 
@@ -721,12 +1029,24 @@ pub(crate) fn icon_png(icon: CheckedIcon) -> Result<Vec<u8>, std::io::Error> {
     }
     let mut output = std::ptr::null_mut();
     let CheckedIcon(file, length) = icon;
+    // SAFETY: `file` is open and owned here through the call, which only
+    // preads it; `output` is a valid out pointer the native side sets to a
+    // malloc'd buffer or null.
     let length = unsafe { tb_file_icon_png(file.as_raw_fd(), length as i64, &mut output) };
-    if output.is_null() || length <= 0 { return Err(std::io::Error::other("That icon couldn't be decoded")); }
+    if output.is_null() || length <= 0 {
+        return Err(std::io::Error::other("That icon couldn't be decoded"));
+    }
     // AppKit hands over a malloc copy, so Rust owns neither an Objective-C
     // object nor the allocation after this copy and free.
-    let bytes = unsafe { std::slice::from_raw_parts(output.cast::<u8>(), length as usize).to_vec() };
-    unsafe { free(output); }
+    // SAFETY: non-null and `length` > 0, checked above; the native side
+    // returns the byte count of the malloc'd PNG it put in `output`.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(output.cast::<u8>(), length as usize).to_vec() };
+    // SAFETY: `output` came from malloc on the native side, and is freed once
+    // here after the bytes were copied out.
+    unsafe {
+        free(output);
+    }
     Ok(bytes)
 }
 
@@ -743,27 +1063,55 @@ mod icon_tests;
 /// nothing reads a film or a PDF any other way, and a PDF's links come back
 /// here (`open_link`) rather than going to the system
 /// (desktop/core/tests/open_gate_source.rs).
-pub(crate) fn show_media(path: &str, origin: Origin, kind: crate::media_view::Kind, opening: crate::media_view::Opening) -> Result<crate::media_view::Media, String> {
+pub(crate) fn show_media(
+    path: &str,
+    origin: Origin,
+    kind: crate::media_view::Kind,
+    opening: crate::media_view::Opening,
+) -> Result<crate::media_view::Media, String> {
     use crate::media_view::Kind;
     use policy::{Media, MediaVerdict};
-    let wants = match kind { Kind::PaneDocument => Media::Pdf, Kind::PaneQuickLook => Media::Office, _ => Media::Video };
+    let wants = match kind {
+        Kind::PaneDocument => Media::Pdf,
+        Kind::PaneQuickLook => Media::Office,
+        _ => Media::Video,
+    };
     let name = threadbear_core::highlights::last_component(path).to_owned();
     if policy::media_kind(path) != Some(wants) {
-        let what = match wants { Media::Pdf => "a PDF", Media::Office => "an Office or iWork document", Media::Video => "a video" };
-        return Err(format!("{name} isn't {what}, so Threadbear didn't open it."));
+        let what = match wants {
+            Media::Pdf => "a PDF",
+            Media::Office => "an Office or iWork document",
+            Media::Video => "a video",
+        };
+        return Err(format!(
+            "{name} isn't {what}, so Threadbear didn't open it."
+        ));
     }
     match policy::decide_media(path, origin) {
         MediaVerdict::Refuse(why) => Err(why),
-        MediaVerdict::Show(checked) => open_media(checked, kind, opening).ok_or_else(|| format!("{name} couldn't be read, so it isn't showing.")),
+        MediaVerdict::Show(checked) => open_media(checked, kind, opening)
+            .ok_or_else(|| format!("{name} couldn't be read, so it isn't showing.")),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn open_media(checked: policy::CheckedFile, kind: crate::media_view::Kind, opening: crate::media_view::Opening) -> Option<crate::media_view::Media> {
+fn open_media(
+    checked: policy::CheckedFile,
+    kind: crate::media_view::Kind,
+    opening: crate::media_view::Opening,
+) -> Option<crate::media_view::Media> {
     use std::os::fd::IntoRawFd as _;
     use std::os::unix::ffi::OsStrExt as _;
     extern "C" {
-        fn tb_media_open(parent: *mut std::ffi::c_void, file: i32, length: i64, path: *const std::ffi::c_char, kind: i32, muted: bool, volume: f32) -> *mut std::ffi::c_void;
+        fn tb_media_open(
+            parent: *mut std::ffi::c_void,
+            file: i32,
+            length: i64,
+            path: *const std::ffi::c_char,
+            kind: i32,
+            muted: bool,
+            volume: f32,
+        ) -> *mut std::ffi::c_void;
     }
     let path = std::ffi::CString::new(checked.real.as_os_str().as_bytes()).ok()?;
     // Among them all they're muted, as they all play at once; on the stage,
@@ -777,14 +1125,31 @@ fn open_media(checked: policy::CheckedFile, kind: crate::media_view::Kind, openi
     // The view owns the open file from here, and closes it, whether or not
     // it's made.
     let file = checked.file.into_raw_fd();
-    let view = unsafe { tb_media_open(opening.parent, file, length, path.as_ptr(), kind as i32, muted, volume) };
-    // Safety: a view tb_media_open just made, owned by nothing else.
+    // SAFETY: `opening.parent` is the window's live content view, called on
+    // the main thread while the window draws; the fd is handed over and
+    // closed by the native side on every path; `path` is a live CString.
+    let view = unsafe {
+        tb_media_open(
+            opening.parent,
+            file,
+            length,
+            path.as_ptr(),
+            kind as i32,
+            muted,
+            volume,
+        )
+    };
+    // SAFETY: a view tb_media_open just made, owned by nothing else.
     unsafe { crate::media_view::Media::from_native(view, kind) }
 }
 
 /// Elsewhere there's no view for them: they open in their own app.
 #[cfg(not(target_os = "macos"))]
-fn open_media(_checked: policy::CheckedFile, _kind: crate::media_view::Kind, _opening: crate::media_view::Opening) -> Option<crate::media_view::Media> {
+fn open_media(
+    _checked: policy::CheckedFile,
+    _kind: crate::media_view::Kind,
+    _opening: crate::media_view::Opening,
+) -> Option<crate::media_view::Media> {
     None
 }
 
@@ -792,7 +1157,13 @@ fn open_media(_checked: policy::CheckedFile, _kind: crate::media_view::Kind, _op
 /// shows it without opening it. Another Mac's file isn't on this one.
 pub(crate) fn reveal(path: &str, origin: Origin, cx: &mut App) {
     if origin == Origin::OtherMac {
-        refuse(format!("{} is on another Mac.", threadbear_core::highlights::last_component(path)), cx);
+        refuse(
+            format!(
+                "{} is on another Mac.",
+                threadbear_core::highlights::last_component(path)
+            ),
+            cx,
+        );
         return;
     }
     let result = policy::with_local_path(Path::new(path), |_| {
@@ -800,7 +1171,11 @@ pub(crate) fn reveal(path: &str, origin: Origin, cx: &mut App) {
             #[cfg(windows)]
             let real = policy::real_path(Path::new(path))?;
             #[cfg(windows)]
-            if real.to_string_lossy().starts_with(r"\\") { return Err(std::io::Error::other("That path can't be shown by the Windows shell.")); }
+            if real.to_string_lossy().starts_with(r"\\") {
+                return Err(std::io::Error::other(
+                    "That path can't be shown by the Windows shell.",
+                ));
+            }
             #[cfg(not(windows))]
             let real = Path::new(path).to_path_buf();
             cx.reveal_path(policy::system_path(&real));
@@ -824,7 +1199,12 @@ pub(crate) fn reveal(path: &str, origin: Origin, cx: &mut App) {
 /// until then. With no window to ask over, the answer is no.
 fn ask(question: Question, cx: &mut App, yes: impl FnOnce(&mut App, bool) + 'static) {
     cx.defer(move |cx| {
-        let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
+        let Some(handle) = cx
+            .active_window()
+            .or_else(|| cx.windows().into_iter().next())
+        else {
+            return;
+        };
         let mut answers = vec![PromptButton::cancel("Cancel")];
         if let Some(always) = &question.always {
             answers.push(PromptButton::new(always.clone()));
@@ -832,7 +1212,17 @@ fn ask(question: Question, cx: &mut App, yes: impl FnOnce(&mut App, bool) + 'sta
         answers.push(PromptButton::new(question.yes.clone()));
         let always_at = question.always.is_some().then_some(1);
         let open_at = answers.len() - 1;
-        let Ok(answer) = handle.update(cx, |_, window, cx| window.prompt(PromptLevel::Critical, &question.title, Some(&question.detail), &answers, cx)) else { return };
+        let Ok(answer) = handle.update(cx, |_, window, cx| {
+            window.prompt(
+                PromptLevel::Critical,
+                &question.title,
+                Some(&question.detail),
+                &answers,
+                cx,
+            )
+        }) else {
+            return;
+        };
         cx.spawn(async move |cx| {
             // Only a yes button's own index: a sheet ended any other way (its
             // window closed under it) gives a code that's neither, and that's
@@ -860,8 +1250,13 @@ fn app_for(file: &Path) -> Option<OpeningApp> {
     // Named and identified as the real app, links followed, so a link in
     // the project named after one app and pointing at another never shows
     // the first's name over the second's id (Gemini's review, 19 Nov).
-    match app.path().and_then(|p| policy::real_path(Path::new(&p.to_string())).ok()) {
-        Some(real) => describe_app(&NSURL::fileURLWithPath(&NSString::from_str(&real.to_string_lossy()))),
+    match app
+        .path()
+        .and_then(|p| policy::real_path(Path::new(&p.to_string())).ok())
+    {
+        Some(real) => describe_app(&NSURL::fileURLWithPath(&NSString::from_str(
+            &real.to_string_lossy(),
+        ))),
         None => describe_app(&app),
     }
 }
@@ -885,7 +1280,10 @@ fn app_for_link(link: &str) -> Option<String> {
 /// Elsewhere the system can't be asked, so the link's scheme stands for its app.
 #[cfg(not(target_os = "macos"))]
 fn app_for_link(link: &str) -> Option<String> {
-    Some(format!("the app for {}: links", link.split(':').next().unwrap_or("")))
+    Some(format!(
+        "the app for {}: links",
+        link.split(':').next().unwrap_or("")
+    ))
 }
 
 /// The app web links open in ("Google Chrome"), for naming what `open_web`
@@ -899,7 +1297,16 @@ pub(crate) fn default_browser() -> Option<String> {
 fn describe_app(app: &objc2_foundation::NSURL) -> Option<OpeningApp> {
     use objc2_foundation::NSBundle;
     let path = std::path::PathBuf::from(app.path()?.to_string());
-    let bundle_id = NSBundle::bundleWithURL(app).and_then(|b| b.bundleIdentifier()).map(|s| s.to_string());
-    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "its app".to_owned());
-    Some(OpeningApp { path, bundle_id, name })
+    let bundle_id = NSBundle::bundleWithURL(app)
+        .and_then(|b| b.bundleIdentifier())
+        .map(|s| s.to_string());
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "its app".to_owned());
+    Some(OpeningApp {
+        path,
+        bundle_id,
+        name,
+    })
 }

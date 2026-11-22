@@ -71,7 +71,16 @@ pub struct NavigationSwipe {
 
 impl Default for NavigationSwipe {
     fn default() -> Self {
-        Self { phase: Phase::Idle, travel: 0., holds: true, allowed: vec![], empty: vec![], sum_x: 0., sum_y: 0., last_speed: 0. }
+        Self {
+            phase: Phase::Idle,
+            travel: 0.,
+            holds: true,
+            allowed: vec![],
+            empty: vec![],
+            sum_x: 0.,
+            sum_y: 0.,
+            last_speed: 0.,
+        }
     }
 }
 
@@ -104,13 +113,20 @@ impl NavigationSwipe {
 
     /// Far enough along that letting go goes there.
     pub fn armed(&self) -> bool {
-        self.direction().is_some() && !self.is_empty() && self.travel >= THRESHOLD && self.travel >= self.sum_y.abs()
+        self.direction().is_some()
+            && !self.is_empty()
+            && self.travel >= THRESHOLD
+            && self.travel >= self.sum_y.abs()
     }
 
     /// Fingers touched the trackpad, with the ways there's somewhere to go.
     /// `empty`: more ways it can swipe, with nowhere to go.
     pub fn begin(&mut self, allowed: &[Direction], empty: &[Direction], holds: bool) {
-        self.empty = empty.iter().copied().filter(|d| !allowed.contains(d)).collect();
+        self.empty = empty
+            .iter()
+            .copied()
+            .filter(|d| !allowed.contains(d))
+            .collect();
         self.allowed = allowed.to_vec();
         self.phase = Phase::Deciding;
         self.travel = 0.;
@@ -173,7 +189,11 @@ impl NavigationSwipe {
                 return Verdict::Scroll;
             }
         }
-        let way = if self.sum_x > 0. { Direction::Back } else { Direction::Forward };
+        let way = if self.sum_x > 0. {
+            Direction::Back
+        } else {
+            Direction::Forward
+        };
         if !self.allowed.contains(&way) && !self.empty.contains(&way) {
             return Verdict::Scroll;
         }
@@ -199,7 +219,8 @@ impl NavigationSwipe {
             if self.travel >= THRESHOLD {
                 return Some(direction);
             }
-            (still_moving && self.last_speed >= FLICK_SPEED && self.travel >= FLICK_TRAVEL).then_some(direction)
+            (still_moving && self.last_speed >= FLICK_SPEED && self.travel >= FLICK_TRAVEL)
+                .then_some(direction)
         })();
         self.reset();
         out
@@ -253,7 +274,10 @@ mod tests {
 
     #[test]
     fn a_swipe_that_drifts_is_still_a_swipe() {
-        assert_eq!(both(&[(2., 1.), (2., 1.), (2., 1.)]).direction(), Some(Back));
+        assert_eq!(
+            both(&[(2., 1.), (2., 1.), (2., 1.)]).direction(),
+            Some(Back)
+        );
     }
 
     #[test]
@@ -329,7 +353,11 @@ mod tests {
     #[test]
     fn a_pause_before_lifting_isnt_a_flick() {
         assert_eq!(both(&[(8., 0.), (60., 0.), (40., 0.)]).end(false), None);
-        assert_eq!(both(&[(8., 0.), (230., 0.)]).end(false), Some(Back), "past the line goes however slowly");
+        assert_eq!(
+            both(&[(8., 0.), (230., 0.)]).end(false),
+            Some(Back),
+            "past the line goes however slowly"
+        );
     }
 
     #[test]
@@ -358,7 +386,11 @@ mod tests {
         swipe.begin(&[Back], &[], false);
         assert_eq!(swipe.move_by(5., 0., SIXTIETH), Verdict::Wait);
         assert_eq!(swipe.move_by(2., 0., SIXTIETH), Verdict::Swipe);
-        assert_eq!(swiped(&[(5., 4.), (1., 1.)], &[Back], false).phase, Phase::Ignoring, "too diagonal for a row");
+        assert_eq!(
+            swiped(&[(5., 4.), (1., 1.)], &[Back], false).phase,
+            Phase::Ignoring,
+            "too diagonal for a row"
+        );
         let mut wobble = NavigationSwipe::default();
         wobble.begin(&[Back], &[], false);
         assert_eq!(wobble.move_by(0., 1., SIXTIETH), Verdict::Wait);
@@ -367,7 +399,16 @@ mod tests {
 
     #[test]
     fn it_and_a_row_always_agree_whether_its_across() {
-        for (dx, dy) in [(8., 0.), (7., 4.), (6., 4.), (9., 6.), (5., 5.), (0., 9.), (3., 8.), (6., 1.)] {
+        for (dx, dy) in [
+            (8., 0.),
+            (7., 4.),
+            (6., 4.),
+            (9., 6.),
+            (5., 5.),
+            (0., 9.),
+            (3., 8.),
+            (6., 1.),
+        ] {
             let mut row = row_swipe::RowSwipe::default();
             row.begin(false);
             row.move_by(dx, dy);

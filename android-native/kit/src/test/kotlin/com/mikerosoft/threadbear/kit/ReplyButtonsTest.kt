@@ -1,12 +1,14 @@
 package com.mikerosoft.threadbear.kit
 
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
-/** Reply buttons (docs/protocol.md, "Reply buttons"): a daily brief's `[Fill in the form](button:<id>)` drawn as a button that starts a thread. */
+/** Reply buttons (docs/protocol/events.md, "Reply buttons"): a daily brief's `[Fill in the form](button:<id>)` drawn as a button that starts a thread. */
 class ReplyButtonsTest {
     private val start = MessageButton("abcd1234", "Fill in the form", "start", target = "pebble")
 
@@ -58,5 +60,53 @@ class ReplyButtonsTest {
     @Test fun hintsSayWhereItGoes() {
         assertEquals("Starts a thread in pebble", ReplyButtons.hint(start))
         assertEquals("Sends a message", ReplyButtons.hint(MessageButton("x", "y", "send")))
+    }
+
+    /** A shared case file's cases this app runs: those whose `differs` doesn't name Android. */
+    private fun shared(path: String): List<JsonObject> =
+        (parseJson(File(path).readText()) as JsonObject).arr("cases")!!.map { it as JsonObject }.filter { it.obj("differs")?.containsKey("android") != true }
+
+    /** How a button looks, against the cases the desktop app, the iPhone and the website run too. */
+    @Test fun looksMatchTheSharedCases() {
+        val cases = shared("../../shared/cases/reply-buttons.json")
+        assertTrue(cases.size > 5)
+        for (c in cases) {
+            val name = c.str("name")
+            val input = c.obj("input")!!
+            val row = input.obj("button")!!
+            val press = input.obj("press")!!
+            val expect = c.obj("expect")!!
+            val button = MessageButton("abcd1234", "Go", row.str("kind")!!, target = row.str("target"), pressedThreadId = row.str("pressedThreadId"), failed = row.str("failed"))
+            val state = press.str("state")!!
+            val status = if (state == "none" || state == "sending") null else CommandStatus(CommandState.valueOf(state.uppercase()), note = press.str("note"), threadId = press.str("threadId"))
+            val want = when (expect.str("look")) {
+                "pressed" -> ReplyButtons.Look.Pressed(expect.str("threadId"))
+                "failed" -> ReplyButtons.Look.Failed(expect.str("error")!!)
+                "pressing" -> ReplyButtons.Look.Pressing
+                else -> ReplyButtons.Look.Ready
+            }
+            assertEquals(want, ReplyButtons.look(button, status, asking = state == "sending"), name)
+        }
+    }
+
+    /** Button links as text, against the cases the desktop app and the iPhone run too. */
+    @Test fun buttonLinksMatchTheSharedCases() {
+        val cases = shared("../../shared/cases/reply-button-links.json")
+        assertTrue(cases.size > 5)
+        for (c in cases) {
+            val name = c.str("name")
+            val input = c.obj("input")!!
+            val expect = c.obj("expect")!!
+            val text = input.str("text")!!
+            if (input.str("op") == "unlink") {
+                val known = input.arr("known")!!.map { (it as JsonPrimitive).content }.toSet()
+                assertEquals(expect.str("text"), ReplyButtons.unlinking(text, known), name)
+            } else {
+                val split = ReplyButtons.trailing(text)
+                assertEquals(expect.str("text"), split.text, name)
+                val links = expect.arr("links")!!.map { val l = it as JsonObject; ReplyButtons.Link(l.str("id")!!, l.str("title")!!) }
+                assertEquals(links, split.links, name)
+            }
+        }
     }
 }

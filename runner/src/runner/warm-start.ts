@@ -6,7 +6,7 @@
 // (0.56 s on Tinker Desk's M2 in ADEMark's A4, 20 Nov 2026; 0.8 s cold
 // against 0.05 s pre-started on the M5), and every new thread paid it after
 // Enter. The app asks for one with `threads.warm` when its new-thread page
-// opens (docs/protocol.md, "Warm start"); the runner starts a session under
+// opens (docs/protocol/connection.md, "Warm start"); the runner starts a session under
 // an id it keeps for the thread, with the options the page's settings work
 // out to. `threads.create` with that `warmId` makes the thread under the id,
 // and its first start takes the running CLI if every option still matches,
@@ -19,7 +19,7 @@ import type { Runner, ThreadState } from '../runner.ts';
 import { newRuntime } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import type { AdapterOutput, AgentSession, QuestionAnswer, QuestionRequest, SessionSink, StartSessionOptions, ToolApprovalAnswer, ToolApprovalRequest } from '../adapters/types.ts';
-import type { EffortLevel, PermissionMode } from '../protocol.ts';
+import type { EffortLevel, PermissionMode, Provider } from '../protocol.ts';
 import { experimentOn } from '../experiments.ts';
 
 export const WARM_START = 'warmStart';
@@ -34,6 +34,7 @@ export type WarmParams = {
   cwd?: string;
   accountId?: string;
   poolId?: string;
+  provider?: Provider;
   model?: string;
   effort?: EffortLevel;
   permissionMode?: PermissionMode;
@@ -169,7 +170,7 @@ export const warmStartPart = {
       // when making the thread failed.
       const st = this.threads.get(spare.id);
       if (st && st.rt.spare !== spare) return;
-      if (st) st.rt.spare = undefined;
+      if (st) this.cli(st, { kind: 'spareGone', spare });
       this.log.info('stopping the CLI started ahead of a thread that never used it', { threadId: spare.id });
       spare.session.kill();
     }, CLAIMED_MS);
@@ -180,9 +181,9 @@ export const warmStartPart = {
   // From startSession: the spare's CLI when it was started with exactly
   // these options and is still running; otherwise it's stopped.
   takeSpare(this: Runner, st: ThreadState, opts: StartSessionOptions, sink: SessionSink): AgentSession | undefined {
-    const spare = st.rt.spare;
+    const taken = this.cli(st, { kind: 'takeSpare' });
+    const spare = taken.ok ? taken.out.spare : undefined;
     if (!spare) return undefined;
-    st.rt.spare = undefined;
     clearTimeout(spare.timer);
     if (!spare.relay.exitedEarly && spare.key === spareKey(opts)) {
       spare.relay.attach(sink);

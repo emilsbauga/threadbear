@@ -28,7 +28,9 @@ pub(crate) fn folder() -> Option<PathBuf> {
         let file = std::env::var_os("THREADBEAR_AUTOMATION")?;
         return Some(Path::new(&file).parent()?.join("hangs"));
     }
-    launch.installed.then(|| installed::logs_dir().join("hangs").join("desktop"))
+    launch
+        .installed
+        .then(|| installed::logs_dir().join("hangs").join("desktop"))
 }
 
 /// From the app's start, on the main thread.
@@ -46,10 +48,18 @@ pub(crate) fn start(cx: &mut App) {
         }
     })
     .detach();
-    let _ = std::thread::Builder::new().name("hang watch".into()).spawn(move || watch(folder, build, beat_tx, back_rx, main_thread));
+    let _ = std::thread::Builder::new()
+        .name("hang watch".into())
+        .spawn(move || watch(folder, build, beat_tx, back_rx, main_thread));
 }
 
-fn watch(folder: PathBuf, build: Option<String>, beat: futures::channel::mpsc::UnboundedSender<()>, back: mpsc::Receiver<()>, main_thread: u32) {
+fn watch(
+    folder: PathBuf,
+    build: Option<String>,
+    beat: futures::channel::mpsc::UnboundedSender<()>,
+    back: mpsc::Receiver<()>,
+    main_thread: u32,
+) {
     // What earlier launches caught, sent (or, scripted, only noted) and
     // tidied before anything new is written.
     crate::crash_reporting::past_stalls(rules::take_past(&folder, crate::now_ms()));
@@ -64,7 +74,11 @@ fn watch(folder: PathBuf, build: Option<String>, beat: futures::channel::mpsc::U
             Ok(()) => {
                 if let Some((name, seconds)) = beats.arrived(now()) {
                     eprintln!("threadbear: main thread back after {seconds:.1} s");
-                    let mut record = rules::read(&folder, &name).unwrap_or_else(|| Record { at: threadbear_core::inbox::iso_time(crate::now_ms()), build: build.clone(), ..Default::default() });
+                    let mut record = rules::read(&folder, &name).unwrap_or_else(|| Record {
+                        at: threadbear_core::inbox::iso_time(crate::now_ms()),
+                        build: build.clone(),
+                        ..Default::default()
+                    });
                     record.recovered_after = Some(seconds);
                     let _ = rules::write(&folder, &name, &record);
                 }
@@ -92,10 +106,18 @@ fn chrono_now() -> threadbear_core::chrono::DateTime<threadbear_core::chrono::Lo
 }
 
 fn begin_sample(folder: &Path, name: &str, build: Option<String>, main_thread: u32) {
-    let record = Record { at: threadbear_core::inbox::iso_time(crate::now_ms()), build, ..Default::default() };
+    let record = Record {
+        at: threadbear_core::inbox::iso_time(crate::now_ms()),
+        build,
+        ..Default::default()
+    };
     let _ = rules::write(folder, name, &record);
     let file = folder.join(format!("{name}.sample"));
-    eprintln!("threadbear: main thread stuck for {} s, sampling to {}", rules::STALL_AFTER_MS / 1000, file.display());
+    eprintln!(
+        "threadbear: main thread stuck for {} s, sampling to {}",
+        rules::STALL_AFTER_MS / 1000,
+        file.display()
+    );
     run_sample(&file);
     // After the sample's away: asking for the idle time goes through the
     // window server, and whatever that does, the sample is what counts.
@@ -109,13 +131,26 @@ fn begin_sample(folder: &Path, name: &str, build: Option<String>, main_thread: u
 fn run_sample(file: &Path) {
     use std::process::{Command, Stdio};
     let home = std::env::var("HOME").unwrap_or_default();
-    let arguments = threadbear_core::hang_sample::sample_arguments(&home, std::process::id(), rules::SAMPLE_SECONDS, &file.to_string_lossy());
+    let arguments = threadbear_core::hang_sample::sample_arguments(
+        &home,
+        std::process::id(),
+        rules::SAMPLE_SECONDS,
+        &file.to_string_lossy(),
+    );
     let mut sample = Command::new("/usr/bin/sandbox-exec");
-    match sample.args(arguments).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+    match sample
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
         // Waited for on a thread of its own, so it doesn't linger as a zombie;
         // this one carries on watching.
         Ok(mut child) => {
-            let _ = std::thread::Builder::new().name("hang sample".into()).spawn(move || child.wait());
+            let _ = std::thread::Builder::new()
+                .name("hang sample".into())
+                .spawn(move || child.wait());
         }
         Err(e) => eprintln!("threadbear: couldn't run sample: {e}"),
     }
@@ -140,22 +175,39 @@ fn main_thread_port() -> u32 {
 
 #[cfg(target_os = "macos")]
 fn context(main_thread: u32) -> Context {
-    Context { main_priority: priority(main_thread), load_average: load_average(), idle_seconds: idle_seconds() }
+    Context {
+        main_priority: priority(main_thread),
+        load_average: load_average(),
+        idle_seconds: idle_seconds(),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn context(_main_thread: u32) -> Context {
-    Context { main_priority: None, load_average: load_average(), idle_seconds: None }
+    Context {
+        main_priority: None,
+        load_average: load_average(),
+        idle_seconds: None,
+    }
 }
 
 /// The thread's scheduling priority now: 46 or so normally, 4 when something
 /// has clamped it to background.
 #[cfg(target_os = "macos")]
 fn priority(thread: u32) -> Option<i64> {
+    // SAFETY: thread_extended_info is a plain C struct of integers and a
+    // char array, for which all zero bytes is a valid value.
     let mut info: libc::thread_extended_info = unsafe { std::mem::zeroed() };
     let mut count = libc::THREAD_EXTENDED_INFO_COUNT;
     // SAFETY: `info` is the size `count` says, and thread_info writes no more.
-    let result = unsafe { libc::thread_info(thread, libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t, (&mut info as *mut libc::thread_extended_info).cast(), &mut count) };
+    let result = unsafe {
+        libc::thread_info(
+            thread,
+            libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t,
+            (&mut info as *mut libc::thread_extended_info).cast(),
+            &mut count,
+        )
+    };
     (result == libc::KERN_SUCCESS).then_some(i64::from(info.pth_curpri))
 }
 

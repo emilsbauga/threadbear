@@ -4,12 +4,11 @@
 // The helpers shared by the worktrees-*.test.ts files. It's one suite split
 // across files because tests in one file run one after another, and this one
 // was started last and held the whole unit suite up by itself (9 Nov).
-import { test } from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { isMadeTmp, makeHarness, tmpDir, type Harness } from './fakes.ts';
-import { git, gitLimits, land, type LandTarget } from '../../src/worktrees.ts';
+import { gitLimits, type LandTarget } from '../../src/worktrees.ts';
 import { PATIENCE_MS } from './patience.ts';
 export { holdUntil } from './patience.ts';
 import { PatchTrust } from '../../src/patch-trust.ts';

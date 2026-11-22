@@ -10,7 +10,7 @@ import type { ThreadbearWorld } from '../support/world.ts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** The demo thread's review (app/Tools/mock-runner/fixtures/demo-design-review). */
+/** The demo thread's review (mock-runner/fixtures/demo-design-review). */
 const DEMO_REVIEW = 'review_account_picker';
 /** The review each scenario opened: the demo's unless it made another. */
 const opened = new WeakMap<ThreadbearWorld, string>();

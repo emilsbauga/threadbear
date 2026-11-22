@@ -1,7 +1,7 @@
 import SwiftUI
 import ThreadbearCore
 
-/// The Move sheet (docs/move-plan.md), for a move that can't just go: where
+/// The Move sheet (docs/archive/move-plan.md), for a move that can't just go: where
 /// a thread will run on the other runner and on which login, both filled in
 /// with that runner's own guess (threads.movePreview), what's in the way or
 /// won't come, then Move.

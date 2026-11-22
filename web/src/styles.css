@@ -1,4 +1,4 @@
-/* The Mac app's look (docs/design-pass.md, app Theme.swift): neutral greys,
+/* The Mac app's look (docs/archive/design-pass.md, app Theme.swift): neutral greys,
    system blue used only where it means something (unread, the agent's pick,
    the primary button, a card waiting on you), orange for waiting on you. */
 :root {
@@ -122,6 +122,11 @@ code, pre { font-family: var(--mono); font-size: 13px; }
 .md .draft-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 12px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .md .draft-head .btn { padding: 3px 8px; font-size: 13px; }
 .md .draft-head .btn.copied { color: #2fb350; font-weight: 600; }
+.edited-drafts { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
+.edited-draft { max-width: 100%; }
+.edited-draft > summary { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; list-style: none; padding: 3px 10px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.edited-draft > summary::-webkit-details-marker { display: none; }
+.edited-draft[open] > summary { margin-bottom: 6px; }
 .md .draft-body { padding: 10px 12px; white-space: pre-wrap; }
 .md .draft-body code { background: var(--line); }
 .md .draft-quote { padding-left: 10px; border-left: 3px solid var(--line-strong); color: var(--muted); }
@@ -420,6 +425,11 @@ button.fold:hover > svg:last-child, button.fold:focus-visible > svg:last-child {
 
 .command { font-size: 13px; color: var(--muted); display: flex; gap: 10px; padding: 0 2px 6px; }
 .command.failed { color: var(--red); }
+/* Dismiss or Stop waiting: words, not a grey box. */
+.command .link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.command .link:hover { text-decoration: underline; }
+.command.in-card { padding: 8px 0 0; }
+.command.inline { display: inline-flex; padding: 0 0 0 8px; font-size: 0.85em; }
 
 /* The card of asks, the done card or an approval, joined to the composer
    as on the Mac: one rounded box, outlined in blue while it waits on you. */
@@ -444,7 +454,7 @@ button.fold:hover > svg:last-child, button.fold:focus-visible > svg:last-child {
 .choice:hover { background: var(--hover); }
 .choice .radio { width: 15px; height: 15px; margin-top: 3px; border-radius: 50%; border: 1.5px solid var(--faint); flex: none; }
 .choice .radio.check { border-radius: 4px; }
-/* The done card's loose ends (docs/protocol.md, "Loose ends"), above its follow-ups. */
+/* The done card's loose ends (docs/protocol/threads.md, "Loose ends"), above its follow-ups. */
 .loose-ends { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .loose-label { font-size: 12px; color: var(--muted); }
 .loose { display: flex; gap: 10px; align-items: baseline; }

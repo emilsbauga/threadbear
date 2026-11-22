@@ -1,4 +1,4 @@
-// Full sync's bodies (docs/full-convex.md step 4; `sync.full` in runner.json, off
+// Full sync's bodies (docs/archive/full-convex.md step 4; `sync.full` in runner.json, off
 // by default). A tool's output, input and diffs go to the backend when it
 // finishes, one row under the seq of its one-line `messages` row, so whoever opens
 // that row can fetch all of it once. Never a delta, and only from when it's on.

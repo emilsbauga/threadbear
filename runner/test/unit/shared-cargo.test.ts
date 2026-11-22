@@ -261,16 +261,16 @@ test("a cargo that didn't build the app doesn't hand back another checkout's", (
 test("the copy's node_modules are there in the slot, for the mock runner the client's tests start", (t) => {
   const h = host(t);
   const src = h.checkout('aaa', 'x');
-  fs.mkdirSync(path.join(src, 'app', 'Tools', 'mock-runner', 'node_modules', 'ws'), { recursive: true });
+  fs.mkdirSync(path.join(src, 'mock-runner', 'node_modules', 'ws'), { recursive: true });
   assert.equal(h.cargo('aaa', ['test']).status, 0);
   const slot = path.join(h.base, 'shared-1', 'src');
-  assert.ok(fs.existsSync(path.join(slot, 'app', 'Tools', 'mock-runner', 'node_modules', 'ws')));
+  assert.ok(fs.existsSync(path.join(slot, 'mock-runner', 'node_modules', 'ws')));
   assert.equal(fs.realpathSync(path.join(slot, 'desktop', 'node_modules')), fs.realpathSync(path.join(src, 'desktop', 'node_modules')));
   // Another checkout's run points them at its own.
   const other = h.checkout('bbb', 'y');
   assert.equal(h.cargo('bbb', ['test'], { THREADBEAR_REMOTE_SLOTS: '1' }).status, 0);
   assert.equal(fs.realpathSync(path.join(slot, 'desktop', 'node_modules')), fs.realpathSync(path.join(other, 'desktop', 'node_modules')));
-  assert.equal(fs.existsSync(path.join(slot, 'app', 'Tools', 'mock-runner', 'node_modules')), false);
+  assert.equal(fs.existsSync(path.join(slot, 'mock-runner', 'node_modules')), false);
 });
 
 test("a program cargo's own list says is up to date comes back, though other files changed", (t) => {

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
-import { ConvexSync, forBackend, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
+import { ConvexSync, forBackend, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
 import type { Project } from '../../src/protocol.ts';
 import { Scheduler, type ScheduleBackend } from '../../src/schedules.ts';
 import { nullLogger, type Logger } from '../../src/log.ts';
@@ -738,7 +738,7 @@ test('the uploader never follows a redirect with the bytes, nor posts them in th
 // ------------------------------------------------------------ step 2 and 3
 
 import { BUTTONS_API_VERSION, COMMAND_ATTEMPT_API_VERSION, LOGIN_NOTES_API_VERSION, MESSAGE_CHARS, PLAN_API_VERSION, PLAN_CHARS, toMessageDoc, toolLine, inputSummary, WokeRows, WOKE_BY_API_VERSION, type Command, type MessageDoc } from '../../src/sync.ts';
-import { REMOTE_ALLOW_REFUSED, remoteAllowRefused, remoteCardShowsAll } from '../../src/tools.ts';
+import { remoteAllowRefused, remoteCardShowsAll } from '../../src/tools.ts';
 
 type Fake = { h: ReturnType<typeof makeHarness>; sync: ConvexSync; calls: Call[]; push: (value: unknown) => void; applied: string[]; landed: Call[] };
 
@@ -2786,7 +2786,7 @@ test("projects: notes go up only when they change, and a backend before API 50 a
   assert.deepEqual(await run(NOTES_APART_API_VERSION - 1), ['long notes', 'longer notes', 'longer notes']);
 });
 
-// docs/protocol.md, "Secrets".
+// docs/protocol/threads.md, "Secrets".
 import { seal } from '../../src/secrets.ts';
 import { NOTES_APART_API_VERSION, SECRETS_API_VERSION, LIVE_PAGES_API_VERSION } from '../../src/sync.ts';
 
@@ -2845,7 +2845,7 @@ test('secrets: an older backend gets the row without the card', async () => {
 });
 
 test("a runner key's refused setSchedules stops the mirroring quietly, and the rest of the write goes on", async () => {
-  // docs/protocol.md, "Runner keys": setSchedules is the main key's only.
+  // docs/protocol/keys.md, "Runner keys": setSchedules is the main key's only.
   let setSchedules = 0;
   const f = setup({
     fail: () => undefined,
@@ -2871,7 +2871,7 @@ test("a runner key's refused setSchedules stops the mirroring quietly, and the r
 });
 
 test('a write the backend refuses for good is tried row by row, the bad row left out and said, and the rest go', async () => {
-  // docs/protocol.md, "Runner keys": caps are permanent refusals, not outages.
+  // docs/protocol/keys.md, "Runner keys": caps are permanent refusals, not outages.
   let bad = '';
   const f = setup({
     answer: (fn) => {
@@ -3584,7 +3584,7 @@ test('pushes failing at the backend are said once per run in tb status and the a
   await sync.stop();
 });
 
-// docs/protocol.md, "Asking another runner" (cross-runner.ts): the card on
+// docs/protocol/runners.md, "Asking another runner" (cross-runner.ts): the card on
 // the asking runner's thread. The phone can't answer it, and an "allow"
 // that the backend's row doesn't back up changes nothing.
 import { START_CARD, type RequestAnswer } from '../../src/cross-runner.ts';
@@ -3646,7 +3646,7 @@ test('asking another runner: a deny from anywhere declines it, and no answer in 
   assert.equal((await second).status, 'expired');
 });
 
-// docs/protocol.md, "Reply buttons": the phone and website draw a reply's
+// docs/protocol/events.md, "Reply buttons": the phone and website draw a reply's
 // buttons from its row, so the row carries their state and goes up again
 // when one is pressed, here or from the phone.
 test('reply buttons: a row carries the buttons it links, is sent again when one is pressed, and a press command presses it once', async () => {

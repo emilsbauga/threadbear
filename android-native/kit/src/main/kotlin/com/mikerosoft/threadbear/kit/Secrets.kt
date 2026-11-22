@@ -8,7 +8,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-// The phone's half of a secret card (docs/protocol.md, "Secrets";
+// The phone's half of a secret card (docs/protocol/threads.md, "Secrets";
 // Secrets.swift): the value is sealed here to the runner's X25519 key, so
 // the Convex mirror only carries ciphertext. Nothing here logs or keeps it.
 

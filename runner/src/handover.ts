@@ -1,4 +1,4 @@
-// Handovers (docs/protocol.md, "Handovers"): a new runner takes over while
+// Handovers (docs/protocol/updates.md, "Handovers"): a new runner takes over while
 // the old one finishes the turns it has. This is the part between the two:
 //
 // - drain files: run/drain-<pid>.json says where a draining runner listens
@@ -36,7 +36,7 @@ import { processInfo } from './proc.ts';
 import { IS_WINDOWS } from './platform.ts';
 
 // `auth: 'challenge'`: this runner answers the RPC's auth challenge
-// (docs/protocol.md, "Auth"). A drain file without it is from an older
+// (docs/protocol/connection.md, "Auth"). A drain file without it is from an older
 // runner, which only knows the bearer header.
 export type DrainInfo = { pid: number; port: number; version: string; release?: string; since: string; threads: string[]; auth?: 'challenge' };
 export type Bucket = 'inbox' | 'snoozed' | 'archived';
@@ -294,7 +294,7 @@ export class Peers {
     let client: PeerClient;
     try {
       // The one place a new client may still send the token (docs/
-      // protocol.md, "Before the challenge"): a draining runner from before
+      // protocol/connection.md, "Before the challenge"): a draining runner from before
       // the challenge can't answer one, and it's the drain file, in this
       // runner's own data dir, that says so, never the server. Remove with
       // the old auth paths.
@@ -857,6 +857,10 @@ export class ThreadRouter implements ThreadControl {
   async send(threadId: string, text: string, images: Parameters<Runner['send']>[2] = [], opts: Parameters<Runner['send']>[3] = {}): Promise<{ turnId: string }> {
     const e = this.away(threadId);
     return e ? e.call('threads.send', { threadId, text, images, ...(opts.answers ? { answers: opts.answers } : {}) }) : this.runner.send(threadId, text, images, opts);
+  }
+
+  experiment(id: string): boolean {
+    return this.runner.experiment(id);
   }
 
   async createReview(threadId: string, input: Parameters<Runner['createReview']>[1]): Promise<ReturnType<Runner['createReview']>> {

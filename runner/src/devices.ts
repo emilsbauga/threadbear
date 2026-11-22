@@ -1,4 +1,4 @@
-// devices.list, devices.pair and devices.revoke (docs/protocol.md,
+// devices.list, devices.pair and devices.revoke (docs/protocol/moves.md,
 // "Devices"): the Settings window's Phone & browser tab. Each is a call to
 // the backend through the mirror's client (sync.ts), so pairing a phone or
 // signing a browser in needs no Convex CLI. A browser's token goes back in

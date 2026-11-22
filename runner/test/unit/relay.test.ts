@@ -1456,3 +1456,15 @@ test("an open thread's summary carries its row's mode, or unknown", async () => 
   await h.relay.call(T, 'threads.subscribe', { threadId: T, afterSeq: 0 });
   assert.deepEqual(said(), ['unknown', 'auto']);
 });
+
+// docs/protocol/threads.md, "What Mike first asked": another Mac's Feed heads the
+// card with it, from the row (API 96), next to his last message.
+test("an open thread's summary carries what Mike first and last asked, from its row", async () => {
+  const h = harness({ row: () => ({ ...idle, share: { access: 'link', slug: 'abc' } }) });
+  h.remote.threads[0]!.asked = 'And the lint too';
+  h.remote.threads[0]!.request = 'Fix the tests';
+  await h.relay.call(T, 'threads.subscribe', { threadId: T, afterSeq: 0 });
+  const thread = (h.published.filter((n) => (n as { method: string }).method === 'thread.updated').at(-1) as { params: { thread: { asked?: string; request?: string } } }).params.thread;
+  assert.equal(thread.asked, 'And the lint too');
+  assert.equal(thread.request, 'Fix the tests');
+});

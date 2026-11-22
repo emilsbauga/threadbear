@@ -2,3 +2,4 @@
 # ("ssh-ed25519 AAAA..."). A release signed by that key itself, or by a key
 # pinned after it, takes it out of every fork's pinned keys
 # (runner/src/release-keys.ts), and setup never pins one listed here.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBDd/HDcJuOLDnb9P3ygKxqNjaMsWoSTSpLrut+iKOtu

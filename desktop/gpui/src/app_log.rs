@@ -11,7 +11,11 @@ use std::path::{Path, PathBuf};
 
 /// A build with no console: the Windows release (main.rs's
 /// `windows_subsystem`, under the same conditions).
-const NO_CONSOLE: bool = cfg!(all(windows, not(debug_assertions), not(feature = "automation")));
+const NO_CONSOLE: bool = cfg!(all(
+    windows,
+    not(debug_assertions),
+    not(feature = "automation")
+));
 
 pub(crate) fn path() -> Option<PathBuf> {
     let launch = installed::launch();
@@ -21,9 +25,16 @@ pub(crate) fn path() -> Option<PathBuf> {
     }
     if NO_CONSOLE {
         let local = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
-        return Some(PathBuf::from(local).join("Threadbear").join("Logs").join("desktop.log"));
+        return Some(
+            PathBuf::from(local)
+                .join("Threadbear")
+                .join("Logs")
+                .join("desktop.log"),
+        );
     }
-    launch.installed.then(|| installed::logs_dir().join("desktop.log"))
+    launch
+        .installed
+        .then(|| installed::logs_dir().join("desktop.log"))
 }
 
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -31,7 +42,10 @@ static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::n
 /// Seconds since the app started, for lines a restart explains (a thread
 /// switch that had to read, as a restart empties the kept threads).
 pub(crate) fn uptime_s() -> u64 {
-    STARTED.get_or_init(std::time::Instant::now).elapsed().as_secs()
+    STARTED
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs()
 }
 
 /// From the app's start, before the connection's first line.
@@ -40,10 +54,25 @@ pub(crate) fn start() {
     threadbear_core::wire::set_logger(|message| threadbear_client::log::write("decode", message));
     let Some(path) = path() else { return };
     // Owner-only, as every file the app writes (private_file_source.rs).
-    let opened = path.parent().map_or(Ok(()), threadbear_core::private_file::dir).and_then(|()| threadbear_client::log::open(&path, threadbear_core::private_file::append));
+    let opened = path
+        .parent()
+        .map_or(Ok(()), threadbear_core::private_file::dir)
+        .and_then(|()| threadbear_client::log::open(&path, threadbear_core::private_file::append));
     match opened {
-        Ok(()) => threadbear_client::log::write("app", &format!("started {}", installed::launch().build.as_ref().map_or("(no build info)", |b| b.short.as_str()))),
-        Err(e) => eprintln!("threadbear: couldn't open the app log at {}: {e}", path.display()),
+        Ok(()) => threadbear_client::log::write(
+            "app",
+            &format!(
+                "started {}",
+                installed::launch()
+                    .build
+                    .as_ref()
+                    .map_or("(no build info)", |b| b.short.as_str())
+            ),
+        ),
+        Err(e) => eprintln!(
+            "threadbear: couldn't open the app log at {}: {e}",
+            path.display()
+        ),
     }
     // With no console, Rust's own panic message would go nowhere, so it goes
     // in the log too, before whatever hook was there (crash_reporting.rs).

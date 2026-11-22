@@ -1,4 +1,4 @@
-// A thread's search words (docs/protocol.md, "Search"): the librarian writes
+// A thread's search words (docs/protocol/threads.md, "Search"): the librarian writes
 // a few words someone might type to find a thread that its title and last
 // reply don't say, like "dentist" for "Wisdom tooth meeting location", and
 // every search (the Mac's sidebar, the phone, list_threads, Convex's

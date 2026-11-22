@@ -47,7 +47,7 @@ function branches(main: string, names: string[]): LandTarget[] {
 }
 
 // a lands first while the others queue behind it; they're then one group.
-async function queued(root: string, main: string, a: LandTarget, others: LandTarget[], cmd: string) {
+async function queued(root: string, _main: string, a: LandTarget, others: LandTarget[], cmd: string) {
   const first = land({ ...a, check: cmd }, capture().opts);
   await until(() => fs.existsSync(path.join(root, 'checking')), "a's check");
   const caps = others.map(() => capture());
@@ -352,4 +352,44 @@ test("what a run with --only says it ran is read the same way", () => {
   assert.deepEqual([...(onlyRan('--only ran: ""\n') ?? ['x'])], []);
   assert.equal(onlyRan('ok    runner unit tests  3s\n'), undefined);
   assert.equal(onlyRan('  log: --only ran: "site build"\n'), undefined);
+});
+
+// No check host could run it (20 Nov: the cloud box ran out of disk during a
+// group's check): the hosts' trouble, so nobody in the group is looked for
+// or halved, and the next check of the same group lands it.
+test('a group check no host could run blames nobody, and the group lands on the next check', async () => {
+  const { root, main } = makeRepo();
+  const [a, b, c, d] = branches(main, ['a', 'b', 'c', 'd']);
+  // The group's first check: the hosts give up, with the exit tb land asks for.
+  const unavailable = `test -f b.txt && ! test -f '${root}/hosts-back' && { touch '${root}/hosts-back'; echo '${SAID}'; echo 'This check failed because cloud ran out of disk during it.'; exit "$THREADBEAR_CHECK_BUSY_EXIT"; }; true`;
+  const { first, rest, caps } = await queued(root, main, a, [b, c, d], `${check(root, 'false')}; ${unavailable}`);
+  assert.equal(await first, 0);
+  const codes = await Promise.all(rest);
+  // The one that held the line hears why, and lands nothing; the rest land.
+  assert.deepEqual([...codes].sort(), [0, 0, 1], said(caps));
+  assert.match(said(caps), /No check host could run the check of 3 landings together, so main wasn't touched\. That's the hosts' trouble, not any landing in it\./);
+  assert.match(said(caps), /cloud ran out of disk during it/);
+  assert.equal(rounds(caps), 0, said(caps));
+  assert.doesNotMatch(said(caps), /Checking them in smaller groups/);
+  const failed = [b, c, d][codes.indexOf(1)];
+  assert.equal(sh(failed.path, 'git rev-parse --abbrev-ref HEAD'), failed.branch);
+  for (const t of [b, c, d].filter((t) => t !== failed)) assert.ok(fs.existsSync(path.join(main, `${t.branch.slice(-8, -7)}.txt`)), t.branch);
+  assert.deepEqual(waiting(path.join(main, '.git')), [], 'nobody left in the line');
+});
+
+// check-remote.sh runs a check again on another host when one ran out of
+// disk: what the earlier run said failed isn't the later one's.
+test('what failed and what ran are read from the last run in a check\'s output', () => {
+  const text = [
+    'Checking on cloud (copied in 3s; ...)',
+    'To run only what failed again: --only "desktop app check"',
+    '--only ran: "desktop app check"',
+    'cloud ran out of disk during this check (0.1 GiB free at the lowest), so what failed there may have failed for want of space. Running it again on another host.',
+    'Checking on tinker-desk (copied in 4s; ...)',
+    'npm ci failed in runner',
+  ].join('\n');
+  assert.equal(onlyFailed(text), undefined);
+  assert.equal(onlyRan(text), undefined);
+  assert.equal(onlyFailed(`${text}\nTo run only what failed again: --only "unit tests"`), 'unit tests');
+  assert.equal(onlyFailed(SAID), 'unit tests=test/unit/x.test.ts');
 });

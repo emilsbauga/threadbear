@@ -1,5 +1,5 @@
 // Real trackpad swipes and mouse drags on the GPUI window, through the window
-// server, as a hand makes them (app/Tools/post-gesture.swift and realdrag.swift):
+// server, as a hand makes them (post-gesture.swift and realdrag.swift, beside it):
 // a row swiped away and back, Back and Forward by swiping the window, and rows
 // and pictures dragged. Made-up events handed to a handler passed every test in
 // the Swift app and failed on Mike's trackpad twice (7 Nov), so each of these is
@@ -177,7 +177,7 @@ try {
   await app.do({ cmd: 'type', text: '', replace: true });
 
   // Files dragged out of the window go as the files themselves, to a window
-  // of our own beside it (app/Tools/droptarget.swift), as a drop on the
+  // of our own beside it (droptarget.swift), as a drop on the
   // Finder would copy into whatever folder someone has open there. Right of
   // the window if there's room, else left of it, touching it so the drag
   // never crosses anyone else's window on the way (realDrag checks the path).

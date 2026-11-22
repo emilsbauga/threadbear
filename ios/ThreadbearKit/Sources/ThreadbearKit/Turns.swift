@@ -22,7 +22,7 @@ public struct WorkedTurn: Hashable, Sendable {
     }
 }
 
-/// A thread as the Mac shows it once its turns are over (docs/protocol.md,
+/// A thread as the Mac shows it once its turns are over (docs/protocol/needs-you.md,
 /// "Needs you", "The summary"): Mike's message, one line of work, then the
 /// reply. The phone has a small screen, so this matters more here.
 public enum Turns {

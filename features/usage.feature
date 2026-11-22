@@ -37,6 +37,19 @@ Feature: The Usage panel and its honey pot
     Then in the "Not in a pool" card, "Grok" has the "grok" logo and no ring
     And in the "Not in a pool" card, "Grok" says why: "Grok reports its limit only from its background service"
 
+  # Option A of Mike's 20 Nov review: a card per login with its own chart
+  # took a screen for two or three logins, so each is one row now, and its
+  # charts and buttons wait until it's clicked open.
+  @usage.pools @swift-pending
+  Scenario: A login's row opens to its charts and buttons when clicked, and shuts again
+    When I click the honey pot in the activity bar
+    Then in the "Claude" card, "alex@example.com" is shut
+    When I click "claude-main"'s row in the Usage panel
+    Then in the "Claude" card, "alex@example.com" is open
+    And in the "Claude" card, "alex+4@example.com" is shut
+    When I click "claude-main"'s row in the Usage panel
+    Then in the "Claude" card, "alex@example.com" is shut
+
   # Mike, 18 Nov: the panel's settings were dumped at its foot; they're in
   # Settings › General › Usage now. The frozen Swift app keeps its card.
   @usage.pools @swift-pending

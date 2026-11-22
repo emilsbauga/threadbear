@@ -1,4 +1,4 @@
-// Box mode (src/box-mode.ts, docs/protocol.md "Box mode"): a runner in a
+// Box mode (src/box-mode.ts, docs/protocol/boxes.md "Box mode"): a runner in a
 // virtual runner's machine for one thread. Its boot exchange, the secrets
 // it keeps, the environment it gives what it starts, the folder it clones,
 // its one thread, the machine it names in heartbeats, and what it does when

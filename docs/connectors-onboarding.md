@@ -105,7 +105,7 @@ Before flipping `mikecann/connectors` to public:
   tailnet hostname, admin logins, the agent list, Bruce paths in `deploy.sh` and the
   LaunchAgent. Ship examples instead (`config/agents.example.json`).
 - Rewrite the docs for a stranger: README with what it does, local install, the
-  Tailscale option, adding a service. `docs/plan.md` keeps the design, without Mike's
+  Tailscale option, adding a service. `docs/archive/plan.md` keeps the design, without Mike's
   machines.
 - Tests use made-up names (most already do).
 - Publish with a fresh history (one commit) rather than the current 12, so nothing

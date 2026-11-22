@@ -2,7 +2,7 @@
 // thread keeps, and a still of each. The still is the shot's `image`, which
 // the window's thumbnails and side-by-side cells show and which a client
 // from before videos and pages shows in their place; `media` is what the
-// window plays or shows on the stage (docs/protocol.md, "Design reviews").
+// window plays or shows on the stage (docs/protocol/events.md, "Design reviews").
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';

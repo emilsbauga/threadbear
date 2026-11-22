@@ -8,8 +8,8 @@ use crate::model::DockModel;
 use crate::platform;
 use crate::theme::DockTheme;
 use gpui_kit::component::h_flex;
-use gpui_kit::prelude::*;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
+use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -43,9 +43,20 @@ impl FloatingWindows {
     /// thread is on show) keeps its window, hidden, until it has something
     /// again (Swift's `sync`; hiding needs the raw window, so for now a
     /// window stays showing while its panel is unavailable).
-    pub fn sync(&mut self, model: Entity<DockModel>, content: SharedContent, options: Rc<DockOptions>, cx: &mut App) {
+    pub fn sync(
+        &mut self,
+        model: Entity<DockModel>,
+        content: SharedContent,
+        options: Rc<DockOptions>,
+        cx: &mut App,
+    ) {
         let floating = model.read(cx).controller.layout.floating.clone();
-        let gone: Vec<PanelId> = self.windows.keys().filter(|p| !floating.iter().any(|f| &f.panel == *p)).cloned().collect();
+        let gone: Vec<PanelId> = self
+            .windows
+            .keys()
+            .filter(|p| !floating.iter().any(|f| &f.panel == *p))
+            .cloned()
+            .collect();
         for panel in gone {
             if let Some(handle) = self.windows.remove(&panel) {
                 let gone_activation = options.window_activation.clone();
@@ -67,7 +78,14 @@ impl FloatingWindows {
                 }
                 continue;
             }
-            let handle = open_floating_window(float, focus.as_deref() == Some(float.panel.as_str()), model.clone(), content.clone(), options.clone(), cx);
+            let handle = open_floating_window(
+                float,
+                focus.as_deref() == Some(float.panel.as_str()),
+                model.clone(),
+                content.clone(),
+                options.clone(),
+                cx,
+            );
             if let Some(handle) = handle {
                 self.windows.insert(float.panel.clone(), handle);
             }
@@ -80,10 +98,19 @@ impl FloatingWindows {
     /// The outline of the window a drag would open, following the pointer
     /// outside the dock's window. Shown only where windows can be placed
     /// and moved by hand, so not on Wayland (see platform.rs).
-    pub fn update_outline(&mut self, frame: Option<dl::Rect>, title: SharedString, header_height: f32, accent: Option<Hsla>, cx: &mut App) {
+    pub fn update_outline(
+        &mut self,
+        frame: Option<dl::Rect>,
+        title: SharedString,
+        header_height: f32,
+        accent: Option<Hsla>,
+        cx: &mut App,
+    ) {
         let Some(frame) = frame.filter(|_| platform::can_move_windows_by_hand()) else {
             if let Some(outline) = self.outline.take() {
-                let _ = outline.handle.update(cx, |_, window, _| window.remove_window());
+                let _ = outline
+                    .handle
+                    .update(cx, |_, window, _| window.remove_window());
             }
             return;
         };
@@ -91,14 +118,19 @@ impl FloatingWindows {
         if let Some(outline) = &self.outline {
             if outline.size == (frame.width, frame.height) {
                 let handle = outline.handle;
-                let _ = handle.update(cx, |_, window, _| platform::set_window_origin(window, origin));
+                let _ = handle.update(cx, |_, window, _| {
+                    platform::set_window_origin(window, origin)
+                });
                 return;
             }
             let old = outline.handle;
             let _ = old.update(cx, |_, window, _| window.remove_window());
             self.outline = None;
         }
-        let bounds = Bounds::new(origin, size(px(frame.width as f32), px(frame.height as f32)));
+        let bounds = Bounds::new(
+            origin,
+            size(px(frame.width as f32), px(frame.height as f32)),
+        );
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -115,11 +147,18 @@ impl FloatingWindows {
             |window, cx| {
                 // It floats under the pointer it follows: clicks go through.
                 platform::set_ignores_mouse_events(window, true);
-                cx.new(|_| OutlineView { title, header_height, accent })
+                cx.new(|_| OutlineView {
+                    title,
+                    header_height,
+                    accent,
+                })
             },
         );
         if let Ok(handle) = opened {
-            self.outline = Some(OutlineWindow { handle: handle.into(), size: (frame.width, frame.height) });
+            self.outline = Some(OutlineWindow {
+                handle: handle.into(),
+                size: (frame.width, frame.height),
+            });
         }
     }
 }
@@ -176,27 +215,51 @@ fn on_screen(frame: dl::Rect, cx: &App) -> dl::Rect {
         let b = d.bounds();
         let bx = b.origin.x.as_f32() as f64;
         let by = b.origin.y.as_f32() as f64;
-        frame.x < bx + b.size.width.as_f32() as f64 && frame.max_x() > bx && frame.y < by + b.size.height.as_f32() as f64 && frame.max_y() > by
+        frame.x < bx + b.size.width.as_f32() as f64
+            && frame.max_x() > bx
+            && frame.y < by + b.size.height.as_f32() as f64
+            && frame.max_y() > by
     });
     if visible || displays.is_empty() {
         return frame;
     }
-    let Some(display) = cx.primary_display() else { return frame };
+    let Some(display) = cx.primary_display() else {
+        return frame;
+    };
     let b = display.bounds();
     let cx_ = (b.origin.x.as_f32() as f64) + b.size.width.as_f32() as f64 / 2.;
     let cy = (b.origin.y.as_f32() as f64) + b.size.height.as_f32() as f64 / 2.;
-    dl::Rect::new(cx_ - frame.width / 2., cy - frame.height / 2., frame.width, frame.height)
+    dl::Rect::new(
+        cx_ - frame.width / 2.,
+        cy - frame.height / 2.,
+        frame.width,
+        frame.height,
+    )
 }
 
-fn open_floating_window(float: &DockFloat, focus: bool, model: Entity<DockModel>, content: SharedContent, options: Rc<DockOptions>, cx: &mut App) -> Option<AnyWindowHandle> {
+fn open_floating_window(
+    float: &DockFloat,
+    focus: bool,
+    model: Entity<DockModel>,
+    content: SharedContent,
+    options: Rc<DockOptions>,
+    cx: &mut App,
+) -> Option<AnyWindowHandle> {
     let frame = on_screen(float.frame, cx);
-    let bounds = Bounds::new(point(px(frame.x as f32), px(frame.y as f32)), size(px(frame.width as f32), px(frame.height as f32)));
+    let bounds = Bounds::new(
+        point(px(frame.x as f32), px(frame.y as f32)),
+        size(px(frame.width as f32), px(frame.height as f32)),
+    );
     let panel = float.panel.clone();
     let title: SharedString = content.title(&panel, cx);
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         // The panel's own bar is the top of the window, as in the main one.
-        titlebar: Some(TitlebarOptions { title: Some(title), appears_transparent: true, traffic_light_position: None }),
+        titlebar: Some(TitlebarOptions {
+            title: Some(title),
+            appears_transparent: true,
+            traffic_light_position: None,
+        }),
         focus,
         show: true,
         // The bar is the panel's: AppKit must not treat the top of the
@@ -216,8 +279,20 @@ fn open_floating_window(float: &DockFloat, focus: bool, model: Entity<DockModel>
         // the app always keeps (Threadbear's thread).
         let on_close = view.clone();
         window.on_window_should_close(cx, move |_, cx| {
-            let (panel, model, closable) = on_close.read_with(cx, |v, cx| (v.panel.clone(), v.model.clone(), v.content.closable(&v.panel, cx)));
-            model.update(cx, |m, cx| if closable { m.close(&panel, cx) } else { m.put_back(&panel, cx) });
+            let (panel, model, closable) = on_close.read_with(cx, |v, cx| {
+                (
+                    v.panel.clone(),
+                    v.model.clone(),
+                    v.content.closable(&v.panel, cx),
+                )
+            });
+            model.update(cx, |m, cx| {
+                if closable {
+                    m.close(&panel, cx)
+                } else {
+                    m.put_back(&panel, cx)
+                }
+            });
             // The sync closes the window.
             false
         });
@@ -263,47 +338,85 @@ enum FloatMode {
 }
 
 impl FloatingPanelView {
-    fn new(panel: PanelId, model: Entity<DockModel>, content: SharedContent, options: Rc<DockOptions>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        panel: PanelId,
+        model: Entity<DockModel>,
+        content: SharedContent,
+        options: Rc<DockOptions>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observed = cx.observe(&model, |_, _, cx| cx.notify());
         // Where the user moves or resizes it (the OS's own drag from the
         // strip beside the traffic lights, or the window's edges), saved.
         // A drag by the title saves where it ends up when it's let go.
         let bounds = cx.observe_window_bounds(window, |this, window, cx| {
-            let dragging = this.model.read(cx).controller.drag.as_ref().is_some_and(|d| d.panel == this.panel);
+            let dragging = this
+                .model
+                .read(cx)
+                .controller
+                .drag
+                .as_ref()
+                .is_some_and(|d| d.panel == this.panel);
             if dragging {
                 return;
             }
             let frame = Self::window_frame(window);
             let panel = this.panel.clone();
-            this.model.update(cx, |m, cx| m.update_controller(cx, |c| c.remember_window_frame(&panel, frame)));
+            this.model.update(cx, |m, cx| {
+                m.update_controller(cx, |c| c.remember_window_frame(&panel, frame))
+            });
         });
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             if let Some(told) = this.options.window_activation.clone() {
                 told(window.is_window_active(), window, cx);
             }
         });
-        Self { panel, model, content, options, press: None, _subscriptions: vec![observed, bounds, activation] }
+        Self {
+            panel,
+            model,
+            content,
+            options,
+            press: None,
+            _subscriptions: vec![observed, bounds, activation],
+        }
     }
 
     /// Where the window is, and where the pointer is on screen.
     fn window_frame(window: &Window) -> dl::Rect {
         let b = window.bounds();
-        dl::Rect::new(b.origin.x.as_f32() as f64, b.origin.y.as_f32() as f64, b.size.width.as_f32() as f64, b.size.height.as_f32() as f64)
+        dl::Rect::new(
+            b.origin.x.as_f32() as f64,
+            b.origin.y.as_f32() as f64,
+            b.size.width.as_f32() as f64,
+            b.size.height.as_f32() as f64,
+        )
     }
 
     fn mouse_on_screen(position: Point<Pixels>, window: &Window) -> dl::Point {
         let b = window.bounds();
         // These windows have full-size content: the frame's origin is the content's.
-        dl::Point::new((b.origin.x + position.x).as_f32() as f64, (b.origin.y + position.y).as_f32() as f64)
+        dl::Point::new(
+            (b.origin.x + position.x).as_f32() as f64,
+            (b.origin.y + position.y).as_f32() as f64,
+        )
     }
 
-    fn begin_press(&mut self, needs_hold: bool, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn begin_press(
+        &mut self,
+        needs_hold: bool,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.press.is_some() {
             return;
         }
         let timer = needs_hold.then(|| {
             cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs_f64(dl::HOLD_SECONDS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(dl::HOLD_SECONDS))
+                    .await;
                 let _ = this.update_in(cx, |this, window, cx| this.hold_fired(window, cx));
             })
         });
@@ -322,7 +435,11 @@ impl FloatingPanelView {
     }
 
     fn hold_fired(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.press.as_ref().is_some_and(|p| p.mode == FloatMode::Waiting) {
+        if self
+            .press
+            .as_ref()
+            .is_some_and(|p| p.mode == FloatMode::Waiting)
+        {
             self.lift(window, cx);
         }
     }
@@ -331,7 +448,11 @@ impl FloatingPanelView {
     fn lift(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         let watch = cx.intercept_keystrokes(move |event, window, cx| {
-            if event.keystroke.key == "escape" && weak.update(cx, |v, cx| v.escape(window, cx)).unwrap_or(false) {
+            if event.keystroke.key == "escape"
+                && weak
+                    .update(cx, |v, cx| v.escape(window, cx))
+                    .unwrap_or(false)
+            {
                 cx.stop_propagation();
             }
         });
@@ -341,13 +462,20 @@ impl FloatingPanelView {
         p.escape_watch = Some(watch);
         let (frame, mouse) = (p.frame_at_start, p.mouse_at_start);
         let panel = self.panel.clone();
-        let update = self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.window_drag_changed(&panel, frame, mouse)));
+        let update = self.model.update(cx, |m, cx| {
+            m.update_controller(cx, |c| c.window_drag_changed(&panel, frame, mouse))
+        });
         if let Some(u) = update {
             apply_window_update(window, u);
         }
     }
 
-    fn pointer_moved(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn pointer_moved(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The button came up without a release (between two frames): over.
         if event.pressed_button != Some(MouseButton::Left) {
             if self.press.is_some() {
@@ -386,7 +514,9 @@ impl FloatingPanelView {
             let mouse = Self::mouse_on_screen(local, window);
             let frame = p.frame_at_start;
             let panel = self.panel.clone();
-            let update = self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.window_drag_changed(&panel, frame, mouse)));
+            let update = self.model.update(cx, |m, cx| {
+                m.update_controller(cx, |c| c.window_drag_changed(&panel, frame, mouse))
+            });
             if let Some(u) = update {
                 apply_window_update(window, u);
             }
@@ -417,7 +547,9 @@ impl FloatingPanelView {
         } else if p.mode == FloatMode::Waiting {
             let frame = Self::window_frame(window);
             let panel = self.panel.clone();
-            self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.remember_window_frame(&panel, frame)));
+            self.model.update(cx, |m, cx| {
+                m.update_controller(cx, |c| c.remember_window_frame(&panel, frame))
+            });
         }
     }
 
@@ -427,7 +559,9 @@ impl FloatingPanelView {
             return false;
         }
         let frame = Self::window_frame(window);
-        let back = self.model.update(cx, |m, cx| m.update_controller(cx, |c| c.cancel_drag(Some(frame))));
+        let back = self.model.update(cx, |m, cx| {
+            m.update_controller(cx, |c| c.cancel_drag(Some(frame)))
+        });
         platform::set_window_alpha(window, 1.);
         if let Some(from) = back {
             platform::set_window_origin(window, point(px(from.x as f32), px(from.y as f32)));
@@ -437,7 +571,10 @@ impl FloatingPanelView {
 }
 
 fn apply_window_update(window: &Window, update: dl::WindowDragUpdate) {
-    platform::set_window_origin(window, point(px(update.origin.x as f32), px(update.origin.y as f32)));
+    platform::set_window_origin(
+        window,
+        point(px(update.origin.x as f32), px(update.origin.y as f32)),
+    );
     platform::set_window_alpha(window, update.alpha as f64);
 }
 
@@ -452,7 +589,10 @@ impl Render for FloatingPanelView {
         let body = content.view(&panel, false, window, cx);
         let body_menu = self.menu();
         let bar_menu = self.menu();
-        let dragging = self.press.as_ref().is_some_and(|p| p.mode == FloatMode::Panel);
+        let dragging = self
+            .press
+            .as_ref()
+            .is_some_and(|p| p.mode == FloatMode::Panel);
         let this = cx.entity().downgrade();
 
         let lights = 78.;
@@ -464,9 +604,19 @@ impl Render for FloatingPanelView {
             .text_size(px(self.options.title_size))
             .font_weight(FontWeight::SEMIBOLD)
             .truncate()
-            .child(title.clone())
-            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Drag to move, or onto the main window to dock it").build(window, cx))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, window, cx| this.begin_press(false, e, window, cx)))
+            .child(title)
+            .tooltip(|window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(
+                    "Drag to move, or onto the main window to dock it",
+                )
+                .build(window, cx)
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.begin_press(false, e, window, cx)
+                }),
+            )
             .context_menu(self.menu());
 
         let bar = h_flex()
@@ -487,7 +637,12 @@ impl Render for FloatingPanelView {
                     .flex_1()
                     .h_full()
                     .min_w(px(0.))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, window, cx| this.begin_press(true, e, window, cx)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                            this.begin_press(true, e, window, cx)
+                        }),
+                    )
                     .context_menu(bar_menu),
             )
             .when_some(accessory, |d, a| d.child(a));
@@ -525,23 +680,40 @@ impl Render for FloatingPanelView {
 }
 
 impl FloatingPanelView {
-    fn menu(&self) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    fn menu(
+        &self,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let model = self.model.clone();
         let content = self.content.clone();
         let panel = self.panel.clone();
         move |menu, _, cx| {
-            let hidden = model.read(cx).controller.layout.hidden_titles.contains(&panel);
+            let hidden = model
+                .read(cx)
+                .controller
+                .layout
+                .hidden_titles
+                .contains(&panel);
             let (m1, p1) = (model.clone(), panel.clone());
-            let mut menu = menu.item(PopupMenuItem::new(if hidden { "Show Title" } else { "Hide Title" }).on_click(move |_, _, cx| m1.update(cx, |m, cx| m.set_title_hidden(&p1, !hidden, cx))));
+            let mut menu = menu.item(
+                PopupMenuItem::new(if hidden { "Show Title" } else { "Hide Title" }).on_click(
+                    move |_, _, cx| m1.update(cx, |m, cx| m.set_title_hidden(&p1, !hidden, cx)),
+                ),
+            );
             let (m2, p2) = (model.clone(), panel.clone());
-            menu = menu.item(PopupMenuItem::new("Put Back in Main Window").on_click(move |_, _, cx| m2.update(cx, |m, cx| m.put_back(&p2, cx))));
+            menu = menu.item(
+                PopupMenuItem::new("Put Back in Main Window")
+                    .on_click(move |_, _, cx| m2.update(cx, |m, cx| m.put_back(&p2, cx))),
+            );
             for extra in content.menu_items(&panel, cx) {
                 menu = menu.item(crate::content::popup_item(extra));
             }
             if content.closable(&panel, cx) {
                 let (m3, p3) = (model.clone(), panel.clone());
                 let title = content.title(&panel, cx);
-                menu = menu.separator().item(PopupMenuItem::new(format!("Close {title}")).on_click(move |_, _, cx| m3.update(cx, |m, cx| m.close(&p3, cx))));
+                menu = menu.separator().item(
+                    PopupMenuItem::new(format!("Close {title}"))
+                        .on_click(move |_, _, cx| m3.update(cx, |m, cx| m.close(&p3, cx))),
+                );
             }
             menu
         }
@@ -561,7 +733,7 @@ fn float_listeners(view: WeakEntity<FloatingPanelView>, dragging: bool) -> impl 
                     let _ = moved.update(cx, |v, cx| v.pointer_moved(e, window, cx));
                 }
             });
-            let released = view.clone();
+            let released = view;
             window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                 if phase == DispatchPhase::Capture {
                     let _ = released.update(cx, |v, cx| v.pointer_up(true, window, cx));

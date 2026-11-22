@@ -1,6 +1,6 @@
 import Foundation
 
-/// What the app works out about pools (docs/pools-plan.md): which pool a new
+/// What the app works out about pools (docs/archive/pools-plan.md): which pool a new
 /// thread starts on, the picker's rail and status line, the model chip's
 /// title and badge, and the sidebar's waiting line. The runner decides which
 /// login a turn really runs on; `pickLogin` here only guesses it, so the

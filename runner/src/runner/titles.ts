@@ -114,7 +114,7 @@ export const titlesPart = {
     this.highlightsChanged(st);
   },
 
-  // The librarian's search words for a thread (docs/protocol.md, "Search"):
+  // The librarian's search words for a thread (docs/protocol/threads.md, "Search"):
   // lowercase words, each once, none already in its title. An empty answer
   // still marks it looked at, so the keyword sweep doesn't ask again.
   setKeywords(this: Runner, threadId: string, words: string): void {
