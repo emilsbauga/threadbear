@@ -17,7 +17,10 @@
 // phone `via` it doesn't call says why here, and parity.test.ts checks every
 // other `via` is called by its kit, so a port that lands flips the test. The
 // rows the API sends it are checked field by field in shared/cases/wire-rows.json.
+// What each app *draws* is draw-parity.ts, the doc's second table.
 // docs/parity.md is made from this (npm run parity-docs).
+
+import { drawParityDoc } from './draw-parity.ts';
 
 export type Where = 'yes' | { no: string };
 export type PhoneWhere = { via: string } | { no: string };
@@ -86,6 +89,7 @@ export function parityDoc(): string {
     '|---|---|---|---|---|',
     ...rows.map(([method, r]) => `| ${r.what} | \`${method}\` | ${cell(r.relay)} | ${cell(r.phone)} | ${android(r)} |`),
     '',
+    drawParityDoc(),
   ].join('\n');
 }
 

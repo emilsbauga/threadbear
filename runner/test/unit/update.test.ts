@@ -410,7 +410,7 @@ test('main moving in the checkout is checked within seconds, not at the next fiv
 });
 
 test('watchMainRef hears a commit on main, from a worktree too', async (t) => {
-  if (noFileWatches(t)) return;
+  if (await noFileWatches(t)) return;
   const { repo, commit } = makeRepo();
   let heard = 0;
   const stop = watchMainRef(repo, () => heard++);

@@ -309,6 +309,14 @@ test('F26: a reply line of "What I need from you" and a long run of spaces is li
     fast('replyWithoutRepeat', () => replyWithoutRepeat(`Done.\n\nWhat I need from you${ws.repeat(300)}.`, { needs: 'you', asks: [{ action: 'x' }] }));
   }
   fast('links in a follow-up', () => needsFromText(`Nothing needed from you.\n\n- ${'['.repeat(30_000)}`));
+  // The line's own check, when the section may come off (withoutNothingLine).
+  for (const run of [' '.repeat(40_000), '*_`'.repeat(13_000), ' right now'.repeat(4_000), '#> -'.repeat(10_000)]) {
+    for (const line of [`Nothing needed from you${run}x`, `${run}Nothing needed from you${run}`, `**${run}nothing needed from you right now${run}.`]) {
+      const reply = `Fixed.\n\n${line}\n\n- Check it tomorrow`;
+      const s = fast('nothing line of a reply', () => splitReplySection(reply));
+      assert.ok(s.reply === reply || s.reply === 'Fixed.', 'whole, or without the section');
+    }
+  }
 });
 
 // ----------------------------------------------------------------- F29

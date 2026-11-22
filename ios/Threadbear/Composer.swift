@@ -116,6 +116,7 @@ struct Composer: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
+        .onAppear { Dictation.prepare() }
         .onDisappear { dictation.close() }
         #if DEBUG
         // For sim-shots.sh: stills of the dictating bar, as the simulator has no one talking.

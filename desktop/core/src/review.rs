@@ -241,7 +241,7 @@ pub fn shot_tip(option: &ReviewOption, index: usize) -> String {
     format!("{}, {what}", option.label())
 }
 
-/// Under the option's name on the stage: which shot this is, "2 of 3 · Mid-drag".
+/// Beside the option's name under the stage: which shot this is, "2 of 3 · Mid-drag".
 pub fn caption_where(option: &ReviewOption, shown: &ReviewShot) -> String {
     let shots = option.all_shots();
     let index = shots.iter().position(|s| s == shown).unwrap_or(0);
@@ -1256,17 +1256,6 @@ impl GalleryLayout {
             (height * aspect, height)
         }
     }
-}
-
-/// The row under the stage (`ReviewStepperLayout.share`): the arrows at its
-/// ends, and between them the film strip from the left and the marks from
-/// the right. Each gets all it wants if there's room; if not, whichever wants
-/// less than half keeps it and the other has the rest. Halving it whatever
-/// they wanted scrolled a short row of marks for no reason.
-pub fn stepper_share(room: f64, strip: f64, marks: f64) -> (f64, f64) {
-    let room = room.max(0.);
-    let given = marks.min((room / 2.).max(room - strip));
-    (strip.min(room - given), given)
 }
 
 /// Where a review's window opens (`ReviewWindowController.frame`): 90% of
@@ -2875,19 +2864,6 @@ mod tests {
             1100. / 760.,
             "no size: the usual mockup's"
         );
-    }
-
-    #[test]
-    fn the_bottom_row_shares_its_room_by_what_each_wants() {
-        assert_eq!(stepper_share(600., 200., 300.), (200., 300.));
-        assert_eq!(
-            stepper_share(600., 700., 100.),
-            (500., 100.),
-            "short marks don't scroll to make the strip longer"
-        );
-        assert_eq!(stepper_share(300., 100., 500.), (100., 200.));
-        assert_eq!(stepper_share(300., 900., 900.), (150., 150.));
-        assert_eq!(stepper_share(-40., 900., 900.), (0., 0.));
     }
 
     #[test]

@@ -67,7 +67,6 @@ pub mod remote_tokens;
 pub mod reply_buttons;
 pub mod reply_links;
 pub mod review;
-pub mod review_page;
 pub mod rich_block;
 pub mod row_motion;
 pub mod row_swipe;

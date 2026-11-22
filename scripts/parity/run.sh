@@ -2,8 +2,9 @@
 # The parity run, on the host it was copied to (Tinker Desk; nightly.sh
 # copies it there and runs this in its desktop session). It plays every
 # scenario (runner/test/helpers/scenario-list.ts) into a throwaway Convex
-# backend, then has the real website, iPhone app and Mac app read them:
-# the website in headless Chrome, the iPhone app in a simulator, and the
+# backend, then has the real website, iPhone, Android and Mac apps read
+# them: the website in headless Chrome, the iPhone app in a simulator, the
+# Android app in an emulator, and the
 # Mac app (the GPUI one) as another runner's threads through Convex, the way Mike sees a
 # Hetzner or bruce thread. Each surface's picture of each scenario goes in
 # <out>, with index.html showing them side by side, and results.json saying
@@ -13,6 +14,9 @@
 # (scenarios.test.ts); this is what they can't see: the screens. Its first
 # runs (9 Nov) found the website and the iPhone drawing a decision card
 # without what each answer does.
+#
+# Mike's setup only (docs/parity-run.md): nightly.sh runs it on his parity
+# host; nothing in check.sh, CI or setup does.
 #
 #   scripts/parity/run.sh <out dir>
 set -uo pipefail
@@ -82,6 +86,10 @@ node scripts/parity/web-shots.mjs "http://127.0.0.1:$WEB_PORT" "$OUT/seed.json" 
 
 say "the iPhone app"
 zsh scripts/parity/ios-shots.sh "$URL" "$OUT/seed.json" "$OUT" > "$work/ios.log" 2>&1 || { echo "iPhone shots failed:"; tail -20 "$work/ios.log"; }
+
+# After the iPhone's simulator has shut down, so the two don't share the memory.
+say "the Android app"
+bash scripts/parity/android-shots.sh "$URL" "$OUT/seed.json" "$OUT" > "$work/android.log" 2>&1 || { echo "Android shots failed:"; tail -20 "$work/android.log"; }
 
 say "the Mac app (GPUI), reading them as another runner's"
 bash scripts/parity/mac-shots.sh "$URL" "$KEY" "$OUT/seed.json" "$OUT" 2> "$work/mac.log" | sed -n '/^\[/,$p' > "$OUT/mac.json" || true

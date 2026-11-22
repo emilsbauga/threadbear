@@ -204,6 +204,9 @@ test("a script that runs what patch trust can't follow fails closed: a hook or s
     ['awk \'{ system("./x.sh") }\' f', {}, /awk program that runs commands/],
     ['trap "$CLEANUP" EXIT', {}, /trap/],
     ['npm run go', { 'package.json': '{"scripts":{"go":"eval $X"}}' }, /package\.json's "go" script line 1 runs text worked out/],
+    // Writing what it then runs: the payload was never hashed (Daybreak 153).
+    ['cd "$(dirname "$0")"\ncp payload.dat helper.sh\n./helper.sh', { 'scripts/payload.dat': 'echo\n', 'scripts/helper.sh': 'echo\n' }, /writes .*helper\.sh, which it also runs/],
+    ['cat "$(dirname "$0")/payload.dat" > "$(dirname "$0")/helper.sh"\n. "$(dirname "$0")/helper.sh"', { 'scripts/payload.dat': 'echo\n', 'scripts/helper.sh': 'echo\n' }, /writes scripts\/helper\.sh/],
   ];
   for (const [i, [body, files, why]] of cases.entries()) {
     for (const where of ['hook', 'setup'] as const) {
@@ -213,7 +216,7 @@ test("a script that runs what patch trust can't follow fails closed: a hook or s
       const set = await load(folder, trust);
       const error = set.patches[0].error ?? '';
       assert.match(error, /^Not run: its (hook "H"|worktree setup) `\.\/scripts\/setup\.sh` runs by itself, but patch trust can't follow everything \.\/scripts\/setup\.sh runs/, `${i} ${where}: ${body}`);
-      assert.match(error, why, `${i} ${where}: ${body}: says why`);
+      assert.match(error, why, `${i} ${where}: ${body}: says why: ${error}`);
       assert.deepEqual([set.actions.length, set.hooks.length], [0, 0], `${i}: ${body} gives nothing`);
       assert.equal(await findWorktreePatch(folder, path.dirname(folder), new Map(), undefined, trust), undefined);
     }

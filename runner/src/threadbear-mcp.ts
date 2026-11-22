@@ -60,7 +60,6 @@ type Async<T, K extends keyof T> = { [P in K]: T[P] extends (...a: infer A) => i
 export type ThreadControl = {
   hello: Runner['hello'];
   createReview?: (...args: Parameters<Runner['createReview']>) => Aw<ReturnType<Runner['createReview']>>;
-  experiment?: Runner['experiment'];
   createButton?: (...args: Parameters<Runner['createButton']>) => Aw<ReturnType<Runner['createButton']>>;
   folderPanel?: (...args: Parameters<Runner['folderPanel']>) => ReturnType<Runner['folderPanel']>;
   pin?: (...args: Parameters<Runner['pin']>) => Aw<ReturnType<Runner['pin']>>;
@@ -768,7 +767,7 @@ export function buildThreadbearTools(
       handle(async (input) => {
         if (!control.createReview) throw new Error('This runner does not support image reviews yet.');
         const { review } = await control.createReview(selfId, input);
-        return `Review ${review.id}: ${review.title} (${review.options.length} options). The user can compare them and send their picks and a reply. You can finish this turn; their reply will arrive as a later message. To open it from an end_turn ask, link to review:${review.id}.${control.experiment?.('reviewPage') ? REVIEW_PAGE_NOTE : ''}${oversizeShotsNote(review)}`;
+        return `Review ${review.id}: ${review.title} (${review.options.length} options). The user can compare them and send their picks and a reply. You can finish this turn; their reply will arrive as a later message. To open it from an end_turn ask, link to review:${review.id}.${REVIEW_NOTE}${oversizeShotsNote(review)}`;
       }),
     ),
   ];
@@ -2357,15 +2356,17 @@ function clip(text: string, max = 2000): string {
 // shot 18,000 px tall loses detail (desktop/gpui/src/fit_picture.rs, 20 Nov).
 export const SHOT_MAX_SIDE = 16384;
 
-// A line for show_options' answer naming the shots over SHOT_MAX_SIDE.
-// With the reviewPage experiment on, what show_options adds to its answer:
-// the review is a page beside the thread where each option's note sits with
-// its pictures at reading size, so the reply needn't say it all again.
-// Mike, 20 Nov 2026: agents wrote every option out twice, in its note and in
-// the reply, and he read the reply because the window's notes were small.
-// In the tool's answer, not its description, so it costs nothing until used.
-export const REVIEW_PAGE_NOTE = " The user reads each option's note beside its pictures on the review's page, and picks there, so don't list or describe the options again in your reply: say they're up and anything that isn't about one option. An ask that links the review needs no answers of its own.";
+// What show_options adds to its answer: each option's note is read in the
+// review window, under its pictures at reading size, so the reply needn't
+// say it all again. Mike, 20 Nov 2026: agents wrote every option out twice,
+// in its note and in the reply, and he read the reply because the window's
+// notes were small. Tried for a day as a page beside the thread (the
+// reviewPage experiment); on 21 Nov he went back to the window, with the
+// words under the picture. In the tool's answer, not its description, so it
+// costs nothing until used.
+export const REVIEW_NOTE = " The user reads each option's note under its pictures in the review window, and picks there, so don't list or describe the options again in your reply: say they're up and anything that isn't about one option. An ask that links the review needs no answers of its own.";
 
+// A line for show_options' answer naming the shots over SHOT_MAX_SIDE.
 export function oversizeShotsNote(review: { options: { id: string; image: ImageRef; shots?: { image: ImageRef }[] }[] }): string {
   const big = review.options.flatMap(option => (option.shots ?? [{ image: option.image }]).map((shot, i) => ({ option: option.id, i, image: shot.image })))
     .filter(({ image }) => (image.width ?? 0) > SHOT_MAX_SIDE || (image.height ?? 0) > SHOT_MAX_SIDE);

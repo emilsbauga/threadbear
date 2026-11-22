@@ -16,6 +16,8 @@ export type TurnMessage = {
   summary?: boolean;
   // A Plan first plan in full (API 72).
   plan?: boolean;
+  // Go ahead or Send back, once the plan's card is answered (API 76).
+  planDecision?: 'go' | 'revise';
   turn?: string;
   // The reply buttons its text links (API 59, reply-buttons.ts).
   buttons?: MessageButton[];

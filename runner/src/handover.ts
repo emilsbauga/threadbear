@@ -660,9 +660,12 @@ export class PrimaryLink {
     if (!this.client) {
       // It says hello so the primary's log can name it (THREADBEAR-F: the
       // primary closed one as "not reading" and couldn't say whose it was).
-      // Not waited for: frames arrive in order, so it's there before any call.
-      const c = RunnerClient.connect(this.url, this.token).then((cl) => {
-        void cl.call('hello', { client: 'threadbear-drain', version: RUNNER_VERSION, pid: process.pid }).catch(() => {});
+      // Waited for: the primary answers once it knows which process this is,
+      // and only then takes frames over 64 KiB (Daybreak finding 158), so a
+      // big first call can't be cut off. A hello refused still leaves the
+      // connection usable.
+      const c = RunnerClient.connect(this.url, this.token).then(async (cl) => {
+        await cl.call('hello', { client: 'threadbear-drain', version: RUNNER_VERSION, pid: process.pid }).catch(() => {});
         return cl;
       });
       this.client = c;
@@ -857,10 +860,6 @@ export class ThreadRouter implements ThreadControl {
   async send(threadId: string, text: string, images: Parameters<Runner['send']>[2] = [], opts: Parameters<Runner['send']>[3] = {}): Promise<{ turnId: string }> {
     const e = this.away(threadId);
     return e ? e.call('threads.send', { threadId, text, images, ...(opts.answers ? { answers: opts.answers } : {}) }) : this.runner.send(threadId, text, images, opts);
-  }
-
-  experiment(id: string): boolean {
-    return this.runner.experiment(id);
   }
 
   async createReview(threadId: string, input: Parameters<Runner['createReview']>[1]): Promise<ReturnType<Runner['createReview']>> {

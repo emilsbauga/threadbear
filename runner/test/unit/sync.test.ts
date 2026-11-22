@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
-import { ConvexSync, forBackend, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
-import type { Project } from '../../src/protocol.ts';
+import { ConvexSync, forBackend, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
+import type { Project, ThreadSummary } from '../../src/protocol.ts';
 import { Scheduler, type ScheduleBackend } from '../../src/schedules.ts';
 import { nullLogger, type Logger } from '../../src/log.ts';
 import { AT_MAC_IDLE_MS, isAtMac } from '../../src/presence.ts';
@@ -748,7 +748,7 @@ type Fake = { h: ReturnType<typeof makeHarness>; sync: ConvexSync; calls: Call[]
 // What the fake deployment's photos were fetched from, across setupFull calls in a test.
 const downloads: string[] = [];
 
-function setupFull(opts: { heads?: { threadId: string; lastSeq: number }[]; taken?: Set<string>; failApply?: boolean | 'async'; log?: Logger; apiVersion?: number; hold?: (fn: string, args: Record<string, unknown>) => Promise<void> | undefined; holdDownload?: (url: string) => Promise<void> | undefined; answer?: (fn: string, args: Record<string, unknown>) => unknown } = {}): Fake {
+function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary | undefined; heads?: { threadId: string; lastSeq: number }[]; taken?: Set<string>; failApply?: boolean | 'async'; log?: Logger; apiVersion?: number; hold?: (fn: string, args: Record<string, unknown>) => Promise<void> | undefined; holdDownload?: (url: string) => Promise<void> | undefined; answer?: (fn: string, args: Record<string, unknown>) => unknown } = {}): Fake {
   const h = makeHarness();
   const calls: Call[] = [];
   // In the order they finish, with hold() keeping some back.
@@ -862,6 +862,7 @@ function setupFull(opts: { heads?: { threadId: string; lastSeq: number }[]; take
     startedAt: '2026-10-27T00:00:00.000Z',
     clock: h.clock,
     log: opts.log ?? nullLogger,
+    ...(opts.elsewhereThread ? { elsewhereThread: opts.elsewhereThread } : {}),
     post,
     subscriber,
     secretBox: h.runner.secrets,
@@ -1089,6 +1090,39 @@ test("handover: a draining runner's open card stays on its thread's row", async 
   const behind = (f.sync as never as { cardsBehind: Map<string, { approvalId: string; title?: string }[]> }).cardsBehind.get('drain-1');
   assert.deepEqual(behind?.map((c) => [c.approvalId, c.title]), [['start-1', 'Start a thread on main? Answer it on the Mac.']]);
   await f.sync.stop();
+});
+
+test("handover: a draining runner's command card can still be allowed from the phone", async () => {
+  // 21 Nov: the Dell updated while a Codex thread waited on `git fetch
+  // origin`. The new runner put the card back up, but with the thread still
+  // on the draining runner it had no folder to check the command's own
+  // against, so the phone showed only Deny.
+  let draining: ThreadSummary | undefined;
+  const f = setupFull({ elsewhereThread: (id) => (id === draining?.id ? draining : undefined) });
+  draining = { ...f.h.runner.create({ text: 'go', cwd: f.h.cfg.defaults.cwd, accountId: 'claude-3' }).thread, id: 'drain-cwd', status: 'waiting' as const, needsYou: true };
+  const cwd = draining.cwd;
+  const docs = () => f.calls.filter((c) => c.fn === 'sync:upsertThreads').flatMap((c) => c.args.threads as ThreadDoc[]);
+  const ts = '2026-11-21T00:00:00.000Z';
+  const card = (approvalId: string, seq: number, cwd: string) => ({ type: 'approval.requested', seq, ts, approvalId, name: 'shell', title: 'git fetch origin', input: { command: 'git fetch origin', cwd }, options: ['allow', 'deny'] });
+  f.sync.start({ hold: true });
+  f.sync.seedCards([{ thread: draining, events: [card('seeded', 10, cwd)] as never }]);
+  f.sync.release();
+  await f.sync.flushNow();
+  assert.deepEqual((docs().filter((d) => d.threadId === draining.id).at(-1)!.pendingApproval as { options?: string[] } | undefined)?.options, ['allow', 'deny']);
+  // One the draining runner puts up after the handover, live.
+  f.h.runner.publish({ method: 'thread.event', params: { threadId: draining.id, event: card('live', 11, cwd) } } as never);
+  assert.deepEqual((f.sync as never as { pending: Map<string, { options: string[] }> }).pending.get(draining.id)?.options, ['allow', 'deny']);
+  // A command for another folder still isn't the phone's to allow.
+  f.h.runner.publish({ method: 'thread.event', params: { threadId: draining.id, event: card('other', 12, '/elsewhere') } } as never);
+  assert.deepEqual((f.sync as never as { pending: Map<string, { options: string[] }> }).pending.get(draining.id)?.options, ['deny']);
+  await f.sync.stop();
+  // The folder a handover reads with the card is enough by itself.
+  const g = setupFull();
+  g.sync.start({ hold: true });
+  g.sync.seedCards([{ thread: draining, events: [card('alone', 10, cwd)] as never }]);
+  assert.deepEqual((g.sync as never as { pending: Map<string, { options: string[] }> }).pending.get(draining.id)?.options, ['allow', 'deny']);
+  g.sync.release();
+  await g.sync.stop();
 });
 
 test('handover: a card answered while the log was read is not put back', async () => {

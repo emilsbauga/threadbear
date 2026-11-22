@@ -95,8 +95,19 @@ for dir in $(git -C "$MAIN" worktree list --porcelain | awk -v RS= -v d="$THREAD
   # One that can't be read is skipped, as the runner does.
   admin="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)" || continue
   lock="$admin/locked"
+  # The renamed file stays, touched first, until it's set up below: the runner's
+  # borrow sweep counts it as the folder in use, so it doesn't take the
+  # detached, unlocked folder back meanwhile (runner/src/borrows.ts).
+  touch -c "$lock" 2>/dev/null || true
   if mv "$lock" "$lock.claimed-$$" 2>/dev/null; then
-    rm -f "$lock.claimed-$$"
+    claim="$lock.claimed-$$"
+    # Not one with changes to tracked files: a spare never has them, so
+    # someone is working there, and the reset below would take their work
+    # (21 Nov). It stays unlocked, out of the pool, as the runner leaves one.
+    if [ -n "$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
+      echo "Passed over $dir: it has changes to tracked files, so someone is working there." >&2
+      continue
+    fi
     claimed="$dir"
     break
   fi
@@ -106,6 +117,7 @@ if [ -n "$claimed" ]; then
   git -C "$claimed" reset -q --hard
   git -C "$claimed" clean -ffdxq "${KEEP[@]}"
   git -C "$claimed" checkout -q -b "$(borrow_branch "$claimed")" main
+  rm -f "$claim"
 else
   mkdir -p "$THREADS"
   # The first free slot number. No cap on the number: on 17 Nov a cap of 50

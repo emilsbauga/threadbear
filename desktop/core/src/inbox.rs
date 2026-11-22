@@ -41,6 +41,14 @@ impl ThreadList {
     }
 }
 
+/// The commit a thread waits for the app to have (`awaitingApp`); none when
+/// the runner had no commit to look for.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct AwaitingApp {
+    #[serde(default)]
+    pub commit: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
@@ -107,6 +115,11 @@ pub struct ThreadSummary {
     /// (wait_for_app_restart): its work isn't over until he's running it.
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub awaiting_app_restart: Option<bool>,
+    /// Waiting to hear the app restarted onto a build with this commit
+    /// (wait_for_app_restart), hibernating or not: the Updates panel lists
+    /// it with whether the build on its way has it.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub awaiting_app: Option<AwaitingApp>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub woke: Option<Value>,
     #[serde(default, deserialize_with = "crate::wire::field")]

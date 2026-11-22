@@ -76,9 +76,6 @@ pub struct Threadbear {
     pub(crate) frame_rate: Option<Entity<crate::frame_stats::FrameRate>>,
     /// The pane sections Hide Panels closed, for Show Panels (`hiddenPanes`).
     pub(crate) hidden_panes: Vec<String>,
-    /// The pane sections made wide for a page, and what that changed, for
-    /// putting each back (`show_pane_wide`).
-    pub(crate) pane_widths: HashMap<String, threadbear_dock::Widened>,
     pub(crate) mode: SidebarMode,
     /// When the activity bar last switched the sidebar's view, for the new
     /// one to settle in (shell.rs `render_threads_panel`).
@@ -574,7 +571,6 @@ impl Threadbear {
             #[cfg(feature = "frame-stats")]
             frame_rate: None,
             hidden_panes: Vec::new(),
-            pane_widths: HashMap::new(),
             mode: SidebarMode::Inbox,
             view_switched: None,
             history: NavigationHistory::default(),
@@ -1029,13 +1025,6 @@ impl Threadbear {
                         self.main_window,
                         cx,
                     );
-                    crate::review_pane::set_on(
-                        self.remote
-                            .experiments
-                            .iter()
-                            .any(|e| e == crate::review_pane::EXPERIMENT),
-                        cx,
-                    );
                     self.runner_version = hello["runnerVersion"].as_str().unwrap_or("").to_owned();
                     self.upstream_on = hello["updates"]["upstream"]["state"]
                         .as_str()
@@ -1266,19 +1255,6 @@ impl Threadbear {
                     // An open review window hears its review change whichever
                     // thread is open here (review_window.rs).
                     crate::review_window::receive_event(&params, cx);
-                    // And its page in the pane, if that's how it's open
-                    // (review_pane.rs).
-                    if params["event"]["type"].as_str() == Some("review.updated") {
-                        if let (Some(thread_id), Some(review)) = (
-                            params["threadId"].as_str(),
-                            threadbear_core::reducer::DesignReview::decode(
-                                &params["event"]["review"],
-                            ),
-                        ) {
-                            self.side
-                                .update(cx, |side, cx| side.review_updated(thread_id, &review, cx));
-                        }
-                    }
                     // Each pane takes its own thread's events only: the open
                     // ones, and those kept loaded, which stay subscribed.
                     let id = params["threadId"].as_str().unwrap_or("");
@@ -2316,10 +2292,6 @@ impl Threadbear {
             if let Some(answers) = composer.answer_chip_lines(cx) {
                 out["answers"] = json!(answers);
             }
-            // The options ticked on a review's page, over the words.
-            if let Some(picks) = composer.review_pick_lines(cx) {
-                out["reviewPicks"] = json!(picks);
-            }
             // Changed drafts going with the message (composer_drafts.rs).
             let drafts = composer.draft_chip_lines(cx);
             if !drafts.is_empty() {
@@ -2554,10 +2526,27 @@ impl Threadbear {
 /// `settings.update` changes only what it names.
 fn merge_json(into: &mut Value, change: &Value) {
     match (into, change) {
+        // `experiments` is a list of { id, on } but a change names them by
+        // id ({ "experiments": { id: on } }). Replacing the list with that
+        // emptied Experiments until the runner answered, so the page got
+        // shorter and the pane lost its place (21 Nov).
+        (Value::Array(list), Value::Object(change))
+            if list
+                .iter()
+                .all(|item| item.get("id").is_some_and(Value::is_string)) =>
+        {
+            for item in list.iter_mut() {
+                if let Some(on) = item["id"].as_str().and_then(|id| change.get(id)) {
+                    item["on"] = on.clone();
+                }
+            }
+        }
         (Value::Object(into), Value::Object(change)) => {
             for (key, value) in change {
                 match into.get_mut(key) {
-                    Some(existing) if existing.is_object() && value.is_object() => {
+                    Some(existing)
+                        if (existing.is_object() || existing.is_array()) && value.is_object() =>
+                    {
                         merge_json(existing, value)
                     }
                     _ => {
@@ -2648,4 +2637,26 @@ struct SectionsCache {
     /// Worked out with nested threads, and which nest under which.
     nested: bool,
     nesting: Option<Rc<threadbear_core::nested::Nesting>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_json;
+    use serde_json::json;
+
+    #[test]
+    fn an_experiment_switch_keeps_the_list() {
+        let mut settings = json!({ "experiments": [{ "id": "pages", "on": false, "name": "Prints" }, { "id": "voiceMode", "on": true }], "labReview": false });
+        merge_json(&mut settings, &json!({ "experiments": { "pages": true } }));
+        assert_eq!(
+            settings["experiments"],
+            json!([{ "id": "pages", "on": true, "name": "Prints" }, { "id": "voiceMode", "on": true }])
+        );
+        merge_json(
+            &mut settings,
+            &json!({ "labReview": true, "models": { "pool": "p1" } }),
+        );
+        assert_eq!(settings["labReview"], json!(true));
+        assert_eq!(settings["models"]["pool"], json!("p1"));
+    }
 }

@@ -17,6 +17,11 @@
 	<!-- Only HTTPS to the paired Convex deployment, so no export compliance question. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- The backend's silent push that takes down a thread's notification once it no longer needs you (AppDelegate, DeliveredNotifications). -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<!-- Which APNs gateway this build's tokens belong to (AppModel.register). -->
 	<key>ThreadbearAPSEnvironment</key>
 	<string>$(THREADBEAR_APS_ENVIRONMENT)</string>

@@ -726,6 +726,95 @@ test('the scanner reads module loads from the syntax, not the text', () => {
   assert.equal(scan('import from from from;').problem?.kind, 'parse');
 });
 
+// Daybreak 154 (21 Nov 2026): eval and Function by another name. The
+// scanner refused the bare names but not `globalThis.eval`, a function's
+// `.constructor`, or a destructured alias, so a trusted script could run a
+// later-changed data file as code with nothing new to approve.
+test('dynamic code by any reflective route is refused: aliases, constructors, string keys, destructuring', () => {
+  const refused = [
+    "(() => {}).constructor('return 1')();",
+    "(function () {}).constructor('return 1')();",
+    "(async () => {}).constructor('return 1');",
+    "globalThis.eval('1');",
+    "globalThis.Function('return 1')();",
+    'globalThis?.eval(src);',
+    "window['eval'](src);",
+    "global['Function'](src);",
+    'const { eval: run } = globalThis;',
+    'const { getBuiltinModule: get } = process;',
+    'const { constructor: F } = () => {};',
+    'const { constructor } = f;',
+    'const { [k]: v } = globalThis;',
+    "Reflect.get(globalThis, 'eval');",
+    "Reflect.get(f, 'constructor');",
+    "Reflect.apply(Reflect.get(globalThis, 'Function'), null, [src]);",
+    'Object.getPrototypeOf(async function () {}).constructor;',
+    'Object.getOwnPropertyDescriptors(Object.getPrototypeOf(f));',
+    "Object.getOwnPropertyDescriptor(f, k);",
+    'await WebAssembly.instantiate(bytes);',
+    "import { Session } from 'node:inspector';",
+    "import repl from 'node:repl';",
+    "const i = await import('inspector/promises');",
+    "const { ['eval']: run } = globalThis;",
+    "const { ['constructor']: F } = f;",
+    'const get = Reflect.get;',
+    'Reflect[m](globalThis, k);',
+    "globalThis.Reflect.get(globalThis, 'eval');",
+    "const { Reflect: R } = globalThis;",
+    "Reflect.get(...[globalThis, 'eval']);",
+    'Reflect.get(globalThis, k);',
+    "const { binding } = process;",
+    "process.binding('contextify');",
+    "const [, get] = Object.entries(process).find(([k]) => k === 'getBuiltinModule');",
+    'const p = process;',
+    "import 'DATA:text/javascript,1';",
+    "import { run } from 'node:test';",
+    'const o = { __proto__: f };',
+  ];
+  for (const src of refused) assert.equal(scanModule(src, 'x.ts').problem?.kind, 'computed', src);
+  // A URL's scheme has no case: `FILE:` is a file, followed and hashed like one.
+  assert.deepEqual(scanModule("import 'FILE:///tmp/x.mjs';", 'x.ts').specifiers, ['/tmp/x.mjs']);
+  // What only looks like it: a class's own constructor, a key in an object
+  // literal, a word inside a longer string, a type.
+  for (const src of [
+    'class A { constructor() {} }\nvoid new A();',
+    'const o = { constructor: 1, eval: 2 };\nvoid o;',
+    "const s = 'see the constructor docs';\nvoid s;",
+    "switch (cmd) {\n  case 'eval':\n    break;\n}",
+    'const plain = (x: object) => Object.getPrototypeOf(x) === Object.prototype;\nvoid plain;',
+    "const own = (r: object) => Object.hasOwn(r, 'constructor') || Object.is(r, 'eval');\nvoid own;",
+    "const has = (o: object, k: string) => Reflect.has(o, k) || Reflect.has(o, 'constructor');\nvoid has;",
+    'const { [0]: first, 1: second } = [1, 2];\nvoid [first, second];',
+    'const { [id]: _, ...rest } = obj;\nvoid rest;',
+    "if (typeof process !== 'undefined') void process.env.HOME;\nmodule.exports = {};",
+    'let f: Function | undefined;\nvoid f;',
+    'const WORDS: Record<string, string> = { a: "A" };\nexport const w = (v: { state: string }) => WORDS[v.state];',
+  ]) assert.equal(scanModule(src, 'x.ts').problem, undefined, src);
+});
+
+// The finding's second test: a payload that's data until a trusted script
+// evaluates it can't change under a kept trust. The script is refused.
+test('a trusted patch that evaluates a data file by an eval alias never loads, so changing the data runs nothing', async () => {
+  const root = tmpDir();
+  for (const [i, code] of [
+    "globalThis.eval(fs.readFileSync(new URL('../payload.json', import.meta.url), 'utf8'));",
+    "(() => {}).constructor(fs.readFileSync(new URL('../payload.json', import.meta.url), 'utf8'))();",
+    "const { eval: run } = globalThis;\nrun(fs.readFileSync(new URL('../payload.json', import.meta.url), 'utf8'));",
+  ].entries()) {
+    const folder = path.join(root, `e${i}`);
+    const mark = path.join(folder, 'ran');
+    const file = writeRaw(folder, `import fs from 'node:fs';\n${code}\nexport default { actions: [{ title: 'Go', run: 'true' }] };\n`, {
+      '.threadbear/payload.json': `process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(mark)}, 'x')`,
+    });
+    const trust = new PatchTrust();
+    trust.trustCurrent([file]);
+    const set = await loadPatchSet(folder, root, new Map(), [], [], undefined, trust);
+    assert.match(set.patches[0].error ?? '', /^Not run: patch trust can't check what tools\.ts line \d+ loads/, code);
+    assert.equal(fs.existsSync(mark), false, code);
+    assert.equal((await trust.check(file, fs.statSync(file).mtimeMs)).trusted, false, code);
+  }
+});
+
 test("a patch or helper that can't be parsed never loads", async () => {
   const root = tmpDir();
   const folder = path.join(root, 'broken');

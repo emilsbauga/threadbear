@@ -93,3 +93,29 @@ async function boundedText(res: Response, max: number): Promise<string | null> {
   }
   return new TextDecoder().decode(all);
 }
+
+// What /register (http.ts) does before it registers: the read-only check
+// that a registration could succeed, then a call-back charged to the
+// relay's budget first (relay.ts startCheck, which says why) and released
+// once answered (endCheck, which also holds off a deployment that said no).
+// Nothing is called back that wasn't charged. 'full': the deployment's or
+// the day's registrations are used up; 'limited': the call-back budget is.
+export type CheckDeps<Check> = {
+  mayRegister: () => Promise<boolean>;
+  startCheck: () => Promise<{ check: Check } | 'limited'>;
+  endCheck: (check: Check, vouched: boolean) => Promise<unknown>;
+  vouches: () => Promise<boolean>;
+};
+export async function checkRegistration<Check>(deps: CheckDeps<Check>): Promise<'full' | 'limited' | 'no' | 'yes'> {
+  if (!(await deps.mayRegister())) return 'full';
+  const started = await deps.startCheck();
+  if (started === 'limited') return 'limited';
+  let vouched = false;
+  try {
+    vouched = await deps.vouches();
+  } finally {
+    // If this fails, the check stops counting after CHECK_LEASE_MS anyway.
+    await deps.endCheck(started.check, vouched).catch(() => {});
+  }
+  return vouched ? 'yes' : 'no';
+}

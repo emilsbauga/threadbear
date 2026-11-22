@@ -97,6 +97,9 @@ class MessageHistory private constructor(
     /** The seq to ask for an older chunk before, or null when there's no more. */
     val nextBefore: Int? get() = if (hasMore) firstSeq else null
 
+    /** Forget everything, for a live page asked for anew (with notes, from API 79). */
+    fun startOver() = reset()
+
     private fun reset() {
         live = null; older = emptyList(); olderImages = emptyList(); olderHasMore = null; lateImages = emptyList()
         loadedRows = 0; loadedPictures = 0; loadedBytes = 0; lowest = null; stuck = false

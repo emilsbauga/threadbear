@@ -206,6 +206,12 @@ type ThreadSummary = {
                         // what this thread landed (wait_for_app_restart);
                         // only while snoozedUntil is set. With an unfinished
                         // waitingOn, the sidebar puts it under Running.
+  awaitingApp?: { commit?, short? } // waiting to hear the app restarted onto
+                        // a build with this commit (wait_for_app_restart),
+                        // hibernating or not, and under a day old; {} when
+                        // there's no commit to look for. The Updates panel
+                        // lists these threads with whether the running,
+                        // ready or building app has the commit.
   startedBy?: { kind, label, icon?, threadId?, threadTitle?, why? } // who
                         // started it when Mike didn't (Who started a thread)
   detached?: true       // a thread another thread started that doesn't

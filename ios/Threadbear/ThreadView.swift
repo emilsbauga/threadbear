@@ -123,6 +123,8 @@ struct ThreadView: View {
         // model.connection in each id: a fresh Convex client after the app
         // comes back from the background, so these follow it, not the old one.
         .task(id: "\(threadId):\(model.connection)") { await follow() }
+        // Opening a thread takes its notification down, as on Android.
+        .task(id: threadId) { if !model.isFake { await DeliveredNotifications.clear(threadId: threadId) } }
         .task {
             if model.isFake, ProcessInfo.processInfo.arguments.contains("-ThreadbearReview") {
                 designReviewShown = DesignReviewTarget(id: "sample-review")

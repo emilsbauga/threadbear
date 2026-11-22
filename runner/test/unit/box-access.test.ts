@@ -230,6 +230,18 @@ test("a box can't take another thread's retired share link under its runner id",
   assert.equal(await outcome(call(s.ctx, sync.upsertThreads, { key: s.boxKey, threads: [{ ...own, share: { access: 'off' as const, slug: 'aBoxsOwnLink1234567890' } }] })), 'ok');
 });
 
+// Codex Security, 21 Nov 2026 (finding 161): nor its own thread's retired link.
+test("a box can't bring back its own thread's retired share link", async () => {
+  const s = await setup();
+  const shared = (slug: string) => ({ ...THREAD_BASICS, threadId: THREAD, runnerId: BOX_RUNNER, title: 't', view: 'inbox' as const, needsYou: false, share: { access: 'link' as const, slug } });
+  assert.equal(await outcome(call(s.ctx, sync.upsertThreads, { key: s.boxKey, threads: [shared('boxFirstLink1234567890')] })), 'ok');
+  assert.equal(await outcome(call(s.ctx, sync.upsertThreads, { key: s.boxKey, threads: [shared('boxSecondLink123456789')] })), 'ok');
+  // The row goes in, keeping its current link, not the retired one.
+  assert.equal(await outcome(call(s.ctx, sync.upsertThreads, { key: s.boxKey, threads: [shared('boxFirstLink1234567890')] })), 'ok');
+  assert.equal(s.rows('threads').find((t) => t.threadId === THREAD)!.share.slug, 'boxSecondLink123456789');
+  assert.equal(await call(s.ctx, load('share').preview, { slug: 'boxFirstLink1234567890' }), null);
+});
+
 // Codex's third review: a message's turn and time are a box's to fill, and
 // share:view hands them to anyone with the link, so they must be what a
 // runner sends: a short turn id and an ISO time.
@@ -244,4 +256,15 @@ test("a box's message turn and time are held to their real shapes", async () => 
   assert.ok(!Number.isNaN(Date.parse(one!.at)));
   assert.equal(two!.turn, 'ae376077');
   assert.equal(two!.at, AT);
+});
+
+// Codex Security, 21 Nov (finding 152): a box never reports a failed update
+// for the main Mac to start a fix thread on; only a following Mac's key can.
+test('a box\'s heartbeat drops any updateFailed it sends', async () => {
+  const s = await setup();
+  const updateFailed = { kind: 'build' as const, commit: 'a'.repeat(40), subject: 's', error: 'e', logFile: '/tmp/l' };
+  await call(s.ctx, sync.heartbeat, { key: s.boxKey, runner: { runnerId: BOX_RUNNER, name: 'box', version: 'v', startedAt: AT, draining: false, threadCount: 1, updateFailed } });
+  assert.equal(s.rows('runners').find((r) => r.runnerId === BOX_RUNNER)!.updateFailed, undefined);
+  await call(s.ctx, sync.heartbeat, { key: MINI_KEY, runner: { runnerId: MINI, name: 'mini', version: 'v', startedAt: AT, draining: false, threadCount: 1, updateFailed } });
+  assert.equal((s.rows('runners').find((r) => r.runnerId === MINI)!.updateFailed as { commit: string }).commit, updateFailed.commit);
 });

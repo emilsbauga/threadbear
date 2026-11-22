@@ -25,12 +25,38 @@ sealed class ThreadItem {
         override val id get() = -gap.seq.toLong() - 1_000_000_000L
     }
 
+    /**
+     * "Moved to alex@example.org: mike@example.net hit its 5-hour limit", or
+     * "Your stopped message and pictures are saved...": the runner's own
+     * line (role note, Turns.fold).
+     */
+    data class Note(val message: PhoneMessage) : ThreadItem() {
+        override val id get() = message.seq.toLong()
+    }
+
+    /**
+     * Where an item sits among the thread's rows, for placing a note. A
+     * turn's folded work has no place of its own: its line goes above the
+     * turn's replies whichever rows it holds, so the note goes by the
+     * messages instead. A divider goes with the row after it.
+     */
+    internal val placedSeq: Int?
+        get() = when (this) {
+            is Message -> message.seq
+            is Note -> message.seq
+            is Tools -> items.firstOrNull()?.seq
+            is Worked -> null
+            is Gap -> gap.seq
+        }
+
     companion object {
         fun group(messages: List<PhoneMessage>): List<ThreadItem> {
             val out = mutableListOf<ThreadItem>()
             for (m in messages) {
                 val last = out.lastOrNull()
-                if (m.role == Role.TOOL) {
+                if (m.role == Role.NOTE) {
+                    out += Note(m)
+                } else if (m.role == Role.TOOL) {
                     if (last is Tools) out[out.size - 1] = Tools(last.items + m) else out += Tools(listOf(m))
                 } else {
                     out += Message(m)
@@ -95,7 +121,25 @@ data class TurnGap(val seq: Int, val from: Instant, val to: Instant, val wokeBy:
 
 /** A thread as the Mac shows it once its turns are over (Turns.swift). */
 object Turns {
+    /**
+     * A thread's items, with each note (role note) where it happened: after
+     * what was on show before it and before the first reply after it. The
+     * notes are taken out first, so a turn folds and picks its reply as if
+     * they weren't there, as the Mac keeps them out of its line of work.
+     * Turns.swift and web/src/turns.ts do the same.
+     */
     fun fold(messages: List<PhoneMessage>, busy: Boolean): List<ThreadItem> {
+        val notes = messages.filter { it.role == Role.NOTE }
+        if (notes.isEmpty()) return foldTurns(messages, busy)
+        val out = foldTurns(messages.filter { it.role != Role.NOTE }, busy).toMutableList()
+        for (note in notes) {
+            val at = out.indexOfFirst { (it.placedSeq ?: Int.MIN_VALUE) > note.seq }.takeIf { it >= 0 } ?: out.size
+            out.add(at, ThreadItem.Note(note))
+        }
+        return out
+    }
+
+    internal fun foldTurns(messages: List<PhoneMessage>, busy: Boolean): List<ThreadItem> {
         val turns = mutableListOf(mutableListOf<PhoneMessage>())
         for (m in messages) {
             if (m.role == Role.USER && m.origin != "runner" && turns.last().isNotEmpty()) turns += mutableListOf<PhoneMessage>()
@@ -212,12 +256,16 @@ object Turns {
         return if (last >= 0) listOf(last) else emptyList()
     }
 
-    /** The last message the thread view shows: not one of Threadbear's own tool rows. */
-    fun lastShown(messages: List<PhoneMessage>): PhoneMessage? = messages.lastOrNull { it.role != Role.TOOL || isStep(it) }
+    /**
+     * The last thing said in the thread: not one of Threadbear's own tool
+     * rows, nor a note (the done card and the reply's buttons go by the
+     * reply before it).
+     */
+    fun lastShown(messages: List<PhoneMessage>): PhoneMessage? = messages.lastOrNull { it.role != Role.NOTE && (it.role != Role.TOOL || isStep(it)) }
 
     internal fun isStep(m: PhoneMessage): Boolean = when (m.role) {
         Role.USER -> true
-        Role.ASSISTANT -> false
+        Role.ASSISTANT, Role.NOTE -> false
         Role.TOOL -> !(m.text.startsWith("threadbear: ") || m.text.startsWith("Find tools: "))
     }
 }

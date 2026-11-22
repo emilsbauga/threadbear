@@ -110,16 +110,26 @@ function rawReader(): URL {
   return new URL(`file://${script}`);
 }
 
-// Writes to a FIFO if something has it open to read, without waiting.
+// Opens a FIFO to write if something has it open to read, without waiting,
+// and writes to it. The open is what lets a reader stuck in open() go: one
+// with terminate() pending exits at once and closes its end, and on a busy
+// machine that can beat the write (EPIPE). That still counts, or every later
+// try finds no reader (ENXIO) and the wait runs out (Pixel, 21 Nov).
 function poke(fifo: string): boolean {
+  let fd: number;
   try {
-    const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
-    fs.writeSync(fd, '{}');
-    fs.closeSync(fd);
-    return true;
+    fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
   } catch {
     return false;
   }
+  try {
+    fs.writeSync(fd, '{}');
+  } catch {
+    // The reader went before the write: it still let go.
+  } finally {
+    fs.closeSync(fd);
+  }
+  return true;
 }
 
 async function outcome(p: Promise<unknown>): Promise<string> {

@@ -390,18 +390,26 @@ export function needsFromText(text: string): Needs | undefined {
 // after it, with at most a line of lead-in before it, is the card's next.
 // Prose after the list ends it, and prose with no list is no follow-up.
 function nextFromList(lines: string[]): string[] {
+  return listAfter(lines).items.map(nextFrom);
+}
+
+// That list as written, whether a line of lead-in came before it, and how
+// many of the lines it and its lead-in take up (0 with no list).
+function listAfter(lines: string[]): { items: string[]; lead: boolean; end: number } {
   const items: string[] = [];
   let lead = 0;
+  let end = 0;
   let inFence = false;
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     if (/^\s*```/.test(line)) inFence = !inFence;
     const m = inFence ? null : itemOf(line);
     if (m && (!items.length || m[1].length === 0)) items.push(m[3]);
     else if (m || (items.length && /^\s{2,}\S/.test(line))) items[items.length - 1] += ` ${line.trim()}`;
     else if (!line.trim()) continue;
     else if (items.length || inFence || ++lead > 1) break;
+    if (items.length) end = i + 1;
   }
-  return items.map(nextFrom);
+  return { items, lead: lead > 0 && items.length > 0, end };
 }
 
 // A follow-up as the message that would start it, for a row on the done
@@ -410,6 +418,14 @@ function nextFromList(lines: string[]): string[] {
 // Nemotron on it". Only the first sentence, as the rest says why.
 const NEXT_LINK = { titleStopsAtNewline: false, titleMin: 1, titleMax: Infinity, targetStopsAtSpace: false, targetMin: 0 };
 function nextFrom(item: string): string {
+  return nextRow(item).row;
+}
+
+// ...and whether that row is the item as written: no link's address,
+// second sentence or cut for length left out of it, no ** taken out
+// ("src/**/*.ts" as much as bold), nor its full stop, which may not be a
+// sentence's ("Run touch release.").
+function nextRow(item: string): { row: string; all: boolean } {
   // A link's text: replaceLinks is `/\[([^\]]+)\]\([^)]*\)/g` read once,
   // as that was quadratic on a long run of "[" in a model's reply.
   const t = replaceLinks(item, NEXT_LINK, (title) => title)
@@ -420,11 +436,11 @@ function nextFrom(item: string): string {
   // the whole text, so none is inside a secret (safe-cut.ts).
   const sentence = safeEnd(t, /^.+?[.!?](?=\s|$)/.exec(t)?.[0].length ?? t.length);
   const first = t.slice(0, safeEnd(t, t.slice(0, sentence).replace(/\.$/, '').length));
-  if (first.length <= MAX_NEXT_CHARS) return first;
+  if (first.length <= MAX_NEXT_CHARS) return { row: first, all: first === item.replace(/\s+/g, ' ').trim() };
   const end = safeEnd(t, MAX_NEXT_CHARS);
   const space = t.lastIndexOf(' ', end - 1);
   const cut = space > 0 ? safeEnd(t, space) : Math.max(end, 1);
-  return t.slice(0, safeEnd(t, t.slice(0, cut).replace(/[,;:]$/, '').length));
+  return { row: t.slice(0, safeEnd(t, t.slice(0, cut).replace(/[,;:]$/, '').length)), all: false };
 }
 
 // "Open X, add Y, then reply 'done'" names the words to send back.
@@ -1091,14 +1107,56 @@ export function splitReplySection(reply: string): { reply: string; needs?: Needs
     // A bare heading becomes a bold one so needsFromText reads it.
     section[0] = `**What I need from you:** ${(m?.[4] ?? '').trim()}`.trimEnd();
     const needs = needsFromText(section.join('\n'));
-    return needs ? { reply: lines.slice(0, i).join('\n').trimEnd(), needs } : { reply };
+    if (!needs) return { reply };
+    const above = lines.slice(0, i).join('\n').trimEnd();
+    // A reply that is only a section saying nothing is needed stays as
+    // written (withoutNothingLine): better those words than none.
+    return { reply: above.trim() || needs.needs === 'you' ? above : reply, needs };
   }
   for (let i = from; i < lines.length; i++) {
     if (!NOTHING_LINE.test(lines[i]) || !/^\W*nothing/i.test(lines[i].replace(/^[\s*_#>-]+/, ''))) continue;
     const needs = needsFromText(lines.slice(i).join('\n'));
-    return needs ? { reply: lines.slice(0, i).join('\n').trimEnd(), needs } : { reply };
+    return needs ? withoutNothingLine(reply, lines, i, needs) : { reply };
   }
   return { reply };
+}
+
+// A reply without its closing "Nothing needed from you" line and the
+// follow-ups listed under it, when that is all the line and what follows it
+// are. The line used to take the rest of the reply with it, whatever that
+// was: on 21 Nov 2026 (thread 649fc651) Mike asked "Anything you need from
+// me here?", the reply opened "Nothing needed from you." and went on for two
+// paragraphs, and all of it came off, so he got a blank answer. Some 60
+// replies before it that month lost words on the line that the card never
+// showed ("This will pick up again on its own on 23 Nov.", "...apart from
+// posting that in Slack when you're ready.").
+//
+// So the section comes off only when the done card shows all of it, and
+// there is a reply above it:
+// - the line says no more than that, and isn't indented as code;
+// - a list straight under it, with no lead-in, is the card's rows: every
+//   item is one line and one row (the card holds three), and the row is
+//   the item as written;
+// - and nothing but blank lines comes after.
+// Otherwise the reply stays as written, under the same card. A lead-in
+// keeps it whole however short ("Two follow-ups are worth doing:"), as no
+// rule told that from news with a list under it ("Everything is on hold
+// until Ian says what's next:", "Only after the backup finishes:"): all
+// ten replies that month with a list under the line had a lead-in or more
+// on the line, and four of the lists weren't follow-ups at all. (Codex and
+// Gemini reviewed two cuts of this that took more off, and each time
+// found words still lost.)
+const ONLY_NOTHING = /^nothing (?:else )?(?:is )?needed from you(?: (?:right now|for now|just now|yet|here|at the moment|at this point))?[.!]?$/i;
+function withoutNothingLine(reply: string, lines: string[], i: number, needs: Needs): { reply: string; needs: Needs } {
+  const line = lines[i].replace(/[*_`]+/g, '').replace(/^[\s#>-]+/, '').trimEnd();
+  const list = listAfter(lines.slice(i + 1));
+  const above = lines.slice(0, i).join('\n').trimEnd();
+  const closes = !lines.slice(i + 1 + list.end).some((l) => l.trim());
+  // A line under an item (more words, a command, an indented item) is read into it.
+  const oneLineEach = lines.slice(i + 1, i + 1 + list.end).filter((l) => l.trim()).length === list.items.length;
+  const shown = !list.lead && oneLineEach && needs.next?.length === list.items.length && list.items.every((item) => nextRow(item).all);
+  const only = ONLY_NOTHING.test(line) && !/^(?: {4}|\t)/.test(lines[i]);
+  return only && closes && (!list.items.length || shown) && above.trim() ? { reply: above, needs } : { reply, needs };
 }
 
 // A reply under a card of asks, without a closing section that writes the

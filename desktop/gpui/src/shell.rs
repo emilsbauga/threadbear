@@ -102,10 +102,6 @@ pub(crate) struct InboxEndNote {
     pub(crate) empty: bool,
 }
 
-/// What a pane made wide for its page leaves the transcript, and anything
-/// else beside it, in points at 100% zoom (`show_pane_wide`).
-const WIDE_PANE_KEEPS: f32 = 420.;
-
 /// Swift's `WindowDock.defaultLayout`: the sidebar without a title, the
 /// thread, and Highlights, side by side.
 pub(crate) fn default_layout() -> DockLayout {
@@ -743,49 +739,6 @@ impl Threadbear {
         self.dock.update(cx, |m, cx| {
             m.show(panel, &near_refs, DockDrop::window(DockEdge::Right), cx)
         });
-    }
-
-    /// Shows a section's panel and makes it at least `width` points wide
-    /// (at 100% zoom, as the app's sizes are), for a page that needs the
-    /// room: Mike kept dragging the pane wider for a design review. The
-    /// room comes from what's beside it, the transcript mostly, which keeps
-    /// `WIDE_PANE_KEEPS`. With less room than that it goes as wide as it
-    /// can, and one that's wide enough already stays as it is.
-    /// `restore_pane_width` puts the width back.
-    pub(crate) fn show_pane_wide(&mut self, section: &str, width: f32, cx: &mut Context<Self>) {
-        if !self.is_panel_showing(section, cx) {
-            self.show_pane(section, cx);
-        }
-        // Worked out here and handed over, where the dock's view would ask
-        // its content: that reads this app, which is in the middle of this
-        // update. The widths are the last frame's and the tree is already
-        // the new one, so a section shown just now is widened at once.
-        let available: std::collections::HashSet<String> = self
-            .dock
-            .read(cx)
-            .layout()
-            .panels()
-            .into_iter()
-            .filter(|p| self.panel_available(p, cx))
-            .collect();
-        let (width, keep) = (style::zoomed(width), style::zoomed(WIDE_PANE_KEEPS));
-        let widened = self.dock.update(cx, |m, cx| {
-            m.widen_panel(section, width, keep, &|p: &str| available.contains(p), cx)
-        });
-        // Nothing changed (wide enough already) leaves an earlier widening's
-        // record be, so that one can still be put back.
-        if let Some(widened) = widened {
-            self.pane_widths.insert(section.to_string(), widened);
-        }
-    }
-
-    /// Puts a section's panel back to the width it had before
-    /// `show_pane_wide`, unless Mike has dragged a divider there since:
-    /// then it stays as he left it. The panel stays open either way.
-    pub(crate) fn restore_pane_width(&mut self, section: &str, cx: &mut Context<Self>) {
-        if let Some(widened) = self.pane_widths.remove(section) {
-            self.dock.update(cx, |m, cx| m.restore_width(&widened, cx));
-        }
     }
 
     /// A rail button, VS Code's way: closes the section's panel if it's

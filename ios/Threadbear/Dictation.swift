@@ -47,7 +47,15 @@ final class Dictation {
     var holdsWords: Bool { whisper != nil || isTranscribing }
 
     /// Whether this start goes to Whisper.
-    private var usesWhisper: Bool { DictationEngine.chosen == .whisper && WhisperModel.shared.installed }
+    private var usesWhisper: Bool { Self.whisperChosen }
+    static var whisperChosen: Bool { DictationEngine.chosen == .whisper && WhisperModel.shared.installed }
+
+    /// A box with the mic has opened: Whisper loads now, so a short dictation
+    /// isn't left waiting on the load when the mic's tapped off (Mike, 21 Nov:
+    /// "it takes quite a while for the dictation to come through").
+    static func prepare() {
+        if whisperChosen { WhisperEngine.shared.warm() }
+    }
 
     /// `onText` gets the whole transcript so far, every time it changes.
     func start(onText: @escaping (String) -> Void) async {
@@ -160,6 +168,7 @@ final class Dictation {
     /// typed as it went, so it just stops.
     func finish() {
         guard let whisper, isListening else { stop(); return }
+        let tappedOff = Date()
         let samples = whisper.sink.samples()
         let onText = whisper.onText
         let prompt = DictationWords.shared.prompt
@@ -170,6 +179,7 @@ final class Dictation {
             defer { if generation == current { isTranscribing = false } }
             do {
                 let text = try await WhisperEngine.shared.transcribe(samples, prompt: prompt)
+                WhisperEngine.shared.note(audioMs: samples.count / 16, tapToTextMs: Int(Date().timeIntervalSince(tappedOff) * 1000))
                 // Closed or started again meanwhile: those words aren't wanted.
                 guard generation == current else { return }
                 if !text.isEmpty { onText(text) }
@@ -181,11 +191,12 @@ final class Dictation {
         }
     }
 
-    /// The screen's gone: drops the model, about 1.2 GB.
+    /// The screen's gone. Whisper stays loaded for the next box, as
+    /// reloading it on every mic tap was most of the wait; it goes when the
+    /// app does (ThreadbearApp) or on a memory warning (WhisperEngine).
     func close() {
         stop()
         isTranscribing = false
-        WhisperEngine.shared.unload()
     }
 
     private func startWhisper(onText: @escaping (String) -> Void) async {

@@ -129,7 +129,9 @@ Ayush's "Plan View UI".
   yet, so the Mac offers only Send back there; writing to it still works.
 - **On the phone.** Sync sends each `plan.proposed` as a message row with
   `plan: true` (backend API 72): the whole plan, scrubbed as a reply is,
-  up to 24,000 characters. The iPhone app draws it as a plan card that
+  up to 24,000 characters, and from API 76 `planDecision` (`go` or
+  `revise`) once it's resolved, which `phone:messages` and `share:view`
+  pass on. The iPhone app draws it as a plan card that
   opens the plan in a sheet (Copy, and Share as a `.md` file), and Claude's
   `ExitPlanMode` card as "The plan is ready" with Read plan. That card's
   `planSeq` is the seq of the plan row it waits on, as the card can reach

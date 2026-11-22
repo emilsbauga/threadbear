@@ -613,6 +613,78 @@ pub fn needs_you(app: &AppSide, runner: Option<&RunnerUpdates>) -> bool {
         || not_following(runner)
 }
 
+/// Where a thread's fix is, for the Updates panel's list of the threads
+/// waiting on the app to restart onto what they landed. Mike checked the
+/// panel before hibernating such threads, and a plain icon couldn't say
+/// whether their fix was in yet; he picked this list over a line on the
+/// thread's row or steps in the thread (review 0a7d18e2, 21 Nov).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixPlace {
+    /// The running app has it: the thread hears once the runner does.
+    InApp,
+    /// The staged build has it.
+    Ready,
+    /// The build under way has it.
+    Building,
+    /// None of them has it yet: it comes in a later build.
+    Next,
+    /// No commit to look for, or git couldn't tell.
+    Unknown,
+}
+
+/// The app's builds, by commit, that a waiting thread's commit is looked
+/// for in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BuildCommits {
+    pub running: Option<String>,
+    pub staged: Option<String>,
+    pub building: Option<String>,
+}
+
+/// Where `want` is, with `has(commit, build)` saying whether a build's
+/// commit contains it (None when git can't tell). The newest build that
+/// has it wins, as that's the soonest it's in front of Mike.
+pub fn fix_place(
+    want: Option<&str>,
+    builds: &BuildCommits,
+    has: impl Fn(&str, &str) -> Option<bool>,
+) -> FixPlace {
+    let Some(want) = want else {
+        return FixPlace::Unknown;
+    };
+    let mut unsure = false;
+    for (build, place) in [
+        (&builds.running, FixPlace::InApp),
+        (&builds.staged, FixPlace::Ready),
+        (&builds.building, FixPlace::Building),
+    ] {
+        match build.as_deref().map(|b| has(want, b)) {
+            Some(Some(true)) => return place,
+            Some(None) => unsure = true,
+            _ => {}
+        }
+    }
+    if unsure {
+        FixPlace::Unknown
+    } else {
+        FixPlace::Next
+    }
+}
+
+/// A waiting thread's place, as its line in the panel says it.
+pub fn fix_label(place: FixPlace, app: &AppSide) -> &'static str {
+    match place {
+        FixPlace::InApp => "In your app",
+        FixPlace::Ready => "Ready",
+        FixPlace::Building => "In this build",
+        FixPlace::Next if app.staged.is_some() || app.building => {
+            "Landed after it, in the next one"
+        }
+        FixPlace::Next => "In the next build",
+        FixPlace::Unknown => "Waiting for the app",
+    }
+}
+
 /// What the icon itself shows of the next version, so a glance says it
 /// without opening the panel. Mike opened and shut Updates every 40 minutes
 /// or so on 18 Nov to see whether a build had finished; he picked a ring
@@ -1908,6 +1980,51 @@ mod tests {
             app_line(&waiting),
             "The app has a new version on main, waiting for a Mac to build it on."
         );
+    }
+
+    #[test]
+    fn a_waiting_thread_says_which_build_has_its_fix() {
+        let builds = BuildCommits {
+            running: Some("r".into()),
+            staged: None,
+            building: Some("b".into()),
+        };
+        // "x" is in the building commit only; "y" in none; "?" git can't place.
+        let has = |want: &str, build: &str| match (want, build) {
+            ("x", "b") => Some(true),
+            ("?", _) => None,
+            _ => Some(false),
+        };
+        assert_eq!(fix_place(Some("x"), &builds, has), FixPlace::Building);
+        assert_eq!(fix_place(Some("y"), &builds, has), FixPlace::Next);
+        assert_eq!(fix_place(Some("?"), &builds, has), FixPlace::Unknown);
+        assert_eq!(fix_place(None, &builds, has), FixPlace::Unknown);
+        // The running app having it wins over a later build having it too.
+        assert_eq!(
+            fix_place(Some("r"), &builds, |_, _| Some(true)),
+            FixPlace::InApp
+        );
+        let staged = BuildCommits {
+            staged: Some("s".into()),
+            ..builds
+        };
+        assert_eq!(
+            fix_place(Some("s"), &staged, |w, b| Some(w == b)),
+            FixPlace::Ready
+        );
+        let building = AppSide {
+            building: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            fix_label(FixPlace::Next, &building),
+            "Landed after it, in the next one"
+        );
+        assert_eq!(
+            fix_label(FixPlace::Next, &AppSide::default()),
+            "In the next build"
+        );
+        assert_eq!(fix_label(FixPlace::Building, &building), "In this build");
     }
 
     #[test]

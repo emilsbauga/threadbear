@@ -489,8 +489,6 @@ function mockExperiments() {
     ...(process.env.TB_MOCK_RECIPES ? ['recipes'] : []),
     // The Feed, with TB_MOCK_FEED (addDemoFeed).
     ...(process.env.TB_MOCK_FEED ? ['feed'] : []),
-    // Reviews as a page beside the thread, with TB_MOCK_REVIEW_PAGE.
-    ...(process.env.TB_MOCK_REVIEW_PAGE ? ['reviewPage'] : []),
   ];
 }
 
@@ -704,7 +702,7 @@ let pendingRestart;
 // a stalled event loop does; `queueMs` answers threads.send at once but
 // starts its turn (and its user.message) that much later, as a message
 // queued behind a running turn is. Both 0 by default.
-let slow = { ms: 0, queueMs: 0, saveMs: 0 };
+let slow = { ms: 0, queueMs: 0 };
 // The runner's own update (protocol "Runner updates"), set by mock.updates.
 let updates = { state: 'idle', oldRunners: [] };
 
@@ -810,8 +808,6 @@ async function handle(client, { id, method, params = {} }) {
   if (slow.ms > 0 && ['threads.send', 'threads.create', 'threads.update', 'threads.createDraft', 'threads.saveDraft', 'threads.delete'].includes(method)) {
     await new Promise((resolve) => setTimeout(resolve, slow.ms));
   }
-  // `saveMs` holds reviews.save: a tick on a review's page on its way.
-  if (slow.saveMs > 0 && method === 'reviews.save') await new Promise((resolve) => setTimeout(resolve, slow.saveMs));
   const result = await dispatch(caller, method, params);
   if (id !== undefined && id !== null) reply(client, id, result ?? {});
   // Like the real runner: a client that says hello hears about a restart
@@ -2258,7 +2254,7 @@ async function dispatch(client, method, p) {
       return { ok: true };
     }
     case 'mock.slow': {
-      slow = { ms: Math.max(0, Number(p.ms ?? 0)), queueMs: Math.max(0, Number(p.queueMs ?? 0)), saveMs: Math.max(0, Number(p.saveMs ?? 0)) };
+      slow = { ms: Math.max(0, Number(p.ms ?? 0)), queueMs: Math.max(0, Number(p.queueMs ?? 0)) };
       return slow;
     }
     case 'mock.restartPending': {
@@ -2745,7 +2741,7 @@ function applyScriptedThreads() {
         if (event.type !== 'review.updated') continue;
         const options = o.review.options.map((option) => ({ reference: false, ...option,
           image: { mediaType: 'image/png', ...option.image, path: path.resolve(dir, option.image.path) } }));
-        event.review = keptForReview(id, { ...event.review, title: o.review.title, note: o.review.note, options });
+        event.review = { ...event.review, title: o.review.title, note: o.review.note, options };
         t.reviews.set(event.review.id, event.review);
       }
       for (const event of t.events) {
@@ -4692,25 +4688,6 @@ function askedLine(e) {
   return e.text.replace(/\s+/g, ' ').trim().slice(0, 140) || undefined;
 }
 
-// With TB_MOCK_REVIEW_PAGE, a review's pictures as the runner keeps them:
-// copied into a folder of the review's own under the thread's media, which
-// is all its page beside the thread may read (desktop/gpui/src/review_pane.rs).
-function keptForReview(threadId, review) {
-  if (!process.env.TB_MOCK_REVIEW_PAGE) return review;
-  const dir = path.join(dataDir, 'threads', threadId, 'media', 'reviews', review.id);
-  fs.mkdirSync(dir, { recursive: true });
-  const keep = (image) => {
-    const kept = path.join(dir, path.basename(image.path));
-    try {
-      fs.copyFileSync(image.path, kept);
-    } catch {
-      return image;
-    }
-    return { ...image, path: kept };
-  };
-  return { ...review, options: review.options.map((option) => ({ ...option, image: keep(option.image), ...(option.shots ? { shots: option.shots.map((shot) => ({ ...shot, image: keep(shot.image), ...(shot.media ? { media: keep(shot.media) } : {}) })) } : {}) })) };
-}
-
 function loadFixtures() {
   for (const root of fixtureDirs) {
     if (!fs.existsSync(root)) continue;
@@ -4729,10 +4706,7 @@ function loadFixtures() {
         const event = JSON.parse(line);
         event.threadId = summary.id;
         if (event.images) event.images = fixPaths(event.images);
-        if (event.type === 'review.updated') {
-          event.review.options = event.review.options.map((option) => ({ ...option, image: fixPaths([option.image])[0] }));
-          event.review = keptForReview(summary.id, event.review);
-        }
+        if (event.type === 'review.updated') event.review.options = event.review.options.map((option) => ({ ...option, image: fixPaths([option.image])[0] }));
         return event;
       });
       summary.lastSeq = events.at(-1)?.seq ?? 0;

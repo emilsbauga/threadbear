@@ -127,6 +127,15 @@ code, pre { font-family: var(--mono); font-size: 13px; }
 .edited-draft > summary { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; list-style: none; padding: 3px 10px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
 .edited-draft > summary::-webkit-details-marker { display: none; }
 .edited-draft[open] > summary { margin-bottom: 6px; }
+.edited-draft .chip-show { color: var(--link); }
+/* The draft's box opens inside the user's message: not a second bubble round it. */
+.msg.user .edited-draft > .md { background: none; border-radius: 0; padding: 0; max-width: none; }
+/* A Plan first plan, as a card (messages.tsx PlanCard). */
+.plan-card { border: 1px solid var(--line-strong); border-radius: 10px; background: var(--raised); padding: 10px 14px 2px; }
+.plan-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; }
+.plan-card-kind { display: inline-flex; align-items: center; gap: 5px; }
+.plan-card-kind svg { width: 13px; height: 13px; }
+.plan-card-title { margin: 4px 0 6px; font-size: 15px; font-weight: 600; }
 .md .draft-body { padding: 10px 12px; white-space: pre-wrap; }
 .md .draft-body code { background: var(--line); }
 .md .draft-quote { padding-left: 10px; border-left: 3px solid var(--line-strong); color: var(--muted); }

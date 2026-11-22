@@ -76,7 +76,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    pub(crate) fn send(&self, event: Event) {
+    fn send(&self, event: Event) {
         if let Some(tx) = self.events.lock().ok().and_then(|e| e.clone()) {
             let _ = tx.unbounded_send(event);
         }
@@ -223,7 +223,7 @@ impl PanelPage {
                     ..Default::default()
                 };
                 let client = PreviewClient::new(
-                    super::preview::PreviewRequests::new(preview.clone(), shared.clone()),
+                    super::preview::PreviewRequests::new(preview.clone()),
                     super::preview::PreviewLife::new(shared.clone()),
                     PanelLoads::new(shared.clone()),
                     PanelDisplay::new(shared.clone()),

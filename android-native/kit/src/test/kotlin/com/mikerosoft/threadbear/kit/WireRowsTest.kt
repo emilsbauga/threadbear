@@ -111,6 +111,16 @@ class WireRowsTest {
         f += under("projects", list(t.projects) { mapOf("id" to it.id, "title" to it.title) })
         f += under("next", list(t.next) { mapOf("" to it) })
         f += under("links", list(t.links) { mapOf("title" to it.title, "url" to it.url, "icon" to it.icon) })
+        f["cardTurn"] = t.cardTurn
+        f += under("looseEnds", list(t.looseEnds) { mapOf("kind" to it.kind, "text" to it.text, "threadId" to it.threadId, "at" to it.at) })
+        t.review?.let { r ->
+            f += under("review", mapOf(
+                "reviewer" to r.reviewer, "independent" to r.independent, "rounds" to n(r.rounds), "threadId" to r.threadId, "passed" to r.passed,
+                "unstructured" to r.unstructured, "unchecked" to r.unchecked,
+            ) + under("findings", list(r.findings) { x ->
+                mapOf("id" to n(x.id), "severity" to x.severity, "claim" to x.claim, "where" to x.where, "outcome" to x.outcome, "note" to x.note)
+            }))
+        }
         f += under("asks", list(t.asks) { a ->
             mapOf("action" to a.action, "why" to a.why, "suggested" to a.suggested, "ticked" to a.ticked) +
                 under("options", list(a.options) { mapOf("" to it) }) +

@@ -30,6 +30,7 @@ const message = v.object({
   toolKind: v.optional(v.string()),
   summary: v.optional(v.boolean()),
   plan: v.optional(v.boolean()), // a Plan first plan (API 72), kept out of the turn's fold
+  planDecision: v.optional(v.union(v.literal('go'), v.literal('revise'))), // what became of it (API 76)
   turn: v.optional(v.string()),
   at: v.string(),
 });
@@ -46,7 +47,7 @@ export const shareImage = v.object({
   height: v.optional(v.number()),
 });
 
-// A link is one thread's (sync.ts slugFree). Two rows with one slug, from
+// A link is one thread's (sync.ts slugState). Two rows with one slug, from
 // before that was checked, show neither rather than guess which is meant.
 async function threadBySlug(ctx: QueryCtx, slug: string): Promise<Doc<'threads'> | null> {
   if (!slug || slug.length > 100) return null;
@@ -54,7 +55,11 @@ async function threadBySlug(ctx: QueryCtx, slug: string): Promise<Doc<'threads'>
     .query('threads')
     .withIndex('by_share_slug', (q) => q.eq('share.slug', slug))
     .take(2);
-  return rows.length === 1 ? rows[0]! : null;
+  if (rows.length !== 1) return null;
+  // A retired link shows nothing, whatever row has it (Codex Security, 21
+  // Nov 2026, finding 161): the owner putting one back clears its tombstones.
+  if (await ctx.db.query('threadTombstones').withIndex('by_slug', (q) => q.eq('slug', slug)).first()) return null;
+  return rows[0]!;
 }
 
 async function isMike(ctx: QueryCtx, token?: string): Promise<boolean> {
@@ -199,6 +204,7 @@ export const view = query({
         ...(m.toolKind ? { toolKind: m.toolKind } : {}),
         ...(m.summary ? { summary: true } : {}),
         ...(m.plan ? { plan: true } : {}),
+        ...(m.plan && m.planDecision ? { planDecision: m.planDecision } : {}),
         ...(m.turn ? { turn: m.turn } : {}),
         at: m.at,
       });

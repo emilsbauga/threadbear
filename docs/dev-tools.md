@@ -619,7 +619,12 @@ rollback covers a release that doesn't come up.
   minutes, starts the fix thread in its own checkout (`RemoteUpdateFixer`
   in `runner/src/fix-update.ts`): once per runner and commit, whatever kind
   it says, at most one thread or message per runner every 10 minutes, and
-  only for a commit on its own main or GitHub's. A report the main Mac
+  only for a commit on its own main or GitHub's. Its prompt has only what
+  the main Mac checked itself (the runner's id, the kind, the commit's
+  short id and subject from its own repo), never the machine's error text,
+  log path or name: those are that key's words, and the thread starts with
+  no Start card (Codex Security, 21 Nov). It reads them on that machine,
+  through a thread there. A report the main Mac
   hasn't fixed in 12 hours (its runner older than the backend, say) is
   handed over from the machine as before.
   Before, that machine's thread asked the main Mac for one, and a runner

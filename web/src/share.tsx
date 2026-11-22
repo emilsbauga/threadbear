@@ -9,7 +9,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useConvex, useMutation, useQuery } from 'convex/react';
 import { useLiveQuery } from './live';
 import { api } from '../../convex/_generated/api';
-import { EditedDrafts, MessageText, Pictures, picturesByRow, ToolRun, Worked, type PageMessage, type Picture } from './messages';
+import { EditedDrafts, MessageText, Pictures, PlanCard, picturesByRow, ToolRun, Worked, type PageMessage, type Picture } from './messages';
 import { editedLabel, splitEdited } from './draft';
 import { CommandNote, useCommand } from './command-state';
 import { empty, hasMore, nextBefore, pictures, rows, takeLive, takeOlder, type History } from './share-history';
@@ -211,6 +211,7 @@ function TurnSection({ id, turn, busy, after, inText, rows }: { id: string; turn
 
   const text = (m: PageMessage) => {
     // Drafts he changed, sent on the end of his words: chips, as in the app.
+    if (m.plan && m.role === 'assistant') return <PlanCard m={m} pictures={inText} rows={rows} />;
     const edited = m.role === 'user' ? splitEdited(m.text) : undefined;
     return edited ? (
       <>

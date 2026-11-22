@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { FCM_TOKEN, androidSealedOk, ANDROID_SEALED_MAX, fcmGone, fcmMessage, fcmPick, fcmReason, fcmSettled } from '../../../relay/convex/fcmMessage.ts';
+import { FCM_TOKEN, androidSealedOk, ANDROID_SEALED_MAX, fcmClearMessage, fcmGone, fcmMessage, fcmPick, fcmReason, fcmSettled } from '../../../relay/convex/fcmMessage.ts';
 import { seal } from '../../../convex/pushSeal.ts';
 
 test('the message is data only, with high priority and a short life', () => {
@@ -16,6 +16,12 @@ test('the message is data only, with high priority and a short life', () => {
   assert.equal('notification' in m.message, false);
   // Sent without sealed text (the backend had no key for the phone), only the thread
   assert.deepEqual(fcmMessage({ deviceToken: 'tok:APA91bExample', threadId: 'th-1' }).message.data, { threadId: 'th-1' });
+});
+
+test('a clear is data only, with no threadId an older app would show as a notification', () => {
+  const m = fcmClearMessage({ deviceToken: 'tok:APA91bExample', threadId: 'th-1' });
+  assert.deepEqual(m, { message: { token: 'tok:APA91bExample', data: { clear: 'th-1' }, android: { priority: 'NORMAL', ttl: '86400s' } } });
+  assert.equal('threadId' in m.message.data, false);
 });
 
 test('a Firebase token is letters, digits and _ - : of a sane length', () => {

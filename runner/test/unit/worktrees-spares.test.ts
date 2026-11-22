@@ -6,7 +6,7 @@ import path from 'node:path';
 import { makeHarness } from '../helpers/fakes.ts';
 import { findWorktreePatch } from '../../src/patches.ts';
 import { cleanUpWorktree, clearBuildCaches, land, makeWorktree, MAX_SPARES } from '../../src/worktrees.ts';
-import { HOOK_PATCH, KEEP, archiveAfterEdit, capture, commit, harness, hookRuns, isLocked, makeBranch, makeRepo, notes, sh, slowWorktreeRemoval, threadWithWorktree, toldAgent, until, write } from '../helpers/worktrees-harness.ts';
+import { HOOK_PATCH, KEEP, archiveAfterEdit, wrapGit, capture, commit, harness, hookRuns, isLocked, makeBranch, makeRepo, notes, sh, slowWorktreeRemoval, threadWithWorktree, toldAgent, until, write } from '../helpers/worktrees-harness.ts';
 
 test('with keep, an archived landed worktree is kept as a spare, and the next thread takes it, build cache and all', async () => {
   const { root, main } = makeRepo(KEEP);
@@ -459,4 +459,56 @@ test('clearBuildCaches leaves a cache folder reached through a link, and a folde
   sh(t.path, `git checkout -q ${t.branch}`);
   assert.deepEqual(await clearBuildCaches(rec), ['app/.build']);
   assert.ok(!fs.existsSync(path.join(t.path, 'app/.build')));
+});
+
+// 21 Nov: a new slot took the first number with no folder, but git keeps a
+// checkout registered after its folder goes (removed by hand, say) and
+// refuses to add another there, after making the thread's branch. So every
+// new thread with no spare to take got no worktree, started in the main
+// checkout, and left a thread/<id8> branch that refused its next try.
+// borrow-worktree.sh already passed such numbers over.
+test('a new slot passes over a number git still has registered after its folder went, and one git refuses leaves no branch', async () => {
+  const { root, main } = makeRepo(KEEP);
+  const threads = path.join(root, 'proj-threads');
+  const patch = (await findWorktreePatch(main, root))!;
+  const one = await makeWorktree({ cwd: main, threadId: 'aaaaaaaa-1', patch });
+  assert.ok(one.ok);
+  fs.rmSync(one.worktree.path, { recursive: true, force: true });
+  const two = await makeWorktree({ cwd: main, threadId: 'bbbbbbbb-1', patch });
+  assert.ok(two.ok, two.ok ? '' : two.reason);
+  assert.equal(two.worktree.path, path.join(threads, 'slot-2'));
+  // A number git refuses though nothing was there (a borrow took it at that
+  // moment), after making the branch as it does: the next, with no branch left.
+  const once = path.join(root, 'refused-once');
+  const restore = wrapGit('add', `if [ ! -e '${once}' ]; then touch '${once}'; "$REAL" -C '${main}' branch thread/cccccccc main; echo "fatal: '${path.join(threads, 'slot-3')}' already exists" >&2; exit 128; fi`);
+  let three;
+  try {
+    three = await makeWorktree({ cwd: main, threadId: 'cccccccc-1', patch });
+  } finally {
+    restore();
+  }
+  assert.ok(fs.existsSync(once), 'git refused the first');
+  assert.ok(three.ok, three.ok ? '' : three.reason);
+  assert.equal(three.worktree.path, path.join(threads, 'slot-4'));
+  const branches = sh(main, "git for-each-ref --format='%(refname:short)' refs/heads/thread/").split('\n').sort();
+  assert.deepEqual(branches, ['thread/aaaaaaaa', 'thread/bbbbbbbb', 'thread/cccccccc'], 'one branch each, none left by a failed add');
+  assert.equal(sh(three.worktree.path, 'git rev-parse --abbrev-ref HEAD'), 'thread/cccccccc');
+});
+
+// A spare with changes to tracked files has someone working in it (its
+// cleanup saw it clean): the next thread's reset would take them.
+test('a spare with edits to tracked files is passed over, edits kept, and stays out of the pool', async () => {
+  const { root, main } = makeRepo(KEEP);
+  const patch = (await findWorktreePatch(main, root))!;
+  const one = await makeWorktree({ cwd: main, threadId: 'aaaaaaaa-1', patch });
+  assert.ok(one.ok);
+  assert.deepEqual(await cleanUpWorktree(one.worktree), { removed: true, spare: true });
+  write(one.worktree.path, { 'README.md': 'someone is working here\n' });
+  const two = await makeWorktree({ cwd: main, threadId: 'bbbbbbbb-1', patch });
+  assert.ok(two.ok && two.worktree.path !== one.worktree.path, 'a new slot, not the spare');
+  assert.equal(fs.readFileSync(path.join(one.worktree.path, 'README.md'), 'utf8'), 'someone is working here\n');
+  assert.ok(!isLocked(main, one.worktree.path), 'out of the pool');
+  const three = await makeWorktree({ cwd: main, threadId: 'cccccccc-1', patch });
+  assert.ok(three.ok && three.worktree.path !== one.worktree.path);
+  assert.equal(fs.readFileSync(path.join(one.worktree.path, 'README.md'), 'utf8'), 'someone is working here\n');
 });

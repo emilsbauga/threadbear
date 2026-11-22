@@ -129,6 +129,18 @@ Feature: The Updates panel
     And I open the Updates panel
     Then the Updates panel lists "The app's next version is queued on build-mac behind 2 other runs (12 minutes so far)."
 
+  # Mike opened Updates before hibernating a thread waiting on its fix, and
+  # the panel couldn't say whether the fix was in yet. He picked a list of
+  # the waiting threads there (review 0a7d18e2, 21 Nov).
+  @system.selfupdate @swift-pending
+  Scenario: The threads waiting on the app say which build has their fix
+    When the app's next version is building
+    And "Make uploads resume after a crash" is waiting on the app, its fix "building"
+    And "Ship the beta to TestFlight" is waiting on the app, its fix "next"
+    And I open the Updates panel
+    Then the Updates panel lists "  Make uploads resume after a crash: In this build"
+    And the Updates panel lists "  Ship the beta to TestFlight: Landed after it, in the next one"
+
   @system.selfupdate @swift-pending
   Scenario: A new version waits for nearby changes to settle before building
     When the app's next version is waiting for main to settle

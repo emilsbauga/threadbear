@@ -122,8 +122,16 @@ A patch whose code can't all be seen isn't loaded at all, trusted or not,
 and has `error` (not `untrusted`) saying why, as a stored hash can't vouch
 for code it didn't cover: one that loads code by a name worked out as it
 runs (`import(name)`, `` import(`./${x}`) ``, `require('./a' + b)`, any
-`createRequire`, `node:module`, `node:vm`, `node:worker_threads`, `eval`,
-a `data:` or `#` specifier), in the patch file or a helper, one the runner
+`createRequire`, `node:module`, `node:vm`, `node:worker_threads`,
+`node:inspector`, `node:repl`, `eval`, `Function`, a `data:` or `#`
+specifier, in any case, or any other URL scheme), or that reaches code
+made from a string or bytes by another route (`globalThis.eval`,
+`window['Function']`, any `.constructor` such as `(() => {}).constructor`,
+`const { eval: run } = globalThis`, `Reflect.get` with anything but a
+plain harmless name or `Reflect` handed on, `getOwnPropertyDescriptors`,
+`process.binding`, `node:test`, `{ __proto__: f }`, `WebAssembly`, or
+`process`, `globalThis` and the like used as values, as in
+`Object.entries(process)`), in the patch file or a helper, one the runner
 can't parse, or one that reaches more than 100 local files. Loads are read
 from the parsed syntax (oxc), so comments and strings don't count either way. `patches.trust` can't trust it; changing it to plain
 imports can. An agent's Edit or Write to a helper carries on the trusted
@@ -327,6 +335,33 @@ scripts deep:
 - Any other file of the repo's a script names (an argument, `< file`,
   a `./` path anywhere in its text) is hashed if it looks runnable
   (above, "Only code is hashed").
+
+It holds what a script writes against what it runs: a file it (or a
+script it reaches) writes and also runs, sources, loads or hashes as code
+can't be followed, as the bytes that will run were never hashed (`cp
+payload.dat run.sh; sh run.sh`, `cat x > run.sh`, `tee`, `mv`, `dd of=`,
+`sed -i`, `curl -o`, `${dest:-run.sh}`'s default; a folder copied over
+one's folder counts), in any order, and so can't a write to somewhere
+worked out as it runs or named by the data once it runs anything at all:
+a path from a `$(...)`, `read`, a loop or what a script was handed that
+was, a pattern or brace the shell expands, `find -exec ... {}`, `xargs`, a
+link the check makes (`ln`), `tar x`, `unzip`, `patch`, `curl -O`, `git
+checkout`, `pull`, `reset --hard` and the like. A variable's value is
+followed through what sets it, across the scripts a check reaches: one
+set to a known path counts as a write to that path, and one set from
+something worked out as it runs (`export 'x=..'`, `printf -v`,
+`${x:=..}`, `let`) as a write anywhere. What follows a step it can't
+follow is still read for what it writes, and written files are matched
+by inode too, so a link made before counts. A schedule's check that's
+known to write a file it then runs can't be approved, an owner's
+included; one that writes somewhere it can't tell is one it can't follow,
+like `python3 x.py`. A file in the temp folder from a plain `$(mktemp)`,
+and a variable nothing it follows sets (the runner's own, like
+`$THREADBEAR_CHECK_STATE`, or a positional handed only those), aren't the
+repo's to steer, though the path one makes if it's empty
+(`"${UNSET}run.sh"`) still counts. What a program on PATH writes by its
+own rules beyond those isn't known (below), and nor is what a JavaScript
+or other language's script writes.
 
 What it can't follow, it doesn't guess at: `eval`, `alias`, `bash -c` or
 `trap` with code worked out as it runs, `$(cat "$f")` or `$(< "$f")`, a
@@ -787,7 +822,13 @@ command, the first time an edit asks for it) and the patch's entry in
 Patches has `editsAsk`: which file, the line and command, why, and what to
 change. A patch's `worktree` setup or check doesn't count either: setup runs what's committed, in a new
 worktree, and the check when a land is asked for, so neither runs what an agent
-just wrote until it has got past a step that's asked about. Its `teardown`
+just wrote until it has got past a step that's asked about. Land itself runs
+nothing else from the branch on this Mac: a format command in the branch's
+`.git-blame-ignore-revs` runs only when main's list has the same command,
+paths and config, with config the branch didn't change, and stops the land
+before anything runs otherwise; a branch adding a command to main's list,
+or changing a config file one runs with, lands only with `tb land
+--allow-format <id>` for exactly what's shown (docs/thread-worktrees.md). Its `teardown`
 does count, as it runs in the worktree as the agent left it. A repo's setup has to
 keep that true: `worktree-setup.sh` won't `npm install` in the main checkout while
 it has uncommitted changes. A patch using `this` or a getter gets none of this. A settings hook that can't be followed all

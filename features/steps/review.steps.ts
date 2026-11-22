@@ -36,6 +36,8 @@ type ReviewState = {
   peeking: boolean;
   minimap: boolean;
   error: string;
+  /** The words under the stage: the option on show's name and reasons, or the agent's lead with them all. GPUI's own. */
+  words?: string;
   /** What the stage draws: "picture", "player", "page", "still" (a clip or a page as its still) or "all". */
   stage: string;
   /** What Open live would open, for the option on show. */
@@ -80,6 +82,11 @@ async function untilClosed(world: ThreadbearWorld): Promise<void> {
 async function press(world: ThreadbearWorld, tip: string): Promise<void> {
   await world.app.do({ cmd: 'click', tip, review: reviewId(world) });
 }
+
+// An option's small picture on the card in the thread, by its tooltip.
+When('I press the picture of {string} on the review\'s card', async function (this: ThreadbearWorld, label: string) {
+  await this.app.do({ cmd: 'click', tip: `Open the review on ${label}` });
+});
 
 When('I open the review', async function (this: ThreadbearWorld) {
   await review(this);
@@ -237,6 +244,14 @@ When('I press the {string} key in the review', async function (this: ThreadbearW
 
 Then('the review is on option {string}, shot {int}', async function (this: ThreadbearWorld, id: string, shot: number) {
   await untilReview(this, `${id}'s shot ${shot} on the stage`, (s) => s.mode === 'Single' && s.focused === id && s.shot === shot - 1);
+});
+
+Then('the review\'s words start {string}', async function (this: ThreadbearWorld, start: string) {
+  await untilReview(this, `the words under the stage starting "${start}"`, (s) => (s.words ?? '').startsWith(start));
+});
+
+Then('the review\'s words say {string}', async function (this: ThreadbearWorld, words: string) {
+  await untilReview(this, `the words under the stage saying "${words}"`, (s) => (s.words ?? '').includes(words));
 });
 
 Then('the review shows them all', async function (this: ThreadbearWorld) {

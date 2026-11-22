@@ -41,7 +41,7 @@ struct DictateButton<Idle: View>: View {
         if dictation.isListening { dictation.finish(); return }
         guard let engine = DictationEngine.chosen else { askEngine = true; return }
         // A download stopped by the app being swiped away picks up again.
-        if engine == .whisper, !whisperModel.installed, whisperModel.progress == nil { whisperModel.download() }
+        if engine == .whisper, !whisperModel.complete, whisperModel.progress == nil { whisperModel.download() }
         listen()
     }
 
@@ -67,7 +67,7 @@ struct DictationNotes: View {
         if let problem = dictation.problem {
             Text(problem).font(.footnote).foregroundStyle(.secondary)
         }
-        if DictationEngine.chosen == .whisper, let progress = whisperModel.progress {
+        if DictationEngine.chosen == .whisper, !whisperModel.installed, let progress = whisperModel.progress {
             ProgressView(value: progress) {
                 Text("Downloading Whisper. Apple's dictation until then.").font(.footnote).foregroundStyle(.secondary)
             }

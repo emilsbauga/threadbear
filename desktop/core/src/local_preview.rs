@@ -136,23 +136,12 @@ pub struct Site {
     /// The page alone, nothing beside it (a live page in the transcript,
     /// whose scripts run: one file, as the phone gets it).
     pub page_only: bool,
-    /// A page the app made itself, and files of its own beside it
-    /// (`Site::made`): answered from here, never read from the folder.
-    made: Option<Made>,
     /// What it may read, and their names' bytes together (`MAX_ALLOWED_BYTES`).
     allowed: Mutex<(HashSet<String>, usize)>,
     /// The folder, held open for the site's life: every read starts here, so
     /// the folder being moved or swapped for a link later changes nothing.
     #[cfg(unix)]
     root_fd: std::os::fd::OwnedFd,
-}
-
-/// What a site made by the app answers from memory.
-struct Made {
-    /// The page as it is now (`Site::remake`).
-    html: Mutex<Vec<u8>>,
-    /// Files of the app's own beside the page, by name.
-    extras: Vec<(String, Vec<u8>)>,
 }
 
 impl Site {
@@ -186,7 +175,6 @@ impl Site {
             let root_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
             Some(Site {
                 root,
-                made: None,
                 allowed: Mutex::new((HashSet::from([page.clone()]), page.len())),
                 page,
                 page_digest,
@@ -210,80 +198,6 @@ impl Site {
         })
     }
 
-    /// A site whose page is `html`, made by the app (a design review's page,
-    /// review_page.rs), in `folder`: the page is answered from memory under
-    /// `page` and no file of that name is read, and `extras` (the app's own
-    /// font files) are answered the same way under their names. From the
-    /// folder it reads only `assets`, the files the app put on the page
-    /// (their paths under the folder), under the same checks as any page's:
-    /// passive files, no symlinks. The page itself is never read for names,
-    /// as an agent's words are on it: `url(reply/x.png)` in a note named a
-    /// file the app hadn't, and two thousand links used up the names before
-    /// the pictures were reached (Gemini's review, 20 Nov 2026). `folder` is
-    /// already real (its symlinks followed by the caller, as `new`'s file is).
-    pub fn made(
-        folder: &Path,
-        page: &str,
-        html: Vec<u8>,
-        assets: &[String],
-        extras: Vec<(String, Vec<u8>)>,
-    ) -> Option<Site> {
-        // Names as the site would take them from a page: one safe part each,
-        // the page a page and each extra a passive asset.
-        let plain = |name: &str| safe_parts(name).is_some_and(|parts| parts.len() == 1);
-        if !is_page(page)
-            || !plain(page)
-            || extras.iter().any(|(name, _)| {
-                !plain(name) || !ASSET_EXTENSIONS.contains(&extension(name).as_str())
-            })
-        {
-            return None;
-        }
-        let site = Site::new(&folder.join(page), None)?;
-        let site = Site {
-            made: Some(Made {
-                html: Mutex::new(html),
-                extras,
-            }),
-            ..site
-        };
-        site.allow_only(assets);
-        Some(site)
-    }
-
-    /// The made page's document again, and what it may read now, for the
-    /// view to load afresh (a tick changed). False for a site with a page
-    /// of its own on disk.
-    pub fn remake(&self, html: Vec<u8>, assets: &[String]) -> bool {
-        match self.made.as_ref().map(|made| made.html.lock()) {
-            Some(Ok(mut now)) => *now = html,
-            _ => return false,
-        }
-        self.allow_only(assets);
-        true
-    }
-
-    /// What a made page may read from its folder: the page and these, each
-    /// a safe path, and no more than any page may name.
-    fn allow_only(&self, assets: &[String]) {
-        let mut names = HashSet::from([self.page.clone()]);
-        let mut bytes = self.page.len();
-        for asset in assets.iter().take(MAX_REFERENCES_PER_FILE) {
-            let Some(parts) = safe_parts(asset) else {
-                continue;
-            };
-            let name = parts.join("/");
-            if name.len() > MAX_REFERENCE_BYTES || bytes + name.len() > MAX_ALLOWED_BYTES {
-                continue;
-            }
-            bytes += name.len();
-            names.insert(name);
-        }
-        if let Ok(mut allowed) = self.allowed.lock() {
-            *allowed = (names, bytes);
-        }
-    }
-
     /// Whether `relative` is one the page may read now (for tests).
     pub fn allows(&self, relative: &str) -> bool {
         self.allowed.lock().is_ok_and(|a| a.0.contains(relative))
@@ -301,29 +215,13 @@ impl Site {
         let relative = parts.join("/");
         let ext = extension(&relative);
         let is_page = relative == self.page;
-        // The app's own page and files, from memory: an extra needs no
-        // naming by the page, as the app put it there.
-        let own = self.made.as_ref().and_then(|made| {
-            if is_page {
-                made.html.lock().ok().map(|html| html.clone())
-            } else {
-                made.extras
-                    .iter()
-                    .find(|(name, _)| *name == relative)
-                    .map(|(_, data)| data.clone())
-            }
-        });
         if !is_page
-            && own.is_none()
             && (self.page_only
                 || !(ASSET_EXTENSIONS.contains(&ext.as_str()) && self.allows(&relative)))
         {
             return None;
         }
-        let data = match own {
-            Some(data) => data,
-            None => self.read(&parts)?,
-        };
+        let data = self.read(&parts)?;
         if is_page {
             if let Some(wanted) = &self.page_digest {
                 if &digest(&data) != wanted {
@@ -333,8 +231,7 @@ impl Site {
         }
         let scanned = SCANNED_EXTENSIONS.contains(&ext.as_str());
         let utf8 = scanned && std::str::from_utf8(&data).is_ok();
-        // A made site's names are the app's (`allow_only`), never the page's.
-        if scanned && !self.page_only && self.made.is_none() {
+        if scanned && !self.page_only {
             let head = &data[..data.len().min(SCAN_BYTES)];
             // A character cut in two at the end reads as U+FFFD, which names nothing.
             let text = String::from_utf8_lossy(head);

@@ -327,7 +327,7 @@ function structuredData() {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: "Threadbear",
-    description: "A desktop app for Mac, Windows and Linux that Mike Cann made for running Claude Code and Codex threads on your own subscriptions, with an iPhone app, a link per thread and patches your agents can write.",
+    description: "A desktop app for Mac, Windows and Linux that Mike Cann made for running Claude Code, Codex, Grok, Cursor, OpenCode and Gemini threads on your own subscriptions, with iPhone and Android apps, a link per thread and patches your agents can write.",
     operatingSystem: "macOS 26 or later (Apple silicon), Windows, Linux",
     applicationCategory: "DeveloperApplication",
     offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },

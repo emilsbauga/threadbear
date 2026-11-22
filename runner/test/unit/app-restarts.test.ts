@@ -512,3 +512,33 @@ test('a turn that needs Mike, or one not waiting on the app, stays in the inbox'
   h.adapter.last.result('completed');
   assert.equal(h.runner.get(thread.id).snoozedUntil, undefined);
 });
+
+// The Updates panel lists the threads waiting on the app and whether each
+// one's commit is in the build that's coming (Mike's pick, review 0a7d18e2,
+// 21 Nov): each waiting thread's summary says which commit it waits for.
+test('a waiting thread says which commit it waits for, until it hears or a day passes', () => {
+  const { h, thread } = setUp();
+  const watcher = new AppRestarts({
+    runner: h.runner, home: h.home, clock: h.clock, log: nullLogger,
+    git: { resolve: () => 'c0ffee1234567', contains: () => true },
+  });
+  assert.equal(watcher.waitingFor(thread.id), undefined, 'not waiting');
+  watcher.appHello(A);
+  watcher.watch(thread.id);
+  assert.deepEqual(watcher.waitingFor(thread.id), { commit: 'c0ffee1234567', short: 'c0ffee123' });
+  watcher.appHello(B);
+  assert.equal(watcher.waitingFor(thread.id), undefined, 'told: no longer waiting');
+  watcher.watch(thread.id);
+  h.clock.advance(25 * 60 * 60_000);
+  assert.equal(watcher.waitingFor(thread.id), undefined, 'a day old: no longer listed');
+});
+
+test('a wait with no commit to look for is still listed', () => {
+  const { h, thread } = setUp();
+  const watcher = new AppRestarts({
+    runner: h.runner, home: h.home, clock: h.clock, log: nullLogger,
+    git: { resolve: () => undefined, contains: () => undefined },
+  });
+  watcher.watch(thread.id);
+  assert.deepEqual(watcher.waitingFor(thread.id), {});
+});

@@ -1,27 +1,40 @@
 import Foundation
+import UIKit
 import os
 import whisper
 
-/// whisper.cpp on the GPU, with the decoding settings Voice Type on the Mac
+/// whisper.cpp, its encoder on the Neural Engine (Core ML) once that's
+/// downloaded and on the GPU until then, with the decoding settings Voice Type on the Mac
 /// uses (its WhisperEngine, which matched what its benchmark measured), less
 /// the word list, which lives on the Mac and isn't in this public repo.
 ///
 /// One serial queue owns the context. Loading takes a few seconds, so it
-/// starts when the mic does and is done by the time the talking is.
+/// starts when a box with the mic opens (Dictation.prepare) and stays until
+/// the app goes to the background or memory runs short.
 nonisolated final class WhisperEngine: @unchecked Sendable {
     static let shared = WhisperEngine()
 
     private let queue = DispatchQueue(label: "threadbear.whisper", qos: .userInitiated)
     private var context: OpaquePointer?
     private let log = Logger(subsystem: "com.mikecann.threadbear", category: "whisper")
+    /// On the queue: how long the last load took, and the last run's time,
+    /// for `note`.
+    private var loadMs: Int?
+    private var runMs = 0
+    private var loadedDuringRun = false
+
+    private init() {
+        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
+                                               object: nil, queue: nil) { [weak self] _ in self?.unload() }
+    }
 
     /// Loads the model if it isn't already. Safe to call often.
     func warm() {
         queue.async { _ = self.loaded() }
     }
 
-    /// The model is about 1.2 GB in memory, so it goes when the new-thread
-    /// screen does.
+    /// The model is about 2.5 GB in memory with the Neural Engine encoder, so
+    /// it goes when the app goes to the background.
     func unload() {
         queue.async {
             if let context = self.context { whisper_free(context) }
@@ -55,6 +68,14 @@ nonisolated final class WhisperEngine: @unchecked Sendable {
         #endif
         params.flash_attn = true
         context = whisper_init_from_file_with_params(path, params)
+        // whisper.cpp won't load at all if the Core ML encoder beside the
+        // weights is bad, so that goes and the GPU does it all instead.
+        if context == nil, FileManager.default.fileExists(atPath: WhisperModel.encoderURL.path) {
+            log.error("Whisper wouldn't load with the Core ML encoder; dropping it")
+            WhisperModel.dropEncoder()
+            context = whisper_init_from_file_with_params(path, params)
+        }
+        loadMs = Int(Date().timeIntervalSince(started) * 1000)
         log.info("Whisper loaded: \(self.context != nil) in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
         return context
     }
@@ -63,6 +84,7 @@ nonisolated final class WhisperEngine: @unchecked Sendable {
         // Under a third of a second, or near silence: nothing to hear, and
         // Whisper makes words up ("Thank you.") when given nothing.
         guard samples.count > 5_000, let peak = samples.lazy.map(abs).max(), peak > 0.01 else { return "" }
+        loadedDuringRun = context == nil
         guard let context = loaded() else { throw WhisperError.notLoaded }
         let started = Date()
         var p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
@@ -100,12 +122,32 @@ nonisolated final class WhisperEngine: @unchecked Sendable {
         for i in 0..<whisper_full_n_segments(context) {
             text += String(cString: whisper_full_get_segment_text(context, i))
         }
-        log.info("Whisper: \(samples.count / 16) ms of audio in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+        runMs = Int(Date().timeIntervalSince(started) * 1000)
+        log.info("Whisper: \(samples.count / 16) ms of audio in \(self.runMs) ms")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
 nonisolated extension WhisperEngine {
+    /// One line per dictation in Application Support/Whisper/timings.log, so
+    /// how long the phone takes can be read off it later (`devicectl device
+    /// copy from --domain-type appDataContainer`) rather than guessed.
+    func note(audioMs: Int, tapToTextMs: Int) {
+        queue.async {
+            let line = "\(ISO8601DateFormatter().string(from: .now)) audio=\(audioMs)ms tapToText=\(tapToTextMs)ms "
+                + "run=\(self.runMs)ms load=\(self.loadMs.map { "\($0)ms" } ?? "-") loadedDuringRun=\(self.loadedDuringRun)\n"
+            let url = WhisperModel.fileURL.deletingLastPathComponent().appendingPathComponent("timings.log")
+            guard let handle = try? FileHandle(forWritingTo: url) else {
+                try? Data(line.utf8).write(to: url)
+                return
+            }
+            defer { try? handle.close() }
+            // A few hundred dictations at most; past 64 KB it starts again.
+            if (try? handle.seekToEnd()) ?? 0 > 64_000 { try? handle.truncate(atOffset: 0) }
+            try? handle.write(contentsOf: Data(line.utf8))
+        }
+    }
+
     /// With a leading space, as mlx-whisper encoded the prompts Voice Type's
     /// benchmark measured (VocabularyPrompt.tokenizerInput there).
     fileprivate func promptTokens(_ prompt: String?, context: OpaquePointer) -> [whisper_token] {

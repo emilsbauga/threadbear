@@ -536,7 +536,14 @@ profile with a loopback model stub and no real API credentials.
   for 45 minutes, the next update build queues for the lease like any
   other run, so a host kept busy all day can't hold the app back for good
   (`~/Library/Caches/Threadbear/update-desktop/deferred-since` holds when
-  that began, and goes once a build runs). The first has a note beside it
+  that began, and goes once a build runs). While a build runs or waits for a host,
+  `~/Library/Caches/Threadbear/update-desktop/phase` holds one line saying
+  whether it's waiting, queued (and behind how many runs) or building, and
+  since when, which the app reads once a second for its Updates panel; it
+  goes when the build ends. For threads waiting on the app to restart onto
+  what they landed, the app also runs `git merge-base --is-ancestor` in the
+  checkout, once each time those threads or its builds change, to say which
+  build has each one's commit. The first has a note beside it
   (`threadbear-perf.lock.holder`: its pid, when
   it took the lock and what it's running) so a waiting run can say who it's
   waiting for. The holder deletes it when it finishes. Each waiting run keeps

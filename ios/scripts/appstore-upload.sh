@@ -11,7 +11,8 @@
 #
 # Each run gets a new build number, the UTC time as YYMMDDHHMM (always increasing), unless
 # BUILD_NUMBER is set, like Walkies' and Quick Ask's (this script is theirs, copied). The version
-# (MARKETING_VERSION, 1.0.0) comes from the project. Everything lands in OUT (default
+# (MARKETING_VERSION, 1.0.0) comes from the project, or MARKETING_VERSION in the environment
+# (the nightly TestFlight build, nightly-testflight.sh, when the project's train is closed). Everything lands in OUT (default
 # ~/Library/Caches/Threadbear/ios-builds/appstore/<build>).
 #
 # OUT and the derived data (DD) must be this account's alone, mode 700 with no ACL letting anyone
@@ -80,7 +81,8 @@ else
   echo "Archiving Release for iOS, build number $BUILD…"
   ../scripts/one-build.sh xcodebuild archive -project Threadbear.xcodeproj -scheme Threadbear -configuration Release \
     -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath "$DD" \
-    CURRENT_PROJECT_VERSION="$BUILD" THREADBEAR_APS_ENVIRONMENT=production "${auth[@]}" > "$OUT/archive.log" 2>&1 \
+    CURRENT_PROJECT_VERSION="$BUILD" ${MARKETING_VERSION:+MARKETING_VERSION=$MARKETING_VERSION} \
+    THREADBEAR_APS_ENVIRONMENT=production "${auth[@]}" > "$OUT/archive.log" 2>&1 \
     || { grep -E " error:|ARCHIVE FAILED" "$OUT/archive.log" >&2; echo "Archive failed, see $OUT/archive.log" >&2; exit 1; }
   # What says this run finished it, for a later BUILD_NUMBER run to reuse.
   echo "archived from commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$OUT/archived.txt"

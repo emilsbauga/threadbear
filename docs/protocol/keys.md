@@ -152,10 +152,16 @@ schedule on it, and mint phone tokens. Now there are two kinds of key, and
   through waiting commands the old way, up to 2 MB a mutation, and keeps
   the file past that. The owner key still gets Convex's
   own upload URL.
-- **Share links.** A slug is one thread's for good. A runner key may put
-  one on its thread only if no other row has it and no other runner's
-  thread ever did: a deleted thread's slug, and the old one when Share
-  again makes a new link, are tombstoned. The owner key may, and other
+- **Share links.** A slug is one thread's for good, and a retired one stays
+  retired. A runner or box key may put one on its thread only if no other
+  row has it and no thread ever had it before, its own runner's and its own
+  thread's included: a deleted thread's slug, and the old one when Share
+  again makes a new link, are tombstoned. Keeping a slug that's still live
+  on the same row is fine. A retired slug only ever that thread's (a pruned
+  row sent again, a late write) doesn't refuse the row: it goes in without
+  it, keeping the link it has if that's still good (and stopping it if the
+  write stops sharing); any other is refused, unless the write stops sharing (then the row's own link stops). `/s/<slug>` never shows a
+  retired slug. The owner key may use any, which un-retires it, and other
   rows with it lose it. `/s/<slug>` and its card show nothing if two rows
   have one slug (from before this).
 - **Taking a thread over.** Apart from a move (Moving a thread to another runner), threads don't change runner, but if the

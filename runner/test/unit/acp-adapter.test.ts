@@ -894,6 +894,132 @@ test('MCP: a card can never approve less than the call runs', async () => {
   assert.equal(r.json.result.isError, true);
 });
 
+test('MCP: accepts JSON-encoded strings for nested object/array arguments and hints when nested objects arrive as null', async () => {
+  const received: Record<string, unknown>[] = [];
+  const endTurnTool = {
+    name: 'end_turn',
+    description: 'x',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      headline: z.string().optional(),
+      asks: z
+        .array(
+          z.object({
+            question: z.string().min(1),
+            options: z.array(z.object({ label: z.string().min(1), does: z.string().optional() })).optional(),
+            links: z.array(z.object({ title: z.string().min(1), url: z.string().min(1) })).optional(),
+          }),
+        )
+        .optional(),
+      completion: z
+        .object({
+          tasks: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), status: z.enum(['completed', 'pending', 'blocked']) })),
+        })
+        .optional(),
+    },
+    handler: async (args: Record<string, unknown>) => {
+      received.push(args);
+      return { content: [{ type: 'text', text: 'Noted.' }] };
+    },
+  };
+  const stringTool = {
+    name: 'send_message',
+    description: 'x',
+    annotations: { readOnlyHint: true },
+    inputSchema: { text: z.string() },
+    handler: async (args: Record<string, unknown>) => {
+      received.push(args);
+      return { content: [{ type: 'text', text: 'Sent.' }] };
+    },
+  };
+  const server = new AcpMcpServer([endTurnTool, stringTool], {
+    log: nullLogger,
+    label: 't',
+    requestApproval: async () => ({ decision: 'allow' }),
+    cwd: () => '/tmp',
+    mode: () => 'full',
+    rules: () => [],
+    addRules: () => undefined,
+  });
+  const url = await server.listen();
+  const auth = { authorization: `Bearer ${server.token}` };
+
+  // 1. Nested objects dropped to null (Cursor CallDynamicTool + Gemini): error hints to pass JSON strings.
+  const nulled = await post(
+    url,
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'end_turn',
+        arguments: {
+          asks: [{ question: 'Land it?', options: [null], links: [null] }],
+          completion: { tasks: [null] },
+        },
+      },
+    },
+    auth,
+  );
+  assert.equal(nulled.json.result.isError, true);
+  assert.match(nulled.json.result.content[0].text, /pass asks, completion as a JSON-encoded string/);
+
+  // 2. Retrying with asks and completion as JSON-encoded strings unwraps and validates cleanly.
+  const ok = await post(
+    url,
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'end_turn',
+        arguments: {
+          headline: 'Ready to land',
+          asks: JSON.stringify([{ question: 'Land it?', options: [{ label: 'Land', does: 'Merge to main' }], links: [{ title: 'PR', url: 'https://example.com/pr/1' }] }]),
+          completion: JSON.stringify({ tasks: [{ id: 't1', title: 'Run checks', status: 'completed' }] }),
+        },
+      },
+    },
+    auth,
+  );
+  assert.equal(ok.json.result.isError, undefined);
+  assert.deepEqual(received[0], {
+    headline: 'Ready to land',
+    asks: [{ question: 'Land it?', options: [{ label: 'Land', does: 'Merge to main' }], links: [{ title: 'PR', url: 'https://example.com/pr/1' }] }],
+    completion: { tasks: [{ id: 't1', title: 'Run checks', status: 'completed' }] },
+  });
+
+  // 3. String arguments that happen to contain JSON are left untouched as strings.
+  const plainString = await post(
+    url,
+    {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'send_message', arguments: { text: '{"keep":"as string"}' } },
+    },
+    auth,
+  );
+  assert.equal(plainString.json.result.isError, undefined);
+  assert.deepEqual(received[1], { text: '{"keep":"as string"}' });
+
+  // 4. Invalid JSON string still returns a normal validation error without crashing.
+  const badJson = await post(
+    url,
+    {
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'end_turn', arguments: { asks: '{not json' } },
+    },
+    auth,
+  );
+  assert.equal(badJson.json.result.isError, true);
+  assert.doesNotMatch(badJson.json.result.content[0].text, /JSON-encoded string/);
+
+  server.close();
+});
+
 for (const [what, rawInput] of [
   ['a nested list of changes', { changes: [{ path: '.mcp.json', newText: 'x' }] }],
   ['a patch body', { patchText: '*** Begin Patch\n*** Update File: .mcp.json\n@@\n-a\n+b\n*** End Patch' }],

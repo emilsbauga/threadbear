@@ -459,7 +459,7 @@ test('a new limits.json is picked up by the 60-second check', () => {
 });
 
 test('a new limits.json is picked up by the folder watch', async (t) => {
-  if (noFileWatches(t)) return;
+  if (await noFileWatches(t)) return;
   const s = setup();
   const store = s.make();
   store.start();

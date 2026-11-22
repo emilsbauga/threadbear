@@ -35,6 +35,20 @@ Feature: Open Anything
     Then the open thread is "Set up the Cloudflare tunnel for the preview server"
     And the Open Anything box is down
 
+  # Picking the thread that's open already used to leave the keyboard with
+  # no one: the box's field went, and opening a shown thread focused nothing,
+  # so ⌘K did nothing until a click (found benchmarking, thread 0b6b183c).
+  @nav.openanything @swift-pending
+  Scenario: Picking the thread that's open already leaves the keys working
+    When I open the thread "Rename the Settings tabs"
+    And I press "k" with "cmd"
+    And I type "Rename the Settings tabs" in the Open Anything box
+    And I press Return in the Open Anything box
+    Then the Open Anything box is down
+    And the open thread is "Rename the Settings tabs"
+    When I press "k" with "cmd"
+    Then the Open Anything box is up
+
   @nav.openanything @swift-pending
   Scenario: A panel opens where it's from, with its button lit
     When I press "k" with "cmd"

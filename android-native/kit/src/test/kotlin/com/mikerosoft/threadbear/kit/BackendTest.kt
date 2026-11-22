@@ -50,6 +50,22 @@ class BackendTest {
         assertEquals("""[{"action":"Merge?","answer":"Merge"}]""", t.calls.last().second["answers"].toString())
     }
 
+    /** Notes (backend API 79) are asked for only when the backend knows the argument. */
+    @Test fun messagesAskForNotesOnlyWhenTold() = runTest {
+        val t = FakeTransport()
+        t.queries = { _, _ -> """{"messages":[],"hasMore":false}""" }
+        val b = PhoneBackend(t, "x")
+        b.messages("t1", 50).toList()
+        b.messages("t1", 50, notes = true).toList()
+        b.olderMessages("t1", 9, 50)
+        b.olderMessages("t1", 9, 50, notes = true)
+        assertNull(t.calls[0].second["notes"])
+        assertEquals("true", t.calls[1].second["notes"].toString())
+        assertNull(t.calls[2].second["notes"])
+        assertEquals("true", t.calls[3].second["notes"].toString())
+        assertEquals("9", t.calls[3].second["beforeSeq"].toString())
+    }
+
     @Test fun aThreadThatIsntThereIsNull() = runTest {
         val t = FakeTransport()
         t.subscriptionError = TransportError.NotFound("No such thread")

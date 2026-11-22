@@ -280,3 +280,37 @@ test('a borrow landed under new commit ids (a group check rebased it) goes back 
   const r = await sweepBorrows(main, opts({ thread: () => 'archived' }));
   assert.deepEqual(r.reclaimed.map((x) => x.path), [wt]);
 });
+
+test('borrow-worktree.sh passes over a spare with edits to tracked files, keeping them', () => {
+  const { main } = makeRepo();
+  addBorrowScript(main);
+  const wt = borrow(main, 'THREADBEAR_THREAD_ID=t-1');
+  assert.match(sh(main, `./borrow-worktree.sh --give-back ${wt}`), /is a spare again/);
+  write(wt, { 'README.md': 'someone is working here\n' });
+  const next = borrow(main, 'THREADBEAR_THREAD_ID=t-2');
+  assert.notEqual(next, wt);
+  assert.equal(fs.readFileSync(path.join(wt, 'README.md'), 'utf8'), 'someone is working here\n');
+});
+
+// Codex's review, 21 Nov: between claiming a spare (its lock renamed away)
+// and checking out its branch, the folder is detached and unlocked, which
+// the sweep took for a spare claimed and never set up after a quiet day,
+// and locked back into the pool under the thread setting it up.
+test('a spare being set up after its claim is not taken back; one claimed and left is, after a quiet day', async () => {
+  const { main } = makeRepo();
+  addBorrowScript(main);
+  const wt = borrow(main, 'THREADBEAR_THREAD_ID=t-1');
+  assert.match(sh(main, `./borrow-worktree.sh --give-back ${wt}`), /is a spare again/);
+  const a = admin(wt);
+  const later = Date.now() + 9 * DAY;
+  const claim = path.join(a, `locked.claimed-4242-${Date.now()}`);
+  fs.renameSync(path.join(a, 'locked'), claim);
+  fs.utimesSync(claim, new Date(later), new Date(later));
+  const mid = await sweepBorrows(main, opts({ now: later }));
+  assert.deepEqual(mid.reclaimed, []);
+  assert.ok(!isLocked(main, wt), 'left to its claimer');
+  // Its claimer gone, the claim a day old: back in the pool.
+  const after = await sweepBorrows(main, opts({ now: later + DAY + 60_000 }));
+  assert.deepEqual(after.reclaimed.map((r) => r.to), ['spare']);
+  assert.ok(isLocked(main, wt));
+});

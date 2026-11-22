@@ -327,26 +327,33 @@ phone doesn't show them. This needs your backend on API 86 or newer. If
 the review changes on the Mac while you're answering, your answer stays
 in the sheet while it reloads, ready for you to check and send again.
 
-The comparison window starts on the first option's first picture. An option
-can have several (its overview, how it looks mid-drag, a detail), shown in a
-strip under the picture. Next and back (or the left and right arrow keys)
-step through every picture of every option, up and down jump to the option
-before or after, and after the last one they're all side by side. Click an
-option on the right, one of its small pictures, or a dot under the stage, to
-go straight to it, and Open live to try one the agent has running (a web
+In the thread, a review's card shows the agent's lead and each option's
+small picture and name. Click one to open the comparison window on that
+option, or the card's button to start on the first. The picture has the
+whole width of the window, with back and next beside it. Under it is a tab
+for each option, with its tick, and under the tabs the name of the option on
+show and the agent's reasons for it, at the size you read replies in the
+thread, so you read about each one while you're looking at it. An option
+can have several pictures (its overview, how it looks mid-drag, a detail),
+shown in a strip under the picture. Next and back (or the left and right
+arrow keys) step through every picture of every option, up and down jump to
+the option before or after, and after the last one they're all side by
+side, with the agent's lead under them. Click a tab or one of the strip's
+small pictures to go straight to it, the first tab to see them all, and
+Open live at the end of the tabs to try one the agent has running (a web
 page only). A review from a thread on another Mac opens on that Mac. An
 agent can show a video or an HTML page in place of a picture: videos play
 quietly on a loop, side by side when they're all showing, with controls
 for sound when one is big; a page shows as it does in the side pane, with
 its scripts off. When
 the agent includes today's version to compare against, hold Space (or click
-its button over the picture) to flick to it and back. To look closer at a
+its button at the end of the tabs) to flick to it and back. To look closer at a
 picture, scroll or pinch over it to zoom in where the pointer is (a long page
 starts small enough to see whole). Then scroll or drag to move around, or use
 the small picture in the corner to jump to a part. Pinching out, ⌘0, Esc or a
 double-click goes back to the whole thing, and ⌘+ and ⌘- zoom too. Tick as
-many as you like, or None if none of them will do, write what you think in
-the box at the bottom, and Send takes it all back to the thread.
+many as you like, or None of them if none will do, write what you think in
+the box at the bottom right, and Send takes it all back to the thread.
 Pasting with the keyboard outside the reply box puts the words in it and moves
 the cursor there, so you can dictate just after ticking an option.
 
@@ -2016,7 +2023,9 @@ terminal command setup used to print still works too:
 If you have them on, notifications reach your phone only while you're away
 from the Mac by default. Threadbear counts you as at the Mac when the app is open and you've
 used the keyboard or mouse in the last two minutes, and as away when the Mac
-is asleep. On the iPhone, Settings > Notify me changes it to Always or Never.
+is asleep. On the iPhone, Settings > Notify me changes it to Always or Never. A
+notification goes away by itself once its thread no longer needs you: when
+you open it on the phone, deal with it on the Mac, or archive it.
 
 Ask on the iPhone: press the Action button, say a question, and hear the
 answer from an archive server of your own, one that knows your past
@@ -2500,7 +2509,10 @@ version (or a runner release) is building, a short arc goes round the
 icon; once the app's next version is ready to restart into, the icon turns
 green. A grey dot means something else is in progress and will sort itself
 out, and a coloured dot means it needs you. Right-click it for a quick
-Restart to Update.
+Restart to Update. Threads waiting for the app to restart onto what they
+landed are listed in the panel's App section, each saying whether its fix
+is in the version that's building, in the one that's ready, or still to
+come in the next build; click one to open it.
 
 A few parts of the runner (the program that keeps it going, and the small
 Threadbear Runner app macOS names in its privacy prompts) don't come with

@@ -62,7 +62,8 @@ const ALLOWED: &[&str] = &[
 /// `sandbox-exec` with core's fixed profile (hang_sample.rs), and nothing else.
 /// The first launch reads the Swift app's settings with `defaults export` of
 /// its own domain, once (swift_import.rs). The self-update (app_update.rs)
-/// reads main's tree with git, runs the update script from the app's own
+/// reads main's tree and commit with git, asks git which of its builds has
+/// a waiting thread's commit (`merge-base --is-ancestor`), runs the update script from the app's own
 /// bundle under `taskpolicy -b`, and opens the installed app again once this
 /// one has quit: fixed programs, on the app's own checkout and bundle.
 /// The Objective-C beside the app (its native/ folders) is read too: the
@@ -78,6 +79,8 @@ const ALLOWED_LINES: &[(&str, &str, usize)] = &[
     // never anything from a thread (handover.rs).
     ("gpui/src/handover.rs", "let mut command = std::process::Command::new(\"/usr/bin/open\");", 1),
     ("gpui/src/app_update.rs", "let out = Command::new(\"/usr/bin/git\").args(rules::rev_parse_arguments(checkout)).stdin(Stdio::null()).output().ok()?;", 1),
+    ("gpui/src/app_update.rs", "let out = Command::new(\"/usr/bin/git\").args([\"-C\", checkout, \"rev-parse\", \"--verify\", \"-q\", \"refs/heads/main\"]).stdin(Stdio::null()).output().ok()?;", 1),
+    ("gpui/src/app_update.rs", "let status = Command::new(\"/usr/bin/git\").args([\"-C\", checkout, \"merge-base\", \"--is-ancestor\", want, build]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().ok()?;", 1),
     ("gpui/src/app_update.rs", "let child = Command::new(program).args(arguments).current_dir(installed::home_dir()).stdin(Stdio::null()).stdout(out).stderr(err).spawn();", 1),
     // Build-time SDK/compiler discovery and the fixed Translate source compile.
     // No app runtime, link, file or runner content supplies these commands.

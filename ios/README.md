@@ -48,15 +48,28 @@ directly, so it works with the Mac asleep: whatever you send waits in
   boot a third.
 - `appstore/` and `scripts/appstore-*`: the App Store listing and release,
   in `appstore/RELEASE.md`.
+- `scripts/nightly-testflight.sh`: the safety net. A schedule on the M5
+  (`--check` at 1:00 and 6:00 Perth) archives main when the app has changed
+  since the last one, uploads it and hands it to the internal TestFlight
+  group "Mike (nightly)", which gets every build with no Beta App Review, so
+  Mike's phone has last night's main through TestFlight's automatic updates.
+  The first check starts it, the second opens a thread only if it failed.
+  Mike's copy only (it needs the App Store Connect key and `origin` being
+  his repo); details in the script's header and `appstore/RELEASE.md`.
 - `scripts/install-phone.sh`: build, install over wifi, launch. After
-  landing an `ios/` change, an agent in Mike's copy installs it on his phone
-  itself, without asking, so he always has the latest to look at:
+  landing an `ios/` change, an agent in Mike's copy tries to install it on
+  his phone itself, without asking, so he has it to look at before the
+  nightly TestFlight build brings it:
   `taskpolicy -b ios/scripts/install-phone.sh` from the landed commit. It
   takes ten minutes or more, so run it in the background, and don't
   `tb land` or rebase while it builds: files changing under the compile
   broke the first try. Say in the reply that it's installed, or why it
   couldn't be (the phone off the wifi, asleep, or needing a restart for
-  "cryptexd"). "Unable to launch ... could not be unlocked" at the end is
+  "cryptexd"); when it can't, say it comes with the nightly TestFlight
+  build and leave it there, no retry watchers. Either install replaces the
+  other: they share the bundle id, so the pairing and settings stay, but a
+  dev install's pushes come through the sandbox, and TestFlight may not
+  update an app it didn't install until Install is tapped in TestFlight. "Unable to launch ... could not be unlocked" at the end is
   fine: it's installed, just not opened. That's his own phone only:
   uploading to App Store Connect still needs him to ask.
 - `scripts/make-icon.swift`: the icon, from the same mascot as the Mac's.

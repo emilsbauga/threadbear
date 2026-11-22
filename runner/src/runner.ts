@@ -16,7 +16,7 @@ import type { SwiftChangesStatus } from './swift-changes.ts';
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
-import { keepPictureMarkers } from './reviews.ts';
+import { fitReview, keepPictureMarkers } from './reviews.ts';
 import path from 'node:path';
 import { ConvexKeys, type ConvexKeysOptions } from './convex-keys.ts';
 import crypto from 'node:crypto';
@@ -85,9 +85,9 @@ import { stripModelSuffix, type AccountRegistry, type LearnedAccountInfo } from 
 import type { SignInState } from './sign-in-state.ts';
 import { pickAccount as pickByRoom, type UsageReading } from './usage.ts';
 import { RUNNER_VERSION, expandHome, paths, peekRunnerJson, type Config } from './config.ts';
-import { experimentOn } from './experiments.ts';
 import { limitWhy, loginOk, nextLogin, pickInPool, poolAccounts } from './pools.ts';
-import { copyImageInto, imageRefFor } from './media.ts';
+import { copyImageInto, imageRefFor, importImageInto } from './media.ts';
+import { ImportQuota } from './media-quota.ts';
 import { isDirectory } from './fsutil.ts';
 import { commandFolders } from './tools.ts';
 import { copySessionTranscript, subagentTranscriptPath } from './transcripts.ts';
@@ -671,6 +671,8 @@ export type RunnerDeps = {
   // Whether the thread is waiting to hear the app restarted onto a new
   // build (wait_for_app_restart), so a done turn hibernates until it has.
   awaitingAppRestart?: (threadId: string) => boolean;
+  // The commit it waits for the app to have (AppRestarts.waitingFor).
+  appRestartWant?: (threadId: string) => { commit?: string; short?: string } | undefined;
   // Whether Mike is at this Mac, as presence last found it (presence.ts);
   // undefined when it hasn't been checked. Only read for phone messages.
   atMac?: () => boolean | undefined;
@@ -887,6 +889,7 @@ export class Runner {
   reachable: Reachable;
   appRestartAsked?: (threadId: string) => void;
   awaitingAppRestart?: (threadId: string) => boolean;
+  appRestartWant?: (threadId: string) => { commit?: string; short?: string } | undefined;
   atMac?: () => boolean | undefined;
 
   private threadKey?: (threadId: string) => string;
@@ -921,6 +924,7 @@ export class Runner {
     this.standingInstructions = deps.standingInstructions;
     this.appRestartAsked = deps.appRestartAsked;
     this.awaitingAppRestart = deps.awaitingAppRestart;
+    this.appRestartWant = deps.appRestartWant;
     this.atMac = deps.atMac;
     this.adapters = deps.adapters;
     this.accounts = deps.accounts;
@@ -1302,8 +1306,16 @@ export class Runner {
       pendingApprovals: [],
       handoff: { fromCwd: this.cfg.defaults.cwd, fromAccountId: accountId, rebuilt: true },
     };
+    // Each only with this thread's own copies of its files, as recoverReviews
+    // takes one from the log (Daybreak 159, Gemini's second review): a moved
+    // thread's log is the other runner's word.
     const reviews = new Map<string, DesignReview>();
-    for (const event of events) if (event.type === 'review.updated') reviews.set(event.review.id, event.review);
+    const media = this.store.mediaDir(id);
+    for (const event of events) {
+      if (event.type !== 'review.updated') continue;
+      const review = fitReview(event.review, { threadId: id, now: media, final: media }, true);
+      if (review) reviews.set(review.id, review);
+    }
     if (reviews.size) rec.reviews = [...reviews.values()];
     const buttons = new Map<string, ReplyButton>();
     for (const event of events) if (event.type === 'button.updated') buttons.set(event.button.id, event.button);
@@ -1700,12 +1712,6 @@ export class Runner {
   // UNREAD_MESSAGE). It counts as a refusal for each (adapters/types.ts).
   unreadMessage(threadId: string): boolean {
     return this.threads.get(threadId)?.rt.session?.unreadMessage?.() === true;
-  }
-
-  // Whether one of the experiments is on here (experiments.ts), for what
-  // a tool tells the agent (threadbear-mcp.ts).
-  experiment(id: string): boolean {
-    return experimentOn(this.cfg.home, id);
   }
 
   get(threadId: string): ThreadSummary {
@@ -3932,12 +3938,8 @@ export class Runner {
     // first, then released, so that can take a moment. Resuming unarchives.
     if (archiving) {
       rt.archivePending = true;
-      if (rec.worktree && !rec.worktree.removedAt) {
-        rec.worktree.cleanupOwed = true;
-        // Each archive tears down again: a thread brought back may have
-        // made its things again since the last one.
-        delete rec.worktree.tornDownAt;
-      }
+      // Its worktree's cleanup is owed, and its teardown due again.
+      this.slot(st, { kind: 'archived' });
       this.archiveWhenGone(st);
     }
     rec.updatedAt = this.isoNow();
@@ -4024,6 +4026,24 @@ export class Runner {
     this.park(st, { kind: 'seen' });
     this.markDirty(st);
     return { thread: this.summary(st) };
+  }
+
+  // media.import from a thread's own key (Daybreak finding 157): off the
+  // event loop, and below Full access metered (media-quota.ts). Whether it's
+  // metered is the caller gate's call, by the thread's saved mode, as for
+  // everything else it may do. The owner's imports (the app's paste and drop)
+  // are importMedia's.
+  readonly importQuota = new ImportQuota();
+
+  async importMediaForThread(threadId: string, p: string, metered: boolean): Promise<{ image: ImageRef }> {
+    const src = path.resolve(expandHome(p));
+    const dir = paths.inbox(this.cfg.home);
+    if (metered) return { image: await this.importQuota.run(threadId, src, dir) };
+    try {
+      return { image: await importImageInto(dir, src) };
+    } catch (e) {
+      throw new RpcError(ErrorCode.badParams, (e as Error).message);
+    }
   }
 
   importMedia(p: string): { image: ImageRef } {
@@ -4605,6 +4625,10 @@ export class Runner {
     // Only while something still listens for the restart: one archived when
     // it came isn't told, and its watch is spent (Codex's review, 19 Nov).
     if (rec.hibernatedForApp && rec.snoozedUntil && this.awaitingAppRestart?.(rec.id)) s.awaitingAppRestart = true;
+    // Any thread waiting on the app, hibernating or not: the Updates panel
+    // lists them with whether the build on its way has their commit.
+    const appWant = rec.archivedAt ? undefined : this.appRestartWant?.(rec.id);
+    if (appWant) s.awaitingApp = appWant;
     if (rec.woke && rec.forceUnread) s.woke = { ...rec.woke };
     if (rec.archivedAt) {
       s.archivedAt = rec.archivedAt;

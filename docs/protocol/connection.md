@@ -146,9 +146,17 @@ once. At most 16 connections may be waiting to authenticate at once,
 refused ones counting until they've gone; the next upgrade is turned away
 with HTTP 503. An
 upgrade with an `Authorization` header that's wrong is turned away with HTTP
-401 before it becomes a WebSocket. Once authenticated, a frame can be up to
-64 MiB (what the runner accepts; what it sends, like a big
-`threads.events` page, has no such limit).
+401 before it becomes a WebSocket. Once authenticated, and once the process
+lookup above has finished, a frame can be up to 64 MiB (what the runner
+accepts; what it sends, like a big `threads.events` page, has no such limit).
+While the lookup runs, frames keep the 64 KiB limit and wait for it, at most
+256 of them and 1 MiB in all; more closes the connection with 4408. A
+lookup counts until it settles, even after its client has gone: the owner
+token's against the 16 waiting to authenticate (a bearer client's upgrade
+waits for a slot like the rest), a thread key's against its own limit of 4
+per thread and 16 for all threads, past which the connection is closed with
+4429, so one thread can't keep the app out (Daybreak finding 158). The answer to `hello` comes once the lookup
+is done, so a client that waits for it can send big frames straight after.
 
 ## Configured Pi profiles
 
@@ -485,7 +493,7 @@ An old runner's `-32601` is shown in the picker, never as a broken composer.
 | `approvals.respond` | `{ threadId, approvalId, decision: "allow" \| "allowAlways" \| "deny" \| "answered", message?: string, answers?: Record<string, string>, queued?: Record<string, "allow" \| "deny"> }` | `{}`. `queued` answers calls from the card's `approval.queued` list, by `itemId`, in the same click ("Queued calls"); ids not on the list are ignored, as is the whole of it from the phone or another Mac's view (`remote`). `allowAlways` on a card that didn't offer it counts as `allow`. `allowAlways` allows matching requests for the rest of this thread only; it never changes the thread's permission mode or saves anything in the project. With `answered`, the app sends the chosen answers in one line as `message` too: the runner keeps it in `approval.resolved` (only `answers` goes to the CLI), so the transcript can show what was chosen |
 | `plans.approve` | `{ threadId, itemId }` | `{}`. Go ahead on a waiting plan (see "Plan first"); `-32602` if that plan isn't waiting |
 | `secrets.answer` | `{ threadId, approvalId, secret?: string, decline?: true }` | `{}`. Answers a `secret.requested` card (Secrets). The runner never logs, emits or mirrors `secret` |
-| `media.import` | `{ path: string }` | `{ image: ImageRef }` copies a file into `inbox/` and reads its size; HEIC becomes JPEG and TIFF or BMP becomes PNG |
+| `media.import` | `{ path: string }` | `{ image: ImageRef }` copies a file into `inbox/` and reads its size; HEIC becomes JPEG and TIFF or BMP becomes PNG. From a thread's own key below Full access it's metered (Daybreak finding 157): one at a time per thread, two at once across them, and pictures of at most 25 MB, 50 files or 200 MB a day per thread, 200 files or 1 GB for all of them (a converted picture counting at its real size), refused with -32602 before the file is opened once over (a converted picture that no longer fits is refused once made). Such a thread's `threads.send` and `threads.create` take only pictures it imported this way, each once and at most 10 at a time, and only to a thread on this runner, and carry a copy the runner makes then from the inbox file, which must still be the file imported, at the size imported, and a picture of the type imported (never converted); otherwise -32602. A thread's import never holds the runner up: it copies in the background from the file as opened, only once its first bytes say it's a picture, leaves nothing behind when it fails, and is removed at once if its client has gone by the time it's done |
 | `patches.trust` | `{ threadId, files: { file, hash }[] }` | `{ trusted: string[] }`. Trusts those versions of the thread's waiting patch files (each a `file` its `patches` lists with `untrusted`, and the `hash` given there), then every thread's patches are read again, so the answer comes once they have been. The `claude` entry's file trusts the folder's Claude Code settings the same way. `-32602` for a file the thread isn't waiting on, or one whose hash has moved on since (look again). See "Trusting a folder's patches" |
 | `actions.run` | `{ threadId, actionId }` | For a prompt action, `{ turnId }`: its prompt was sent as a message (as `threads.send`). For a url action (only an older client calls it for one), `{ ok: true, durationMs }` once the page is opened on the runner's Mac, with nothing in the transcript. For a command action, `{ ok, exitCode?, durationMs, seq }` once the command has finished, with its output in the transcript as the `action.run` event at `seq`. The command runs in the thread's folder through a login shell with the thread's variables (`THREADBEAR_THREAD_ID` and the rest) and is stopped after 10 minutes. `-32602` for an action the thread doesn't have, `-32020` while the same action is still running |
 | `panels.render` | `{ threadId, panelId }` | `{ image?: ImageRef, items?: PanelItem[], note?: string }` draws an `image` panel or fills a `list` panel now. For `xcode.simulator`, a screenshot of the booted simulator (`xcrun simctl io booted screenshot`), written to the same file each time under the thread's `panels/`; with no device booted (or another failure) there's only `note`. For a `list` panel, the rows its patch's `items` function returned (at most 200), or `note` with the error when it threw or took over 20 seconds. Slow: it waits for the screenshot or the function. `-32602` for a panel the thread doesn't have |

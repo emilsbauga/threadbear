@@ -11,7 +11,7 @@
 // its own file up once, keeps a live copy of the whole table (and a copy on
 // disk for when the backend can't be reached), and sends only its own,
 // each run taken with a claim first so it's sent once.
-import type { CheckCard } from './patch-trust.ts';
+import { CheckRefused, type CheckCard } from './patch-trust.ts';
 import { type KeptCheck, CHECK_TIMEOUT_MS, checkLimitMs, checkOutcome, checkRunningElsewhere, checksRunningElsewhere, clearCheckRunning, dropKeptCheck, HELD_EXTRA, HELD_SKIP, heldToldAbout, keepCheck, markCheckRunning, MAX_CHECK_CHARS, MAX_CHECK_TIMEOUT_SECS, noteHeldTold, readKeptCheck, runCheck, type CheckResult } from './schedule-check.ts';
 import { forbiddenText } from './sync.ts';
 import fs from 'node:fs';
@@ -1496,8 +1496,9 @@ export class Scheduler {
     try {
       this.runner.patchTrust.approveCheck(rec.check, cwd, card);
     } catch (e) {
-      // A card's approval that doesn't hold changes nothing.
-      if (card) throw bad(e instanceof Error ? e.message : String(e));
+      // A card's approval that doesn't hold changes nothing, and nor does
+      // one of a check nobody can approve (it writes what it runs).
+      if (card || e instanceof CheckRefused) throw bad(e instanceof Error ? e.message : String(e));
       this.log.warn("could not approve a schedule's check", { scheduleId: rec.id, error: String(e) });
     }
   }

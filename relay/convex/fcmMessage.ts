@@ -29,6 +29,20 @@ export function fcmMessage(a: { deviceToken: string; threadId: string; encrypted
   };
 }
 
+// The silent "clear" (apns.ts says when): data only, under `clear` and with no
+// `threadId`, so an Android app from before this ignores it rather than
+// showing "A thread needs you". Normal priority: it only tidies the shade, and
+// it is worth nothing after a day.
+export function fcmClearMessage(a: { deviceToken: string; threadId: string }) {
+  return {
+    message: {
+      token: a.deviceToken,
+      data: { clear: a.threadId },
+      android: { priority: 'NORMAL' as const, ttl: '86400s' },
+    },
+  };
+}
+
 // Firebase says a token is no good with 404 NOT_FOUND whose error code is
 // UNREGISTERED (the app was removed or its data cleared), which fcmReason
 // reads. The backend then forgets the phone. Only that verdict counts, not

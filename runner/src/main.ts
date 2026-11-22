@@ -106,7 +106,7 @@ import { machineSampler } from './runner-stats.ts';
 import { machineIcon } from './machine.ts';
 import { filesMethods } from './files.ts';
 import { devicesMethods } from './devices.ts';
-import { flushSentry, reportException, reportLoggedError, reportLoggedWarning, startSentry } from './sentry.ts';
+import { flushSentry, reportException, reportLoggedError, reportLoggedWarning, startSentry, useSentryMask } from './sentry.ts';
 import { ERROR_EXIT_CODE, ERROR_LEAVE_DEADLINE_MS, ERROR_STOP_DEADLINE_MS, decideErrorExit, errorMode, guardHolds, guardNotice, readErrorExits, takeErrorEnv, testThrow, writeErrorExits } from './error-exits.ts';
 import { ALWAYS_ASK_TOOLS, NEVER_ASK_TOOLS, RICH_BLOCKS_LINE, SERVER_NAME, buildThreadbearTools, serverInstructions, type RemoteControl } from './threadbear-mcp.ts';
 import { CrossRunner } from './cross-runner.ts';
@@ -535,6 +535,7 @@ async function main(): Promise<void> {
       if (!appRestarts.isWatching(threadId)) appRestarts.watch(threadId);
     },
     awaitingAppRestart: (threadId) => appRestarts.isWatching(threadId),
+    appRestartWant: (threadId) => appRestarts.waitingFor(threadId),
   });
   // Until it is listening (below): see Runner.holdWaits.
   runner.holdWaits = true;
@@ -700,6 +701,8 @@ async function main(): Promise<void> {
   // (nor anything the rules know) is split in two (safe-cut.ts). Not counted
   // in the scrubber's status: nothing is taken out here.
   useScrubForCuts((text) => redactSecrets(scrubber.known.mask(text)).text);
+  // Sentry's events lose them too (sentry.ts scrubForSentry).
+  useSentryMask((text) => scrubber.known.mask(text));
   runner.secrets.onWritten = (value) => scrubber.known.add(value);
   if (box) {
     scrubber.known.add(box.secrets.boxKey);
@@ -932,6 +935,7 @@ async function main(): Promise<void> {
     scrubber,
     elsewhere: (id) => peers.owns(id) || peers.isArriving(id),
     elsewhereIds: () => [...peers.summaries(['inbox', 'snoozed', 'archived']).map((t) => t.id), ...peers.arrivingIds()],
+    elsewhereThread: (id) => peers.find(id),
     movedAway: (id) => movesRef?.gone(id) ?? false,
     version: RUNNER_VERSION,
     release: RELEASE.release,
@@ -1181,7 +1185,7 @@ async function main(): Promise<void> {
     schedules: { list: () => scheduler.list(), update: (p) => scheduler.update(p), delete: (id) => scheduler.delete(id) },
     threads: (since) => runner.scheduledSince(since),
     start: (p) => runner.create({ text: p.text, title: p.title, cwd: p.cwd, worktree: false, startedBy: { kind: 'runner', label: 'Recipes', why: p.title } }).thread,
-    log: (msg) => log.warn(msg),
+    log: (msg, extra) => log.warn(msg, extra),
   });
   if (!box && !copyOfReal) recipes.start();
   const upstream = new Upstream({
@@ -1669,7 +1673,7 @@ async function main(): Promise<void> {
     remote: peers,
     relay,
     virtualStart: (p) => virtualRunners.start(p),
-    gate: new CallerGate({ runner, remote: peers, schedules: scheduler }),
+    gate: new CallerGate({ runner, remote: peers, schedules: scheduler, images: runner.importQuota }),
     callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id) || peers.owns(id), log }),
     updates: () => (draining ? undefined : runnerUpdates()),
     appHello: (build, app) => appRestarts.appHello(build, app),
@@ -1933,7 +1937,7 @@ async function main(): Promise<void> {
         onlyOwn: true,
         // Its port is on disk too (drain-<pid>.json), so a thread's shell can
         // reach this one as well as the primary.
-        gate: new CallerGate({ runner, schedules: scheduler }),
+        gate: new CallerGate({ runner, schedules: scheduler, images: runner.importQuota }),
         callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id), log }),
         methods: {
           ...scheduledSendMethods(runner),

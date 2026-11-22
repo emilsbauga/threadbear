@@ -201,15 +201,16 @@ function providerToken(cfg: ApnsConfig, nowMs = Date.now()): string {
 
 type SendResult = { token: string; status: number; reason?: string };
 
-function sendOne(session: http2.ClientHttp2Session, cfg: ApnsConfig, jwt: string, token: string, payload: string): Promise<SendResult> {
+function sendOne(session: http2.ClientHttp2Session, cfg: ApnsConfig, jwt: string, token: string, payload: string, kind: 'alert' | 'background' = 'alert'): Promise<SendResult> {
   return new Promise((resolve) => {
     const req = session.request({
       ':method': 'POST',
       ':path': `/3/device/${token}`,
       authorization: `bearer ${jwt}`,
       'apns-topic': cfg.topic,
-      'apns-push-type': 'alert',
-      'apns-priority': '10',
+      // A background push (clear) must say so, at priority 5, or Apple refuses it.
+      'apns-push-type': kind,
+      'apns-priority': kind === 'alert' ? '10' : '5',
       'content-type': 'application/json',
     });
     let status = 0;
@@ -477,4 +478,72 @@ export const test = internalAction({
   args: { title: v.optional(v.string()), body: v.optional(v.string()) },
   returns: vSendResult,
   handler: async (ctx, { title, body }): Promise<SendSummary> => await sendAlert(ctx, { title: title ?? 'Threadbear', body: body ?? 'Test notification', threadId: 'test' }),
+});
+
+// The thread stopped needing Mike after a push went out for it (sync:upsertThreads):
+// a silent push to each phone that gets them, to take its notification down,
+// so the phone isn't left with ones he's already dealt with. The iPhone app
+// (AppDelegate) and the Android one (ThreadbearMessagingService) read
+// `clear`; apps from before it ignore it, as it has no alert and no
+// `threadId`. Through the relay's /clear, which a relay from before it
+// answers with a 404: then nothing happens, as before. Best effort: iOS
+// may hold a background push back, and the app tidies up when it next opens
+// too. Not counted in pushHealth, which is about notifications reaching him.
+export const clear = internalAction({
+  args: { threadId: v.string() },
+  returns: v.object({ sent: v.number(), failed: v.number() }),
+  handler: async (ctx, { threadId }): Promise<{ sent: number; failed: number }> => {
+    // Not UnifiedPush phones (the F-Droid build) yet: they'd need a clear of
+    // their own through sendWebPush, and their notifications still come down
+    // when the thread is opened there.
+    const targets = ((await ctx.runQuery(internal.devices.targets, {})) as Target[]).filter((t) => t.notify !== 'off' && t.platform !== 'webpush');
+    if (!targets.length) return { sent: 0, failed: 0 };
+    const cfg = apnsConfig();
+    const direct = cfg && process.env.PUSH_VIA !== 'relay' ? targets.filter((t) => t.platform !== 'android') : [];
+    const relayed = targets.filter((t) => !direct.includes(t));
+    let sent = 0;
+    let failed = 0;
+    if (direct.length && cfg) {
+      const payload = JSON.stringify({ aps: { 'content-available': 1 }, clear: threadId });
+      const jwt = providerToken(cfg);
+      for (const env of ['sandbox', 'production'] as const) {
+        const tokens = direct.filter((t) => t.environment === env).map((t) => t.apnsToken);
+        if (!tokens.length) continue;
+        const session = http2.connect(env === 'production' ? 'https://api.push.apple.com' : 'https://api.sandbox.push.apple.com');
+        session.on('error', (e) => console.error(`[apns] session error: ${e.message}`));
+        try {
+          for (const r of await Promise.all(tokens.map((t) => sendOne(session, cfg, jwt, t, payload, 'background')))) {
+            if (r.status === 200) sent++;
+            else {
+              failed++;
+              console.warn(`[apns] clear ${failureText(r.status, r.reason)} for …${r.token.slice(-6)}`);
+            }
+          }
+        } finally {
+          session.close();
+        }
+      }
+    }
+    if (relayed.length && process.env.PUSH_RELAY !== 'off') {
+      const url = process.env.PUSH_RELAY_URL || RELAY_URL;
+      const install = await relayInstall(ctx, url);
+      if ('failure' in install) return { sent, failed: failed + relayed.length };
+      for (const t of relayed) {
+        const res = await fetch(`${url}/clear`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${install.installId}.${install.installKey}`, 'X-Threadbear-Version': `api-${API_VERSION}` },
+          body: JSON.stringify({ deviceToken: t.apnsToken, environment: t.environment, threadId, ...(t.platform ? { platform: t.platform } : {}) }),
+        }).catch(() => null);
+        // A relay from before /clear: nothing to do, and no use trying the rest.
+        if (res?.status === 404) return { sent, failed };
+        const r = ((await res?.json().catch(() => ({}))) ?? {}) as { ok?: boolean; status?: number; reason?: string };
+        if (r.ok) sent++;
+        else {
+          failed++;
+          console.warn(`[relay] clear ${failureText(typeof r.status === 'number' ? r.status : (res?.status ?? 0), r.reason)} for …${t.apnsToken.slice(-6)}`);
+        }
+      }
+    }
+    return { sent, failed };
+  },
 });

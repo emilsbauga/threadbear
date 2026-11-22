@@ -108,6 +108,16 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // 21 Nov 2026: the review link was dropped on the way to the phone, so a
+    // pick between three mocks showed there as a bare question.
+    name: 'a pick between mockups, linking their review',
+    shows: ['Which way should a waiting thread show its fix?', 'Open the three mocks'],
+    play: (p) => {
+      p.say('Three mocks are up.');
+      p.endTurn({ needs: 'you', asks: [{ question: 'Which way should a waiting thread show its fix?', links: [{ title: 'Open the three mocks', url: 'review:0a7d18e2-5c14-45d3-ae06-5e1e13aa47d5' }] }] });
+    },
+  },
+  {
     name: 'a done card with follow-ups',
     shows: ['Landed it.', 'Make the phone show Stop on a running thread', 'Check the website draws the new card'],
     play: (p) => {

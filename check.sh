@@ -523,7 +523,9 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   # grep to /dev/null, not -q (see swift_needed).
   if [ "$ALL" = 1 ] || [ -z "$CHANGED" ] \
     || printf '%s\n' "$CHANGED" | grep -E '^(eslint\.config\.mjs|eslint-suppressions\.json|package(-lock)?\.json)$' >/dev/null; then
-    step "lint" "$ROOT" npm run lint:files -- .
+    # Node's own heap limit (about 2 GB) is under what the whole lint takes,
+    # and it died out of memory on the cloud box (21 Nov 2026).
+    step "lint" "$ROOT" env NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=4096" npm run lint:files -- .
   else
     LINT_FILES=()
     while IFS= read -r f; do

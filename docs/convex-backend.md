@@ -63,7 +63,10 @@ dashboard panel.
   `pushHealth` row (`convex/pushHealth.ts`); while none get through, the
   owner runner's heartbeat answers `pushFailing` and `tb status` says so. `npx convex run push:test '{"body":"hi"}'
   --prod` sends a test; `npx convex run devices:list --prod` shows the
-  phones.
+  phones. When a thread that had a push in the last day stops needing
+  Mike (seen on the Mac, answered, archived), `upsertThreads` schedules
+  `push:clear`: a silent push that takes its notification down on the
+  phones (see the payload below; through the relay's `/clear`).
 - `convex/tokens.ts`: the token helpers, and `issue`, `revoke`, `list` to
   run from a terminal with `npx convex run tokens:issue
   '{"name":"iphone","days":90}'` (add `--prod` for the Sydney prod
@@ -401,7 +404,14 @@ phone names must be one that has heartbeated (or `"any"`), else
   as `{ aps: { alert: { title, body }, sound: "default", "thread-id":
   threadId }, threadId }` for bundle id `com.mikecann.threadbear`; the
   title is the thread's title and the body the question, the approval
-  with its input line, or the reply.
+  with its input line, or the reply. When it stops needing him, a silent
+  `{ aps: { "content-available": 1 }, clear: threadId }` (a background
+  push, priority 5; on Android the data `{ clear }`) tells the app to take
+  that thread's notifications down. It has no alert and no `threadId`, so
+  an older app ignores it. The iPhone app also takes them down when a
+  thread is opened and whenever the inbox says a thread no longer needs
+  him (`ios/Threadbear/DeliveredNotifications.swift`), as iOS may hold a
+  background push back.
 
 Changes from the proposal: `answers` values are strings, not arrays (a
 multi-select question's choices go in one string, comma-joined, which is

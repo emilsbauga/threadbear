@@ -880,9 +880,6 @@
         "looseEnds.0.kind": "thread",
         "looseEnds.0.text": "A thread it started is still going",
         "looseEnds.0.threadId": "th-2"
-      },
-      "differs": {
-        "android": "Android's PhoneThread has no looseEnds (API 73): its done card has no Still open list. Not ported yet."
       }
     },
     {
@@ -1033,9 +1030,6 @@
         "review.rounds": 2,
         "review.findings.count": 1,
         "review.findings.0.claim": "The cap can be skipped"
-      },
-      "differs": {
-        "android": "Android's PhoneThread has no review or cardTurn (API 76, lab review): no ledger over the reply. Not ported yet."
       }
     },
     {
@@ -1178,9 +1172,6 @@
       },
       "expect": {
         "role": "note"
-      },
-      "differs": {
-        "android": "Android has no note role (login notes, API 79) and doesn't ask phone:messages for them, so it never sees one; a note row would be skipped. Not ported yet."
       }
     },
     {

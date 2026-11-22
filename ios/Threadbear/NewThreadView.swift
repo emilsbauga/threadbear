@@ -123,6 +123,7 @@ struct NewThreadView: View {
                     }
                 }
             }
+            .onAppear { Dictation.prepare() }
             .onDisappear { dictation.close() }
             .task {
                 if photos.isEmpty, let load = model.loadSamplePhoto { words.add([load], model: model) }

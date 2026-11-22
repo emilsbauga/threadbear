@@ -115,7 +115,25 @@ stays. Separate repos do not block one another.
    single file comes across into the file its section went to. The branch
    that brings in such a commit itself, rather than rebasing it onto a
    main that has moved on in what it rewrote, has it made again there with
-   the same tool, its other commits picked as usual.
+   the same tool, its other commits picked as usual. Only a tool main's own
+   `.git-blame-ignore-revs` already lists, command, paths and config exactly,
+   is run, and only with config the branch hasn't changed: the branch's
+   list is anyone's who can commit to it, and Land runs on this Mac, not a
+   check host. One main doesn't list stops the landing before anything
+   runs, with the command shown and how to make that commit again by hand
+   (rebase, run it yourself, commit); one already made on main as it is now
+   lands as a plain commit. A formatter isn't run on a tree that brings its
+   own toolchain file, cargo config, mise or rtx config, a `.config` folder
+   or a link where it formats (names matched without case, as a Mac's disk
+   opens them), as those can change what the command runs. A group check
+   crossing format commits takes their commands from main's list, never
+   from the waiting branches stacked on it, nor a format commit of theirs.
+   And since main's list is what later landings run, a branch that adds or
+   changes a command in it, or changes a config file one runs with (the
+   split tool's script, the toolchain file), stops with what changed shown,
+   and lands only with `tb land --allow-format <id>`, the id it gives for
+   exactly those commands and file contents (the Land chip never passes
+   it; such a branch never rides in another's group check).
    Then it refuses a commit whose `Important:` line git doesn't read as a
    trailer (not in the last paragraph with `Co-Authored-By`), as a release
    would not flag it and forks wouldn't hear. And it holds a landing while
@@ -566,7 +584,11 @@ worktree: { setup: "...", check: "...", keep: ["app/.build", "dock/.build"] },
 With `keep`:
 
 - New worktrees are `<repo>-threads/slot-<n>`, not `<id8>`, as the folder
-  outlives the thread.
+  outlives the thread: the first number with no folder that git doesn't
+  still have registered (its folder removed by hand), trying the next when
+  git refuses one, a few times, and deleting the branch a refused add made.
+  On 21 Nov a slot removed by hand would have left every new thread with no
+  spare in the main checkout, and its branch refusing its next try.
 - Cleaning up a landed one detaches it, deletes its branch and locks it
   (`git worktree lock --reason "threadbear spare"`): a spare. Past six
   spares (`MAX_SPARES`), it's removed as before.
@@ -576,6 +598,10 @@ With `keep`:
   isn't: two at once both succeed.) Then `git reset --hard`, `git clean -ffdx` with the kept folders
   left out (an old thread's `node_modules` goes, its build cache stays),
   and `git checkout -b thread/<id8> main`. Setup runs as for a new one.
+  A spare with changes to tracked files is passed over and left unlocked,
+  out of the pool: its cleanup or give-back saw it clean, so someone is
+  working there, and the reset would take their work.
+  `borrow-worktree.sh` does the same.
 - A patch's `teardown` runs before the worktree is set aside, as for one
   that's removed: what the thread made is its own, not the next thread's.
 - A worktree that has to stay (work not on main, uncommitted changes)
@@ -586,7 +612,13 @@ With `keep`:
   again. Only while the folder is still the thread's own checkout, and only
   real folders inside it, never through a link; each is renamed aside right
   after that check, then deleted.
-- The record keeps `keep`, and `spare: true` once it's set aside. A
+- The record keeps `keep`, and `spare: true` once it's set aside. What the
+  record says of the worktree (held, cleanup owed, removed, handed on) is
+  one state type in `runner/src/slot.ts`, with every write in its
+  `writeSlot`; the same module says what each slot folder is on disk
+  (`slotOnDisk`: a spare, a thread's, a borrow, left behind, and the
+  disagreements, like a record whose folder is on another branch), which
+  the borrow sweep picks from. A
   spare's thread, unarchived, never goes back into that folder even though
   it's still there: it's another thread's now. Nor does any thread whose
   worktree was removed, whatever is at that path now: on 8 Nov a removed

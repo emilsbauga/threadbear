@@ -17,30 +17,6 @@ macro_rules! font {
     };
 }
 
-/// Allo's upright files by weight, for a page the app makes itself to
-/// carry the same font (review_pane.rs): a web view can't see a font GPUI
-/// was only handed.
-pub fn allo_weights() -> [(u16, &'static [u8]); 4] {
-    [
-        (
-            400,
-            include_bytes!("../fonts/allo/Allo-Regular.otf").as_slice(),
-        ),
-        (
-            500,
-            include_bytes!("../fonts/allo/Allo-Medium.otf").as_slice(),
-        ),
-        (
-            600,
-            include_bytes!("../fonts/allo/Allo-SemiBold.otf").as_slice(),
-        ),
-        (
-            700,
-            include_bytes!("../fonts/allo/Allo-Bold.otf").as_slice(),
-        ),
-    ]
-}
-
 pub fn register(cx: &App) {
     let fonts = vec![
         font!("Allo-Regular.otf"),

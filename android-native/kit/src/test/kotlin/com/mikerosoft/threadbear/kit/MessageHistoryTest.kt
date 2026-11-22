@@ -27,6 +27,21 @@ class MessageHistoryTest {
         assertNull(all.nextBefore)
     }
 
+    /**
+     * The first page can come before phone:me says the backend has notes
+     * (API 79), without them; the page asked for again with them starts
+     * higher up. Rows of the note-less page aren't kept as older ones, or
+     * the notes between the two tops would never be read (review, 22 Nov).
+     */
+    @Test fun aPageAskedForAgainWithNotesStartsOver() {
+        val h = MessageHistory()
+        h.takeLive(page(21..100, hasMore = true))
+        h.startOver()
+        h.takeLive(page(26..105, hasMore = true))
+        assertEquals(emptyList(), h.older)
+        assertEquals(26, h.nextBefore)
+    }
+
     /** Going back is never cut off by the cap: what you load is room on top of it. */
     @Test fun chunksGoAboveTheLivePageUntilTheStart() {
         val h = MessageHistory()

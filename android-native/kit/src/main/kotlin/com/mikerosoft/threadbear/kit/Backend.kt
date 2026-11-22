@@ -28,6 +28,9 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
     private fun args(vararg extra: Pair<String, JsonElement>): Map<String, JsonElement> =
         mapOf(*extra) + ("token" to JsonPrimitive(token))
 
+    private fun withNotes(notes: Boolean, vararg pairs: Pair<String, JsonElement>): Array<Pair<String, JsonElement>> =
+        if (notes) arrayOf(*pairs, "notes" to JsonPrimitive(true)) else arrayOf(*pairs)
+
     private fun <T> live(name: String, args: Map<String, JsonElement>, read: (JsonElement) -> T): Flow<T> =
         transport.subscribe(name, args).map { text ->
             try {
@@ -114,16 +117,20 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
     fun thread(threadId: String): Flow<ThreadDetail?> =
         liveOrGone("phone:thread", args("threadId" to JsonPrimitive(threadId)), ThreadDetail::read)
 
-    /** The newest `limit` messages, tool lines included, live (backend API 2). */
-    fun messages(threadId: String, limit: Int): Flow<MessagePage> = live(
+    /**
+     * The newest `limit` messages, tool lines included, live (backend API 2).
+     * `notes` asks for the runner's notes too (role note, backend API 79):
+     * an older backend refuses an argument it doesn't know, so only from 79.
+     */
+    fun messages(threadId: String, limit: Int, notes: Boolean = false): Flow<MessagePage> = live(
         "phone:messages",
-        args("threadId" to JsonPrimitive(threadId), "limit" to JsonPrimitive(limit), "tools" to JsonPrimitive(true)),
+        args(*withNotes(notes, "threadId" to JsonPrimitive(threadId), "limit" to JsonPrimitive(limit), "tools" to JsonPrimitive(true))),
     ) { MessagePage.read(it as JsonObject) }
 
-    suspend fun olderMessages(threadId: String, beforeSeq: Int, limit: Int): MessagePage {
+    suspend fun olderMessages(threadId: String, beforeSeq: Int, limit: Int, notes: Boolean = false): MessagePage {
         val text = transport.query(
             "phone:messages",
-            args("threadId" to JsonPrimitive(threadId), "beforeSeq" to JsonPrimitive(beforeSeq), "limit" to JsonPrimitive(limit), "tools" to JsonPrimitive(true)),
+            args(*withNotes(notes, "threadId" to JsonPrimitive(threadId), "beforeSeq" to JsonPrimitive(beforeSeq), "limit" to JsonPrimitive(limit), "tools" to JsonPrimitive(true))),
         )
         return MessagePage.read(parseJson(text) as JsonObject)
     }

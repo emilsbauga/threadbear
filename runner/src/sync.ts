@@ -535,8 +535,8 @@ export type ThreadDoc = {
 };
 
 // An open ask as the phone sees it (convex/schema.ts): no `where`, which the
-// paragraph already says, and only web links, as a file on the Mac can't
-// be opened from the phone.
+// paragraph already says, and only links the phone can open (web pages,
+// thread: and review:), as a file on the Mac can't be opened from there.
 export type PhoneAsk = { action: string; why?: string; reply?: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: { title: string; url: string }[]; ticked?: boolean };
 
 // A text message, or one line for a tool call (role "tool", since backend
@@ -781,6 +781,9 @@ export type SyncDeps = {
   // full write's prune. Absent in small tests.
   elsewhere?: (threadId: string) => boolean;
   elsewhereIds?: () => string[];
+  // That thread as the draining runner has it, for its folder: a card it
+  // puts up is checked against it (remoteCardShowsAll).
+  elsewhereThread?: (threadId: string) => ThreadSummary | undefined;
   // A thread moved from here to another runner (moves.ts gone): its row is
   // that runner's now, so it's only ever forgotten here, never removed.
   movedAway?: (threadId: string) => boolean;
@@ -1141,6 +1144,7 @@ function steadyDigest(row: ThreadDoc): string {
 }
 
 const THREAD_LINK = /^thread:[\w-]+$/i;
+const REVIEW_LINK = /^review:[a-zA-Z0-9-]{1,200}$/;
 
 export function toPhoneAsk(a: OpenAsk): PhoneAsk {
   const out: PhoneAsk = { action: a.action };
@@ -1152,9 +1156,10 @@ export function toPhoneAsk(a: OpenAsk): PhoneAsk {
     if (a.optionNotes?.length === a.options.length && a.optionNotes.some(Boolean)) out.optionNotes = a.optionNotes;
     if (a.suggested !== undefined) out.suggested = a.suggested;
   }
-  // Web pages, and thread:<id> (another thread, which the phone and the web
-  // open in place); a file or review only opens on the Mac.
-  const links = a.links?.filter((l) => /^https?:\/\//i.test(l.url) || THREAD_LINK.test(l.url));
+  // Web pages, thread:<id> (another thread, which the phone and the web open
+  // in place) and review:<id> (this thread's show_options review, which the
+  // phone opens in its Reviews sheet); a file only opens on the Mac.
+  const links = a.links?.filter((l) => /^https?:\/\//i.test(l.url) || THREAD_LINK.test(l.url) || REVIEW_LINK.test(l.url));
   if (links?.length) out.links = links.map((l) => ({ title: l.title, url: l.url }));
   if (a.ticked) out.ticked = true;
   return out;
@@ -2680,7 +2685,7 @@ export class ConvexSync {
 
   // A card the thread now waits on, or one that's been answered, onto what
   // its row shows. False for an event that's neither.
-  private noteCard(threadId: string, e: PersistedEvent): boolean {
+  private noteCard(threadId: string, e: PersistedEvent, cwd = this.threadCwd(threadId)): boolean {
     if (e.type === 'approval.requested' && e.name === START_CARD) {
       // A request for a thread on another runner (cross-runner.ts) is
       // answered only on the main Mac, whose runner starts it: the phone's
@@ -2695,7 +2700,7 @@ export class ConvexSync {
       // "$token"`), so what the line is made from must go up as it is (Codex review).
       const raw = summaryField(e.input);
       const shownAsIs = raw === undefined || this.scrubber.safeText(raw) === raw;
-      const whole = shownAsIs && remoteCardShowsAll(e.name, e.input, this.threadCwd(threadId), e.title);
+      const whole = shownAsIs && remoteCardShowsAll(e.name, e.input, cwd, e.title);
       const planSeq = e.name === 'ExitPlanMode' && e.itemId ? this.planSeqs.get(`${threadId} ${e.itemId}`) : undefined;
       this.addCard(threadId, {
         approvalId: e.approvalId, kind: 'approval', seq: e.seq, name: e.name,
@@ -2744,7 +2749,10 @@ export class ConvexSync {
       for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
         if (e.type === 'approval.resolved' || !('approvalId' in e)) continue;
         const shown = [this.pending.get(thread.id), ...(this.cardsBehind.get(thread.id) ?? [])].some((c) => c?.approvalId === e.approvalId);
-        if (!shown && !this.closedCards.has(e.approvalId)) added = this.noteCard(thread.id, e) || added;
+        // Its folder from the draining runner: the thread isn't here yet, and
+        // without one a command's own folder reads as somewhere else, so the
+        // card went up Deny-only (Dell XPS, 21 Nov 2026).
+        if (!shown && !this.closedCards.has(e.approvalId)) added = this.noteCard(thread.id, e, thread.cwd) || added;
       }
       // Older than one that came live meanwhile: behind it, as if they'd
       // all come live (the newest on the row, the rest in order behind).
@@ -2847,11 +2855,12 @@ export class ConvexSync {
 
   // Only a change the phone would see makes a write.
   // The thread's folder, for whether a card's line shows all of it.
+  // Or, during a handover, the draining runner's.
   private threadCwd(threadId: string): string | undefined {
     try {
       return this.deps.runner.get(threadId).cwd;
     } catch {
-      return undefined;
+      return this.deps.elsewhereThread?.(threadId)?.cwd;
     }
   }
 
@@ -3775,14 +3784,10 @@ export class ConvexSync {
     }
   }
 
+  // A draining runner's thread that isn't here yet has its folder there: a
+  // relative pin, or a file of secrets it touched, needs it now.
   private cwdOf(threadId: string): string | undefined {
-    try {
-      return this.deps.runner.get(threadId).cwd;
-    } catch {
-      // A draining runner's thread that isn't here yet: only a relative
-      // pin needs it, and the look through on coming across finds that.
-      return undefined;
-    }
+    return this.threadCwd(threadId);
   }
 
   // Threads in use that haven't been looked through since this runner

@@ -18,17 +18,29 @@ export const PATIENCE_MS = 60_000;
 // For a test of a real file watch. On Linux a user's inotify instances run
 // out (128 by default) and fs.watch throws, which the code takes as "no
 // watch" and relies on its timed look. The test can't tell anything then, so
-// it skips and says why, rather than failing a deploy (9 Nov).
-export function noFileWatches(t: TestContext): boolean {
+// it skips and says why, rather than failing a deploy (9 Nov). On a Mac the
+// watch starts, and its 'error' event says EMFILE a moment later once the
+// user's FSEvents streams have run out (other projects' dev servers), which
+// a try/catch alone missed, failing tb land's check (Niko, 20 Nov).
+export async function noFileWatches(t: TestContext): Promise<boolean> {
+  let code: string | undefined;
   try {
-    fs.watch(os.tmpdir()).close();
-    return false;
+    const w = fs.watch(os.tmpdir());
+    code = await new Promise<string | undefined>((resolve, reject) => {
+      const quiet = setTimeout(() => resolve(undefined), 500);
+      w.on('error', (e: NodeJS.ErrnoException) => {
+        clearTimeout(quiet);
+        if (e.code === 'EMFILE' || e.code === 'ENOSPC') resolve(e.code);
+        else reject(e);
+      });
+    }).finally(() => w.close());
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    code = (e as NodeJS.ErrnoException).code;
     if (code !== 'EMFILE' && code !== 'ENOSPC') throw e;
-    t.skip(`this machine has no file watches left (${code})`);
-    return true;
   }
+  if (!code) return false;
+  t.skip(`this machine has no file watches left (${code})`);
+  return true;
 }
 
 // Waits until cond holds or PATIENCE_MS is up. It doesn't throw: the assert

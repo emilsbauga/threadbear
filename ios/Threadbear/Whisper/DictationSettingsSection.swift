@@ -22,7 +22,10 @@ struct DictationSettingsSection: View {
                 if let progress = whisper.progress {
                     ProgressView(value: progress) { Text("Downloading Whisper") }
                 } else if whisper.installed {
-                    Button("Delete Whisper (\(WhisperModel.sizeText))", role: .destructive) {
+                    if !whisper.encoderInstalled {
+                        Button("Download the faster part (\(WhisperModel.encoderSizeText))") { whisper.download() }
+                    }
+                    Button("Delete Whisper", role: .destructive) {
                         whisper.delete()
                         engine = .apple
                     }

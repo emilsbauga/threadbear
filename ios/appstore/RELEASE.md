@@ -89,6 +89,15 @@ After a rejection: fix, `UPLOAD=1 ios/scripts/appstore-upload.sh` (new build num
 then `--submit` again; it resubmits the rejected submission, which App Store Connect's own button
 sometimes won't.
 
+## Nightly TestFlight builds
+
+`ios/scripts/nightly-testflight.sh` uploads main through the same `appstore-upload.sh` every night
+the app has changed, with the same build numbers (UTC `YYMMDDHHMM`, so they never collide with a
+release's), into the internal group "Mike (nightly)" (`testflight.mjs`). When the project's version
+is approved or released, those builds go on the next patch version's TestFlight train (1.0.5 after
+1.0.4), which is only a TestFlight version: the App Store version is still made by
+`appstore-metadata.mjs`. A nightly build can be the one submitted, if it's from the main you want.
+
 ## Once it's approved
 
 Release it once Mike says to: `node ios/scripts/appstore-release.mjs <version> --release` (without

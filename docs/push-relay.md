@@ -126,6 +126,21 @@ The same, through Firebase Cloud Messaging (API 66):
    you". A token Firebase says is unregistered (404) is dropped like an Apple
    one.
 
+### Taking a notification down
+
+When a thread that had a push stops needing the person, the backend's
+`push:clear` posts `{ deviceToken, environment?, platform?, threadId }` to
+the relay's `/clear` (20 Nov 2026). The relay sends Apple a background
+push (`apns-push-type: background`, priority 5) of `{ aps: {
+"content-available": 1 }, clear: threadId }`, or Firebase a data-only
+`{ clear: threadId }` at normal priority. The app takes down that thread's
+notifications. It's checked, rate limited and counted like a send. Apps
+from before it ignore it, as there's no alert and no `threadId`, and a
+relay from before it answers 404, which the backend takes as "can't clear"
+and stops there. iOS may hold background pushes back, so the iPhone app
+also tidies up whenever its inbox updates. UnifiedPush phones (the F-Droid
+build) don't get clears yet.
+
 A relay with no `FCM_SERVICE_ACCOUNT` answers an Android send with
 `relay not configured`, which the backend reports as failing pushes
 (`pushHealth`). Deploy the relay before a backend that has Android phones.
@@ -157,11 +172,23 @@ sized well above real use:
   day. One it knows can always register again, including one whose
   install expired, so made-up deployments using up a day's new installs
   can't keep a real backend out. `/register` checks a deployment is under
-  its limits before calling it back. That check counts nothing, as it
-  runs before the call-back says who's asking, so a deployment that keeps
-  saying no can keep being called back (only ever at its own convex.site
-  address). Installs from before 5 Nov 2026, which couldn't register
-  again, never expire.
+  its limits before calling it back. That check counts nothing of the
+  deployment's, as it runs before the call-back says who's asking.
+  Installs from before 5 Nov 2026, which couldn't register again, never
+  expire.
+- Every call-back is charged to the relay's own budget before it starts
+  (Codex Security, 21 Nov 2026), never to a deployment's registrations or
+  the day's new installs. Deployments without an install at least a week
+  old here get at most 15 at once and 600 an hour, relay-wide.
+  Established ones get 10 at once and 1,200 an hour of their own, which
+  made-up names can't use, and past that hour's 1,200 each still gets its
+  first 5, so draining them by naming some backends can't stop one nobody
+  named. Any one deployment gets one at a time, and none for 30 seconds
+  after it says no. Someone who knows a deployment's name can still hold
+  up its registering again (not its sends) by sending a no for it every 30
+  seconds, for as long as they keep it up (to the end of that hour if they
+  drain the 1,200 as well); made-up names can hold up new installs for the
+  hour.
 - Installs under a week old share 600 sends an hour, and all installs
   together get 6,000. Past either, each install still gets the first 10
   sends of its hour, so no pile of installs can stop a real backend's

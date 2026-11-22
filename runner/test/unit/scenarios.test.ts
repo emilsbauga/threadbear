@@ -27,7 +27,6 @@ type Field = 'needs' | 'recap' | 'asks' | 'next' | 'looseEnds' | 'review' | 'pla
 // of these stops being a difference, so the list can't outlive its reason.
 const KNOWN: { route: Route; field: Field; why: string }[] = [
   { route: 'phone', field: 'pictures', why: "phone:thread carries words only; the phone gets a message's pictures from phone:images." },
-  { route: 'phone', field: 'plans', why: "phone:thread carries words only; the phone gets a message's plan flag from phone:messages (API 72) and draws its own plan card." },
 ];
 
 

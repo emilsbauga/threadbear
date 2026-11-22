@@ -214,6 +214,16 @@ data class PhoneThread(
     val waitingForRoom: PhoneWaitingForRoom? = null,
     val waitingForNetwork: PhoneWaitingForNetwork? = null,
     val links: List<PhoneLink>? = null,
+    /**
+     * What the runner found still open on a thread whose last turn needs
+     * nothing (backend API 73), for the done card's "Still open" or
+     * "Coming back" list. Null when it hasn't checked, or an older runner.
+     */
+    val looseEnds: List<PhoneLooseEnd>? = null,
+    /** Another lab's review of the last turn's change (backend API 76), drawn over that turn's reply. */
+    val review: PhoneLabReview? = null,
+    /** The turn the done card's fields (review, looseEnds) are from, as message rows name turns (API 76). */
+    val cardTurn: String? = null,
 ) {
     val id get() = threadId
     val isBusy get() = status == ThreadStatus.RUNNING || status == ThreadStatus.STARTING
@@ -282,6 +292,10 @@ data class PhoneThread(
             waitingForRoom = o.obj("waitingForRoom")?.let { w -> w.str("until")?.let { PhoneWaitingForRoom(it, w.str("accountId")) } },
             waitingForNetwork = o.obj("waitingForNetwork")?.let { w -> w.str("since")?.let { PhoneWaitingForNetwork(it) } },
             links = o.arr("links")?.lossy { val l = it as JsonObject; PhoneLink(l.needStr("title"), l.needStr("url"), l.str("icon")) },
+            looseEnds = o.arr("looseEnds")?.lossy { PhoneLooseEnd.read(it as JsonObject) },
+            // Lenient field by field: a ledger in a shape this phone doesn't know never stops the thread loading.
+            review = o.obj("review")?.let { runCatching { PhoneLabReview.read(it) }.getOrNull() },
+            cardTurn = o.str("cardTurn"),
         )
     }
 }
@@ -353,7 +367,13 @@ data class MessageButton(
     val failed: String? = null,
 )
 
-enum class Role { USER, ASSISTANT, TOOL }
+/**
+ * `TOOL` is one line for a tool call (backend API 2). `NOTE` is the line a
+ * thread writes when its login runs out and it moves to another or waits
+ * for room, or a stopped message is saved (backend API 79, asked for with
+ * `notes`): a quiet line of its own, never part of a turn's work.
+ */
+enum class Role { USER, ASSISTANT, TOOL, NOTE }
 
 data class PhoneMessage(
     val seq: Int,
@@ -377,6 +397,7 @@ data class PhoneMessage(
                 "user" -> Role.USER
                 "assistant" -> Role.ASSISTANT
                 "tool" -> Role.TOOL
+                "note" -> Role.NOTE
                 else -> throw BadRow("Unknown role")
             },
             text = o.needStr("text"),
@@ -506,6 +527,8 @@ object BackendApi {
     const val BUTTONS = 59
     const val SLASH_COMMANDS = 62
     const val PLANS = 72
+    /** From 79 phone:messages gives a login's notes to an app that asks (`notes`). */
+    const val LOGIN_NOTES = 79
     /**
      * From 93 a phone can register a Web Push endpoint (platform "webpush",
      * phone:webPushKey for the VAPID key): the fdroid build's UnifiedPush.

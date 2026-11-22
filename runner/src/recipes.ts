@@ -101,7 +101,8 @@ export type RecipesDeps = {
   threads: (since: number) => ThreadSummary[];
   // Starts a thread.
   start: (p: { text: string; title: string; cwd: string }) => ThreadSummary;
-  log?: (msg: string) => void;
+  // A fixed message, and what went wrong as `error` (sentry.ts sends only the message).
+  log?: (msg: string, extra?: { error: string }) => void;
 };
 
 /** One RECIPE.md: `key: value` lines between `---`, then `## ` sections. */
@@ -138,7 +139,7 @@ export function parseRecipe(text: string, file: string): Omit<RecipeFile, 'id' |
   };
 }
 
-function readDir(dir: string | undefined, source: RecipeFile['source'], log?: (m: string) => void): RecipeFile[] {
+function readDir(dir: string | undefined, source: RecipeFile['source'], log?: (m: string, extra?: { error: string }) => void): RecipeFile[] {
   if (!dir || !fs.existsSync(dir)) return [];
   const out: RecipeFile[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -151,14 +152,14 @@ function readDir(dir: string | undefined, source: RecipeFile['source'], log?: (m
       const header = HEADERS.map((h) => path.join(at, h)).find((h) => fs.existsSync(h));
       out.push({ id: entry.name, ...parsed, file, dir: at, source, ...(header ? { header } : {}) });
     } catch (e) {
-      log?.(`recipes: ${(e as Error).message}`);
+      log?.('recipes: could not read one', { error: (e as Error).message });
     }
   }
   return out;
 }
 
 /** The built-in recipes and the user's, theirs in place of a built-in with its id. */
-export function readRecipes(builtinDir: string | undefined, folder: string | undefined, log?: (m: string) => void): RecipeFile[] {
+export function readRecipes(builtinDir: string | undefined, folder: string | undefined, log?: (m: string, extra?: { error: string }) => void): RecipeFile[] {
   const byId = new Map<string, RecipeFile>();
   for (const r of readDir(builtinDir, 'builtin', log)) byId.set(r.id, r);
   for (const r of readDir(folder, 'yours', log)) byId.set(r.id, r);
@@ -181,7 +182,7 @@ export class Recipes {
       try {
         this.look();
       } catch (e) {
-        this.deps.log?.(`recipes: look failed: ${(e as Error).message}`);
+        this.deps.log?.('recipes: look failed', { error: (e as Error).message });
       }
     }, LOOK_MS);
     this.timer.unref?.();

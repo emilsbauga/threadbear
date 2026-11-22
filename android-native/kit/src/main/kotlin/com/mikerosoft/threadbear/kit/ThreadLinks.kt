@@ -140,7 +140,7 @@ object ThreadLinks {
         is ThreadItem.Message -> if (matches(item.message, q)) item.message.seq else null
         is ThreadItem.Tools -> item.items.lastOrNull { matches(it, q) }?.seq
         is ThreadItem.Worked -> item.worked.items.asReversed().firstNotNullOfOrNull { step(it, q) }
-        is ThreadItem.Gap -> null
+        is ThreadItem.Gap, is ThreadItem.Note -> null
     }
 
     private val ownLink = Regex("""\]\(work:[^)\n]*(\))?""")
@@ -151,7 +151,7 @@ object ThreadLinks {
         // One with no `)` uses up its line and stays: trying every `](work:`
         // after it again was quadratic.
         Role.ASSISTANT -> !m.summary && normal(ownLink.replace(m.text) { if (it.groups[1] == null) it.value else "]" }).contains(q)
-        Role.USER -> false
+        Role.USER, Role.NOTE -> false
     }
 
     private val home = Regex("""/Users/[^/\s]+""")
@@ -170,6 +170,6 @@ object ThreadLinks {
         is ThreadItem.Message -> message.seq == seq
         is ThreadItem.Tools -> items.any { it.seq == seq }
         is ThreadItem.Worked -> worked.items.any { it.holds(seq) }
-        is ThreadItem.Gap -> false
+        is ThreadItem.Gap, is ThreadItem.Note -> false
     }
 }

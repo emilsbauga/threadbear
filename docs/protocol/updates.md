@@ -335,6 +335,11 @@ other restarting. The runner keeps the last build it saw of each and the
 threads waiting, in `app-restart.json` in the data dir, so both outlast its
 own restarts.
 
+- While a thread is on the list (and asked under a day ago), its summary
+  has `awaitingApp` (`{ commit?, short? }`, the commit it waits for), so
+  the GPUI app's Updates panel can list it with whether its running,
+  staged or building version has that commit (`git merge-base
+  --is-ancestor` in the checkout it follows).
 - `wait_for_app_restart` (`{ text?, commit? }`) puts the calling thread on
   the list, remembering the build running then and the commit the new build
   must contain: `commit` if given, else main's HEAD at that moment. Main

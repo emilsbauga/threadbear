@@ -71,6 +71,11 @@ object Line {
     val External = icon("external", "M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6")
     val Play = icon("play", "M6 3l14 9-14 9z")
     val CheckCircle = icon("checkCircle", circle(12f, 12f, 10f), "m9 12 2 2 4-4")
+    val Circle = icon("circle", circle(12f, 12f, 10f))
+    val AlertCircle = icon("alertCircle", circle(12f, 12f, 10f), "M12 8v4", "M12 16h.01")
+    val MessageAlert = icon("messageAlert", "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", "M12 7v3", "M12 13h.01")
+    val UserCircle = icon("userCircle", circle(12f, 12f, 10f), circle(12f, 10f, 3f), "M7 20.66V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.66")
+    val Mail = icon("mail", "M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7")
 
     // The thread view's (rich replies, pictures, plans, chips).
     val Square = icon("square", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z")

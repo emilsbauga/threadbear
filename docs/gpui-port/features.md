@@ -406,7 +406,6 @@ It comes from reading code, not from running anything, so "(unverified)" means n
 | `review.media` | Video and HTML shots | Loop, muted among many | On a Mac, clips loop in AVKit's player (`media_view.rs`), with controls and sound on the stage and muted among many. Pages, and clips on Windows and Linux, are a still with a button for now. | hard | L | `ReviewWindow` (`ReviewVideo`) |
 | `review.picks` | Picks and notes | Tick, None, Send, drafts | Drawn, with `Textarea`. | build | M | `ReviewSession`, `ReviewWindow` |
 | `review.openlive` | Open live | Tries a running option | Through the open gate. | build | S | `ReviewWindow` |
-| `review.page` | Review as a page beside the thread | Experiment `reviewPage`: a review opens as a page in the side pane, each option's words at reading size with its pictures under them; ticks show over the message box and go with it as the answer; a picture opens the window as a closer look; the pane opens wide enough | `review_pane.rs` over the pane as a preview (`Target::Review`); the page's HTML in `core/src/review_page.rs`, shown sealed by the web runtime (`web_panels::made_page`, `Site::made`); a click on the page reaches the app as `Event::Asked`. | build | L | none (GPUI only) |
 
 ## 17. Navigation, shortcuts, main menu
 

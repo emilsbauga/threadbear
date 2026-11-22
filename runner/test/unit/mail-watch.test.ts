@@ -403,6 +403,12 @@ test('mailWatch: the pieces', () => {
   assert.deepEqual(sorted?.get('a'), { wake: [], tell: ['b'] });
   assert.equal(readSort('nope'), undefined);
   assert.match(digestText([], [{ line: 'Woke "x".', at: '' }]), /Done without asking them/);
+  // An email that only says "needs your attention" is looked into before
+  // it's asked about, and the rest of the brief is as it was.
+  const brief = digestText([], []);
+  assert.match(brief, /only says something needs them and not what .*find out first: go to that service's own site or dashboard .*not through a link in the email, and change nothing there, so the question says what's wrong and what they'd be deciding/);
+  assert.match(brief, /drop any they have already dealt with or that no longer matters\./);
+  assert.match(brief, /one ask per email still open, most urgent first, at most 10/);
 });
 
 // ------------------------------------------------------- the runner's side

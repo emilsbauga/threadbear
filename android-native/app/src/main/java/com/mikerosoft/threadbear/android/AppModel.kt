@@ -255,6 +255,23 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
 
     fun cancelPair() { pendingPair.value = null }
 
+    /**
+     * Debug builds only, as the iPhone's `-ThreadbearPair`: the parity run
+     * (scripts/parity/android-shots.sh) pairs an emulator with its throwaway
+     * backend on this Mac's loopback, where nothing can scan a code. Only a
+     * local http backend, and never in a release build (ALLOW_LOCAL).
+     */
+    fun pairForParity(url: String, token: String) {
+        if (!BuildConfig.ALLOW_LOCAL || token.isEmpty()) return
+        val local = Regex("^http://(127\\.0\\.0\\.1|localhost|10\\.0\\.2\\.2)(:\\d+)?$")
+        if (!local.matches(url) || _pairing.value?.let { it.deploymentUrl == url && it.token == token } == true) return
+        val pairing = Pairing(url, token)
+        pairingChanged(forget = _pairing.value != null)
+        commands.clear()
+        store.save(pairing)
+        connect(pairing)
+    }
+
     /** Yes to the request on screen: checked with phone:me before anything is kept. */
     fun acceptPair(shown: PairingRequest) {
         if (pendingPair.value !== shown) return

@@ -43,7 +43,10 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   picture, PDF, text file or page in the pane, opens a review's window as
   its card does, and opens anything else (a
   folder, a `.tandem` project) in its own app. A review link has no
-  hover peek and isn't sent to the phone (only `http(s)` links are). Mike,
+  hover peek. The phone gets `http(s)`, `thread:` and `review:` links (a
+  review one opens its Reviews sheet; the website says it opens on the Mac
+  or iPhone), never a path: until 21 Nov 2026 a review link was dropped on
+  the way, and a pick between three mocks reached the phone as a bare question. Mike,
   30 Oct 2026: a card's buttons opened three videos, but nothing on it
   opened the stills the agent had put up to compare. The agent calls it last, after its final
   message. The tool's description says when, so a resumed session that
@@ -102,7 +105,17 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   "Nothing needed from you" line, under an `end_turn` with no asks or
   next of its own, loses it, and the card comes from it instead
   (`splitReplySection`): Sonnet wrote one there in a quarter of its eval
-  sessions. Under an `end_turn` that has asks, a "What I need from you"
+  sessions. The "Nothing needed from you" line comes off only as a closing
+  section the done card shows all of: the line says no more than that; a
+  list straight under it, with no lead-in, has every item as a row on the
+  card that is the item as written (no link's address, second sentence,
+  line under it, full stop or cut for length left out); and nothing comes
+  after.
+  Otherwise the card is still read from it and the reply stays as written,
+  as it does when the section is all the reply has: on 21 Nov 2026 a reply
+  that opened with the line lost both its paragraphs, and Mike got a blank
+  answer (thread 649fc651).
+  Under an `end_turn` that has asks, a "What I need from you"
   section loses its place too, and the card stays `end_turn`'s, so a reply
   can't say what the card under it says (`replyWithoutRepeat`; Mike took
   thread 7ac017b7's repeats on 3 Nov 2026 for it not having used the card).

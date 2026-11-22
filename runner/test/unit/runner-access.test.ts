@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { convexPoster, forbiddenText } from '../../src/sync.ts';
-import { ACCESS, actsAs, badRunnerStats, BOX_CALLS, BOX_READS, callerFrom, isIsoTime, mayCall, mayClaim, mayFinish, mayTake, mayTouch, mayUseStorage, mayWrite, ownsCard, sameKey, wholeIn, type Caller } from '../../../convex/runnerAccess.ts';
+import { ACCESS, actsAs, badRunnerStats, BOX_CALLS, BOX_READS, callerFrom, isIsoTime, mayCall, mayClaim, mayFinish, mayTake, mayTouch, mayUseStorage, mayWrite, ownsCard, sameKey, webLinksOnly, wholeIn, type Caller } from '../../../convex/runnerAccess.ts';
 
 const OWNER_KEY = 'owner-key-of-the-deployment';
 const LAPTOP = 'laptop000001';
@@ -275,4 +275,14 @@ test("the protocol lists what a box key may call", () => {
   const listed = /<!-- box-calls -->\n([\s\S]*?)\n<!-- \/box-calls -->/.exec(doc)?.[1];
   assert.ok(listed, 'the protocol has the box-calls list');
   assert.deepEqual([...listed.matchAll(/`(\w+)`/g)].map((m) => m[1]).sort(), [...BOX_CALLS].sort());
+});
+
+test("a thread row keeps an ask's web, thread and review links, and nothing else", () => {
+  const row = webLinksOnly({
+    links: [{ title: 'Doc', url: 'https://example.com' }, { title: 'Review', url: 'review:abc' }],
+    asks: [{ action: 'Pick one', links: [{ title: 'Open the mocks', url: 'review:0a7d18e2-5c14' }, { title: 'Its thread', url: 'thread:a1b2c3d4' }, { title: 'Page', url: 'https://example.com/p' }, { title: 'File', url: '/Users/x/a.png' }, { title: 'Odd', url: 'review:a/b' }] }],
+  });
+  // The row's own links (patch buttons) stay web pages only.
+  assert.deepEqual(row.links, [{ title: 'Doc', url: 'https://example.com' }]);
+  assert.deepEqual(row.asks[0].links.map((l: { url: string }) => l.url), ['review:0a7d18e2-5c14', 'thread:a1b2c3d4', 'https://example.com/p']);
 });

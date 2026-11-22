@@ -64,4 +64,43 @@ export default defineSchema({
     sends: v.number(),
     newSends: v.number(),
   }).index('by_hour', ['hour']),
+
+  // A call-back /register is making to a deployment's /relay/verify, from
+  // just before it starts until it's answered (relay.ts startCheck,
+  // endCheck). One that never ends (its action died) stops counting after
+  // CHECK_LEASE_MS and goes in expire. Never the nonce.
+  checks: defineTable({
+    deployment: v.string(),
+    known: v.boolean(),
+    startedAt: v.number(),
+  })
+    .index('by_startedAt', ['startedAt'])
+    // Each kind's own range, so made-up names' call-backs never contend
+    // with established backends' (relay.ts startCheck).
+    .index('by_known', ['known', 'startedAt'])
+    .index('by_deployment', ['deployment', 'startedAt']),
+
+  // Per deployment: until when it isn't called back after saying no, and
+  // its call-backs this UTC hour (relay.ts startCheck, endCheck). Removed a
+  // day after it was last touched (relay.ts expire).
+  checkHolds: defineTable({
+    deployment: v.string(),
+    at: v.number(),
+    noUntil: v.optional(v.number()),
+    hour: v.optional(v.string()),
+    count: v.optional(v.number()),
+  })
+    .index('by_deployment', ['deployment'])
+    .index('by_at', ['at']),
+
+  // Call-backs /register made this UTC hour, relay-wide: one row for
+  // deployments with no install a week old here, one for established ones
+  // (relay.ts startCheck), so neither kind's writes contend with the
+  // other's. Apart from `hours`, so /register never holds up /send's writes.
+  // Removed after two days (relay.ts expire). Since 21 Nov 2026.
+  checkHours: defineTable({
+    hour: v.string(),
+    known: v.boolean(),
+    checks: v.number(),
+  }).index('by_hour', ['hour', 'known']),
 });

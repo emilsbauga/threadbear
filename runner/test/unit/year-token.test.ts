@@ -15,6 +15,7 @@ import { cliEnv } from '../../src/adapters/claude/adapter.ts';
 import { AccountRegistry, discoverAccounts } from '../../src/accounts.ts';
 import type { Account } from '../../src/protocol.ts';
 import { FakeAccounts, makeHarness, tick } from '../helpers/fakes.ts';
+import { noFileWatches } from '../helpers/patience.ts';
 import { onYearToken } from '../../src/year-token.ts';
 import { withholdPath } from '../../src/withhold.ts';
 
@@ -64,7 +65,8 @@ test('the account says it has a token and when it was made, never the token', ()
 // Mike, 18 Nov: the row took about 10 seconds to change after Year-long
 // token… finished, the registry's rescan interval. The file landing in the
 // login's folder is news at once.
-test('a token made for a login is news straight away, not at the next rescan', async () => {
+test('a token made for a login is news straight away, not at the next rescan', async (t) => {
+  if (await noFileWatches(t)) return;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-year-watch-'));
   const one = path.join(root, 'claude-1');
   fs.mkdirSync(one);

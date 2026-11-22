@@ -4,7 +4,7 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import { keepPictureMarkers, reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
+import { fitReview, keepPictureMarkers, reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
 import type { ImageRef } from '../protocol.ts';
 import type { DesignReview, ReviewDraft } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
@@ -267,7 +267,15 @@ export const reviewsPart = {
       if (event.type === 'review.updated' && event.review && typeof event.review === 'object' && typeof event.review.id === 'string') latest.set(event.review.id, event.review);
     }
     const reviews = new Map((st.rec.reviews ?? []).map(r => [r.id, r]));
-    for (const [id, review] of latest) if (!reviews.has(id) || reviews.get(id)!.revision < review.revision) reviews.set(id, review);
+    // One from the log, as a moved thread's is the other runner's word: its
+    // files only this thread's own copies (Daybreak 159, 21 Nov 2026), and
+    // one with none left isn't recovered.
+    const media = this.store.mediaDir(st.rec.id);
+    for (const [id, logged] of latest) {
+      if (reviews.has(id) && !(reviews.get(id)!.revision < logged.revision)) continue;
+      const review = fitReview(logged, { threadId: st.rec.id, now: media, final: media }, true);
+      if (review?.id === id) reviews.set(id, review);
+    }
     // A reply's pictures are only ever this thread's own copies: a moved
     // thread's log is the other runner's word, and could name any file here
     // (Codex's review, 17 Nov).

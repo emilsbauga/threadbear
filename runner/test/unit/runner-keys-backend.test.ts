@@ -207,6 +207,109 @@ test("a share slug is one thread's: Mac mini's key can't take a live or retired 
   assert.equal(await call(s.ctx, share.preview, { slug: 'dup' }), null);
 });
 
+// Codex Security, 21 Nov 2026 (finding 161): a retired link stays retired
+// for a runner key, its own runner's tombstones too: not back on the thread
+// that had it, nor on another of its threads. Keeping a link that's still
+// live on the same row is fine; the thread that had a retired one still
+// mirrors, without it.
+test("Mac mini's key can't bring back a retired link of its own, on the same thread or another", async () => {
+  const s = await setup();
+  const view = async (slug: string) => (await call(s.ctx, load('share').preview, { slug })) !== null;
+  const shareOf = (id: string) => s.rows('threads').find((t) => t.threadId === id)?.share;
+  await s.mini.upsert(thread('M1', MINI, { share: { access: 'link', slug: 'oldLink' } }));
+  await s.mini.upsert(thread('M2', MINI));
+  // Still live on its own row: writing it again is fine.
+  assert.equal(await outcome(s.mini.upsert(thread('M1', MINI, { share: { access: 'link', slug: 'oldLink' } }))), 'ok');
+  assert.equal(shareOf('M1').slug, 'oldLink');
+  // Share again: old -> new retires the old one.
+  assert.equal(await outcome(s.mini.upsert(thread('M1', MINI, { share: { access: 'link', slug: 'newLink' } }))), 'ok');
+  assert.ok(s.rows('threadTombstones').some((t) => t.slug === 'oldLink' && t.runnerId === MINI));
+  // Back on the same thread: the row goes in, the link doesn't.
+  assert.equal(await outcome(s.mini.upsert(thread('M1', MINI, { title: 'still mirrored', share: { access: 'link', slug: 'oldLink' } }))), 'ok');
+  assert.equal(s.rows('threads').find((t) => t.threadId === 'M1')!.title, 'still mirrored');
+  // On another thread of its runner: refused.
+  assert.equal(await outcome(s.mini.upsert(thread('M2', MINI, { share: { access: 'link', slug: 'oldLink' } }))), 'forbidden');
+  assert.equal(shareOf('M2'), undefined);
+  assert.equal(await view('oldLink'), false);
+  assert.equal(await view('newLink'), true, 'a late write with the old link leaves the current one');
+  assert.equal(shareOf('M1').slug, 'newLink');
+  // A deleted (or pruned) thread's link likewise: on another id refused; the
+  // thread itself sent again comes back without it, its messages too.
+  await s.mini.upsert(thread('M3', MINI, { share: { access: 'link', slug: 'm3Link' } }));
+  await call(s.ctx, sync.prune, { key: MINI_KEY, runnerId: MINI, keep: ['M1', 'M2'] });
+  assert.ok(s.rows('threadTombstones').some((t) => t.slug === 'm3Link'));
+  assert.equal(await outcome(s.mini.upsert(thread('M2', MINI, { share: { access: 'link', slug: 'm3Link' } }))), 'forbidden');
+  assert.equal(await outcome(s.mini.upsert(thread('M3', MINI, { share: { access: 'off', slug: 'm3Link' } }))), 'ok');
+  assert.equal(shareOf('M3'), undefined);
+  await s.mini.append('M3', 'after the prune');
+  assert.deepEqual(textsOf(s.rows('messages'), 'M3'), ['after the prune']);
+  assert.equal(await view('m3Link'), false);
+  // The owner may still put a retired link back (its key is Mike's own),
+  // which un-retires it.
+  assert.equal(await outcome(s.owner.upsert(thread('L1', LAPTOP, { share: { access: 'link', slug: 'oldLink' } }))), 'ok');
+  assert.equal(await view('oldLink'), true);
+  assert.ok(!s.rows('threadTombstones').some((t) => t.slug === 'oldLink'));
+});
+
+// Gemini's review: a link brought back before this check (live on its row,
+// and tombstoned) goes on the runner's next write of the thread.
+test('a retired link still live on its row from before this check goes on the next write', async () => {
+  const s = await setup();
+  await s.mini.upsert(thread('R', MINI, { share: { access: 'link', slug: 'resurrected' } }));
+  await s.ctx.db.insert('threadTombstones', { threadId: 'R', runnerId: MINI, slug: 'resurrected', at: 1 });
+  assert.equal(await outcome(s.mini.upsert(thread('R', MINI, { share: { access: 'link', slug: 'resurrected' } }))), 'ok');
+  assert.equal(s.rows('threads').find((t) => t.threadId === 'R')!.share, undefined);
+  assert.equal(await call(s.ctx, load('share').preview, { slug: 'resurrected' }), null);
+});
+
+// Codex's and Gemini's second reviews: stopping sharing with a write that
+// names a retired link stops the link the row has; and a slug brought onto
+// another thread before the fix stops showing, and that thread still mirrors.
+test('a stop-sharing write naming a retired link stops the current one', async () => {
+  const s = await setup();
+  const view = async (slug: string) => (await call(s.ctx, load('share').preview, { slug })) !== null;
+  await s.mini.upsert(thread('T', MINI, { share: { access: 'link', slug: 'linkA' } }));
+  await s.mini.upsert(thread('T', MINI, { share: { access: 'link', slug: 'linkB' } }));
+  assert.equal(await view('linkB'), true);
+  assert.equal(await outcome(s.mini.upsert(thread('T', MINI, { share: { access: 'off', slug: 'linkA' } }))), 'ok');
+  assert.equal(s.rows('threads').find((t) => t.threadId === 'T')!.share.access, 'off');
+  assert.equal(await view('linkB'), false);
+});
+
+test('a retired slug moved onto another thread before the fix stops showing, and that thread still mirrors', async () => {
+  const s = await setup();
+  const view = async (slug: string) => (await call(s.ctx, load('share').preview, { slug })) !== null;
+  await s.mini.upsert(thread('M2', MINI, { share: { access: 'link', slug: 'old' } }));
+  await s.ctx.db.insert('threadTombstones', { threadId: 'M1', runnerId: MINI, slug: 'old', at: 1 });
+  assert.equal(await view('old'), false, 'share.ts serves no retired slug');
+  assert.equal(await outcome(s.mini.upsert(thread('M2', MINI, { title: 'next', share: { access: 'link', slug: 'old' } }))), 'ok');
+  const row = s.rows('threads').find((t) => t.threadId === 'M2')!;
+  assert.deepEqual([row.title, row.share], ['next', undefined]);
+  // Gemini's third review: and the write after that (the runner still has the link).
+  assert.equal(await outcome(s.mini.upsert(thread('M2', MINI, { title: 'third', share: { access: 'link', slug: 'old' } }))), 'ok');
+  assert.equal(s.rows('threads').find((t) => t.threadId === 'M2')!.title, 'third');
+  // Still not on a thread that never had it.
+  assert.equal(await outcome(s.mini.upsert(thread('M3', MINI, { share: { access: 'link', slug: 'old' } }))), 'forbidden');
+});
+
+// Codex's third review: a late stop-sharing write naming a link another
+// thread retired still stops the row's current link.
+test("a stop-sharing write naming another thread's retired link stops the current one", async () => {
+  const s = await setup();
+  const view = async (slug: string) => (await call(s.ctx, load('share').preview, { slug })) !== null;
+  await s.mini.upsert(thread('T2', MINI, { share: { access: 'link', slug: 'linkB' } }));
+  await s.ctx.db.insert('threadTombstones', { threadId: 'T1', runnerId: MINI, slug: 'linkA', at: 1 });
+  assert.equal(await outcome(s.mini.upsert(thread('T2', MINI, { share: { access: 'off', slug: 'linkA' } }))), 'ok');
+  assert.equal(s.rows('threads').find((t) => t.threadId === 'T2')!.share.access, 'off');
+  assert.equal(await view('linkB'), false);
+  // And naming another row's live link while stopping: the same.
+  await s.mini.upsert(thread('T3', MINI, { share: { access: 'link', slug: 'linkC' } }));
+  await s.owner.upsert(thread('O', LAPTOP, { share: { access: 'link', slug: 'ownersLink' } }));
+  assert.equal(await outcome(s.mini.upsert(thread('T3', MINI, { share: { access: 'off', slug: 'ownersLink' } }))), 'ok');
+  assert.equal(await view('linkC'), false);
+  assert.equal(await view('ownersLink'), true);
+});
+
 test("the owner taking a thread id over from Mac mini's runner starts it clean", async () => {
   const s = await setup();
   await s.mini.upsert(thread('T', MINI, { share: { access: 'link', slug: 'minis' } }));

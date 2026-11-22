@@ -110,10 +110,9 @@ export const registerVerified = internalMutation({
 
 // Asked by /register before it calls a deployment back: whether a
 // registration for it could succeed now (registerVerified still checks).
-// Read-only on purpose: anything it counted could be run up by anyone
-// naming someone else's deployment, before the call-back says who they
-// are. So call-backs to a deployment that keeps saying no aren't capped;
-// they only ever go to its own convex.site address (verify.ts).
+// Read-only, as it runs before the call-back says who's asking: it mustn't
+// use up anything of the deployment's. The call-back itself is charged to
+// startCheck's budget, which is the relay's, not the deployment's.
 export const mayRegister = internalQuery({
   args: { deployment: v.string() },
   returns: v.boolean(),
@@ -129,6 +128,113 @@ export const mayRegister = internalQuery({
       .withIndex('by_day', (q) => q.eq('day', today))
       .unique();
     return (counts?.newInstalls ?? 0) < NEW_INSTALLS_PER_DAY;
+  },
+});
+
+// The call-backs /register makes (Codex Security, 21 Nov 2026, finding
+// 156). /register is open to anyone, and each call-back is an outbound
+// request that can take VERIFY_TIMEOUT_MS, so they're charged before they
+// start, to the relay's own budget, never to a deployment's registrations
+// or the day's new installs (a call-back that says no charges nothing of
+// those, so nobody can use up a real backend's allowance by naming it):
+//
+// - Deployments without an established install here (one at least
+//   NEW_INSTALL_MS old: anyone can make up names, or make deployments and
+//   register them): at most MAX_NEW_CHECKS_IN_FLIGHT at once and
+//   NEW_CHECKS_PER_HOUR an hour, relay-wide.
+// - Established ones: at most MAX_KNOWN_CHECKS_IN_FLIGHT at once and
+//   KNOWN_CHECKS_PER_HOUR an hour, relay-wide, counted apart from the
+//   made-up names (their own index range and row, so a flood of those
+//   neither uses their allowance nor contends with their writes). Past the
+//   hour's pool, each established deployment still gets its first
+//   RESERVED_CHECKS_PER_HOUR of the hour, so someone naming others to drain
+//   the pool can't stop one they didn't name registering again.
+// - One at a time to any one deployment, and none to it for NO_COOLDOWN_MS
+//   after it said no.
+//
+// Real use is far below all of these (16 Nov: at most 11 registrations a
+// day, relay-wide). What's left: someone who knows a deployment's name can
+// keep it from registering again (not from sending: a working install
+// never calls /register) while they keep sending a no for it at least
+// every NO_COOLDOWN_MS, and, if they drain the established pool as well,
+// for the rest of that hour; made-up names can hold back new installs (and
+// an install under a week old registering again) for the hour, as made-up
+// deployments already could the day's new installs (NEW_INSTALLS_PER_DAY);
+// and established deployments someone registered and kept a week can hold
+// the established slots while they keep answering slowly.
+export const MAX_NEW_CHECKS_IN_FLIGHT = 15;
+export const MAX_KNOWN_CHECKS_IN_FLIGHT = 10;
+export const NO_COOLDOWN_MS = 30_000;
+export const NEW_CHECKS_PER_HOUR = 600;
+export const KNOWN_CHECKS_PER_HOUR = 1_200;
+export const RESERVED_CHECKS_PER_HOUR = 5;
+// How long a started call-back counts as still going: past verify.ts's
+// VERIFY_TIMEOUT_MS with room to spare, for one whose action died before
+// endCheck.
+export const CHECK_LEASE_MS = 30_000;
+
+// Charges one call-back to `deployment`, or says why not: { check } to
+// hand to endCheck once it's answered, or 'limited'.
+export const startCheck = internalMutation({
+  args: { deployment: v.string() },
+  returns: v.union(v.object({ check: v.id('checks') }), v.literal('limited')),
+  handler: async (ctx, { deployment }) => {
+    const now = Date.now();
+    const live = now - CHECK_LEASE_MS;
+    const hour = hourOf(now);
+    if (await ctx.db.query('checks').withIndex('by_deployment', (q) => q.eq('deployment', deployment).gt('startedAt', live)).first()) return 'limited';
+    const hold = await ctx.db
+      .query('checkHolds')
+      .withIndex('by_deployment', (q) => q.eq('deployment', deployment))
+      .unique();
+    if (hold?.noUntil !== undefined && hold.noUntil > now) return 'limited';
+    const install = await ctx.db
+      .query('installs')
+      .withIndex('by_deployment', (q) => q.eq('deployment', deployment))
+      .first();
+    const known = install !== null && now - install.createdAt >= NEW_INSTALL_MS;
+    const going = await ctx.db
+      .query('checks')
+      .withIndex('by_known', (q) => q.eq('known', known).gt('startedAt', live))
+      .take(known ? MAX_KNOWN_CHECKS_IN_FLIGHT : MAX_NEW_CHECKS_IN_FLIGHT);
+    if (going.length >= (known ? MAX_KNOWN_CHECKS_IN_FLIGHT : MAX_NEW_CHECKS_IN_FLIGHT)) return 'limited';
+    const pool = await ctx.db
+      .query('checkHours')
+      .withIndex('by_hour', (q) => q.eq('hour', hour).eq('known', known))
+      .unique();
+    const used = pool?.checks ?? 0;
+    const mine = hold?.hour === hour ? (hold.count ?? 0) : 0;
+    const reserved = known && mine < RESERVED_CHECKS_PER_HOUR;
+    if (used >= (known ? KNOWN_CHECKS_PER_HOUR : NEW_CHECKS_PER_HOUR) && !reserved) return 'limited';
+    if (pool) await ctx.db.patch('checkHours', pool._id, { checks: used + 1 });
+    else await ctx.db.insert('checkHours', { hour, known, checks: 1 });
+    if (hold) await ctx.db.patch('checkHolds', hold._id, { at: now, hour, count: mine + 1 });
+    else await ctx.db.insert('checkHolds', { deployment, at: now, hour, count: 1 });
+    return { check: await ctx.db.insert('checks', { deployment, known, startedAt: now }) };
+  },
+});
+
+// A call-back answered: it stops counting as going, and a no keeps the
+// deployment from being called back for NO_COOLDOWN_MS (a yes lifts that).
+// One answered after its lease ran out (a later call-back may have been
+// made and answered since) only stops counting.
+export const endCheck = internalMutation({
+  args: { check: v.id('checks'), vouched: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { check, vouched }) => {
+    const row = await ctx.db.get('checks', check);
+    if (!row) return null;
+    await ctx.db.delete('checks', check);
+    const now = Date.now();
+    if (row.startedAt <= now - CHECK_LEASE_MS) return null;
+    const hold = await ctx.db
+      .query('checkHolds')
+      .withIndex('by_deployment', (q) => q.eq('deployment', row.deployment))
+      .unique();
+    const noUntil = vouched ? undefined : now + NO_COOLDOWN_MS;
+    if (hold) await ctx.db.patch('checkHolds', hold._id, { at: now, noUntil });
+    else if (noUntil !== undefined) await ctx.db.insert('checkHolds', { deployment: row.deployment, at: now, noUntil });
+    return null;
   },
 });
 
@@ -272,7 +378,7 @@ export const forget = internalMutation({
 export const EXPIRE_BATCH = 200;
 export const expire = internalMutation({
   args: {},
-  returns: v.object({ installs: v.number(), removed: v.number(), hours: v.number() }),
+  returns: v.object({ installs: v.number(), removed: v.number(), hours: v.number(), checks: v.number() }),
   handler: async (ctx) => {
     const now = Date.now();
     // Rows from before the deployment check (5 Nov 2026; no more can be
@@ -295,8 +401,27 @@ export const expire = internalMutation({
       .withIndex('by_hour', (q) => q.lt('hour', hourOf(now - 2 * 86_400_000)))
       .take(EXPIRE_BATCH);
     for (const row of old) await ctx.db.delete(row._id);
-    if ([idle, gone, old].some((b) => b.length === EXPIRE_BATCH)) await ctx.scheduler.runAfter(0, internal.relay.expire, {});
-    return { installs: idle.length, removed: gone.length, hours: old.length };
+    // Call-back records (startCheck, endCheck): a deployment's a day after
+    // it was last touched, hourly counts after two days, and any left going by an action
+    // that died.
+    const holds = await ctx.db
+      .query('checkHolds')
+      .withIndex('by_at', (q) => q.lt('at', now - 86_400_000))
+      .take(EXPIRE_BATCH);
+    for (const row of holds) await ctx.db.delete('checkHolds', row._id);
+    const checkHours = await ctx.db
+      .query('checkHours')
+      .withIndex('by_hour', (q) => q.lt('hour', hourOf(now - 2 * 86_400_000)))
+      .take(EXPIRE_BATCH);
+    for (const row of checkHours) await ctx.db.delete('checkHours', row._id);
+    const checked = [...holds, ...checkHours];
+    const stuck = await ctx.db
+      .query('checks')
+      .withIndex('by_startedAt', (q) => q.lt('startedAt', now - CHECK_LEASE_MS))
+      .take(EXPIRE_BATCH);
+    for (const row of stuck) await ctx.db.delete('checks', row._id);
+    if ([idle, gone, old, holds, checkHours, stuck].some((b) => b.length === EXPIRE_BATCH)) await ctx.scheduler.runAfter(0, internal.relay.expire, {});
+    return { installs: idle.length, removed: gone.length, hours: old.length, checks: checked.length + stuck.length };
   },
 });
 

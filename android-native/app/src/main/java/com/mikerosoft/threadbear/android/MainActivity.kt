@@ -77,6 +77,12 @@ class MainActivity : ComponentActivity() {
         if (data != null && data.startsWith("threadbear://pair")) {
             if (!model.ask(data, PairingSource.OPENED)) model.note("That isn't a pairing link Threadbear can use.")
         }
+        // The parity run's emulator (debug builds only; AppModel.pairForParity).
+        if (BuildConfig.ALLOW_LOCAL) {
+            val url = intent?.getStringExtra("parityUrl")
+            val token = intent?.getStringExtra("parityToken")
+            if (url != null && token != null) model.pairForParity(url, token)
+        }
         Push.validThreadId(intent?.getStringExtra("threadId"))?.let { openThread.value = it }
     }
 }

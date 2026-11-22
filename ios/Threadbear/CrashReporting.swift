@@ -4,7 +4,7 @@ import Sentry
 #endif
 
 /// Crash and error reports to Sentry (project `threadbear`, tag
-/// component: ios), from App Store installs only. Agents build and run this
+/// component: ios), from App Store and TestFlight installs only. Agents build and run this
 /// app in the simulator and on Mike's phones all day, and an agent watcher
 /// opens a thread for anything that reaches Sentry, so a Debug build, the
 /// simulator and a development-signed install (install-phone.sh, which has
@@ -24,7 +24,10 @@ enum CrashReporting {
         let build = info["CFBundleVersion"] as? String ?? "0"
         SentrySDK.start { options in
             options.dsn = dsn
-            options.environment = "production"
+            // TestFlight builds (the nightly one on Mike's phone, nightly-testflight.sh) have a
+            // sandbox receipt; App Store ones don't.
+            let testFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+            options.environment = testFlight ? "testflight" : "production"
             options.releaseName = "threadbear-ios@\(version)+\(build)"
             options.sendDefaultPii = false
             options.tracesSampleRate = 0

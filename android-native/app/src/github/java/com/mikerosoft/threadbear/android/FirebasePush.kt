@@ -55,6 +55,9 @@ class ThreadbearMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        // The thread no longer needs you (seen on the Mac, answered, archived):
+        // its notification comes down (push:clear in the backend).
+        Push.validThreadId(message.data["clear"])?.let { Push.clear(this, it); return }
         val threadId = Push.validThreadId(message.data["threadId"]) ?: return
         Push.show(this, threadId, message.data["e"])
     }

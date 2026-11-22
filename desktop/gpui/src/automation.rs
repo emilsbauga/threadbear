@@ -304,10 +304,6 @@ async fn run(
     if cmd["cmd"] == "review" {
         return crate::review_window::automation(&weak, window, cmd, cx).await;
     }
-    // A design review's page beside the thread (review_pane.rs).
-    if cmd["cmd"] == "review-page" {
-        return crate::review_pane::automation(&weak, window, cmd, cx).await;
-    }
     // Send's right-click menu (composer_send.rs), read the same way.
     // The slash palette's right-click menu (slash_resize.rs), the same way.
     if cmd["cmd"] == "palette-menu" {

@@ -30,6 +30,17 @@ data class DraftBlock(val kind: Kind, val source: String) {
     /** `quote`: a Slack "> " line, drawn with a bar. */
     data class Line(val spans: List<Span>, val quote: Boolean = false)
 
+    /** What the chip for his changed draft calls it. */
+    val editedLabel: String
+        get() = when (kind) {
+            Kind.SLACK -> "Your edited Slack message"
+            Kind.EMAIL -> "Your edited email"
+            Kind.DRAFT -> "Your edited draft"
+        }
+
+    /** A sent message taken apart by [splitEdited]: his own words, and each draft he changed. */
+    data class Edited(val words: String, val drafts: List<DraftBlock>)
+
     /** What the box's header calls it. */
     val label: String
         get() = when (kind) {
@@ -132,6 +143,91 @@ data class DraftBlock(val kind: Kind, val source: String) {
         /** Where the placeholders for a line's tokens start (Unicode's private use area). */
         private const val PLACEHOLDER_BASE = 0xE000
         private const val PLACEHOLDER_END = 0xF8FF
+
+        private const val EDITED_ONE = "I edited your draft. Use my version below exactly as it is, not yours:"
+        private const val EDITED_MANY = "I edited your drafts. Use my versions below exactly as they are, not yours:"
+
+        /**
+         * A sent message with the Mac's edited drafts on its end
+         * (desktop/core's draft_block.rs `split_edited`, the website's and
+         * the iPhone's `splitEdited`): his own words, and each draft he
+         * changed, so his bubble shows a chip for each rather than the line
+         * asking the agent to use them and the raw fences. Null when it
+         * doesn't end that way.
+         */
+        fun splitEdited(text: String): Edited? {
+            // Windows line ends are plain ones, and the runner's "[2 pictures]"
+            // line (a picture sent with no marker, sync.ts toMessageDoc) goes
+            // after the drafts: it stays with his words, where
+            // ThreadPictures.words takes it off once the pictures are here.
+            val plain = text.replace("\r\n", "\n")
+            val tail = PICTURES_TAIL.find(plain)
+            val edited = splitPlain(if (tail != null) plain.substring(0, tail.range.first) else plain) ?: return null
+            if (tail == null) return edited
+            val line = tail.value.trim()
+            return edited.copy(words = if (edited.words.isEmpty()) line else "${edited.words}\n\n$line")
+        }
+
+        private val PICTURES_TAIL = Regex("""\n\n\[[1-9]\d{0,2} pictures?]\s*$""")
+
+        private fun splitPlain(text: String): Edited? {
+            // From the first one: a draft can hold the line itself, and his
+            // own words can too, so each place it starts is tried until one
+            // is followed by nothing but drafts.
+            val starts = mutableListOf<Pair<Int, String>>()
+            for (intro in listOf(EDITED_ONE, EDITED_MANY)) {
+                var from = 0
+                while (true) {
+                    val found = text.indexOf(intro, from)
+                    if (found < 0) break
+                    starts += found to intro
+                    from = found + 1
+                }
+            }
+            for ((at, intro) in starts.sortedBy { it.first }) splitAt(text, at, intro)?.let { return it }
+            return null
+        }
+
+        private fun splitAt(text: String, at: Int, intro: String): Edited? {
+            val before = text.substring(0, at)
+            if (before.isNotEmpty() && !before.endsWith("\n\n")) return null
+            var rest = at + intro.length
+            val drafts = mutableListOf<DraftBlock>()
+            while (text.startsWith("\n\n", rest)) {
+                val after = rest + 2
+                var ticks = 0
+                while (after + ticks < text.length && text[after + ticks] == '`') ticks++
+                if (ticks < 3) return null
+                val lineEnd = text.indexOf('\n', after)
+                if (lineEnd < 0) return null
+                val word = text.substring(after + ticks, lineEnd)
+                val kind = Kind.entries.firstOrNull { it.wire == word } ?: return null
+                val body = lineEnd + 1
+                val close = "\n" + "`".repeat(ticks)
+                val end = closing(text, body, close) ?: return null
+                // Whatever length it is: what was sent is shown.
+                val source = text.substring(body, end).replace("\r\n", "\n")
+                if (source.isBlank()) return null
+                drafts += DraftBlock(kind, source)
+                rest = end + close.length
+            }
+            if (drafts.isEmpty() || !blankFrom(text, rest) || (intro == EDITED_ONE) != (drafts.size == 1)) return null
+            return Edited(before.trimEnd(), drafts)
+        }
+
+        /** Where a draft's closing fence is: on a line of its own, with only the end or a new paragraph after it. */
+        private fun closing(text: String, from: Int, close: String): Int? {
+            var start = from
+            while (true) {
+                val found = text.indexOf(close, start)
+                if (found < 0) return null
+                val end = found + close.length
+                if (text.startsWith("\n\n", end) || blankFrom(text, end)) return found
+                start = found + 1
+            }
+        }
+
+        private fun blankFrom(text: String, from: Int): Boolean = (from until text.length).all { text[it].isWhitespace() }
 
         /** The draft for a fence's info string (only the first word counts), or null for any other fence. */
         fun from(language: String?, code: String): DraftBlock? {

@@ -428,6 +428,86 @@ test('one reply: a closing section comes off the reply, bold, # or a bare line',
   assert.equal(none.reply, 'The script says nothing needed from you is wrong, so I fixed it.');
 });
 
+// Thread 649fc651 (21 Nov 2026): asked "Anything you need from me here?", the
+// agent's reply opened "Nothing needed from you." and went on for two
+// paragraphs. Everything from that line down came off as the closing
+// section, which was the whole reply, and Mike got a blank answer.
+test('one reply: a "Nothing needed from you" line comes off only as a closing section the card shows all of', () => {
+  const nothing = { needs: 'nothing' as const };
+  const whole = (reply: string, needs: object = nothing, why = reply) => assert.deepEqual(splitReplySection(reply), { reply, needs }, why);
+  // The answer opens with it and says more on the same line and after it.
+  whole('Nothing needed from you. The sprinklers are on Auto, and the next run is Monday at 6:00.\n\nThe only thing outstanding is the re-test. This thread is asleep until then.');
+  // More on the line that the card doesn't show: the line stays.
+  whole('Sent the form.\n\nNothing needed from you right now. This picks up again by itself on 23 Nov.');
+  whole("Drafted the post.\n\nNothing needed from you right now apart from posting that in Slack when you're ready.");
+  for (const line of ['Nothing needed from you right now.', '**Nothing needed from you.**', 'Nothing else is needed from you for now']) {
+    // The bare line closing a reply comes off, as before.
+    assert.deepEqual(splitReplySection(`Fixed and committed.\n\n${line}\n`), { reply: 'Fixed and committed.', needs: nothing }, line);
+    // Words after it aren't on the card, so it isn't a closing section.
+    whole(`${line}\n\nThe deploy is still going.\nIt takes about ten minutes.`, nothing, line);
+    whole(`Fixed.\n\n${line}\n\nThe deploy is still going.`, nothing, line);
+    // A reply that is only the line stays as written: the done card has no words of its own.
+    whole(line, nothing, line);
+  }
+  whole('**What I need from you:** nothing right now.');
+  // A plain list of follow-ups straight under it goes to the card with it.
+  const next = { needs: 'nothing' as const, next: ['Check it on production tomorrow'] };
+  const item = '- Check it on production tomorrow.';
+  assert.deepEqual(splitReplySection('Fixed.\n\n**Nothing needed from you right now.**\n\n- Check it on production tomorrow\n'), { reply: 'Fixed.', needs: next });
+  assert.deepEqual(splitReplySection('Fixed.\n\nNothing needed from you.\n1. Check one\n2. Check `two`!\n3. See   v1.2'), { reply: 'Fixed.', needs: { needs: 'nothing', next: ['Check one', 'Check `two`!', 'See v1.2'] } });
+  // Words after the list aren't on the card.
+  whole(`Fixed.\n\nNothing needed from you right now.\n${item}\n\nThe deploy is still going.`, next);
+  // Nor is a lead-in, on the line or under it, short or not: it may be news (from Codex's and Gemini's reviews).
+  for (const section of [
+    `Nothing needed from you right now. One follow-up is worth doing:\n\n${item}`,
+    `Nothing needed from you right now.\n\nWorth doing next:\n${item}`,
+    `Nothing needed from you.\nOnly after the backup finishes:\n${item}`,
+    `Nothing needed from you.\nThe database is still offline.\n${item}`,
+    `Nothing needed from you. The database is still offline; my next step is:\n${item}`,
+    `Nothing needed from you right now apart from posting these when you're ready:\n${item}`,
+    `Nothing needed from you right now. The deploy finished at 3pm.\n\nWorth doing next:\n${item}`,
+    `Nothing needed from you right now.\n\nThe sprinklers are on Auto, and the next run is Monday at 6:00. This thread is asleep until then.\n\n${item}`,
+  ]) whole(`Fixed.\n\n${section}`, next, section);
+  // A follow-up that says more than its row on the card: a why, a line under it, a link, a command.
+  whole(`Fixed.\n\nNothing needed from you right now.\n${item} It needs a real login.`, next);
+  whole(`Fixed.\n\nNothing needed from you right now.\n${item}\n  It needs a real login.`, next);
+  whole('Fixed.\n\nNothing needed from you right now.\n- Check it on [production](https://example.com/admin) tomorrow', { needs: 'nothing', next: ['Check it on production tomorrow'] });
+  whole(`Fixed.\n\nNothing needed from you right now.\n${item}\n  \`\`\`bash\n  curl -fsS https://example.com/health\n  \`\`\``, next);
+  // ...with or without a full stop on the item (from Gemini's second review): lines under it are read into its row.
+  const bare = '- Check it on production tomorrow';
+  whole(`Fixed.\n\nNothing needed from you right now.\n${bare}\n  It needs a real login`, { needs: 'nothing', next: ['Check it on production tomorrow It needs a real login'] });
+  whole(`Fixed.\n\nNothing needed from you right now.\n${bare}\n  \`\`\`bash\n  curl -fsS https://example.com/health\n  \`\`\``, { needs: 'nothing', next: ['Check it on production tomorrow ```bash curl -fsS https://example.com/health ```'] });
+  whole('Fixed.\n\nNothing needed from you right now.\n  - Check one\n  - Check two\n  - Check three\n  - Check four', { needs: 'nothing', next: ['Check one - Check two - Check three - Check four'] });
+  whole(`Fixed.\n\nNothing needed from you right now.\n${bare}\n  - on the admin page`, { needs: 'nothing', next: ['Check it on production tomorrow - on the admin page'] });
+  // The row takes ** out, bold or not.
+  whole('Fixed.\n\nNothing needed from you right now.\n- Run the tests on src/**/*.ts and test/**/*.ts', { needs: 'nothing', next: ['Run the tests on src//*.ts and test//*.ts'] });
+  whole('Fixed.\n\nNothing needed from you right now.\n- **Check it** on production tomorrow', next);
+  // ...and the item's full stop, which may not be a sentence's (from Codex's reviews).
+  whole(`Fixed.\n\nNothing needed from you right now.\n${item}`, next);
+  whole('Fixed.\n\nNothing needed from you.\n- Run touch release.', { needs: 'nothing', next: ['Run touch release'] });
+  whole('Fixed.\n\nNothing needed from you.\n- Run cd ..', { needs: 'nothing', next: ['Run cd .'] });
+  whole('Fixed.\n\nNothing needed from you.\n- Run cp backup .', { needs: 'nothing', next: ['Run cp backup'] });
+  // An indented list reads as one item (as it always has), so its other items aren't rows.
+  whole('Fixed.\n\nNothing needed from you right now.\n  - Check one.\n  - Check two.\n  - Check three.\n  - Check four.', { needs: 'nothing', next: ['Check one'] });
+  // One the card cut for length.
+  const long = 'Before restarting the service, inspect the release notes and compare all environment settings against the current production deployment and never reset the production database';
+  const cut = splitReplySection(`Updated.\n\nNothing needed from you.\n- ${long}`);
+  assert.ok(cut.reply.endsWith(long) && cut.needs?.next?.[0] && cut.needs.next[0].length < long.length);
+  // A list after an opening line is the answer, not a closing section.
+  whole("Nothing else is needed from you, so it's fine to archive.\n\nWhen the video goes public, I'll:\n\n1. Publish the article. It has the title.\n2. Draft the post.\n\nI also tidied up.", {
+    needs: 'nothing',
+    next: ['Publish the article', 'Draft the post'],
+  });
+  // More follow-ups than the card holds, or the same one twice: the list stays.
+  whole('Fixed.\n\nNothing needed from you right now.\n- Check one\n- Check two\n- Check three\n- Check four', { needs: 'nothing', next: ['Check one', 'Check two', 'Check three'] });
+  whole('Fixed.\n\nNothing needed from you right now.\n- Check one\n- Check one', { needs: 'nothing', next: ['Check one'] });
+  // Quoted as output, in an indented code block (from Gemini's review).
+  whole('Here is the exact output:\n\n    Nothing needed from you right now.');
+  // Line endings and blank lines around a reply that is only the section.
+  whole('\r\n\r\nNothing needed from you right now.\r\n');
+  assert.deepEqual(splitReplySection('Fixed.\r\n\r\nNothing needed from you right now.\r\n'), { reply: 'Fixed.', needs: nothing });
+});
+
 // Thread 7ac017b7 (3 Nov 2026): six of eight replies under a card went on to
 // write the card out again, and that looked like not using the card at all.
 test('one reply: a section repeating the card comes off the reply, and one saying more stays', () => {

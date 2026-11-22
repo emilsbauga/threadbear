@@ -276,14 +276,6 @@ pub(crate) fn media_key(thread_id: &str, path: &str, opened: u64) -> String {
 /// Whether the pane is showing a video or a PDF in the system's view, which
 /// has to be placed every frame (shell.rs draws the pane uncached then).
 pub(crate) fn shows_media(side: &SidePane, thread_id: &str) -> bool {
-    // A review's page is a page's view too (review_pane.rs).
-    if side
-        .previews
-        .get(thread_id)
-        .is_some_and(|p| matches!(p.target, Target::Review(_)))
-    {
-        return true;
-    }
     let Some(path) = side.previews.get(thread_id).and_then(|p| p.file_path()) else {
         return false;
     };
@@ -480,8 +472,6 @@ impl SidePane {
             }
             Target::Folder(_) => self.load_folder_for_preview(thread, cx),
             Target::Pr(url) => self.begin_pr(url, cx),
-            // Its page is made as it's drawn (review_pane.rs).
-            Target::Review(_) => {}
         }
     }
 
@@ -1404,7 +1394,6 @@ impl SidePane {
             }
             Target::Folder(path) => self.render_folder(thread, path, preview, window, cx),
             Target::Pr(url) => self.render_pr(thread, url, window, cx),
-            Target::Review(id) => self.render_review(thread, id, window, cx),
         }
     }
 
@@ -1875,7 +1864,6 @@ impl SidePane {
             Target::Folder(path) => format!("folder {path}"),
             Target::Page(url) => format!("page {url}"),
             Target::Pr(url) => format!("pr {url}"),
-            Target::Review(id) => format!("review {id}"),
         }
     }
 
@@ -1895,13 +1883,6 @@ impl SidePane {
                 pane.insert("previewKind".into(), json!("pr"));
                 pane.insert("previewText".into(), json!(url));
                 pane.insert("pr".into(), self.prs.describe(url));
-            }
-            Target::Review(id) => {
-                pane.insert("previewKind".into(), json!("review"));
-                pane.insert("previewText".into(), json!(id));
-                if let Some(thread) = self.thread(cx) {
-                    pane.insert("review".into(), self.review_dump(&thread.id));
-                }
             }
             Target::Folder(path) => {
                 pane.insert("previewKind".into(), json!("folder"));

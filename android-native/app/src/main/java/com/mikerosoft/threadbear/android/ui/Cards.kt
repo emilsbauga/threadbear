@@ -45,8 +45,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.mikerosoft.threadbear.kit.ApprovalOption
+import com.mikerosoft.threadbear.kit.LooseEnds
 import com.mikerosoft.threadbear.kit.PendingApproval
 import com.mikerosoft.threadbear.kit.PhoneAsk
+import com.mikerosoft.threadbear.kit.PhoneLooseEnd
 import com.mikerosoft.threadbear.kit.Question
 import com.mikerosoft.threadbear.kit.RunnerKeyPins
 
@@ -344,9 +346,17 @@ fun AsksCard(
     }
 }
 
-/** A finished turn that needs nothing: archive it, or tick follow-ups to carry on. */
+/**
+ * A finished turn that needs nothing: archive it, or tick follow-ups to
+ * carry on. What the runner found still open (loose ends) goes between,
+ * under "Still open", or "Coming back" when it's only booked check-ins, as
+ * on the Mac and the iPhone: plain lines, and a thread one opens that thread.
+ */
 @Composable
-fun DoneCard(next: List<String>, ticked: Set<Int>, busy: Boolean, tick: (Int) -> Unit, send: () -> Unit, archive: () -> Unit) {
+fun DoneCard(
+    next: List<String>, ticked: Set<Int>, busy: Boolean, tick: (Int) -> Unit, send: () -> Unit, archive: () -> Unit,
+    looseEnds: List<PhoneLooseEnd> = emptyList(), openThread: (String) -> Unit = {},
+) {
     val colors = MaterialTheme.colorScheme
     val accent = LocalSignals.current.accent
     CardFrame {
@@ -356,6 +366,26 @@ fun DoneCard(next: List<String>, ticked: Set<Int>, busy: Boolean, tick: (Int) ->
             Text("Done", style = MaterialTheme.typography.titleSmall, color = colors.onSurfaceVariant)
             Spacer(Modifier.weight(1f))
             Pill("Archive", archive, icon = Line.Archive)
+        }
+        LooseEnds.heading(looseEnds)?.let { heading ->
+            val signals = LocalSignals.current
+            Text(heading, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+            for (end in LooseEnds.ordered(looseEnds)) {
+                val thread = end.threadId?.takeIf { it.isNotEmpty() }
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .then(if (thread != null) Modifier.clickable(onClickLabel = "Open the thread") { openThread(thread) } else Modifier)
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        if (end.isBooked) Line.Clock else Line.AlertCircle, if (end.isBooked) "Booked" else "Still open",
+                        Modifier.padding(top = 2.dp).size(18.dp), tint = if (end.isBooked) colors.onSurfaceVariant else signals.needsYou,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(LooseEnds.line(end), style = MaterialTheme.typography.bodyLarge, color = if (thread != null) signals.accent else colors.onSurface)
+                }
+            }
         }
         if (next.isNotEmpty()) {
             Text("Or carry on", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)

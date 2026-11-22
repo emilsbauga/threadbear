@@ -245,22 +245,22 @@ impl Threadbear {
     }
 
     /// Down, and the keyboard back where it was if nothing was opened.
+    /// Hands back what had it, for an open that ends up taking nothing.
     pub(crate) fn close_open_anything(
         &mut self,
         give_back: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let Some(open) = self.anything.take() else {
-            return;
-        };
+    ) -> Option<FocusHandle> {
+        let open = self.anything.take()?;
         if give_back {
-            if let Some(before) = open.before {
-                window.focus(&before, cx);
+            if let Some(before) = &open.before {
+                window.focus(before, cx);
                 crate::web_panels::keyboard_to_app(window);
             }
         }
         cx.notify();
+        open.before
     }
 
     /// The app's pages as it has them now, each with its key.
@@ -334,7 +334,11 @@ impl Threadbear {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_open_anything(false, window, cx);
+        // The box's field, while it has the keyboard (Return was pressed in
+        // it). The box is still about while this runs, so its field still
+        // counts as focused after the box is down.
+        let field = window.focused(cx);
+        let before = self.close_open_anything(false, window, cx);
         let key = item.kept_key().to_owned();
         self.note_recent(key.clone(), cx);
         // In the activity log as the menu-like pick it is: which kind, and
@@ -356,7 +360,15 @@ impl Threadbear {
             Target::Thread(id) if beside => self.open_thread_in_panel(id, cx),
             Target::Thread(id) => {
                 self.reveal_thread(&id, cx);
+                let shown = self.selected.as_deref() == Some(id.as_str());
                 self.open(id, window, cx);
+                // The thread on screen already: `open` has nothing to do, so
+                // its composer takes the keyboard as opening another's would.
+                if shown {
+                    if let Some(pane) = self.pane.clone() {
+                        pane.update(cx, |p, cx| p.focus_composer(window, cx));
+                    }
+                }
             }
             Target::Project(id) => self.open_project_page(&id, cx),
             Target::Page(page) => self.open_anything_page(page, window, cx),
@@ -365,6 +377,16 @@ impl Threadbear {
                 thread,
                 project,
             } => self.open_anything_panel(&key, &id, thread, project, beside, window, cx),
+        }
+        // Whatever was opened that took nothing (a page, a project), the
+        // keyboard goes back where it was: left on the box's field, it goes
+        // with the box, and ⌘K and every other key find no one to hear them.
+        let now = window.focused(cx);
+        if now.is_none() || now == field {
+            if let Some(before) = before {
+                window.focus(&before, cx);
+                crate::web_panels::keyboard_to_app(window);
+            }
         }
         cx.notify();
     }

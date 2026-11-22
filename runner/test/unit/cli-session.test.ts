@@ -513,7 +513,7 @@ test('only cli-session.ts writes a thread`s CLI', () => {
   // file: the receivers in it that aren't a Runtime.
   const notRuntimes: Record<string, string[]> = {
     'runner/warm-start.ts': ['this'], // Runner.spare, nobody's yet
-    'runner/worktrees.ts': ['w'], // a worktree slot's spare
+    'slot.ts': ['out'], // a worktree slot's spare, as the record's fields
     'folder-cache.ts': ['this'],
     'projects.ts': ['out'],
     'handover.ts': ['this'],

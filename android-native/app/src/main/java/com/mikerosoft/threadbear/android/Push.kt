@@ -211,7 +211,7 @@ object Push {
     /** Unpairing takes down every notification the old pairing left. */
     fun clearAll(context: Context) = NotificationManagerCompat.from(context).cancelAll()
 
-    /** Opening a thread clears its notification, as reading it on the iPhone does. */
+    /** Opening a thread clears its notification, as does a silent clear from the backend. */
     fun clear(context: Context, threadId: String) = NotificationManagerCompat.from(context).cancel(threadId, 1)
 }
 

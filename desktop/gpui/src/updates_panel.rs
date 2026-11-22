@@ -751,7 +751,68 @@ impl Threadbear {
                     .into_any_element(),
             );
         }
+        out.extend(self.render_waiting_fixes(&side, cx));
         out
+    }
+
+    /// The threads waiting for the app to restart onto what they landed,
+    /// each with which build has it (`FixPlace`), and opening it on a click.
+    fn render_waiting_fixes(&mut self, side: &AppSide, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use threadbear_core::updates::FixPlace;
+        let fixes = self.waiting_fixes();
+        if fixes.is_empty() {
+            return Vec::new();
+        }
+        let (secondary, green) = (style::secondary_text(cx), style::tick_green(cx));
+        let mut out = vec![small_heading("Threads waiting on this version", cx)
+            .pt(px(4.))
+            .into_any_element()];
+        for (id, title, place) in fixes {
+            let color = match place {
+                FixPlace::Ready | FixPlace::InApp => green,
+                _ => secondary,
+            };
+            let open = id.clone();
+            out.push(
+                h_flex()
+                    .w_full()
+                    .gap(px(8.))
+                    .justify_between()
+                    .child(text_button(
+                        SharedString::from(format!("updates-waiting-{id}")),
+                        title,
+                        "Open this thread",
+                        12.,
+                        true,
+                        false,
+                        cx,
+                        move |t, window, cx| t.open(open.clone(), window, cx),
+                    ))
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap(px(4.))
+                            .children((place == FixPlace::Building).then(|| {
+                                crate::spinner::TurningArc::new(9., secondary).outside_threads()
+                            }))
+                            .child(text_line(rules::fix_label(place, side), 11., color)),
+                    )
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
+    /// The waiting threads with their titles, by title.
+    fn waiting_fixes(&self) -> Vec<(String, String, threadbear_core::updates::FixPlace)> {
+        let mut fixes: Vec<_> = self
+            .updater
+            .fixes
+            .iter()
+            .map(|(id, place)| (id.clone(), self.thread_title(id), *place))
+            .collect();
+        fixes.sort_by(|a, b| a.1.cmp(&b.1));
+        fixes
     }
 
     /// The runner's lines: not following main, its build, the threads still
@@ -1331,6 +1392,13 @@ impl Threadbear {
         {
             lines.push(format!("  > {}", self.thread_title(id)));
         }
+        let fixes = self.waiting_fixes();
+        if !fixes.is_empty() {
+            lines.push("## Threads waiting on this version".to_owned());
+            for (_, title, place) in fixes {
+                lines.push(format!("  {title}: {}", rules::fix_label(place, &side)));
+            }
+        }
         lines.push("# Runner".to_owned());
         match &self.updates_panel.runner {
             Some(runner) => {
@@ -1528,6 +1596,34 @@ pub(crate) fn automation(
             );
         }
         app.update(cx, |t, cx| t.preview_update(state, cx));
+    }
+    // Made-up threads waiting on the app, with where each one's fix is:
+    // {"waiting": {"<thread id>": "in-app" | "ready" | "building" | "next" | "unknown"}}.
+    if let Some(waiting) = cmd["waiting"].as_object() {
+        use threadbear_core::updates::FixPlace;
+        let mut fixes = Vec::new();
+        for (id, place) in waiting {
+            fixes.push((
+                id.clone(),
+                match place.as_str() {
+                    Some("in-app") => FixPlace::InApp,
+                    Some("ready") => FixPlace::Ready,
+                    Some("building") => FixPlace::Building,
+                    Some("next") => FixPlace::Next,
+                    Some("unknown") => FixPlace::Unknown,
+                    _ => {
+                        return Err(
+                            "waiting's places are in-app, ready, building, next or unknown".into(),
+                        )
+                    }
+                },
+            ));
+        }
+        app.update(cx, |t, cx| {
+            t.updater.preview = true;
+            t.updater.fixes = fixes;
+            cx.notify();
+        });
     }
     // {"rightClick": true}: the icon's right-click, which opens or closes
     // the popover; {"popover": false} closes it.

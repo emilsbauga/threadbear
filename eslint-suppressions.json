@@ -594,7 +594,7 @@
   },
   "runner/test/unit/move-schedules.test.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 9
+      "count": 14
     }
   },
   "runner/test/unit/moves-backend.test.ts": {
@@ -722,7 +722,7 @@
   },
   "runner/test/unit/reviews.test.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 33
+      "count": 41
     }
   },
   "runner/test/unit/rpc.test.ts": {

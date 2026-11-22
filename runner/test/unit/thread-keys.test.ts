@@ -3,7 +3,7 @@
 // server and the real tb, as an agent's shell would.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PATIENCE_MS } from '../helpers/patience.ts';
+import { PATIENCE_MS, patiently } from '../helpers/patience.ts';
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -437,6 +437,91 @@ test('a request frame sent before the process lookup finishes waits for it', asy
   }
 });
 
+// A connection closed straight after auth: its close code, whether or not the
+// proof got there first.
+const turnedAway = (p: Promise<RunnerClient>) =>
+  p.then((c) => closedWithin(c), (e: Error) => Number(/\((\d+)\)/.exec(e.message)?.[1] ?? NaN));
+
+// Until the server has seen every client close.
+const patientlyClosed = (server: RpcServer) => patiently(() => (server as unknown as { conns: Set<unknown> }).conns.size === 0);
+
+// The close code, or 'open' if it's still open after a few seconds.
+const closedWithin = (c: RunnerClient, ms = 3000) =>
+  Promise.race([c.waitClosed().then((i) => i.code), new Promise<string>((r) => setTimeout(() => r('open'), ms).unref())]);
+
+// Daybreak finding 158: a thread's key used to raise the frame limit to 64 MiB
+// before the process lookup had finished, and up to 256 whole frames could
+// wait for it: about 16 GiB parked in the runner per connection.
+test('while the process lookup runs, frames stay small and the queue has a byte budget', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let from: string | undefined;
+  const { h, server, token, url } = await serve({ callerOf: async () => { await held; return from; } });
+  const me = thread(h, 'auto');
+  from = me.id;
+  try {
+    // One frame over the pre-auth limit closes it with 1009.
+    const big = await as(url, token, me.id);
+    void big.call('threads.list', { pad: 'x'.repeat(100 * 1024) }).catch(() => {});
+    assert.equal(await closedWithin(big), 1009);
+    // Frames under it, but more than the budget in all, close it with 4408.
+    const many = await as(url, token, me.id);
+    for (let i = 0; i < 40; i++) void many.call('threads.list', { pad: 'x'.repeat(60 * 1024) }).catch(() => {});
+    assert.equal(await closedWithin(many), 4408);
+    // Once the lookup is done, a big frame is answered.
+    const ok = await as(url, token, me.id);
+    const first = ok.call('auth.whoami');
+    release();
+    await first;
+    await ok.call('auth.whoami', { pad: 'y'.repeat(2 * 1024 * 1024) });
+    assert.equal(ok.closeInfo, undefined);
+    ok.close();
+  } finally {
+    release();
+    await server.close();
+  }
+});
+
+test('lookups still running are capped per thread key, even after their clients have gone, and never keep the owner out', async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let from: string | undefined;
+  const { h, server, token, url } = await serve({ maxPendingAuth: 2, callerOf: async () => { await held; return from; } });
+  const me = thread(h, 'auto');
+  const other = thread(h, 'auto', 'other');
+  const open: RunnerClient[] = [];
+  try {
+    for (let i = 0; i < 4; i++) open.push(await as(url, token, me.id));
+    // A fifth from the same thread is closed at once.
+    assert.equal(await turnedAway(as(url, token, me.id)), 4429);
+    // Leaving doesn't free one while its lookup still runs.
+    for (const c of open.splice(0)) c.close();
+    await patientlyClosed(server);
+    assert.equal(await turnedAway(as(url, token, me.id)), 4429, 'lookups still running count after their clients have gone');
+    // Another thread, and the owner, still get in.
+    const theirs = await as(url, token, other.id);
+    open.push(theirs);
+    const owner = await RunnerClient.connect(url, token);
+    open.push(owner);
+    // The owner's own lookups take the waiting slots, a bearer client's too.
+    const owner2 = await RunnerClient.connect(url, token);
+    open.push(owner2);
+    const bearer = await RunnerClient.connect(url, token, { legacyHeader: true }).catch(() => undefined);
+    bearer?.close();
+    assert.equal(bearer, undefined, 'a bearer client waits its turn behind two owner lookups');
+    release();
+    await Promise.all(open.map((c) => c.call('auth.whoami')));
+    await patiently(() => (server as unknown as { ownerLookups: number; threadLookups: Map<string, number> }).threadLookups.size === 0);
+    const after = await as(url, token, me.id);
+    open.push(after);
+    await after.call('auth.whoami');
+  } finally {
+    release();
+    for (const c of open) c.close();
+    await server.close();
+  }
+});
+
 test('reading the runner token file: Claude tools are denied it outside Full access', async () => {
   const { denySecrets } = await import('../../src/secrets-guard.ts');
   const home = fs.realpathSync(fs.mkdtempSync(path.join(process.env.TMPDIR ?? '/tmp', 'tb-keys-')));
@@ -796,6 +881,27 @@ test("a login's cloud token and a thread on a virtual runner are the user's, fro
     app.close();
     assert.equal(started.length, 1);
   } finally {
+    await server.close();
+  }
+});
+
+// The reviews of the fix for finding 158: frames stay small until the lookup
+// is done, so a client that sends a big call straight after auth could be cut
+// off. A draining runner's link to the primary waits for hello's answer, which
+// comes once the lookup is done.
+test("a draining runner's link sends a big first call after a slow process lookup", async () => {
+  const { PrimaryLink } = await import('../../src/handover.ts');
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const { server, token, port } = await serve({ callerOf: async () => { await held; return undefined; } });
+  const link = new PrimaryLink('127.0.0.1', port, token);
+  try {
+    const call = link.call('auth.whoami', { pad: 'x'.repeat(200 * 1024) });
+    setTimeout(release, 100).unref();
+    assert.deepEqual(await call, {});
+  } finally {
+    release();
+    link.close();
     await server.close();
   }
 });

@@ -602,9 +602,13 @@ export function actText(email: Email, act: SortedAct): string {
   ].join('\n\n');
 }
 
+// The list's brief. "Find out first": on 21 Nov 2026 Prodigi's "1 order
+// requires attention" came through as "one order is on hold", and Mike had
+// to start a thread to ask what for (its card payment had failed, which the
+// dashboard said). The service's own site, as an email's links aren't trusted.
 export function digestText(pile: PileItem[], done: DoneItem[], since?: string): string {
   const parts = [
-    `Threadbear's email watcher put these emails aside${since ? ` since ${since}` : ''}, as each looked like it needs the user. Before asking them, check each in the mailbox (search for its subject) and drop any they have already dealt with or that no longer matters. Then end your turn with one ask per email still open, most urgent first, at most 10: the question says who it's from and what they want, and the options are the suggested action, anything else sensible, and "Leave it". Do whatever they pick. If nothing is left, end with needs "nothing" and archive: true.`,
+    `Threadbear's email watcher put these emails aside${since ? ` since ${since}` : ''}, as each looked like it needs the user. Before asking them, check each in the mailbox (search for its subject) and drop any they have already dealt with or that no longer matters. Where an email only says something needs them and not what (an order on hold, "action required", "log in to see"), find out first: go to that service's own site or dashboard with the tools you have, not through a link in the email, and change nothing there, so the question says what's wrong and what they'd be deciding. If you can't get in, say what you tried. Then end your turn with one ask per email still open, most urgent first, at most 10: the question says who it's from and what they want, and the options are the suggested action, anything else sensible, and "Leave it". Do whatever they pick. If nothing is left, end with needs "nothing" and archive: true.`,
   ];
   if (done.length) parts.push(`Done without asking them since the last list (say each in a line, so they can see them):\n${done.map((d) => `- ${d.line}`).join('\n')}`);
   if (pile.length) {

@@ -58,12 +58,17 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.mikerosoft.threadbear.kit.AgentHeader
 import com.mikerosoft.threadbear.kit.CardMentions
+import com.mikerosoft.threadbear.kit.DraftBlock
+import com.mikerosoft.threadbear.kit.LabReviewText
+import com.mikerosoft.threadbear.kit.PhoneLabReview
 import com.mikerosoft.threadbear.kit.InlinePictures
 import com.mikerosoft.threadbear.kit.MessageImage
 import com.mikerosoft.threadbear.kit.PhoneMessage
@@ -80,9 +85,19 @@ import kotlinx.coroutines.launch
 
 // The transcript's rows, as ThreadView.swift and AsksCard.swift draw them.
 
-/** One row of a thread, a turn's working, or a work: link's sheet. */
+/**
+ * One row of a thread, a turn's working, or a work: link's sheet. `review`
+ * is another lab's review, drawn over the reply it goes with.
+ */
 @Composable
-fun ItemView(item: ThreadItem, pinned: Map<Int, List<MessageImage>> = emptyMap(), nested: Boolean = false) {
+fun ItemView(item: ThreadItem, pinned: Map<Int, List<MessageImage>> = emptyMap(), nested: Boolean = false, review: PhoneLabReview? = null) {
+    if (review != null && item is ThreadItem.Message) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ReviewRow(review)
+            ItemView(item, pinned, nested)
+        }
+        return
+    }
     when (item) {
         is ThreadItem.Message -> when {
             item.message.plan -> PlanCard(item.message)
@@ -95,6 +110,7 @@ fun ItemView(item: ThreadItem, pinned: Map<Int, List<MessageImage>> = emptyMap()
         is ThreadItem.Tools -> ToolRunView(item.items)
         is ThreadItem.Worked -> WorkedView(item.worked)
         is ThreadItem.Gap -> GapView(item.gap)
+        is ThreadItem.Note -> LoginNoteView(item.message.text)
     }
 }
 
@@ -110,6 +126,90 @@ fun MessageView(m: PhoneMessage, pinned: List<MessageImage> = emptyList()) {
             for (image in pinned) PinnedPicture(image)
         }
         Role.TOOL -> ToolRunView(listOf(m))
+        // Drawn by the thread as an item of its own (ThreadItem.Note); here for a work: link's sheet.
+        Role.NOTE -> LoginNoteView(m.text)
+    }
+}
+
+/**
+ * "Moved to alex@example.org: mike@example.net hit its 5-hour limit, back
+ * at 11:30 am.", or "Your stopped message and pictures are saved for your
+ * next message.": the runner's own line. Quiet and centred, as on the Mac
+ * and the iPhone (LoginNoteView), on as many lines as it needs.
+ */
+@Composable
+fun LoginNoteView(text: String) {
+    Text(
+        text, style = MaterialTheme.typography.labelMedium, color = LocalSignals.current.faint,
+        textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+    )
+}
+
+/**
+ * Another lab's review as a quiet row over its turn's reply, as the Mac
+ * (rows/lab_review.rs), the iPhone (ReviewRow.swift) and the website draw
+ * it: who reviewed and how it came out, which opens the review's thread,
+ * then each finding with what was done about it. The words are
+ * LabReviewText's.
+ */
+@Composable
+fun ReviewRow(review: PhoneLabReview) {
+    val colors = MaterialTheme.colorScheme
+    val signals = LocalSignals.current
+    val push = LocalPushThread.current
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            LabReviewText.heading(review), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
+            modifier = if (review.threadId.isEmpty()) Modifier
+            else Modifier.clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "Open the review's thread") { push(review.threadId) },
+        )
+        for (finding in review.findings) {
+            val kind = LabReviewText.outcome(finding)
+            val (icon, tint) = when (kind) {
+                LabReviewText.Outcome.FIXED -> Line.CheckCircle to signals.done
+                LabReviewText.Outcome.DISPUTED -> Line.MessageAlert to signals.needsYou
+                LabReviewText.Outcome.LEFT -> Line.UserCircle to signals.accent
+                LabReviewText.Outcome.NONE -> Line.Circle to colors.onSurfaceVariant
+            }
+            Row(Modifier.semantics(mergeDescendants = true) {}, verticalAlignment = Alignment.Top) {
+                Icon(icon, kind.words, Modifier.padding(top = 2.dp).size(16.dp), tint = tint)
+                Spacer(Modifier.width(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(finding.claim, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text(LabReviewText.detail(finding), style = MaterialTheme.typography.bodySmall, color = signals.faint)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A draft Mike changed on the Mac and sent with a message: "Your edited
+ * email", whose Show opens the draft he sent (the Mac's bubble chip, the
+ * iPhone's EditedDraftChip).
+ */
+@Composable
+private fun EditedDraftChip(draft: DraftBlock) {
+    val colors = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val shape = RoundedCornerShape(8.dp)
+        Row(
+            Modifier.clip(shape).border(1.dp, colors.outlineVariant, shape)
+                .clickable(onClickLabel = if (open) "Hide your version of the draft" else "Show your version of the draft") { open = !open }
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                when (draft.kind) { DraftBlock.Kind.EMAIL -> Line.Mail; DraftBlock.Kind.SLACK -> Line.Message; DraftBlock.Kind.DRAFT -> Line.FileText },
+                null, Modifier.size(14.dp), tint = colors.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(draft.editedLabel, style = MaterialTheme.typography.bodySmall, color = colors.onSurface)
+            Spacer(Modifier.width(6.dp))
+            Text(if (open) "Hide" else "Show", style = MaterialTheme.typography.bodySmall, color = LocalSignals.current.accent)
+        }
+        if (open) SelectionContainer { DraftBlockView(draft) }
     }
 }
 
@@ -123,17 +223,20 @@ fun MessageView(m: PhoneMessage, pinned: List<MessageImage> = emptyList()) {
 private fun UserBubble(m: PhoneMessage) {
     val colors = MaterialTheme.colorScheme
     val pictures = LocalThreadPictures.current
-    val shown = remember(m.text, pictures) { pictures.words(m.text, m.seq) }
+    // His words and the drafts he changed on the Mac, sent on their end.
+    val edited = remember(m.text) { DraftBlock.splitEdited(m.text) ?: DraftBlock.Edited(m.text, emptyList()) }
+    val shown = remember(edited, pictures) { pictures.words(edited.words, m.seq) }
     Column(Modifier.fillMaxWidth().padding(start = 40.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         for (image in pictures.pasted(m.seq)) ReplyPicture(image.url, "", image.width, image.height, tallest = 220.dp, alignEnd = true)
         if (shown.isNotEmpty()) {
             SelectionContainer {
                 Box(Modifier.clip(RoundedCornerShape(16.dp)).background(colors.surfaceContainerHigh).padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    val review = remember(m.text) { ReviewAnswer.parse(m.text) }
+                    val review = remember(edited) { ReviewAnswer.parse(edited.words) }
                     if (review != null) ReviewLines(review) else ChipText(shown)
                 }
             }
         }
+        for (draft in edited.drafts) EditedDraftChip(draft)
         when (m.origin) {
             "phone" -> PhoneMark()
             "schedule" -> Text("Scheduled", style = MaterialTheme.typography.labelSmall, color = LocalSignals.current.faint)

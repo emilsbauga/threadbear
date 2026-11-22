@@ -129,7 +129,7 @@ test('an install idle for 90 days is removed, its key stops working, and its bac
   clock = T0 + IDLE_INSTALL_MS - 86_400_000;
   assert.equal(await admit(b.ctx, busy), 'ok');
   clock = T0 + IDLE_INSTALL_MS + 1;
-  assert.deepEqual(await call(b.ctx, relay.expire, {}), { installs: 1, removed: 0, hours: 1 });
+  assert.deepEqual(await call(b.ctx, relay.expire, {}), { installs: 1, removed: 0, hours: 1, checks: 0 });
   assert.equal(await admit(b.ctx, idle), 'auth');
   assert.equal(await admit(b.ctx, busy), 'ok');
   assert.equal((await call(b.ctx, relay.stats, {})).installs, 1, 'stats leaves the keyless row out');

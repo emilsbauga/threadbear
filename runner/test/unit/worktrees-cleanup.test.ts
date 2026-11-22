@@ -588,3 +588,66 @@ for (const keep of [true, false]) {
     assert.equal(fs.readFileSync(path.join(w.path, 'README.md'), 'utf8'), 'mid-cleanup edit\n');
   });
 }
+
+// Codex's review, 21 Nov: a commit made while that last status ran (on the
+// detached HEAD) left the folder clean, and it was pooled anyway; the next
+// thread's checkout from main would leave the commit on no branch.
+test('a commit made while the cleanup reads its status the last time keeps the worktree out of the pool', async () => {
+  const { main } = makeRepo(KEEP);
+  const patch = (await findWorktreePatch(main, path.dirname(main)))!;
+  const made = await makeWorktree({ cwd: main, threadId: 'eeeeeeee-2', patch });
+  assert.ok(made.ok);
+  const w = made.worktree;
+  const count = path.join(path.dirname(main), 'status-count');
+  const restore = wrapGit('status', `out=$("$REAL" "$@"); code=$?; n=$(cat '${count}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${count}'; if [ $n = 2 ]; then "$REAL" -C '${w.path}' commit -q --allow-empty -m late; fi; printf '%s\\n' "$out"; exit $code`);
+  let result;
+  try {
+    result = await cleanUpWorktree(w);
+  } finally {
+    restore();
+  }
+  assert.equal(result.removed, false, JSON.stringify(result));
+  assert.ok(!sh(main, 'git worktree list --porcelain').includes('locked threadbear spare'), 'not a spare');
+  assert.equal(sh(w.path, 'git log -1 --format=%s'), 'late', 'the commit is still checked out');
+});
+
+// Codex's second look, 21 Nov: the branch was checked to be all on main once,
+// at the start; a commit made after that was detached at, its branch deleted
+// with -D, and the folder pooled (or removed), leaving it on no branch.
+for (const keep of [true, false]) {
+  test(`a commit made after the cleanup checked the branch stays on it: ${keep ? 'not pooled' : 'not removed'}`, async () => {
+    const { main } = makeRepo(keep ? KEEP : undefined);
+    const patch = (await findWorktreePatch(main, path.dirname(main)))!;
+    const made = await makeWorktree({ cwd: main, threadId: 'eeeeeeee-3', patch });
+    assert.ok(made.ok);
+    const w = made.worktree;
+    const once = path.join(path.dirname(main), 'committed');
+    const restore = wrapGit('--is-ancestor', `"$REAL" "$@"; code=$?; if [ ! -e '${once}' ]; then touch '${once}'; echo late > '${path.join(w.path, 'late.txt')}'; "$REAL" -C '${w.path}' add late.txt; "$REAL" -C '${w.path}' commit -qm late; fi; exit $code`);
+    let result;
+    try {
+      result = await cleanUpWorktree(w);
+    } finally {
+      restore();
+    }
+    assert.ok(fs.existsSync(once), 'the commit was made mid-cleanup');
+    assert.equal(result.removed, false, JSON.stringify(result));
+    assert.equal(sh(main, `git log -1 --format=%s ${w.branch}`), 'late', 'still on its branch');
+    assert.equal(sh(w.path, 'git rev-parse --abbrev-ref HEAD'), w.branch);
+    assert.ok(!sh(main, 'git worktree list --porcelain').includes('locked threadbear spare'));
+  });
+}
+
+// Codex's third look, 21 Nov: the branch is deleted with update-ref (so only
+// as it was checked), which unlike branch -D doesn't refuse a branch some
+// checkout is on: one moved with git worktree move, its record left behind.
+test('a branch a moved checkout is still on is never deleted by the old record`s cleanup', async () => {
+  const { main } = makeRepo();
+  const t = makeBranch(main);
+  const moved = `${t.path}-moved`;
+  sh(main, `git worktree move ${t.path} ${moved}`);
+  const rec = { repo: 'proj', mainCheckout: main, path: t.path, branch: t.branch, base: sh(main, 'git rev-parse main') };
+  const result = await cleanUpWorktree(rec);
+  assert.equal(result.removed, true);
+  assert.ok(result.removed && result.branchLeft?.includes('a checkout is on it'), JSON.stringify(result));
+  assert.equal(sh(moved, 'git rev-parse --abbrev-ref HEAD'), t.branch, 'still on its branch');
+});

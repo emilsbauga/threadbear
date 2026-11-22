@@ -57,7 +57,7 @@ import { parseSync } from 'oxc-parser';
 import { atomicWriteFileSync } from './fsutil.ts';
 import { claudeCommands, claudeCommandsKinds, type ClaudeCommands, type ClaudeOptions } from './claude-trust.ts';
 import type { Lane, TrustOffThread } from './trust-off-thread.ts';
-import { isBinary, looksRunnable, MAX_READ_BYTES, reachOf, reachOfCommand, Reads, type FollowOptions, type ScriptReach } from './script-trust.ts';
+import { isBinary, looksRunnable, MAX_READ_BYTES, reachOf, reachOfCommand, Reads, type FollowOptions, type ScriptReach, type Writes, writeProblem } from './script-trust.ts';
 import { bareImport } from './tracked-packages.ts';
 import { fileShas, TrustedVersions, versionKey, type FileShas, type PatchChanges } from './patch-changes.ts';
 import { allowCommand } from './shell-allowlist.ts';
@@ -554,6 +554,11 @@ export class PatchTrust implements PatchTrustStore {
 
   approveCheck(command: string, cwd: string, card?: CheckCard): void {
     if (this.checksHeld(cwd)) throw new Error(WINDOWS_CHECK);
+    // Bound as far as it can be is how an owner's check that can't be
+    // followed is approved, and for one that writes what it runs that
+    // leaves out what runs (Daybreak 153's verify-fix): never approved.
+    const writes = this.digestOf(command, cwd).writes;
+    if (writes) throw new CheckRefused(`A schedule's check runs by itself, and this one writes a file it then runs, so no approval can cover what will run: ${writes} Nothing changed. Have the check run only files already in the repo, and do any writing in the thread it wakes.`);
     if (card) {
       const now = checkDigest(command, cwd);
       if (now.problem) throw new Error(`A schedule's check runs by itself, so what it runs must be something Threadbear can hash, and it can't follow this: ${now.problem} Nothing changed. Put it in a shell script or JavaScript it can follow.`);
@@ -567,8 +572,9 @@ export class PatchTrust implements PatchTrustStore {
   // a row the backend (or another runner) wrote finds nothing here.
   checkApproved(command: string, cwd: string): { approved: boolean; hash: string; why?: string } {
     this.load();
-    const { hash } = this.digestOf(command, cwd);
+    const { hash, writes } = this.digestOf(command, cwd);
     if (this.checksHeld(cwd)) return { approved: false, hash, why: WINDOWS_CHECK };
+    if (writes) return { approved: false, hash, why: writes };
     return { approved: (this.folders.get(folderKeyOfDir(cwd)) ?? []).includes(CHECK_PREFIX + hash), hash };
   }
 
@@ -1092,7 +1098,8 @@ export function scanModule(src: string, file: string): ModuleScan {
     const value = spec && plainString(spec);
     if (value === undefined) return refuse(at);
     if (/^\.{1,2}(\/|$)|^\//.test(value)) specifiers.add(value);
-    else if (value.startsWith('file:')) {
+    // A URL's scheme has no case: `DATA:` and `FILE:` are those (Gemini's review).
+    else if (/^file:/i.test(value)) {
       try {
         specifiers.add(fileURLToPath(value));
       } catch {
@@ -1101,13 +1108,15 @@ export function scanModule(src: string, file: string): ModuleScan {
     }
     // A data: module's own imports are in a string, and `#x` maps through
     // package.json to a local file this doesn't follow.
-    else if (/^(data:|#)/.test(value) || LOADER_MODULES.includes(value)) refuse(at);
+    else if (/^(data:|#)/i.test(value) || /^[a-z][a-z0-9+.-]*:/i.test(value) && !value.startsWith('node:') || LOADER_MODULES.includes(value)) refuse(at);
     // A package: hashed only when the repo commits it (tracked-packages.ts).
     else packages.add(value);
   };
   // Identifiers and members a load handled already, so they aren't
   // refused as bare references to `require`.
   const handled = new Set<AstNode>();
+  // `Reflect.x` members that are called right there: the only use allowed.
+  const reflectCalls = new Set<AstNode>();
   const stack: { node: AstNode; parent?: AstNode; key?: string }[] = [{ node: parsed.program as unknown as AstNode }];
   while (stack.length) {
     const { node, parent, key } = stack.pop()!;
@@ -1148,7 +1157,14 @@ export function scanModule(src: string, file: string): ModuleScan {
       }
       case 'Identifier':
         if (handled.has(node) || !isReference(parent, key)) break;
-        if (LOADER_NAMES.includes(node.name)) refuse(node);
+        // Reflect only called in place (`Reflect.has(o, k)`), below.
+        if (node.name === 'Reflect') break;
+        if (LOADER_NAMES.includes(node.name) || CODE_REACH.includes(node.name)) refuse(node);
+        // `process`, `globalThis` and the like as values (`const p = process`,
+        // `Object.entries(process)`): what's on them is then read by a name
+        // this can't see (Gemini's review). Their plain members, `typeof`,
+        // and `module.exports = ...` read nothing that way.
+        if (RISKY_OBJECTS.includes(node.name) && node.name !== 'require' && !(parent?.type === 'MemberExpression' && key === 'object') && parent?.type !== 'UnaryExpression') refuse(node);
         break;
       case 'MemberExpression': {
         const name = propertyName(node);
@@ -1156,8 +1172,39 @@ export function scanModule(src: string, file: string): ModuleScan {
           // `process[k]`: any property, so any loader, by a name worked out later.
           const o = node.object;
           if (o.type === 'MetaProperty' || (o.type === 'Identifier' && RISKY_OBJECTS.includes(o.name))) refuse(node);
-        } else if (!handled.has(node) && LOADER_PROPERTIES.includes(name)) refuse(node);
+        } else if (!handled.has(node) && (LOADER_PROPERTIES.includes(name) || CODE_REACH.includes(name))) refuse(node);
         break;
+      }
+      // `const { eval: run } = globalThis`, `{ constructor: F } = f`: a
+      // pattern's key reads that property, though it isn't a reference
+      // (Daybreak 154). A worked-out key could read any of them.
+      case 'Property':
+        // `{ __proto__: f }` makes f the prototype: its constructor then reads as o's.
+        if (parent?.type === 'ObjectExpression' && !node.computed && node.kind === 'init' && !node.shorthand && propertyKey(node) === '__proto__') refuse(node);
+        if (parent?.type === 'ObjectPattern') {
+          const name = propertyKey(node);
+          // `{ ['eval']: run }` names it too (Codex's review).
+          // A worked-out key reads like `o[k]` (see CODE_REACH); a number reads no loader.
+          const read = name ?? plainString(node.key);
+          if (read !== undefined && (LOADER_PROPERTIES.includes(read) || CODE_REACH.includes(read) || LOADER_NAMES.includes(read))) refuse(node);
+        }
+        break;
+    }
+    // `Reflect.get(f, 'constructor')`: a string that's exactly such a name,
+    // handed to what reads a property by one, reaches it without writing it
+    // as one (`globalThis['eval']` is a member above). Not any such string:
+    // `case 'eval':` in a CLI's switch, or `Object.hasOwn(o, 'constructor')`,
+    // reads nothing. And Reflect only ever called in place, so it can't be
+    // handed on as `const get = Reflect.get` (Codex's review).
+    if (node.type === 'Identifier' && node.name === 'Reflect' && isReference(parent, key) && !(parent?.type === 'MemberExpression' && key === 'object' && reflectCalls.has(parent))) refuse(node);
+    if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && node.callee.object.type === 'Identifier' && node.callee.object.name === 'Reflect') {
+      reflectCalls.add(node.callee);
+      const method = propertyName(node.callee);
+      if (method === undefined) refuse(node);
+      else if (method === 'get' || method === 'getOwnPropertyDescriptor') {
+        // Reads a property by name: only a plain one that isn't a loader's.
+        const named = node.arguments[1] && plainString(node.arguments[1]);
+        if (named === undefined || CODE_REACH.includes(named) || LOADER_NAMES.includes(named) || LOADER_PROPERTIES.includes(named)) refuse(node);
       }
     }
     for (const k of Object.keys(node)) {
@@ -1183,9 +1230,33 @@ type AstNode = { type: string; start: number; end: number; [field: string]: any 
 
 // Names that load code, or hand out something that can, when used as values.
 const LOADER_NAMES = ['require', 'eval', 'Function', 'createRequire', 'getBuiltinModule', 'dlopen'];
-const LOADER_PROPERTIES = ['require', 'createRequire', 'getBuiltinModule', 'dlopen', '_load'];
-// Modules that load code by a name or from a string.
-const LOADER_MODULES = ['module', 'node:module', 'vm', 'node:vm', 'worker_threads', 'node:worker_threads'];
+const LOADER_PROPERTIES = ['require', 'createRequire', 'getBuiltinModule', 'dlopen', '_load', 'binding', '_linkedBinding'];
+// What reaches code made from a string or bytes without a loader's name
+// (Daybreak 154, 21 Nov 2026): `eval` and `Function` as properties
+// (`globalThis.eval`), any function's `constructor` (`(() => {}).constructor`
+// is Function, an async one's AsyncFunction), what lists a prototype's
+// hidden properties with their values (`getOwnPropertyDescriptors` hands
+// out `constructor` without naming it), and WebAssembly, which compiles
+// bytes. Not `getPrototypeOf`, everyday code that reaches nothing by
+// itself: from a prototype it's still one of these. As a name, a
+// property, a string or a pattern's key, all refused: a script whose
+// payload is data until it evaluates it isn't one the hash can vouch for.
+// Not a class's own `constructor() {}` or an object literal's key, which
+// define rather than read. What can't be refused by a scan is a script
+// written to hide it (`o[a][b](c)` with keys worked out as it runs), and a
+// child process running whatever it's handed, which a patch's commands do
+// by design: the card that trusts it is what reads for those.
+const CODE_REACH = [
+  'eval', 'Function', 'constructor', 'AsyncFunction', 'GeneratorFunction', 'AsyncGeneratorFunction',
+  'getOwnPropertyDescriptor', 'getOwnPropertyDescriptors', '__lookupGetter__', 'WebAssembly', 'Reflect', '__proto__',
+  'setPrototypeOf',
+];
+// Modules that load code by a name or from a string: the module system, vm,
+// workers, and inspector and repl, which evaluate what they're sent.
+const LOADER_MODULES = [
+  'module', 'node:module', 'vm', 'node:vm', 'worker_threads', 'node:worker_threads', 'inspector', 'node:inspector',
+  'inspector/promises', 'node:inspector/promises', 'repl', 'node:repl', 'node:test', 'test',
+];
 // Objects a computed `[k]` on could reach a loader through.
 const RISKY_OBJECTS = ['globalThis', 'global', 'process', 'module', 'require', 'self', 'window'];
 // TypeScript types: gone before the code runs, so nothing in them loads.
@@ -1355,13 +1426,29 @@ export function actionCommandProblem(command: string, folder: string, files: str
 // repo too, each followed from its own folder and repo (checkDigest, and the
 // commands of a patch that loads without a hash). `missing`: files it names
 // that aren't there yet.
-function followOutside(command: string, label: string, start: FollowOptions, reads: Reads): { files: Set<string>; missing: Set<string>; problem?: string } {
+function followOutside(command: string, label: string, start: FollowOptions, reads: Reads): { files: Set<string>; missing: Set<string>; problem?: string; writeProblem?: string } {
   const files = new Set<string>();
   const missing = new Set<string>();
   const seen = new Set<string>();
   const queue: { file: string; dir: string }[] = [];
   let problem: string | undefined;
+  // Each reach's writes, held against all of their runs at the end: a
+  // script outside the repo that writes one the check runs (Daybreak 153).
+  const writes: Writes = { written: [], reached: [], pending: [], deps: [], exported: [], cleared: [] };
+  let wrote: string | undefined;
   const take = (reach: ScriptReach) => {
+    wrote ??= reach.writeProblem;
+    if (reach.writes) {
+      writes.written.push(...reach.writes.written);
+      writes.reached.push(...reach.writes.reached);
+      writes.somewhere ??= reach.writes.somewhere;
+      // A variable the check sets is the outside script's to write to too.
+      writes.pending!.push(...(reach.writes.pending ?? []));
+      writes.deps!.push(...(reach.writes.deps ?? []));
+      if (reach.writes.assignsAny) writes.assignsAny = true;
+      writes.exported!.push(...(reach.writes.exported ?? []));
+      writes.cleared!.push(...(reach.writes.cleared ?? []));
+    }
     for (const f of reach.files) files.add(f);
     for (const f of reach.missing) missing.add(f);
     for (const { file, dirs } of reach.outside ?? []) for (const dir of dirs) queue.push({ file, dir });
@@ -1382,7 +1469,11 @@ function followOutside(command: string, label: string, start: FollowOptions, rea
     // folder it runs in: its `./x` is there, not beside it.
     take(reachOf(script, { ...followOptions(path.dirname(script), reads), folder: dir, outside: true }));
   }
-  return { files, missing, ...(problem ? { problem } : {}) };
+  const cross = writeProblem(writes, start.top);
+  if (cross?.definite) wrote ??= cross.problem;
+  else if (cross) problem ??= cross.problem;
+  if (wrote) problem = wrote;
+  return { files, missing, ...(problem ? { problem } : {}), ...(wrote ? { writeProblem: wrote } : {}) };
 }
 
 // What a schedule's check runs, for binding its approval to (a card, or an
@@ -1394,7 +1485,12 @@ function followOutside(command: string, label: string, start: FollowOptions, rea
 // that runs in turn isn't: a thread that asks first can't approve one
 // (threadbear-mcp.ts). Programs on PATH and installed packages aren't
 // followed, as for patches. `commandOnly`: nothing but the command counts.
-export type CheckDigest = { hash: string; files: string[]; problem?: string };
+// `writes`: it writes a file it then runs (Daybreak 153), so no approval,
+// an owner's included, can cover what will run.
+// A check no one can approve, said to whoever made it, owner included.
+export class CheckRefused extends Error {}
+
+export type CheckDigest = { hash: string; files: string[]; problem?: string; writes?: string };
 // What a card was put up for (threadbear-mcp.ts, checkGuard): the digest and
 // folder as it went up, neither when they couldn't be read here.
 export type CheckCard = { hash?: string; folder?: string };
@@ -1427,7 +1523,7 @@ export function checkDigest(command: string, cwd: string, commandOnly = false): 
   if (huge) problem ??= `the check reaches ${huge}, over ${MAX_READ_BYTES / 1024 / 1024} MB, more than patch trust reads.`;
   // Whether it stopped, not its wording: the bytes say what changed, and a
   // reworded message shouldn't hold every such check.
-  return { hash: sha256(Buffer.from(JSON.stringify([CHECK_TAG, command, pairs, Boolean(problem)]))), files: pairs.map(([f]) => f), ...(problem ? { problem } : {}) };
+  return { hash: sha256(Buffer.from(JSON.stringify([CHECK_TAG, command, pairs, Boolean(problem)]))), files: pairs.map(([f]) => f), ...(problem ? { problem } : {}), ...(followed.writeProblem ? { writes: followed.writeProblem } : {}) };
 }
 
 // Every file a schedule's check reaches from `cwd`, as checkDigest follows

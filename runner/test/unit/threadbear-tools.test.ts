@@ -1298,6 +1298,14 @@ test('end_turn asks once about an ask pointing at another thread with no link, a
   assert.deepEqual(toPhoneAsk({ action: 'x', links: [{ title: 'Open its thread', url: `thread:${app.id}` }, { title: 'File', url: '/tmp/a.png' }] }).links, [{ title: 'Open its thread', url: `thread:${app.id}` }]);
 });
 
+test("an ask's review link reaches the phone, which opens it in its Reviews sheet", () => {
+  // 21 Nov 2026: a pick between three mocks reached the phone as a bare
+  // question, its "Open the three mocks" link dropped on the way.
+  const review = 'review:0a7d18e2-5c14-45d3-ae06-5e1e13aa47d5';
+  assert.deepEqual(toPhoneAsk({ action: 'Which way?', links: [{ title: 'Open the three mocks', url: review }] }).links, [{ title: 'Open the three mocks', url: review }]);
+  assert.equal(toPhoneAsk({ action: 'x', links: [{ title: 'Bad', url: 'review:../../etc' }] }).links, undefined);
+});
+
 test('end_turn asks once for a try at a step a card hands over, in both forms', async () => {
   const forms = [
     { oneReply: true, offering: { asks: [{ question: 'Turn on the setting.', options: [{ label: 'Done' }, { label: 'Can you do it?' }] }] }, plain: { asks: [{ question: 'Should I sign you up for the store?', options: [{ label: 'Sign me up' }, { label: 'Hold off' }] }] } },
@@ -2018,6 +2026,29 @@ test("one reply: a reply that ends in a What I need from you section gives the c
   s.result('completed');
   await tick();
   assert.equal(h.runner.get(thread.id).needs, 'you');
+});
+
+// Thread 649fc651 (21 Nov 2026): Mike asked "Anything you need from me
+// here?", the agent called end_turn first and then answered "Nothing needed
+// from you. ..." with two paragraphs. The line took the whole reply off as a
+// closing section, the event was written with no text, and the Stop hook
+// didn't ask for a reply, as the agent had written one.
+test('one reply: a reply that opens "Nothing needed from you" reaches the thread whole', async () => {
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  const { call } = tools(h, thread.id, undefined, () => true);
+  const input = { needs: 'nothing', headline: 'Nothing needed; waiting on the re-test' };
+  toolCall(s, 'e1', END_TURN, input);
+  const r = await call('end_turn', input);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: r.text, truncated: false, images: [] } });
+  const words = 'Nothing needed from you. The sprinklers are on Auto, and the next run is Monday at 6:00.\n\nThe only thing outstanding is the re-test. This thread is asleep until then.';
+  s.text('m1', words);
+  const reply = h.events(thread.id).find((e) => e.type === 'assistant.text' && e.itemId === 'm1');
+  assert.ok(reply?.type === 'assistant.text' && reply.final);
+  assert.equal(reply.text, words);
+  s.result('completed');
+  await tick();
+  assert.equal(h.runner.get(thread.id).needs, 'nothing');
 });
 
 // ------------------------------------------------------------ other runners' threads

@@ -165,4 +165,42 @@ class DraftBlockTest {
             assertEquals(o["expect"], got, name)
         }
     }
+
+    /** A sent message with the Mac's edited drafts on its end (DraftBlockTests.swift, aSentMessageGivesBackItsEditedDrafts). */
+    @Test fun aSentMessageGivesBackItsEditedDrafts() {
+        val intro = "I edited your draft. Use my version below exactly as it is, not yours:"
+        val one = "Send it\n\n$intro\n\n```email\nHi Geoff,\n\nCheers\n```"
+        val split = DraftBlock.splitEdited(one)
+        assertEquals("Send it", split?.words)
+        assertEquals(listOf(DraftBlock(DraftBlock.Kind.EMAIL, "Hi Geoff,\n\nCheers")), split?.drafts)
+        assertEquals("", DraftBlock.splitEdited("$intro\n\n```slack\nhey\n```")?.words)
+        val many = "I edited your drafts. Use my versions below exactly as they are, not yours:"
+        val two = "ok\n\n$many\n\n```draft\nrun `x`\n```\n\n````email\na\n```\nb\n```\n\nc\n````"
+        assertEquals(listOf("run `x`", "a\n```\nb\n```\n\nc"), DraftBlock.splitEdited(two)?.drafts?.map { it.source })
+        assertNull(DraftBlock.splitEdited("Send it"))
+        assertNull(DraftBlock.splitEdited("$one\n\nand another thing"))
+        assertNull(DraftBlock.splitEdited("He said $intro\n\n```email\nx\n```"))
+        assertNull(DraftBlock.splitEdited("$intro\n\n```python\nx\n```"))
+        // One intro with two drafts, or the many intro with one, isn't the Mac's.
+        assertNull(DraftBlock.splitEdited("$intro\n\n```email\na\n```\n\n```slack\nb\n```"))
+        assertNull(DraftBlock.splitEdited("$many\n\n```email\na\n```"))
+        // A draft that quotes the line itself still comes apart at the real one.
+        assertEquals("ok", DraftBlock.splitEdited("ok\n\n$intro\n\n```email\nThe app said:\n\n$intro\n```")?.words)
+        // A long one is shown too, and Windows line ends are plain ones.
+        val long = "x".repeat(DraftBlock.MAX_SOURCE + 1)
+        assertEquals(long, DraftBlock.splitEdited("$intro\n\n```draft\n$long\n```")?.drafts?.first()?.source)
+        assertEquals("a\nb", DraftBlock.splitEdited("$intro\n\n```email\na\r\nb\n```")?.drafts?.first()?.source)
+        // The parity scenario's message, as the Mac sends it.
+        val sent = "Send it\n\n$intro\n\n```email\nHi Geoff,\n\nI don't think it came through. Can you send it again please?\n```"
+        assertEquals("Send it", DraftBlock.splitEdited(sent)?.words)
+        assertEquals("Your edited email", DraftBlock.splitEdited(sent)?.drafts?.single()?.editedLabel)
+        // A picture sent with it and no marker: the runner's "[1 picture]" line
+        // after the fence stays with his words, for ThreadPictures.words to take off.
+        assertEquals("Send it\n\n[1 picture]", DraftBlock.splitEdited("$sent\n\n[1 picture]")?.words)
+        assertEquals("[2 pictures]", DraftBlock.splitEdited("$intro\n\n```email\nx\n```\n\n[2 pictures]")?.words)
+        // Windows line ends all through come apart the same.
+        assertEquals("Send it", DraftBlock.splitEdited(sent.replace("\n", "\r\n"))?.words)
+        assertEquals("Your edited Slack message", DraftBlock(DraftBlock.Kind.SLACK, "x").editedLabel)
+        assertEquals("Your edited draft", DraftBlock(DraftBlock.Kind.DRAFT, "x").editedLabel)
+    }
 }

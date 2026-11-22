@@ -90,8 +90,8 @@ export const threadFields = {
   // The open card of asks from the agent's end_turn (docs/protocol/needs-you.md,
   // "Needs you"), since API 14: what Mike has to do, which the phone shows
   // under the reply with its options as buttons. asksSeq says which card a
-  // picked answer belongs to. Only web links: the phone can't open a file
-  // on the Mac.
+  // picked answer belongs to. Only links the phone can open (web pages,
+  // thread:<id>, review:<id>): it can't open a file on the Mac.
   asks: v.optional(
     v.array(
       v.object({

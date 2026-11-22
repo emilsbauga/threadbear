@@ -226,3 +226,9 @@ export const Circle = () => (
     <circle cx="8" cy="8" r="6.2" />
   </svg>
 );
+// A Plan first plan's card (SF Symbols' list.bullet.clipboard).
+export const Clipboard = () => (
+  <svg {...base}>
+    <path d="M5.5 2.5H3.5v12h9v-12h-2M6 1.5h4v2H6zM6 7h4.5M6 9.5h4.5M6 12h4.5" />
+  </svg>
+);

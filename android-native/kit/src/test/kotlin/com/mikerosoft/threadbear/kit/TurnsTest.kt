@@ -138,6 +138,7 @@ class TurnsTest {
         is ThreadItem.Message -> "m${item.message.seq}"
         is ThreadItem.Tools -> "tools " + item.items.joinToString(" ") { it.seq.toString() }
         is ThreadItem.Gap -> "gap " + item.gap.label
+        is ThreadItem.Note -> "note ${item.message.seq}"
         is ThreadItem.Worked -> item.worked.title + ": " + item.worked.items.joinToString(", ") { shown(it) }
     }
 
@@ -154,6 +155,7 @@ class TurnsTest {
                 val role = when (m.str("role")) {
                     "user" -> USER
                     "assistant" -> ASSISTANT
+                    "note" -> Role.NOTE
                     else -> TOOL
                 }
                 PhoneMessage(

@@ -129,17 +129,43 @@ async function claimable(ctx: QueryCtx | MutationCtx, caller: Caller, threadId: 
 
 // ------------------------------------------------------------ share links
 // A link's slug is one thread's for good: /s/<slug> must never start showing
-// another thread. A runner key may take one only if no other row has it and
-// no other runner's thread ever did (a deleted thread's, or one replaced by
-// Share again with a new link: tombstones with `slug`). The owner may; the
-// other rows then lose it.
-
-async function slugFree(ctx: QueryCtx | MutationCtx, caller: Caller, threadId: string, slug: string): Promise<boolean> {
-  if (caller.owner) return true;
-  for await (const t of ctx.db.query('threads').withIndex('by_share_slug', (q) => q.eq('share.slug', slug))) if (t.threadId !== threadId) return false;
-  // A box: only a link its own thread had, not another thread's under its runner id.
-  for await (const t of ctx.db.query('threadTombstones').withIndex('by_slug', (q) => q.eq('slug', slug))) if (t.runnerId !== caller.runnerId || !ownThreadOnly(caller, t.threadId)) return false;
-  return true;
+// another thread, and a retired one never comes back. Retired is a deleted
+// thread's, or one replaced by Share again with a new link: tombstones with
+// `slug`. Retiring a link is how it's revoked, so for a runner or box key a
+// retired slug stays retired, its own runner's and its own thread's included
+// (Codex Security, 21 Nov 2026, finding 161):
+//   'taken': another row has it, or another thread ever did (and this one
+//     never): a write that would show it is refused; one that stops sharing
+//     goes in, stopping the link the row has.
+//   'retired': only this thread ever had it, and it was retired (Share again,
+//     or the row went in a prune and the runner sends the thread again): the
+//     row goes in without it (keeping the link it has, if any), so the
+//     thread keeps mirroring and the retired link stays dead. Also a link
+//     still live on this row that was retired before this check (brought
+//     back then, from this thread or another): it goes. A write that stops
+//     sharing stops it, whichever link it names. share.ts never serves a
+//     retired slug either.
+// The owner may use any; the other rows then lose it, and its tombstones go
+// (the owner putting a link on a thread un-retires it).
+async function slugState(ctx: QueryCtx | MutationCtx, caller: Caller, threadId: string, slug: string): Promise<'free' | 'retired' | 'taken'> {
+  if (caller.owner) return 'free';
+  let liveHere = false;
+  for await (const t of ctx.db.query('threads').withIndex('by_share_slug', (q) => q.eq('share.slug', slug))) {
+    if (t.threadId !== threadId) return 'taken';
+    liveHere = true;
+  }
+  // Another thread's tombstone refuses it, unless this thread has (or had)
+  // it too: brought over before this check, its own writes still go in.
+  let here = liveHere;
+  let retired = false;
+  let elsewhere = false;
+  for await (const t of ctx.db.query('threadTombstones').withIndex('by_slug', (q) => q.eq('slug', slug))) {
+    retired = true;
+    if (t.threadId === threadId) here = true;
+    else elsewhere = true;
+  }
+  if (elsewhere && !here) return 'taken';
+  return retired ? 'retired' : 'free';
 }
 
 async function retireSlug(ctx: MutationCtx, threadId: string, runnerId: string, slug: string): Promise<void> {
@@ -422,7 +448,7 @@ export const armClears = machines.internalMutation({
 });
 
 // A thread's row and everything under it, with a tombstone so a runner key
-// can't take the id or its link later (claimable, slugFree). removeThreads
+// can't take the id or its link later (claimable, slugState). removeThreads
 // and prune; a runner key only ever reaches its own (their callers check).
 // `refillView` false: a box's removal, which brings no other thread under
 // its runner id back into a list (it touches its own thread only).
@@ -887,6 +913,7 @@ export const linkProjects = internalMutation({
 // false to true), at most one per thread this often, so a status that
 // flaps doesn't ring his phone over and over.
 const PUSH_COOLDOWN_MS = 30_000;
+const CLEAR_WITHIN_MS = 24 * 60 * 60_000;
 
 export const upsertThreads = mutation({
   args: { key: v.string(), threads: v.array(threadDoc) },
@@ -925,8 +952,23 @@ export const upsertThreads = mutation({
       // A new row: not under an id another runner has had, or with
       // anything left under it (a pruned thread's messages).
       if (!existing && !(await claimable(ctx, caller, t.threadId))) throw forbidden(`write thread ${t.threadId}`);
-      const slug = t.share?.slug;
-      if (slug && !(await slugFree(ctx, caller, t.threadId, slug))) throw forbidden('use that share link');
+      let slug = t.share?.slug;
+      if (slug) {
+        const state = await slugState(ctx, caller, t.threadId, slug);
+        // A write that stops sharing always goes in (on the link the row
+        // has): only one that would show a link is refused.
+        if (state === 'taken' && t.share?.access === 'link') throw forbidden('use that share link');
+        if (state !== 'free') {
+          // The row keeps the link it has, if that one's still good (a late
+          // write mustn't take down the current link); else none.
+          // A write that stops sharing stops it on the kept link too.
+          const { share: given, ...rest } = t;
+          const good = existing?.runnerId === t.runnerId && existing.share?.slug && (await slugState(ctx, caller, t.threadId, existing.share.slug)) === 'free' ? existing.share : undefined;
+          const kept = good && given && given.access !== 'link' ? { ...good, access: given.access } : good;
+          t = kept ? { ...rest, share: kept } : rest;
+          slug = kept?.slug;
+        }
+      }
       // The owner writing a thread another runner had (only the owner can):
       // it starts clean, so nothing that runner wrote under the id (its
       // messages, pictures, link, sidebar row) shows as the new one's.
@@ -984,9 +1026,15 @@ export const upsertThreads = mutation({
         for (const other of await ctx.db.query('threads').withIndex('by_share_slug', (q) => q.eq('share.slug', slug)).collect()) {
           if (other.threadId !== t.threadId) await ctx.db.patch(other._id, { share: undefined, updatedMs: now });
         }
+        for (const gone of await ctx.db.query('threadTombstones').withIndex('by_slug', (q) => q.eq('slug', slug)).take(100)) await ctx.db.delete('threadTombstones', gone._id);
       }
       const before = transfer ? null : existing;
       const wantsPush = t.needsYou && before !== null && !before.needsYou && (before.pushedAt ?? 0) < now - PUSH_COOLDOWN_MS;
+      // It stopped needing Mike after a push went out for it (seen on the
+      // Mac, answered, archived): the phones take that notification down
+      // (push:clear). Not for one pushed more than a day ago, which the
+      // phone's own tidying on opening has long since dealt with.
+      const wantsClear = before?.needsYou === true && !t.needsYou && (before.pushedAt ?? 0) > now - CLEAR_WITHIN_MS;
       // A held push stays held only while the thread still needs Mike.
       const held = t.needsYou && before?.pushHeldAt && !wantsPush ? { pushHeldAt: before.pushHeldAt } : {};
       const row = { ...t, ...stored, updatedMs: now };
@@ -1008,6 +1056,7 @@ export const upsertThreads = mutation({
       // thread, one taken over, or one whose projects changed reads its links.
       if (!existing || transfer || projectKey(existing) !== projectKey(row)) await linkThread(ctx, t.threadId, row);
       if (wantsPush && (caller.owner || (await pushAllowed(ctx, t.runnerId, now)))) await ctx.scheduler.runAfter(0, internal.push.notify, { threadId: t.threadId });
+      if (wantsClear && (caller.owner || (await pushAllowed(ctx, t.runnerId, now)))) await ctx.scheduler.runAfter(0, internal.push.clear, { threadId: t.threadId });
     }
     return { skipped, ...(closed.length ? { closed } : {}) };
   },

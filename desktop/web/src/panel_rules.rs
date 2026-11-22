@@ -11,10 +11,6 @@ pub enum Event {
     /// Loading started or stopped, going back became possible or not, or the
     /// title or address changed.
     Changed,
-    /// A link Mike clicked on a page the app made itself (a design review's:
-    /// preview_rules::asked): what follows the app's own prefix, for the app
-    /// to read. The page stays where it is.
-    Asked(String),
 }
 
 /// Whose page it is, which decides where its links may go.

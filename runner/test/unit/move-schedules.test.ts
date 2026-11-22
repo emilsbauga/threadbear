@@ -440,10 +440,14 @@ test("a compromised old runner's oversized review notes arrive cut to what show_
   r.plan = plan;
   const packed = (await s.runner.packForMove(id, r)).entries;
   const recEntry = packed.find((e) => e.path === 'thread/thread.json')!;
-  const image = { path: '/x/a.png', mediaType: 'image/png' };
+  // Its pictures came with the move, at the other runner's own paths.
+  const theirs = (rid: string) => ({ path: `/home/someone/.threadbear/threads/${id}/media/reviews/${rid}/a.png`, mediaType: 'image/png' });
+  const sample = fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'features', 'support', 'sample.png'));
+  for (const rid of ['big', 'fits']) packed.push({ path: `thread/media/reviews/${rid}/a.png`, data: sample } as any);
+  const image = theirs('big');
   const option = (n: number, note: string) => ({ id: `o${n}`, title: 'T'.repeat(300), note, image });
   const review = (rid: string, note: string, options: unknown[]) => ({ id: rid, title: 'Pick one', note, options, status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: { o0: 'n'.repeat(9000) }, reply: 'r'.repeat(9000) } });
-  const fits = { id: 'fits', title: 'Fine', note: 'A `normal` note 😀', options: [{ id: 'a', title: 'A', note: 'why', image }], status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: {} } };
+  const fits = { id: 'fits', title: 'Fine', note: 'A `normal` note 😀', options: [{ id: 'a', title: 'A', note: 'why', image: theirs('fits') }], status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: {} } };
   // A queued answer to a review naming a file on this Mac as its reply's
   // picture (Codex's review, 17 Nov): it comes without it.
   const secret = path.join(tmpDir(), 'private.png');
@@ -476,8 +480,138 @@ test("a compromised old runner's oversized review notes arrive cut to what show_
   assert.ok(big!.options.every((o) => o.note!.length === 4000 && o.title.length === 200));
   assert.equal(big!.draft.notes.o0!.length, 4000);
   assert.equal(big!.draft.reply!.length, 8000);
-  assert.deepEqual(t.runner.getReview(id, 'fits').review, fits);
-  assert.deepEqual(kept, fits);
+  // Words exactly; its picture this thread's copy here.
+  // Its type and size the file's own.
+  const fitsHere = { ...fits, options: [{ ...fits.options[0]!, image: { ...theirs('fits'), path: path.join(t.store.mediaDir(id), 'reviews', 'fits', 'a.png'), width: kept!.options[0]!.image.width, height: kept!.options[0]!.image.height } }] };
+  assert.ok(kept!.options[0]!.image.width! > 0);
+  assert.deepEqual(t.runner.getReview(id, 'fits').review, fitsHere);
+  assert.deepEqual(kept, fitsHere);
+  assert.ok(fs.existsSync(fitsHere.options[0]!.image.path));
+  assert.ok(big!.options.every((o) => o.image.path === path.join(t.store.mediaDir(id), 'reviews', 'big', 'a.png')));
+});
+
+// Daybreak 159 (21 Nov 2026): a move kept a review's files as the other
+// runner named them, and once the thread was here the review window read
+// them as this Mac's: an extra Mac could show any picture, video, page or
+// note link of the main Mac's. Only files that came with the move stay, as
+// this thread's copies, in the record and in the log the apps draw from.
+test("a moved review never names a file of this Mac's; the ones that came are this thread's copies", async () => {
+  const s = machine([{ id: 'claude-main', provider: 'claude', title: 'S', configDir: tmpDir() }]);
+  const t = machine([{ id: 'claude-1', provider: 'claude', title: 'T', configDir: tmpDir() }]);
+  t.runner.movedInAtMostAsk = () => true;
+  const id = s.runner.create({ text: 'x', accountId: 'claude-main', cwd: tmpDir('tb-move-work-') }).thread.id;
+  s.adapter.last.init();
+  s.adapter.last.result('completed');
+  await tick();
+  const r: MoveRow = { moveId: 'ee66ff77aa88', threadId: id, from: 'S1', to: 'T1', state: 'unpacking', createdAt: 1, updatedAt: 1, info: (await s.runner.describeForMove(id, 0))! };
+  const plan = await t.runner.planMove(r);
+  if ('problem' in plan) assert.fail(plan.problem);
+  r.plan = plan;
+  const packed = (await s.runner.packForMove(id, r)).entries;
+  // This Mac's own files: a picture, a video, a page, a note.
+  const mine = fs.realpathSync(tmpDir('tb-move-mine-'));
+  const sample = fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'features', 'support', 'sample.png'));
+  fs.writeFileSync(path.join(mine, 'secret.png'), sample);
+  fs.writeFileSync(path.join(mine, 'home.mp4'), 'mp4');
+  fs.writeFileSync(path.join(mine, 'page.html'), '<p>mine</p>');
+  fs.writeFileSync(path.join(mine, 'notes.md'), '# mine');
+  const rid = '1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9';
+  const theirs = (rest: string, mediaType = 'image/png') => ({ path: `/Users/other/.threadbear/threads/${id}/media/reviews/${rid}/${rest}`, mediaType });
+  packed.push({ path: `thread/media/reviews/${rid}/a.png`, data: sample } as any);
+  // A clip and a page that came, which stay usable here.
+  const mp4 = Buffer.alloc(16);
+  mp4.writeUInt32BE(16, 0);
+  mp4.write('ftypisom', 4, 'ascii');
+  packed.push({ path: `thread/media/reviews/${rid}/clip.mp4`, data: mp4 } as any);
+  packed.push({ path: `thread/media/reviews/${rid}/p1/index.html`, data: Buffer.from('<p>page</p>') } as any);
+  const local = (f: string, mediaType: string) => ({ path: path.join(mine, f), mediaType });
+  const review = {
+    id: rid, title: 'Pick', status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: {} },
+    note: `Compare with [mine](${path.join(mine, 'notes.md')})`,
+    options: [
+      { id: 'came', title: 'Came', image: theirs('a.png'), shots: [{ image: theirs('a.png') }, { image: theirs('a.png'), media: local('home.mp4', 'video/mp4') }, { image: local('secret.png', 'image/png') }, { image: theirs('a.png'), media: theirs('clip.mp4', 'video/mp4') }, { image: theirs('a.png'), media: theirs('p1/index.html', 'text/html') }, { image: theirs('a.png'), media: local('page.html', 'text/html') }] },
+      { id: 'raster', title: 'Raster', image: local('secret.png', 'image/png') },
+      { id: 'video', title: 'Video', image: local('secret.png', 'image/png'), shots: [{ image: local('secret.png', 'image/png'), media: local('home.mp4', 'video/mp4') }] },
+      { id: 'page', title: 'Page', image: local('secret.png', 'image/png'), shots: [{ image: local('secret.png', 'image/png'), media: local('page.html', 'text/html') }] },
+      { id: 'note', title: 'Note', note: `[notes](${path.join(mine, 'notes.md')})`, image: local('secret.png', 'image/png') },
+    ],
+  };
+  const onlyLocal = { ...review, id: '2b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9', options: review.options.slice(1) };
+  const recEntry = packed.find((e) => e.path === 'thread/thread.json')!;
+  recEntry.data = Buffer.from(JSON.stringify({ ...JSON.parse(recEntry.data.toString('utf8')), reviews: [review, onlyLocal] }));
+  // The log the apps draw the review's card from, with a later revision recoverReviews would take.
+  const logEntry = packed.find((e) => e.path === 'thread/events.ndjson')!;
+  const lines = logEntry.data.toString('utf8').split('\n').filter(Boolean);
+  const ts = new Date().toISOString();
+  lines.push(JSON.stringify({ seq: lines.length + 1, ts, type: 'review.updated', review: { ...review, revision: 7 } }));
+  lines.push(JSON.stringify({ seq: lines.length + 1, ts, type: 'review.updated', review: onlyLocal }));
+  // The type with a JSON escape in it, which reads the same to every later
+  // reader (Codex's and Gemini's reviews).
+  lines.push(JSON.stringify({ seq: lines.length + 1, ts, type: 'review.updated', review: { ...onlyLocal, id: '3b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9' } }).replace('"review.updated"', '"review\\u002eupdated"'));
+  logEntry.data = Buffer.from(lines.join('\n') + '\n');
+  await t.runner.placeMove(r, packed);
+  await t.runner.adoptMoved(r);
+  await tick();
+  const here = path.join(t.store.mediaDir(id), 'reviews', rid, 'a.png');
+  const reviews = t.runner.listReviews(id).reviews;
+  assert.deepEqual(reviews.map((x) => x.id), [rid], 'a review with nothing that came goes');
+  const got = reviews[0]!;
+  assert.equal(got.revision, 7, "the log's later revision, fitted the same way");
+  assert.deepEqual(got.options.map((o) => o.id), ['came']);
+  assert.equal(got.options[0]!.image.path, here);
+  const dir = path.dirname(here);
+  assert.deepEqual(got.options[0]!.shots!.map((x) => [x.image.path, x.media?.path, x.media?.mediaType]), [[here, undefined, undefined], [here, undefined, undefined], [here, path.join(dir, 'clip.mp4'), 'video/mp4'], [here, path.join(dir, 'p1', 'index.html'), 'text/html'], [here, undefined, undefined]]);
+  assert.ok(fs.existsSync(path.join(dir, 'clip.mp4')) && fs.existsSync(path.join(dir, 'p1', 'index.html')));
+  assert.ok(fs.existsSync(here), 'the copy that came is usable here');
+  assert.equal(got.note, `Compare with [mine]\\(${path.join(mine, 'notes.md')})`, 'a note link to a file is only words');
+  const events = t.runner.events(id, { limit: 1000 }).events;
+  const all = JSON.stringify([t.runner.listReviews(id), events, t.store.load(id)]);
+  assert.ok(!all.includes(path.join(mine, 'secret.png')) && !all.includes('home.mp4') && !all.includes('page.html'), 'no file of this Mac named anywhere');
+  assert.ok(!all.includes('/Users/other/'), "nor the other runner's paths");
+  const seqs = events.map((e) => e.seq);
+  assert.deepEqual(seqs, seqs.map((_, i) => seqs[0]! + i), 'the log stays gapless');
+  assert.equal(events.filter((e: any) => e.type === 'system.note' && /review that came with the move was left out/.test(e.text)).length, 2);
+  // And again after a restart, as recoverReviews reads the log at start.
+  const again = t.restart();
+  const reread = JSON.stringify(again.runner.listReviews(id));
+  assert.ok(!reread.includes(path.join(mine, 'secret.png')) && reread.includes(here), reread);
+});
+
+// Codex's and Gemini's reviews of the Daybreak 159 fix: a runner from
+// before placed the move, put the thread live and stopped before adopting.
+// The updated runner's adopt fits the live log too.
+test("a move an older runner put live before stopping has its log's reviews fitted as it's adopted", async () => {
+  const s = machine([{ id: 'claude-main', provider: 'claude', title: 'S', configDir: tmpDir() }]);
+  const t = machine([{ id: 'claude-1', provider: 'claude', title: 'T', configDir: tmpDir() }]);
+  t.runner.movedInAtMostAsk = () => true;
+  const id = s.runner.create({ text: 'x', accountId: 'claude-main', cwd: tmpDir('tb-move-work-') }).thread.id;
+  s.adapter.last.init();
+  s.adapter.last.result('completed');
+  await tick();
+  const r: MoveRow = { moveId: 'ff77aa88bb99', threadId: id, from: 'S1', to: 'T1', state: 'unpacking', createdAt: 1, updatedAt: 1, info: (await s.runner.describeForMove(id, 0))! };
+  const plan = await t.runner.planMove(r);
+  if ('problem' in plan) assert.fail(plan.problem);
+  r.plan = plan;
+  const packed = (await s.runner.packForMove(id, r)).entries;
+  await t.runner.placeMove(r, packed);
+  // As the older runner left it: a review naming a file of this Mac's in
+  // the log, and the thread folder live.
+  const secret = path.join(fs.realpathSync(tmpDir('tb-move-mine-')), 'secret.png');
+  fs.writeFileSync(secret, fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'features', 'support', 'sample.png')));
+  const stage = path.join(t.home, 'moves', r.moveId);
+  const log = path.join(stage, 'thread', 'events.ndjson');
+  const n = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length;
+  const review = { id: '4b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9', title: 'P', status: 'pending', revision: 1, createdAt: 'c', updatedAt: 'c', draft: { notes: {} }, options: [{ id: 'a', title: 'A', image: { path: secret, mediaType: 'image/png' } }] };
+  fs.appendFileSync(log, JSON.stringify({ seq: n + 1, ts: new Date().toISOString(), type: 'review.updated', review }) + '\n');
+  const dest = path.join(t.home, 'threads', id);
+  fs.renameSync(path.join(stage, 'thread'), dest);
+  await t.runner.adoptMoved(r);
+  await tick();
+  const events = t.runner.events(id, { limit: 1000 }).events;
+  assert.ok(!JSON.stringify(events).includes(secret), 'no file of this Mac named');
+  assert.equal(events.at(-2)?.type, 'system.note', 'the review is a note saying it was left out');
+  const seqs = events.map((e) => e.seq);
+  assert.deepEqual(seqs, seqs.map((_, i) => seqs[0]! + i), 'the log stays gapless');
 });
 
 test("a move whose thread id isn't a thread id's shape is refused before anything is placed or adopted", async () => {

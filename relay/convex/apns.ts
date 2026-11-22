@@ -36,57 +36,82 @@ function providerToken(cfg: ApnsConfig, nowMs = Date.now()): string {
   return token;
 }
 
+type Sent = { status: number; reason?: string };
+
+// One push to Apple. An alert at priority 10; a background push (the
+// silent "clear" below) must say so and go at priority 5, or Apple refuses it.
+async function post(cfg: ApnsConfig, environment: 'sandbox' | 'production', deviceToken: string, payload: string, kind: 'alert' | 'background'): Promise<Sent> {
+  const host = environment === 'production' ? 'https://api.push.apple.com' : 'https://api.sandbox.push.apple.com';
+  const session = http2.connect(host);
+  session.on('error', () => {});
+  try {
+    return await new Promise<Sent>((resolve) => {
+      const req = session.request({
+        ':method': 'POST',
+        ':path': `/3/device/${deviceToken}`,
+        authorization: `bearer ${providerToken(cfg)}`,
+        'apns-topic': cfg.topic,
+        'apns-push-type': kind,
+        'apns-priority': kind === 'alert' ? '10' : '5',
+        'content-type': 'application/json',
+      });
+      let status = 0;
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('response', (h) => (status = Number(h[':status'] ?? 0)));
+      req.on('data', (c: string) => (body += c));
+      req.on('end', () => {
+        let reason: string | undefined;
+        try {
+          reason = body ? (JSON.parse(body) as { reason?: string }).reason : undefined;
+        } catch {
+          reason = body || undefined;
+        }
+        resolve({ status, ...(reason ? { reason } : {}) });
+      });
+      req.on('error', (e) => resolve({ status: 0, reason: e.message }));
+      req.setTimeout(10_000, () => {
+        req.close();
+        resolve({ status: 0, reason: 'timeout' });
+      });
+      req.end(payload);
+    });
+  } finally {
+    session.close();
+  }
+}
+
+const vEnvironment = v.union(v.literal('sandbox'), v.literal('production'));
+const vSent = v.object({ status: v.number(), reason: v.optional(v.string()) });
+
 // The relay can't read what it forwards: an encrypted notification goes to
 // the phone with a stand-in alert and mutable-content, and the app's
 // notification extension decrypts `e` into the real title and text with a
 // key only the phone and its own backend have.
 export const send = internalAction({
-  args: { deviceToken: v.string(), environment: v.union(v.literal('sandbox'), v.literal('production')), threadId: v.string(), encrypted: v.optional(v.string()), title: v.optional(v.string()), body: v.optional(v.string()) },
-  returns: v.object({ status: v.number(), reason: v.optional(v.string()) }),
-  handler: async (_ctx, a): Promise<{ status: number; reason?: string }> => {
+  args: { deviceToken: v.string(), environment: vEnvironment, threadId: v.string(), encrypted: v.optional(v.string()), title: v.optional(v.string()), body: v.optional(v.string()) },
+  returns: vSent,
+  handler: async (_ctx, a): Promise<Sent> => {
     const cfg = apnsConfig();
     if (!cfg) return { status: 0, reason: 'relay not configured' };
     const aps = a.encrypted
       ? { alert: { title: 'Threadbear', body: 'A thread needs you' }, sound: 'default', 'mutable-content': 1, 'thread-id': a.threadId }
       : { alert: { title: a.title ?? 'Threadbear', body: a.body ?? 'A thread needs you' }, sound: 'default', 'thread-id': a.threadId };
     const payload = JSON.stringify({ aps, threadId: a.threadId, ...(a.encrypted ? { e: a.encrypted } : {}) });
-    const host = a.environment === 'production' ? 'https://api.push.apple.com' : 'https://api.sandbox.push.apple.com';
-    const session = http2.connect(host);
-    session.on('error', () => {});
-    try {
-      return await new Promise<{ status: number; reason?: string }>((resolve) => {
-        const req = session.request({
-          ':method': 'POST',
-          ':path': `/3/device/${a.deviceToken}`,
-          authorization: `bearer ${providerToken(cfg)}`,
-          'apns-topic': cfg.topic,
-          'apns-push-type': 'alert',
-          'apns-priority': '10',
-          'content-type': 'application/json',
-        });
-        let status = 0;
-        let body = '';
-        req.setEncoding('utf8');
-        req.on('response', (h) => (status = Number(h[':status'] ?? 0)));
-        req.on('data', (c: string) => (body += c));
-        req.on('end', () => {
-          let reason: string | undefined;
-          try {
-            reason = body ? (JSON.parse(body) as { reason?: string }).reason : undefined;
-          } catch {
-            reason = body || undefined;
-          }
-          resolve({ status, ...(reason ? { reason } : {}) });
-        });
-        req.on('error', (e) => resolve({ status: 0, reason: e.message }));
-        req.setTimeout(10_000, () => {
-          req.close();
-          resolve({ status: 0, reason: 'timeout' });
-        });
-        req.end(payload);
-      });
-    } finally {
-      session.close();
-    }
+    return await post(cfg, a.environment, a.deviceToken, payload, 'alert');
+  },
+});
+
+// A silent push that tells the app to take down a thread's notifications:
+// the thread no longer needs the person (seen on the Mac, answered,
+// archived). No alert, so an app from before this shows nothing. `clear`
+// rather than `threadId`, so nothing reads it as a thread to open.
+export const clear = internalAction({
+  args: { deviceToken: v.string(), environment: vEnvironment, threadId: v.string() },
+  returns: vSent,
+  handler: async (_ctx, a): Promise<Sent> => {
+    const cfg = apnsConfig();
+    if (!cfg) return { status: 0, reason: 'relay not configured' };
+    return await post(cfg, a.environment, a.deviceToken, JSON.stringify({ aps: { 'content-available': 1 }, clear: a.threadId }), 'background');
   },
 });

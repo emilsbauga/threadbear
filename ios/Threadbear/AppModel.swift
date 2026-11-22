@@ -855,6 +855,11 @@ final class AppModel {
                     }
                     if glides { model.popMarksAfterLanding(flying: Set(flying.keys)) }
                     model.inboxAnswers += 1
+                    // Notifications for threads that no longer need you come down.
+                    if !model.isFake {
+                        let needing = Set(list.filter(\.needsYou).map(\.threadId))
+                        Task { await DeliveredNotifications.keepOnly(needingYou: needing) }
+                    }
                 case .hibernating: model.hibernating = list
                 case .den: model.den = list
                 }

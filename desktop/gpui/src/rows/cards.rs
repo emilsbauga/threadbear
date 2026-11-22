@@ -1768,11 +1768,23 @@ impl ThreadPane {
                         .child(review.title.clone()),
                 ),
         );
-        // The reviewPage experiment: the options themselves on the card, each
-        // a small picture with its name, and a click on one opens the page
-        // beside the thread (review_pane.rs) in place of the window and its
-        // button. Another Mac's pictures aren't here to show.
-        let content = if crate::review_pane::is_on(cx) && self.summary.runner_id.is_none() {
+        let button = h_flex().mt(px(10.)).child(
+            pill(("open-review", ix), &open_title, false, true, None, cx)
+                .min_w(px(140.))
+                .tip(open_tip)
+                .on_click(cx.listener({
+                    let opened = opened.clone();
+                    move |this, _: &ClickEvent, window, cx| {
+                        this.open_review(opened.clone(), window, cx)
+                    }
+                }))
+                .test_support(),
+        );
+        // The options themselves on the card, each a small picture with its
+        // name, so the reply needn't list them (Mike, 20 Nov); a click on
+        // one opens the window (review_window.rs) on it. Another Mac's
+        // pictures aren't here to show.
+        let content = if self.summary.runner_id.is_none() {
             let picked_ids = review
                 .response
                 .as_ref()
@@ -1788,12 +1800,9 @@ impl ThreadPane {
                 let (opened, tip) = (
                     opened.clone(),
                     if review.is_pending() {
-                        format!(
-                            "Open {} beside the thread to read, pick and reply",
-                            option.title
-                        )
+                        format!("Open the review on {}", option.label())
                     } else {
-                        format!("Open the review at {}", option.title)
+                        format!("Look at {} and what was sent", option.label())
                     },
                 );
                 let name = h_flex()
@@ -1826,18 +1835,33 @@ impl ThreadPane {
                     v_flex()
                         .id(("review-tile", ix * 16 + index))
                         .role(Role::Button)
-                        .aria_label(SharedString::from(option.title.clone()))
+                        .aria_label(SharedString::from(tip.clone()))
                         .flex_none()
                         .cursor_pointer()
                         .tip(tip)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.open_review(opened.clone(), window, cx)
+                            this.open_review_at(opened.clone(), Some(index), window, cx)
                         }))
                         .test_support()
                         .child(review_tile(&option.image, cx))
                         .child(name),
                 );
             }
+            // The agent's lead, which the window shows only with all of
+            // them side by side: here it's read first, as part of the thread.
+            let lead = review.note.clone().filter(|n| !n.is_empty()).map(|note| {
+                div()
+                    .mt(px(8.))
+                    .text_size(px(size::WORK))
+                    .line_height(px(size::WORK_LINE))
+                    .child(crate::review_window::inline_note(
+                        ("review-lead", ix),
+                        &note,
+                        label,
+                        &self.summary.cwd,
+                        cx,
+                    ))
+            });
             head.child(
                 div()
                     .mt(px(4.))
@@ -1846,7 +1870,9 @@ impl ThreadPane {
                     .text_color(quiet)
                     .child(state),
             )
+            .children(lead)
             .child(tiles)
+            .child(button)
         } else {
             head.child(
                 div()
@@ -1856,18 +1882,7 @@ impl ThreadPane {
                     .text_color(quiet)
                     .child(detail),
             )
-            // Its window (review_window.rs).
-            .child(
-                h_flex().mt(px(10.)).child(
-                    pill(("open-review", ix), &open_title, false, true, None, cx)
-                        .min_w(px(140.))
-                        .tip(open_tip)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.open_review(opened.clone(), window, cx)
-                        }))
-                        .test_support(),
-                ),
-            )
+            .child(button)
         };
         row_wrap(
             row,
@@ -1877,8 +1892,8 @@ impl ThreadPane {
 }
 
 /// An option's small picture on its review's card: this wide and tall, so
-/// two fit a row beside a review's page, when the transcript is at its
-/// narrowest, and four when it has its full width.
+/// two fit a row when the transcript is at its narrowest, and four when it
+/// has its full width.
 const REVIEW_TILE: (f32, f32) = (150., 90.);
 
 /// The picture cut to the tile from its top left corner, where a mockup's
