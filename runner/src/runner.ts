@@ -1,3 +1,4 @@
+import { experimentOn } from './experiments.ts';
 import { readImageInfo } from './media.ts';
 import { selectAttachments } from './intake-files.ts';
 import type { AttachmentRef } from './protocol.ts';

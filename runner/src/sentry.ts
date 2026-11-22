@@ -160,7 +160,7 @@ export const ERROR_CLASSES: ReadonlySet<string> = new Set([
   'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError',
   'AbortError', 'TimeoutError', 'SystemError', 'DOMException',
   'AcpExitedError', 'AcpRpcError', 'AmbiguousPeer', 'BoxBootRefused', 'BoxFolderBroken', 'CheckRefused', 'CodexExitedError', 'CodexRpcError',
-  'ConvexAdminError', 'CronError', 'GaveUp', 'HeldLocal', 'KeysBusy', 'NoSwitches', 'Refused', 'RewindRefusedError',
+  'ConvexAdminError', 'CronError', 'GaveUp', 'HeldLocal', 'KeysBusy', 'NoSwitches', 'PiMissingSessionError', 'Refused', 'RewindRefusedError',
   'RpcClientError', 'RpcError', 'RunnerJsonError', 'RunnerNotProvedError', 'SessionNotFoundError', 'SpawnRefused',
   'SpecialFile', 'StaleProcess', 'TooBig', 'Unknown', 'Waiting',
 ]);

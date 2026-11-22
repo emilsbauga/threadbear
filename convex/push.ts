@@ -11,7 +11,7 @@ import { request as httpsRequest } from 'node:https';
 import http2 from 'node:http2';
 import { v } from 'convex/values';
 import { internal } from './_generated/api';
-import { internalAction, type ActionCtx } from './_generated/server';
+import { env, internalAction, type ActionCtx } from './_generated/server';
 import { failureText } from './pushHealth';
 import { pushText } from './pushText';
 import { seal } from './pushSeal';
@@ -34,7 +34,7 @@ const RELAY_URL = 'https://impartial-hound-393.ap-southeast-2.convex.site';
 type Target = { apnsToken: string; environment: 'sandbox' | 'production'; notify: 'away' | 'always' | 'off'; pushKey?: string; platform?: 'android' | 'webpush'; webPush?: { p256dh: string; auth: string } };
 
 // This deployment's own site address (relay registration, the VAPID subject).
-const siteUrl = (): string | undefined => process.env.CONVEX_SITE_URL;
+const siteUrl = (): string | undefined => env.CONVEX_SITE_URL;
 
 // fresh: this send registered it, so a refusal of it isn't an old key's.
 type Install = { attempt: string; installId: string; installKey: string; fresh?: boolean };
@@ -113,8 +113,8 @@ async function relaySend(url: string, install: Install, alert: { title: string; 
 // sealed with it, so the relay forwards only ciphertext; an older app
 // without one gets the relay's plain "A thread needs you", never the text.
 async function sendViaRelay(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, targets: Target[]): Promise<SendSummary> {
-  if (process.env.PUSH_RELAY === 'off') return { sent: 0, failed: 0, skipped: 'relayOff' };
-  const url = process.env.PUSH_RELAY_URL || RELAY_URL;
+  if (env.PUSH_RELAY === 'off') return { sent: 0, failed: 0, skipped: 'relayOff' };
+  const url = env.PUSH_RELAY_URL || RELAY_URL;
   const first = await relayInstall(ctx, url);
   if ('failure' in first) return { sent: 0, failed: targets.length, broken: targets.length, failure: first.failure };
   let install: Install = first;
@@ -171,7 +171,7 @@ async function sendViaRelay(ctx: ActionCtx, alert: { title: string; body: string
 type ApnsConfig = { key: string; keyId: string; teamId: string; topic: string };
 
 function apnsConfig(): ApnsConfig | null {
-  const { APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID, APNS_TOPIC } = process.env;
+  const { APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID, APNS_TOPIC } = env;
   if (!APNS_KEY_P8 || !APNS_KEY_ID || !APNS_TEAM_ID || !APNS_TOPIC) return null;
   return { key: toPem(APNS_KEY_P8), keyId: APNS_KEY_ID, teamId: APNS_TEAM_ID, topic: APNS_TOPIC };
 }
@@ -245,7 +245,7 @@ const vSendResult = v.object({ sent: v.number(), failed: v.number(), skipped: v.
 
 // The payload the phone app expects (docs/convex-backend.md, section 6).
 async function sendAlert(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, which: (notify: 'away' | 'always' | 'off') => boolean = (n) => n !== 'off'): Promise<SendSummary> {
-  const viaRelay = !apnsConfig() || process.env.PUSH_VIA === 'relay';
+  const viaRelay = !apnsConfig() || env.PUSH_VIA === 'relay';
   // A throw (a malformed APNS_KEY_P8 makes signing throw) counts as a
   // failure too, or a broken key would never be reported.
   let out: SendSummary;
@@ -286,7 +286,7 @@ async function deliver(ctx: ActionCtx, alert: { title: string; body: string; thr
 
 async function deliverRest(ctx: ActionCtx, alert: { title: string; body: string; threadId: string }, targets: Target[]): Promise<SendSummary> {
   const cfg = apnsConfig();
-  if (!cfg || process.env.PUSH_VIA === 'relay') return await sendViaRelay(ctx, alert, targets);
+  if (!cfg || env.PUSH_VIA === 'relay') return await sendViaRelay(ctx, alert, targets);
   // An Apple key is no use for an Android phone: those go through the relay,
   // to Firebase, after the Apple ones are sent.
   const apple = targets.filter((t) => t.platform !== 'android');
@@ -499,7 +499,7 @@ export const clear = internalAction({
     const targets = ((await ctx.runQuery(internal.devices.targets, {})) as Target[]).filter((t) => t.notify !== 'off' && t.platform !== 'webpush');
     if (!targets.length) return { sent: 0, failed: 0 };
     const cfg = apnsConfig();
-    const direct = cfg && process.env.PUSH_VIA !== 'relay' ? targets.filter((t) => t.platform !== 'android') : [];
+    const direct = cfg && env.PUSH_VIA !== 'relay' ? targets.filter((t) => t.platform !== 'android') : [];
     const relayed = targets.filter((t) => !direct.includes(t));
     let sent = 0;
     let failed = 0;
@@ -524,8 +524,8 @@ export const clear = internalAction({
         }
       }
     }
-    if (relayed.length && process.env.PUSH_RELAY !== 'off') {
-      const url = process.env.PUSH_RELAY_URL || RELAY_URL;
+    if (relayed.length && env.PUSH_RELAY !== 'off') {
+      const url = env.PUSH_RELAY_URL || RELAY_URL;
       const install = await relayInstall(ctx, url);
       if ('failure' in install) return { sent, failed: failed + relayed.length };
       for (const t of relayed) {

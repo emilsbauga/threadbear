@@ -9,7 +9,7 @@ const sync = load('sync');
 const OWNER = 'owner-key';
 process.env.RUNNER_KEY = OWNER;
 
-const scheduled = (b: ReturnType<typeof memoryBackend>, name: string) => b.scheduled.filter((s: any) => String(s.fn).endsWith(name)).map((s: any) => s.args);
+const scheduled = (b: ReturnType<typeof memoryBackend>, name: string) => b.scheduled.filter((s) => String(s.fn).endsWith(name)).map((s) => s.args);
 const write = (b: ReturnType<typeof memoryBackend>, needsYou: boolean) =>
   call(b.ctx, sync.upsertThreads, { key: OWNER, threads: [{ threadId: 'T', runnerId: 'mac1', ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou }] });
 
@@ -30,7 +30,7 @@ test('no clear for a thread that never had a push, or had one over a day ago', a
   await b.ctx.db.insert('threads', { threadId: 'T', runnerId: 'mac1', ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: true });
   await write(b, false);
   assert.deepEqual(scheduled(b, 'push.clear'), [], 'never pushed');
-  const row = b.rows('threads')[0] as any;
+  const row = b.rows('threads')[0]!;
   await b.ctx.db.patch(row._id, { needsYou: true, pushedAt: Date.now() - 25 * 60 * 60_000 });
   await write(b, false);
   assert.deepEqual(scheduled(b, 'push.clear'), [], 'pushed too long ago');

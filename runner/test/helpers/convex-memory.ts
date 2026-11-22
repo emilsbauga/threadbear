@@ -79,7 +79,7 @@ function fitProblem(fields: unknown, doc: Record<string, unknown>): string | nul
 const fakes: Record<string, Record<string, unknown>> = {
   'convex/values': { v, ConvexError },
   'convex/server': { defineSchema: (t: Record<string, Def>) => realServer.defineSchema(t), defineTable },
-  './_generated/server': { mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
+  './_generated/server': { env: process.env, mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
   './_generated/api': { internal: fnRef(['internal']), api: fnRef(['api']), components: fnRef(['components']) },
   '@convex-dev/state-machines': stateMachines,
 };
@@ -342,7 +342,7 @@ export function memoryBackend(root = CONVEX) {
       return id;
     },
   };
-  const scheduled: unknown[] = [];
+  const scheduled: { fn: string; args: unknown }[] = [];
   // Every job by id, as _scheduled_functions has them, for the library's
   // timers: a timer is cancelled only while it's pending. runAt's go in
   // `timers` (not `scheduled`, which tests read as runAfter's), due at `at`.
