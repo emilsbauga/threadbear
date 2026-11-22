@@ -471,7 +471,7 @@ mod tests {
         let parent = thread("parent", json!({}));
         let deferred = child("deferred", "parent", json!({ "backlogged": true }));
         let dependent = child("dependent", "deferred", json!({}));
-        let threads = vec![parent, deferred, dependent];
+        let threads = [parent, deferred, dependent];
         let wakes = HashMap::new();
         let nesting = Nesting::build(threads.iter(), now(), &wakes);
         assert!(!nesting.is_nested("deferred"));
