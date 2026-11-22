@@ -15,7 +15,7 @@ test('Pi remains a distinct engine alongside CLI and ACP providers', () => {
   assert.equal(isAgentEngine('codex'), true);
   assert.equal(isAgentEngine('other'), false);
   assert.equal(isProvider('pi'), true);
-  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi', 'cursor', 'opencode', 'grok']);
+  assert.deepEqual(PROVIDERS, ['claude', 'codex', 'pi', 'cursor', 'opencode', 'grok', 'antigravity']);
 });
 
 test('Pi configuration is opt-in and does not create or read profile files', () => {

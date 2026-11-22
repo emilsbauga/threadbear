@@ -170,16 +170,4 @@ brings one in. CONTRIBUTING.md, "How my agents take PRs and forks".
   runner updating itself". Driving the desktop app, real-thread and cursor bugs, freezes:
   desktop/README.md. The Swift app: app/README.md, "Rules for changing it". The iPhone
   app: ios/README.md. Real-screen tests: features/README.md. Parity: docs/parity.md.
-
-`app/Tools/dev-app.sh` runs a debug build in a temp bundle, against the
-mock runner or a dev runner, with invisible windows. Unit tests install the
-same process-local DesktopGuard before any test. `shot` draws hidden windows
-in-process (flat sidebar glass). Real pointer/menu tests and foreground timing
-checks need a separate Mac or VM desktop: only there, start the debug app with
-`THREADBEAR_AUTOMATION_VISIBLE=1`. Never use that opt-in on the working desktop.
-Never use
-`~/Applications/Threadbear.app` for this. Instances belong to the thread
-and checkout that started them: without `--id`, a command means your
-newest one, never another thread's, and `stop --all` stops only yours.
-`start` prints the id; pass `--id` to every command once you have more
-than one, and use `status` to see whose is whose.
+- Hidden Swift test windows and real pointer tests: docs/dev-tools.md, “Hidden Swift test windows”.

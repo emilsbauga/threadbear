@@ -640,3 +640,18 @@ rollback covers a release that doesn't come up.
 - `deploy-runner.sh` still works as before, for a deploy that shouldn't wait
   five minutes, a branch, or a dirty build; the updater sees the release
   waiting and stays out of the way until it's running.
+
+### Hidden Swift test windows
+
+`app/Tools/dev-app.sh` runs a debug build in a temp bundle, against the
+mock runner or a dev runner, with invisible windows. Unit tests install the
+same process-local DesktopGuard before any test. `shot` draws hidden windows
+in-process (flat sidebar glass). Real pointer/menu tests and foreground timing
+checks need a separate Mac or VM desktop: only there, start the debug app with
+`THREADBEAR_AUTOMATION_VISIBLE=1`. Never use that opt-in on the working desktop.
+Never use
+`~/Applications/Threadbear.app` for this. Instances belong to the thread
+and checkout that started them: without `--id`, a command means your
+newest one, never another thread's, and `stop --all` stops only yours.
+`start` prints the id; pass `--id` to every command once you have more
+than one, and use `status` to see whose is whose.
