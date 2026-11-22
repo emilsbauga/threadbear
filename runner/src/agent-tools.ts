@@ -26,8 +26,8 @@ import type { DynamicToolCallParams, DynamicToolCallResponse, DynamicToolSpec } 
 export type ToolDefinition = {
   name: string;
   description: string;
-  inputSchema: Record<string, unknown>; // a zod raw shape
-  handler: (args: any, extra: unknown) => Promise<{ content?: unknown[]; isError?: boolean }>;
+  inputSchema: z.ZodRawShape;
+  handler(args: Record<string, unknown>, extra: unknown): Promise<{ content?: unknown[]; isError?: boolean }>;
   annotations?: { readOnlyHint?: boolean };
   // A tool whose arguments have changed shape: the version of it this call
   // was written for, as the thread's list may be older than this runner.
@@ -85,7 +85,7 @@ export function dynamicToolSpecs(tools: ToolDefinition[]): DynamicToolSpec[] {
 }
 
 export function jsonSchema(t: ToolDefinition): unknown {
-  const schema = z.toJSONSchema(z.object(t.inputSchema as any)) as Record<string, unknown>;
+  const schema = z.toJSONSchema(z.object(t.inputSchema)) as Record<string, unknown>;
   delete schema.$schema;
   return schema;
 }
@@ -137,7 +137,7 @@ export class AgentTools {
     }
     const raw = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? (params.arguments as Record<string, unknown>) : {};
     const tool = known.formFor?.(raw) ?? known;
-    const parsed = z.object(tool.inputSchema as any).safeParse(raw);
+    const parsed = z.object(tool.inputSchema).safeParse(raw);
     if (!parsed.success) return text(`Those arguments don't fit ${name}: ${z.prettifyError(parsed.error)}`, false);
     const args = parsed.data as Record<string, unknown>;
     const gate = await gateThreadbearTool(this.deps, {

@@ -25,7 +25,7 @@ export class PiBridge {
   private server: http.Server;
   private pending = new Set<AbortController>();
   private host: AgentTools;
-  private closing?: Promise<void>;
+  private closePromise?: Promise<void>;
   constructor(options: PiBridgeOptions) {
     this.options = options;
     this.host = new AgentTools(options.tools, { ...options, requestApproval: req => options.sink.requestApproval(req) });
@@ -80,11 +80,11 @@ export class PiBridge {
     return { allow, ...(allow ? {} : { reason: answer.message ?? 'The user did not approve this action.' }) };
   }
   close(): Promise<void> {
-    this.closing ??= new Promise<void>(resolve => {
+    this.closePromise ??= new Promise<void>(resolve => {
       for (const controller of this.pending) controller.abort();
       this.server.close(() => resolve());
       this.server.closeAllConnections();
     });
-    return this.closing;
+    return this.closePromise;
   }
 }

@@ -15,14 +15,14 @@ test('Pi bridge authenticates, validates and asks before tools; denied calls nev
   const { url, token } = await bridge.start();
   assert.equal((await fetch(url + '/tools')).status, 403);
   const call = (route: string, body: unknown) => fetch(url + route, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify(body) }).then(r => r.json());
-  const defs = await fetch(url + '/tools', { headers: { authorization: 'Bearer ' + token } }).then(r => r.json()) as any;
+  const defs = await fetch(url + '/tools', { headers: { authorization: 'Bearer ' + token } }).then(r => r.json()) as { tools: { name: string }[] };
   assert.equal(defs.tools[0].name, 'mcp__threadbear__change');
-  assert.equal((await call('/tool', { name: 'change', input: { value: 1 }, id: 'bad' }) as any).success, false);
+  assert.equal((await call('/tool', { name: 'change', input: { value: 1 }, id: 'bad' }) as { success: boolean }).success, false);
   assert.equal(approvals, 0);
-  assert.equal((await call('/tool', { name: 'change', input: { value: 'no' }, id: 'one' }) as any).success, false);
+  assert.equal((await call('/tool', { name: 'change', input: { value: 'no' }, id: 'one' }) as { success: boolean }).success, false);
   assert.equal(calls, 0); allow = true;
-  assert.equal((await call('/tool', { name: 'change', input: { value: 'yes' }, id: 'two' }) as any).success, true);
-  assert.equal((await call('/tool', { name: 'change', input: { value: 'again' }, id: 'three' }) as any).success, true);
+  assert.equal((await call('/tool', { name: 'change', input: { value: 'yes' }, id: 'two' }) as { success: boolean }).success, true);
+  assert.equal((await call('/tool', { name: 'change', input: { value: 'again' }, id: 'three' }) as { success: boolean }).success, true);
   assert.equal(calls, 2); assert.equal(approvals, 2);
 });
 
@@ -32,7 +32,7 @@ test('Pi native rules cover exact cwd/input, while full mode still asks for alwa
   const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: async () => { approvals++; return { decision: 'allowAlways' }; } };
   const bridge = new PiBridge({ tools: [{ name: 'delete_thread', description: 'Delete', inputSchema: {}, handler: async () => ({ content: [] }) }], sink, cwd: () => cwd, mode: () => mode, rules: () => rules, addRules: added => added.forEach(r => rules.add(r)) });
   t.after(() => bridge.close()); const { url, token } = await bridge.start();
-  const call = (route: string, data: unknown) => fetch(url + route, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify(data) }).then(r => r.json()) as Promise<any>;
+  const call = (route: string, data: unknown) => fetch(url + route, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify(data) }).then(r => r.json()) as Promise<{ allow: boolean }>;
   assert.equal((await call('/approve', { name: 'read', input: { path: '/file' } })).allow, true);
   for (let i = 0; i < 2; i++) await call('/approve', { name: 'bash', input: { command: 'test' }, id: 'b' });
   assert.equal(approvals, 1); cwd = '/b'; await call('/approve', { name: 'bash', input: { command: 'test' }, id: 'b' }); assert.equal(approvals, 2);
@@ -71,12 +71,12 @@ test('Pi edits to code Threadbear runs always ask and never save an allow rule',
 
 
 test('Pi approval cards keep whole arguments, refuse oversized values, and edits stay on the Mac', async t => {
-  const requests: any[] = [];
+  const requests: Parameters<SessionSink["requestApproval"]>[0][] = [];
   const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: async req => { requests.push(req); return { decision: 'allow' }; } };
   const bridge = new PiBridge({ tools: [], sink, cwd: () => '/work', mode: () => 'ask', rules: () => [], addRules() {} });
   t.after(() => bridge.close());
   const { url, token } = await bridge.start();
-  const approve = (name: string, input: unknown) => fetch(url + '/approve', { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ name, input }) }).then(r => r.json()) as Promise<any>;
+  const approve = (name: string, input: unknown) => fetch(url + '/approve', { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ name, input }) }).then(r => r.json()) as Promise<{ allow: boolean }>;
   const content = 'a'.repeat(LIMITS.toolInputString);
   assert.equal((await approve('write', { path: 'a.txt', content })).allow, true);
   assert.equal(requests[0].input.content, content);

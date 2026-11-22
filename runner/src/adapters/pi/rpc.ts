@@ -5,7 +5,10 @@ import path from 'node:path';
 import { killGroup, type ProcessRegistry } from '../../proc.ts';
 import type { Logger } from '../../log.ts';
 
-export type RecordValue = Record<string, any>;
+export type RecordValue = Record<string, unknown>;
+export function asRecord(value: unknown): RecordValue | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : undefined;
+}
 export type PiRpcOptions = {
   command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv;
   diagnosticsDir: string;
@@ -24,7 +27,7 @@ export class PiRpc {
   private writes: Promise<void> = Promise.resolve();
   private buffer = '';
   private diagnostics = '';
-  private closing = false;
+  private shutdownRequested = false;
   private failure?: Error;
   private done = false;
   readonly closed: Promise<void>;
@@ -60,7 +63,7 @@ export class PiRpc {
     this.child.on('close', (code, signal) => {
       if (this.done) return;
       this.done = true;
-      if (!this.closing && !this.failure) this.failure = new Error(`Pi exited unexpectedly (${code ?? signal ?? 'unknown'}).`);
+      if (!this.shutdownRequested && !this.failure) this.failure = new Error(`Pi exited unexpectedly (${code ?? signal ?? 'unknown'}).`);
       // Classify only; do not echo native diagnostics into the error.
       if (/session.*(?:not found|does not exist)|no session.*found/i.test(this.diagnostics)) {
         this.failure = new PiMissingSessionError();
@@ -76,7 +79,7 @@ export class PiRpc {
     });
   }
 
-  get alive(): boolean { return !this.closing && !this.failure && !this.done; }
+  get alive(): boolean { return !this.shutdownRequested && !this.failure && !this.done; }
 
   request(command: string, data: RecordValue = {}): Promise<RecordValue> {
     if (!this.alive) return Promise.reject(this.failure ?? new Error('Pi session is closed.'));
@@ -124,6 +127,7 @@ export class PiRpc {
         if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.type !== 'string') throw new Error();
       } catch { return this.fail(new Error('Pi emitted an invalid RPC record.')); }
       if (record.type === 'response') {
+        if (typeof record.id !== 'string') continue;
         const pending = this.pending.get(record.id);
         if (!pending) continue;
         this.pending.delete(record.id); clearTimeout(pending.timer);
@@ -132,7 +136,7 @@ export class PiRpc {
           pending.reject(error);
           return this.fail(error);
         }
-        if (record.success === true) pending.resolve(record.data ?? {});
+        if (record.success === true) pending.resolve(asRecord(record.data) ?? {});
         else pending.reject(new Error(typeof record.error === 'string' ? record.error : 'Pi rejected the request.'));
       } else {
         try { this.options.event(record); } catch { return this.fail(new Error('Pi RPC event could not be processed.')); }
@@ -149,14 +153,14 @@ export class PiRpc {
   terminate(error: Error): void { this.fail(error); }
 
   kill(): void {
-    this.closing = true;
+    this.shutdownRequested = true;
     if (this.child.pid && !this.done) killGroup(this.child.pid, 'SIGKILL');
     else if (!this.done) this.child.kill('SIGKILL');
   }
 
   async end(hard = false): Promise<void> {
     if (this.done) return;
-    this.closing = true;
+    this.shutdownRequested = true;
     if (hard) this.kill();
     else this.child.stdin.end();
     const timer = setTimeout(() => this.kill(), this.options.shutdownTimeoutMs);

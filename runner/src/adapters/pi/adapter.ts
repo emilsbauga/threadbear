@@ -9,7 +9,7 @@ import type { Account, EffortLevel, ModelChoice, PermissionMode, PiProfile } fro
 import type { Logger } from '../../log.ts';
 import type { ProcessRegistry } from '../../proc.ts';
 import { SessionNotFoundError, type AgentAdapter, type AgentSession, type SessionSink, type StartSessionOptions, type UserInput } from '../types.ts';
-import { PiMissingSessionError, PiRpc, type RecordValue } from './rpc.ts';
+import { asRecord, PiMissingSessionError, PiRpc, type RecordValue } from './rpc.ts';
 import { PiNormalizer } from './normalize.ts';
 
 export type PiAdapterDeps = {
@@ -136,9 +136,10 @@ class PiSession implements AgentSession {
       throw new Error('Pi did not use the requested session ID.');
     }
     if (state.isStreaming || state.isCompacting) throw new Error('Pi started with unexpected active work.');
-    this.defaultThinking = this.appliedThinking = state.thinkingLevel ?? 'off';
+    this.defaultThinking = this.appliedThinking = typeof state.thinkingLevel === 'string' ? state.thinkingLevel : 'off';
     this.initialized = true;
-    this.sink.output({ kind: 'session', nativeSessionId: state.sessionId, model: state.model?.id ?? this.model });
+    const modelId = asRecord(state.model)?.id;
+    this.sink.output({ kind: 'session', nativeSessionId: opts.sessionId, model: typeof modelId === 'string' ? modelId : this.model });
   }
 
   send(input: UserInput): void {
@@ -266,7 +267,7 @@ class PiSession implements AgentSession {
   }
 
   private async dialog(record: RecordValue): Promise<void> {
-    if (!['select', 'confirm', 'input', 'editor'].includes(record.method) || typeof record.id !== 'string') return;
+    if (typeof record.method !== 'string' || !['select', 'confirm', 'input', 'editor'].includes(record.method) || typeof record.id !== 'string') return;
     const controller = new AbortController(); this.dialogs.add(controller);
     const question = [record.title, record.message].filter((s: unknown) => typeof s === 'string' && s).join('\n\n') || 'Pi has a question';
     const labels: string[] = record.method === 'confirm' ? ['Yes', 'No'] : Array.isArray(record.options) ? record.options.filter((s: unknown) => typeof s === 'string') : [];

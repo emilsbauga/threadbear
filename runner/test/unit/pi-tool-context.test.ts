@@ -17,8 +17,10 @@ test('compact context handles loopback hosts and preserves actual schema propert
   assert.equal(schema.description, 'Object docs', 'full schemas are not mutated');
 });
 
+type RegisteredTool = { name: string; description: string; exposure?: string; parameters: { properties: Record<string, { description?: string }> }; execute(id: string, args: object, signal: AbortSignal): Promise<unknown> };
+
 async function setup(t: { after(fn: () => Promise<void>): void }, toolContext?: 'auto' | 'compact' | 'full', searchAvailable = true) {
-  const handlers = new Map<string, Function>(), definitions = new Map<string, any>();
+  const handlers = new Map<string, Function>(), definitions = new Map<string, RegisteredTool>();
   let active = ['read', 'bash', 'edit', 'write'], approvals = 0, deleted = false;
   const sink: SessionSink = { output() {}, exited() {}, requestQuestion: async () => ({ answers: null }), requestApproval: async () => { approvals++; return { decision: 'deny' }; } };
   const bridge = new PiBridge({ toolContext, tools: [
@@ -32,7 +34,7 @@ async function setup(t: { after(fn: () => Promise<void>): void }, toolContext?: 
   let loading = true;
   try {
     await extension.default({
-      registerTool: (tool: any) => definitions.set(tool.name, tool),
+      registerTool: (tool: RegisteredTool) => definitions.set(tool.name, tool),
       on: (name: string, fn: Function) => handlers.set(name, fn),
       getActiveTools: () => { assert.equal(loading, false, 'Pi action methods are unavailable during extension loading'); return active; },
       getAllTools: () => [...(searchAvailable ? [{ name: 'tool_search' }] : []), ...definitions.values()],
@@ -50,19 +52,19 @@ test('Pi auto compacts only local or sub-70K models, and restores full definitio
   const large = { baseUrl: 'https://openrouter.ai/api/v1', contextWindow: 70000 };
   h.prompt(large);
   assert.ok(h.active().includes(deleteName));
-  assert.equal(h.definitions.get(endName).description, 'Full completion guidance');
+  assert.equal(h.definitions.get(endName)!.description, 'Full completion guidance');
   h.prompt({ ...large, contextWindow: 69999 });
   assert.ok(h.active().includes('read') && h.active().includes('tool_search') && h.active().includes(endName));
   assert.ok(!h.active().includes(deleteName));
-  assert.equal(h.definitions.get(deleteName).exposure, 'deferred');
-  assert.equal(h.definitions.get(endName).parameters.properties.headline.description, undefined);
+  assert.equal(h.definitions.get(deleteName)!.exposure, 'deferred');
+  assert.equal(h.definitions.get(endName)!.parameters.properties.headline.description, undefined);
   h.activate(deleteName); h.prompt({ ...large, contextWindow: 32000 });
   assert.ok(!h.active().includes(deleteName), 'next prompt sheds previously loaded tools');
   h.prompt({ baseUrl: 'http://127.0.0.1:1234/v1', contextWindow: 262144 });
-  assert.equal(h.definitions.get(deleteName).exposure, 'deferred');
+  assert.equal(h.definitions.get(deleteName)!.exposure, 'deferred');
   h.prompt(large);
   assert.ok(h.active().includes(deleteName));
-  assert.equal(h.definitions.get(endName).parameters.properties.headline.description, 'The headline text');
+  assert.equal(h.definitions.get(endName)!.parameters.properties.headline.description, 'The headline text');
   h.prompt({ baseUrl: 'https://openrouter.ai/api/v1' });
   assert.ok(h.active().includes(deleteName), 'unknown remote context stays full');
 });
@@ -72,7 +74,7 @@ test('Pi without native tool search retains its full tools', async t => {
   h.prompt({ baseUrl: 'http://localhost:1234/v1', contextWindow: 32000 });
   assert.ok(h.active().includes(deleteName));
   assert.ok(!h.active().includes('tool_search'));
-  assert.equal(h.definitions.get(endName).description, 'Full completion guidance');
+  assert.equal(h.definitions.get(endName)!.description, 'Full completion guidance');
 });
 
 test('Pi tool-context overrides and discovered-tool approvals retain the original policy', async t => {
@@ -84,7 +86,7 @@ test('Pi tool-context overrides and discovered-tool approvals retain the origina
   assert.ok(!compact.active().includes(deleteName));
   assert.equal(await compact.hook({ toolName: 'tool_search', input: { query: 'delete_thread' }, toolCallId: 'search' }, {}), undefined);
   assert.equal(compact.approvals(), 0, 'pure tool discovery does not ask for approval');
-  await assert.rejects(compact.definitions.get(deleteName).execute('delete', {}, new AbortController().signal), /denied/i);
+  await assert.rejects(compact.definitions.get(deleteName)!.execute('delete', {}, new AbortController().signal), /denied/i);
   assert.equal(compact.approvals(), 1);
   assert.equal(compact.deleted(), false, 'full mode still gates always-ask tools after discovery');
 });

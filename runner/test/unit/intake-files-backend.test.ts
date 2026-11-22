@@ -42,7 +42,7 @@ test('file intake remains invisible until complete, preserves receipt and delete
   assert.equal((await call(b.ctx, files.status, { keyHash: hash, messageId: message.messageId })).body.localSaved, false);
   assert.ok(b.hasFile(storageId));
   await call(b.ctx, consumer.finishIntake, lease);
-  assert.ok(b.scheduled.some(x => String((x as any).fn).endsWith('cleanDelivered')));
+  assert.ok(b.scheduled.some(x => String((x as { fn: unknown }).fn).endsWith('cleanDelivered')));
   await call(b.ctx, files.cleanDelivered, { transferId: prepared.body.transferId });
   assert.equal(b.hasFile(storageId), false);
   const delivered = await call(b.ctx, files.status, { keyHash: hash, messageId: message.messageId });
@@ -74,9 +74,9 @@ test('HTTP rejects malformed requests and foreign credentials; duplicate uploads
   const ctx = { ...b.ctx, storage: {
     store: async (blob: Blob) => { const id = 'blob:' + ++next; blobs.set(id, blob); return id; },
     delete: async (id: string) => { blobs.delete(id); }, get: async (id: string) => blobs.get(id) ?? null,
-  }, runQuery: (ref: unknown, args: any) => {
+  }, runQuery: (ref: unknown, args: Record<string, unknown>) => {
     const [module, name] = String(ref).split('.').slice(-2); return call(b.ctx, load(module)[name], args);
-  }, runMutation: (ref: unknown, args: any) => {
+  }, runMutation: (ref: unknown, args: Record<string, unknown>) => {
     const [module, name] = String(ref).split('.').slice(-2); return call(b.ctx, load(module)[name], args);
   } };
   const request = (op: string, body?: string | Buffer, auth = key) => new Request('https://example.convex.site/intake/v2/' + op, { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + auth, 'Content-Type': 'application/json' }, body });

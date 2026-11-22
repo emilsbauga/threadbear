@@ -11,7 +11,7 @@ import type { Doc, Id } from './_generated/dataModel';
 export const BLOCK_BYTES = 8 * 1024 * 1024;
 export const fileFields = { id: v.string(), name: v.string(), mediaType: v.string(), size: v.number(), sha256: v.string() };
 type FileSpec = { id: string; name: string; mediaType: string; size: number; sha256: string };
-type Outcome = { status: number; body: Record<string, any>; keepStorage?: boolean };
+type Outcome = { status: number; body: Record<string, unknown>; keepStorage?: boolean };
 const fail = (status: number, error: string): Outcome => ({ status, body: { error } });
 const count = (f: FileSpec) => Math.ceil(f.size / BLOCK_BYTES);
 const expected = (f: FileSpec, index: number) => Math.min(BLOCK_BYTES, f.size - index * BLOCK_BYTES);
@@ -190,15 +190,20 @@ export const jsonRequest = httpAction(async (ctx, req): Promise<Response> => {
   if (op === 'status') return response(await ctx.runQuery(internal.intakeFiles.status, { keyHash, messageId: url.searchParams.get('messageId') ?? '' }));
   if (req.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') return response(fail(415, 'Expected application/json'));
   const bytes = await bounded(req, 64 * 1024); if (!bytes) return response(fail(413, 'Request exceeds 64 KiB'));
-  let b: any;
+  let b: Record<string, unknown>;
   try { b = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { return response(fail(400, 'Invalid JSON')); }
   if (!b || typeof b !== 'object') return response(fail(400, 'Invalid request'));
   if (op === 'prepare') {
     if (!Array.isArray(b.attachments)) return response(fail(400, 'Expected attachment manifest'));
     const m = validate(b.message, b.attachments.length > 0); if ('status' in m) return response(fail(m.status, m.error ?? 'Invalid message'));
     // Project only expected primitive fields; do not pass arbitrary nested values to Convex validators.
-    const specs = b.attachments.map((f: any) => ({ id: f?.id, name: f?.name, mediaType: f?.mediaType, size: f?.size, sha256: f?.sha256 }));
-    if (specs.some((f: any) => typeof f.id !== 'string' || typeof f.name !== 'string' || typeof f.mediaType !== 'string' || typeof f.size !== 'number' || typeof f.sha256 !== 'string')) return response(fail(400, 'Invalid manifest'));
+    const specs: FileSpec[] = [];
+    for (const attachment of b.attachments as unknown[]) {
+      if (!attachment || typeof attachment !== 'object') return response(fail(400, 'Invalid manifest'));
+      const { id, name, mediaType, size, sha256 } = attachment as Record<string, unknown>;
+      if (typeof id !== 'string' || typeof name !== 'string' || typeof mediaType !== 'string' || typeof size !== 'number' || typeof sha256 !== 'string') return response(fail(400, 'Invalid manifest'));
+      specs.push({ id, name, mediaType, size, sha256 });
+    }
     return response(await ctx.runMutation(internal.intakeFiles.prepare, { keyHash, message: m, attachments: specs }));
   }
   if (typeof b.messageId !== 'string') return response(fail(400, 'Expected messageId'));

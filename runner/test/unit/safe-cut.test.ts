@@ -325,7 +325,7 @@ test("the recap: a purpose or brief cut the old way, through a secret, doesn't c
   const json = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   fs.writeFileSync(file, JSON.stringify({ ...json, experiments: { recapBox: true } }));
   h.clock.advance(6000);
-  const st = (h.runner as any).threads.get(thread.id);
+  const st = h.runner['threads'].get(thread.id)!;
   const at = URL.indexOf('@');
   for (let shift = -3; shift <= 0; shift++) {
     // What slice(0, 200) and slice(0, 600) left: the cut at or before the "@".

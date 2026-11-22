@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { SessionSink } from '../types.ts';
-import type { RecordValue } from './rpc.ts';
+import { asRecord, type RecordValue } from './rpc.ts';
 import { truncateResultText, type NormalizerContext } from '../context.ts';
 import { computeEditDiff, toolKind, toolTitle, truncateInput } from '../../tools.ts';
 import { displayToolName } from './tools.ts';
@@ -18,9 +18,10 @@ export class PiNormalizer {
   constructor(sink: SessionSink, context?: NormalizerContext) { this.sink = sink; this.context = context; }
 
   handle(record: RecordValue): void {
+    const message = asRecord(record.message);
     if (record.type === 'tool_execution_start' && typeof record.toolCallId === 'string') {
       this.openTools.add(record.toolCallId);
-      const args = record.args ?? {}, name = String(record.toolName ?? 'tool');
+      const args = asRecord(record.args) ?? {}, name = String(record.toolName ?? 'tool');
       const display = displayToolName(name);
       this.sink.output({ kind: 'event', event: { type: 'tool.call', itemId: record.toolCallId, name, kind: toolKind(display), title: toolTitle(display, args, this.context?.cwd ?? ''), input: truncateInput(args) } });
       if (this.context && ['edit', 'write'].includes(name) && typeof args.path === 'string') {
@@ -31,7 +32,8 @@ export class PiNormalizer {
     }
     if (record.type === 'tool_execution_end' && typeof record.toolCallId === 'string') {
       this.openTools.delete(record.toolCallId);
-      const blocks: RecordValue[] = Array.isArray(record.result?.content) ? record.result.content : [];
+      const content = asRecord(record.result)?.content;
+      const blocks: RecordValue[] = Array.isArray(content) ? content : [];
       const text = blocks.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
       const images = [];
       if (this.context) for (const block of blocks) if (block?.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string') {
@@ -40,25 +42,24 @@ export class PiNormalizer {
       const result = this.context ? truncateResultText(text, record.toolCallId, this.context) : { text, truncated: false };
       this.sink.output({ kind: 'event', event: { type: 'tool.result', itemId: record.toolCallId, ok: record.isError !== true, images, ...result } });
     }
-    if (record.type === 'message_start' && record.message?.role === 'assistant') {
+    if (record.type === 'message_start' && message?.role === 'assistant') {
       this.messageId = crypto.randomUUID();
       this.error = undefined;
     }
     if (record.type === 'message_update') {
-      const event = record.assistantMessageEvent;
-      if (!event || !['text_delta', 'thinking_delta'].includes(event.type) || typeof event.delta !== 'string' || !Number.isInteger(event.contentIndex) || event.contentIndex < 0) return;
+      const event = asRecord(record.assistantMessageEvent);
+      if (!event || (event.type !== 'text_delta' && event.type !== 'thinking_delta') || typeof event.delta !== 'string' || typeof event.contentIndex !== 'number' || !Number.isInteger(event.contentIndex) || event.contentIndex < 0) return;
       this.messageId ??= crypto.randomUUID();
       this.sink.output({ kind: 'delta', delta: { type: event.type === 'text_delta' ? 'assistant.text.delta' : 'reasoning.delta', itemId: `${this.messageId}:${event.contentIndex}`, text: event.delta } });
     }
-    if (record.type === 'message_end' && record.message?.role === 'assistant') {
-      const message = record.message;
+    if (record.type === 'message_end' && message?.role === 'assistant') {
       this.messageId ??= crypto.randomUUID();
       if (Array.isArray(message.content)) message.content.forEach((block: RecordValue, index: number) => {
         const itemId = `${this.messageId}:${index}`;
         if (block?.type === 'text' && typeof block.text === 'string') this.sink.output({ kind: 'event', event: { type: 'assistant.text', itemId, text: block.text } });
         if (block?.type === 'thinking' && typeof block.thinking === 'string') this.sink.output({ kind: 'event', event: { type: 'reasoning', itemId, text: block.thinking } });
       });
-      this.error = message.stopReason === 'error' ? (message.errorMessage ?? 'Pi model request failed.') : message.stopReason === 'length' ? 'Pi reached the model output limit.' : undefined;
+      this.error = message.stopReason === 'error' ? (typeof message.errorMessage === 'string' ? message.errorMessage : 'Pi model request failed.') : message.stopReason === 'length' ? 'Pi reached the model output limit.' : undefined;
       this.aborted = message.stopReason === 'aborted';
       this.messageId = undefined;
     }
