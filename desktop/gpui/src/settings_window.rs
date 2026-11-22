@@ -1045,12 +1045,7 @@ impl SettingsWindow {
                 .app
                 .upgrade()
                 .is_some_and(|a| a.read(cx).librarian.busy.contains("titles"));
-            let connected = self.app.upgrade().is_some_and(|a| {
-                matches!(
-                    a.read(cx).status,
-                    threadbear_client::runner::Status::Connected { .. }
-                )
-            });
+            let connected = self.app.upgrade().is_some_and(|a| a.read(cx).connected());
             let toggle = if busy {
                 Spinner::new().with_size(px(14.)).into_any_element()
             } else if !connected {

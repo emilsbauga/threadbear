@@ -21,10 +21,7 @@ impl Threadbear {
         if self.new_thread.creating || self.new_thread.picks.runner.is_some() {
             return;
         }
-        if !matches!(
-            self.status,
-            threadbear_client::runner::Status::Connected { .. }
-        ) {
+        if !self.connected() {
             self.new_thread.error = Some("Connect to the runner to save to Backlog.".into());
             cx.notify();
             return;
@@ -318,10 +315,7 @@ impl Composer {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        if !matches!(
-            app.read(cx).status,
-            threadbear_client::runner::Status::Connected { .. }
-        ) {
+        if !app.read(cx).connected() {
             app.update(cx, |app, cx| app.show_error("Connect to the runner to start this saved task. Your draft is still in the box.".into(), cx));
             return;
         }

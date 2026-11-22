@@ -69,11 +69,7 @@ pub(crate) fn projects_made(projects: &Value) -> usize {
 
 impl Threadbear {
     pub(crate) fn set_evolving_titles(&mut self, on: bool, cx: &mut Context<Self>) {
-        if !matches!(
-            self.status,
-            threadbear_client::runner::Status::Connected { .. }
-        ) || self.librarian.busy.contains("titles")
-        {
+        if !self.connected() || self.librarian.busy.contains("titles") {
             return;
         }
         let Some(before) = self

@@ -2,7 +2,7 @@ use serde_json::json;
 use threadbear_core::inbox::{self, ThreadSummary};
 
 fn row(value: serde_json::Value) -> ThreadSummary {
-    serde_json::from_value(value).unwrap()
+    serde_json::from_value(value).expect("valid Backlog test fixture")
 }
 
 #[test]
