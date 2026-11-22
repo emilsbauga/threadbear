@@ -1,17 +1,17 @@
 use serde_json::json;
 use threadbear_core::inbox::{self, ThreadSummary};
 
-fn row(value: serde_json::Value) -> ThreadSummary {
-    serde_json::from_value(value).expect("valid Backlog test fixture")
+fn row(value: serde_json::Value) -> serde_json::Result<ThreadSummary> {
+    serde_json::from_value(value)
 }
 
 #[test]
-fn saved_tasks_are_separate_from_inbox_even_when_starred() {
+fn saved_tasks_are_separate_from_inbox_even_when_starred() -> serde_json::Result<()> {
     let task = row(
         json!({"id":"saved", "title":"Plan the garden", "starredAt":"2026-11-01T00:00:00Z",
         "backlog":{"text":"Plan the garden  \n\n", "images":[], "revision":3}}),
-    );
-    let conversation = row(json!({"id":"chat", "title":"Current conversation"}));
+    )?;
+    let conversation = row(json!({"id":"chat", "title":"Current conversation"}))?;
     let sections = inbox::sections([&task, &conversation], 0);
     assert_eq!(inbox::section_of(&task, 0, &Default::default()), "backlog");
     assert_eq!(
@@ -27,23 +27,25 @@ fn saved_tasks_are_separate_from_inbox_even_when_starred() {
             .len(),
         1
     );
+    Ok(())
 }
 
 #[test]
-fn deferred_conversations_stay_in_backlog_without_losing_history() {
+fn deferred_conversations_stay_in_backlog_without_losing_history() -> serde_json::Result<()> {
     let task = row(
         json!({"id":"later", "backlogged":true,"lastSeq":47,"needsYou":true,
         "starredAt":"2026-11-01T00:00:00Z"}),
-    );
+    )?;
     assert_eq!(inbox::section_of(&task, 0, &Default::default()), "backlog");
     assert_eq!(task.last_seq, 47);
     assert_eq!(inbox::needs_you_count([&task], 0), 0);
     let archived =
-        row(json!({"id":"later", "backlogged":true,"archivedAt":"2026-11-01T00:00:00Z"}));
+        row(json!({"id":"later", "backlogged":true,"archivedAt":"2026-11-01T00:00:00Z"}))?;
     assert_eq!(
         inbox::section_of(&archived, 0, &Default::default()),
         "archived"
     );
+    Ok(())
 }
 
 #[test]
