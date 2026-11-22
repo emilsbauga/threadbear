@@ -290,7 +290,8 @@ pub(crate) fn guard() {
         unsafe extern "C" {
             fn TBHideTestingWindows();
         }
-        // Process-local AppKit guard, installed before any windows exist.
+        // SAFETY: The linked AppKit function takes no arguments. Startup installs
+        // the process-local guard before the app creates its first window.
         unsafe {
             TBHideTestingWindows();
         }
