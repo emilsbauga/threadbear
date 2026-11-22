@@ -77,7 +77,7 @@ class PiSession implements AgentSession {
   private ready: Promise<void>;
   private initialized = false;
   private ending = false;
-  private ended = false;
+  private sessionEnded = false;
   private stopping = false;
   private queue: UserInput[] = [];
   private turn?: Turn;
@@ -111,13 +111,13 @@ class PiSession implements AgentSession {
     if (opts.effort === 'ultra') throw new Error('Pi does not support ultra effort.');
     const sessionDir = path.join(this.profile.configDir, 'sessions', 'threadbear', opts.threadId);
     await fs.mkdir(sessionDir, { recursive: true, mode: 0o700 });
-    if (this.ending || this.ended) return;
+    if (this.ending || this.sessionEnded) return;
     const bridgeEnv: Record<string, string> = {};
     if (deps.toolsFor) {
       this.bridge = new PiBridge({ toolContext: this.profile.toolContext, tools: deps.toolsFor(opts.threadId), sink: this.sink, runsAsCode: opts.runsAsCode, cwd: () => opts.cwd, mode: () => this.mode, rules: () => this.rules, addRules: rules => { for (const rule of rules) this.rules.add(rule); this.sink.output({ kind: 'allowRules', rules }); } });
       const address = await this.bridge.start();
       bridgeEnv.THREADBEAR_PI_BRIDGE_URL = address.url; bridgeEnv.THREADBEAR_PI_BRIDGE_TOKEN = address.token;
-      if (this.ending || this.ended) { await this.bridge.close(); return; }
+      if (this.ending || this.sessionEnded) { await this.bridge.close(); return; }
     }
     const args = [...(deps.args ?? []), '--mode', 'rpc', '--provider', this.profile.connection.provider, '--model', this.model,
       '--session-dir', sessionDir, opts.resume ? '--session' : '--session-id', opts.sessionId,
@@ -130,7 +130,7 @@ class PiSession implements AgentSession {
       requestTimeoutMs: deps.requestTimeoutMs ?? 15_000, shutdownTimeoutMs: deps.shutdownTimeoutMs ?? 3000, maxLineBytes: deps.maxLineBytes,
       event: record => this.event(record), exited: error => this.onExit(error) });
     const state = await this.rpc.request('get_state');
-    if (this.ending || this.ended) return;
+    if (this.ending || this.sessionEnded) return;
     if (state.sessionId !== opts.sessionId) {
       if (opts.resume) throw new SessionNotFoundError('Pi did not restore the requested session.');
       throw new Error('Pi did not use the requested session ID.');
@@ -143,13 +143,13 @@ class PiSession implements AgentSession {
   }
 
   send(input: UserInput): void {
-    if (this.ending || this.ended) throw new Error('The Pi session is closed.');
+    if (this.ending || this.sessionEnded) throw new Error('The Pi session is closed.');
     this.queue.push(input);
     void this.pump();
   }
 
   private async pump(): Promise<void> {
-    if (!this.initialized || this.turn || this.stopping || this.ending || this.ended || !this.queue.length) return;
+    if (!this.initialized || this.turn || this.stopping || this.ending || this.sessionEnded || !this.queue.length) return;
     const input = this.queue.shift()!;
     const turn: Turn = { input, started: Date.now(), normalizer: new PiNormalizer(this.sink, fileContext(this.opts.cwd, this.opts.mediaDir, this.opts.blobsDir)), acknowledged: false, settled: false, interrupted: false, cancelled: [] };
     this.turn = turn;
@@ -168,7 +168,7 @@ class PiSession implements AgentSession {
         if (stat.size > 20 * 1024 * 1024) throw new Error('Pi input image exceeds 20 MB.');
         return { type: 'image', mimeType: image.mediaType, data: (await fs.readFile(image.path)).toString('base64') };
       }));
-      if (turn.interrupted || this.ending || this.ended || this.turn !== turn) return;
+      if (turn.interrupted || this.ending || this.sessionEnded || this.turn !== turn) return;
       const response = await this.rpc!.request('prompt', { message: input.text, ...(images.length ? { images } : {}) });
       if (this.turn !== turn) return;
       turn.acknowledged = true;
@@ -185,7 +185,7 @@ class PiSession implements AgentSession {
   private event(record: RecordValue): void {
     if (record.type === 'extension_ui_request') { void this.dialog(record).catch(error => this.fail(error)); return; }
     const turn = this.turn;
-    if (!turn || this.ended) return;
+    if (!turn || this.sessionEnded) return;
     turn.normalizer.handle(record);
     if (record.type === 'agent_settled') {
       turn.settled = true;
@@ -210,7 +210,7 @@ class PiSession implements AgentSession {
   }
 
   async interrupt(): Promise<void> {
-    if (this.ended) return;
+    if (this.sessionEnded) return;
     this.stopping = true;
     for (const dialog of this.dialogs) dialog.abort();
     const cancelled = this.queue.splice(0).flatMap(input => input.id ? [input.id] : []);
@@ -280,13 +280,13 @@ class PiSession implements AgentSession {
   }
 
   private fail(error: Error): void {
-    if (this.ended) return;
+    if (this.sessionEnded) return;
     if (this.rpc) this.rpc.terminate(error);
     else this.onExit(error);
   }
   private onExit(error?: Error): void {
-    if (this.ended) return;
-    this.ended = true;
+    if (this.sessionEnded) return;
+    this.sessionEnded = true;
     for (const dialog of this.dialogs) dialog.abort();
     this.queue = [];
     if (this.turn) {
