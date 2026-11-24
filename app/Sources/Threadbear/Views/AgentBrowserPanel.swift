@@ -93,6 +93,7 @@ final class AgentBrowserModel: ObservableObject {
     @Published private(set) var pending: Set<String> = []
     /// The request each key is waiting on, so an old request's timeout
     /// can't clear a newer one's spinner.
+    @Published private(set) var feedback: [String: String] = [:]
     private var pendingRequests: [String: UUID] = [:]
     private var agentTabs: [AgentTab] = []
     private var profileTabs: [AgentTab] = []
@@ -127,7 +128,13 @@ final class AgentBrowserModel: ObservableObject {
 
     private func mergeTabs() {
         let joined = Dictionary(agentTabs.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        let previous = tabs
         tabs = Array(profileTabs.reduce(into: joined) { $0[$1.id] = $1 }.values).sorted { $0.tabId < $1.tabId }
+        feedback = feedback.filter { id, _ in
+            guard let old = previous.first(where: { $0.id == id }),
+                  let live = tabs.first(where: { $0.id == id }) else { return false }
+            return live.thread == old.thread && live.handoffs == old.handoffs && live.state == old.state && live.finish == old.finish
+        }
     }
 
     private func connection() -> BrowserBearPipe? {
@@ -174,26 +181,39 @@ final class AgentBrowserModel: ObservableObject {
     static let openingKey = "open"
 
     /// `key` is what a button watches, in `pending`, until the answer comes.
-    private func action(_ cmd: String, _ args: [String: Any], thread: String? = nil, key: String? = nil) {
+    private func action(_ cmd: String, _ args: [String: Any], thread: String? = nil, key: String, tab: AgentTab? = nil) {
+        guard !pending.contains(key) else { return }
         requestError = nil
         error = nil
-        guard let pipe = connection() else { return }
-        let request = UUID()
-        if let key {
-            pending.insert(key)
-            pendingRequests[key] = request
-            // A connection that drops takes its answers with it, and the pipe
-            // gives up on any by 45 seconds, so the button comes back by then.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 46) { [weak self] in self?.answered(key, request) }
+        if let tab { feedback[tab.id] = nil }
+        guard let pipe = connection() else {
+            if let tab { feedback[tab.id] = "BrowserBear isn't running." }
+            else { error = "BrowserBear isn't running." }
+            return
         }
-        pipe.request(cmd, args, thread: thread, failure: { [weak self] message in
+        let request = UUID()
+        pending.insert(key)
+        pendingRequests[key] = request
+        DispatchQueue.main.asyncAfter(deadline: .now() + 46) { [weak self] in
+            guard let self, self.pendingRequests[key] == request else { return }
+            self.answered(key, request)
+            if let tab { self.feedback[tab.id] = "BrowserBear didn't answer in time." }
+            else { self.error = "BrowserBear didn't answer in time." }
+        }
+        pipe.request(cmd, args, thread: thread, failure: { _ in }, reply: { [weak self] result in
             DispatchQueue.main.async {
-                self?.requestError = message
-                self?.error = message
-                if let key { self?.answered(key, request) }
+                guard let self, self.pendingRequests[key] == request else { return }
+                self.answered(key, request)
+                if let tab, !self.tabs.contains(where: { $0.id == tab.id && $0.thread == tab.thread && $0.handoffs == tab.handoffs }) { return }
+                if let why = result["_error"] as? String {
+                    if cmd == "panelShow", why == "unknown command panelShow" {
+                        self.action("panelShowChrome", args, thread: thread, key: key, tab: tab)
+                    } else if let tab { self.feedback[tab.id] = why }
+                    else { self.requestError = why; self.error = why }
+                } else if cmd == "markDone", let tab {
+                    self.feedback[tab.id] = "Done sent"
+                }
             }
-        }, reply: { [weak self] _ in
-            DispatchQueue.main.async { if let key { self?.answered(key, request) } }
         })
     }
 
@@ -203,11 +223,11 @@ final class AgentBrowserModel: ObservableObject {
         pending.remove(key)
     }
 
-    func done(_ tab: AgentTab) { action("markDone", ["tab": tab.tabId], key: Self.pendingKey("markDone", tab)) }
+    func done(_ tab: AgentTab) { action("markDone", ["tab": tab.tabId], key: Self.pendingKey("markDone", tab), tab: tab) }
 
     /// Brings the page's real window to the front.
     func show(_ tab: AgentTab, thread: String) {
-        action("panelShow", ["tab": tab.tabId, "profile": tab.profileId], thread: thread, key: Self.pendingKey("panelShow", tab))
+        action("panelShow", ["tab": tab.tabId, "profile": tab.profileId], thread: thread, key: Self.pendingKey("panelShow", tab), tab: tab)
     }
 
     /// A new page in the agents' browser, behind Mike's windows.
@@ -339,13 +359,16 @@ struct AgentPageRow: View {
                     .fixedSize()
                     .busy(model.pending.contains(AgentBrowserModel.pendingKey("panelShow", tab)))
                     .tip("Bring this page's window to the front, in \(place)")
-                if yours {
+                if yours, tab.finish == true {
                     Button("Done") { model.done(tab) }
                         .controlSize(.small)
                         .fixedSize()
                         .busy(model.pending.contains(AgentBrowserModel.pendingKey("markDone", tab)))
                         .tip("Tell the agent you've finished here")
                 }
+            }
+            if let message = model.feedback[tab.id] {
+                Text(message).font(.system(size: TypeScale.label)).foregroundStyle(.secondary)
             }
         }
         .padding(zoomed(8))

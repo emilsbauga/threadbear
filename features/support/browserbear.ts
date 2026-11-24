@@ -28,6 +28,8 @@ const STILL = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSE
 export class StandInBrowserBear {
   readonly home: string;
   readonly heard: Heard[] = [];
+  rejectShow = false;
+  supportsPanelShow = false;
   private tabs: Tab[] = [];
   private server: net.Server;
   private sockets = new Set<net.Socket>();
@@ -56,12 +58,20 @@ export class StandInBrowserBear {
   }
 
   /** The agent hands a page to Mike: `browserbear handoff <tab> --wait`. */
-  handOver(tabId: number): void {
+  handOver(tabId: number, waiting = true): void {
     const tab = this.tabs.find((t) => t.tabId === tabId);
     if (!tab) throw new Error(`no tab ${tabId}`);
     tab.state = 'yours';
-    tab.finish = true;
+    tab.finish = waiting;
     tab.handoffs = (tab.handoffs ?? 0) + 1;
+    this.write();
+  }
+
+  finishHandoff(tabId: number): void {
+    const tab = this.tabs.find((t) => t.tabId === tabId);
+    if (!tab) throw new Error(`no tab ${tabId}`);
+    tab.state = 'idle';
+    tab.finish = false;
     this.write();
   }
 
@@ -102,13 +112,15 @@ export class StandInBrowserBear {
       case 'panelStill':
         return { ok: true, result: { data: STILL, at: Date.now() } };
       case 'panelShow':
+        if (!this.supportsPanelShow) return { ok: false, error: 'unknown command panelShow' };
+        return { ok: true, result: {} };
+      case 'panelShowChrome':
+        if (this.rejectShow) return { ok: false, error: 'This Chrome profile is not connected.' };
         return { ok: true, result: {} };
       case 'markDone': {
         const tab = this.tabs.find((t) => t.tabId === args.tab);
         if (!tab) return { ok: false, error: 'no such tab' };
-        tab.state = 'idle';
-        tab.finish = false;
-        this.write();
+        // The waiting agent finishes the handoff after it sees the click.
         return { ok: true, result: {} };
       }
       case 'handoff': {

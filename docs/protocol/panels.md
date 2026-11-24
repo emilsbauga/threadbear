@@ -277,7 +277,8 @@ profiles.
   "started debugging" bar up), and never takes one of a page handed to the user
   in their own Chrome.
 - `{cmd:"panelShow",thread,args:{tab,profile}}` brings the page's real window
-  to the front.
+  to the front. For services that report this command as unknown, retry with
+  `panelShowChrome` and the same profile, tab and thread.
 - `markDone {tab}` is the Done button for a page waiting on `handoff --wait`.
 
 BrowserBear checks that the thread owns the page in that exact profile (the agents'

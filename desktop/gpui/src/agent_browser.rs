@@ -434,6 +434,7 @@ pub(crate) struct AgentBrowser {
     pub(crate) browser_name: String,
     pub(crate) error: Option<String>,
     request_error: Option<String>,
+    feedback: HashMap<String, String>,
     /// Buttons waiting for BrowserBear's answer, by `pending_key`. It can
     /// take a while, as the browser has to do the thing.
     pub(crate) pending: HashSet<String>,
@@ -519,6 +520,7 @@ impl AgentBrowser {
             browser_name: "Helium".into(),
             error: None,
             request_error: None,
+            feedback: HashMap::new(),
             pending: HashSet::new(),
             pending_requests: HashMap::new(),
             next_request: 0,
@@ -589,6 +591,18 @@ impl AgentBrowser {
         let tabs = bear::merge(&self.agent_tabs, &self.profile_tabs);
         // Only a change is told: the window redraws for each.
         if tabs != self.tabs {
+            self.feedback.retain(|id, _| {
+                let previous = self.tabs.iter().find(|t| t.id() == *id);
+                tabs.iter().any(|t| {
+                    t.id() == *id
+                        && previous.is_some_and(|p| {
+                            p.thread == t.thread
+                                && p.handoffs == t.handoffs
+                                && p.state == t.state
+                                && p.finish == t.finish
+                        })
+                })
+            });
             self.tabs = tabs;
             let live: HashSet<String> = self.tabs.iter().map(AgentTab::id).collect();
             self.stills.retain(|id, _| live.contains(id));
@@ -699,12 +713,31 @@ impl AgentBrowser {
     /// until the answer comes.
     fn action(
         &mut self,
-        cmd: &str,
+        cmd: &'static str,
         args: Value,
         thread: Option<&str>,
-        key: String,
+        tab: Option<&AgentTab>,
         cx: &mut Context<Self>,
     ) {
+        let key = tab.map_or_else(
+            || OPENING_KEY.to_owned(),
+            |t| {
+                pending_key(
+                    if cmd == "panelShowChrome" {
+                        "panelShow"
+                    } else {
+                        cmd
+                    },
+                    t,
+                )
+            },
+        );
+        if self.pending.contains(&key) {
+            return;
+        }
+        if let Some(t) = tab {
+            self.feedback.remove(&t.id());
+        }
         self.request_error = None;
         self.error = None;
         self.next_request += 1;
@@ -712,24 +745,56 @@ impl AgentBrowser {
         self.pending.insert(key.clone());
         self.pending_requests.insert(key.clone(), request);
         cx.notify();
+        let retry = (cmd == "panelShow").then(|| (args.clone(), thread.map(str::to_owned)));
+        let target = tab.cloned();
+        let reply_key = key.clone();
         let sent = self.send(cmd, args, thread, cx, move |b, got, cx| {
-            if let Err(why) = got {
-                b.request_error = Some(why.clone());
-                b.error = Some(why);
+            b.answered(&reply_key, request);
+            if target.as_ref().is_some_and(|t| {
+                !b.tabs.iter().any(|live| {
+                    live.id() == t.id() && live.thread == t.thread && live.handoffs == t.handoffs
+                })
+            }) {
+                cx.notify();
+                return;
             }
-            b.answered(&key, request);
+            if let Some((args, thread)) = retry.filter(|_| {
+                got.as_ref()
+                    .err()
+                    .is_some_and(|e| e == "unknown command panelShow")
+            }) {
+                b.action(
+                    "panelShowChrome",
+                    args,
+                    thread.as_deref(),
+                    target.as_ref(),
+                    cx,
+                );
+                return;
+            }
+            match (got, target) {
+                (Err(why), Some(t)) => {
+                    b.feedback.insert(t.id(), why);
+                }
+                (Err(why), None) => {
+                    b.request_error = Some(why.clone());
+                    b.error = Some(why);
+                }
+                (Ok(_), Some(t)) if cmd == "markDone" => {
+                    b.feedback.insert(t.id(), "Done sent".into());
+                }
+                _ => {}
+            }
             cx.notify();
         });
         if !sent {
-            self.error = Some("BrowserBear isn't running.".into());
-            let key = self
-                .pending_requests
-                .iter()
-                .find(|(_, r)| **r == request)
-                .map(|(k, _)| k.clone());
-            if let Some(key) = key {
-                self.answered(&key, request);
+            let why = "BrowserBear isn't running.".to_owned();
+            if let Some(t) = tab {
+                self.feedback.insert(t.id(), why);
+            } else {
+                self.error = Some(why);
             }
+            self.answered(&key, request);
         }
     }
 
@@ -747,7 +812,7 @@ impl AgentBrowser {
             "markDone",
             json!({ "tab": tab.tab_id }),
             None,
-            pending_key("markDone", tab),
+            Some(tab),
             cx,
         );
     }
@@ -758,7 +823,7 @@ impl AgentBrowser {
             "panelShow",
             json!({ "tab": tab.tab_id, "profile": tab.profile_id() }),
             Some(thread),
-            pending_key("panelShow", tab),
+            Some(tab),
             cx,
         );
     }
@@ -769,7 +834,7 @@ impl AgentBrowser {
             "open",
             json!({ "profile": "agent", "url": url }),
             Some(thread),
-            OPENING_KEY.to_owned(),
+            None,
             cx,
         );
     }
@@ -1033,7 +1098,8 @@ impl SidePane {
             SharedString::from(format!("browser-show-{}", tab.id())),
             "Show window",
             format!(
-                "Bring this page's window to the front, in {}",
+                "Bring this page's window to the front: {} ({})",
+                tab.shown_title(),
                 tab.place(browser_name)
             ),
         )
@@ -1043,13 +1109,13 @@ impl SidePane {
             show_model.update(cx, |b, cx| b.show(&show_tab, &show_thread, cx))
         });
         let mut buttons = h_flex().gap(px(6.)).child(show);
-        if yours {
+        if tab.yours() && tab.finish == Some(true) {
             let (done_tab, done_model) = (tab.clone(), model.clone());
             buttons = buttons.child(
                 PushButton::new(
                     SharedString::from(format!("browser-done-{}", tab.id())),
                     "Done",
-                    "Tell the agent you've finished here",
+                    format!("Tell the agent you've finished here: {}", tab.shown_title()),
                 )
                 .small()
                 .busy(b.pending.contains(&pending_key("markDone", tab)))
@@ -1077,6 +1143,14 @@ impl SidePane {
                     .child(words),
             )
             .child(buttons)
+            .when_some(b.feedback.get(&tab.id()).cloned(), |row, message| {
+                row.child(
+                    div()
+                        .text_size(px(style::size::LABEL))
+                        .text_color(p.secondary)
+                        .child(message),
+                )
+            })
             .into_any_element()
     }
 
@@ -1102,10 +1176,10 @@ impl SidePane {
             .iter()
             .map(|t| {
                 let mut buttons = vec!["Show window"];
-                if t.yours() {
+                if t.yours() && t.finish == Some(true) {
                     buttons.push("Done");
                 }
-                json!({ "title": t.shown_title(), "host": t.host(), "state": t.state, "action": t.working().then(|| t.action.clone()).flatten(), "buttons": buttons, "still": b.stills.contains_key(&t.id()) })
+                json!({ "title": t.shown_title(), "host": t.host(), "state": t.state, "action": t.working().then(|| t.action.clone()).flatten(), "buttons": buttons, "feedback": b.feedback.get(&t.id()), "still": b.stills.contains_key(&t.id()) })
             })
             .collect();
         pane.insert("pages".into(), json!(rows));

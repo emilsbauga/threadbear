@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { okValue, sleep, type Dump } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 
-type Page = { title: string; host: string; buttons: string[] };
+type Page = { title: string; host: string; buttons: string[]; feedback?: string };
 type BrowserWorld = ThreadbearWorld & { pages?: Map<string, number> };
 
 const bear = (world: ThreadbearWorld) => {
@@ -29,6 +29,32 @@ Given('BrowserBear has {string} at {string} open for {string}', async function (
 
 When('the agent hands {string} to me', function (this: BrowserWorld, title: string) {
   bear(this).handOver(tabOf(this, title));
+});
+
+When('the agent hands {string} to me without waiting', function (this: BrowserWorld, title: string) {
+  bear(this).handOver(tabOf(this, title), false);
+});
+
+When('the agent resumes work in {string}', function (this: BrowserWorld, title: string) {
+  bear(this).finishHandoff(tabOf(this, title));
+});
+
+Given('BrowserBear supports panelShow', function (this: BrowserWorld) {
+  bear(this).supportsPanelShow = true;
+});
+
+Then('BrowserBear received only the panelShow request for {string}', async function (this: BrowserWorld, title: string) {
+  const tab = tabOf(this, title);
+  await heard(this, 'panelShow', (h) => h.cmd === 'panelShow' && h.args.tab === tab);
+  assert.ok(!bear(this).heard.some((h) => h.cmd === 'panelShowChrome'));
+});
+
+When('the browser window becomes unavailable', function (this: BrowserWorld) {
+  bear(this).rejectShow = true;
+});
+
+Then('the page {string} reports {string}', async function (this: BrowserWorld, title: string, message: string) {
+  await this.until(message, (d) => listed(d)?.some((p) => p.title === title && p.feedback === message));
 });
 
 const browserButton = (d: Dump) => d.rails?.right.find((b) => b.title === 'Browser');
@@ -59,7 +85,7 @@ const tips: Record<string, string> = {
 
 When('I press {string} on {string}', async function (this: ThreadbearWorld, button: string, title: string) {
   await this.until(`"${title}" with ${button} in the Browser pane`, (d) => listed(d)?.some((p) => p.title === title && p.buttons.includes(button)));
-  await this.app.do({ cmd: 'click', tipPrefix: tips[button] });
+  await this.app.do({ cmd: 'click', tipPrefix: `${tips[button]}: ${title}` });
 });
 
 async function heard(world: ThreadbearWorld, what: string, check: (h: { cmd: string; args: Record<string, unknown>; thread?: string }) => boolean): Promise<void> {
@@ -73,7 +99,7 @@ async function heard(world: ThreadbearWorld, what: string, check: (h: { cmd: str
 Then('BrowserBear was asked to show that page for {string}', async function (this: BrowserWorld, threadTitle: string) {
   const thread = this.thread(await this.app.dump(), threadTitle);
   const tab = [...(this.pages?.values() ?? [])][0];
-  await heard(this, `panelShow for tab ${tab}`, (h) => h.cmd === 'panelShow' && h.args.tab === tab && h.args.profile === 'agent-chrome' && h.thread === thread?.id);
+  await heard(this, `panelShowChrome for tab ${tab}`, (h) => h.cmd === 'panelShowChrome' && h.args.tab === tab && h.args.profile === 'agent-chrome' && h.thread === thread?.id);
 });
 
 Then("BrowserBear was told I'm done with {string}", async function (this: BrowserWorld, title: string) {

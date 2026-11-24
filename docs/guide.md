@@ -425,7 +425,7 @@ An address typed at the top opens a new page in the agents' browser.
 When the agent needs you to do something in a page (sign in, approve, pay),
 handoff brings that page's window to the front. For a page in the agents'
 browser it also opens this thread's Browser panel, with the page marked Your
-turn and a Done button, even if the panel was closed; your selected thread
+turn and a Done button while the agent is waiting, even if the panel was closed; your selected thread
 stays yours. The agent waits for Done or for the page to settle after your step.
 Normal browsing by the agent doesn't open the panel.
 

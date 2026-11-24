@@ -23,12 +23,39 @@ Feature: The Browser pane
     Then the Browser pane lists "Example Domain" from "example.com" with "Show window"
 
   @browserbear @windows-pending @browser.show @swift-pending
-  Scenario: Show window asks BrowserBear to bring the page's window forward
+  Scenario: Show window brings the selected page forward
     Given BrowserBear has "Example Domain" at "https://example.com/" open for "Morning brief"
     When I open the thread "Morning brief"
     And I click the right rail's Browser button
-    And I press "Show window" on "Example Domain"
+    And BrowserBear has "Second" at "https://second.example/" open for "Morning brief"
+    Then the Browser pane lists "Second" from "second.example" with "Show window"
+    When I press "Show window" on "Example Domain"
     Then BrowserBear was asked to show that page for "Morning brief"
+
+  @browserbear @windows-pending @browser.show @swift-pending
+  Scenario: A service supporting panelShow handles the first request
+    Given BrowserBear supports panelShow
+    And BrowserBear has "Example Domain" at "https://example.com/" open for "Morning brief"
+    When I open the thread "Morning brief"
+    And I click the right rail's Browser button
+    And I press "Show window" on "Example Domain"
+    Then BrowserBear received only the panelShow request for "Example Domain"
+
+  @browserbear @windows-pending @browser.handoff @swift-pending
+  Scenario: A handoff without a waiting agent has no Done button
+    Given BrowserBear has "Sign in" at "https://login.example.com/" open for "Morning brief"
+    When I open the thread "Morning brief"
+    And the agent hands "Sign in" to me without waiting
+    Then the Browser pane lists "Sign in" from "login.example.com" with "Show window"
+
+  @browserbear @windows-pending @browser.show @swift-pending
+  Scenario: A rejected Show window request explains the failure on the page
+    Given BrowserBear has "Example Domain" at "https://example.com/" open for "Morning brief"
+    When I open the thread "Morning brief"
+    And I click the right rail's Browser button
+    And the browser window becomes unavailable
+    And I press "Show window" on "Example Domain"
+    Then the page "Example Domain" reports "This Chrome profile is not connected."
 
   @browserbear @windows-pending @browser.handoff @swift-pending
   Scenario: A page handed to me opens the pane by itself, and Done tells the agent
@@ -39,7 +66,9 @@ Feature: The Browser pane
     And the Browser pane lists "Sign in" from "login.example.com" with "Show window, Done"
     When I press "Done" on "Sign in"
     Then BrowserBear was told I'm done with "Sign in"
-    And the Browser pane lists "Sign in" from "login.example.com" with "Show window"
+    And the page "Sign in" reports "Done sent"
+    When the agent resumes work in "Sign in"
+    Then the Browser pane lists "Sign in" from "login.example.com" with "Show window"
 
   @browserbear @windows-pending @browser.handoff @panel.requests @swift-pending
   Scenario: show_panel for the browser brings the Browser pane up
