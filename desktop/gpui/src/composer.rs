@@ -2557,8 +2557,8 @@ impl Composer {
     }
 }
 
-impl Render for Composer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Composer {
+    fn restore_pending_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The box as it was before an edit that's just gone, first: it
         // replaces what's there, so anything given back goes after it.
         if let Some((text, images)) = self.pending_box.take() {
@@ -2581,6 +2581,12 @@ impl Render for Composer {
                 }
             }
         }
+    }
+}
+
+impl Render for Composer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_pending_box(window, cx);
         let mentions = threadbear_core::board::take_mentions(
             &mut self.pending_mentions,
             self.editing.as_ref().map(|e| e.seq),
